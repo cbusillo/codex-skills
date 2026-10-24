@@ -2464,7 +2464,7 @@ def release_retained_prs(issue: dict[str, Any], source: dict[str, Any], actor: s
     ambiguous = []
     for pull in by_url.values():
         if (pull.get("state") != "open" and not (pull.get("state") == "closed" and pull.get("merged_at"))
-                or (pull.get("user") or {}).get("login") != actor or github_plan_claim.is_train_batch(pull)):
+                or (pull.get("user") or {}).get("login") != actor):
             continue
         head_repo = ((pull.get("head") or {}).get("repo") or {}).get("full_name", "")
         base_repo = ((pull.get("base") or {}).get("repo") or {}).get("full_name", "")
@@ -2478,7 +2478,7 @@ def release_retained_prs(issue: dict[str, Any], source: dict[str, Any], actor: s
             pull, number, repo=repo, local_references=head_repo.casefold() == repo.casefold(),
             attestation=True, record_kind="pr" if "pull_request" in issue else "issue")
         if not source_branch and not subject and url not in inherited:
-            if not linked_source:
+            if not linked_source or github_plan_claim.is_train_batch(pull):
                 continue
             if not named and url not in declared and github_plan_release.stamp(pull.get("created_at")) < started:
                 continue

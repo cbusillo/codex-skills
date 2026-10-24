@@ -1628,7 +1628,7 @@ class OwnReleaseTests(ReleaseHarness):
 
     def test_release_leaves_the_merge_train_batch_to_the_train(self) -> None:
         self.f.pulls = [{"number": 101, "state": "open", "user": {"login": BOT}, "created_at": "2026-10-01T01:00:00Z",
-                         "body": "Launchplane batch: #99\n\nCloses #42",
+                         "body": CLAIM.TRAIN_BATCH_MARKER + "batch:sha -->\n\nCloses #42",
                          "head": {"ref": CLAIM.TRAIN_BRANCH_PREFIX + "owner/repo/main/batch", "repo": {"full_name": "owner/repo"}},
                          "base": {"repo": {"full_name": "owner/repo"}}, "html_url": "https://github.com/owner/repo/pull/101"}]
         self.run_own_release()

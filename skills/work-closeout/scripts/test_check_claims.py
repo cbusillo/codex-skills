@@ -54,6 +54,26 @@ def native_terminal_result(identifier: str, output: str = "", *, javascript: boo
     }
 
 
+OPAQUE_CLAIM = 'P=gh-plan.py; uv run "$P" claim "$(next_issue)"'
+SETTLED_AT = "2026-01-01T00:00:30Z"
+
+
+def finished_opaque_call(at: str | None = SETTLED_AT, *, result: bool = True) -> list[dict]:
+    rows = [{"payload": {"type": "function_call", "name": "shell_command", "call_id": "opaque",
+                         "arguments": json.dumps({"command": OPAQUE_CLAIM})}}]
+    if result:
+        rows.append(native_terminal_result("opaque"))
+    return [{**row, "timestamp": at} if at is not None else row for row in rows]
+
+
+def code_cell(output: dict) -> list[dict]:
+    return [{"timestamp": SETTLED_AT, "type": "response_item", "payload": row} for row in (
+        {"type": "custom_tool_call", "name": "exec", "call_id": "cell",
+         "input": 'await tools.exec_command({cmd: ["uv run gh-plan.py claim", next()].join(" ")});'},
+        {"type": "custom_tool_call_output", "call_id": "cell",
+         "output": [{"type": "input_text", "text": json.dumps(output)}]})]
+
+
 def native_runtime() -> dict:
     return {"type": "session_meta", "payload": {"id": SESSION, "cli_version": SUPPORTED_CLI_VERSION}}
 
@@ -217,15 +237,19 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertEqual(self.check()[0]["retained_prs"], [self.pulls[0]["html_url"]])
 
     def test_merge_train_batch_copying_the_closing_keyword_is_not_retained_work(self):
-        batch = pull(7, branch=helper.claim.TRAIN_BRANCH_PREFIX + f"{REPO}/main/batch", created_at="2026-01-01T00:01:30Z")
+        train_branch = helper.claim.TRAIN_BRANCH_PREFIX + f"{REPO}/main/batch"
+        batch = pull(7, branch=train_branch, created_at="2026-01-01T00:01:30Z",
+                     body=helper.claim.TRAIN_BATCH_MARKER + "batch:sha -->\n\nFixes #1")
         self.pulls = [pull(), batch]
         self.comments.append({**self.release, "body": self.release["body"] + "\n" + self.pulls[0]["html_url"]})
         self.assertEqual(self.check()[0]["retained_prs"], [self.pulls[0]["html_url"]])
         self.comments[-1]["body"] += "\n" + batch["html_url"]
         self.assertEqual(self.check()[0]["retained_prs"], [self.pulls[0]["html_url"]])
-        self.pulls[1] = pull(8, branch="work/unnamed", created_at="2026-01-01T00:01:30Z")
-        with self.assertRaises(ValueError):
-            self.check()
+        for unnamed in (pull(8, branch="work/unnamed", created_at="2026-01-01T00:01:30Z"),
+                        pull(8, branch=train_branch, created_at="2026-01-01T00:01:30Z")):
+            self.pulls[1] = unnamed
+            with self.subTest(pull=unnamed), self.assertRaises(ValueError):
+                self.check()
 
     def test_split_handoffs_can_be_in_separate_authored_comments(self):
         self.pulls = [pull(), pull(3, branch="work/split")]
@@ -1412,17 +1436,13 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertTrue(report["blocked"])
         self.assertIn("lost", {item["call_id"] for item in report["unresolved_invocations"]})
 
-    def undecodable_claim_session(self, *, timestamp: str | None = "2026-01-01T00:00:30Z") -> dict:
+    def undecodable_claim_session(self, *rows: dict) -> dict:
         root = self.entry()
         helper.claim_log.record(SESSION, REPO, 1)
         self.comments.append(self.release)
-        row: dict[str, object] = {"payload": {"type": "function_call", "name": "shell_command", "call_id": "opaque",
-                                              "arguments": json.dumps({"command": 'P=gh-plan.py; uv run "$P" claim "$(next_issue)"'})}}
-        if timestamp is not None:
-            row["timestamp"] = timestamp
         with Path(root["transcript"]).open("a") as stream:
-            stream.write(json.dumps(row) + "\n")
-            stream.write(json.dumps({"type": "api-request-blob", "message": {"role": "user", "content": "opaque"}}) + "\n")
+            for row in [*(rows or finished_opaque_call()), {"type": "api-request-blob", "message": {"role": "user", "content": "opaque"}}]:
+                stream.write(json.dumps(row) + "\n")
         self.enterContext(patch.object(helper, "search_account", return_value="test"))
         return root
 
@@ -1450,14 +1470,28 @@ class ClaimCloseoutTests(unittest.TestCase):
 
     def test_search_cannot_settle_a_cell_it_may_not_have_indexed(self) -> None:
         recent = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        for timestamp in (recent, None):
-            with self.subTest(timestamp=timestamp):
+        for rows in (finished_opaque_call(recent), finished_opaque_call(None), finished_opaque_call(result=False)):
+            with self.subTest(rows=rows):
                 self.setUp()
-                root = self.undecodable_claim_session(timestamp=timestamp)
+                root = self.undecodable_claim_session(*rows)
                 self.search_finds(1)
                 report = helper.check([root])
                 self.assertFalse(report["claims_clear"])
                 self.reader.request.assert_not_called()
+
+    def test_native_command_and_code_cell_settle_only_once_nothing_is_left_running(self) -> None:
+        command = {"timestamp": SETTLED_AT, "type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "CommandExecution", "id": "x", "command": OPAQUE_CLAIM, "status": "completed", "exit_code": 0,
+            "aggregated_output": ""}}}
+        for rows, settled in (([command], True), (code_cell({"exit_code": 0, "output": ""}), True),
+                              (code_cell({"session_id": 7, "output": ""}), False)):
+            with self.subTest(rows=rows):
+                self.setUp()
+                root = self.undecodable_claim_session(*rows)
+                self.search_finds(1)
+                report = helper.check([root])
+                self.assertTrue(report["unresolved_invocations"] or report["settled_invocations"])
+                self.assertEqual(report["claims_clear"], settled)
 
     def test_search_that_misses_a_known_claim_or_is_incomplete_settles_nothing(self) -> None:
         for numbers, incomplete in (((), False), ((1,), True)):

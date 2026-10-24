@@ -798,19 +798,20 @@ def handoff_url(repo: str, number: int, comment_id: int) -> str:
 
 
 TRAIN_BRANCH_PREFIX = "launchplane/train/"
+TRAIN_BATCH_MARKER = "<!-- launchplane-batch:"
 
 
 def is_train_batch(pull: dict[str, Any]) -> bool:
     head, base = pull.get("head") or {}, pull.get("base") or {}
     head_repo = (head.get("repo") or {}).get("full_name", "")
-    return ((head.get("ref") or "").startswith(TRAIN_BRANCH_PREFIX)
+    return ((head.get("ref") or "").startswith(TRAIN_BRANCH_PREFIX) and TRAIN_BATCH_MARKER in (pull.get("body") or "")
             and bool(head_repo) and head_repo.casefold() == (base.get("repo") or {}).get("full_name", "").casefold())
 
 
 def is_retained_work(pull: dict[str, Any], *, author: str, issue_repo: str, issue_number: int, target_repo: str) -> bool:
     if pull.get("state") != "open" and not (pull.get("state") == "closed" and pull.get("merged_at")):
         return False
-    if (pull.get("user") or {}).get("login") != author or is_train_batch(pull):
+    if (pull.get("user") or {}).get("login") != author:
         return False
     if any(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() != target_repo.casefold()
            for side in ("head", "base")):
@@ -906,9 +907,9 @@ def artifact_evidence(
             if not permitted(tree["branch"]) and tree["branch"] not in (ended_branches or set()):
                 conflicts.append({"source": "worktree", **tree, "certainty": "current_or_stale"})
     for pull in pulls:
-        if pull["number"] == subject_pr or is_train_batch(pull):
-            continue
         branch = (pull.get("head") or {}).get("ref", "")
+        if pull["number"] == subject_pr or (is_train_batch(pull) and not permitted(branch)):
+            continue
         if (pr_issue_reference(pull, number, repo=repo, local_references=local_references,
                                record_kind="pr" if subject_pr is not None else "issue")
                 or branch in (recorded_branches or set())

@@ -132,7 +132,7 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data
             def retained_work(candidate):
                 return claim.is_retained_work(candidate, author=actor, issue_repo=repo, issue_number=number, target_repo=repo)
             pulls = [p for p in pulls if (p.get("head") or {}).get("ref") == record["branch"]
-                     or retained_work(p) and (p["number"] in named or during_claim(p))]
+                     or retained_work(p) and not claim.is_train_batch(p) and (p["number"] in named or during_claim(p))]
         if receipt is not None:
             handoffs = [evidence]
             for pull in pulls:
@@ -174,22 +174,36 @@ def recorded_targets(entry: dict) -> dict:
     discovery["targets"].update(targets)
     unresolved = discovery["unresolved_invocations"]
     if unresolved:
-        mentioned = last_mentioned_at(rows, {item["call_id"] for item in unresolved})
+        inputs = {call.identifier: (call.text, call.javascript, call.name, call.index) for call in history.tool_details(rows)}
+        recorded = history.tool_outputs(rows, followups=False)
+        ended = {item["call_id"] for item in unresolved
+                 if item.get("ended") or code_cell_left_nothing_running(item["call_id"], inputs, recorded)}
+        finished = result_times(rows, ended, inputs, recorded)
         for item in unresolved:
-            item["finished_at"] = mentioned.get(item["call_id"])
+            item["finished_at"] = finished.get(item["call_id"])
     return discovery
 
 
-def last_mentioned_at(rows: list[dict], call_ids: set[str]) -> dict[str, float]:
+def code_cell_left_nothing_running(call: str, inputs: dict, recorded: dict[str, list[object]]) -> bool:
+    if call not in inputs or not inputs[call][1]:
+        return False
+    results = history.native_results(recorded.get(call, []))
+    return bool(results) and not any(type(result.get("session_id")) is int for result in results)
+
+
+def result_times(rows: list[dict], call_ids: set[str], inputs: dict, recorded: dict[str, list[object]]) -> dict[str, float]:
+    producers = {call: {call, *history.ordered_polls(call, inputs, recorded)} for call in call_ids}
     latest: dict[str, float] = {}
     for row in rows:
+        produced = set(history.tool_outputs([row], followups=False))
+        if not produced:
+            continue
         try:
             at = release.stamp(row["timestamp"]).timestamp()
         except (KeyError, TypeError, ValueError):
             continue
-        text = json.dumps(row)
-        for call in call_ids:
-            if call in text and at >= latest.get(call, at):
+        for call, identifiers in producers.items():
+            if produced & identifiers and at >= latest.get(call, at):
                 latest[call] = at
     return latest
 

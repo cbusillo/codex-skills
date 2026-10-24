@@ -4110,18 +4110,22 @@ class ClaimTests(unittest.TestCase):
         self.assert_no_writes()
 
     def test_merge_train_batch_is_not_competing_ownership(self):
-        batch = {"number": 101, "body": "Launchplane batch: #99\n\nCloses #42",
+        batch = {"number": 101, "body": CLAIM.TRAIN_BATCH_MARKER + "batch:sha -->\n\nCloses #42",
                  "head": {"ref": CLAIM.TRAIN_BRANCH_PREFIX + "owner/repo/main/batch", "repo": {"full_name": "owner/repo"}},
                  "base": {"repo": {"full_name": "owner/repo"}}}
         self.pulls = [batch]
         self.run_claim()
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
         self.setUp()
-        self.pulls = [batch, {"number": 99, "body": "Closes #42", "head": {"ref": "work/source"}}]
-        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-            self.run_claim()
-        self.assertEqual([c.get("number") for c in caught.exception.payload["competing_evidence"]], [99])
-        self.assert_no_writes()
+        unmarked = {**batch, "number": 99, "body": "Closes #42"}
+        for competing in (unmarked, {"number": 99, "body": "Closes #42", "head": {"ref": "work/source"}}):
+            with self.subTest(competing=competing):
+                self.setUp()
+                self.pulls = [batch, competing]
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual([c.get("number") for c in caught.exception.payload["competing_evidence"]], [99])
+                self.assert_no_writes()
 
     def test_context_link_does_not_override_branch_or_claim_owner(self):
         self.pulls = [{"number": 99, "body": "Code follow-ups recorded without starting implementation: "

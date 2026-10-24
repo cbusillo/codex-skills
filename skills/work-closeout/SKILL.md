@@ -321,10 +321,15 @@ native outputs without executing recorded programs. A command it cannot decode,
 such as one built from a shell variable or a code-mode cell, is settled by
 GitHub's own record instead: every claim comment shows its session ID, so one
 search of the App's account for that ID finds the session's claims, and each
-one found is checked like any other target. The search settles only commands
-whose last transcript entry is at least 10 minutes old, only when it returns
-complete results that include every claim the check already knows, and only
-when the App has a single installation and no client App. Otherwise the command
+one found is checked like any other target. The search settles a command only
+when the transcript shows it finished, with nothing it started still running,
+at least 10 minutes before the check; only when the search returns complete
+results that include every claim the check already knows; and only when the App
+has a single installation and no client App. A code-mode cell that left a
+process running stays unresolved, because the transcript cannot show when that
+process ended. The search relies on GitHub's index catching up within those 10
+minutes; the claim journal still covers every claim the current helper makes.
+Otherwise the command
 stays in `unresolved_invocations`, the reason is in `coverage.search_errors`,
 and the verdict stays conditional while known targets are checked. When
 `unresolved_invocations` remains, or when recovering older/remote-host evidence,
@@ -358,7 +363,8 @@ independent issue link under the successor's handoff contract. Retained work is
 a PR on the claim's branch, or an open PR by the automation identity that links
 the issue and is named in the release or opened during the claim, the same rule
 `gh-plan.py release` uses. A PR the release mentions only as context, and a
-merge-train batch PR (head under `launchplane/train/`), are not retained work. A PR-only claim
+merge-train batch PR (head under `launchplane/train/` with Launchplane's batch
+marker), are not retained work unless it is on the claim's own branch. A PR-only claim
 uses the PR itself as its work record. Preserve the branch, worktree and the
 next actor's custody.
 
