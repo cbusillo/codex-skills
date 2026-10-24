@@ -1250,11 +1250,7 @@ def test_numbered_questions_are_unchanged_without_counter_access() -> None:
             with_call_stub(callback, run)
 
 
-def test_question_refuses_live_mentions_of_anyone_but_the_owner() -> None:
-    quiet = ("Owner question: Q15. Post this?\n\n> <code>@mike-b</code> Fixed, thanks @Owner.\n\n"
-             "Mail a@b.com.")
-    posted = []
-
+def recording_callback(posted: list[str]) -> Callable[..., github_api.ApiResult]:
     def callback(method: str, endpoint: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if endpoint == "/user":
             return success({"login": "fixture-automation"})
@@ -1262,6 +1258,14 @@ def test_question_refuses_live_mentions_of_anyone_but_the_owner() -> None:
             return success([])
         posted.append(github_comment._canonical_comment_body(body["body"]))
         return success(comment_body(1001, body=body["body"]))
+
+    return callback
+
+
+def test_question_refuses_live_mentions_of_anyone_but_the_owner() -> None:
+    quiet = ("Owner question: Q15. Post this?\n\n> <code>@mike-b</code> Fixed, thanks @Owner.\n\n"
+             "Mail a@b.com.")
+    posted: list[str] = []
 
     def run(calls: list[dict[str, Any]]) -> None:
         try:
@@ -1274,7 +1278,7 @@ def test_question_refuses_live_mentions_of_anyone_but_the_owner() -> None:
         assert not calls, calls
         github_comment.comment("issue", 42, quiet, repo="owner/repo", gh_cmd="fake-gh")
 
-    with_call_stub(callback, run)
+    with_call_stub(recording_callback(posted), run)
     assert posted == [quiet]
 
 
@@ -1282,23 +1286,18 @@ def test_only_an_unescaped_code_tag_quiets_a_mention() -> None:
     owner = frozenset({"acme"})
     assert github_comment.live_mentions("<code>@mike-b</code> @acme a@b.com", notify=owner) == []
     for live in ("`@mike-b`", "\\<code>@mike-b</code>", "<code>@mike-b </code>", "@acme/support", "(mentions:@mike-b)",
-                 "&#64;mike-b", "&#x40;mike-b", "&commat;mike-b", "@acme&#45;bot", "&lt;code&gt;@mike-b&lt;/code&gt;"):
+                 "&#64;mike-b", "&#x40;mike-b", "&#0064;mike-b", "@acme&#45;bot", "&lt;code&gt;@mike-b&lt;/code&gt;"):
         assert github_comment.live_mentions(live, notify=owner), live
 
 
 def test_ordinary_comment_keeps_its_mentions() -> None:
     reply = "@mike-b Fixed, thanks."
-    posted = []
+    posted: list[str] = []
 
-    def callback(method: str, endpoint: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
-        if endpoint == "/user":
-            return success({"login": "fixture-automation"})
-        if method == "GET":
-            return success([])
-        posted.append(github_comment._canonical_comment_body(body["body"]))
-        return success(comment_body(1001, body=body["body"]))
+    def run(_calls: list[dict[str, Any]]) -> None:
+        github_comment.comment("issue", 42, reply, repo="owner/repo", gh_cmd="fake-gh")
 
-    with_call_stub(callback, lambda _calls: github_comment.comment("issue", 42, reply, repo="owner/repo", gh_cmd="fake-gh"))
+    with_call_stub(recording_callback(posted), run)
     assert posted == [reply]
 
 
