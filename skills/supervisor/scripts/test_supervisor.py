@@ -29,6 +29,7 @@ import session_liveness
 import codex_idle_watch
 import finished_map
 import iterm_tab
+from codex_session_proxy import MEMORY_SETTING
 import oq
 import session_record
 import status
@@ -2326,7 +2327,7 @@ class CodexProjectTests(unittest.TestCase):
                 f'#!{sys.executable}\nimport argparse, json, os\n'
                 'parser = argparse.ArgumentParser()\n'
                 'parser.add_argument("--remote")\nparser.add_argument("-C", "--cd")\n'
-                'parser.add_argument("prompt")\nargs = parser.parse_args()\n'
+                'parser.add_argument("-c", action="append")\nparser.add_argument("prompt")\nargs = parser.parse_args()\n'
                 'os.chdir(args.cd)\nprint(json.dumps([os.getcwd(), args.prompt]))\n'
             )
             fake_codex.chmod(0o700)
@@ -2627,6 +2628,15 @@ class TerminalTests(unittest.TestCase):
                     self.assertIs(json.loads(options.settings)[iterm_tab.CLAUDE_AUTO_MEMORY_SETTING], False)
                     self.assertEqual(args[separator + 1:], ["brief"])
         self.assertNotIn(iterm_tab.CLAUDE_QUESTION_TOOL, iterm_tab.append_brief("codex --remote unix://", "brief"))
+
+    def test_codex_launch_turns_off_memory_generation_over_the_command_file(self):
+        for launch in ("codex --remote unix://", f"cd /work && exec codex -c {MEMORY_SETTING}=true"):
+            with self.subTest(launch=launch):
+                args = shlex.split(iterm_tab.append_brief(launch, "brief"))
+                flags = args[:args.index("--")]
+                overrides = [flags[i + 1] for i, flag in enumerate(flags[:-1]) if flag == "-c"]
+                self.assertEqual(overrides[-1], f"{MEMORY_SETTING}=false")
+                self.assertEqual(args[-1], "brief")
 
     def test_claude_launch_preserves_existing_settings_and_overrides_unattended_settings(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -3173,7 +3183,7 @@ class TerminalTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as folder:
             command = Path(folder) / "launch.txt"
-            command.write_text("codex --remote unix://\n")
+            command.write_text("codex\n")
             args = argparse.Namespace(
                 command="new", window_id="chosen", command_file=command, brief_file=fixture_briefs(command)
             )
@@ -3202,7 +3212,7 @@ class TerminalTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as folder:
             command = Path(folder) / "launch.txt"
-            command.write_text("codex --remote unix://\n")
+            command.write_text("codex\n")
             args = argparse.Namespace(command="new", window_id="chosen", command_file=command, brief_file=fixture_briefs(command))
             with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}):
                 result = asyncio.run(iterm_tab.operate(app, args))
@@ -3246,7 +3256,7 @@ class TerminalTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as folder:
             command = Path(folder) / "launch.txt"
-            command.write_text("codex --remote unix://\n")
+            command.write_text("codex\n")
             args = argparse.Namespace(command="new", window_id="chosen", command_file=command, brief_file=fixture_briefs(command))
             with (
                 patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
@@ -3432,6 +3442,19 @@ class TerminalTests(unittest.TestCase):
             for command in ("env CODEX_HOME=/manual codex brief", "export CLAUDE_CONFIG_DIR=/manual && claude brief"):
                 path.write_text(command)
                 with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), self.assertRaisesRegex(ValueError, "account settings need --account-provider"):
+                    asyncio.run(iterm_tab.operate(app, args))
+            window.async_create_tab.assert_not_awaited()
+
+    def test_codex_daemon_launch_without_provider_refuses_before_tabs(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "launch.txt"
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=path, brief_file=fixture_briefs(path),
+                                      account_provider=None, account=None, account_config=None)
+            for command in ("codex --remote unix:///daemon.sock -C /work", "cd /work && exec codex --remote=unix://"):
+                path.write_text(command)
+                with patch.dict("sys.modules", {"iterm2": SimpleNamespace()}), self.assertRaisesRegex(ValueError, "--account-provider openai"):
                     asyncio.run(iterm_tab.operate(app, args))
             window.async_create_tab.assert_not_awaited()
 
