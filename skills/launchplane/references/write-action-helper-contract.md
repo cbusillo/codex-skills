@@ -747,9 +747,10 @@ installed local helper bindings.
   `dropped_field_paths`, as are names that are not env keys. A secret-looking
   value in a kept field fails the read.
   Provider deployment status is a bounded code from the latest reported
-  deployment; omitted, null or blank status stays `null` (unknown). Invalid or
-  credential-shaped status refuses the read. This is separate from plan
-  readiness and does not prove an idle source, a complete deployment inventory
+  deployment; omitted, null or whitespace-only status stays `null` (unknown).
+  Malformed status is dropped to `null` with its path recorded, retaining the
+  other plan evidence. Recognized credential shapes refuse the read. This is
+  separate from plan readiness and does not prove an idle source, a complete deployment inventory
   or exclusion of concurrent maintenance. Read the source's current operation
   and deployment evidence before testing restore; no source apply is available
   through this command.

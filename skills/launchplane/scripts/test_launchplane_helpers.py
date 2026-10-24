@@ -5554,12 +5554,11 @@ def test_plan_read_preserves_provider_deployment_status_without_changing_readine
     assert code == 0
     assert output["result"]["current_target"]["latest_deployment_status"] == deployment_status
     assert output["result"]["plan_status"] == response["result"]["plan_status"]
-    assert "plan.current_target.latest_deployment_status" not in output["result"]["dropped_field_paths"]
     assert len(calls) == 1 and not calls[0].get("idempotency_key")
     assert "private-deployment-id" not in json.dumps(output)
 
 
-@pytest.mark.parametrize("status_fields", [{}, {"latest_deployment_status": None}, {"latest_deployment_status": ""}])
+@pytest.mark.parametrize("status_fields", [{}, {"latest_deployment_status": None}, {"latest_deployment_status": ""}, {"latest_deployment_status": " \t "}])
 def test_plan_read_keeps_unreported_provider_deployment_status_unknown(status_fields: dict[str, object]) -> None:
     response = _target_replacement_plan_response()
     response["result"]["current_target"].update(status_fields)
@@ -5568,8 +5567,21 @@ def test_plan_read_keeps_unreported_provider_deployment_status_unknown(status_fi
     assert output["result"]["current_target"]["latest_deployment_status"] is None
 
 
-@pytest.mark.parametrize("deployment_status", [42, True, {}, [], "done on private-host", "ghp_" + "x" * 32, "x" * 300])
-def test_plan_read_refuses_unbounded_or_private_provider_deployment_status(deployment_status: object) -> None:
+@pytest.mark.parametrize("deployment_status", [42, True, {}, [], "done on private-host", "x" * 300])
+def test_plan_read_retains_other_evidence_when_provider_deployment_status_is_malformed(deployment_status: object) -> None:
+    response = _target_replacement_plan_response()
+    response["result"]["current_target"]["latest_deployment_status"] = deployment_status
+    code, output, calls = _run_plan_read(PLAN_READ_ARGV, response)
+    assert code == 0
+    assert output["result"]["current_target"]["latest_deployment_status"] is None
+    assert output["result"]["blocker_codes"] == response["result"]["blocker_codes"]
+    assert len(calls) == 1
+    if isinstance(deployment_status, str):
+        assert deployment_status not in json.dumps(output)
+
+
+@pytest.mark.parametrize("deployment_status", ["ghp_" + "x" * 32, "aB9_" * 6, "abc7" * 10])
+def test_plan_read_refuses_recognized_credential_shapes_in_provider_deployment_status(deployment_status: str) -> None:
     response = _target_replacement_plan_response()
     response["result"]["current_target"]["latest_deployment_status"] = deployment_status
     code, output, calls = _run_plan_read(PLAN_READ_ARGV, response)

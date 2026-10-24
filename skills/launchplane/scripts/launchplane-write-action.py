@@ -32,6 +32,7 @@ from launchplane_inventory import project_inventory  # noqa: E402
 from launchplane_reply_schema import ReplySchemaError  # noqa: E402
 from launchplane_reply_schema import check_controller_reply  # noqa: E402
 from launchplane_safety import (  # noqa: E402
+    CREDENTIAL_LIKE_WORD_RE,
     LaunchplaneSafetyError,
     assert_public_safe_shape,
     build_launchplane_url,
@@ -3915,8 +3916,13 @@ def _project_target_replacement_current_target(
         for name in TARGET_REPLACEMENT_CURRENT_TARGET_KEY_LISTS
     }
     deployment_status = target.get("latest_deployment_status")
+    if isinstance(deployment_status, str):
+        deployment_status = deployment_status.strip()
+        if CREDENTIAL_LIKE_WORD_RE.search(deployment_status):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
     projected["latest_deployment_status"] = (
-        public_code(deployment_status) if deployment_status not in (None, "") else None
+        drops.keep("plan.current_target.latest_deployment_status", public_code, deployment_status)
+        or None
     )
     _report_dropped_fields(
         target,
