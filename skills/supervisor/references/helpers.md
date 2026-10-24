@@ -794,7 +794,9 @@ audit records the weekly stamp that ISO week. The receipt is saved as
 `weekly/DATE.receipt.json` under `state_dir`. Each attempt that left the stamp
 unwritten stays as its own `DATE-*.attempt.json`, never overwritten, with stderr
 beside every attempt: repositories it did read already advanced their audit
-windows, so a later receipt does not repeat those findings. The audit is
+windows, so a later receipt does not repeat those findings. An attempt stopped
+by the time bound or a signal is empty, because the audit prints its receipt only
+when it finishes; findings for windows it advanced are lost. The audit is
 bounded to 30 minutes and sends nothing. The plist does not change: add the entry
 to the private configuration, and the next run picks it up.
 
