@@ -468,7 +468,8 @@ dependencies with `link`/`unlink`, rather than copying blocker lists into
 Current Status. Missing or malformed wait evidence still requires review.
 Landing reconciliation and issue closure refresh native parents and dependents
 without inferring their finish lines or changing human-authored bodies. Open
-`stale`, `done` and unstatused planning scopes retain their review holds; a
+`stale`, `done` and unstatused planning scopes retain their review holds, except
+`done` left on a reopened issue; a
 closed issue retains `waiting` when its structured person/event wait remains.
 
 - `plan:active`: actionable now, including work whose next actor is any agent.

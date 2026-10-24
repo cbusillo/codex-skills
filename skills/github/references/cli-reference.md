@@ -2445,7 +2445,10 @@ close and recovery retained. An ordinary close outside a matching checkout can
 succeed with partial planning-configuration coverage when no canonical planning
 label identifies the source; custom label configuration remains unverified,
 and the receipt retains that review rather than claiming complete projection.
-Provider failures remain unsuccessful. The shared `set_issue_state` primitive keeps its existing contract;
+Provider failures remain unsuccessful. A confirmed CLI reopen runs the same
+refresh: a reopened issue's `done` label is no longer a scope hold, so its
+status comes from its wait record and blockers.
+The shared `set_issue_state` primitive keeps its existing contract;
 `gh-plan close` owns its own post-close orchestration.
 `--duplicate-of` accepts the same issue-reference forms, resolves the target's
 REST database id, and sends `state_reason=duplicate` plus `duplicate_issue_id`

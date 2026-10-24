@@ -206,10 +206,10 @@ def test_own_user_sibling_writes_use_resolved_personal_actor() -> None:
             ):
                 exit_code = github_issue.main()
             payload = json.loads(stdout.getvalue())
-            assert (exit_code != 0) == (command == "close"), payload
-            assert payload["ok"] == (command != "close"), payload
-            if command == "close":
-                assert payload["recovery"]["issue_closed"] is True, payload
+            assert (exit_code != 0) == (command != "edit"), payload
+            assert payload["ok"] == (command == "edit"), payload
+            if command != "edit":
+                assert payload["recovery"][{"close": "issue_closed", "reopen": "issue_reopened"}[command]] is True, payload
             assert payload["actor"] == payload["expected_actor"] == personal_login, payload
             assert sum(call["method"] == "PATCH" for call in calls) == 1, calls
 
@@ -1292,7 +1292,7 @@ def _run_cli(argv: list[str], stdin: Any, *, timeout: float, planning: bool = Fa
         output = io.StringIO()
         # Existing stdin tests isolate input selection; stateful projection tests
         # opt into the real CLI adapter and original API transport below.
-        projection = contextlib.nullcontext() if planning else patch.object(github_issue, "refresh_after_close",
+        projection = contextlib.nullcontext() if planning else patch.object(github_issue, "refresh_projection",
             return_value={"ok": True, "coverage": "complete", "issues": []})
         with contextlib.redirect_stdout(output), projection:
             result["exit_code"] = github_issue.main()
@@ -1536,6 +1536,22 @@ def test_generic_cli_close_refreshes_a_nonplan_blockers_dependent_without_fact_e
             key: value for key, value in dependent.items() if key != "labels"}
 
 
+def test_generic_cli_reopen_replaces_the_done_label_with_the_derived_status() -> None:
+    names = github_plan_status.DEFAULT_STATUS_LABELS
+    clear = github_plan_status.wait_records.reviewed(evidence="Recurrence trigger fired; no person or event wait")
+    with generic_close_fixture() as (callback, records, comments, states, posts):
+        records[42].update(state="closed", state_reason="completed", user={"login": "owner"},
+                           body="Request.\n" + github_plan_status.wait_records.marker(clear),
+                           labels=[{"name": names[key]} for key in ("plan", "done")])
+        def run(calls):
+            code, payload = _run_cli(["reopen", "owner/repo#42"], io.StringIO(""), timeout=10, planning=True)
+            assert code == 0, payload
+            assert payload["projection"]["coverage"] == "complete", payload
+        with_call_stub(callback, run)
+        assert states == [(42, "open")], states
+        assert {item["name"] for item in records[42]["labels"]} == {names[key] for key in ("plan", "active")}
+
+
 def test_generic_close_without_a_matching_checkout_preserves_configuration_review() -> None:
     for labels in ([], [{"name": "bug"}], [{"name": github_plan_status.DEFAULT_STATUS_LABELS["active"]}]):
         with generic_close_fixture(verified_checkout=False) as (callback, records, comments, states, posts):
@@ -1721,6 +1737,7 @@ TESTS = [
     test_close_refuses_over_unanswered_outside_comment_before_any_write,
     test_close_rejects_comment_with_comment_file,
     test_generic_cli_close_refreshes_a_nonplan_blockers_dependent_without_fact_edits,
+    test_generic_cli_reopen_replaces_the_done_label_with_the_derived_status,
     test_generic_close_without_a_matching_checkout_preserves_configuration_review,
     test_generic_cli_projection_failure_preserves_confirmed_close_and_metadata_recovery,
     test_generic_closed_source_transient_comment_read_repairs_lifecycle_and_keeps_wait_review,
