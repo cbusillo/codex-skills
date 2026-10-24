@@ -236,13 +236,15 @@ class ClaimCloseoutTests(unittest.TestCase):
                               "\n".join(p["html_url"] for p in self.pulls)})
         self.assertEqual(self.check()[0]["retained_prs"], [self.pulls[0]["html_url"]])
 
-    def test_pr_opened_on_the_branch_after_the_release_belongs_to_later_work(self):
+    def test_pr_opened_on_the_branch_after_the_release_for_another_issue_is_later_work(self):
         self.comments.append(self.release)
         self.pulls = [pull(body="Refs #2", created_at="2026-01-01T00:03:00Z")]
         self.assertEqual(self.check()[0]["retained_prs"], [])
-        self.pulls = [pull(body="Refs #2", created_at="2026-01-01T00:01:30Z")]
-        with self.assertRaises(ValueError):
-            self.check()
+        for kept in (pull(body="Refs #2", created_at="2026-01-01T00:01:30Z"),
+                     pull(3, created_at="2026-01-01T00:03:00Z")):
+            self.pulls = [kept]
+            with self.subTest(pull=kept), self.assertRaises(ValueError):
+                self.check()
 
     def test_merge_train_batch_copying_the_closing_keyword_is_not_retained_work(self):
         train_branch = helper.claim.TRAIN_BRANCH_PREFIX + f"{REPO}/main/batch"

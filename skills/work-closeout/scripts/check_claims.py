@@ -136,7 +136,9 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data
                     return False
             def retained_work(candidate):
                 return claim.is_retained_work(candidate, author=actor, issue_repo=repo, issue_number=number, target_repo=repo)
-            pulls = [p for p in pulls if (p.get("head") or {}).get("ref") == record["branch"] and not opened_after_release(p)
+            def later_work_for_another_issue(candidate):
+                return opened_after_release(candidate) and not claim.pr_issue_reference(candidate, number, repo=repo, attestation=True)
+            pulls = [p for p in pulls if (p.get("head") or {}).get("ref") == record["branch"] and not later_work_for_another_issue(p)
                      or retained_work(p) and (p["number"] in named or not claim.is_train_batch(p) and during_claim(p))]
         if receipt is not None:
             handoffs = [evidence]
