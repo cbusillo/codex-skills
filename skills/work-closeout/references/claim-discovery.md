@@ -76,7 +76,12 @@ named functions, executable options, computed callees, division syntax,
 identifier escapes and unsupported syntax keep coverage conditional. A parse
 error alone never proves nonexecution. The reader assumes native results,
 `load` values and tool metadata obey the harness's serializable-data contract;
-the existing stored-claim check still covers later `load` cells. Use direct
+after claim-related code may have stored data, every later opaque cell stays
+conditional because hidden or computed access cannot prove it ignored that data.
+Keep subsequent diagnostics bounded or use direct literal shell/output calls;
+keeping `store` separate from claim-related code also avoids that uncertainty.
+Complete output alone does not resolve older opaque evidence; use the existing
+Director-decision route when native evidence cannot establish coverage. Use direct
 literal shell calls and `text(result)` outside this subset. Known shell calls
 and their argument objects come from syntax-tree locations, including recovered
 nodes in unbounded cells. Any code-mode cell outside the bounded subset retains

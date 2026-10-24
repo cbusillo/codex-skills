@@ -2667,6 +2667,9 @@ print(root)"""
             {"payload": {"type": "custom_tool_call_output", "call_id": "metadata",
                 "output": json.dumps({"session_id": 41, "exit_code": None, "output":
                     json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 1}})})}},
+            {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "store",
+                "input": f'store("c","uv run gh-plan.py --repo {REPO} claim 1");'}},
+            native_terminal_result("store", javascript=True),
             {
                 "payload": {
                     "type": "custom_tool_call",
@@ -2698,11 +2701,24 @@ print(root)"""
         self.assertTrue(report["claims_clear"], report)
 
     def test_regex_comment_boundary_cannot_hide_stored_claim_execution(self) -> None:
-        root = self.entry(cli_version=SUPPORTED_CLI_VERSION)
-        inputs = [
-            f'store("c","uv run gh-plan.py --repo {REPO} claim 1");',
+        getters = [
             'text(ALL_TOOLS.filter(x=>/x//**/.test(x.name)));text(await tools.exec_command({cmd:load("c")}));',
+            'const r=/x//**/;text(await tools.exec_command({cmd:load("c")}));',
+            'text(await tools.exec_command({cmd:globalThis["lo"+"ad"]("c")}));',
+            'const r=/`/;text(await tools.exec_command({cmd:load("c")}));/`/;',
+            'const r=/\'/;text(await tools.exec_command({cmd:load("c")}));/\'/;',
         ]
+        for getter in getters:
+            with self.subTest(getter=getter):
+                root = self.stored_claim_entry(getter)
+                report = helper.check([root])
+                self.assertFalse(report["claims_clear"], report)
+                self.assertFalse(report["coverage"]["complete"], report)
+                self.assertTrue(report["unresolved_invocations"], report)
+
+    def stored_claim_entry(self, following: str, *, first: str | None = None) -> dict:
+        root = self.entry(cli_version=SUPPORTED_CLI_VERSION)
+        inputs = [first if first is not None else f'store("c","uv run gh-plan.py --repo {REPO} claim 1");', following]
         rows = []
         for index, source in enumerate(inputs):
             rows.extend([
@@ -2711,10 +2727,38 @@ print(root)"""
             ])
         with Path(root["transcript"]).open("a") as stream:
             stream.write("\n".join(json.dumps(row) for row in rows) + "\n")
+        return root
+
+    def test_bounded_diagnostics_after_stored_claim_data_stay_clear(self) -> None:
+        for source in (
+            'text(ALL_TOOLS.filter(x=>/launchplane|dokploy/i.test(x.name)));',
+            'text(ALL_TOOLS.filter(x=>x.name.includes("launchplane")));',
+            'text(await tools.exec_command({cmd:"git status --short"}));',
+        ):
+            with self.subTest(source=source):
+                report = helper.check([self.stored_claim_entry(source)])
+                self.assertTrue(report["claims_clear"], report)
+                self.assertTrue(report["coverage"]["complete"], report)
+                self.assertEqual(report["unresolved_invocations"], [], report)
+
+    def test_hidden_stored_claim_setter_keeps_its_own_uncertainty(self) -> None:
+        root = self.stored_claim_entry(
+            'text(await tools.exec_command({cmd:load("c")}));',
+            first=f'/x//**/;store("c","uv run gh-plan.py --repo {REPO} claim 1");',
+        )
         report = helper.check([root])
         self.assertFalse(report["claims_clear"], report)
         self.assertFalse(report["coverage"]["complete"], report)
         self.assertTrue(report["unresolved_invocations"], report)
+
+    def test_stored_claim_does_not_replace_interactive_uncertainty(self) -> None:
+        source = (
+            f'text(await tools.exec_command({{cmd:"uv run gh-plan.py --repo {REPO} claim 1",tty:true}}));'
+            'text(globalThis["lo"+"ad"]("c"));'
+        )
+        report = helper.check([self.stored_claim_entry(source)])
+        self.assertFalse(report["claims_clear"], report)
+        self.assertIn("interactive_uncertain", {r["reason"] for r in report["unresolved_invocations"]})
 
     def test_recorded_held_claim_and_failed_reads_cannot_clear(self) -> None:
         entry = self.receipt_entry()
