@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import direction_audit as audit
 import repository_setup as setup
@@ -165,6 +166,12 @@ class RepositorySetupTests(unittest.TestCase):
         text = setup.markdown(self.account.collect())
         self.assertIn("- o/new (fork): merge train, Renovate, ruleset pair, no checkout\n", text)
         self.assertEqual(text.count(setup.SETUPS["renovate"].fix), 1)
+
+    def test_upstream_contribution_fork_is_not_checked(self) -> None:
+        self.account.repos["o/upstream"] = {"fork": True}
+        with mock.patch.object(setup, "UPSTREAM_CONTRIBUTION_FORKS", frozenset({"o/upstream"})):
+            result = self.account.collect()
+        self.assertEqual((result["repositories"], result["gaps"]), (1, []))
 
 
 if __name__ == "__main__":
