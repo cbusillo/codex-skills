@@ -126,8 +126,8 @@ may still be open. The host helper's own checks still decide.
 A task branch that never had a PR retires with `--branch work/<task>` in
 place of `--pr`: the helper refuses when any PR exists for that branch, and
 keeps a worktree whose HEAD is not in the default branch's tracking ref, one
-checked out within the last two hours, and one whose branch an open claim
-on any of the owner's issues, open or closed, names.
+checked out within the last two hours, and one whose branch an unreleased
+claim names on any issue, open or closed, in that account's repositories.
 Portable unlocked worktrees are outside it and follow work-closeout. The
 [daily stranded-work sweep](../../direction/references/stranded-work.md) reports
 finished worktrees the landing step left behind.
