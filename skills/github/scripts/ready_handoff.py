@@ -43,8 +43,23 @@ MISSING_CLIENT_TEST_NOTES_MESSAGE = (
 UNCONFIRMED_CLIENT_ACCEPTANCE_MESSAGE = (
     "Client acceptance is not confirmed; use --waiting-for-client, or for "
     'engineering-only changes use "Nothing for the Client to test: <reason>" '
-    f'or start release test steps with "{ENGINEERING_RELEASE_TESTS}" '
     'under "## Client test notes"'
+)
+CLIENT_CHANGE = "Client change"
+CLIENT_CHANGE_LINE = re.compile(rf"^{CLIENT_CHANGE}:[ \t]*\S")
+NO_CLIENT_CHANGE_MESSAGE = (
+    f'Client test notes name no Client-visible change; add "{CLIENT_CHANGE}: '
+    '<what the Client will see or do differently>", or if nothing changes for '
+    f'the Client use "{NOTHING_TO_TEST}: <reason>" and plain ready'
+)
+BOTH_CLASSES_MESSAGE = (
+    f'Client test notes say both "{NOTHING_TO_TEST}" and "{CLIENT_CHANGE}:"; '
+    "keep the one that matches the diff"
+)
+RELEASE_TESTS_MESSAGE = (
+    f'"{ENGINEERING_RELEASE_TESTS}" asks the Client to check engineering work '
+    f'at release; use "{NOTHING_TO_TEST}: <reason>", or name the change with '
+    f'"{CLIENT_CHANGE}: <...>" and use --waiting-for-client'
 )
 REVIEW_CONFIG_PATH = ".github/github.json"
 # Leads sessions and the Supervisor already write; see model-review Reporting.
@@ -151,6 +166,29 @@ def client_test_notes_error(pr, *, repository="") -> str:
     if repository and client_release_repository(repository):
         return MISSING_CLIENT_TEST_NOTES_MESSAGE
     return ""
+
+
+def _notes_lines(body):
+    for section in test_notes_sections(body):
+        cleaned = re.sub(r"<!--[\s\S]*?-->", "", section)
+        for line, heading, fence in _markdown_lines(cleaned):
+            if not fence and not heading:
+                yield _strip_note_decoration(line.strip())
+
+
+def handoff_class_error(pr, *, waiting_for_client=False) -> str:
+    body = pr.get("body") or ""
+    lines = tuple(_notes_lines(body))
+    if ENGINEERING_RELEASE_TESTS in lines:
+        return RELEASE_TESTS_MESSAGE
+    names_change = any(CLIENT_CHANGE_LINE.match(line) for line in lines)
+    if not test_notes_sections(body):
+        return NO_CLIENT_CHANGE_MESSAGE if waiting_for_client else ""
+    if body_client_test_notes(body).review_required:
+        return "" if names_change else NO_CLIENT_CHANGE_MESSAGE
+    if names_change:
+        return BOTH_CLASSES_MESSAGE
+    return NO_CLIENT_CHANGE_MESSAGE if waiting_for_client else ""
 
 
 def requires_client_acceptance(pr, check_runs, *, repository=""):
