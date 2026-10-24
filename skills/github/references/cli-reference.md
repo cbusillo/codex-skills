@@ -661,7 +661,7 @@ verifying its required local gates. This never bypasses a pending, failing or
 unavailable check or the watcher's required-check verification.
 
 For an owner-side landing PR sharing a source SHA with an outside fork, checks
-and Ready JSON can list an unexecuted fork approval under `approvalHeldForkRuns`;
+JSON can list an unexecuted fork approval under `approvalHeldForkRuns`;
 watcher snapshots use `approval_held_fork_runs`. Such a run is excluded from
 failure counts and failed-run/retry recommendations only after proving the
 current owner PR's repository, head and target, a matching passed owner workflow

@@ -3549,6 +3549,7 @@ class ExecutionReader:
         self.jobs = jobs or {}
         self.unavailable = unavailable
         self.pull = pull
+        self.pull_reads = 0
         self.calls = []
         self.results = []
         self.cache_enabled = True
@@ -3569,6 +3570,7 @@ class ExecutionReader:
 
     def get_json(self, path, **_kwargs):
         if path.endswith('/pulls/123') and self.pull is not None:
+            self.pull_reads += 1
             if path == self.unavailable:
                 raise gh_pr_watch.github_read.GitHubReadShapeError("fixture incomplete inventory")
             return self.pull
@@ -3576,7 +3578,7 @@ class ExecutionReader:
         return {"state": "success"}
 
     @staticmethod
-    def invalid_response(_step, _message):
+    def invalid_response(_step: str, _message: str) -> None:
         raise gh_pr_watch.github_read.GitHubReadShapeError("fixture malformed response")
 
     @staticmethod
@@ -3604,6 +3606,7 @@ def execution_snapshot(monkeypatch, tmp_path, runs, checks, *, allow_no_checks=F
     'bad_run_targets', 'bad_run_target',
     'bad_head_repository',
     'owner_skipped_checks',
+    'fork_lists_pr', 'wrong_branch', 'wrong_target_base', 'wrong_target_head', 'owner_neutral_checks',
 ])
 def test_unexecuted_fork_approval_needs_proven_passed_owner_execution(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str,
@@ -3657,9 +3660,19 @@ def test_unexecuted_fork_approval_needs_proven_passed_owner_execution(
         new['workflow_id'] += 1
     elif case == 'wrong_base':
         pull['base']['ref'] = 'release'
+    elif case == 'fork_lists_pr':
+        old['pull_requests'] = new['pull_requests']
+    elif case == 'wrong_branch':
+        pull['head']['ref'] = 'other-branch'
+    elif case == 'wrong_target_base':
+        new['pull_requests'][0]['base']['repo'] = {**owner, 'id': owner['id'] + 10}
+    elif case == 'wrong_target_head':
+        new['pull_requests'][0]['head']['repo'] = {**owner, 'id': owner['id'] + 10}
     check = execution_check(new, 21, new['conclusion'], status=new['status'])
     if case == 'owner_skipped_checks':
         check['conclusion'] = 'skipped'
+    elif case == 'owner_neutral_checks':
+        check['conclusion'] = 'neutral'
     checks = [] if case == 'owner_no_checks' else [check]
     if case == 'fork_with_checks':
         checks.append(execution_check(old, 11, 'neutral'))
@@ -3672,6 +3685,7 @@ def test_unexecuted_fork_approval_needs_proven_passed_owner_execution(
         assert result['summary']['failingCount'] == result['summary']['pendingCount'] == 0
         assert result['summary']['countsComplete'] is True
         assert [run['id'] for run in result['approvalHeldForkRuns']] == [old['id']]
+        assert reader.pull_reads == 1
         return
     if case == 'unavailable_jobs':
         reader = ExecutionReader([old, new], [check], unavailable=unavailable, pull=pull)
