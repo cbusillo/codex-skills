@@ -121,7 +121,7 @@ commands:
   - name: supervisor-foreign-watch
     source: skill
     resource_path: scripts/foreign_watch.py
-    example_argv: ["uv", "run", "--no-cache", "scripts/foreign_watch.py", "--owner", "OWNER", "--repo", "OWNER/REPO", "--own-login", "OWN-LOGIN", "--state", "<private-state.json>", "--deadline-seconds", "1800"]
+    example_argv: ["uv", "run", "--no-cache", "scripts/foreign_watch.py", "--owner", "OWNER", "--own-login", "OWN-LOGIN", "--state", "<private-state.json>", "--deadline-seconds", "1800"]
     purpose: Wake on untrusted foreign comments and Launchplane product-review records without starting work.
   - name: supervisor-finished-map
     source: skill

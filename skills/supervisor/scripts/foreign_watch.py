@@ -29,6 +29,7 @@ MENTIONS = "director-mentions"  # watermark key; not a repository name
 # Search indexing can lag; each mention search overlaps the previous one and
 # skips thread versions already reported.
 MENTION_OVERLAP = timedelta(minutes=15)
+READ_ERRORS = (GitHubReadError, GitHubReadShapeError, OSError, ValueError, TypeError, KeyError)
 # Enough of the comment to read it at a check; the full comment stays on GitHub.
 EXCERPT_CHARS = 240
 
@@ -61,8 +62,35 @@ def read_comments(reader, repo: str, since: str) -> list[dict]:
     )
 
 
+def read_opened(reader, repo: str, since: str) -> list[dict]:
+    query_since = (timestamp(since) - timedelta(seconds=1)).isoformat()
+    issues = reader.paged_json(
+        f"repos/{repo}/issues", step_prefix="foreign_opened",
+        params={"since": query_since, "state": "all"}, required_query_params={"since": query_since},
+    )
+    return [{**issue, "body": f"{issue['title']}\n{issue.get('body') or ''}", "updated_at": issue["created_at"]}
+            for issue in issues if issue["user"] is None or issue["user"]["type"] != "Bot"]
+
+
+def installed_repositories(reader, owner: str) -> list[str]:
+    repositories = reader.paged_json("/installation/repositories", collection_key="repositories",
+                                     step_prefix="foreign_repositories")
+    return [r["full_name"] for r in repositories
+            if r["full_name"].split("/")[0].casefold() == owner.casefold() and r["archived"] is False]
+
+
+def read_error(repo: str, error: Exception) -> dict:
+    diagnostics = getattr(error, "diagnostics", {})
+    return {"repository": repo, "error": "read incomplete",
+            "retryable": isinstance(error, GitHubReadError) and bool(
+                error.result.failure and error.result.failure.retryable),
+            "retry_at": next((r.get("retryAt") for r in reversed(
+                diagnostics.get("requests", [])
+            ) if r.get("retryAt") is not None), None)}
+
+
 def scan(repos, watermarks, own_logins, launchplane_logins, started, reader):
-    """One since-scoped repository comment listing; failures retain its watermark."""
+    """One since-scoped listing of each repository's comments and newly opened issues; failures retain its watermark."""
     notices, errors, next_watermarks = [], [], dict(watermarks)
     own = {login.casefold() for login in own_logins}
     launchplane = {login.casefold() for login in launchplane_logins}
@@ -70,7 +98,7 @@ def scan(repos, watermarks, own_logins, launchplane_logins, started, reader):
         since = watermarks[repo]
         pending = []
         try:
-            for comment in read_comments(reader, repo, since):
+            for comment in read_comments(reader, repo, since) + read_opened(reader, repo, since):
                 user = comment["user"]
                 login = user["login"] if user is not None else None
                 body = comment.get("body") or ""
@@ -94,14 +122,8 @@ def scan(repos, watermarks, own_logins, launchplane_logins, started, reader):
                         "untrusted": True,
                         "review_marker": marker_seen,
                     })
-        except (GitHubReadError, GitHubReadShapeError, OSError, ValueError, TypeError, KeyError) as error:
-            diagnostics = getattr(error, "diagnostics", {})
-            errors.append({"repository": repo, "error": "comment read incomplete",
-                           "retryable": isinstance(error, GitHubReadError) and bool(
-                               error.result.failure and error.result.failure.retryable),
-                           "retry_at": next((r.get("retryAt") for r in reversed(
-                               diagnostics.get("requests", [])
-                           ) if r.get("retryAt") is not None), None)})
+        except READ_ERRORS as error:
+            errors.append(read_error(repo, error))
             continue
         notices.extend(pending)
         next_watermarks[repo] = started
@@ -159,8 +181,8 @@ def load_state(path: Path, repos, initial: str, *, rewind=False) -> dict[str, st
     values = dict(values)
     for repo in repos:
         values.setdefault(repo, initial)
-        if rewind and timestamp(initial) < timestamp(values[repo]):
-            values[repo] = initial
+    if rewind:
+        values = {key: min(value, initial, key=timestamp) for key, value in values.items()}
     return values
 
 
@@ -192,7 +214,8 @@ def watch_lock(path: Path):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--owner", required=True)
-    parser.add_argument("--repo", action="append", required=True)
+    parser.add_argument("--repo", action="append",
+                        help="default: the automation installation's non-archived repositories of --owner")
     parser.add_argument("--own-login", action="append", required=True)
     parser.add_argument("--launchplane-login", action="append", default=[])
     parser.add_argument("--director-login",
@@ -209,8 +232,8 @@ def main() -> int:
     args = parser.parse_args()
     if any(not math.isfinite(v) or v <= 0 for v in (args.interval, args.deadline_seconds)):
         parser.error("timings must be finite and positive")
-    repos = list(dict.fromkeys(args.repo))
-    if any(not REPOSITORY.fullmatch(repo) or repo.split("/")[0].casefold() != args.owner.casefold()
+    repos = list(dict.fromkeys(args.repo)) if args.repo else None
+    if repos and any(not REPOSITORY.fullmatch(repo) or repo.split("/")[0].casefold() != args.owner.casefold()
            for repo in repos):
         parser.error("repositories must belong to the configured Director")
     deadline = time.monotonic() + args.deadline_seconds
@@ -225,18 +248,23 @@ def main() -> int:
 
 
 def watch(args, repos, initial, deadline):
-    watermarks = load_state(args.state, [*repos, MENTIONS], initial, rewind=args.since is not None)
+    watermarks = load_state(args.state, [*(repos or []), MENTIONS], initial, rewind=args.since is not None)
     seen = load_mention_seen(args.state)
     while time.monotonic() < deadline:
         started = utc_now()
         reader = GitHubReader(operation="github.supervisor.foreign_watch", strict_actor=True,
                               gh_prefix_args=automation_only_gh_prefix_args(),
                               deadline_at=time.time() + max(0, deadline - time.monotonic()))
-        notices, errors, watermarks = scan(repos, watermarks, args.own_login,
-                                          args.launchplane_login, started, reader)
-        mentions, gaps, mention_errors, watermarks, seen = scan_mentions(
-            args, repos, watermarks, seen, args.own_login, started, reader)
-        notices, errors = notices + mentions, errors + mention_errors
+        try:
+            watched = repos or installed_repositories(reader, args.owner)
+        except READ_ERRORS as error:
+            notices, errors, gaps = [], [read_error("installation", error)], []
+        else:
+            notices, errors, watermarks = scan(watched, {**dict.fromkeys(watched, initial), **watermarks},
+                                              args.own_login, args.launchplane_login, started, reader)
+            mentions, gaps, mention_errors, watermarks, seen = scan_mentions(
+                args, watched, watermarks, seen, args.own_login, started, reader)
+            notices, errors = notices + mentions, errors + mention_errors
         print(json.dumps({"notices": notices, "errors": errors, "coverage_gaps": gaps,
                           "untrusted": True}), flush=True)
         save_state(args.state, watermarks, seen)

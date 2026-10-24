@@ -30,17 +30,38 @@ def comment(login="client", body="feedback", updated=SINCE):
             "html_url": "https://github.com/director/project/issues/1#issuecomment-2"}
 
 
+def opened(login="client", kind="User", created=SINCE):
+    return {"user": {"login": login, "type": kind}, "title": "Add tvOS support", "body": None,
+            "created_at": created, "updated_at": STARTED,
+            "html_url": "https://github.com/director/project/pull/50"}
+
+
+def feeds(*comment_pages, opened_items=(), repositories=()):
+    pages = iter(comment_pages)
+
+    def read(path, **_):
+        if path == "/installation/repositories":
+            return list(repositories)
+        if not path.endswith("/issues/comments"):
+            return list(opened_items)
+        page = next(pages)
+        if isinstance(page, Exception):
+            raise page
+        return page
+    return read
+
+
 class WatchTests(unittest.TestCase):
     def test_persistent_read_retry_preserves_watermark_and_provider_cooldown(self):
         with tempfile.TemporaryDirectory() as directory:
             now = [0.0]
             reader = Mock()
-            reader.paged_json.side_effect = [foreign_watch.GitHubReadError(
+            reader.paged_json.side_effect = feeds(foreign_watch.GitHubReadError(
                 "provider unavailable", result=ApiResult(ok=False, status=503, body=None,
                     failure=FailureDetail(cause="network_provider_failure", message="unavailable",
                                           retryable=True, fallback_eligible=False, disposition="retry")),
                 diagnostics={"requests": [{"retryAt": 20}]},
-            ), [comment()], foreign_watch.GitHubReadShapeError("terminal")]
+            ), [comment()], foreign_watch.GitHubReadShapeError("terminal"))
             args = argparse.Namespace(state=Path(directory) / "state.json", since=None,
                 own_login=["director"], launchplane_login=[], interval=5, once=False, persistent=True)
 
@@ -65,24 +86,30 @@ class WatchTests(unittest.TestCase):
 
     def test_filter_and_review_records(self):
         reader = Mock()
-        reader.paged_json.return_value = [comment("Director"), comment("agent[bot]"),
+        reader.paged_json.side_effect = feeds([comment("Director"), comment("agent[bot]"),
             comment(), comment("delivery[bot]"),
-            comment("agent[bot]", "<!-- launchplane:product-review:decision-1 -->")]
+            comment("agent[bot]", "<!-- launchplane:product-review:decision-1 -->")])
         notices, errors, watermarks = self.scan(reader)
         self.assertEqual([n["kind"] for n in notices], ["foreign"] + ["launchplane"] * 2)
         self.assertTrue(all(n["untrusted"] and "body" not in n for n in notices))
         self.assertEqual(errors, [])
         self.assertEqual(watermarks[REPO], STARTED)
-        reader.paged_json.assert_called_once()
-        path = reader.paged_json.call_args.args[0]
-        params = reader.paged_json.call_args.kwargs["params"]
-        self.assertEqual(path, f"repos/{REPO}/issues/comments")
-        self.assertLess(foreign_watch.timestamp(params["since"]), foreign_watch.timestamp(SINCE))
+        for call in reader.paged_json.call_args_list:
+            self.assertLess(foreign_watch.timestamp(call.kwargs["params"]["since"]), foreign_watch.timestamp(SINCE))
+
+    def test_issue_or_pull_request_opened_by_an_outside_person_is_a_notice(self):
+        reader = Mock()
+        reader.paged_json.side_effect = feeds([], opened_items=[
+            opened(), opened("director"), opened("dependabot[bot]", "Bot"), opened(created="2026-10-09T11:00:00Z")])
+        notices, errors, _ = self.scan(reader)
+        self.assertEqual(errors, [])
+        self.assertEqual([(n["author"], n["url"], n["excerpt"]) for n in notices],
+                         [("client", "https://github.com/director/project/pull/50", "Add tvOS support")])
 
     def test_notice_carries_a_bounded_excerpt_of_the_comment(self):
         reader = Mock()
         correction = "If I made a mistake on the csv sheet,\n\ncan I send the corrected one?"
-        reader.paged_json.return_value = [comment(body=correction), comment(body="word " * 200)]
+        reader.paged_json.side_effect = feeds([comment(body=correction), comment(body="word " * 200)])
         short, long = self.scan(reader)[0]
         self.assertEqual(short["excerpt"], "If I made a mistake on the csv sheet, can I send the corrected one?")
         self.assertTrue(long["excerpt"].startswith("word word"))
@@ -90,7 +117,7 @@ class WatchTests(unittest.TestCase):
 
     def test_failure_preserves_only_failed_repository_watermark(self):
         reader = Mock()
-        reader.paged_json.side_effect = [foreign_watch.GitHubReadShapeError("partial"), []]
+        reader.paged_json.side_effect = feeds(foreign_watch.GitHubReadShapeError("partial"), [])
         notices, errors, watermarks = foreign_watch.scan(
             [REPO, "director/healthy"], {REPO: SINCE, "director/healthy": SINCE},
             ["director"], [], STARTED, reader)
@@ -102,7 +129,7 @@ class WatchTests(unittest.TestCase):
         reader = Mock()
         for bad in ({}, {**comment(), "updated_at": "invalid"}, {**comment(), "user": []}):
             with self.subTest(bad=bad):
-                reader.paged_json.return_value = [comment(), bad]
+                reader.paged_json.side_effect = feeds([comment(), bad])
                 notices, errors, watermarks = self.scan(reader)
                 self.assertEqual(notices, [])
                 self.assertTrue(errors)
@@ -110,8 +137,7 @@ class WatchTests(unittest.TestCase):
 
     def test_old_comments_excluded_and_edits_reported(self):
         reader = Mock()
-        reader.paged_json.return_value = [comment(updated="2026-10-09T11:59:59Z"),
-                                          comment(updated=STARTED)]
+        reader.paged_json.side_effect = feeds([comment(updated="2026-10-09T11:59:59Z"), comment(updated=STARTED)])
         self.assertEqual(len(self.scan(reader)[0]), 1)
 
     def test_state_roundtrip_and_corruption_refusal(self):
@@ -130,8 +156,8 @@ class WatchTests(unittest.TestCase):
 
     def test_deleted_author_is_untrusted_and_marker_quote_does_not_reclassify(self):
         reader = Mock()
-        reader.paged_json.return_value = [{**comment(), "user": None},
-            comment(body='Quoted: <!-- launchplane:product-review:id -->')]
+        reader.paged_json.side_effect = feeds([{**comment(), "user": None},
+            comment(body='Quoted: <!-- launchplane:product-review:id -->')])
         notices, errors, watermarks = self.scan(reader)
         self.assertEqual(errors, [])
         self.assertIsNone(notices[0]["author"])
@@ -162,7 +188,7 @@ class WatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "watch.json"
             reader = Mock()
-            reader.paged_json.return_value = [comment()]
+            reader.paged_json.side_effect = feeds([comment()])
             output = io.StringIO()
             with patch.object(foreign_watch.sys, "argv", ["foreign_watch.py", "--owner", "director",
                     "--repo", REPO, "--own-login", "director", "--state", str(path), "--since", SINCE, "--once"]), \
@@ -176,6 +202,22 @@ class WatchTests(unittest.TestCase):
             self.assertGreater(factory.call_args.kwargs["deadline_at"], 0)
             self.assertEqual(factory.call_args.kwargs["gh_prefix_args"], foreign_watch.automation_only_gh_prefix_args())
             self.assertIn(REPO, json.loads(path.read_text())["watermarks"])
+
+    def test_default_scope_is_the_installations_active_repositories_of_the_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            reader = Mock()
+            reader.paged_json.side_effect = feeds([], [comment()], repositories=[
+                {"full_name": REPO, "archived": False}, {"full_name": "director/new", "archived": False},
+                {"full_name": "director/old", "archived": True}, {"full_name": "client/app", "archived": False}])
+            output = io.StringIO()
+            with patch.object(foreign_watch.sys, "argv", ["foreign_watch.py", "--owner", "director",
+                    "--own-login", "director", "--state", str(Path(directory) / "w.json"), "--since", SINCE, "--once"]), \
+                 patch.object(foreign_watch, "GitHubReader", return_value=reader), redirect_stdout(output):
+                self.assertEqual(foreign_watch.main(), 0)
+            read = {call.args[0] for call in reader.paged_json.call_args_list}
+            self.assertEqual(read, {"/installation/repositories", f"repos/{REPO}/issues/comments", f"repos/{REPO}/issues",
+                                    "repos/director/new/issues/comments", "repos/director/new/issues"})
+            self.assertEqual([n["repository"] for n in json.loads(output.getvalue())["notices"]], ["director/new"])
 
     def test_expired_deadline_starts_no_read(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(foreign_watch.time, "monotonic", side_effect=[0, 1801]), \
@@ -199,7 +241,7 @@ class WatchTests(unittest.TestCase):
 
     def test_foreign_marker_remains_foreign(self):
         reader = Mock()
-        reader.paged_json.return_value = [comment(body="<!-- launchplane:product-review:fake -->")]
+        reader.paged_json.side_effect = feeds([comment(body="<!-- launchplane:product-review:fake -->")])
         notices = self.scan(reader)[0]
         self.assertEqual(notices[0]["kind"], "foreign")
         self.assertTrue(notices[0]["review_marker"])

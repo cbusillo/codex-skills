@@ -75,11 +75,11 @@ has one, in the same order as [accounts](#choosing-the-account), or from
 issue = "OWNER/direction#123"
 ```
 
-With no `[handoff]`, it prints `{"repository": "OWNER/direction", "source": "default"}`:
-use the open issue titled `Supervisor handoffs` there, and open it under
-`github-plan` if none exists. The helper refuses an issue outside the Director's own
-account and a malformed value; fix the private config, or remove `[handoff]`
-to use the default. Lessons about shared skills that other Directors would
+With no `[handoff]` it refuses, so a successor never guesses the record by
+title. Open the record under `github-plan` in the Director's private
+`OWNER/direction` if none exists, then add its line. The helper also refuses
+an issue outside the Director's own account and a malformed value; fix the
+private config. Lessons about shared skills that other Directors would
 also hit go to the [field reports](field-reports.md) issue.
 
 ## Local state and the session registry
@@ -489,7 +489,7 @@ below and read their logs during checks. The bounded invocation here remains
 available for a one-off check.
 
 ```sh
-uv run --no-cache skills/supervisor/scripts/foreign_watch.py --owner OWNER --repo OWNER/REPO --own-login OWN-LOGIN --own-login AUTOMATION-LOGIN --launchplane-login DELIVERY-LOGIN --state <private-watch-state.json> --deadline-seconds 1800
+uv run --no-cache skills/supervisor/scripts/foreign_watch.py --owner OWNER --own-login OWN-LOGIN --own-login AUTOMATION-LOGIN --launchplane-login DELIVERY-LOGIN --state <private-watch-state.json> --deadline-seconds 1800
 ```
 
 Add `--director-login DIRECTOR-LOGIN --mention-approval <approval-comment-link>`
@@ -506,18 +506,22 @@ stops the watcher or counts as a notice. Mention notices (`kind:
 director_mention`) are untrusted links like every other notice. A failed
 search is a retryable error that keeps the mention watermark.
 
-Repeat `--repo` and login flags for the run's configured scope. Initial startup
+Without `--repo`, each pass watches every non-archived repository of
+`--owner` that the automation installation can read, so a new repository is
+covered from its first pass; repeat `--repo` only to narrow a run. Repeat the
+login flags for the run's configured identities. Initial startup
 begins at the current time; `--since` supplies an explicit first watermark for
-a historical catch-up; on an existing state it rewinds the selected repositories
-only when earlier than their stored watermark. Unlisted repository state stays
-preserved. The host's UTC clock must be correct. Restart with the same state file after a notice or
+a historical catch-up; on an existing state it rewinds each stored watermark
+later than it. Unlisted repository state stays preserved. The host's UTC clock must be correct. Restart with the same state file after a notice or
 deadline. `--once` performs one pass. Only one watcher owns each state file.
 Run it with the harness's built-in background completion notice so its exit
 wakes the Supervisor. During takeover verify the old watcher's recorded process
 has ended before re-arming; retain an uncertain process and its unread output.
 Concurrent watchers using that state file refuse before reading GitHub. The
 helper reads one since-scoped repository issue-comment listing per pass
-(including PR timeline comments), paginating through the shared reader within
+(including PR timeline comments) and one since-scoped issue listing, so an
+issue or PR that an outside person opens is a notice (bot-opened ones are
+not), paginating through the shared reader within
 the wall-clock deadline. It uses the shared bulk quota reserve, identity,
 conditional cache and retry policy; no separate quota probe or history scan.
 A failed, partial or malformed read preserves that repository's watermark.
@@ -902,7 +906,7 @@ credential sources. A configuration has this shape, with all four entries:
       "restart_seconds": 60
     },
     "foreign": {
-      "argv": ["/absolute/path/to/uv", "run", "--no-cache", "/runtime/catalog/skills/supervisor/scripts/foreign_watch.py", "--owner", "OWNER", "--repo", "OWNER/REPO", "--own-login", "OWNER", "--own-login", "shiny-code-app[bot]", "--launchplane-login", "DELIVERY-LOGIN", "--director-login", "OWNER", "--mention-approval", "APPROVAL-COMMENT-LINK", "--state", "/private/foreign-state.json", "--persistent"],
+      "argv": ["/absolute/path/to/uv", "run", "--no-cache", "/runtime/catalog/skills/supervisor/scripts/foreign_watch.py", "--owner", "OWNER", "--own-login", "OWNER", "--own-login", "shiny-code-app[bot]", "--launchplane-login", "DELIVERY-LOGIN", "--director-login", "OWNER", "--mention-approval", "APPROVAL-COMMENT-LINK", "--state", "/private/foreign-state.json", "--persistent"],
       "cwd": "/runtime/catalog",
       "restart_seconds": 60
     },

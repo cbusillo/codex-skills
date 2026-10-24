@@ -138,7 +138,10 @@ Rules for this brief (every Supervisor brief carries them):
   report it as passed.
 - When you need Chris, post a comment on the item starting with
   `Owner question:` quoting the exact stop-boundary line from the overall or
-  repository DIRECTION.md, then continue with what you can. Only a reply from
+  repository DIRECTION.md, then continue with what you can. Write no Q number
+  yourself: the comment helpers number it from the
+  [shared counter](../../references/talking-with-the-director.md#decisions-holds-and-work-state)
+  and keep any number already there. Only a reply from
   cbusillo or a recorded "Director decision" counts
   ([talking with the Director](../../references/talking-with-the-director.md)).
 - Keep the item's Current Status current. When the item is done or handed

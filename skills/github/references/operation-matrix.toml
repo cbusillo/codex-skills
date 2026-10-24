@@ -589,12 +589,12 @@ id = "github.supervisor.foreign_watch"
 request_priority = "bulk"
 capabilities = ["issues_read"]
 permission_mode = "fixed"
-permission_note = "Read-only repository issue-comment feeds under the configured automation identity. Notices remain untrusted and authorize no action. No grants or identity fallback."
+permission_note = "Read-only repository issue and issue-comment feeds under the configured automation identity. Notices remain untrusted and authorize no action. No grants or identity fallback."
 entrypoint = "supervisor/scripts/foreign_watch.py"
-intent = "Notify the Supervisor of foreign comments and Launchplane review records within an explicit repository scope."
+intent = "Notify the Supervisor of foreign comments, issues and PRs opened by outside people, and Launchplane review records across the owner's installed repositories or an explicit scope."
 current_transport = "rest_api"
 selected_transport = "rest_api"
-endpoint_or_command = "Paged GET /repos/{repo}/issues/comments?since={watermark}; GET /repos/{repo}/issues/comments/{id} and paged GET /repos/{repo}/issues/{number}/comments?since= for the Director's mention approval and any later answer"
+endpoint_or_command = "Paged GET /installation/repositories without --repo; paged GET /repos/{repo}/issues/comments?since={watermark} and /repos/{repo}/issues?state=all&since={watermark}; GET /repos/{repo}/issues/comments/{id} and paged GET /repos/{repo}/issues/{number}/comments?since= for the Director's mention approval and any later answer"
 quota_bucket = "rest_core"
 actor_policy = "automation_required"
 mutation_class = "read"
@@ -602,8 +602,8 @@ idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "paged_read"
 retained_graphql_rationale = "No GraphQL or full-history scans; only the since-scoped repository comment feed. Mentions outside the listed repositories use github.director_mentions.search."
-source_refs = ["supervisor/scripts/foreign_watch.py:read_comments", "supervisor/scripts/foreign_watch.py:scan", "supervisor/scripts/foreign_watch.py:scan_mentions"]
-test_refs = ["supervisor/scripts/test_foreign_watch.py:test_filter_and_review_records", "supervisor/scripts/test_foreign_watch.py:test_quota_retry_time_and_failed_read_retention", "supervisor/scripts/test_foreign_watch.py:MentionTests"]
+source_refs = ["supervisor/scripts/foreign_watch.py:read_comments", "supervisor/scripts/foreign_watch.py:read_opened", "supervisor/scripts/foreign_watch.py:installed_repositories", "supervisor/scripts/foreign_watch.py:scan", "supervisor/scripts/foreign_watch.py:scan_mentions"]
+test_refs = ["supervisor/scripts/test_foreign_watch.py:test_filter_and_review_records", "supervisor/scripts/test_foreign_watch.py:test_default_scope_is_the_installations_active_repositories_of_the_owner", "supervisor/scripts/test_foreign_watch.py:test_quota_retry_time_and_failed_read_retention", "supervisor/scripts/test_foreign_watch.py:MentionTests"]
 
 [[operations]]
 id = "github.director_mentions.search"

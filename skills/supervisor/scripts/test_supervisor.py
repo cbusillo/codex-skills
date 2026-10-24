@@ -205,6 +205,9 @@ class TranscriptTests(unittest.TestCase):
                     "<result>output </task-notification>" + notice("bmon", "completed")["message"]["content"]
                     + "</result></task-notification>")}}], ["bmon"]),
             ("terminal notices", [notice("bosltstxv", "completed"), notice("bmon", "killed")], []),
+            ("monitor expiry", [{**notice("bmon"), "message": {"content": "<task-notification>\n<task-id>bmon</task-id>\n"
+                "<summary>Monitor event: \"checks settled\"</summary>\n<event>[Monitor expired after 15m with no events "
+                "delivered.]</event>\n</task-notification>"}}], ["bosltstxv"]),
             ("native run ID is distinct from task ID", [{**notice("bosltstxv", "completed"),
                 "origin": {**notice("bosltstxv")["origin"], "runId": "native-run"}}, notice("bmon", "completed")], []),
             ("task stop is not yet confirmed", [stop, notice("bmon", "completed")], ["bosltstxv"]),
