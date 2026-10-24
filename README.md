@@ -10,7 +10,6 @@ read the Director's overall `DIRECTION.md` in the repository owner's
 [AGENTS.md](AGENTS.md) holds execution details for both hosts and is the only
 repository agent-instruction filename; path-specific instructions use nested
 `AGENTS.md` files. Generated host-global instructions remain host-specific.
-Every Code history is available in Git; its history readers and fixtures are removed.
 Codex Lab is retired; its traces and archives are historical evidence.
 
 Each skill lives in its own directory under [`skills/`](skills) with a `SKILL.md`
@@ -850,8 +849,7 @@ required Python validation jobs or repository protection.
 Hosts may expose bundled system skills or generate installation caches. Treat
 `.system/` in this repository and installed plugin caches as generated/vendor
 state, not as maintained source. Edit the top-level skill directories instead.
-Cache locations and refresh behavior belong to the selected host; do not assume
-the retired Every Code startup mechanism applies to Codex or Claude Code.
+Cache locations and refresh behavior belong to the selected host.
 
 Some top-level skills intentionally use the same names as bundled system skills
 as deliberate user-maintained overrides. Verify the current host's selection

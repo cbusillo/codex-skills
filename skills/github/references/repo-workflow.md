@@ -547,12 +547,7 @@ Before merging any PR, do a fresh PR read and account for feedback:
   `gh` only when needed; those surfaces may still require GraphQL
 - inspect PR comments, reviews, and review threads
 - inspect failed or cancelled check logs before deciding CI is non-blocking
-- account for auto-review or system review findings that arrived after the last
-  push
-- apply `../../references/background-review-reporting.md`: absence before a
-  possible post-turn trigger is `not yet observable`, not skipped or not
-  emitted, and is not a reason to poll indefinitely before reporting the
-  point-in-time merge or closeout state
+- account for system review findings that arrived after the last push
 - confirm that explicit user approval, including approval already given in the
   session, covers this merge; ask only when that authorization is missing or no
   longer covers the action and scope
@@ -774,11 +769,6 @@ Allowed without asking when safe:
   of the remote; runtime-bound checkouts must use the landed repo-local
   reconciler instead
 - report unsafe cleanup candidates instead of touching them
-
-Exclude detached host auto-review worktrees (for example `auto-review-<hex>`)
-from ordinary cleanup. An explicit
-bulk or retirement scope still requires the shared policy's current owner/job,
-lock, runtime, content, and disposition evidence.
 
 Use `git branch -d <branch>` when Git can prove the exact branch is merged.
 Consider `-D` only when the shared policy establishes the exact already

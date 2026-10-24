@@ -381,9 +381,6 @@ branch, PR, and commit, then use it to decide whether closeout can proceed:
 - Passed, failed, pending, and not-run evidence with concrete reasons.
 - Metadata/docs impact: whether `.github/github.json` or docs changed, were
   checked, are stale, or were intentionally not updated.
-- Background review: consume the target, observation time or head SHA, and the
-  canonical point-in-time state from the readiness handoff without re-inferring
-  a terminal outcome from absence.
 - Next action: the smallest step that would change readiness.
 
 If the readiness handoff is missing, stale, tied to a different commit/PR, or
@@ -397,33 +394,6 @@ schema expectations: `qualityGate`, `docs`, `metadataFreshness`, `cleanup`,
 Launchplane routing when present. Readiness uses those fields to decide what
 must be verified; closeout uses the same fields to decide what final evidence,
 metadata updates, and cleanup remain.
-
-## Background Review State
-
-Use `../references/background-review-reporting.md` for target matching,
-point-in-time vocabulary, and durable wording. Never infer `skipped`, `not
-emitted`, `did not run`, or another terminal state merely because no lifecycle
-evidence is visible before the final response.
-
-Take a point-in-time read when available, but do not poll or delay the final
-response solely for a review that can only start after that response. `Not yet
-observable` is non-terminal and does not block `Safe to exit: yes` when every
-other gate is satisfied. A matching review that is already `in flight` remains
-pending evidence and keeps the verdict conditional. Preserve positive terminal
-evidence exactly, including cancellation, supersession, failure, skip reason,
-and completed findings or no-findings results. `Observation unavailable` keeps
-the verdict conditional unless the owning policy explicitly says that review
-surface is not required for the current task.
-
-Never wait indefinitely for a matching review. Use a bounded observation when
-it is useful; if the review remains `in flight`, report the verdict as
-conditional. Cancellation and supersession are terminal but are not clean
-reviews. The never-started exception applies only when a later observation can
-read the lifecycle surface and still finds no matching evidence because no
-review ever started; then no corrective follow-up is required. If matching
-terminal evidence appears after an earlier `not yet observable` summary, always
-preserve that original point-in-time statement and add a follow-up; the
-never-started exception cannot apply.
 
 When writing final summaries, closeout comments, or migrated handoff content,
 follow [Agent Comments](../references/talking-with-the-director.md#agent-comments)
@@ -446,12 +416,8 @@ Safe to exit: yes
   done or explicitly not applicable.
 - The owning durable surface was named as closed/updated with evidence, or no
   owning PR, issue, GitHub plan, or approved private recovery location was in play.
-- Background review state follows the point-in-time contract above.
-  Current-target findings are accounted for under
-  `../references/model-review.md`;
-  no matching review is `in flight`. `Not yet observable` is permitted when a
-  post-turn trigger may still occur and the answer says so explicitly. Activity
-  in detached `auto-review-<hex>` worktrees for older targets is not a gate.
+- Current-target review findings are accounted for under
+  `../references/model-review.md`.
 - PR, issue, and GitHub plan state is current.
 - This session's claims are released, with complete readback evidence
   under Claim Disposition and verified retained-PR handoffs where needed, or
@@ -477,8 +443,6 @@ Safe to exit: conditional
 - The owning durable surface is named, current, and contains the blocker or next
   action needed to resume.
 - Failing and not-run checks are recorded with reasons.
-- Current auto-review blockers, if any, are recorded in the PR, issue, or plan
-  that owns the unfinished work.
 - Remaining docs, metadata, security, or quality follow-up is tracked durably.
 - No transient local state is required to resume.
 
@@ -570,8 +534,7 @@ checks below as relevant.
   that branch is this task's, even after compaction or a handoff. When its lock
   reason names a retire command, use that command. When the task's
   record does not show that it created a registered worktree, the owning session is
-  unknown: leave it, and mention it when it bears on this closeout. Detached
-  auto-review worktrees stay excluded as described below.
+  unknown: leave it, and mention it when it bears on this closeout.
   [Task worktrees](../github/references/worktrees.md) documents portable Git
   removal and per-host helper retirement. Creation through the catalog helper
   does not replace a host's lock or guarded retirement policy.
@@ -584,27 +547,6 @@ checks below as relevant.
   into a cleanup plan/report instead of opening many issues.
 - If cleanup safety remains ambiguous after the available investigation,
   preserve the candidate and name the exact missing evidence or choice.
-
-## Auto Review Worktrees
-
-Host auto-review flows may leave detached review worktrees, such as those the
-retired Every Code harness created under:
-
-```text
-~/.code/working/<repo>/branches/auto-review*
-```
-
-Treat these as external review context, not the active workstream.
-
-- Ignore them for normal safe-to-exit and dirty-worktree decisions.
-- Do not treat their files as blocking the current repo closeout.
-- Exclude them from ordinary cleanup. In an authorized bulk or retirement scope,
-  preserve them unless the shared policy establishes owner/job completion, lock
-  and runtime state, valuable contents, and exact disposition.
-- Mention them only when relevant, for example: "Ignored detached auto-review
-  worktrees."
-- If the user asks about a review result or review worktree specifically, switch
-  context deliberately and inspect that worktree as the task target.
 
 ## Required Love Gate
 
@@ -640,8 +582,6 @@ Comments above and link the owning records instead of copying this report:
   fits the active plan.
 - Checks: gates, inspections, docs, metadata, CI/Actions, and GitHub
   security/quality signals that passed, failed, were pending, or were not run.
-- Background review: target, point-in-time state, observation time or head SHA,
-  and terminal evidence when one was positively observed.
 - Love Gate: include `Love:` and `Do not love:` entries. Use `Do not love:
   nothing material` when no meaningful concern remains.
 - Cleanup: artifacts, plans, handoffs, branches, or worktrees removed or left

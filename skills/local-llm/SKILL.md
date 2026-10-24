@@ -235,8 +235,7 @@ use `local_codex_agent.py` with the selected Codex host and a
 verified local model. Reuse a host/model already established by the task;
 ordinary implementation choices do not require a new user question.
 
-Every Code is retired; do not restore that runtime. Direct model replies,
-isolated local agent runs, and the user's ordinary configured host session
+Direct model replies, isolated local agent runs, and the user's ordinary configured host session
 provide different evidence.
 
 ## Related Skills

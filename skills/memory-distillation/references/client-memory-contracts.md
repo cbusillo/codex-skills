@@ -28,7 +28,7 @@ Inventory each distinct in-scope store:
 Resolve aliases only within scope; deduplicate by canonical identity (resolved
 path, or filesystem identity where needed), report all known names, and apply a
 change once. Do not follow an alias outside scope. Unknown ownership or denied
-access is a coverage gap, not permission to probe further. Former Every Code and Codex Lab
+access is a coverage gap, not permission to probe further. Former Codex Lab
 stores are historical evidence; do not make them active client requirements.
 
 Check all consumed layers relevant to the requested subject. An empty `MEMORY.md`
