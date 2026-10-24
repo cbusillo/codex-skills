@@ -99,19 +99,21 @@ def attempts_path(session: str, *, create: bool = False) -> Path:
 
 @contextmanager
 def attempt(session: str, repo: str, number: int) -> Iterator[None]:
-    record(session, repo, number)
-    row = {"session": session, "repository": repo, "record": number, "pid": os.getpid(), "ended": False}
+    row = {"session": session, "repository": repo, "record": number, "pid": os.getpid(), "group": os.getpgid(0), "ended": False}
+    target(row, session)
     directory, filename = attempts_path(session, create=True), f"{uuid.uuid4().hex}.json"
     write_row(directory, filename, row)
     try:
+        record(session, repo, number)
         yield
     finally:
         write_row(directory, filename, {**row, "ended": True})
 
 
-def process_running(pid: int) -> bool:
+def process_running(pid: int, *, group: bool = False) -> bool:
+    probe = os.killpg if group else os.kill
     try:
-        os.kill(pid, 0)
+        probe(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
@@ -122,11 +124,12 @@ def process_running(pid: int) -> bool:
 class Attempt(NamedTuple):
     target: tuple[str, int]
     pid: int
+    group: int
     ended: bool
 
     @property
     def running(self) -> bool:
-        return not self.ended and process_running(self.pid)
+        return not self.ended and (process_running(self.pid) or process_running(self.group, group=True))
 
 
 def read_rows(directory: Path) -> Iterator[dict]:
@@ -156,8 +159,8 @@ def attempts(session: str) -> list[Attempt]:
         return []
     found = []
     for row in read_rows(directory):
-        pid, ended = row.get("pid"), row.get("ended")
-        if type(pid) is not int or pid <= 0 or type(ended) is not bool:
+        pid, group, ended = row.get("pid"), row.get("group"), row.get("ended")
+        if any(type(value) is not int or value <= 0 for value in (pid, group)) or type(ended) is not bool:
             raise ValueError("claim journal has an invalid attempt")
-        found.append(Attempt(target(row, session), pid, ended))
+        found.append(Attempt(target(row, session), pid, group, ended))
     return found

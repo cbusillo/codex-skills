@@ -57,10 +57,18 @@ class ClaimLogTests(unittest.TestCase):
             raise OSError("post failed")
         self.assertFalse(journal.attempts("root")[0].running)
 
+    def test_attempt_is_visible_before_its_target_is_journaled(self) -> None:
+        with patch.object(journal, "record", side_effect=OSError("journal unavailable")):
+            with self.assertRaises(OSError), journal.attempt("root", "owner/repo", 1):
+                pass
+        self.assertEqual([a.target for a in journal.attempts("root")], [("owner/repo", 1)])
+        self.assertEqual(journal.read("root"), set())
+
     def test_malformed_attempt_cannot_mean_no_running_claim(self) -> None:
         with journal.attempt("root", "owner/repo", 1):
             path = next((journal.log_path("root") / "attempts").glob("*.json"))
-        for content in ('{"pid":', '{"session":"root","repository":"owner/repo","record":1,"pid":"1","ended":true}'):
+        valid = '"session":"root","repository":"owner/repo","record":1,"ended":true'
+        for content in ('{"pid":', f'{{{valid},"pid":"1","group":1}}', f'{{{valid},"pid":1}}'):
             path.write_text(content)
             with self.subTest(content=content), self.assertRaises(ValueError):
                 journal.attempts("root")

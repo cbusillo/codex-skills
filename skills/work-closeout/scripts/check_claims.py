@@ -10,9 +10,10 @@ import json
 import re
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 SKILLS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SKILLS / "github/scripts"))
@@ -149,56 +150,69 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data
 transcript_values = history.values
 
 
-def receipt_targets(rows: list[dict], native: str) -> set[tuple[str, int]]:
+def entry_rows(entry: dict) -> list[dict]:
+    return entry.get("_transcript_records") or history.read_records(Path(entry["transcript"]))
+
+
+def receipt_values(rows: list[dict]) -> Iterator[dict]:
     receipts = [row for row in rows if "claim" in row]
     receipts.extend(block for blocks in history.tool_outputs(rows).values() for block in blocks)
-    return {
-        target
-        for block in receipts
-        for value in transcript_values(block)
-        if (target := history.claim_target(value, native)) is not None
-    }
+    for block in receipts:
+        yield from transcript_values(block)
+
+
+def receipt_targets(rows: list[dict], native: str) -> set[tuple[str, int]]:
+    return {target for value in receipt_values(rows) if (target := history.claim_target(value, native)) is not None}
+
+
+def foreign_receipt(rows: list[dict], native: str) -> bool:
+    return any(isinstance(claim := value.get("claim"), dict) and claim.get("session") != native for value in receipt_values(rows))
 
 
 def session_start(rows: list[dict]) -> datetime | None:
-    stamps = [row["timestamp"] for row in rows if row.get("timestamp") is not None]
-    stamps.extend(meta["timestamp"] for meta in [history.metadata(rows)] if "timestamp" in meta)
+    first = history.metadata(rows) or next((row for row in rows if "uuid" in row), {})
     try:
-        parsed = [datetime.fromisoformat(stamp) for stamp in stamps]
-    except (TypeError, ValueError):
+        began = datetime.fromisoformat(first["timestamp"])
+    except (KeyError, TypeError, ValueError):
         return None
-    if not parsed or any(stamp.tzinfo is None for stamp in parsed):
-        return None
-    return min(parsed)
+    return began if began.tzinfo is not None else None
 
 
-def journal_covers(rows: list[dict], journal: set[tuple[str, int]], seen: set[tuple[str, int]]) -> bool:
-    began = session_start(rows)
-    return began is not None and began > JOURNAL_SHIPPED and seen <= journal
+def lineage_start(entries: list[dict]) -> datetime | None:
+    starts = [session_start(entry_rows(entry)) for entry in entries]
+    return None if None in starts else min(starts, default=None)
 
 
-def recorded_targets(entry: dict) -> dict:
+class JournalEvidence(NamedTuple):
+    journal: set[tuple[str, int]]
+    seen: set[tuple[str, int]]
+    attempted: frozenset[tuple[str, int]]
+
+
+def journal_covers(rows: list[dict], native: str, began: datetime | None, evidence: JournalEvidence) -> bool:
+    return (
+        began is not None
+        and began > JOURNAL_SHIPPED
+        and evidence.seen <= evidence.journal <= evidence.attempted
+        and not foreign_receipt(rows, native)
+    )
+
+
+def recorded_targets(entry: dict, began: datetime | None = None, attempted: frozenset[tuple[str, int]] = frozenset()) -> dict:
     require_own_transcript(entry)
     native = entry["session_id"]
     journal = claim_log.read(native)
-    rows = entry.get("_transcript_records") or history.read_records(Path(entry["transcript"]))
+    rows = entry_rows(entry)
     receipts = receipt_targets(rows, native)
     discovery = history.literal_targets(
         rows, native, directory=Path(entry["native_output_directory"]) if entry.get("native_output_directory") else None
     )
     discovery["journal_covered_invocations"] = []
-    if journal_covers(rows, journal, receipts | discovery["targets"]):
+    if journal_covers(rows, native, began, JournalEvidence(journal, receipts | discovery["targets"], attempted)):
         discovery["journal_covered_invocations"] = discovery.pop("unresolved_invocations")
         discovery["unresolved_invocations"] = []
     discovery["targets"].update(journal | receipts)
     return discovery
-
-
-def unsettled_attempts(native: str) -> tuple[set[tuple[str, int]], set[tuple[str, int]]]:
-    attempts = claim_log.attempts(native)
-    running = {attempt.target for attempt in attempts if attempt.running}
-    without_lifecycle = claim_log.read(native) - {attempt.target for attempt in attempts}
-    return running, without_lifecycle
 
 
 def check(
@@ -212,32 +226,37 @@ def check(
     native_sessions = {entry["session_id"] for entry in entries}
     targets: dict[str, set[tuple[str, int]]] = {}
     unresolved, covered = [], []
-    for entry in history.expand(entries):
-        discovery = recorded_targets(entry)
+    expanded = history.expand(entries)
+    attempts = {native: claim_log.attempts(native) for native in {entry["session_id"] for entry in expanded}}
+    began = lineage_start(expanded)
+    for entry in expanded:
+        attempted = frozenset(attempt.target for attempt in attempts[entry["session_id"]])
+        discovery = recorded_targets(entry, began, attempted)
         targets.setdefault(entry["session_id"], set()).update(discovery["targets"])
         for found, items in ((unresolved, discovery["unresolved_invocations"]), (covered, discovery["journal_covered_invocations"])):
             found.extend({**item, "session": entry["session_id"], "transcript": entry["transcript"]} for item in items)
+    running = {native: {attempt.target for attempt in found if attempt.running} for native, found in attempts.items()}
+    for native, active in running.items():
+        targets.setdefault(native, set()).update(active)
     repos = {repo for records in targets.values() for repo, _ in records}
     accounts = set(owners) | {repo.split("/")[0] for repo in repos}
     released, blocked, readers, pulls_cache, data_cache = [], [], {}, {}, {}
     complete = not unresolved
     for native, records in sorted(targets.items()):
-        running, without_lifecycle = unsettled_attempts(native)
         for repo, number in sorted(records):
             try:
-                if (repo, number) in running:
+                if (repo, number) in running[native]:
                     raise ValueError("a claim attempt is still running; let it finish, then check again")
                 if repo not in readers:
                     readers[repo] = (reader_for_repo or repository_reader)(repo, deadline)
                 selected = readers[repo]
                 if not selected.expected_actor:
                     raise ValueError("repository's configured automation identity is unknown")
-                found = check_record(
-                    selected, repo, number, native, selected.expected_actor, pulls_cache=pulls_cache, data_cache=data_cache
+                released.extend(
+                    check_record(
+                        selected, repo, number, native, selected.expected_actor, pulls_cache=pulls_cache, data_cache=data_cache
+                    )
                 )
-                if not found and (repo, number) in without_lifecycle:
-                    raise ValueError("journaled claim has no published claim and no recorded attempt end; it may still be posting")
-                released.extend(found)
             except (ValueError, OSError, GitHubReadError, GitHubReadShapeError, github_identity.GitHubAppError) as error:
                 blocked.append(f"{repo}#{number}: {error}")
                 complete = False
