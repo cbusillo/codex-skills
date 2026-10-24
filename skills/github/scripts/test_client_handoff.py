@@ -97,7 +97,7 @@ class ClientRuleTests(unittest.TestCase):
             started.start()
             self.addCleanup(started.stop)
         helper.CURRENT_OPERATION = "github.pr.ready"
-        self.live = object.__new__(watch.Live)
+        self.live = watch.Live.__new__(watch.Live)
         self.live.reader = object()
         self.live.get = lambda _path: {"checks": [{"context": "unit", "app_id": None}]}
         ready_comment = {"id": 1, "user": {"login": "engineer"}, "body": handoff_body(SHA),
