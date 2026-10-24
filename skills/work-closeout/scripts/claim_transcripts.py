@@ -2863,6 +2863,8 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         decode_failed = False
         interactive_uncertain = False
         receipt_pure = not javascript or single_javascript_shell(text)
+        source_ended: list[bool] = []
+        launched_in_background = False
         try:
             sources = shell_texts(text, javascript, exec_command=name == "exec_command")
             source_ended = completed_sources(records, inputs, own_outputs, identifier, sources, session)
@@ -2901,6 +2903,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
             for source, ended in zip(sources.commands, source_ended, strict=True):
                 receipt_pure = receipt_pure and not source.interactive
                 discovery = shell_claims(source.text, claim_related=source.interactive and claim_may_be_interactive)
+                launched_in_background = launched_in_background or discovery.asynchronous
                 invocations.extend(discovery.arguments)
                 ended_invocations.extend([ended and not discovery.asynchronous] * len(discovery.arguments))
                 opaque = opaque or discovery.opaque
@@ -2964,6 +2967,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
                 {
                     "call_id": identifier,
                     "reason": reason,
+                    "ended": bool(source_ended) and all(source_ended) and not (launched_in_background or decode_failed),
                     "recovery": (
                         "This code-mode cell is outside the bounded subset after possible interactive claim input. "
                         "Preserve the originating command, process session ID and complete input/output evidence on the owning issue; "

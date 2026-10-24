@@ -22,9 +22,19 @@ import github_plan_claim as claim
 import github_plan_claim_log as claim_log
 import github_plan_release as release
 import release_session_claims as sessions
-from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError
+from github_read import (
+    GitHubReader,
+    GitHubReadError,
+    GitHubReadShapeError,
+    path_with_query,
+)
 
 CHECK_OPERATION = "work-closeout.claims"
+SEARCH_INDEX_DELAY_SECONDS = 600
+SEARCH_PAGE_SIZE = 100
+SEARCH_READER = "search"
+SEARCHABLE_SESSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{7,}")
+RECORD_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/([1-9]\d*)")
 
 
 def explicit_pr_numbers(text, repo):
@@ -113,17 +123,23 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data
                         ((c.get("body") or "").startswith(f"Handoff from {record['worker']}\n") or c == evidence)):
                     named.update(explicit_pr_numbers(c.get("body") or "", repo))
             def during_claim(pull):
-                if (not claim.pr_issue_reference(pull, number, repo=repo, attestation=True)
-                        or (pull.get("user") or {}).get("login") != actor):
-                    return False
                 try:
                     return (release.stamp(source["created_at"]) <= release.stamp(pull.get("created_at"))
                             <= release.stamp(releases[0]["created_at"]))
                 except (TypeError, ValueError, KeyError):
                     # Unknown chronology cannot hide an independently linked PR.
                     return True
-            pulls = [p for p in pulls if (p.get("head") or {}).get("ref") == record["branch"]
-                     or p["number"] in named or during_claim(p)]
+            def opened_after_release(candidate, claim_ended=releases[0]["created_at"]):
+                try:
+                    return release.stamp(candidate.get("created_at")) > release.stamp(claim_ended)
+                except (TypeError, ValueError, KeyError):
+                    return False
+            def retained_work(candidate):
+                return claim.is_retained_work(candidate, author=actor, issue_repo=repo, issue_number=number, target_repo=repo)
+            def later_work_for_another_issue(candidate):
+                return opened_after_release(candidate) and not claim.pr_issue_reference(candidate, number, repo=repo, attestation=True)
+            pulls = [p for p in pulls if (p.get("head") or {}).get("ref") == record["branch"] and not later_work_for_another_issue(p)
+                     or retained_work(p) and (p["number"] in named or not claim.is_train_batch(p) and during_claim(p))]
         if receipt is not None:
             handoffs = [evidence]
             for pull in pulls:
@@ -163,14 +179,103 @@ def recorded_targets(entry: dict) -> dict:
         rows, native, directory=Path(entry["native_output_directory"]) if entry.get("native_output_directory") else None
     )
     discovery["targets"].update(targets)
+    unresolved = discovery["unresolved_invocations"]
+    if unresolved:
+        inputs = {call.identifier: (call.text, call.javascript, call.name, call.index) for call in history.tool_details(rows)}
+        recorded = history.tool_outputs(rows, followups=False)
+        ended = {item["call_id"] for item in unresolved if item.get("ended")}
+        finished = result_times(rows, ended, inputs, recorded)
+        for item in unresolved:
+            item["finished_at"] = finished.get(item["call_id"])
     return discovery
+
+
+def result_times(rows: list[dict], call_ids: set[str], inputs: dict, recorded: dict[str, list[object]]) -> dict[str, float]:
+    producers = {call: {call, *history.ordered_polls(call, inputs, recorded)} for call in call_ids}
+    latest: dict[str, float] = {}
+    for row in rows:
+        produced = set(history.tool_outputs([row], followups=False))
+        if not produced:
+            continue
+        try:
+            at = release.stamp(row["timestamp"]).timestamp()
+        except (KeyError, TypeError, ValueError):
+            continue
+        for call, identifiers in producers.items():
+            if produced & identifiers and at >= latest.get(call, at):
+                latest[call] = at
+    return latest
+
+
+def search_account() -> str:
+    if github_identity.configured_value("GITHUB_CLIENT_APP_OWNERS"):
+        raise ValueError("a client App is configured; one search cannot cover its repositories")
+    config = github_identity.github_app_config()
+    if config is None:
+        raise ValueError("the automation App is not configured")
+    installations = github_identity.app_installations(config)
+    if [str(installation["id"]) for installation in installations] != [config.installation_id]:
+        raise ValueError("the App is installed on more than its configured account; one search cannot cover them")
+    return installations[0]["account"]["login"]
+
+
+def session_records(reader: GitHubReader, account: str, session: str) -> set[tuple[str, int]]:
+    if not SEARCHABLE_SESSION.fullmatch(session):
+        raise ValueError(f"session {session!r} cannot be searched exactly")
+    query = f'"{session}" user:{account}'
+    body = reader.request("GET", path_with_query("/search/issues", {"q": query, "per_page": SEARCH_PAGE_SIZE}),
+                          step="closeout_session_records", bucket="search", fresh=True).body
+    items = body.get("items") if isinstance(body, dict) else None
+    if not isinstance(items, list) or body.get("incomplete_results") is not False or body.get("total_count") != len(items):
+        raise ValueError(f"search for session {session} returned incomplete results")
+    found = set()
+    for item in items:
+        match = RECORD_URL.fullmatch(str((item or {}).get("html_url", "")))
+        if not match or match[1].split("/")[0].casefold() != account.casefold():
+            raise GitHubReadShapeError(f"search for session {session} returned a record outside {account}")
+        found.add((match[1], int(match[2])))
+    return found
+
+
+def settle_from_search(
+    unresolved: list[dict],
+    targets: dict[str, set[tuple[str, int]]],
+    released: list[dict],
+    check_target: Callable[[str, str, int], None],
+    search_reader: Callable[[], GitHubReader],
+) -> tuple[list[dict], list[str]]:
+    indexed_before = time.time() - SEARCH_INDEX_DELAY_SECONDS
+    eligible = [item for item in unresolved if item.get("finished_at") is not None and item["finished_at"] <= indexed_before]
+    if not eligible:
+        return [], []
+    try:
+        account = search_account()
+        reader = search_reader()
+    except (ValueError, OSError, GitHubReadError, GitHubReadShapeError, github_identity.GitHubAppError) as error:
+        return [], [str(error)]
+    settled, errors = [], []
+    for native in sorted({item["session"] for item in eligible}):
+        try:
+            found = session_records(reader, account, native)
+        except (ValueError, OSError, GitHubReadError, GitHubReadShapeError) as error:
+            errors.append(str(error))
+            continue
+        known = {(entry["repository"], entry["record"]) for entry in released if entry["source_session"] == native}
+        if not known <= found:
+            errors.append(f"search has not indexed every known claim of session {native} yet")
+            continue
+        for repo, number in sorted(found - targets.setdefault(native, set())):
+            targets[native].add((repo, number))
+            check_target(native, repo, number)
+        settled.extend(item for item in eligible if item["session"] == native)
+    return settled, errors
 
 
 def check(
     entries: list[dict],
     *,
     owners: Sequence[str] = (),
-    reader_for_repo: Callable[[str, float], GitHubReader] | None = None,
+    reader_for_repo: Callable[[str | None, float], GitHubReader] | None = None,
     read_timeout: float = 600,
 ) -> dict:
     deadline = time.time() + read_timeout
@@ -184,41 +289,50 @@ def check(
             {**item, "session": entry["session_id"], "transcript": entry["transcript"]}
             for item in discovery["unresolved_invocations"]
         )
+    released, blocked, readers, pulls_cache, data_cache = [], [], {}, {}, {}
+
+    def check_target(native: str, repo: str, number: int) -> None:
+        try:
+            if repo not in readers:
+                readers[repo] = (reader_for_repo or repository_reader)(repo, deadline)
+            selected = readers[repo]
+            if not selected.expected_actor:
+                raise ValueError("repository's configured automation identity is unknown")
+            released.extend(
+                check_record(selected, repo, number, native, selected.expected_actor, pulls_cache=pulls_cache, data_cache=data_cache)
+            )
+        except (ValueError, OSError, GitHubReadError, GitHubReadShapeError, github_identity.GitHubAppError) as error:
+            blocked.append(f"{repo}#{number}: {error}")
+
+    def search_reader() -> GitHubReader:
+        readers[SEARCH_READER] = (reader_for_repo or repository_reader)(None, deadline)
+        return readers[SEARCH_READER]
+
+    for native_session, records in sorted(targets.items()):
+        for target in sorted(records):
+            check_target(native_session, *target)
+    settled, search_errors = settle_from_search(unresolved, targets, released, check_target, search_reader)
+    unresolved = [item for item in unresolved if item not in settled]
     repos = {repo for records in targets.values() for repo, _ in records}
     accounts = set(owners) | {repo.split("/")[0] for repo in repos}
-    released, blocked, readers, pulls_cache, data_cache = [], [], {}, {}, {}
-    complete = not unresolved
-    for native, records in sorted(targets.items()):
-        for repo, number in sorted(records):
-            try:
-                if repo not in readers:
-                    readers[repo] = (reader_for_repo or repository_reader)(repo, deadline)
-                selected = readers[repo]
-                if not selected.expected_actor:
-                    raise ValueError("repository's configured automation identity is unknown")
-                released.extend(
-                    check_record(
-                        selected, repo, number, native, selected.expected_actor, pulls_cache=pulls_cache, data_cache=data_cache
-                    )
-                )
-            except (ValueError, OSError, GitHubReadError, GitHubReadShapeError, github_identity.GitHubAppError) as error:
-                blocked.append(f"{repo}#{number}: {error}")
-                complete = False
+    complete = not unresolved and not blocked
     return {
         "operation": CHECK_OPERATION,
-        "ok": not blocked and complete,
-        "claims_clear": not blocked and complete,
+        "ok": complete,
+        "claims_clear": complete,
         "session_ids": sorted(native_sessions),
         "coverage": {
             "owners": sorted(accounts),
             "repositories": sorted(repos),
             "complete": complete,
-            "scope": "session claim journals and recorded transcript claims",
+            "scope": "session claim journals, recorded transcript claims, and the session's claim records found by GitHub search",
+            "search_errors": search_errors,
         },
         "request_count": sum(len(selected.requests) for selected in readers.values()),
         "released_claims": released,
         "blocked": blocked,
         "unresolved_invocations": unresolved,
+        "settled_invocations": settled,
     }
 
 
@@ -239,7 +353,7 @@ def require_own_transcript(entry: dict) -> None:
         raise ValueError(f"transcript {entry['transcript']} does not belong to session {entry['session_id']}")
 
 
-def repository_reader(repo: str, deadline: float) -> GitHubReader:
+def repository_reader(repo: str | None, deadline: float) -> GitHubReader:
     # The shared reader selects the existing App by target repository, exactly
     # as the claim helper does. No credential/config mutation or fallback.
     return GitHubReader(

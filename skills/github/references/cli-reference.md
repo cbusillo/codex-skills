@@ -1099,7 +1099,9 @@ remain. To record verified absence or a resolved hold, use
 `wait 123 --clear --evidence "Full issue/discussion reviewed; existing release evidence ..."`.
 These replace the whole wait record, so preserve every unresolved hold in the
 replacement. They post and read back an authored structured comment without
-replacing anyone's prose or changing labels. Keep labels current separately
+replacing anyone's prose or changing labels. Its visible text says what is
+waited for and when each wait ends, or that nothing is waited on; a wait that
+names someone as a live `@login` is refused, so write `<code>@login</code>`. Keep labels current separately
 under [Status Labels](../../github-plan/SKILL.md#status-labels). Native open
 blockers remain independent and cannot be cleared by a wait record.
 

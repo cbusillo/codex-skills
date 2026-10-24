@@ -4109,6 +4109,24 @@ class ClaimTests(unittest.TestCase):
                          [{"source": "open_pr", "number": 99, "branch": source["branch"]}])
         self.assert_no_writes()
 
+    def test_merge_train_batch_is_not_competing_ownership(self):
+        batch = {"number": 101, "body": CLAIM.TRAIN_BATCH_MARKER + "batch:sha -->\n\nCloses #42",
+                 "head": {"ref": CLAIM.TRAIN_BRANCH_PREFIX + "owner/repo/main/batch", "repo": {"full_name": "owner/repo"}},
+                 "base": {"repo": {"full_name": "owner/repo"}}}
+        self.pulls = [batch]
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.setUp()
+        unmarked = {**batch, "number": 99, "body": "Closes #42"}
+        for competing in (unmarked, {"number": 99, "body": "Closes #42", "head": {"ref": "work/source"}}):
+            with self.subTest(competing=competing):
+                self.setUp()
+                self.pulls = [batch, competing]
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual([c.get("number") for c in caught.exception.payload["competing_evidence"]], [99])
+                self.assert_no_writes()
+
     def test_context_link_does_not_override_branch_or_claim_owner(self):
         self.pulls = [{"number": 99, "body": "Code follow-ups recorded without starting implementation: "
                        "https://github.com/owner/repo/issues/42", "head": {"ref": "work/docs"}}]
@@ -5245,6 +5263,23 @@ class ClaimTests(unittest.TestCase):
         self.run_claim(command=PLAN.cmd_wait)
         self.run_claim()
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_wait_comment_says_what_it_waits_for_without_notifying_anyone(self):
+        self.args.all = self.args.clear = False
+        self.args.waiting_for = "@mike-b to confirm the run"
+        self.args.ends_when = "Mike replies on the issue"
+        self.args.evidence = "Recorded request"
+        with self.assertRaises(PLAN.PlanError): self.run_claim(command=PLAN.cmd_wait)
+        self.assert_no_writes()
+        self.args.waiting_for = "<code>@mike-b</code> to confirm the run"
+        self.run_claim(command=PLAN.cmd_wait)
+        self.args.waiting_for = self.args.ends_when = None
+        self.args.clear = True
+        self.args.evidence = "Confirmed"
+        self.run_claim(command=PLAN.cmd_wait)
+        visible = [wait_record.without_records(comment["body"]).strip() for comment in self.comments[-2:]]
+        self.assertEqual(visible, ["Waiting for <code>@mike-b</code> to confirm the run. This ends when Mike replies on the issue.",
+                                   "Nothing here is waiting on a person or event."])
 
     def test_wait_review_requires_evidence_and_an_ending_condition_before_writes(self):
         self.args.all = self.args.clear = False
