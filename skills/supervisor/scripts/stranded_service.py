@@ -173,8 +173,10 @@ def run_weekly(config_path, stopped):
         catalog = Path(config["catalog"])
         audit = [config["uv"], "run", "--no-project", "--no-cache",
                  str(catalog / "skills/direction/scripts/direction_audit.py"), "--weekly", "--owner", weekly["owner"]]
-        attempt = folder / f"{today.isoformat()}.attempt.json"
-        with attempt.open("wb") as out, (folder / f"{today.isoformat()}.stderr").open("wb") as err:
+        handle, name = tempfile.mkstemp(prefix=f"{today.isoformat()}-", suffix=".attempt.json", dir=folder)
+        attempt = Path(name)
+        stderr = attempt.with_name(attempt.name.removesuffix(".attempt.json") + ".stderr")
+        with os.fdopen(handle, "wb") as out, stderr.open("wb") as err:
             code = command(audit, catalog, subprocess.DEVNULL, out, err, stopped, WEEKLY_AUDIT_SECONDS)
         if code not in WEEKLY_STAMP_WRITTEN_CODES:
             services.emit("weekly_not_recorded", exit_code=code, output=str(attempt))

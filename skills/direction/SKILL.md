@@ -424,7 +424,9 @@ Supervisor's existing daily scheduler, using the automation identity: the
 It reads audited repositories and records completion in the local marker.
 Record registration and receiver evidence before calling it active. The receiving
 direction session reads the newest `weekly/DATE.receipt.json` under that
-service's `state_dir`, then performs per-repository
+service's `state_dir`, plus every `*.attempt.json` there modified after the
+previous receipt, whose read repositories' findings the receipt does not
+repeat. It then performs per-repository
 steps 1–4, the account-wide `direction`-label and friction searches with their
 design procedure, and the [weekly finding judgments](#weekly-audit). Use that
 receipt's findings because collection has already advanced the audit windows.

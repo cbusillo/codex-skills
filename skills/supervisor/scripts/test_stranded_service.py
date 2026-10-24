@@ -157,22 +157,29 @@ class DailyTests(unittest.TestCase):
         (self.root / "scan-code").write_text("3")
         self.assertEqual(self.entry().returncode, 0)
         self.assertEqual(self.weekly_receipts(), [self.payload])
+        (self.root / "payload").write_text("second audit\n")
         self.assertEqual(self.entry().returncode, 0)
         self.assertEqual(self.weekly_receipts(), [self.payload])
 
-    def test_unrecorded_weekly_audit_is_retried_the_next_run(self):
+    def test_unrecorded_weekly_audits_are_kept_and_retried(self):
         self.weekly_on(dt.datetime.now().astimezone().isoweekday())
         (self.root / "scan-code").write_text("1")
-        self.assertEqual(self.entry().returncode, 1)
+        for failed in ("first partial\n", "second partial\n"):
+            (self.root / "payload").write_text(failed)
+            self.assertEqual(self.entry().returncode, 1)
         self.assertEqual(self.weekly_receipts(), [])
+        (self.root / "payload").write_text(self.payload)
         (self.root / "scan-code").write_text("0")
         self.assertEqual(self.entry().returncode, 0)
         self.assertEqual(self.weekly_receipts(), [self.payload])
+        attempts = sorted(path.read_text() for path in (self.state / "weekly").glob("*.attempt.json"))
+        self.assertEqual(attempts, ["first partial\n", "second partial\n"])
 
     def test_weekly_audit_runs_on_or_after_its_weekday_once_per_iso_week(self):
         self.weekly_on(3)
-        tuesday, thursday, next_monday = dt.date(2026, 10, 20), dt.date(2026, 10, 22), dt.date(2026, 10, 26)
-        for day, expected in ((tuesday, 0), (thursday, 1), (thursday, 1), (next_monday, 1)):
+        tuesday, thursday = dt.date(2026, 10, 20), dt.date(2026, 10, 22)
+        next_monday, next_wednesday = dt.date(2026, 10, 26), dt.date(2026, 10, 28)
+        for day, expected in ((tuesday, 0), (thursday, 1), (thursday, 1), (next_monday, 1), (next_wednesday, 2)):
             with self.subTest(day=day), mock.patch.object(daily, "local_today", return_value=day):
                 self.assertEqual(daily.run_weekly(self.config, threading.Event()), 0)
                 self.assertEqual(len(self.weekly_receipts()), expected)
