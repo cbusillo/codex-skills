@@ -408,6 +408,12 @@ def claude_settings(command_text, words):
     return {**settings, **dict.fromkeys(CLAUDE_UNATTENDED_SETTINGS, False)}
 
 
+def codex_daemon_without_ingress(command_text):
+    words = launch_words(command_text)
+    return Path(words[0]).name == "codex" and any(
+        word == "--remote" or word.startswith("--remote=") for word in words[1:])
+
+
 def append_brief(command_text, brief):
     """Append a literal prompt only to a direct invocation, optionally after cd."""
     words = launch_words(command_text)
@@ -422,6 +428,9 @@ def append_brief(command_text, brief):
         if not any(word == CLAUDE_AUTOCOMPACT_OPTION or word.startswith(CLAUDE_AUTOCOMPACT_OPTION + "=")
                    for word in words[1:]):
             command_text += f" {CLAUDE_AUTOCOMPACT_OPTION} auto"
+    elif agent == "codex":
+        from codex_session_proxy import MEMORY_SETTING
+        command_text += " -c " + shlex.quote(f"{MEMORY_SETTING}=false")
     prompt_option = " --prompt-interactive=" if agent == "agy" else " -- "
     return command_text + prompt_option + shlex.quote(brief)
 
@@ -1194,6 +1203,9 @@ def prepare_launches(args):
              for text in command_texts):
         raise ValueError("account settings need --account-provider; remove them from the launch file "
                          "and use --account for an explicit override")
+    elif any(codex_daemon_without_ingress(text) for text in command_texts):
+        raise ValueError("Codex --remote launches need --account-provider openai, so the launcher's "
+                         "ingress can start the thread with memory generation off")
     else:
         command_texts = [append_brief(text, brief) for text, brief in zip(command_texts, briefs)]
     if choices[0]:

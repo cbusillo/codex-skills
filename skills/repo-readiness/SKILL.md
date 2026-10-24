@@ -87,29 +87,6 @@ inspection, browser, CI, deployment, or security gates.
    continue with local/GitHub readiness checks. Do not print raw helper stderr or
    copy helper payloads into readiness output.
 
-   If you inspect worktrees, ignore detached host auto-review worktrees, such as
-   `~/.code/working/<repo>/branches/auto-review*` left by the retired Every Code
-   harness, unless the user's
-   task is specifically about that review. They are detached external review
-   context and should not affect readiness for the active repo/branch.
-
-   When background auto-review results or ledgers are available in session
-   context or repo tooling, follow
-   `../references/background-review-reporting.md`. Match the observation to the
-   active branch, PR, and head SHA before using it as evidence. Do not declare a
-   branch, PR, release, or handoff green while findings against the current
-   target are not yet accounted for under `../references/model-review.md` or
-   while a matching review is `in flight`.
-   When no lifecycle evidence is visible before a possible post-turn trigger,
-   report `not yet observable`; do not infer a skipped or not-emitted outcome,
-   and do not delay the final response solely waiting for that trigger. If a
-   matching review is already `in flight`, use only bounded waiting when useful;
-   otherwise preserve it as pending evidence in the readiness handoff. If a
-   finding points at a detached `auto-review*` worktree or older snapshot,
-   verify it against current `HEAD` before treating it as blocking. Detached
-   auto-review worktrees are not dirty active state; only matching review
-   findings and lifecycle evidence matter.
-
 5. Apply [Gate Selection](#gate-selection) for the required breadth at this stage,
    including the final-readiness defaults for lint/static analysis and IDE
    inspection. Run the required repo gates and the narrowest additional checks
@@ -174,9 +151,6 @@ instead of repeating its fields:
   substitute and keep the gap visible in the readiness status.
 - Metadata/docs impact: whether `.github/github.json` or docs changed, were
   checked, are stale, or were intentionally not updated.
-- Background review: the target-matched point-in-time state, observation time
-  or head SHA, and the canonical state: `not yet observable`, `in flight`,
-  `observation unavailable`, or an exact terminal outcome.
 - Next action: the smallest step that would change readiness.
 
 This handoff is evidence, not cleanup: do not delete artifacts, remove
@@ -191,8 +165,7 @@ metadata updates, and cleanup remain.
 
 Use `../references/talking-with-the-director.md` for readiness reports and durable
 readiness comments, including its Agent Comments shape. Link gate and review
-records and write out only otherwise unrecorded gaps. Use
-`../references/background-review-reporting.md` for Background Review state.
+records and write out only otherwise unrecorded gaps.
 
 ## Gate Selection
 

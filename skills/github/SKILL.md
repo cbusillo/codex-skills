@@ -1085,16 +1085,9 @@ the landing route:
   authority.
 - **Fresh head**: This also applies before calling a PR green, ready to merge,
   merged, releasable, or clean, and before a release. Read the PR and its
-  checks for the current head SHA. Match background review evidence to that
-  SHA. Unresolved blocking findings against it block the merge or release even
-  when CI is green, until they are accounted for under
-  [reviews by another model](../references/model-review.md). Findings from a
-  detached `auto-review-<hex>` worktree are current when their snapshot SHA
-  matches the head and history otherwise; those worktrees are not dirty local
-  state. Report review lifecycle under
-  [background review reporting](../references/background-review-reporting.md):
-  no matching evidence is `not yet observable`, never `skipped`, and a final
-  response does not wait for a review that starts after it.
+  checks for the current head SHA. Unresolved blocking review findings against
+  that SHA block the merge or release even when CI is green, until they are
+  accounted for under [reviews by another model](../references/model-review.md).
 - **Human comments**: Before a merge or close settles an issue or PR, run
   `uv run ../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
   An attention result or degraded coverage needs a response or explicit

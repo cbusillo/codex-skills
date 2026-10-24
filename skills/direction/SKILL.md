@@ -418,10 +418,15 @@ marker path: `~/.code/direction-last-check.json` unless `DIRECTION_MARKER`
 names another. Host home variables differ between Claude Code and Codex.
 
 Schedule `direction_audit.py --weekly --owner OWNER` once a week through the
-Supervisor's existing daily scheduler, using the automation identity. It reads
-audited repositories and records completion in the local marker.
+Supervisor's existing daily scheduler, using the automation identity: the
+`weekly` entry of the
+[daily stranded-work service](../supervisor/references/helpers.md#daily-stranded-work-service).
+It reads audited repositories and records completion in the local marker.
 Record registration and receiver evidence before calling it active. The receiving
-direction session uses the saved JSON receipt, then performs per-repository
+direction session reads the newest `weekly/DATE.receipt.json` under that
+service's `state_dir`, plus every `*.attempt.json` there modified after the
+previous receipt, whose read repositories' findings the receipt does not
+repeat. Report an empty attempt as lost coverage. It then performs per-repository
 steps 1–4, the account-wide `direction`-label and friction searches with their
 design procedure, and the [weekly finding judgments](#weekly-audit). Use that
 receipt's findings because collection has already advanced the audit windows.
