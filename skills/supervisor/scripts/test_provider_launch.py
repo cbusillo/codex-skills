@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import account_choice
 import agent_tools
 import iterm_tab
+from codex_session_proxy import MEMORY_SETTING
 import tmux_terminal
 import session_liveness
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
@@ -265,7 +266,7 @@ class ProviderLaunchTests(unittest.TestCase):
         self.assertEqual(parts[parts.index("cd") + 1], "/fixture")
         self.assertIn("TERM=fixture", parts)
         native = parts[parts.index("--") + 1:]
-        self.assertEqual(native, ["codex", "--remote", endpoint, "-c", "memories.generate_memories=false",
+        self.assertEqual(native, ["codex", "--remote", endpoint, "-c", f"{MEMORY_SETTING}=false",
                                   "--", "literal $(touch NEVER)"])
 
     def test_codex_launch_records_account_and_verified_process_generation(self):

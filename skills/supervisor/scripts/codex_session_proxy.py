@@ -109,7 +109,7 @@ def without_memory_generation(message: dict) -> dict:
     params = message.get("params") or {}
     config = (params.get("config") or {}) if isinstance(params, dict) else None
     if not isinstance(config, dict):
-        raise ValueError("thread/start params and config must be objects")
+        raise ValueError("new thread params and config must be objects")
     return {**message, "params": {**params, "config": {**config, MEMORY_SETTING: False}}}
 
 
@@ -250,7 +250,7 @@ class Ingress:
                                         raise ValueError("native thread action requires an exact identity")
                                     if targets and identity is None:
                                         raise ValueError("native action needs a request ID for acknowledgement")
-                                if method == "thread/start":
+                                if method in {"thread/start", "thread/fork"}:
                                     raw = json.dumps(without_memory_generation(message))
                                 if method == "thread/resume":
                                     session = message["params"]["threadId"]
