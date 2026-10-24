@@ -244,7 +244,7 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.comments.append({**self.release, "body": self.release["body"] + "\n" + self.pulls[0]["html_url"]})
         self.assertEqual(self.check()[0]["retained_prs"], [self.pulls[0]["html_url"]])
         self.comments[-1]["body"] += "\n" + batch["html_url"]
-        self.assertEqual(self.check()[0]["retained_prs"], [self.pulls[0]["html_url"]])
+        self.assertEqual(self.check()[0]["retained_prs"], [p["html_url"] for p in self.pulls])
         for unnamed in (pull(8, branch="work/unnamed", created_at="2026-01-01T00:01:30Z"),
                         pull(8, branch=train_branch, created_at="2026-01-01T00:01:30Z")):
             self.pulls[1] = unnamed
@@ -1479,11 +1479,13 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertFalse(report["claims_clear"])
                 self.reader.request.assert_not_called()
 
-    def test_native_command_and_code_cell_settle_only_once_nothing_is_left_running(self) -> None:
+    def test_search_settles_only_commands_the_reader_proves_finished(self) -> None:
         command = {"timestamp": SETTLED_AT, "type": "event_msg", "payload": {"type": "item_completed", "item": {
             "type": "CommandExecution", "id": "x", "command": OPAQUE_CLAIM, "status": "completed", "exit_code": 0,
             "aggregated_output": ""}}}
-        for rows, settled in (([command], True), (code_cell({"exit_code": 0, "output": ""}), True),
+        detached = finished_opaque_call()
+        detached[0]["payload"]["arguments"] = json.dumps({"command": f"({OPAQUE_CLAIM}) >/dev/null 2>&1 &"})
+        for rows, settled in (([command], True), (detached, False), (code_cell({"exit_code": 0, "output": ""}), False),
                               (code_cell({"session_id": 7, "output": ""}), False)):
             with self.subTest(rows=rows):
                 self.setUp()

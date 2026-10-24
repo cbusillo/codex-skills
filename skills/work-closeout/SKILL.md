@@ -317,21 +317,28 @@ Keep the journal with its session; another host also needs the complete native
 lineage and recorded claim results.
 
 For older helpers, the reader reconstructs bounded literal invocations and
-native outputs without executing recorded programs. A command it cannot decode,
-such as one built from a shell variable or a code-mode cell, is settled by
-GitHub's own record instead: every claim comment shows its session ID, so one
-search of the App's account for that ID finds the session's claims, and each
-one found is checked like any other target. The search settles a command only
-when the transcript shows it finished, with nothing it started still running,
-at least 10 minutes before the check; only when the search returns complete
-results that include every claim the check already knows; and only when the App
-has a single installation and no client App. A code-mode cell that left a
-process running stays unresolved, because the transcript cannot show when that
-process ended. The search relies on GitHub's index catching up within those 10
-minutes; the claim journal still covers every claim the current helper makes.
-Otherwise the command
-stays in `unresolved_invocations`, the reason is in `coverage.search_errors`,
-and the verdict stays conditional while known targets are checked. When
+native outputs without executing recorded programs. A shell command it cannot
+decode, such as one that names the helper through a shell variable, can be
+settled by GitHub's own record instead: every claim comment shows its session
+ID, so one search of the App's account for that ID finds the claims made under
+that session ID, and each one found is checked like any other target. The
+search settles a command only when the reader shows it finished in the
+foreground, with no `&` launch, at least 10 minutes before the check; only when
+the search returns complete results that include every claim the check already
+knows; and only when the App configured now has a single installation and no
+client App. A code-mode cell settles only when the reader proves it finished,
+which it cannot for cells that leave a process running.
+
+The search does not prove absence. It relies on GitHub's index catching up
+within those 10 minutes, and it cannot see a claim an undecodable command made
+under another session ID, through another App or account, or from a host with
+other configuration. The claim journal still records every claim the current
+helper makes on this host. A command that detaches work another way, such as
+through `tmux` or `launchd`, is background work under the rule below.
+
+A command that cannot be settled stays in `unresolved_invocations` and the
+verdict stays conditional while known targets are checked. When a search ran
+and could not settle it, the reason is in `coverage.search_errors`. When
 `unresolved_invocations` remains, or when recovering older/remote-host evidence,
 read [recorded claim discovery](references/claim-discovery.md) for supported
 program/data boundaries and recovery. Use an explicit literal `--repo OWNER/REPO`
@@ -362,9 +369,10 @@ retained PR, and the check verifies the same repository, source identity and
 independent issue link under the successor's handoff contract. Retained work is
 a PR on the claim's branch, or an open PR by the automation identity that links
 the issue and is named in the release or opened during the claim, the same rule
-`gh-plan.py release` uses. A PR the release mentions only as context, and a
-merge-train batch PR (head under `launchplane/train/` with Launchplane's batch
-marker), are not retained work unless it is on the claim's own branch. A PR-only claim
+`gh-plan.py release` uses. A PR the release mentions only as context is not
+retained work. Neither is a merge-train batch PR (head under
+`launchplane/train/` with Launchplane's batch marker) opened during the claim,
+unless the release names it or it is on the claim's own branch. A PR-only claim
 uses the PR itself as its work record. Preserve the branch, worktree and the
 next actor's custody.
 
