@@ -92,9 +92,11 @@ def _client_profile(settings: dict[str, Any], entry: dict[str, Any]) -> dict[str
 
 
 def _omits_required_profile_fields(raw_profile: object) -> bool:
+    if not isinstance(raw_profile, dict) or not ({"client", "owner"} & raw_profile.keys()):
+        return True
+    client = raw_profile["client"] if "client" in raw_profile else raw_profile["owner"]
     return (
-        not isinstance(raw_profile, dict)
-        or not ({"client", "owner"} & raw_profile.keys())
+        (client is not None and not (isinstance(client, dict) and "github_login" in client))
         or not isinstance(raw_profile.get("lanes"), list)
         or "driver_id" not in raw_profile
     )

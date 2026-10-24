@@ -125,6 +125,13 @@ def candidate_response(
     )
 
 
+def setUpModule():
+    states = ready_handoff.acceptance_reader()
+    unmapped = patch.object(ready_handoff, "client_release", return_value=states.ClientRelease(states.NO_CLIENT))
+    unmapped.start()
+    unittest.addModuleCleanup(unmapped.stop)
+
+
 class Fake:
     def __init__(self, count=6):
         self.pulls = {number: pr(number) for number in range(1, count + 1)}

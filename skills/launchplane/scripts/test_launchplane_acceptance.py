@@ -171,6 +171,8 @@ class AcceptanceTests(unittest.TestCase):
             "profile omits its Client": lambda pin: self.profile["profile"].pop("owner"),
             "profile omits its lanes": lambda pin: self.profile["profile"].pop("lanes"),
             "Client profile omits its driver": lambda pin: pin[0].pop("driver_id"),
+            "Client profile omits its login": lambda pin: pin[0].update(owner={"review_label": "owner-review"}),
+            "profile omits its login": lambda pin: self.profile["profile"].update(client={}),
             "unrelated entry without product": lambda pin: self.mapping["mapping"]["repositories"].append(
                 {"repository": "example/web", "classification": "managed_runtime", "driver_id": "generic-web",
                  "source": "product_profile"}),
