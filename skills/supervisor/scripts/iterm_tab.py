@@ -22,6 +22,7 @@ import tempfile
 import time
 import tomllib
 from pathlib import Path
+from typing import NamedTuple
 
 import account_choice
 import claude_trust
@@ -985,20 +986,13 @@ def codex_directory(words):
     return Path(options.cd[0])
 
 
-def check_codex_project(command_text, choice):
-    """Require an explicit, already-trusted directory in the selected Codex home."""
-    if choice["provider"] != "openai":
-        if launch_agent(command_text) == "codex":
-            raise ValueError("Codex launches require --account-provider openai")
-        return
-    words, _ = launch_parts(command_text)
-    if Path(words[0]).name != "codex":
-        raise ValueError("openai account selection requires a direct Codex invocation")
-    directory = codex_directory(words)
-    if not directory.is_absolute() or not directory.is_dir():
-        raise ValueError("Codex -C/--cd must name an existing absolute repository directory")
-    home = Path(choice["env"]["CODEX_HOME"]).expanduser()
-    config_path = home / "config.toml"
+class CodexProjectEntry(NamedTuple):
+    target: Path
+    project: object
+    matched: bool
+
+
+def codex_project_entry(directory, config_path):
     try:
         with config_path.open("rb") as stream:
             config = tomllib.load(stream)
@@ -1024,7 +1018,29 @@ def check_codex_project(command_text, choice):
             else:
                 continue
             break
-    if not isinstance(project, dict) or project.get("trust_level") != "trusted":
+    return CodexProjectEntry(target, project, matched)
+
+
+def codex_folder_trusted(project):
+    return isinstance(project, dict) and project.get("trust_level") == "trusted"
+
+
+def check_codex_project(command_text, choice):
+    """Require an explicit, already-trusted directory in the selected Codex home."""
+    if choice["provider"] != "openai":
+        if launch_agent(command_text) == "codex":
+            raise ValueError("Codex launches require --account-provider openai")
+        return
+    words, _ = launch_parts(command_text)
+    if Path(words[0]).name != "codex":
+        raise ValueError("openai account selection requires a direct Codex invocation")
+    directory = codex_directory(words)
+    if not directory.is_absolute() or not directory.is_dir():
+        raise ValueError("Codex -C/--cd must name an existing absolute repository directory")
+    home = Path(choice["env"]["CODEX_HOME"]).expanduser()
+    config_path = home / "config.toml"
+    target, project, matched = codex_project_entry(directory, config_path)
+    if not codex_folder_trusted(project):
         command = shlex.join(["codex", "-C", str(directory)])
         recovery = (
             f"review the existing projects entry for {target} yourself and deliberately set "
