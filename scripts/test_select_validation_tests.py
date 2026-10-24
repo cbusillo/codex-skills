@@ -19,6 +19,7 @@ import select_validation_tests as selector
 HELPERS = [
     "scripts/validate_words.py",
     "skills/a/scripts/test_hook.py",
+    "skills/a/scripts/test_package.py",
     "skills/a/scripts/test_tool.py",
     "skills/b/scripts/test_other.py",
 ]
@@ -42,6 +43,8 @@ class SelectionTests(unittest.TestCase):
         self.write("skills/a/scripts/hook.py", "HELPER = load_sibling('run-me.py')\nprint('see notes.py')\n")
         self.write("skills/a/scripts/test_hook.py", "import hook\n")
         self.write("skills/a/scripts/notes.py", "print('notes')\n")
+        self.write("skills/a/scripts/plan_status/__init__.py", "VALUE = 1\n")
+        self.write("skills/a/scripts/test_package.py", "import plan_status\n")
         self.write("skills/a/SKILL.md", "skill\n")
         self.write("skills/b/scripts/test_other.py", "print('other')\n")
         self.commit()
@@ -123,6 +126,11 @@ class SelectionTests(unittest.TestCase):
     def test_file_a_module_only_names_in_a_message_selects_no_module_tests(self) -> None:
         self.write("skills/a/scripts/notes.py", "print('changed')\n")
         self.assertEqual(self.selection(self.pull_request_checkout()).helpers, ["scripts/validate_words.py"])
+
+    def test_package_initializer_selects_helpers_importing_the_package(self) -> None:
+        self.write("skills/a/scripts/plan_status/__init__.py", "VALUE = 2\n")
+        selected = self.selection(self.pull_request_checkout()).helpers
+        self.assertEqual(selected, ["scripts/validate_words.py", "skills/a/scripts/test_package.py"])
 
     def test_deleted_module_selects_its_former_callers(self) -> None:
         (self.repo / "skills/a/scripts/tool.py").unlink()

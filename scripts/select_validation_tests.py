@@ -128,7 +128,7 @@ def names_of(paths: set[str]) -> defaultdict[str, set[str]]:
         file = PurePosixPath(path)
         files_by_name[file.name].add(path)
         if file.suffix == ".py":
-            files_by_name[file.stem].add(path)
+            files_by_name[file.parent.name if file.stem == "__init__" else file.stem].add(path)
     return files_by_name
 
 
