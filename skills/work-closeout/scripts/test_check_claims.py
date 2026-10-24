@@ -2652,6 +2652,51 @@ print(root)"""
         report = helper.check([self.receipt_entry()])
         self.assertTrue(report["claims_clear"], report)
 
+    def test_metadata_regex_filter_still_requires_exact_claim_release(self) -> None:
+        root = self.entry(cli_version=SUPPORTED_CLI_VERSION)
+        source = f'text(await tools.exec_command({{cmd:"uv run gh-plan.py --repo {REPO} claim 1"}}));'
+        rows = [
+            {
+                "payload": {
+                    "type": "custom_tool_call",
+                    "name": "exec",
+                    "call_id": "metadata",
+                    "input": source,
+                }
+            },
+            native_terminal_result(
+                "metadata",
+                json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 1}}),
+                javascript=True,
+            ),
+            {
+                "payload": {
+                    "type": "custom_tool_call",
+                    "name": "exec",
+                    "call_id": "filter",
+                    "input": 'text(ALL_TOOLS.filter(x=>/launchplane|dokploy/i.test(x.name+" "+x.description)));',
+                }
+            },
+            {
+                "payload": {
+                    "type": "custom_tool_call_output",
+                    "call_id": "filter",
+                    "output": "[]",
+                }
+            },
+        ]
+        with Path(root["transcript"]).open("a") as stream:
+            stream.write("\n".join(json.dumps(row) for row in rows) + "\n")
+        report = helper.check([root])
+        self.assertEqual(report["unresolved_invocations"], [], report)
+        self.assertTrue(report["blocked"], report)
+        self.assertFalse(report["claims_clear"], report)
+        self.comments.append(self.release)
+        report = helper.check([root])
+        self.assertTrue(report["coverage"]["complete"], report)
+        self.assertTrue(report["claims_clear"], report)
+
+
     def test_recorded_held_claim_and_failed_reads_cannot_clear(self) -> None:
         entry = self.receipt_entry()
         report = helper.check([entry])

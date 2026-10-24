@@ -202,6 +202,16 @@ class JavascriptData:
                 pass
             elif native == "Object" and method in {"keys", "values", "entries"} and len(args) == 1:
                 result_kind = "array"
+            elif receiver.type == "regex":
+                callback = node.parent
+                if (
+                    method != "test"
+                    or len(args) != 1
+                    or re.fullmatch(r"/[A-Za-z0-9_ .|-]+/i?", source(receiver)) is None
+                    or callback.type != "arrow_function"
+                    or callback.child_by_field_name("body") != node
+                ):
+                    raise ValueError("regex predicate")
             else:
                 receiver_kind = self.expression(receiver, environment)
                 if method in CALLBACK_METHODS and len(args) == 1:

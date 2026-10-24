@@ -72,7 +72,7 @@ conditional except `forEach(text)`. Function literals cannot enter data directly
 Only numeric `let` counters may be incremented. Explicit property writes,
 mutating method names and loop assignment targets stay conditional. Literal
 arrays used to decode targets remain immutable. Prototype/constructor access, capability aliases, unknown calls,
-named functions, executable options, computed callees, regex/division syntax,
+named functions, executable options, computed callees, division syntax,
 identifier escapes and unsupported syntax keep coverage conditional. A parse
 error alone never proves nonexecution. The reader assumes native results,
 `load` values and tool metadata obey the harness's serializable-data contract;
@@ -82,7 +82,13 @@ and their argument objects come from syntax-tree locations, including recovered
 nodes in unbounded cells. Any code-mode cell outside the bounded subset retains
 pending interactive claim uncertainty, including aliases, computed constructors
 and escaped shorthand keys. Every decoded target remains subject to release
-verification even when the surrounding cell is conditional.
+verification even when the surrounding cell is conditional. A direct expression-body
+predicate in a checked inline data callback may call a literal regex's `test`
+with one checked data argument. Its pattern contains only letters, digits,
+underscore, space, dot, pipe or hyphen, and its flags are empty or `i`.
+Regex values, aliases, constructors, other methods and other syntax remain
+conditional. The serializable-data and unchanged-builtins assumption also
+covers `RegExp.prototype.exec`; no recorded regex is executed by the reader.
 
 `interactive_uncertain` means a prior invocation could have left claim input in
 an interactive process and this later cell is outside that subset. Complete
