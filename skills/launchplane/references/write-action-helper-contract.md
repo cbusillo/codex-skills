@@ -2439,17 +2439,22 @@ plan already ran: read the plan's persisted review instead of resubmitting. An
 unenrolled repository (`repository_not_enrolled`) or a change that alters nothing
 (`policy_unchanged`) stops before any write.
 
-`merge-train-enrollment-propose --repo OWNER/REPO --repository-id ID --like
-OWNER/ENROLLED [--base-branch main] --reason TEXT --source-event-id ID` uses the
-same read, envelope, output and replay rules. It appends a copy of the `--like`
-repository's target for that base branch with the new `repository` and
-`github_token.github_app.repository_id`, so the new target inherits that
+`merge-train-enrollment-propose --repo OWNER/REPO --repository-id ID
+[--base-branch BRANCH] --like OWNER/ENROLLED [--like-base-branch main] --reason
+TEXT --source-event-id ID` uses the same read, envelope, output and replay
+rules. Repeat `--repo` with its `--repository-id`, and `--base-branch` when
+any branch is not `main`, in the same order, to enroll several repository
+branches in one proposal, so the Director approves one card. It appends a copy
+of the `--like` repository's target on `--like-base-branch` for each
+repository, with its `repository`, `base_branch` and
+`github_token.github_app.repository_id`, so each new target inherits that
 target's labels, enqueue authority, merge identity, App credential binding and
 scheduler settings for the Director to review. It leaves out the template's
 own `provider_delivery_protection_expectation` and
 `config_authority_events_enabled`, which describe the template repository. It
-stops before any write when the repository branch is already enrolled
-(`repository_already_enrolled`), the template branch is not
+stops before any write when the arguments do not pair up or repeat a
+repository branch (`unpaired_enrollment_arguments`), a repository branch is
+already enrolled (`repository_already_enrolled`), the template branch is not
 (`template_not_enrolled`), or the template uses any credential source besides
 a GitHub App (`template_not_github_app`). The service's review still decides
 whether the App installation and required checks support it.

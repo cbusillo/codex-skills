@@ -213,7 +213,10 @@ It reads every repository the weekly audit lists and reports, per repository,
 missing merge-train enrollment, Renovate configuration, the standard ruleset
 pair, the automation App installation, a checkout under `~/Developer`, and
 Codex folder trust in each configured Codex home on this host. Claude folder
-trust is not checked: the Supervisor launcher writes it. Each fix names its
+trust is not checked: the Supervisor launcher writes it. Forks named in its
+`UPSTREAM_CONTRIBUTION_FORKS` only carry pull requests to their upstream and
+are not checked; add a fork there when its default branch carries nothing of
+its own. Each fix names its
 helper and whether an agent or the Director does it. When nothing is missing
 it prints one line. It changes nothing; fixing a gap is ordinary work, except
 that enrollment needs the Director's approval of the proposal. Exit 3 means a

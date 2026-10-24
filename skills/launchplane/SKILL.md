@@ -887,7 +887,7 @@ exact-lane backup planning authority and open the product's production Actions
 card. Submit no proposal until the service supports its descriptor and the caller
 has the required authority. Source delivery grants no access. To add or remove
 one trusted automation id on named enrolled repositories, use
-`merge-train-trusted-automation-propose`; to enroll a repository branch, use
+`merge-train-trusted-automation-propose`; to enroll repository branches, use
 `merge-train-enrollment-propose`. Never hand-build a merge-train record; both
 keep the active record in memory only.
 
