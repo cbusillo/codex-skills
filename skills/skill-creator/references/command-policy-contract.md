@@ -131,6 +131,5 @@ Agent execution cases can show that the tested context exposes command-policy
 metadata and that the tested model chooses a helper-backed route. They do not
 prove that the runtime intercepted a raw command before execution. Runtime
 command-blocker tests must live with the host that implements the blocker.
-Historical Every Code harness results are not evidence of current Codex or
-Claude Code enforcement. Select current evidence using
+Select current evidence using
 [validation guidance](validation.md).

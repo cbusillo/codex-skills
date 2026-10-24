@@ -1,8 +1,7 @@
 # Reviews By Another Model
 
 Use this when asking another model to review work, and when weighing what a
-model reviewer returns, including a background review a host starts by itself.
-Findings from either are weighed the same way. Two things are not covered: a
+model reviewer returns. Findings from either are weighed the same way. Two things are not covered: a
 human reviewer, whose comments follow the owning skill's rules, and a
 deterministic analyzer such as a type checker or security scanner, whose output
 is evidence rather than an opinion to weigh.

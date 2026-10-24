@@ -8,7 +8,6 @@
     "githubWorkflow": "skills/github/references/repo-workflow.md",
     "taskWorktrees": "skills/github/references/worktrees.md",
     "githubPostMergeCheckouts": "skills/github/references/post-merge-checkouts.md",
-    "backgroundReviewReporting": "skills/references/background-review-reporting.md",
     "executionEnvironment": "skills/github/references/execution-environment.md",
     "ideConfigurationPolicy": "skills/references/ide-configuration-policy.md",
     "githubConfigSchema": "skills/github/references/config-schema.md",

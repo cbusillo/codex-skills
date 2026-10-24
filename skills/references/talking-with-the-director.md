@@ -217,10 +217,6 @@ markers and exact-output contracts as described under Carry Context.
   URLs do not carry the viewer's GitHub session and can return 404.
 - Link point-in-time evidence for handoffs and closeout: commits, workflow
   runs, issue and PR comments, landing plans, and deploy records.
-- For Background Review lifecycle wording, use
-  `background-review-reporting.md`. Record the target and observation time;
-  never turn absence into a terminal claim. If later terminal evidence appears,
-  preserve the original statement and add a follow-up.
 - Link logs and source text at their owning run, file, or artifact.
 
 ## GitHub Markdown Writes
