@@ -797,6 +797,29 @@ def handoff_url(repo: str, number: int, comment_id: int) -> str:
     return f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}"
 
 
+TRAIN_BRANCH_PREFIX = "launchplane/train/"
+TRAIN_BATCH_MARKER = "<!-- launchplane-batch:"
+
+
+def is_train_batch(pull: dict[str, Any]) -> bool:
+    head, base = pull.get("head") or {}, pull.get("base") or {}
+    head_repo = (head.get("repo") or {}).get("full_name", "")
+    return ((head.get("ref") or "").startswith(TRAIN_BRANCH_PREFIX) and TRAIN_BATCH_MARKER in (pull.get("body") or "")
+            and bool(head_repo) and head_repo.casefold() == (base.get("repo") or {}).get("full_name", "").casefold())
+
+
+def is_retained_work(pull: dict[str, Any], *, author: str, issue_repo: str, issue_number: int, target_repo: str) -> bool:
+    if pull.get("state") != "open" and not (pull.get("state") == "closed" and pull.get("merged_at")):
+        return False
+    if (pull.get("user") or {}).get("login") != author:
+        return False
+    if any(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() != target_repo.casefold()
+           for side in ("head", "base")):
+        return False
+    return pr_issue_reference(pull, issue_number, repo=issue_repo,
+                              local_references=issue_repo.casefold() == target_repo.casefold(), attestation=True)
+
+
 def retained_handoff(
     source: dict[str, Any], candidates: list[dict[str, Any]], pulls: list[dict[str, Any]], *,
     issue_repo: str, issue_number: int, target_repo: str, selected_id: int | None = None,
@@ -804,22 +827,8 @@ def retained_handoff(
 ) -> dict[str, Any] | None:
     """Prefer the first usable qualified handoff, preserving a selected ID."""
     author = source["author"]
-    qualified = []
-    for pull in pulls:
-        if pull.get("state") != "open" and not (pull.get("state") == "closed" and pull.get("merged_at")):
-            continue
-        if (pull.get("user") or {}).get("login") != author:
-            continue
-        if ((pull.get("head") or {}).get("repo") or {}).get("full_name", "").casefold() != target_repo.casefold():
-            continue
-        if ((pull.get("base") or {}).get("repo") or {}).get("full_name", "").casefold() != target_repo.casefold():
-            continue
-        # Classify only the issue reference, independently of branch evidence
-        # or lifecycle state (open/merged admission was checked above).
-        if not pr_issue_reference(pull, issue_number, repo=issue_repo,
-                                  local_references=issue_repo.casefold() == target_repo.casefold(), attestation=True):
-            continue
-        qualified.append(pull)
+    qualified = [pull for pull in pulls if is_retained_work(pull, author=author, issue_repo=issue_repo,
+                                                             issue_number=issue_number, target_repo=target_repo)]
     first = None
     for handoff in candidates:
         if selected_id is not None and handoff.get("id") != selected_id:
@@ -898,9 +907,9 @@ def artifact_evidence(
             if not permitted(tree["branch"]) and tree["branch"] not in (ended_branches or set()):
                 conflicts.append({"source": "worktree", **tree, "certainty": "current_or_stale"})
     for pull in pulls:
-        if pull["number"] == subject_pr:
-            continue
         branch = (pull.get("head") or {}).get("ref", "")
+        if pull["number"] == subject_pr or (is_train_batch(pull) and not permitted(branch)):
+            continue
         if (pr_issue_reference(pull, number, repo=repo, local_references=local_references,
                                record_kind="pr" if subject_pr is not None else "issue")
                 or branch in (recorded_branches or set())

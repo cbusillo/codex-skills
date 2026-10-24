@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import tempfile
 import sqlite3
+import time
 import unittest
 from unittest.mock import Mock, patch
 from types import SimpleNamespace
@@ -51,6 +52,26 @@ def native_terminal_result(identifier: str, output: str = "", *, javascript: boo
             "output": (json.dumps({"exit_code": 0, "output": output}) if javascript else f"Chunk ID: fixture\nWall time: 0.1 seconds\nProcess exited with code 0\nOutput:\n{output}"),
         }
     }
+
+
+OPAQUE_CLAIM = 'P=gh-plan.py; uv run "$P" claim "$(next_issue)"'
+SETTLED_AT = "2026-01-01T00:00:30Z"
+
+
+def finished_opaque_call(at: str | None = SETTLED_AT, *, result: bool = True) -> list[dict]:
+    rows = [{"payload": {"type": "function_call", "name": "shell_command", "call_id": "opaque",
+                         "arguments": json.dumps({"command": OPAQUE_CLAIM})}}]
+    if result:
+        rows.append(native_terminal_result("opaque"))
+    return [{**row, "timestamp": at} if at is not None else row for row in rows]
+
+
+def code_cell(output: dict) -> list[dict]:
+    return [{"timestamp": SETTLED_AT, "type": "response_item", "payload": row} for row in (
+        {"type": "custom_tool_call", "name": "exec", "call_id": "cell",
+         "input": 'await tools.exec_command({cmd: ["uv run gh-plan.py claim", next()].join(" ")});'},
+        {"type": "custom_tool_call_output", "call_id": "cell",
+         "output": [{"type": "input_text", "text": json.dumps(output)}]})]
 
 
 def native_runtime() -> dict:
@@ -200,13 +221,45 @@ class ClaimCloseoutTests(unittest.TestCase):
             self.check()
 
     def test_named_split_branch_pr_is_verified_too(self):
-        self.pulls = [pull(), pull(3, branch="work/split", body="Unrelated")]
-        self.comments.append({**self.release, "body": self.release["body"] + "\n" +
-                              "\n".join(p["html_url"] for p in self.pulls)})
+        self.pulls = [pull(), pull(3, branch="work/split")]
+        self.comments.append({**self.release, "body": self.release["body"] + "\n" + self.pulls[0]["html_url"]})
         with self.assertRaises(ValueError):
             self.check()
-        self.pulls[1]["body"] = "Fixes #1"
+        self.comments[-1]["body"] += "\n" + self.pulls[1]["html_url"]
         self.assertEqual(len(self.check()[0]["retained_prs"]), len(self.pulls))
+
+    def test_pr_the_release_names_only_as_context_is_not_retained_work(self):
+        context = [pull(3, branch="work/base", body="Base branch for the stack"),
+                   pull(4, branch="work/human", user={"login": "person"})]
+        self.pulls = [pull(), *context]
+        self.comments.append({**self.release, "body": self.release["body"] + "\n" +
+                              "\n".join(p["html_url"] for p in self.pulls)})
+        self.assertEqual(self.check()[0]["retained_prs"], [self.pulls[0]["html_url"]])
+
+    def test_pr_opened_on_the_branch_after_the_release_for_another_issue_is_later_work(self):
+        self.comments.append(self.release)
+        self.pulls = [pull(body="Refs #2", created_at="2026-01-01T00:03:00Z")]
+        self.assertEqual(self.check()[0]["retained_prs"], [])
+        for kept in (pull(body="Refs #2", created_at="2026-01-01T00:01:30Z"),
+                     pull(3, created_at="2026-01-01T00:03:00Z")):
+            self.pulls = [kept]
+            with self.subTest(pull=kept), self.assertRaises(ValueError):
+                self.check()
+
+    def test_merge_train_batch_copying_the_closing_keyword_is_not_retained_work(self):
+        train_branch = helper.claim.TRAIN_BRANCH_PREFIX + f"{REPO}/main/batch"
+        batch = pull(7, branch=train_branch, created_at="2026-01-01T00:01:30Z",
+                     body=helper.claim.TRAIN_BATCH_MARKER + "batch:sha -->\n\nFixes #1")
+        self.pulls = [pull(), batch]
+        self.comments.append({**self.release, "body": self.release["body"] + "\n" + self.pulls[0]["html_url"]})
+        self.assertEqual(self.check()[0]["retained_prs"], [self.pulls[0]["html_url"]])
+        self.comments[-1]["body"] += "\n" + batch["html_url"]
+        self.assertEqual(self.check()[0]["retained_prs"], [p["html_url"] for p in self.pulls])
+        for unnamed in (pull(8, branch="work/unnamed", created_at="2026-01-01T00:01:30Z"),
+                        pull(8, branch=train_branch, created_at="2026-01-01T00:01:30Z")):
+            self.pulls[1] = unnamed
+            with self.subTest(pull=unnamed), self.assertRaises(ValueError):
+                self.check()
 
     def test_split_handoffs_can_be_in_separate_authored_comments(self):
         self.pulls = [pull(), pull(3, branch="work/split")]
@@ -1392,6 +1445,88 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertFalse(report["coverage"]["complete"])
         self.assertTrue(report["blocked"])
         self.assertIn("lost", {item["call_id"] for item in report["unresolved_invocations"]})
+
+    def undecodable_claim_session(self, *rows: dict) -> dict:
+        root = self.entry()
+        helper.claim_log.record(SESSION, REPO, 1)
+        self.comments.append(self.release)
+        with Path(root["transcript"]).open("a") as stream:
+            for row in [*(rows or finished_opaque_call()), {"type": "api-request-blob", "message": {"role": "user", "content": "opaque"}}]:
+                stream.write(json.dumps(row) + "\n")
+        self.enterContext(patch.object(helper, "search_account", return_value="test"))
+        return root
+
+    def search_finds(self, *numbers: int, incomplete: bool = False) -> None:
+        items = [{"html_url": f"https://github.com/{REPO}/issues/{number}"} for number in numbers]
+        self.reader.request.return_value = SimpleNamespace(
+            body={"total_count": len(items), "incomplete_results": incomplete, "items": items})
+
+    def test_github_search_settles_an_undecodable_cell_when_it_finds_only_released_claims(self) -> None:
+        root = self.undecodable_claim_session()
+        self.search_finds(1)
+        report = helper.check([root])
+        self.assertTrue(report["claims_clear"])
+        self.assertEqual([item["call_id"] for item in report["settled_invocations"]], ["opaque"])
+
+    def test_github_search_finds_the_unreleased_claim_an_undecodable_cell_made(self) -> None:
+        root = self.undecodable_claim_session()
+        held = comment(50, "Claimed by worker\n\n" + helper.claim.marker(SOURCE))
+        self.reader.paged_json.side_effect = lambda path, **kw: (
+            [held] if path.endswith("/issues/5/comments") else self.paged(path, **kw))
+        self.search_finds(1, 5)
+        report = helper.check([root])
+        self.assertFalse(report["claims_clear"])
+        self.assertTrue(any(line.startswith(f"{REPO}#5:") for line in report["blocked"]))
+
+    def test_search_cannot_settle_a_cell_it_may_not_have_indexed(self) -> None:
+        recent = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        for rows in (finished_opaque_call(recent), finished_opaque_call(None), finished_opaque_call(result=False)):
+            with self.subTest(rows=rows):
+                self.setUp()
+                root = self.undecodable_claim_session(*rows)
+                self.search_finds(1)
+                report = helper.check([root])
+                self.assertFalse(report["claims_clear"])
+                self.reader.request.assert_not_called()
+
+    def test_search_settles_only_commands_the_reader_proves_finished(self) -> None:
+        command = {"timestamp": SETTLED_AT, "type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "CommandExecution", "id": "x", "command": OPAQUE_CLAIM, "status": "completed", "exit_code": 0,
+            "aggregated_output": ""}}}
+        detached = finished_opaque_call()
+        detached[0]["payload"]["arguments"] = json.dumps({"command": f"({OPAQUE_CLAIM}) >/dev/null 2>&1 &"})
+        for rows, settled in (([command], True), (detached, False), (code_cell({"exit_code": 0, "output": ""}), False),
+                              (code_cell({"session_id": 7, "output": ""}), False)):
+            with self.subTest(rows=rows):
+                self.setUp()
+                root = self.undecodable_claim_session(*rows)
+                self.search_finds(1)
+                report = helper.check([root])
+                self.assertTrue(report["unresolved_invocations"] or report["settled_invocations"])
+                self.assertEqual(report["claims_clear"], settled)
+
+    def test_search_that_misses_a_known_claim_or_is_incomplete_settles_nothing(self) -> None:
+        for numbers, incomplete in (((), False), ((1,), True)):
+            with self.subTest(numbers=numbers, incomplete=incomplete):
+                self.setUp()
+                root = self.undecodable_claim_session()
+                self.search_finds(*numbers, incomplete=incomplete)
+                report = helper.check([root])
+                self.assertFalse(report["claims_clear"])
+                self.assertEqual([item["call_id"] for item in report["unresolved_invocations"]], ["opaque"])
+                self.assertTrue(report["coverage"]["search_errors"])
+
+    def test_one_search_covers_only_a_single_app_installation(self) -> None:
+        config = SimpleNamespace(installation_id="1")
+        self.enterContext(patch.object(helper.github_identity, "github_app_config", return_value=config))
+        self.enterContext(patch.object(helper.github_identity, "configured_value", return_value=None))
+        installations = [{"id": 1, "account": {"login": "test"}}]
+        with patch.object(helper.github_identity, "app_installations", return_value=installations):
+            self.assertEqual(helper.search_account(), "test")
+        with patch.object(helper.github_identity, "app_installations",
+                          return_value=[*installations, {"id": 2, "account": {"login": "client"}}]), \
+                self.assertRaises(ValueError):
+            helper.search_account()
 
     def test_orphan_saved_shell_output_cannot_prove_complete_claim_coverage(self) -> None:
         root = self.entry()
