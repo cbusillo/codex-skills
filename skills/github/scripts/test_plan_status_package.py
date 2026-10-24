@@ -44,6 +44,9 @@ from github_plan_status import DEFAULT_STATUS_LABELS, derive, label_changes, wai
 from github_plan_status.body import wrap_contributor_plan
 from github_plan_status.workflow_runs import current_workflow_runs, workflow_execution_identity
 from github_plan_status.client_test_notes import ENGINEERING_RELEASE_TESTS, body_client_test_notes, client_test_notes
+from github_plan_status.references import linked_issues
+pull = {'title': 'o/r#3: first slice', 'body': 'Refs #5 and o/x#6. See #9.'}
+assert linked_issues('o/r', pull) == [('o/r', 3), ('o/r', 5), ('o/x', 6)]
 assert current_workflow_runs([], 'head')['current'] == []
 assert workflow_execution_identity({}) is None
 notes = ENGINEERING_RELEASE_TESTS + '\\nCheck the imported parts at release.'

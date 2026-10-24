@@ -14,6 +14,11 @@ import subprocess
 import time
 from typing import Any, Callable
 
+try:
+    from github_plan_status.references import pr_issue_reference as pr_issue_reference
+except ModuleNotFoundError:
+    from skills.github.scripts.github_plan_status.references import pr_issue_reference as pr_issue_reference
+
 
 MARKER = "github-plan:claim "
 EMPTY_HOLDERS = {"none", "unassigned", "unclaimed", "not assigned", "n/a", "-", "nobody", "no one", "no-one"}
@@ -846,39 +851,6 @@ def recorded_claim_branches(status: str, comments: list[dict[str, Any]]) -> set[
     """A released claim leaves its PR branch as artifact evidence."""
     return {record["branch"] for text in [status, *(c.get("body") or "" for c in comments)]
             for record in records(text)}
-
-
-def pr_issue_reference(pull: dict[str, Any], number: int, *, repo: str,
-                       local_references: bool = True, attestation: bool = False, record_kind: str = "issue") -> bool:
-    """Ownership needs implementation evidence; named handoffs may attest links."""
-    title = pull.get("title") or ""
-    body = pull.get("body") or ""
-    path_kind = "pull" if record_kind == "pr" else "issues"
-    issue_url = rf"https://github\.com/{re.escape(repo)}/{path_kind}/{number}"
-    issue_reference = rf"(?:{re.escape(repo)}#{number}|{issue_url})(?!\d)"
-    if local_references:
-        issue_reference = rf"(?:#{number}|{issue_reference})(?!\d)"
-    any_issue = r"(?:https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*(?:#[\w-]+)?|[\w.-]+/[\w.-]+#[1-9]\d*|#[1-9]\d*)"
-    list_item = rf"(?:{any_issue}|<{any_issue}>|\[[^\]\n]+\]\({any_issue}(?:[ \t]+\"[^\"]*\")?\))"
-    separator = r"(?:[ \t]*,[ \t]*(?:and[ \t]+)?|[ \t]+and[ \t]+)"
-    ownership_reference = (
-        rf"(?i)(?<![\w])(?:__)?(?:refs?|fix(?:es|ed)?|clos(?:e|es|ed)|resolv(?:e|es|ed)|implement(?:s|ed|ing)?)"
-        rf"(?:\*\*|__)?\s*:?(?:\*\*|__)?\s+(?:{list_item}{separator})*"
-        rf"(?:{issue_reference}|<{issue_url}(?!\d)[^>]*>|"
-        rf"\[[^\]\n]+\]\({issue_url}(?!\d)[^\n)]*\))"
-    )
-    # Preserve the existing independent-link rule for source-authored retained
-    # handoffs, including exclusion of explicitly unstarted follow-up links.
-    link_text = title
-    if attestation:
-        link_text += "\n" + "\n".join(
-            line for line in body.splitlines()
-            if not (line.startswith("Code follow-ups recorded without starting implementation:")
-                    and not re.search(ownership_reference, line))
-        )
-    return bool((repo and re.search(issue_url + r"(?!\d)", link_text, re.IGNORECASE))
-                or re.search(ownership_reference, body)
-                or (local_references and re.search(rf"(?<![\w/])#{number}(?!\d)", title)))
 
 
 def artifact_evidence(
