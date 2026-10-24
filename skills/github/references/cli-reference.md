@@ -625,6 +625,15 @@ weighed-outcome record for the current head, or a change to the base branch's
 and automation identity count; refusals name those identities. A raw Supervisor
 review report does not attest that its findings have been weighed.
 
+It also refuses while the PR references an open issue in the same owner's
+repositories that GitHub does not list among its closing references, unless
+that issue has an open sub-issue or a recorded wait
+([Q761](https://github.com/cbusillo/direction/issues/98#issuecomment-6386746517)).
+The refusal names each issue. Close it with the PR, or split every remaining
+step into an open sub-issue that names its next actor, or record the event it
+waits on under
+[issue closing](repo-workflow.md#issue-closing-and-post-merge-proof).
+
 Post the disposition through the existing comment command:
 
 ```sh

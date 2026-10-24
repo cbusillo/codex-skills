@@ -39,7 +39,18 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
 """
 
 
-def closing_references(reader: github_read.GitHubReader, repo: str, number: int) -> tuple[dict[str, Any], list[tuple[str, int]]]:
+def landing_identity(repository: dict[str, Any], pull: dict[str, Any]) -> tuple[Any, ...]:
+    if pull.get("merged") is not True:
+        raise ValueError("PR is not confirmed merged")
+    branch = repository.get("defaultBranchRef") or {}
+    sha = (pull.get("mergeCommit") or {}).get("oid")
+    if not branch.get("name") or pull.get("baseRefName") != branch["name"] or not sha:
+        raise ValueError("PR has no confirmed default-branch landing")
+    return sha, pull.get("url"), pull["baseRefName"]
+
+
+def closing_references(reader: github_read.GitHubReader, repo: str, number: int, *,
+                       landed: bool = True) -> tuple[dict[str, Any], list[tuple[str, int]]]:
     owner, name = repo.split("/", 1)
     after = None
     references: list[tuple[str, int]] = []
@@ -56,13 +67,9 @@ def closing_references(reader: github_read.GitHubReader, repo: str, number: int)
         if not isinstance(repository, dict):
             raise TypeError("Repository read unavailable")
         pull = repository.get("pullRequest")
-        if not isinstance(pull, dict) or pull.get("merged") is not True:
-            raise ValueError("PR is not confirmed merged")
-        branch = repository.get("defaultBranchRef") or {}
-        sha = (pull.get("mergeCommit") or {}).get("oid")
-        if not branch.get("name") or pull.get("baseRefName") != branch["name"] or not sha:
-            raise ValueError("PR has no confirmed default-branch landing")
-        current = (sha, pull.get("url"), pull["baseRefName"])
+        if not isinstance(pull, dict):
+            raise ValueError("PR is not confirmed merged" if landed else "PR read unavailable")
+        current = landing_identity(repository, pull) if landed else (pull.get("url"),)
         if identity is not None and identity != current:
             raise ValueError("Landing changed during pagination")
         identity = current

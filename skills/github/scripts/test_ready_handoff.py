@@ -52,6 +52,9 @@ class Reader:
         self.completed_steps = []
         self.actor = "engineer"
         self.expected_actor = "engineer"
+        self.issues: dict[int, dict[str, Any]] = {}
+        self.sub_issues: dict[int, list[dict[str, Any]]] = {}
+        self.closing: list[int] = []
 
     def get_json(self, path, **_kwargs):
         if path.endswith("/pulls/1"):
@@ -63,6 +66,11 @@ class Reader:
             if self.config is None:
                 raise GitHubReadError("Not Found", result=ApiResult(ok=False, status=404, body=None), diagnostics={})
             return {"content": base64.b64encode(json.dumps(self.config).encode()).decode()}
+        if path.startswith(f"/repos/{REPO}/issues/"):
+            number = int(path.rsplit("/", 1)[1])
+            if number not in self.issues:
+                raise GitHubReadError("Not Found", result=ApiResult(ok=False, status=404, body=None), diagnostics={})
+            return copy.deepcopy(self.issues[number])
         raise AssertionError(path)
 
     def paged_json(self, path, **_kwargs):
@@ -80,7 +88,17 @@ class Reader:
             return self.comments
         if path.endswith("/pulls/1/files"):
             return self.files
+        if path.endswith("/sub_issues"):
+            return self.sub_issues.get(int(path.split("/")[-2]), [])
+        if path.endswith("/comments"):
+            return []
         raise AssertionError(path)
+
+    def graphql_json(self, _query, variables, **_kwargs):
+        assert variables["number"] == 1
+        nodes = [{"number": number, "repository": {"nameWithOwner": REPO}} for number in self.closing]
+        pull = {"merged": False, "url": "fixture", "closingIssuesReferences": {"nodes": nodes, "pageInfo": {"hasNextPage": False}}}
+        return ApiResult(ok=True, status=200, body={"data": {"repository": {"pullRequest": pull}}})
 
     @staticmethod
     def diagnostics():
@@ -756,6 +774,45 @@ class ReadyTests(unittest.TestCase):
         self.args.waiting_for_client = True
         self.reader.checks.append({"id": 2, "name": "launchplane/owner-review", "status": "completed", "conclusion": "failure"})
         self.refuse()
+
+    def link_open_issue(self, number=7):
+        self.reader.pr["body"] = f"Refs #{number}"
+        self.reader.issues[number] = {"number": number, "state": "open", "body": "", "user": {"login": "engineer"}}
+
+    def test_open_referenced_issue_without_follow_up_refuses_naming_it(self):
+        self.link_open_issue()
+        message = self.refuse()
+        self.assertIn(f"{REPO}#7", message)
+        self.assertIn(f"Closes {REPO}#7", message)
+
+    def test_closing_the_referenced_issue_allows_ready(self):
+        self.link_open_issue()
+        self.reader.closing = [7]
+        self.post()
+
+    def test_open_sub_issue_owns_the_remaining_steps(self):
+        self.link_open_issue()
+        self.reader.sub_issues[7] = [{"number": 8, "state": "closed"}]
+        self.refuse()
+        self.reader.sub_issues[7].append({"number": 9, "state": "open"})
+        self.post()
+
+    def test_recorded_event_wait_owns_the_remaining_step(self):
+        self.link_open_issue()
+        record = helper.github_plan_wait.reviewed(evidence="Release pending", waiting_for="Client", ends_when="Client accepts the release")
+        self.reader.issues[7]["user"] = {"login": "example"}
+        self.reader.issues[7]["body"] = helper.github_plan_wait.marker(record)
+        self.post()
+
+    def test_closed_issues_pull_requests_and_other_owners_need_no_follow_up(self):
+        self.reader.pr["body"] = "Refs #7, #8 and other/tool#9"
+        self.reader.issues[7] = {"number": 7, "state": "closed", "body": ""}
+        self.reader.issues[8] = {"number": 8, "state": "open", "body": "", "pull_request": {}}
+        self.post()
+
+    def test_unreadable_linked_issue_refuses(self):
+        self.reader.pr["body"] = "Refs #7"
+        self.assertIn("unavailable", self.refuse())
 
     def test_cli_selects_ready_and_waiting_variant(self):
         with patch("sys.argv", ["gh-pr.py", "--repo", REPO, "ready", "1", "--waiting-for-client"]):
