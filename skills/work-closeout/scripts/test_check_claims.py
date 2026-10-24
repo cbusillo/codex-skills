@@ -63,6 +63,7 @@ class ClaimCloseoutTests(unittest.TestCase):
     def setUp(self):
         self.folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.enterContext(patch.object(Path, "home", return_value=self.folder))
+        self.enterContext(patch.object(helper.claim_log, "process_running", return_value=False))
         self.native_index = sqlite3.connect(":memory:")
         self.addCleanup(self.native_index.close)
         self.native_index.executescript(
@@ -416,8 +417,7 @@ class ClaimCloseoutTests(unittest.TestCase):
         return entry
 
     def finished_attempt(self, number: int = 1) -> None:
-        with helper.claim_log.attempt(SESSION, REPO, number):
-            pass
+        helper.claim_log.record(SESSION, REPO, number)
 
     @staticmethod
     def claude_rows(command: str) -> list[dict]:
@@ -508,32 +508,51 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertFalse(report["claims_clear"], report)
         self.assertTrue(report["unresolved_invocations"])
 
-    def test_journal_row_without_attempt_lifecycle_keeps_reconstruction_coverage(self) -> None:
+    def test_journal_row_without_attempt_records_keeps_reconstruction_coverage(self) -> None:
         self.finished_attempt()
         helper.claim_log.record(SESSION, REPO, 2)
+        next(helper.claim_log.attempts_path(SESSION).glob("*.json")).unlink()
         self.comments.append(self.release)
         self.assertTrue(helper.check([self.journal_era_entry('eval "$CMD" claim')])["unresolved_invocations"])
 
-    def test_running_claim_attempt_blocks_before_its_claim_is_visible(self) -> None:
-        self.comments.clear()
-        with helper.claim_log.attempt(SESSION, REPO, 1):
-            report = helper.check([self.journal_era_entry()])
+    def test_session_without_local_journal_rows_keeps_reconstruction_coverage(self) -> None:
+        report = helper.check([self.journal_era_entry('eval "$CMD" claim')])
         self.assertFalse(report["claims_clear"], report)
+        self.assertTrue(report["unresolved_invocations"])
+
+    def test_live_claim_process_or_group_blocks_before_its_claim_is_visible(self) -> None:
+        self.finished_attempt()
+        self.comments.clear()
+        for alive in (lambda pid, group=False: not group, lambda pid, group=False: group):
+            with self.subTest(alive=alive), patch.object(helper.claim_log, "process_running", side_effect=alive):
+                report = helper.check([self.journal_era_entry()])
+                self.assertFalse(report["claims_clear"], report)
+                self.assertTrue(report["blocked"])
         self.assertTrue(helper.check([self.journal_era_entry()])["claims_clear"])
 
-    def test_one_running_attempt_blocks_even_after_a_concurrent_attempt_ended(self) -> None:
+    def test_one_live_attempt_blocks_even_after_an_earlier_attempt_settled(self) -> None:
+        self.finished_attempt()
         self.comments.append(self.release)
-        with helper.claim_log.attempt(SESSION, REPO, 1):
-            self.finished_attempt()
+        self.finished_attempt()
+        newest = max(helper.claim_log.attempts(SESSION), key=lambda attempt: attempt.identifier)
+        with patch.object(helper.claim_log, "process_running", side_effect=lambda pid, group=False: False):
+            self.assertTrue(helper.check([self.journal_era_entry()])["claims_clear"])
+        with patch.object(helper.claim_log.Attempt, "running", property(lambda attempt: attempt == newest)):
             self.assertFalse(helper.check([self.journal_era_entry()])["claims_clear"])
 
-    def test_killed_helper_blocks_while_its_process_group_still_runs(self) -> None:
-        self.comments.clear()
-        with helper.claim_log.attempt(SESSION, REPO, 1):
-            with patch.object(helper.claim_log, "process_running", side_effect=lambda pid, group=False: group):
-                self.assertFalse(helper.check([self.journal_era_entry()])["claims_clear"])
-            with patch.object(helper.claim_log, "process_running", return_value=False):
-                self.assertTrue(helper.check([self.journal_era_entry()])["claims_clear"])
+    def test_attempt_started_during_the_check_keeps_it_conditional(self) -> None:
+        self.finished_attempt()
+        self.comments.append(self.release)
+        check_record = helper.check_record
+
+        def start_another_attempt(*args: object, **kwargs: object) -> list[dict]:
+            helper.claim_log.record(SESSION, REPO, 1)
+            return check_record(*args, **kwargs)
+
+        with patch.object(helper, "check_record", side_effect=start_another_attempt):
+            report = helper.check([self.journal_era_entry()])
+        self.assertFalse(report["claims_clear"], report)
+        self.assertTrue(report["blocked"])
 
     def test_journal_keeps_a_child_claim_when_the_root_transcript_has_no_receipt(self) -> None:
         helper.claim_log.record(SESSION, REPO, 1)

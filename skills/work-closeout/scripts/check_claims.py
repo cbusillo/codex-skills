@@ -193,6 +193,7 @@ def journal_covers(rows: list[dict], native: str, began: datetime | None, eviden
     return (
         began is not None
         and began > JOURNAL_SHIPPED
+        and bool(evidence.journal)
         and evidence.seen <= evidence.journal <= evidence.attempted
         and not foreign_receipt(rows, native)
     )
@@ -260,6 +261,9 @@ def check(
             except (ValueError, OSError, GitHubReadError, GitHubReadShapeError, github_identity.GitHubAppError) as error:
                 blocked.append(f"{repo}#{number}: {error}")
                 complete = False
+    for native, found in sorted(attempts.items()):
+        if {attempt.identifier for attempt in claim_log.attempts(native)} != {attempt.identifier for attempt in found}:
+            blocked.append(f"session {native}: a claim attempt started during this check; check again after it finishes")
     return {
         "operation": CHECK_OPERATION,
         "ok": not blocked and complete,

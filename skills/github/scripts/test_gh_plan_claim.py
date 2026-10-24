@@ -234,14 +234,13 @@ class ClaimTests(unittest.TestCase):
             import github_plan_claim_log
 
             self.assertIn(("owner/repo", 42), github_plan_claim_log.read(OWNER["session"]))
-            self.assertEqual([a.running for a in github_plan_claim_log.attempts(OWNER["session"])], [True])
+            self.assertEqual([a.target for a in github_plan_claim_log.attempts(OWNER["session"])], [("owner/repo", 42)])
             raise OSError("connection lost after posting")
 
         self.after_post = post_then_interrupt
         with self.assertRaises((OSError, PLAN.PlanError)):
             self.run_claim()
         self.assertTrue(self.comments)
-        self.assertEqual([a.running for a in PLAN.github_plan_claim_log.attempts(OWNER["session"])], [False])
 
     def test_dependabot_pr_can_be_claimed_without_a_tracking_issue(self):
         self.pr_fixture("dependabot[bot]")

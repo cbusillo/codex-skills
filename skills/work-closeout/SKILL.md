@@ -302,16 +302,18 @@ uv run <skill-dir>/scripts/check_claims.py \
 The check takes its targets from the session's private host-local claim journal
 and recorded claim results in its own native transcript. `gh-plan.py claim`
 records the exact repository and issue or PR number after target preflight and
-before posting, and records each attempt's start and end around the post.
-Failed or interrupted attempts stay targets until GitHub readback accounts for
-them. A target blocks while an attempt without a recorded end still has a live
-process or process group. Children claiming under the root session ID enter the
-same journal even when their output is absent from the root transcript.
+before posting, first as an attempt record naming its process and process
+group. Failed or interrupted attempts stay targets until GitHub readback
+accounts for them. A target blocks while an attempt's process or process group
+is alive, and the check stays conditional when an attempt starts while it runs.
+Children claiming under the root session ID enter the same journal even when
+their output is absent from the root transcript.
 
-The journal is the claim source when the earliest supplied transcript began
-after the journal shipped, every journal row has attempt records, every
-recorded claim receipt and every claim the reader recognizes has a journal row,
-and no recorded receipt names another session. Invocations the reader cannot
+The journal is the claim source when this host holds journal rows for the
+session, every row has attempt records, the earliest supplied transcript began
+after the journal shipped, every recorded claim receipt and every claim the
+reader recognizes has a journal row, and no recorded receipt names another
+session. Invocations the reader cannot
 decode are then listed under `journal_covered_invocations` and do not leave
 coverage incomplete. Every other session keeps the bounded reconstruction
 below.

@@ -12,7 +12,6 @@ import stat
 import tempfile
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import NamedTuple
 
@@ -86,7 +85,9 @@ def write_row(directory: Path, filename: str, row: dict) -> None:
 def record(session: str, repo: str, number: int) -> None:
     row = {"session": session, "repository": repo, "record": number}
     target(row, session)
-    write_row(log_path(session, create=True), hashlib.sha256(f"{repo}#{number}".encode()).hexdigest() + ".json", row)
+    directory = log_path(session, create=True)
+    write_row(attempts_path(session, create=True), f"{uuid.uuid4().hex}.json", {**row, "pid": os.getpid(), "group": os.getpgid(0)})
+    write_row(directory, hashlib.sha256(f"{repo}#{number}".encode()).hexdigest() + ".json", row)
 
 
 def attempts_path(session: str, *, create: bool = False) -> Path:
@@ -95,19 +96,6 @@ def attempts_path(session: str, *, create: bool = False) -> Path:
         path.mkdir(exist_ok=True, mode=0o700)
     lease.require_private(path.lstat(), stat.S_ISDIR)
     return path
-
-
-@contextmanager
-def attempt(session: str, repo: str, number: int) -> Iterator[None]:
-    row = {"session": session, "repository": repo, "record": number, "pid": os.getpid(), "group": os.getpgid(0), "ended": False}
-    target(row, session)
-    directory, filename = attempts_path(session, create=True), f"{uuid.uuid4().hex}.json"
-    write_row(directory, filename, row)
-    try:
-        record(session, repo, number)
-        yield
-    finally:
-        write_row(directory, filename, {**row, "ended": True})
 
 
 def process_running(pid: int, *, group: bool = False) -> bool:
@@ -122,17 +110,17 @@ def process_running(pid: int, *, group: bool = False) -> bool:
 
 
 class Attempt(NamedTuple):
+    identifier: str
     target: tuple[str, int]
     pid: int
     group: int
-    ended: bool
 
     @property
     def running(self) -> bool:
-        return not self.ended and (process_running(self.pid) or process_running(self.group, group=True))
+        return process_running(self.pid) or process_running(self.group, group=True)
 
 
-def read_rows(directory: Path) -> Iterator[dict]:
+def read_rows(directory: Path) -> Iterator[tuple[str, dict]]:
     for path in sorted(directory.glob("*.json")):
         lease.require_private(path.lstat(), stat.S_ISREG)
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -141,7 +129,7 @@ def read_rows(directory: Path) -> Iterator[dict]:
             row = json.load(stream)
         if not isinstance(row, dict):
             raise ValueError("claim journal has an invalid record")
-        yield row
+        yield path.stem, row
 
 
 def read(session: str) -> set[tuple[str, int]]:
@@ -149,7 +137,7 @@ def read(session: str) -> set[tuple[str, int]]:
         directory = log_path(session)
     except FileNotFoundError:
         return set()
-    return {target(row, session) for row in read_rows(directory)}
+    return {target(row, session) for _, row in read_rows(directory)}
 
 
 def attempts(session: str) -> list[Attempt]:
@@ -158,9 +146,9 @@ def attempts(session: str) -> list[Attempt]:
     except FileNotFoundError:
         return []
     found = []
-    for row in read_rows(directory):
-        pid, group, ended = row.get("pid"), row.get("group"), row.get("ended")
-        if any(type(value) is not int or value <= 0 for value in (pid, group)) or type(ended) is not bool:
+    for identifier, row in read_rows(directory):
+        pid, group = row.get("pid"), row.get("group")
+        if any(type(value) is not int or value <= 0 for value in (pid, group)):
             raise ValueError("claim journal has an invalid attempt")
-        found.append(Attempt(target(row, session), pid, group, ended))
+        found.append(Attempt(identifier, target(row, session), pid, group))
     return found

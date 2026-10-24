@@ -5,6 +5,8 @@
 # ///
 from __future__ import annotations
 
+import os
+import shutil
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -44,30 +46,28 @@ class ClaimLogTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             journal.read("root")
 
-    def test_each_attempt_records_its_own_start_and_end(self) -> None:
-        with journal.attempt("root", "owner/repo", 1):
-            with journal.attempt("root", "owner/repo", 1):
-                self.assertEqual([a.running for a in journal.attempts("root")], [True, True])
-            self.assertEqual(sorted(a.running for a in journal.attempts("root")), [False, True])
-        self.assertEqual({a.target for a in journal.attempts("root") if not a.running}, {("owner/repo", 1)})
+    def test_each_attempt_is_recorded_before_its_target(self) -> None:
+        journal.record("root", "owner/repo", 1)
+        journal.record("root", "owner/repo", 1)
+        attempts = journal.attempts("root")
+        self.assertEqual([(a.target, a.pid, a.group) for a in attempts], [(("owner/repo", 1), os.getpid(), os.getpgid(0))] * 2)
+        self.assertEqual(len({a.identifier for a in attempts}), 2)
+        with patch.object(journal, "write_row", side_effect=[None, OSError("disk full")]), self.assertRaises(OSError):
+            journal.record("root", "owner/other", 2)
         self.assertEqual(journal.read("root"), {("owner/repo", 1)})
 
-    def test_attempt_that_raises_still_records_its_end(self) -> None:
-        with self.assertRaises(OSError), journal.attempt("root", "owner/repo", 1):
-            raise OSError("post failed")
-        self.assertFalse(journal.attempts("root")[0].running)
-
-    def test_attempt_is_visible_before_its_target_is_journaled(self) -> None:
-        with patch.object(journal, "record", side_effect=OSError("journal unavailable")):
-            with self.assertRaises(OSError), journal.attempt("root", "owner/repo", 1):
-                pass
-        self.assertEqual([a.target for a in journal.attempts("root")], [("owner/repo", 1)])
-        self.assertEqual(journal.read("root"), set())
+    def test_attempt_runs_while_its_process_or_group_is_alive(self) -> None:
+        journal.record("root", "owner/repo", 1)
+        self.assertTrue(journal.attempts("root")[0].running)
+        with patch.object(journal.os, "kill", side_effect=ProcessLookupError), patch.object(journal.os, "killpg", side_effect=ProcessLookupError):
+            self.assertFalse(journal.attempts("root")[0].running)
+        with patch.object(journal.os, "kill", side_effect=ProcessLookupError), patch.object(journal.os, "killpg", side_effect=PermissionError):
+            self.assertTrue(journal.attempts("root")[0].running)
 
     def test_malformed_attempt_cannot_mean_no_running_claim(self) -> None:
-        with journal.attempt("root", "owner/repo", 1):
-            path = next((journal.log_path("root") / "attempts").glob("*.json"))
-        valid = '"session":"root","repository":"owner/repo","record":1,"ended":true'
+        journal.record("root", "owner/repo", 1)
+        path = next(journal.attempts_path("root").glob("*.json"))
+        valid = '"session":"root","repository":"owner/repo","record":1'
         for content in ('{"pid":', f'{{{valid},"pid":"1","group":1}}', f'{{{valid},"pid":1}}'):
             path.write_text(content)
             with self.subTest(content=content), self.assertRaises(ValueError):
@@ -85,13 +85,13 @@ class ClaimLogTests(unittest.TestCase):
         journal.record("root", "owner/repo", 1)
         self.assertFalse(path.is_symlink())
         self.assertEqual(saved.read_bytes(), original)
-        path.unlink()
-        saved.unlink()
         directory = path.parent
-        directory.rmdir()
+        shutil.rmtree(directory)
         directory.symlink_to(self.folder, target_is_directory=True)
         with self.assertRaises(ValueError):
             journal.read("root")
+        with self.assertRaises(ValueError):
+            journal.attempts("root")
 
 
 if __name__ == "__main__":
