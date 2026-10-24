@@ -20,7 +20,6 @@ MEMORY_CITATION_TAIL = re.compile(
 )
 SAFE = re.compile(r"^(?:\*\*)?Safe to exit: yes\.?(?:\*\*)?$")
 NO_DIRECTOR_ACTION = re.compile(r"^No Director (?:action|decision) needed\.\s+")
-# A terminal Claude Code task notice carries <status>, or the expiry event of a Monitor; other events do not.
 TASK_TERMINAL_NOTICE = re.compile(
     r"\A\s*<task-notification>\s*<task-id>([^<>\s]+)</task-id>\s*"
     r"(?:<(tool-use-id|output-file)>[^<]*</\2>\s*)*"

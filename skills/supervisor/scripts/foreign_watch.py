@@ -90,7 +90,6 @@ def read_error(repo: str, error: Exception) -> dict:
 
 
 def scan(repos, watermarks, own_logins, launchplane_logins, started, reader):
-    """One since-scoped listing of each repository's comments and newly opened issues; failures retain its watermark."""
     notices, errors, next_watermarks = [], [], dict(watermarks)
     own = {login.casefold() for login in own_logins}
     launchplane = {login.casefold() for login in launchplane_logins}
