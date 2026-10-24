@@ -228,21 +228,6 @@ def _project_repo_mapping_item(item: object) -> dict[str, object]:
     return projected
 
 
-def _project_every_code_request(item: object) -> dict[str, object]:
-    source = _require_dict(item)
-    projected: dict[str, object] = {}
-    if "state" in source:
-        projected["state"] = public_code(source["state"])
-    source_issue_url = source.get("source_issue_url") or source.get("issue_url")
-    if source_issue_url:
-        projected["source_issue_url"] = public_url(source_issue_url)
-    if source.get("result_pr_url"):
-        projected["result_pr_url"] = public_url(source["result_pr_url"])
-    if "summary_status" in source:
-        projected["summary_status"] = public_service_text(source["summary_status"])
-    return projected
-
-
 def _project_preview_item(item: object) -> dict[str, object]:
     source = _require_dict(item)
     projected: dict[str, object] = {}
@@ -319,8 +304,6 @@ def project_context_sections(context: dict[str, Any]) -> dict[str, object]:
         ("work_graph", "work_graph"),
         ("work_graph_snapshot", "work_graph"),
         ("repo_product_mapping", "repo_product_mapping"),
-        ("every_code", "every_code"),
-        ("every_code_summary", "every_code"),
         ("preview_readiness", "preview_readiness"),
     )
     for source_key, target_key in source_map:
@@ -340,14 +323,6 @@ def project_context_sections(context: dict[str, Any]) -> dict[str, object]:
             if repositories is not None:
                 section["repositories"] = _project_list(
                     repositories, _project_repo_mapping_item
-                )
-        elif target_key == "every_code":
-            requests = _nested_items(source_section, "summary", "requests")
-            if requests is None and "summary" in source_section:
-                requests = _require_dict(source_section["summary"]).get("summaries")
-            if requests is not None:
-                section["requests"] = _project_list(
-                    requests, _project_every_code_request
                 )
         elif target_key == "preview_readiness":
             items = _nested_items(source_section, "readiness", "items")
