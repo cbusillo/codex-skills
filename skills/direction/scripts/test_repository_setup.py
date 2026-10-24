@@ -16,7 +16,11 @@ STANDARD = [{"name": name, "target": "branch", "enforcement": "active"}
             for name in audit.github_rulesets.required_ruleset_names()]
 
 
-class Account:
+def project_fixture_toml(directory: Path) -> str:
+    return f'[projects.{json.dumps(str(directory))}]\ntrust_level = "trusted"\n'
+
+
+class FakeOwner:
     def __init__(self, root: Path) -> None:
         self.developer = root / "Developer"
         self.codex_home = root / "codex-home"
@@ -28,18 +32,17 @@ class Account:
         self.rulesets: dict[str, Any] = {"o/ready": STANDARD}
         self.failing: set[str] = set()
         self.owner_login = False
-        self.trusted: set[str] = set()
+        self.codex_projects: set[str] = set()
         for name in ("ready", "old"):
-            self.add_checkout(name, trusted=True)
+            self.add_checkout(name, in_codex=True)
 
-    def add_checkout(self, name: str, *, trusted: bool) -> None:
+    def add_checkout(self, name: str, *, in_codex: bool) -> None:
         (self.developer / name / ".git").mkdir(parents=True)
         (self.developer / name / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
-        if trusted:
-            self.trusted.add(name)
-        entries = "".join(f'[projects.{json.dumps(str(self.developer / item))}]\ntrust_level = "trusted"\n'
-                          for item in sorted(self.trusted))
-        (self.codex_home / "config.toml").write_text(entries)
+        if in_codex:
+            self.codex_projects.add(name)
+        (self.codex_home / "config.toml").write_text("".join(
+            project_fixture_toml(self.developer / item) for item in sorted(self.codex_projects)))
 
     def fetch(self, args: list[str]) -> Any:
         path = args[1]
@@ -78,14 +81,14 @@ class RepositorySetupTests(unittest.TestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        self.account = Account(Path(directory.name))
+        self.account = FakeOwner(Path(directory.name))
 
     def gaps(self) -> set[tuple[str | None, str, str]]:
         return {(row["repo"], row["setup"], row["fixer"]) for row in self.account.collect()["gaps"]}
 
     def add_new_repository(self, **meta: Any) -> None:
         self.account.repos["o/new"] = meta
-        self.account.add_checkout("new", trusted=True)
+        self.account.add_checkout("new", in_codex=True)
         self.account.enrolled.add("o/new")
         self.account.files["o/new"] = {"": ["README.md", ".github"], ".github": ["renovate.json5"]}
         self.account.rulesets["o/new"] = STANDARD
@@ -106,8 +109,8 @@ class RepositorySetupTests(unittest.TestCase):
 
     def test_checkout_without_codex_trust_is_left_to_the_director(self) -> None:
         self.add_new_repository()
-        self.account.trusted.discard("new")
-        self.account.add_checkout("other", trusted=False)
+        self.account.codex_projects.discard("new")
+        self.account.add_checkout("other", in_codex=False)
         self.assertEqual(self.gaps(), {("o/new", "codex_trust", "Director")})
 
     def test_one_missing_ruleset_of_the_pair_is_named(self) -> None:
