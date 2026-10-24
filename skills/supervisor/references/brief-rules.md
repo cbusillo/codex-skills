@@ -129,8 +129,8 @@ Rules for this brief (every Supervisor brief carries them):
 - Tests ([Q375](https://github.com/cbusillo/codex-skills/issues/1884#issuecomment-6215129557)):
   run focused tests plus the full test modules for the safety areas you touch
   locally ([gate selection](../../repo-readiness/SKILL.md#gate-selection));
-  never run the complete multi-shard suite locally. CI runs it and stays the
-  required gate before `ready` and merge.
+  never run the complete multi-shard suite locally. CI runs it; Ready and merge
+  evidence follow the [test command contract](../../github/references/config-schema.md#workflow-metadata).
 - Inspection: run it through the
   [jetbrains-inspection](../../jetbrains-inspection/SKILL.md) skill's
   supported route for the repository; the skill owns which backend applies.
