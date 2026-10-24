@@ -11981,7 +11981,7 @@ def _active_merge_train_policy_read(trusted: dict[str, list[int]]) -> dict[str, 
     }
 
 
-def _run_trusted_automation_proposal(
+def _run_merge_train_proposal(
     argv: list[str], read_payload: dict[str, object]
 ) -> tuple[int, dict[str, Any], list[dict[str, object]]]:
     posted: list[dict[str, object]] = []
@@ -12043,7 +12043,7 @@ def test_trusted_automation_proposal_changes_only_named_targets_and_returns_revi
     read_payload = _active_merge_train_policy_read(
         {"owner/alpha": [49699333], "owner/beta": [], "owner/gamma": [49699333]}
     )
-    exit_code, output, posted = _run_trusted_automation_proposal(
+    exit_code, output, posted = _run_merge_train_proposal(
         _trusted_automation_argv("add", "Owner/Alpha", "owner/beta"), read_payload
     )
 
@@ -12064,7 +12064,7 @@ def test_trusted_automation_proposal_changes_only_named_targets_and_returns_revi
 
 
 def test_trusted_automation_proposal_remove_drops_only_that_id() -> None:
-    _, _, posted = _run_trusted_automation_proposal(
+    _, _, posted = _run_merge_train_proposal(
         _trusted_automation_argv("remove", "owner/alpha"),
         _active_merge_train_policy_read({"owner/alpha": [29139614, 49699333]}),
     )
@@ -12078,7 +12078,7 @@ def test_trusted_automation_proposal_refuses_unknown_repository_and_no_op_withou
         (("owner/alpha", "owner/missing"), {"owner/alpha": []}, "repository_not_enrolled"),
         (("owner/alpha",), {"owner/alpha": [29139614]}, "policy_unchanged"),
     ):
-        exit_code, output, posted = _run_trusted_automation_proposal(
+        exit_code, output, posted = _run_merge_train_proposal(
             _trusted_automation_argv("add", *repositories), _active_merge_train_policy_read(trusted)
         )
         assert (exit_code, output["warnings"][0]["code"], posted) == (2, code, [])
@@ -12087,7 +12087,7 @@ def test_trusted_automation_proposal_refuses_unknown_repository_and_no_op_withou
 def test_trusted_automation_proposal_replays_the_identical_envelope() -> None:
     read_payload = _active_merge_train_policy_read({"owner/alpha": []})
     bodies = [
-        _run_trusted_automation_proposal(_trusted_automation_argv("add", "owner/alpha"), read_payload)[2][0]
+        _run_merge_train_proposal(_trusted_automation_argv("add", "owner/alpha"), read_payload)[2][0]
         for _ in range(2)
     ]
 
@@ -12102,6 +12102,58 @@ def test_trusted_automation_proposal_replay_refuses_a_changed_active_policy() ->
         "merge-train-policy-20261019T162850Z-" + "e" * 12,
     ]
 
-    exit_code, output, posted = _run_trusted_automation_proposal(argv, drifted)
+    exit_code, output, posted = _run_merge_train_proposal(argv, drifted)
 
     assert (exit_code, output["warnings"][0]["code"], posted) == (2, "active_policy_changed", [])
+
+
+def _enrollment_policy_read() -> dict[str, object]:
+    read_payload = _active_merge_train_policy_read({"owner/alpha": [29139614], "owner/beta": []})
+    targets = cast(dict[str, Any], read_payload["record"])["policy"]["policies"]
+    for repository_id, target in enumerate(targets, start=101):
+        target["github_token"] = {
+            "github_app": {"app_id": 7, "repository_id": repository_id, "private_key_context": "private-key-context"}
+        }
+        target["scheduler"] = {"enabled": True, "runner_mode": "controller", "mutate": True}
+    return read_payload
+
+
+def _enrollment_argv(repository: str, like: str) -> list[str]:
+    return [
+        "merge-train-enrollment-propose",
+        "--repo", repository,
+        "--repository-id", "999",
+        "--like", like,
+        "--reason", "Q755: enroll a repository",
+        "--source-event-id", "test:enroll:one",
+        "--updated-at", "2026-10-24T16:00:00Z",
+    ]
+
+
+def test_enrollment_proposal_adds_a_copy_of_the_template_for_the_new_repository() -> None:
+    read_payload = _enrollment_policy_read()
+    active_targets = copy.deepcopy(cast(dict[str, Any], read_payload["record"])["policy"]["policies"])
+
+    exit_code, output, posted = _run_merge_train_proposal(_enrollment_argv("owner/new", "Owner/Alpha"), read_payload)
+
+    assert exit_code == 0
+    targets = cast(dict[str, Any], posted[0]["request"])["record"]["policy"]["policies"]
+    assert targets[:2] == active_targets
+    expected = copy.deepcopy(active_targets[0])
+    expected["repository"] = "owner/new"
+    expected["github_token"]["github_app"]["repository_id"] = 999
+    assert targets[2] == expected
+    assert output["request"]["changed_target_count"] == 1
+    assert "private-key-context" not in json.dumps(output)
+
+
+def test_enrollment_proposal_refuses_enrolled_repository_and_unusable_template_without_posting() -> None:
+    legacy_token = _enrollment_policy_read()
+    cast(dict[str, Any], legacy_token["record"])["policy"]["policies"][0]["github_token"] = {"env_var": "PRIVATE_GITHUB_TOKEN"}
+    for repository, like, read_payload, code in (
+        ("owner/beta", "owner/alpha", _enrollment_policy_read(), "repository_already_enrolled"),
+        ("owner/new", "owner/missing", _enrollment_policy_read(), "template_not_enrolled"),
+        ("owner/new", "owner/alpha", legacy_token, "template_not_github_app"),
+    ):
+        exit_code, output, posted = _run_merge_train_proposal(_enrollment_argv(repository, like), read_payload)
+        assert (exit_code, output["warnings"][0]["code"], posted) == (2, code, [])
