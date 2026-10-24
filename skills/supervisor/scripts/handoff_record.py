@@ -47,7 +47,8 @@ def handoff_record(owner: str, paths: list[Path]) -> dict[str, str]:
         raise ValueError("--owner takes the Director's GitHub login")
     configured = configured_issue(paths)
     if configured is None:
-        return {"repository": f"{owner}/direction", "source": "default"}
+        raise ValueError(f'no [handoff] record configured; add issue = "{owner}/direction#NUMBER" '
+                         "under [handoff] in your private skill-data/supervisor.toml, creating that issue first if needed")
     issue, path = configured
     match = ISSUE.fullmatch(issue)
     if match is None:

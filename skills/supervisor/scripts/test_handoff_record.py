@@ -21,10 +21,10 @@ class HandoffRecordTest(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
-    def test_unset_record_defaults_to_the_directors_own_direction_repository(self) -> None:
+    def test_unset_record_is_refused_with_the_line_to_add(self) -> None:
         accounts_only = self.config("supervisor.toml", "[accounts]\n")
-        record = handoff_record("someone", [self.folder / "missing.toml", accounts_only])
-        self.assertEqual({"repository": "someone/direction", "source": "default"}, record)
+        with self.assertRaisesRegex(ValueError, 'issue = "someone/direction#NUMBER"'):
+            handoff_record("someone", [self.folder / "missing.toml", accounts_only])
 
     def test_first_config_with_a_handoff_table_wins(self) -> None:
         first = self.config("first.toml", '[handoff]\nissue = "someone/direction#12"\n')
