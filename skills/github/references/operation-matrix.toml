@@ -455,7 +455,7 @@ idempotency = "non_idempotent"
 retry_eligibility = "conditional"
 reconciliation_strategy = "operation_marker"
 retained_graphql_rationale = "No retained GraphQL transport; reuses REST checks and shared comment reconciliation."
-source_refs = ["github/scripts/gh-pr.py:cmd_ready", "github/scripts/gh-pr.py:validate_ready_pr", "github/scripts/ready_handoff.py:latest_ready", "github/scripts/ready_handoff.py:requires_client_acceptance"]
+source_refs = ["github/scripts/gh-pr.py:cmd_ready", "github/scripts/gh-pr.py:validate_ready_pr", "github/scripts/ready_handoff.py:latest_ready", "github/scripts/ready_handoff.py:client_handoff"]
 test_refs = ["github/scripts/test_ready_handoff.py", "supervisor/scripts/test_auto_enqueue.py:test_latest_wait_stale_head_missing_head_and_untrusted_ready_refuse"]
 
 [[operations]]

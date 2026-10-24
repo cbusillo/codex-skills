@@ -125,6 +125,13 @@ def candidate_response(
     )
 
 
+def setUpModule():
+    states = ready_handoff.acceptance_reader()
+    unmapped = patch.object(ready_handoff, "client_release", return_value=states.ClientRelease(states.NO_CLIENT))
+    unmapped.start()
+    unittest.addModuleCleanup(unmapped.stop)
+
+
 class Fake:
     def __init__(self, count=6):
         self.pulls = {number: pr(number) for number in range(1, count + 1)}
@@ -1686,9 +1693,11 @@ def api_result(certainty=None):
 
 class QualificationTests(unittest.TestCase):
     def setUp(self):
-        standing_patch = patch.object(ready_handoff, "director_standing_acceptance", return_value=False)
-        self.standing = standing_patch.start()
-        self.addCleanup(standing_patch.stop)
+        states = ready_handoff.acceptance_reader()
+        self.client_repository = states.ClientRelease(states.CLIENT)
+        release_patch = patch.object(ready_handoff, "client_release", return_value=states.ClientRelease(states.NO_CLIENT))
+        self.release = release_patch.start()
+        self.addCleanup(release_patch.stop)
         self.io = object.__new__(watch.Live)
         self.io.reader = object()
         self.pull = pr()
@@ -1729,17 +1738,6 @@ class QualificationTests(unittest.TestCase):
 
     def qualified(self):
         return self.io.qualified(TARGET, self.pull, set(), self.agent_review_required)
-
-    def test_standing_product_notes_qualify_without_saved_client_decision(self):
-        self.pull["body"] = "## Client test notes\nClient change: a new feature.\nTry the new feature."
-        self.standing.return_value = True
-        self.io.acceptance = Mock(return_value=False)
-        self.assertTrue(self.qualified())
-        self.standing.assert_called_once_with(REPO)
-        self.io.acceptance.assert_not_called()
-        self.pull["labels"] = [{"name": "owner-review"}]
-        self.assertFalse(self.qualified())
-        self.io.acceptance.assert_called_once()
 
     def test_review_gap_reads_records_and_base_branch_review_paths(self):
         config = None
@@ -1856,6 +1854,7 @@ class QualificationTests(unittest.TestCase):
         self.assertFalse(self.qualified())
 
     def test_client_request_notes_and_label_require_recorded_acceptance(self):
+        self.release.return_value = self.client_repository
         for configure in (
             lambda: self.pull["labels"].append({"name": "owner-review"}),
             lambda: self.checks["checkRuns"].append(
@@ -1869,6 +1868,7 @@ class QualificationTests(unittest.TestCase):
         self.assertTrue(self.qualified())
 
     def test_handoff_class_mismatch_never_enqueues(self):
+        self.release.return_value = self.client_repository
         self.io.acceptance = lambda *_args: True
         for body in (
             f"## Client test notes\n{ready_handoff.ENGINEERING_RELEASE_TESTS}\nCheck the imported parts at release.",
@@ -1899,6 +1899,7 @@ class QualificationTests(unittest.TestCase):
         self.assertTrue(self.qualified())
 
     def test_neutral_engineering_advisory_does_not_invent_acceptance_wait(self):
+        self.release.return_value = self.client_repository
         self.pull["body"] = "## Client test notes\nNothing for the Client to test: documentation only."
         review = {"name": "launchplane/owner-review", "status": "completed", "conclusion": "neutral"}
         self.checks["checkRuns"].append(review)

@@ -710,28 +710,39 @@ A later push needs a fresh `ready` call. For required Client acceptance that
 does not yet cover the current head, use `ready <pr> --waiting-for-client`.
 It posts `Engineering ready; waiting for the Client's acceptance` with the head
 and permits only pending `launchplane/owner-review` checks; every other pending
-check, unfinished workflow and every failure still refuses. A normal ready
-handoff requiring Client acceptance (review label, request check or real Client
-test notes) requires a successful current-head
-`launchplane/owner-review` check. The watcher independently verifies the saved
-Client decision before enqueueing. A completed neutral `launchplane/owner-review` advisory
-does not request acceptance on its own. Before posting a handoff, `ready`
-validates `## Client test notes` (or legacy `## Owner test notes`) with the
-merge train's rules: inline `Client test notes:` or `Client testing:` paragraphs,
-empty or placeholder sections, decorated no-test markers, and `Nothing for the
-Client to test` without `: <reason>` refuse with the exact remedy, and
-repositories that feed a Client release (including pinned Odoo addon sources)
-require a `## Client test notes` section unless authored by `dependabot[bot]`
-without `owner-review` (the merge train additionally verifies a pure dependency
-diff). Real Client test notes use Launchplane's
-repository mapping and scoped product profile: `director_standing` supplies
-standing acceptance. Unknown, unavailable or mismatched profile evidence keeps
-the Client acceptance path. An explicit review label or non-neutral review check
-still requires current-head acceptance. This read grants no release authority.
+check, unfinished workflow and every failure still refuses.
+
+`ready` and the auto-enqueue watcher share one Client rule, `client_handoff` in
+`ready_handoff.py`. Client acceptance is required only when Launchplane maps the
+repository, directly or as an addon source pinned in an Odoo product's prod or
+testing lane, to an active product whose Client is not the Director, or when the
+PR carries an explicit hold: an `owner-review` label, or a
+`launchplane/owner-review` check that is not completed neutral. A product that
+releases on `director_standing` is the Director's, so it keeps standing
+acceptance unless explicitly held. A repository with no Client gets a plain
+Ready with no notes, `Client change:` statement or no-test declaration.
+Launchplane answers Client, Director standing, no Client, or unknown. Missing
+credentials and a failed, ambiguous, malformed or truncated read are unknown:
+the PR stays on the Client path and the refusal names the read, so
+`Nothing for the Client to test: <reason>` still gets a plain Ready. This read
+grants no release authority.
+
+On the Client path, a normal handoff requiring acceptance (a hold or real Client
+test notes) needs a successful current-head `launchplane/owner-review` check,
+and the watcher independently verifies the saved Client decision before
+enqueueing. A completed neutral `launchplane/owner-review` advisory does not
+request acceptance on its own. The notes follow the merge train's rules: inline
+`Client test notes:` or `Client testing:` paragraphs, empty or placeholder
+sections, decorated no-test markers, and `Nothing for the Client to test`
+without `: <reason>` refuse with the exact remedy, and a `## Client test notes`
+section (or legacy `## Owner test notes`) is required unless authored by
+`dependabot[bot]` without `owner-review` (the merge train additionally verifies
+a pure dependency diff). A Director-standing product still needs notes the
+train accepts, but no class statement or acceptance.
 Read-back and uncertain-comment recovery
 use the [shared retry policy](#shared-retry-policy); do not replay an unknown write.
 
-The notes make one statement that classifies the PR
+On the Client path, the notes make one statement that classifies the PR
 ([Q762](https://github.com/cbusillo/direction/issues/98#issuecomment-6386995776)),
 and the [Client Products rules](../../supervisor/SKILL.md#client-products) say
 what each class needs:

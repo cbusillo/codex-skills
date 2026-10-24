@@ -27,11 +27,8 @@ import github_plan_landing
 import github_plan_status.references
 import github_plan_wait
 from ready_handoff import (
-    UNCONFIRMED_CLIENT_ACCEPTANCE_MESSAGE,
-    client_test_notes_error,
-    handoff_class_error,
+    client_handoff,
     handoff_body,
-    requires_client_acceptance,
     review_evidence_gap,
     review_result_body,
 )
@@ -642,20 +639,16 @@ def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
     validate_ready_pr(current, repo=repo, number=number)
     if current["headRefOid"] != checks["headSha"] or current["labels"] != pr["labels"]:
         raise PrHelperError("PR head or labels changed during readiness checks; read it again", repo=repo, pr=number)
-    notes_error = client_test_notes_error(current, repository=repo)
-    if notes_error:
-        raise PrHelperError(notes_error, repo=repo, pr=number)
-    class_error = handoff_class_error(current, waiting_for_client=args.waiting_for_client)
-    if class_error:
-        raise PrHelperError(class_error, repo=repo, pr=number)
-    if not args.waiting_for_client and requires_client_acceptance(current, checks["checkRuns"], repository=repo):
-        if not any(
-            check.get("name") == "launchplane/owner-review"
-            and check.get("status") == "completed"
-            and check.get("conclusion") == "success"
-            for check in checks["checkRuns"]
-        ):
-            raise PrHelperError(UNCONFIRMED_CLIENT_ACCEPTANCE_MESSAGE, repo=repo, pr=number)
+    client_refusal = client_handoff(
+        current, checks["checkRuns"], repository=repo, waiting_for_client=args.waiting_for_client,
+    ).refusal(accepted=args.waiting_for_client or any(
+        check.get("name") == "launchplane/owner-review"
+        and check.get("status") == "completed"
+        and check.get("conclusion") == "success"
+        for check in checks["checkRuns"]
+    ))
+    if client_refusal:
+        raise PrHelperError(client_refusal, repo=repo, pr=number)
     review_gap = ready_review_gap(repo, number, current)
     if review_gap:
         raise PrHelperError(review_gap, repo=repo, pr=number)
