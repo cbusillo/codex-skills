@@ -367,7 +367,8 @@ The Supervisor runs the same check for any session.
 An open PR need not merge before a session exits. Its exact release names the
 retained PR, and the check verifies the same repository, source identity and
 independent issue link under the successor's handoff contract. Retained work is
-a PR on the claim's branch, or an open PR by the automation identity that links
+a PR on the claim's branch opened before its release, or an open PR by the
+automation identity that links
 the issue and is named in the release or opened during the claim, the same rule
 `gh-plan.py release` uses. A PR the release mentions only as context is not
 retained work. Neither is a merge-train batch PR (head under
