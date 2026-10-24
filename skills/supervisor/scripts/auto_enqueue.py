@@ -31,9 +31,8 @@ sys.path.insert(0, str(ROOT / "github/scripts"))
 from skills.github.scripts import github_api, github_pr_batch, github_open_prs
 from skills.github.scripts.github_identity import automation_login
 from skills.github.scripts.ready_handoff import (
-    handoff_class_error,
+    client_handoff,
     latest_ready,
-    requires_client_acceptance,
     review_evidence_gap,
 )
 from skills.github.scripts.github_read import (
@@ -514,8 +513,6 @@ class Live:
         )
         if not latest_ready(pr, comments, trusted):
             return False
-        if handoff_class_error(pr):
-            return False
         reviews = self.pages(f"/repos/{repo}/pulls/{number}/reviews")
         newest = {}
         for item in sorted(reviews, key=lambda value: value["id"]):
@@ -576,9 +573,10 @@ class Live:
                     or any(item["state"] != "success" for item in statuses)
                 ):
                     return False
-        if requires_client_acceptance(pr, checks["checkRuns"], repository=repo) and not self.acceptance(repo, pr):
-            return False
-        return True
+        handoff = client_handoff(pr, checks["checkRuns"], repository=repo)
+        return not handoff.refusal(
+            accepted=not handoff.acceptance_required or self.acceptance(repo, pr)
+        )
 
     def review_gap(self, target, pr, extra_trusted, *, file_inventory=None):
         """Name a pending or missing review of record; ready refuses the same gap."""

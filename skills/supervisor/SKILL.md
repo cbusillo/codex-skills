@@ -573,10 +573,12 @@ for products a Client runs business on.
   [launchplane](../launchplane/SKILL.md) for that routing.
 - Open a Client-visible PR as soon as its work is ready; it gets one preview
   request whenever it opens, so holding it only delays the Client.
-- Unless the product is `director_standing`, each Client-visible PR needs
-  the Client's own Accept before it lands, and the release needs a separate
-  Accept. Hand the PR off with
-  `--waiting-for-client` until then. The train
+- When Launchplane maps the repository to a Client other than the Director,
+  under the [ready handoff rule](../github/references/cli-reference.md#ready-handoffs),
+  each Client-visible PR needs the Client's own Accept before it lands, and the
+  release needs a separate Accept. Hand the PR off with
+  `--waiting-for-client` until then. A `director_standing` product or a
+  repository with no Client needs neither unless the PR is explicitly held. The train
   [lands a product's ready accepted features together](https://github.com/cbusillo/launchplane/blob/main/docs/merge-train-policy.md)
   and the release invitation names each one. A base update that leaves the
   change unchanged

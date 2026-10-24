@@ -51,7 +51,7 @@ fails loudly when a reviewer could not read or returned nothing.
   finding; fix it with a `Client-impact: visible` commit so the Client decides
   again.
 - When a PR has Client test notes (or legacy `## Owner test notes`), ask the
-  reviewer to check its `Client change:` or `Nothing for the Client to test:`
+  reviewer to check any `Client change:` or `Nothing for the Client to test:`
   statement against the diff
   ([ready handoffs](../github/references/cli-reference.md#ready-handoffs)).
   A wrong class in either direction, including engineering notes that ask the
