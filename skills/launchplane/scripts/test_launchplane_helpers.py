@@ -5488,6 +5488,7 @@ def test_target_replacement_plan_read_keeps_key_names_and_drops_text() -> None:
     assert plan["current_target"] == {
         "env_keys": ["EXAMPLE_DB_NAME", "EXAMPLE_LEFTOVER"],
         "required_volume_keys_missing": ["ODOO_LOG_VOLUME"],
+        "latest_deployment_status": None,
     }
     assert plan["steps"] == [
         {"step_id": "resolve_target", "status": "ready"},
@@ -5541,6 +5542,54 @@ def test_target_replacement_plan_read_marks_missing_key_lists_as_unreported() ->
     assert payload["result"]["delivered_runtime_keys"] == []
     assert plan["retired_provider_keys"] == ["EXAMPLE_RETIRED"]
     assert (plan["blocker_codes"], plan["blocker_keys"], plan["blocker_count"]) == ([], {}, 0)
+
+
+@pytest.mark.parametrize("deployment_status", ["queued", "running", "done", "error"])
+def test_plan_read_preserves_provider_deployment_status_without_changing_readiness(deployment_status: str) -> None:
+    response = _target_replacement_plan_response()
+    response["result"].update(plan_status="ready", blockers=[], blocker_codes=[], blocker_keys={})
+    response["result"]["current_target"]["latest_deployment_status"] = deployment_status
+    response["result"]["current_target"]["latest_deployment_id"] = "private-deployment-id"
+    code, output, calls = _run_plan_read(PLAN_READ_ARGV, response)
+    assert code == 0
+    assert output["result"]["current_target"]["latest_deployment_status"] == deployment_status
+    assert output["result"]["plan_status"] == response["result"]["plan_status"]
+    assert len(calls) == 1 and not calls[0].get("idempotency_key")
+    assert "private-deployment-id" not in json.dumps(output)
+
+
+@pytest.mark.parametrize("status_fields", [{}, {"latest_deployment_status": None}, {"latest_deployment_status": ""}, {"latest_deployment_status": " \t "}])
+def test_plan_read_keeps_unreported_provider_deployment_status_unknown(status_fields: dict[str, object]) -> None:
+    response = _target_replacement_plan_response()
+    response["result"]["current_target"].update(status_fields)
+    code, output, _ = _run_plan_read(PLAN_READ_ARGV, response)
+    assert code == 0
+    assert output["result"]["current_target"]["latest_deployment_status"] is None
+
+
+@pytest.mark.parametrize("deployment_status", [42, True, {}, [], "done on private-host", "x" * 300])
+def test_plan_read_retains_other_evidence_when_provider_deployment_status_is_malformed(deployment_status: object) -> None:
+    response = _target_replacement_plan_response()
+    response["result"]["current_target"]["latest_deployment_status"] = deployment_status
+    code, output, calls = _run_plan_read(PLAN_READ_ARGV, response)
+    assert code == 0
+    assert output["result"]["current_target"]["latest_deployment_status"] is None
+    assert output["result"]["blocker_codes"] == response["result"]["blocker_codes"]
+    assert len(calls) == 1
+    if isinstance(deployment_status, str):
+        assert deployment_status not in json.dumps(output)
+
+
+@pytest.mark.parametrize("deployment_status", ["ghp_" + "x" * 32, "aB9_" * 6, "abc7" * 10])
+def test_plan_read_refuses_recognized_credential_shapes_in_provider_deployment_status(deployment_status: str) -> None:
+    response = _target_replacement_plan_response()
+    response["result"]["current_target"]["latest_deployment_status"] = deployment_status
+    code, output, calls = _run_plan_read(PLAN_READ_ARGV, response)
+    assert code == 1
+    assert not output["result"]
+    assert len(calls) == 1
+    if isinstance(deployment_status, str):
+        assert deployment_status not in json.dumps(output)
 
 
 CANDIDATE_ARTIFACT_ID = "artifact-example-20261016"
