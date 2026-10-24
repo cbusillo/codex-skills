@@ -985,9 +985,9 @@ Use PRs for all non-trivial changes.
   shared-infrastructure changes, also run locally the full test modules for the
   safety areas touched, as described in
   [Gate Selection](../repo-readiness/SKILL.md#gate-selection). Under the split,
-  the complete suite runs only in CI and must pass for the current head before
-  `ready` or merge; pushing opens
-  that CI feedback loop and does not require it to have run locally.
+  the complete suite runs only in CI; Ready and merge evidence follow the
+  [test command contract](references/config-schema.md#workflow-metadata).
+  Pushing opens that CI feedback loop and does not require it to have run locally.
   For code changes with an available IDE project, run
   `jetbrains-inspection` on the changed files before pushing or updating a PR.
   If `.github/github.json` defines `qualityGate.inspection`, PR creation and

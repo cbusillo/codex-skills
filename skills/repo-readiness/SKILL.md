@@ -202,9 +202,9 @@ records and write out only otherwise unrecorded gaps. Use
 - Narrow code change: run targeted tests/checks for touched behavior alongside
   any explicitly required repository gates.
 - For repositories declaring `test.local` and `test.ci`, run focused local tests for touched behavior plus
-  required lint, type checks and IDE inspection. The full suite runs in CI;
-  before merge or `ready`, verify it passed on the current PR head. Local
-  success alone does not establish PR readiness. Otherwise retain repository
+  required lint, type checks and IDE inspection. Full-suite, Ready and merge
+  evidence follow the [test command contract](../github/references/config-schema.md#workflow-metadata).
+  Local success alone does not establish PR readiness. Otherwise retain repository
   requirements, including legacy `test.default`, until adoption under the test
   command contract above; metadata absence does not opt a repository in.
 - Without the split, shared contract, deployment, release, or security-sensitive

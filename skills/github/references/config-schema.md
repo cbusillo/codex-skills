@@ -241,6 +241,14 @@ Common top-level keys:
   Without a documented module mapping, identify complete modules exercising
   the touched safety area through its callers; record any coverage gap as
   missing evidence.
+  A candidate-only CI pilot requires the repository Director's recorded approval,
+  linked from its testing documentation. Only in that approved scope, green
+  focused current-head PR checks selected by the documented rule may qualify
+  checked Ready. The full suite must pass on the exact final train candidate
+  before merge. Focused source checks cannot satisfy or be reused as the full
+  candidate gate. Direct merges and unknown selection retain full PR-head
+  validation. Required merge checks, whole touched safety modules, review
+  metadata and Client acceptance stay unchanged.
 - `qualityGate.test.default`: legacy test command, used until both `test.local`
   and `test.ci` are declared. An incomplete split does not override legacy test
   requirements. Preserve its declared scope until the repository adopts the split;
