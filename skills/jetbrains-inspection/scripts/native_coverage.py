@@ -65,7 +65,7 @@ def applicable_files(tool: str, selected: set[str], language: str | None = None,
     # their applicability does not depend on registration succeeding.
     if tool.startswith("Css") or tool == "Eslint":
         return set()
-    if language in {"css", "scss", "sass", "less", "javascript", "typescript", "html", "json", "yaml", "sql", "java", "kotlin"}:
+    if language in {"css", "scss", "sass", "less", "javascript", "typescript", "html", "json", "sql", "java", "kotlin"}:
         return set()
     return None
 

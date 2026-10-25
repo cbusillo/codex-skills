@@ -103,7 +103,8 @@ limits inspection while other source remains available for references.
 Structured `prepare.python` runs the maintained environment generator in that
 snapshot, with an isolated preparation home. Otherwise the exact source
 worktree must already have its documented `.venv`. Native does not guess a
-Python version. Command-string and nested-project preparation remain ineligible
+Python version. YAML selections keep this prerequisite because each run includes
+Python defect controls. Command-string and nested-project preparation remain ineligible
 for automatic native selection; without qualified Qodana they return UNKNOWN
 before desktop contact. Explicit native uses the prepared root `.venv` instead
 of treating those commands as a structured root generator. Native does not read a
