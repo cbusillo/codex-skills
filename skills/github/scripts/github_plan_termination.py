@@ -1,12 +1,13 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
+# dependencies = ["aiohttp==3.14.5", "tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
 # ///
 """Read-only source-host checks for claims interrupted by a host/terminal crash."""
 from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta, timezone
+from contextlib import nullcontext
 import json
 from pathlib import Path
 import re
@@ -14,6 +15,7 @@ import socket
 import subprocess
 from subprocess import run as run_terminal
 import sys
+import time
 from typing import NamedTuple
 
 def native_helpers():
@@ -125,7 +127,7 @@ def transcript_snapshot(record, path):
     before = path.stat()
     with path.open(encoding="utf-8") as stream:
         lines = list(stream)
-    records, truncated = transcript_records(record, lines)
+    records, truncated = native_transcript_records({**record, "transcript": str(path)}, lines, local_only=False)
     after = path.stat()
     if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
         raise ValueError("Source transcript changed during termination checks")
@@ -157,6 +159,22 @@ def transcript_records(record, lines, *, require_identity: bool = True):
     return records, truncated
 
 
+def native_transcript_records(record: dict, lines: list[str], *, local_only: bool = True) -> tuple[list[dict], bool]:
+    codex = record["harness"] == "codex"
+    records, truncated = transcript_records(record, lines, require_identity=not codex)
+    local = records
+    if codex:
+        native_helpers()
+        import claim_history
+        local = claim_history.root_records(Path(record["transcript"]), "codex", record["session_id"], records)
+    return (local if local_only else records), truncated
+
+
+def require_preboot_action(action: dict, booted_at: datetime) -> None:
+    if action.get("action_pending") and stamp(action["action_at"]) >= booted_at:
+        raise ValueError("source native action occurred after reboot; preserve claims")
+
+
 def _transcript_activity(times, mtime_ns, truncated, now, ended):
     if not times or max(times) > ended:
         raise ValueError("Source transcript is uncertain or resumed after termination")
@@ -168,11 +186,10 @@ def _transcript_activity(times, mtime_ns, truncated, now, ended):
     return max(times)
 
 
-def verify(record, session):
+def verify(record, session, *, deadline: float | None = None):
     """Never infer termination from absence alone; caller supplies original identity."""
     import github_plan_closure
-    return _verify(record, session, lambda pid, argv: not github_plan_closure.action_pending(session)
-                   and github_plan_closure.guarded_launch_endpoint(pid, argv) is not None)
+    return _verify(record, session, lambda pid, argv: github_plan_closure.guarded_launch_endpoint(pid, argv) is not None, deadline=deadline)
 
 
 class _TerminationProcess(NamedTuple):
@@ -186,8 +203,8 @@ class _TerminationProcess(NamedTuple):
 def _verify_queue_source(record, session, *, latest_pid=None):
     """Bind original cleanup identity once; never grant claim-release authority."""
     import github_plan_closure
-    process = _initial_source(record, session,
-        lambda pid, argv: github_plan_closure.guarded_launch_endpoint(pid, argv) is not None, latest_pid=latest_pid)
+    process = _initial_source(record, session, latest_pid=latest_pid)
+    _physical_exit(process, lambda pid, argv: github_plan_closure.guarded_launch_endpoint(pid, argv) is not None)
     terminal_state(record)
     return process
 
@@ -204,7 +221,7 @@ def _recheck_queue_process(process):
     _physical_exit(process, lambda pid, argv: github_plan_closure.guarded_launch_endpoint(pid, argv) is not None)
 
 
-def _initial_source(record, session, independent_harness, *, latest_pid=None):
+def _initial_source(record, session, *, latest_pid=None):
     _validate_metadata(record, session)
     if record.get("session_id") != session or record.get("host") != socket.gethostname():
         raise ValueError("Run termination checks on the recorded source host with the exact native session")
@@ -231,7 +248,6 @@ def _initial_source(record, session, independent_harness, *, latest_pid=None):
     original_launch = latest_pid is None or latest_pid in {record.get("pid"), record.get("launch_pid")}
     rebooted_at = booted if original_launch and activity is not None and activity.latest < booted else None
     process = _TerminationProcess(dict(record), physical, rebooted_at or cutoff, roots, rebooted_at)
-    _physical_exit(process, independent_harness)
     return process
 
 
@@ -239,22 +255,44 @@ def _transcript_roots(record):
     roots = record.get("transcript_roots")
     if not isinstance(roots, list) or not roots or not all(isinstance(root, str) and Path(root).is_dir() for root in roots):
         raise ValueError("Supply every known source-account transcript root on the source host")
-    return {Path(root).resolve(strict=True) for root in roots}
+    from github_plan_sessions import observation_homes
+    configured = ({home / name for home in observation_homes() for name in ("sessions", "archived_sessions")}
+                  if record["harness"] == "codex" else set())
+    return {Path(root).resolve(strict=True) for root in [*roots, *(path for path in configured if path.is_dir())]}
 
 
-def _verify(record, session, independent_harness):
+def _verify(record, session, independent_harness, *, deadline: float | None = None):
+    if deadline is not None and time.monotonic() > deadline:
+        raise TimeoutError("termination verification exceeded its deadline")
     if record.get("exit_record"):
         import github_plan_termination_history
         return github_plan_termination_history.verify(record, session)
-    process = _initial_source(record, session, independent_harness)
-    activity = _verify_transcripts(record, process.roots, before_boot=process.rebooted_at)
-    data = {key: record[key] for key in ("session_id", "pid", "host", "ended_at", "cause", "retained_artifacts", "tmux_session_id")}
-    data.update(checked_at=datetime.now(timezone.utc).isoformat(), last_activity_at=activity.last.isoformat(), terminal_state=terminal_state(record))
-    if process.rebooted_at is not None:
-        data["booted_at"] = process.rebooted_at.isoformat()
-    validate(data, session)
-    _verify_artifacts(data["retained_artifacts"])
-    return data
+    import github_plan_closure
+    process = _initial_source(record, session)
+    with (github_plan_closure.ownership(session) if process.rebooted_at is not None else nullcontext(False)) as held:
+        action = github_plan_closure.lease_state(session)
+        if process.rebooted_at is not None and not held and action:
+            raise ValueError("source ownership appeared during termination proof")
+        if process.rebooted_at is not None:
+            require_preboot_action(action, process.rebooted_at)
+        if process.rebooted_at is not None and action.get("action_pending"):
+            import asyncio
+            import github_plan_native
+            asyncio.run(github_plan_native.prove_crash_end(record, deadline=deadline, process=process))
+        _physical_exit(process, lambda pid, argv: (process.rebooted_at is not None or not github_plan_closure.action_pending(session))
+                       and independent_harness(pid, argv))
+        activity = _verify_transcripts(record, process.roots, before_boot=process.rebooted_at)
+        data = {key: record[key] for key in ("session_id", "pid", "host", "ended_at", "cause", "retained_artifacts", "tmux_session_id")}
+        data.update(checked_at=datetime.now(timezone.utc).isoformat(), last_activity_at=activity.last.isoformat(), terminal_state=terminal_state(record))
+        if process.rebooted_at is not None:
+            data["booted_at"] = process.rebooted_at.isoformat()
+        validate(data, session)
+        _verify_artifacts(data["retained_artifacts"])
+        if process.rebooted_at is not None and not held and github_plan_closure.lease_state(session) != action:
+            raise ValueError("source native action changed during termination proof")
+        if deadline is not None and time.monotonic() > deadline:
+            raise TimeoutError("termination verification exceeded its deadline")
+        return data
 
 
 class _TranscriptActivity(NamedTuple):

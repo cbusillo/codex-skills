@@ -342,6 +342,27 @@ knows; and only when the App configured now has a single installation and no
 client App. A code-mode cell settles only when the reader proves it finished,
 which it cannot for cells that leave a process running.
 
+For a Codex source killed by a host reboot, add `--termination-record /absolute/original-record.json
+--confirm-session-ended` to the check after independently verifying native task
+and remote peer closure. Use the original source-host record from Supervisor's
+[crash recovery](../supervisor/references/helpers.md), with the original native
+identity, terminal, transcript roots and retained artifacts. Pass one original
+session per recovery check. The existing termination verifier must prove that
+the source and every discovered native child ended before the current boot.
+It rechecks their transcripts, resumed processes, terminal and retained artifacts
+before and after canonical claim reads. The boot time supplies the latest possible
+completion bound for interrupted historical calls; complete GitHub search after
+the same indexing delay and exact release checks still apply. Missing reboot
+proof, a resumed child, changed lineage, or incomplete search keeps coverage
+conditional. This reads evidence only and never releases claims or edits the ledger.
+Run this recovery before retiring retained worktrees: the original record's
+artifacts remain part of termination proof. Missing or changed artifacts keep
+the result conditional and must be reconciled through their owning handoff.
+For large historical lineages, `--read-timeout SECONDS` selects a positive finite
+aggregate read budget (ten minutes by default). The same deadline covers
+canonical reads and all source proofs/rechecks; it never resets per child or
+pass. Idle-observation and native RPC limits remain unchanged.
+
 The search does not prove absence. It relies on GitHub's index catching up
 within those 10 minutes, and it cannot see a claim an undecodable command made
 under another session ID, through another App or account, or from a host with
@@ -390,7 +411,7 @@ unless the release names it or it is on the claim's own branch. A PR-only claim
 uses the PR itself as its work record. Preserve the branch, worktree and the
 next actor's custody.
 
-The check does not inspect processes. Stop or hand off any background work you
+The check does not stop processes. Stop or hand off any background work you
 started before the verdict; leaving it running is a closeout problem, not
 something the check proves.
 

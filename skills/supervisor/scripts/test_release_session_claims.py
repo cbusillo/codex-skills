@@ -401,10 +401,13 @@ class ReleaseTests(unittest.TestCase):
                                 helper.verify_process_exit({**self.entry, "harness": source}, ended_at=ended)
 
     def test_finish_retry_preserves_claims_when_tty_start_is_unavailable(self):
-        with patch.object(helper, "inventory", return_value=[(456, self.entry["tty"], "codex")]), \
-                patch.object(helper.closure, "process_started_at", side_effect=ValueError("start unavailable")):
-            result, report = self.finish_thread([self.source, self.own_release()])
-        self.assertEqual(result, 1, report)
+        for absent in (False, True):
+            with self.subTest(absent=absent), \
+                    patch.object(helper, "inventory", return_value=[(456, self.entry["tty"], "codex")]), \
+                    patch.object(helper.session_liveness, "process_absent", return_value=absent), \
+                    patch.object(helper.closure, "process_started_at", side_effect=ValueError("start unavailable")):
+                result, report = self.finish_thread([self.source, self.own_release()])
+            self.assertEqual(result, 0 if absent else 1, report)
 
     def test_new_closure_does_not_trust_ledger_end_to_excuse_existing_work(self):
         ended = helper.release.stamp(self.entry["ended_at"])

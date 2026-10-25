@@ -10,6 +10,7 @@ import json
 import io
 from contextlib import asynccontextmanager, contextmanager, redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 import unittest
 from unittest.mock import patch
@@ -230,6 +231,127 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeQueueTests(unittest.TestCase):
+    def test_manual_file_deadline_preserves_the_observer_default_and_still_expires(self) -> None:
+        from types import SimpleNamespace
+        import uuid
+        for kind in ("observer", "manual", "expired"):
+            with self.subTest(kind=kind), ReceiptFixture(str(uuid.uuid4())) as f:
+                clock = [0.0]
+                def now() -> float:
+                    clock[0] += 1_000_000.0
+                    return clock[0]
+                with patch.object(CLOSURE, "time", SimpleNamespace(monotonic=now)):
+                    deadline = None if kind == "observer" else (1e12 if kind == "manual" else 1.0)
+                    if kind == "manual":
+                        self.assertTrue(CLOSURE.transcript_facts(f.session, str(f.transcript), identity_only=True, deadline=deadline))
+                    else:
+                        with self.assertRaises(TimeoutError):
+                            CLOSURE.transcript_facts(f.session, str(f.transcript), identity_only=True, deadline=deadline)
+
+    def test_crash_proof_requires_unloaded_empty_unchanged_sources_without_clearing_barriers(self) -> None:
+        import uuid
+        from types import SimpleNamespace
+        import github_plan_termination as termination
+        termination.native_helpers()
+        import claim_history
+        for variant in ("clear", "loaded", "queued", "no_boot", "changed", "new_action", "fork", "foreign_fork",
+                        "cross_home", "outside", "wrong_path", "missing_home", "supplied", "wrong_process", "supplied_new_pid"):
+            with self.subTest(variant=variant), ReceiptFixture(str(uuid.uuid4())) as f:
+                other, _ledger, _selected, _retained, deleted = self.cancel_setup(f)
+                f.home_queues = {str(f.home): [], str(other): []}
+                owned = dict(f.entry)
+                if variant == "missing_home":
+                    owned.pop("codex_home")
+                if variant == "supplied_new_pid":
+                    for key in ("launch_pid", "launch_generation", "launch_started_at"):
+                        owned.pop(key)
+                    saved_rows = CLOSURE.log_rows()
+                    for row in saved_rows:
+                        if row.get("session_id") == f.session:
+                            row["launch_pid"] = 456
+                    CLOSURE.replace_rows(saved_rows)
+                if variant in {"cross_home", "outside", "wrong_path"}:
+                    primary = other / "sessions" / f.transcript.name
+                    owned["transcript"] = str(primary)
+                    if variant == "outside":
+                        primary = f.root / "outside.jsonl"
+                        primary.write_bytes(f.transcript.read_bytes())
+                        owned["transcript"] = str(primary)
+                    f.rpc_results["thread/read"] = {"thread": {"id": f.session,
+                        "path": str(f.root / "wrong.jsonl") if variant == "wrong_path" else str(primary),
+                        "status": {"type": "notLoaded"}}}
+                    saved = CLOSURE.log_rows()
+                    for row in saved:
+                        if row.get("session_id") == f.session:
+                            row["transcript"] = owned["transcript"]
+                            if row.get("resumed_generation"):
+                                row["resumed_generation"]["transcript"] = owned["transcript"]
+                    CLOSURE.replace_rows(saved)
+                    with self.assertRaises(ValueError):
+                        NATIVE._cancel_origin(owned, CLOSURE.lease_state(f.session))
+                if variant == "loaded":
+                    f.home_states[str(other)] = "idle"
+                if variant == "queued":
+                    f.home_queues[str(other)] = [{"id": "pending", "clientUserMessageId": "pending-client", "input": []}]
+                if variant in {"fork", "foreign_fork"}:
+                    rows = [json.loads(line) for line in f.transcript.read_text().splitlines()]
+                    rows[0]["payload"].update(forked_from_id="native-parent", parent_thread_id="native-parent",
+                        subagent_history_start_ordinal=2,
+                        source={"subagent": {"thread_spawn": {"parent_thread_id": "native-parent"}}})
+                    rows[1:1] = [{"type": "session_meta", "payload": {
+                        "id": "foreign-native" if variant == "foreign_fork" else "native-parent"}},
+                        {"type": "event_msg", "payload": {"type": "thread_settings_applied", "thread_id": f.session}}]
+                    for index, row in enumerate(rows):
+                        row["ordinal"] = index
+                    f.transcript.write_text("".join(json.dumps(row) + "\n" for row in rows))
+                before = {path: path.read_bytes() for path in (f.transcript, f.log, CLOSURE.lease_path(f.session))}
+                process = SimpleNamespace(rebooted_at=None if variant == "no_boot" else datetime.now(timezone.utc),
+                                          roots=frozenset({f.transcript.parent}))
+                if variant == "new_action":
+                    process.rebooted_at -= timedelta(minutes=1)
+                supplied = None
+                if variant in {"supplied", "wrong_process", "supplied_new_pid"}:
+                    supplied = termination._TerminationProcess(
+                        {**owned, **({"session_id": "foreign-native"} if variant == "wrong_process" else {})},
+                        dict(owned), process.rebooted_at, process.roots, process.rebooted_at)
+                    if variant == "supplied_new_pid":
+                        process.rebooted_at = None
+                original_files = NATIVE._source_files
+                original_connection = NATIVE.connection
+                connections = 0
+                proof_deadline = NATIVE.time.monotonic() + 600
+                observed_deadlines = []
+                @asynccontextmanager
+                async def short_connection(home: object, **kwargs: object) -> AsyncIterator[object]:
+                    nonlocal connections
+                    async with original_connection(home, **kwargs) as request:
+                        connections += 1
+                        try:
+                            yield request
+                        finally:
+                            connections -= 1
+                def files(*args: object, **kwargs: object) -> dict:
+                    self.assertEqual(connections, 0)
+                    observed_deadlines.append(kwargs["deadline"])
+                    value = original_files(*args, **kwargs)
+                    if variant == "changed" and "thread/read" in f.rpc_requests:
+                        value = {**value, "changed": True}
+                    return value
+                with patch.object(termination, "_verify_queue_source", return_value=process), \
+                        patch.object(termination, "_recheck_queue_process"), patch.object(NATIVE, "_source_files", side_effect=files), \
+                        patch.object(NATIVE, "connection", side_effect=short_connection), \
+                        patch.object(claim_history, "root_context", return_value={"parent": "native-parent", "ancestors": ("native-parent",)}):
+                    if variant in {"clear", "fork", "cross_home", "missing_home", "supplied"}:
+                        asyncio.run(NATIVE.prove_crash_end(owned, deadline=proof_deadline, process=supplied))
+                    else:
+                        with self.assertRaises(ValueError):
+                            asyncio.run(NATIVE.prove_crash_end(owned, deadline=proof_deadline, process=supplied))
+                self.assertTrue(all(deadline == proof_deadline for deadline in observed_deadlines))
+                self.assertEqual({path: path.read_bytes() for path in before}, before)
+                self.assertTrue(CLOSURE.action_pending(f.session))
+                self.assertFalse(deleted)
+                self.assertFalse(f.mutations)
+
     def test_removed_pane_closure_proves_replacement_tree_and_preserves_source_vetoes(self):
         import uuid
         from github_plan_sessions import native_helpers
@@ -790,7 +912,7 @@ class NativeQueueTests(unittest.TestCase):
         import uuid
         from types import SimpleNamespace
         import github_plan_termination as termination
-        for mode in ("minimal", "historical", "historical_markers", "known_launch_pid", "matching_generation", "stale_generation", "partial_tail", "interior", "complete_corrupt", "wrong_host", "new_generation", "inventory_marker", "backfill_marker", "gone_artifact"):
+        for mode in ("minimal", "historical", "historical_markers", "known_launch_pid", "matching_generation", "stale_generation", "partial_tail", "interior", "complete_corrupt", "wrong_host", "new_generation", "inventory_marker", "backfill_marker", "gone_artifact", "postboot_action"):
             with self.subTest(mode=mode), ReceiptFixture(str(uuid.uuid4())) as f:
                 other, _ledger, selected, _retained, deleted = self.cancel_setup(f)
                 # Preserve the original object; an output attestation is insufficient.
@@ -828,9 +950,11 @@ class NativeQueueTests(unittest.TestCase):
                 path.chmod(0o600)
                 before = {value: value.read_bytes() for value in (path, f.transcript, f.log, CLOSURE.lease_path(f.session))}
                 with patch.object(termination, "inventory", side_effect=lambda: f.process_rows), \
+                        patch.object(SESSIONS.process_liveness(), "host_boot_time", return_value=(
+                            datetime.fromisoformat(record["ended_at"]) if mode == "postboot_action" else None)), \
                         patch.object(termination, "run_terminal", return_value=SimpleNamespace(
                         returncode=0, stdout="a" * 32 + "\t1\t1\n", stderr="")):
-                    if mode not in {"minimal", "historical", "historical_markers", "matching_generation", "partial_tail", "gone_artifact"}:
+                    if mode not in {"minimal", "historical", "historical_markers", "matching_generation", "partial_tail", "gone_artifact", "postboot_action"}:
                         with self.assertRaises(ValueError): asyncio.run(NATIVE.cancel_queue(other, f.session, termination_record=path))
                         self.assertFalse(deleted)
                         continue

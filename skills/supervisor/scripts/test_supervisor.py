@@ -1997,6 +1997,22 @@ class TabCloseTests(unittest.TestCase):
                     rows=[(456, self.entry["tty"], command)], ended_at=cutoff,
                     started_at=lambda _pid: cutoff + timedelta(seconds=1))
 
+    def test_disappeared_tty_process_needs_kernel_absence_for_session_proof(self) -> None:
+        entry = {**self.entry, "pid": 123, "session_id": "source", "harness": "codex"}
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        for scope, absent in (("session", True), ("session", False), ("terminal", True)):
+            with self.subTest(scope=scope, absent=absent), \
+                    patch.object(session_liveness, "process_arguments", return_value=([], True)), \
+                    patch.object(session_liveness, "process_absent", return_value=absent):
+                started = Mock(side_effect=subprocess.CalledProcessError(1, ["ps"]))
+                if scope == "session" and absent:
+                    session_liveness.verify_process_exit(entry, rows=[(456, entry["tty"], "short-helper")],
+                        ended_at=cutoff, started_at=started, scope=scope)
+                else:
+                    with self.assertRaises(ValueError):
+                        session_liveness.verify_process_exit(entry, rows=[(456, entry["tty"], "short-helper")],
+                            ended_at=cutoff, started_at=started, scope=scope)
+
     def test_managed_wrapper_needs_its_guard_on_the_source_tty(self):
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
         for name in ("codex-session.py", "codex_session_proxy.py"):
