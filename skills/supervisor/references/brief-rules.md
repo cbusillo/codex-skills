@@ -48,7 +48,7 @@ Rules for this brief (every Supervisor brief carries them):
 - Read the item in full first, every comment and linked issue, then re-check
   it against current code before starting (overall DIRECTION.md Issue trial,
   [direction#96](https://github.com/cbusillo/direction/issues/96)). If the
-  code or a later comment already settles it, say so on the item and stop.
+  code or a later comment already settles it, record why and continue independent items.
   Follow the repository's
   [executing loop](../../references/executing-loop.md), opening each step's
   owning SKILL.md before the step.
@@ -57,8 +57,8 @@ Rules for this brief (every Supervisor brief carries them):
   `gh-plan.py claim --help` and
   [Planning: Claim](../../github/references/cli-reference.md#planning-claim)
   decide the flags; flags a brief suggests are hints. If the item is claimed,
-  already done, or needs a Director decision before any action, say so on the
-  item and stop.
+  already done, or waiting, record why, skip it and continue independent items. A wait
+  does not block read-only work that answers it.
 - Work in your own linked worktree from
   `/Users/cbusillo/.local/bin/dev-worktree /Users/cbusillo/Developer/<repo> <slug> origin/main`
   ([task worktrees](../../github/references/worktrees.md)). Never edit a
