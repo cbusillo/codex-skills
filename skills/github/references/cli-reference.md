@@ -993,6 +993,18 @@ The [daily sweep](../../direction/references/stranded-work.md) reports fired
 triggers and coverage gaps without reopening issues. This option records a
 condition, not authority to close protected work or perform the triggered action.
 
+#### Product release event waits
+
+`wait` and `create` accept `--release-product PRODUCT` and
+`--release-next-action "Next agent: verify the repaired flow in production"`
+alongside `--waiting-for` and `--ends-when`. The pointer binds the first wait;
+other waits retain their own ending conditions. `--release-after` accepts a
+timezone-aware boundary and defaults to the writer's current time. Launchplane
+resolves only matching product waits after a successful production release
+finishes later than that boundary. Failed releases, rollbacks and older releases
+do not resolve them. Completion evidence and the next agent action are recorded;
+resolution alone does not close an issue or claim its production verification.
+
 ### Planning: Claim
 
 Before an authorized `go` creates a branch or worktree, run from a checkout of
