@@ -15,6 +15,8 @@ import sys
 import tempfile
 import threading
 import unittest
+from email.parser import BytesParser
+from email.policy import default
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
@@ -27,6 +29,7 @@ class SenderTests(unittest.TestCase):
     def setUp(self):
         self.requests = []
         self.posts = []
+        self.attachments = []
         self.fail_at = None
         self.metadata = {"guild_id": "11", "channel_id": "22"}
         self.redirect = False
@@ -48,7 +51,16 @@ class SenderTests(unittest.TestCase):
 
             def do_POST(self):
                 owner.requests.append(self.path)
-                owner.posts.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
+                body = self.rfile.read(int(self.headers['Content-Length']))
+                content_type = self.headers["Content-Type"]
+                if content_type.startswith("multipart/form-data"):
+                    message = BytesParser(policy=default).parsebytes(
+                        f"Content-Type: {content_type}\r\n\r\n".encode() + body)
+                    parts = list(message.iter_parts())
+                    owner.posts.append(json.loads(parts[0].get_payload(decode=True)))
+                    owner.attachments.append((parts[1].get_filename(), parts[1].get_payload(decode=True)))
+                else:
+                    owner.posts.append(json.loads(body))
                 if len(owner.posts) == owner.fail_at:
                     self.respond(500, {"error": owner.url})
                 else:
@@ -95,6 +107,23 @@ class SenderTests(unittest.TestCase):
             endpoint = urlsplit(self.url).path
             self.assertEqual(self.requests, [endpoint, *([endpoint + "?wait=true"] * len(self.posts))])
             self.assertNotIn(self.url, result.stdout + result.stderr)
+
+    def test_attachment_is_one_confirmed_post_with_mentions_disabled(self) -> None:
+        source = "Full report\n" + "🧭 pending choice @everyone\n" * 100
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            sender.deliver("Daily digest: see attached waits", self.url, source)
+        self.assertEqual(len(self.posts), 1)
+        self.assertEqual(self.posts[0]["allowed_mentions"], {"parse": []})
+        self.assertEqual(self.attachments, [("stranded-work.md", source.encode("utf-8"))])
+        self.assertEqual(output.getvalue().strip(), "https://discord.com/channels/11/22/101")
+
+    def test_missing_input_file_names_read_failure_without_path(self) -> None:
+        result = self.run_sender(args=("--file", str(self.root / "private-missing.md")),
+                                 env={**self.env, sender.KEY: self.url})
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr.strip(), "digest_report_read_failed")
+        self.assertEqual(self.requests, [])
 
     def test_code_home_precedence_and_no_shell_execution(self):
         other = self.root / "other"

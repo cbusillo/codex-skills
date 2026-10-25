@@ -8,9 +8,24 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 
 FINDING = re.compile(r"^- (\w+) \((age unknown|[0-9.]+h)\): (https://github\.com/\S+) — (.*)$")
 PERSON = re.compile(r"\b(?:Chris|cbusillo|Director|Owner)\b", re.IGNORECASE)
+
+
+class DigestError(ValueError):
+    pass
+
+
+class SummaryTooLarge(DigestError):
+    pass
+
+
+@dataclass
+class Presentation:
+    content: str
+    attachment: str | None = None
 
 
 def units(text: str) -> int:
@@ -21,7 +36,7 @@ def parse(report: str) -> tuple[str, str, list[dict]]:
     lines = report.splitlines()
     if (len(lines) < 3 or lines[0] != "Daily stranded-work sweep"
             or not lines[1].startswith("Observed: ") or not lines[2].startswith("Coverage: ")):
-        raise ValueError("digest_report_invalid")
+        raise DigestError("digest_report_invalid")
     rows: list[dict] = []
     for line in lines[3:]:
         match = FINDING.fullmatch(line)
@@ -34,10 +49,10 @@ def parse(report: str) -> tuple[str, str, list[dict]]:
             rows[-1]["title"] = line.removeprefix("  Name: ")
         elif line.startswith("- ") and not line.startswith("- Coverage gap:"):
             # Do not silently discard a changed collector format.
-            raise ValueError("digest_report_invalid")
+            raise DigestError("digest_report_invalid")
     count = re.search(r"; (\d+) candidates\.$", lines[2])
     if not count or int(count[1]) != len(rows):
-        raise ValueError("digest_report_invalid")
+        raise DigestError("digest_report_invalid")
     return lines[1].removeprefix("Observed: ")[:10], lines[2].split(";", 1)[0].removeprefix("Coverage: "), rows
 
 
@@ -72,9 +87,26 @@ def summary(report: str, full_list_url: str) -> str:
         result = "\n".join(lines)
         if units(result) < 2000:
             return result
-    # An unbounded person queue cannot always fit. Keep every required item;
-    # retain the runner's reconciliation boundary instead of dropping any.
-    raise ValueError("digest_summary_too_large")
+    raise SummaryTooLarge("digest_summary_too_large")
+
+
+def presentation(report: str, full_list_url: str) -> Presentation:
+    try:
+        return Presentation(summary(report, full_list_url))
+    except SummaryTooLarge:
+        date, coverage, rows = parse(report)
+        counts: dict[str, int] = defaultdict(int)
+        for row in rows:
+            counts[row["kind"]] += 1
+        lines = [f"Daily digest · {date} · {coverage}"]
+        lines.extend(f"{kind}: {count}" for kind, count in sorted(counts.items()))
+        waiting = sum(row["person"] for row in rows)
+        lines.extend([f"Waiting on Chris: {waiting} (all waits in attached full report)",
+                      f"[Full list](<{full_list_url}>)"])
+        content = "\n".join(lines)
+        if units(content) >= 2000:
+            raise SummaryTooLarge("digest_summary_too_large") from None
+        return Presentation(content, report)
 
 
 def archive(report: str, tracking_issue: str) -> str:
@@ -87,13 +119,13 @@ def archive(report: str, tracking_issue: str) -> str:
 
     target = re.fullmatch(r"([\w.-]+/[\w.-]+)#([0-9]+)", tracking_issue)
     if not target:
-        raise ValueError("digest_tracking_issue_invalid")
+        raise DigestError("digest_tracking_issue_invalid")
     try:
         result = github_comment.comment("issue", int(target[2]), report, repo=target[1], dedupe_body=True)
     except github_comment.CommentError:
-        raise ValueError("digest_archive_failed") from None
+        raise DigestError("digest_archive_failed") from None
     url = result.get("url")
     if not isinstance(url, str) or not re.fullmatch(
             rf"https://github\.com/{re.escape(target[1])}/issues/{target[2]}#issuecomment-[0-9]+", url):
-        raise ValueError("digest_archive_response_invalid")
+        raise DigestError("digest_archive_response_invalid")
     return url

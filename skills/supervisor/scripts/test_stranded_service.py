@@ -103,6 +103,45 @@ class DailyTests(unittest.TestCase):
         self.assertEqual(len(list(self.state.rglob("delivery.stdout"))), 2)
         self.assertTrue(all(path.read_text() for path in self.state.rglob("delivery.stdout")))
 
+    def test_retry_unsent_delivers_retained_report_without_rescanning_and_only_once(self) -> None:
+        (self.root / "scan-code").write_text("3")
+        (self.root / "send-code").write_text("1")
+        self.assertEqual(self.entry().returncode, 1)
+        original = {path: path.read_bytes() for path in self.state.rglob("report.md")}
+        original.update({path: path.read_bytes() for path in self.state.rglob("delivery.stdout")})
+        (self.root / "payload").write_text("must not rescan\n")
+        (self.root / "scan-code").write_text("2")
+        (self.root / "send-code").write_text("0")
+        argv = [sys.executable, str(daily.__file__), "retry-unsent", "--config", str(self.config)]
+        for _ in range(2):
+            result = subprocess.run(argv, capture_output=True, timeout=5, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / "received").read_text(), self.payload * 2)
+        receipt = json.loads(next(self.state.glob("*.delivered.json")).read_text())
+        self.assertEqual(receipt["scan_exit_code"], 3)
+        self.assertEqual(Path(receipt["report"]).read_text(), self.payload)
+        self.assertFalse(services.reconciliation_marker(self.state / "daily", "stranded").exists())
+        for path, content in original.items():
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_retry_unsent_requires_current_retained_scan_and_preserves_marker_on_failure(self) -> None:
+        self.state.mkdir()
+        marker = services.reconciliation_marker(self.state / "daily", "stranded")
+        argv = [sys.executable, str(daily.__file__), "retry-unsent", "--config", str(self.config)]
+        self.assertEqual(subprocess.run(argv, capture_output=True, timeout=5, check=False).returncode, 1)
+        source = self.state / "attempt" / "report.md"
+        source.parent.mkdir()
+        source.write_text(self.payload)
+        today = dt.datetime.now().astimezone().date()
+        valid = {"day": today.isoformat(), "scan_exit_code": 3, "report": str(source)}
+        for override in ({"day": (today - dt.timedelta(days=1)).isoformat()}, {"scan_exit_code": 2},
+                         {"report": str(self.root / "payload")}):
+            marker.write_text(json.dumps({**valid, **override}))
+            before = marker.read_bytes()
+            self.assertEqual(subprocess.run(argv, capture_output=True, timeout=5, check=False).returncode, 1)
+            self.assertEqual(marker.read_bytes(), before)
+        self.assertFalse((self.root / "received").exists())
+
     def test_scan_error_is_retained_without_sending_and_next_run_can_recover(self):
         (self.root / "scan-code").write_text("2")
         self.assertEqual(self.entry().returncode, 1)
