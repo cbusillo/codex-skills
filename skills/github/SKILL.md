@@ -886,7 +886,7 @@ and say why.
 - **Comments and reviews**: `scripts/gh-pr.py comment --body-file` or
   `scripts/gh-comment` for timeline comments;
   `scripts/gh-with-env-token pr review --body-file` for review feedback.
-  For images/videos, repeat `--attach FILE[#alt]` with per-command `GH_WITH_ENV_TOKEN_OWN_USER=1`: Chris-owned repos only, posted as Chris with an agent-posted first line; PDFs stay manual.
+  For images/videos, repeat `--attach FILE[#alt]` with per-command `GH_WITH_ENV_TOKEN_OWN_USER=1`: Chris-owned repos only, posted as Chris; the helper adds the agent-posted first line. PDFs stay manual.
 - **CI failures**: `github-ci-diagnose.py` prioritizes test, helper and validator
   causes. Raw `gh run view` or `gh api` log reads are fallback diagnostics.
 

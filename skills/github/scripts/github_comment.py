@@ -1122,7 +1122,7 @@ def validate_own_attachment_command(arguments: list[str], body: str) -> str:
     if args.number <= 0:
         raise ValueError("Attachment comments require a positive issue or PR number")
     validate_attachment_request(args.repo, body, args.attach)
-    if github_identity.configured_value("GH_WITH_ENV_TOKEN_OWN_USER_LOGIN", environ=os.environ) != ATTACHMENT_OWNER:
+    if str(github_identity.configured_value("GH_WITH_ENV_TOKEN_OWN_USER_LOGIN") or "").casefold() != ATTACHMENT_OWNER:
         raise ValueError("Own-user attachments require Chris's declared personal login")
     result = _call_api(
         "GET", f"/repos/{args.repo}", None, gh_cmd=DEFAULT_GH,
@@ -1136,12 +1136,24 @@ def validate_own_attachment_command(arguments: list[str], body: str) -> str:
     return args.repo
 
 
+def attachment_write_outcome(stderr: str, nonce: str) -> str:
+    for line in stderr.splitlines():
+        try:
+            receipt = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if receipt == {"schema_version": 1, "nonce": nonce, "write_outcome": "not_started"}:
+            return "not_started"
+    return "unknown"
+
+
 def attached_comment(
     kind: str, number: int, body: str, attachments: list[str], *, repo: str | None,
     gh_cmd: str, operation: str, retry_summaries: list[github_api_core.RetrySummary],
 ) -> dict[str, Any]:
     resolved_repo = resolve_repo(repo, gh_cmd=gh_cmd, operation=operation)
-    body = f"{AGENT_POSTED_LINE}\n\n{body}"
+    if body.splitlines()[:1] != [AGENT_POSTED_LINE]:
+        body = f"{AGENT_POSTED_LINE}\n\n{body}"
     try:
         validate_attachment_request(resolved_repo, body, attachments)
     except (ValueError, OSError) as error:
@@ -1161,7 +1173,12 @@ def attached_comment(
         raise _local_error(
             str(error), operation=operation, cause="attachment_cli_unavailable", failed_step="attachment_preflight",
         ) from error
-    if help_result.returncode or "--attach" not in help_result.stdout:
+    if help_result.returncode:
+        raise _local_error(
+            f"Attachment CLI preflight failed: {github_api_core.redact_string(help_result.stderr.strip())}",
+            operation=operation, cause="attachment_cli_unavailable", failed_step="attachment_preflight",
+        )
+    if "--attach" not in help_result.stdout:
         raise _local_error(
             "Attachments require GitHub CLI with the official --attach flag (2.103.2 or newer)",
             operation=operation, cause="attachment_cli_unavailable", failed_step="attachment_preflight",
@@ -1170,9 +1187,11 @@ def attached_comment(
     command = [gh_cmd, kind, "comment", str(number), "--repo", resolved_repo, "--body-file", "-"]
     for attachment in attachments:
         command.extend(["--attach", attachment])
+    receipt_nonce = os.urandom(16).hex()
     try:
         result = subprocess.run(
             command, input=body, capture_output=True, text=True, check=False,
+            env={**os.environ, "GH_WITH_ENV_TOKEN_RECEIPT_NONCE": receipt_nonce},
         )
     except OSError as error:
         raise _local_error(
@@ -1181,7 +1200,7 @@ def attached_comment(
         ) from error
     url = result.stdout.strip()
     match = re.fullmatch(
-        rf"https://github\.com/{re.escape(resolved_repo)}/(?:issues|pull)/{number}#issuecomment-(\d+)", url,
+        rf"https://github\.com/{re.escape(resolved_repo)}/(?:issues|pull)/{number}#issuecomment-(\d+)", url, re.IGNORECASE,
     )
     if result.returncode or not match:
         raise _local_error(
@@ -1189,7 +1208,8 @@ def attached_comment(
             "Only images and videos are supported; PDFs still go by hand. "
             f"Read the thread before retrying. {github_api_core.redact_string(result.stderr.strip())}",
             operation=operation, cause="attachment_comment_failed", actor=actor,
-            failed_step="attach_comment", write_outcome="unknown", payload={"url": url if match else None},
+            failed_step="attach_comment", write_outcome=attachment_write_outcome(result.stderr, receipt_nonce),
+            payload={"url": url if match else None},
         )
     try:
         readback = _call_api(
@@ -1203,8 +1223,10 @@ def attached_comment(
         error.payload["url"] = url
         raise
     saved = readback.body
+    saved_user = saved.get("user") if isinstance(saved, dict) else None
+    saved_author = str(saved_user.get("login") or "") if isinstance(saved_user, dict) else ""
     if (not isinstance(saved, dict) or saved.get("id") != int(match[1])
-            or saved.get("html_url") != url or (saved.get("user") or {}).get("login", "").casefold() != actor
+            or saved.get("html_url") != url or saved_author.casefold() != actor
             or not str(saved.get("body", "")).startswith(f"{AGENT_POSTED_LINE}\n")
             or "https://github.com/user-attachments/assets/" not in str(saved.get("body", ""))):
         raise _local_error(

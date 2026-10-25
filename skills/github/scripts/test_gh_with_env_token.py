@@ -869,7 +869,7 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
               "    assert not os.environ.get('GH_TOKEN')\n"
               "    body = sys.stdin.read()\n"
               "    assert body.splitlines()[0] == github_comment.AGENT_POSTED_LINE\n"
-              "    assert args[-2] == '--attach'\n"
+              "    assert any(value == '--attach' for value in args)\n"
               "    print(f'https://github.com/{owner}/catalog/issues/42#issuecomment-20')\n"
               "else:\n"
               "    assert os.environ.get('GH_TOKEN') == 'installation-token'\n"
@@ -897,6 +897,13 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
             )
             assert result.returncode == 0, (result.stdout, result.stderr)
             assert json.loads(result.stdout)["actor"] == owner
+        refused = subprocess.run(
+            [sys.executable, str(SCRIPT.with_name("github_comment.py")), "issue", "42", "--repo", repo,
+             "--body-file", "-", "--attach", str(image)], env={**env, "FIXTURE_LOGIN": "another-person"},
+            input="proof", text=True, capture_output=True, timeout=15,
+        )
+        assert refused.returncode != 0
+        assert json.loads(refused.stdout)["write_outcome"] == "not_started", refused.stdout
         cases = [
             (args, "ordinary text", {}),
             ([*args[:-1], str(pdf)], body, {}),

@@ -1350,7 +1350,7 @@ def test_attachment_limits_refuse_before_cli() -> None:
             github_comment.subprocess, "run", side_effect=AssertionError("must not call CLI")
         ):
             for changes in options:
-                arguments = {"kind": "issue", "number": 42, "body": "proof", "repo": "cbusillo/repo",
+                arguments = {"kind": "issue", "number": 42, "body": "proof", "repo": f"{github_comment.ATTACHMENT_OWNER}/repo",
                              "attachments": [str(image)], **changes}
                 try:
                     github_comment.comment(**arguments)
@@ -1360,7 +1360,7 @@ def test_attachment_limits_refuse_before_cli() -> None:
                     raise AssertionError(changes)
             image.write_bytes(b"%PDF-1.7 renamed")
             try:
-                github_comment.comment("issue", 42, "proof", repo="cbusillo/repo", attachments=[str(image)])
+                github_comment.comment("issue", 42, "proof", repo=f"{github_comment.ATTACHMENT_OWNER}/repo", attachments=[str(image)])
             except github_comment.CommentError as error:
                 assert error.failure.write_outcome == "not_started"
             else:
@@ -1374,48 +1374,53 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
         image.write_bytes(b"image fixture")
         video.write_bytes(b"video fixture")
         attachments = [str(image) + "#Evidence", str(video)]
-        url = "https://github.com/cbusillo/repo/issues/42#issuecomment-1001"
+        url = f"https://github.com/{github_comment.ATTACHMENT_OWNER}/repo/issues/42#issuecomment-1001"
         saved = {**comment_body(1001, github_comment.ATTACHMENT_OWNER), "html_url": url,
                  "body": github_comment.AGENT_POSTED_LINE + "\n\n![proof](https://github.com/user-attachments/assets/example)"}
         for kind in ("issue", "pr"):
-            for mode in ("success", "old_cli", "failed_upload", "bad_readback", "wrong_author"):
+            for mode in ("success", "old_cli", "failed_upload", "bad_readback", "wrong_author", "missing_author", "canonical_case", "prewrite_refusal", "forged_receipt", "help_failure"):
                 calls: list[list[str]] = []
 
                 def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
                     calls.append(command)
                     if command[1] == "help":
-                        return subprocess.CompletedProcess(command, 0, "" if mode == "old_cli" else "--attach", "")
+                        return subprocess.CompletedProcess(command, 1 if mode == "help_failure" else 0,
+                                                           "" if mode == "old_cli" else "--attach", "authentication unavailable")
                     assert command[:4] == ["fake-gh", kind, "comment", "42"]
-                    assert command[command.index("--repo") + 1] == "cbusillo/repo"
-                    assert command[-4:] == ["--attach", attachments[0], "--attach", attachments[1]]
+                    assert command[command.index("--repo") + 1].casefold() == f"{github_comment.ATTACHMENT_OWNER}/repo"
+                    assert [command[index + 1] for index, value in enumerate(command) if value == "--attach"] == attachments
                     assert kwargs["input"].splitlines()[0] == github_comment.AGENT_POSTED_LINE
+                    if mode in ("prewrite_refusal", "forged_receipt"):
+                        nonce = kwargs["env"]["GH_WITH_ENV_TOKEN_RECEIPT_NONCE"] if mode == "prewrite_refusal" else "forged"
+                        receipt = {"schema_version": 1, "nonce": nonce, "write_outcome": "not_started"}
+                        return subprocess.CompletedProcess(command, 1, "", json.dumps(receipt))
                     return subprocess.CompletedProcess(command, 1 if mode == "failed_upload" else 0, url, "upload failed")
 
                 readback = dict(saved)
                 if mode == "bad_readback":
                     readback["body"] = "no uploaded image"
-                if mode == "wrong_author":
-                    readback["user"] = {"login": "someone-else"}
+                if mode in ("wrong_author", "missing_author"):
+                    readback["user"] = {"login": "someone-else" if mode == "wrong_author" else None}
                 with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}), patch.object(
                     github_comment.subprocess, "run", side_effect=run
                 ), patch.object(github_comment, "_call_api", return_value=success(readback)):
                     try:
-                        result = github_comment.comment(kind, 42, "proof", repo="cbusillo/repo",
+                        result = github_comment.comment(kind, 42, "proof", repo=f"{github_comment.ATTACHMENT_OWNER}/repo".upper() if mode == "canonical_case" else f"{github_comment.ATTACHMENT_OWNER}/repo",
                                                         gh_cmd="fake-gh", attachments=attachments)
                     except github_comment.CommentError as error:
-                        assert mode != "success", error
-                        assert error.failure.write_outcome == ("not_started" if mode == "old_cli" else
-                                                              "unknown" if mode == "failed_upload" else "applied")
+                        assert mode not in ("success", "canonical_case"), error
+                        assert error.failure.write_outcome == ("not_started" if mode in ("old_cli", "prewrite_refusal", "help_failure") else
+                                                              "unknown" if mode in ("failed_upload", "forged_receipt") else "applied")
                     else:
-                        assert mode == "success"
+                        assert mode in ("success", "canonical_case")
                         assert result["actor"] == github_comment.ATTACHMENT_OWNER
                         assert result["url"] == url
-                assert len(calls) == (1 if mode == "old_cli" else 2)
+                assert len(calls) == (1 if mode in ("old_cli", "help_failure") else 2)
         with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "0"}), patch.object(
             github_comment.subprocess, "run", side_effect=AssertionError("must not call CLI")
         ):
             try:
-                github_comment.comment("issue", 42, "proof", repo="cbusillo/repo", attachments=attachments)
+                github_comment.comment("issue", 42, "proof", repo=f"{github_comment.ATTACHMENT_OWNER}/repo", attachments=attachments)
             except github_comment.CommentError as error:
                 assert error.failure.write_outcome == "not_started"
             else:
