@@ -30,7 +30,9 @@ For IDE-selection failures, follow the lane or single-IDE guidance in
 [Result Policy](../SKILL.md#result-policy).
 The helper appends each `UNKNOWN` verdict to
 `${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/jetbrains-inspection/unknown-verdicts.jsonl`
-so repeated blockers can be fixed later. Set `JB_INSPECT_UNKNOWN_LOG=0` to
+so repeated blockers can be fixed later. Native assessments write the same
+unknown and outcome rows, naming their `backend` with the finding,
+`proof_failure_count` and `uncovered_inspection_count` totals. Set `JB_INSPECT_UNKNOWN_LOG=0` to
 disable logging, set it to a path to override the log file, or set
 `JB_INSPECT_ROLLOUT_FILE` to include the current rollout/session transcript in
 the record. Set `JB_INSPECT_DEPLOYMENT_MANIFEST` to the immutable deployment or
