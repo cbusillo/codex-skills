@@ -458,6 +458,13 @@ identify arbitrary writers or prove that ignored files are quiet.
   real mistakes, and add real tool, library and product names to the
   repository's tracked `.idea/dictionaries/project.xml` rather than renaming
   or suppressing them.
+  An inspection a headless run cannot prove, such as `Eslint`, may be declared
+  covered by one of the repository's own gates with
+  `qualityGate.inspection.coveredBy` (see
+  [inspection configuration](references/inspection-config.md#inspections-covered-by-repository-gates));
+  it is then listed under `covered_by` instead of making the verdict UNKNOWN.
+  An unproven grammar checker (`Grazie*`) is listed under
+  `advisory_coverage_gaps`.
   `whole_project` and `directory` GREEN additionally require plugin capability
   `inspection_execution_proof_version >= 2`, which attests the exact native IDE
   inspection run with affirmative physical-file traversal and file-scoped tool

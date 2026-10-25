@@ -427,6 +427,28 @@ class NativeTests(unittest.TestCase):
             native.attribute_to_change(receipt, findings, repo, "files", selected)
             self.assertEqual(({finding["introduced"] for finding in findings}, receipt["changed_lines"]), ({None}, "unavailable"))
 
+    def test_covered_by_must_name_a_declared_gate(self) -> None:
+        gates = {"lint": {"eslint": "npm run lint"}, "inspection": {"coveredBy": {"Eslint": "lint.eslint"}}}
+        self.assertEqual(native.covered_by_gates({"qualityGate": gates}), {"Eslint": "lint.eslint"})
+        self.assertEqual(native.covered_by_gates({}), {})
+        for broken in ({"Eslint": "lint.stylelint"}, {"Eslint": "lint"}, {"Eslint": ""}, {"Eslint": 3}, ["Eslint"]):
+            with self.subTest(broken=broken), self.assertRaisesRegex(native.Blocked, "native_covered_by_invalid"):
+                native.covered_by_gates({"qualityGate": {**gates, "inspection": {"coveredBy": broken}}})
+
+    def test_declared_and_grammar_gaps_leave_the_verdict_with_their_reasons(self) -> None:
+        coverage = {"unproven": ["Eslint", "GrazieInspection", "JSUnusedLocalSymbols"]}
+        gaps = ["execution_unproven:Eslint", "inspection_applicability_unproven:Eslint",
+                "execution_unproven:GrazieInspection", "execution_unproven:JSUnusedLocalSymbols"]
+        remaining = native.settle_declared_gaps(coverage, gaps, {"Eslint": "lint.eslint"})
+        self.assertEqual(remaining, ["execution_unproven:JSUnusedLocalSymbols"])
+        self.assertEqual((coverage["covered_by"], coverage["advisory_gaps"], coverage["unproven"]),
+                         ({"Eslint": "lint.eslint"}, ["execution_unproven:GrazieInspection"], ["JSUnusedLocalSymbols"]))
+        receipt = native.new_receipt(host) | {"scope": "files", "selected_file_count": 1, "coverage": coverage}
+        clean = native.envelope(host, receipt, [], "native_completed", [])
+        self.assertEqual((clean["agent_result"]["verdict"], clean["covered_by"], clean["advisory_coverage_gaps"]),
+                         ("GREEN", {"Eslint": "lint.eslint"}, ["execution_unproven:GrazieInspection"]))
+        self.assertEqual(native.envelope(host, receipt, [], "native_coverage_unproven", remaining)["agent_result"]["verdict"], "UNKNOWN")
+
     def test_spelling_and_grammar_are_reported_beside_the_verdict_without_counting(self) -> None:
         receipt = native.new_receipt(host) | {"scope": "files", "selected_file_count": 1}
         typo = {"file": "a.py", "line": 2, "rule_id": "SpellCheckingInspection", "severity": "TYPO", "message": "Typo", "introduced": True}
@@ -1705,6 +1727,21 @@ print('Done.')
         result = self.assess()
         self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
         self.assertEqual(set(result["coverage"]["missing_execution"]), {"JSUnusedLocalSymbols", "TypeScriptUnresolvedReference"})
+
+    def test_lint_covered_eslint_and_unproven_grammar_leave_a_green_run(self):
+        self.script.write_text(self.script.read_text().replace("report_user=True", "report_user=False"))
+        profile = self.repo / ".idea/inspectionProfiles/Test.xml"
+        profile.write_text(profile.read_text().replace(
+            "</profile>", '<inspection_tool class="Eslint" enabled="true"/><inspection_tool class="GrazieInspection" enabled="true"/></profile>'))
+        unknown = self.assess()
+        self.assertEqual(unknown["agent_result"]["verdict"], "UNKNOWN")
+        (self.repo / ".github/github.json").write_text(json.dumps({"qualityGate": {
+            "lint": {"eslint": "npm run lint"}, "inspection": {"ide": "WebStorm", "coveredBy": {"Eslint": "lint.eslint"}}}}))
+        green = self.assess()
+        self.assertEqual(green["agent_result"]["verdict"], "GREEN", green["proof_failures"])
+        self.assertEqual(green["covered_by"], {"Eslint": "lint.eslint"})
+        self.assertTrue(all(gap.endswith(":GrazieInspection") for gap in green["advisory_coverage_gaps"]))
+        self.assertTrue(green["advisory_coverage_gaps"])
 
     def test_missing_typescript_canary_evidence_keeps_the_verdict_unknown(self):
         self.script.write_text(self.script.read_text().replace("report_canary=True", "report_canary=False")

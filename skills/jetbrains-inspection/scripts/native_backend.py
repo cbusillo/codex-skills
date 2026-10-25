@@ -1156,6 +1156,39 @@ def attribute_to_change(receipt: dict[str, Any], findings: list[dict[str, Any]],
             finding["introduced"] = lines is None or finding["line"] in lines
 
 
+ADVISORY_TOOL_PREFIX = "Grazie"
+
+
+def covered_by_gates(repository_config: dict[str, Any]) -> dict[str, str]:
+    gates = repository_config.get("qualityGate", {})
+    declared = gates.get("inspection", {}).get("coveredBy", {}) if isinstance(gates, dict) else None
+    if not isinstance(declared, dict):
+        raise Blocked("native_covered_by_invalid")
+    for tool, gate_key in declared.items():
+        gate: Any = gates
+        for part in gate_key.split(".") if isinstance(gate_key, str) else [None]:
+            gate = gate.get(part) if isinstance(gate, dict) and part else None
+        if not isinstance(tool, str) or not isinstance(gate, str) or not gate.strip():
+            raise Blocked("native_covered_by_invalid")
+    return declared
+
+
+def settle_declared_gaps(coverage: dict[str, Any], gaps: list[str], covered_by: dict[str, str]) -> list[str]:
+    remaining, covered, advisory = [], {}, []
+    for gap in gaps:
+        tool = gap.partition(":")[2]
+        if tool in covered_by:
+            covered[tool] = covered_by[tool]
+        elif tool.startswith(ADVISORY_TOOL_PREFIX):
+            advisory.append(gap)
+        else:
+            remaining.append(gap)
+    settled = set(covered) | {gap.partition(":")[2] for gap in advisory}
+    coverage["unproven"] = [tool for tool in coverage.get("unproven", []) if tool not in settled]
+    coverage.update(covered_by=covered, advisory_gaps=advisory)
+    return remaining
+
+
 def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]], reason: str, gaps: list[str], artifact: str | None = None) -> dict[str, Any]:
     product = host.IDE_PRODUCTS[receipt.get("product", PYTHON_PRODUCT_KEY)]
     preexisting = [finding for finding in findings if finding.get("introduced") is False]
@@ -1221,6 +1254,8 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
         action = "Restore non-reaping child-exit observation in the documented native Python setup (waitid/WNOWAIT or kqueue/NOTE_EXIT). Registration is required before the launch gate opens. Preserve any held custody and use --native-recover-only first; never substitute a reaping poll before stopping the owned group."
     report = (f"{verdict}: native {product.display_name}; {reason}; {len(findings)} findings; {len(advisory)} advisory spelling or grammar findings; "
               f"{len(preexisting)} preexisting findings not counted; "
+              f"{len(receipt.get('coverage', {}).get('covered_by', {}))} inspections covered by repository gates; "
+              f"{len(receipt.get('coverage', {}).get('advisory_gaps', []))} advisory coverage gaps; "
               f"{len(gaps)} proof gaps; {len(receipt.get('coverage', {}).get('unproven', []))} inspections unproven.")
     return {"schema_version": host.AGENT_RESULT_SCHEMA_VERSION, "command": "agent-inspect", "backend": "native",
             "status": {"GREEN": "clean", "RED": "findings"}.get(verdict, "error"),
@@ -1230,6 +1265,8 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
             "scope": receipt.get("scope"), "selected_file_count": receipt.get("selected_file_count"),
             "finding_count": len(findings), "preexisting_finding_count": len(preexisting),
             "advisory_finding_count": len(advisory), "advisory_findings": advisory[:common.FINDING_LIMIT],
+            "covered_by": receipt.get("coverage", {}).get("covered_by", {}),
+            "advisory_coverage_gaps": receipt.get("coverage", {}).get("advisory_gaps", []),
             "advisory_findings_truncated": len(advisory) > common.FINDING_LIMIT,
             "changed_lines": receipt.get("changed_lines"), "findings": findings[:common.FINDING_LIMIT], "findings_artifact": artifact,
             "findings_truncated": len(findings) > common.FINDING_LIMIT, "proof_failures": gaps,
@@ -1427,6 +1464,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
                                                 all_findings, control_root=control_root, tool_languages=languages, scope=scope,
                                                 **product_proof)
         receipt["coverage"]["profile_requested"] = sorted(profile_requested)
+        gaps = settle_declared_gaps(receipt["coverage"], gaps, covered_by_gates(host.read_repo_config(repo)))
         allowed = selected | controls
         if set(receipt.get("inspected_files", [])) - allowed:
             gaps.append("native_unselected_file_traversal")
