@@ -451,7 +451,12 @@ identify arbitrary writers or prove that ignored files are quiet.
 ## Result Policy
 
 - `GREEN`: inspection worked and found no actionable findings for the selected
-  scope/filter.
+  scope/filter. Native `changed_files` and `files` runs count only findings on
+  lines the change adds or modifies since the default branch's merge base, and
+  all findings in new files. They report the rest as
+  `preexisting_finding_count`; fix those only when they fall in the task's
+  scope. When the merge base cannot be found, `changed_lines` is `unavailable`
+  and every finding counts.
   `whole_project` and `directory` GREEN additionally require plugin capability
   `inspection_execution_proof_version >= 2`, which attests the exact native IDE
   inspection run with affirmative physical-file traversal and file-scoped tool
