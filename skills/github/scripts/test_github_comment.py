@@ -1334,7 +1334,97 @@ def test_personal_question_uses_chat_id_before_exact_text_approval() -> None:
         with_call_stub(callback, run)
 
 
+def test_attachment_limits_refuse_before_cli() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        image = pathlib.Path(directory) / "proof.png"
+        image.write_bytes(b"image fixture")
+        pdf = image.with_suffix(".pdf")
+        pdf.write_bytes(b"%PDF-1.7")
+        options = [
+            {"repo": "another/repo"}, {"attachments": [str(pdf)]},
+            {"attachments": [str(image.with_name("missing.png"))]},
+            {"edit_last": True}, {"edit_comment": 1}, {"dedupe_body": True},
+            {"body": "Owner question: decide"},
+        ]
+        with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}), patch.object(
+            github_comment.subprocess, "run", side_effect=AssertionError("must not call CLI")
+        ):
+            for changes in options:
+                arguments = {"kind": "issue", "number": 42, "body": "proof", "repo": "cbusillo/repo",
+                             "attachments": [str(image)], **changes}
+                try:
+                    github_comment.comment(**arguments)
+                except github_comment.CommentError as error:
+                    assert error.failure.write_outcome == "not_started"
+                else:
+                    raise AssertionError(changes)
+            image.write_bytes(b"%PDF-1.7 renamed")
+            try:
+                github_comment.comment("issue", 42, "proof", repo="cbusillo/repo", attachments=[str(image)])
+            except github_comment.CommentError as error:
+                assert error.failure.write_outcome == "not_started"
+            else:
+                raise AssertionError("renamed PDF must refuse")
+
+
+def test_attachment_passthrough_and_failures_never_replay() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        image = pathlib.Path(directory) / "proof.png"
+        video = image.with_suffix(".mp4")
+        image.write_bytes(b"image fixture")
+        video.write_bytes(b"video fixture")
+        attachments = [str(image) + "#Evidence", str(video)]
+        url = "https://github.com/cbusillo/repo/issues/42#issuecomment-1001"
+        saved = {**comment_body(1001, github_comment.ATTACHMENT_OWNER), "html_url": url,
+                 "body": github_comment.AGENT_POSTED_LINE + "\n\n![proof](https://github.com/user-attachments/assets/example)"}
+        for kind in ("issue", "pr"):
+            for mode in ("success", "old_cli", "failed_upload", "bad_readback", "wrong_author"):
+                calls: list[list[str]] = []
+
+                def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                    calls.append(command)
+                    if command[1] == "help":
+                        return subprocess.CompletedProcess(command, 0, "" if mode == "old_cli" else "--attach", "")
+                    assert command[:4] == ["fake-gh", kind, "comment", "42"]
+                    assert command[command.index("--repo") + 1] == "cbusillo/repo"
+                    assert command[-4:] == ["--attach", attachments[0], "--attach", attachments[1]]
+                    assert kwargs["input"].splitlines()[0] == github_comment.AGENT_POSTED_LINE
+                    return subprocess.CompletedProcess(command, 1 if mode == "failed_upload" else 0, url, "upload failed")
+
+                readback = dict(saved)
+                if mode == "bad_readback":
+                    readback["body"] = "no uploaded image"
+                if mode == "wrong_author":
+                    readback["user"] = {"login": "someone-else"}
+                with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}), patch.object(
+                    github_comment.subprocess, "run", side_effect=run
+                ), patch.object(github_comment, "_call_api", return_value=success(readback)):
+                    try:
+                        result = github_comment.comment(kind, 42, "proof", repo="cbusillo/repo",
+                                                        gh_cmd="fake-gh", attachments=attachments)
+                    except github_comment.CommentError as error:
+                        assert mode != "success", error
+                        assert error.failure.write_outcome == ("not_started" if mode == "old_cli" else
+                                                              "unknown" if mode == "failed_upload" else "applied")
+                    else:
+                        assert mode == "success"
+                        assert result["actor"] == github_comment.ATTACHMENT_OWNER
+                        assert result["url"] == url
+                assert len(calls) == (1 if mode == "old_cli" else 2)
+        with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "0"}), patch.object(
+            github_comment.subprocess, "run", side_effect=AssertionError("must not call CLI")
+        ):
+            try:
+                github_comment.comment("issue", 42, "proof", repo="cbusillo/repo", attachments=attachments)
+            except github_comment.CommentError as error:
+                assert error.failure.write_outcome == "not_started"
+            else:
+                raise AssertionError("missing opt-in must refuse")
+
+
 TESTS: list[Callable[[], None]] = [
+    test_attachment_limits_refuse_before_cli,
+    test_attachment_passthrough_and_failures_never_replay,
     test_concurrent_numbering_reconciles_the_same_saved_body,
     test_question_numbering_follows_confirmed_write_and_repairs_same_assignment,
     test_numbered_questions_are_unchanged_without_counter_access,

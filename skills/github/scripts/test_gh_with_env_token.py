@@ -837,6 +837,103 @@ def test_write_actor_probe_rejects_non_probe_commands_before_authentication() ->
             assert not auth_calls.exists(), result
 
 
+def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
+    sys.path.insert(0, str(SCRIPT.parent))
+    import github_comment
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        env_file, identity, classifier = app_fixture(root)
+        owner = github_comment.ATTACHMENT_OWNER
+        repo = f"{owner}/catalog"
+        env_file.write_text(env_file.read_text() + f"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN={owner}\n")
+        image = root / "proof.png"
+        image.write_bytes(b"image fixture")
+        pdf = image.with_suffix(".pdf")
+        pdf.write_bytes(b"%PDF-1.7")
+        calls_file = root / "calls.jsonl"
+        fake_gh = root / "gh"
+        write(fake_gh, f"#!{sys.executable}\n" +
+              "import json, os, sys\n"
+              f"sys.path.insert(0, {str(SCRIPT.parent)!r})\n"
+              "import github_comment\n"
+              "args = sys.argv[1:]\n"
+              "owner = github_comment.ATTACHMENT_OWNER\n"
+              "with open(os.environ['FIXTURE_CALLS'], 'a') as stream:\n"
+              "    stream.write(json.dumps([args, os.environ.get('GH_TOKEN')]) + '\\n')\n"
+              "if args == ['api', 'user', '--jq', '.login']:\n"
+              "    assert not os.environ.get('GH_TOKEN')\n"
+              "    print(os.environ.get('FIXTURE_LOGIN', owner))\n"
+              "elif args[:1] == ['help']:\n    print('--attach')\n"
+              "elif args[:2] in (['issue', 'comment'], ['pr', 'comment']):\n"
+              "    assert not os.environ.get('GH_TOKEN')\n"
+              "    body = sys.stdin.read()\n"
+              "    assert body.splitlines()[0] == github_comment.AGENT_POSTED_LINE\n"
+              "    assert args[-2] == '--attach'\n"
+              "    print(f'https://github.com/{owner}/catalog/issues/42#issuecomment-20')\n"
+              "else:\n"
+              "    assert os.environ.get('GH_TOKEN') == 'installation-token'\n"
+              "    path = next(arg for arg in args if arg.startswith('/'))\n"
+              "    if path.endswith('/comments/20'):\n"
+              "        result = {'id': 20, 'html_url': f'https://github.com/{owner}/catalog/issues/42#issuecomment-20',\n"
+              "                  'user': {'login': owner}, 'body': github_comment.AGENT_POSTED_LINE + '\\n\\n![proof](https://github.com/user-attachments/assets/example)'}\n"
+              "    else:\n"
+              "        result = {'owner': {'login': os.environ.get('FIXTURE_OWNER', owner)}, 'full_name': f'{owner}/catalog'}\n"
+              "    print('HTTP/2.0 200\\r\\ncontent-type: application/json\\r\\n\\r\\n' + json.dumps(result))\n")
+        body = github_comment.AGENT_POSTED_LINE + "\n\nAttachment proof"
+        args = ["issue", "comment", "42", "--repo", repo, "--body-file", "-", "--attach", str(image)]
+        env = {
+            "PATH": os.environ["PATH"], "HOME": directory, "CODEX_SKILLS_ENV_FILE": str(env_file),
+            "GH_WITH_ENV_TOKEN_IDENTITY_HELPER": str(identity), "GH_WITH_ENV_TOKEN_PYTHON": sys.executable,
+            "GH_WITH_ENV_TOKEN_GH": str(fake_gh), "GH_WITH_ENV_TOKEN_OWN_USER": "1",
+            "FIXTURE_CALLS": str(calls_file), "GH_COMMENT_GH": str(SCRIPT),
+            "GITHUB_RETRY_STATE_DIR": str(root / "retry-state"),
+        }
+        for kind in ("issue", "pr"):
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT.with_name("github_comment.py")), kind, "42", "--repo", repo,
+                 "--body-file", "-", "--attach", str(image) + "#Evidence"],
+                env=env, input="Attachment proof", text=True, capture_output=True, timeout=15,
+            )
+            assert result.returncode == 0, (result.stdout, result.stderr)
+            assert json.loads(result.stdout)["actor"] == owner
+        cases = [
+            (args, "ordinary text", {}),
+            ([*args[:-1], str(pdf)], body, {}),
+            ([*args, "--edit-last"], body, {}),
+            ([*args[:5], "--body", "replacement", *args[5:]], body, {}),
+            (args, body, {"GH_WITH_ENV_TOKEN_OWN_USER": "0"}),
+            (args, body, {"GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "1"}),
+            (args, body, {"FIXTURE_LOGIN": "another-person"}),
+            (args, body, {"FIXTURE_OWNER": "new-owner"}),
+            ([*args[:4], "other/catalog", *args[5:]], body, {}),
+        ]
+        for command, requested_body, changes in cases:
+            calls_file.write_text("")
+            result = subprocess.run([str(SCRIPT), *command], env={**env, **changes}, input=requested_body,
+                                    text=True, capture_output=True, timeout=15)
+            assert result.returncode != 0, (command, changes, result.stdout)
+            calls = [json.loads(line)[0] for line in calls_file.read_text().splitlines()]
+            assert not any(call[:2] == ["issue", "comment"] for call in calls), calls
+        original_env = env_file.read_text()
+        env_file.write_text(original_env.replace(f"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN={owner}",
+                                                "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN=another-person"))
+        result = subprocess.run([str(SCRIPT), *args], env=env, input=body, text=True, capture_output=True, timeout=15)
+        assert result.returncode != 0, result.stdout
+        env_file.write_text(original_env + "GH_WITH_ENV_TOKEN_OWN_USER=1\n")
+        result = subprocess.run([str(SCRIPT), *args], env={key: value for key, value in env.items()
+                                                        if key != "GH_WITH_ENV_TOKEN_OWN_USER"},
+                                input=body, text=True, capture_output=True, timeout=15)
+        assert result.returncode != 0, result.stdout
+        env_file.write_text(original_env)
+        calls_file.write_text("")
+        result = subprocess.run([str(SCRIPT), "api", "--include", "--method", "POST", f"/repos/{repo}/issues/42/comments"],
+                                env=env, text=True, capture_output=True, timeout=15)
+        assert result.returncode == 0, result.stderr
+        calls = [json.loads(line) for line in calls_file.read_text().splitlines()]
+        assert calls[-1][1] == "installation-token", calls
+
+
 def test_comment_cli_selects_own_user_through_real_wrapper() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -1285,6 +1382,7 @@ def main() -> None:
         test_check_reports_app_identity_and_source,
         test_write_actor_probe_preserves_repository_authorization,
         test_write_actor_probe_rejects_non_probe_commands_before_authentication,
+        test_attachment_route_enforces_limits_through_real_wrapper,
         test_comment_cli_selects_own_user_through_real_wrapper,
         test_comment_cli_rejects_malformed_probe_once_before_authentication,
         test_invalid_probe_does_not_wait_for_open_stdin,

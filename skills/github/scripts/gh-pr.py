@@ -586,7 +586,7 @@ def cmd_comment(args: argparse.Namespace) -> dict[str, Any]:
         raise PrHelperError("PR comment body is empty", operation="comment", repo=repo, pr=number)
     reviewed_head = getattr(args, "reviewed_head", None)
     if reviewed_head is not None:
-        if args.edit_last or args.edit_comment is not None or args.create_if_none:
+        if args.edit_last or args.edit_comment is not None or args.create_if_none or getattr(args, "attach", None):
             raise PrHelperError("Post a new review disposition comment; do not edit an earlier result", operation="comment", repo=repo, pr=number)
         try:
             body = review_result_body(body, reviewed_head)
