@@ -463,9 +463,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
             director_spoke = any(c in decisions for c in current)
             receivers = [w["waiting_for"] for w in wait["waits"] if w["waiting_for"] not in director and any(
                 re.search(r"\b" + re.escape(name) + r"\b", w["waiting_for"], re.I) for name in receiver_terms)]
-            sources = [item, *current]
-            source = next((s for s in reversed(sources) if login(s) in trusted
-                           and github_plan_wait.records(s.get("body") or "")), item)
+            source = github_plan_wait.current_source(item, current, trusted) or item
             since = None if source is item else source.get("updated_at") or source.get("created_at")
             linked = (any(c.get("html_url") in open_questions for c in current)
                       or bool(set(COMMENT_LINK.findall(json.dumps(wait))) & (open_questions | decision_urls)))

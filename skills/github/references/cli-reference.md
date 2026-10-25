@@ -1847,6 +1847,21 @@ competing worker's state and recheck before any retry. If an owned Current
 Status was already updated, reconcile only that record too; never rewrite a
 competitor's record.
 
+#### Product release event waits
+
+`wait` and `create` accept `--release-product PRODUCT`,
+`--release-commit FULL_SOURCE_SHA` and
+`--release-next-action "Next agent: verify the repaired flow in production"`
+alongside `--waiting-for` and `--ends-when`. The pointer binds the first wait
+and is shown next to it in the published summary; other waits stay separate.
+Release resolutions bind to the previous record, so they cannot erase a newer
+wait recorded concurrently. The writer records the product, required source
+commit and next agent action for
+[Launchplane's release-completion resolver](https://github.com/cbusillo/launchplane/issues/4908).
+Before writing these pointers, deploy the matching Launchplane planning-package
+pin and update installed catalog readers. Older readers preserve the wait as
+malformed rather than ignoring its additional field.
+
 ### Planning: Management
 
 - `reconcile-landing --pr N [--apply]`: Read a confirmed default-branch
