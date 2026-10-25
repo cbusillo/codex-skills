@@ -258,6 +258,7 @@ def main():
     reader = GitHubReader(operation="github.direction.director_waits", strict_actor=True,
                           gh_prefix_args=automation_only_gh_prefix_args(),
                           deadline_at=time.time() + args.deadline_seconds)
+    reader.gh_prefix_args.extend(repository_scope.include_archived_arguments(args.include_archived, gh_command=reader.gh_cmd))
     result = collect(reader, args.owner, terms, datetime.now(timezone.utc), args.issue_limit, include_archived=args.include_archived)
     if (people["status"] == "error" or people["director_ambiguous"]
             or (not people["director_names"] and not args.director_name)):

@@ -436,6 +436,7 @@ def run_raw(
     completed_steps: list[str] | None = None,
     failed_step: str = "gh_invocation",
     repository: str | None = None,
+    include_archived: bool = False,
 ) -> tuple[str, str, str]:
     """Run gh through the configured actor without implicit identity fallback."""
     tried: list[tuple[str, subprocess.CompletedProcess[str]]] = []
@@ -446,7 +447,7 @@ def run_raw(
     if active_first:
         commands.append(("active-gh-user", ["gh", *args]))
     elif bot_enabled:
-        commands.append(("automation-gh", [str(BOT_GH), *args]))
+        commands.append(("automation-gh", [str(BOT_GH), *repository_scope.include_archived_arguments(include_archived), *args]))
     elif skip_bot:
         commands.append(("active-gh-user", ["gh", *args]))
     else:
@@ -933,6 +934,7 @@ def api_json_uncached(
     completed_steps: list[str] | None = None,
     failed_step: str | None = None,
     repository: str | None = None,
+    include_archived: bool = False,
 ) -> tuple[str, Any]:
     resolved_graphql_operation = graphql_operation
     if github_api_core.is_graphql_path(path) and resolved_graphql_operation is None:
@@ -995,6 +997,7 @@ def api_json_uncached(
         input_text = json.dumps(payload if payload is not None else {})
     actor, stdout, _ = run_raw(
         args,
+        **({"include_archived": True} if include_archived else {}),
         input_text=input_text,
         operation=operation or CURRENT_OPERATION,
         is_write=resolved_is_write,
@@ -1059,6 +1062,7 @@ def collect_paged_rest_items(
     issue_only: bool = False,
     completed_steps: list[str] | None = None,
     page_metadata: list[dict[str, Any]] | None = None,
+    include_archived: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     actor = ""
     items: list[dict[str, Any]] = []
@@ -1072,6 +1076,7 @@ def collect_paged_rest_items(
             bucket=bucket,
             completed_steps=steps,
             failed_step=f"{step_prefix}_page_{page}",
+            **({"include_archived": True} if include_archived else {}),
         )
         if not actor:
             actor = page_actor
@@ -1948,6 +1953,7 @@ def cmd_search(args: argparse.Namespace) -> None:
                                                   include_archived=getattr(args, "include_archived", False))},
         bucket="search",
         step_prefix="search_plan_issues",
+        include_archived=getattr(args, "include_archived", False),
         limit=args.limit,
         collection_key="items",
         issue_only=True,

@@ -7,12 +7,15 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -24,6 +27,7 @@ import director_waits
 import direction_audit
 import github_work_rollup as rollup
 import github_unanswered_comments as attention
+from test_gh_with_env_token import run_wrapper, user_token_fixture, write
 
 SPEC = importlib.util.spec_from_file_location("archive_plan", SCRIPTS / "gh-plan.py")
 assert SPEC is not None and SPEC.loader is not None
@@ -31,6 +35,10 @@ PLAN = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PLAN)
 REPOS = json.loads((SCRIPTS / "fixtures/archived-repositories.json").read_text())
 NOW = datetime(2026, 10, 11, tzinfo=timezone.utc)
+
+
+def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    return patch.object(target, name, *args, **kwargs)
 
 
 def search_items(query):
@@ -44,6 +52,45 @@ def search_items(query):
 
 
 class ArchiveTests(unittest.TestCase):
+    def test_helper_opt_in_survives_the_real_wrapper(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_path:
+            root = Path(temporary_path)
+            env_file, classifier, identity, fake_gh = user_token_fixture(root)
+            write(fake_gh, f'''#!{sys.executable}
+import json, sys
+from urllib.parse import parse_qs, urlsplit
+args = sys.argv[1:]
+query = " ".join(args)
+for arg in args:
+    query += " " + " ".join(parse_qs(urlsplit(arg).query).get("q", []))
+rows = json.loads({json.dumps(search_items(''))!r})
+repositories = json.loads({json.dumps(REPOS)!r})
+archived = {{repo["full_name"] for repo in repositories if repo["archived"]}}
+if "archived:false" in query:
+    rows = [row for row in rows if "/".join(row["repository_url"].split("/")[-2:]) not in archived]
+print(json.dumps({{"items": rows, "total_count": len(rows), "incomplete_results": False}}))
+''')
+
+            def delegate(command: list[str]) -> subprocess.CompletedProcess[str]:
+                reply = run_wrapper(env_file, classifier, identity, *command[1:], gh_command=fake_gh)
+                self.assertEqual(reply.returncode, 0, reply.stderr)
+                return reply
+
+            for included in (False, True):
+                expected = len(REPOS) if included else sum(not repo["archived"] for repo in REPOS)
+                result = subprocess.run(
+                    [sys.executable, str(SCRIPTS / "gh-plan.py"), "search", "user:owner", *(["--include-archived"] if included else [])],
+                    cwd=root, text=True, capture_output=True, timeout=20,
+                    env={"PATH": os.environ["PATH"], "HOME": str(root), "CODEX_SKILLS_ENV_FILE": str(env_file),
+                         "GH_WITH_ENV_TOKEN_CLASSIFIER": str(classifier), "GH_WITH_ENV_TOKEN_IDENTITY_HELPER": str(identity),
+                         "GH_WITH_ENV_TOKEN_PYTHON": sys.executable, "GH_WITH_ENV_TOKEN_GH": str(fake_gh)},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["total_count"], expected)
+                settings = {"subjects": ["owner"], "window": rollup.Window(NOW, NOW, "today"), "include_bots": True, "include_archived": included}
+                with patch_attr(rollup, "run", delegate), patch_attr(rollup, "subject_item_in_window", return_value=True):
+                    self.assertEqual(len(rollup.collect_subject_items(settings)), expected)
+
     def test_plan_search_count_excludes_archived_repository(self):
         def read(path, **kwargs):
             rows = search_items(kwargs["query"]["q"])

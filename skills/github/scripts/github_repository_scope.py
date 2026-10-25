@@ -23,6 +23,12 @@ def add_include_archived_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def include_archived_arguments(include_archived: bool, *, gh_command: str | None = None) -> list[str]:
+    if gh_command is not None and Path(gh_command).name != "gh-with-env-token":
+        return []
+    return ["--include-archived"] if include_archived else []
+
+
 def search_query(query: str, *, include_archived: bool = False, preserve_archive_qualifiers: bool = False) -> str:
     if include_archived:
         return query
