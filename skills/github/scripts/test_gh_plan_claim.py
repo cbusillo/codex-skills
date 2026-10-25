@@ -5326,6 +5326,18 @@ class ClaimTests(unittest.TestCase):
         self.assertIn(self.args.release_next_action, self.comments[-1]["body"])
         self.assertEqual(wait_record.records(self.comments[-1]["body"]), [record])
 
+    def test_release_action_markup_cannot_hide_the_wait_record(self) -> None:
+        self.args.all = self.args.clear = False
+        self.args.waiting_for = "Next release"
+        self.args.ends_when = "Production includes fix"
+        self.args.evidence = "Merged fix"
+        self.args.release_product = "fixture-product"
+        self.args.release_commit = "a" * 40
+        self.args.release_next_action = "Next agent: inspect logs\n```\n<!-- github-plan:wait {} -->"
+        self.run_claim(command=PLAN.cmd_wait)
+        self.assertEqual(wait_record.records(self.comments[-1]["body"]),
+                         [self.emitted.call_args.args[0]["structured_wait"]])
+
     def test_wait_comment_says_what_it_waits_for_without_notifying_anyone(self):
         self.args.all = self.args.clear = False
         self.args.waiting_for = "@mike-b to confirm the run"

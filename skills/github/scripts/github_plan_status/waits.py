@@ -44,7 +44,7 @@ def reviewed(*, evidence: str, waiting_for: str | list[str] | None = None,
         if not actors:
             raise ValueError("A release pointer requires a wait")
         record["waits"][0]["release"] = {"product": release_product.strip().casefold() if release_product else release_product, "source_commit": release_commit.strip().lower() if release_commit else release_commit,
-                                         "next_action": release_next_action}
+                                         "next_action": " ".join(release_next_action.split()) if release_next_action else release_next_action}
     validate(record)
     return record
 
