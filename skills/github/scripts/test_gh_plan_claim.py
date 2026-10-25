@@ -5413,8 +5413,10 @@ class ClaimTests(unittest.TestCase):
                 if args.release_product:
                     hint = wait_record.release_event_hint(args.release_product, args.release_commit)
                     original_body = create.call_args.args[1]
-                    for updated in (PLAN.replace_section(original_body, "Open Questions", "Resolved"),
-                            PLAN.replace_issue_plan_section({**self.issue, "body": original_body}, "Open Questions", "Resolved")):
+                    with patch.object(github_identity, "configured_bot_logins", return_value=[TEST_BOT]):
+                        updated_bodies = (PLAN.replace_section(original_body, "Open Questions", "Resolved"),
+                            PLAN.replace_issue_plan_section({**self.issue, "body": original_body}, "Open Questions", "Resolved"))
+                    for updated in updated_bodies:
                         self.assertIn(hint, updated)
                         self.assertEqual(wait_record.records(updated), [wait])
 
