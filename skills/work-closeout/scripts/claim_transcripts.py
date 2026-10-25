@@ -2880,7 +2880,6 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         invocations = []
         ended_invocations = []
         opaque = False
-        unclassified = False
         reason = "missing_output"
         decode_failed = False
         interactive_uncertain = False
@@ -2916,7 +2915,6 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
                     )
                 )
             interactive_uncertain = opaque and sources.interactive_opaque and claim_may_be_interactive
-            unclassified = opaque
             for source, ended in zip(sources.commands, source_ended, strict=True):
                 receipt_pure = receipt_pure and not source.interactive
                 discovery = shell_claims(source.text, claim_related=source.interactive and claim_may_be_interactive)
@@ -2952,8 +2950,6 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         ):
             reason = UNFINISHED_CLAIM
         targets.update(found)
-        if javascript:
-            opaque = opaque or (unclassified and bool(found))
         if opaque:
             reason = (
                 "interactive_uncertain"

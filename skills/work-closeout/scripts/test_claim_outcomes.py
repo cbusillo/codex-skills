@@ -77,7 +77,7 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                 },
             },
         }
-        for kind in ("ended", "prior", "foreign", "duplicate", "unknown_count", "overlap", "yielded", "while", "do"):
+        for kind in ("ended", "prior", "foreign", "duplicate", "unknown_count", "overlap", "yielded", "while", "do", "local_function", "parameterless_callback"):
             with self.subTest(kind=kind):
                 code = source
                 if kind == "duplicate":
@@ -86,6 +86,10 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                     code = f"let i=0;while(i++<2){{{source}}}"
                 if kind == "do":
                     code = f"let i=0;do{{{source}}}while(i++<2);"
+                if kind == "local_function":
+                    code = f"const run=async()=>{{{source}}};await run();run();"
+                if kind == "parameterless_callback":
+                    code = f"[1,2].forEach(()=>{{{source}}});"
                 if kind == "unknown_count":
                     code = f'load("jobs").map(async n=>{{{source}}});'
                 rows = invocation(code)
@@ -362,7 +366,8 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                 rows.extend(
                     {"payload": {**row["payload"], "call_id": "later"}} for row in invocation('const t=tools;await t[load("method")]({session_id:123,chars:load("input")});')
                 )
-                self.assertTrue(check_claims.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+                self.assertTrue(any(item["call_id"] == "later" and item["reason"] == "interactive_uncertain"
+                                    for item in check_claims.history.literal_targets(rows, SESSION)["unresolved_invocations"]))
 
     def test_ambiguous_input_capabilities_keep_the_pending_context(self) -> None:
         command = '"uv run gh-plan.py --repo test/a show 5"'
@@ -401,11 +406,13 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                 rows.extend(invocation(source, {"session_id": 123}))
                 rows.extend({"payload": {**row["payload"], "call_id": "later"}} for row in invocation(followup))
                 report = check_claims.history.literal_targets(rows, SESSION)
-                self.assertTrue(any(item["call_id"] == "later" for item in report["unresolved_invocations"]))
+                self.assertTrue(any(item["call_id"] == "later" and item["reason"] == "interactive_uncertain"
+                                    for item in report["unresolved_invocations"]))
         rows = [{"type": "session_meta", "payload": {"cli_version": ".".join(map(str, check_claims.history.CLOSED_STDIN_SINCE))}}]
         rows.extend(invocation(f"await tools.exec_command({{cmd:{command},tty:true}});"))
         rows.extend({"payload": {**row["payload"], "call_id": "later"}} for row in invocation(followup))
-        self.assertTrue(check_claims.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+        self.assertTrue(any(item["call_id"] == "later" and item["reason"] == "interactive_uncertain"
+                                    for item in check_claims.history.literal_targets(rows, SESSION)["unresolved_invocations"]))
 
     def test_finished_or_unexecuted_native_commands_cannot_start_input_context(self) -> None:
         followup = 'text(String(load("result")).replace(/x/g,"y"));'

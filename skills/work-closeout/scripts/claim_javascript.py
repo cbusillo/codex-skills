@@ -96,8 +96,7 @@ def property_name(node: Node) -> str:
 
 
 class JavascriptData:
-    def __init__(self, *, data_only: bool = False) -> None:
-        self.data_only = data_only
+    def __init__(self) -> None:
         self.environment: dict[str, tuple[str, bool]] = {"ALL_TOOLS": ("data", False), "undefined": ("data", False)}
 
     def bind(self, node: Node | None, environment: dict, *, kind: str = "data", mutable: bool = False) -> None:
@@ -118,7 +117,7 @@ class JavascriptData:
         if node is None:
             raise ValueError("missing expression")
         kind = node.type
-        if self.data_only and kind == "regex":
+        if kind == "regex":
             call = node.parent.parent if node.parent.type == "arguments" else None
             callee = call.child_by_field_name("function") if call is not None else None
             if (
@@ -127,8 +126,10 @@ class JavascriptData:
                 or property_name(callee.child_by_field_name("property")) not in {"split", "replace", "replaceAll"}
             ):
                 raise ValueError("regex value")
+            if re.fullmatch(r"/(?:[A-Za-z0-9_ .|+*-]|\\s)+/[gi]*", source(node)) is None:
+                raise ValueError("regex pattern")
             return "data"
-        if self.data_only and kind == "arrow_function":
+        if kind == "arrow_function":
             local = environment.copy()
             parameters = node.child_by_field_name("parameter") or node.child_by_field_name("parameters")
             if parameters is not None:
@@ -139,14 +140,13 @@ class JavascriptData:
             else:
                 self.expression(body, local)
             return "function"
-        if self.data_only and kind == "assignment_expression":
+        if kind == "assignment_expression":
             left = node.child_by_field_name("left")
-            if left.type != "identifier" or not environment.get(source(left), (None, False))[1]:
+            if left.type != "identifier" or environment.get(source(left)) != ("data", True):
                 raise ValueError("assignment")
             result = self.expression(node.child_by_field_name("right"), environment)
-            if result == "function":
+            if result != "data":
                 raise ValueError("assignment")
-            environment[source(left)] = (result, True)
             return result
         if kind in {"identifier", "shorthand_property_identifier"}:
             return environment[source(node)][0]
@@ -225,10 +225,8 @@ class JavascriptData:
             raise ValueError("spread arguments")
         if callee.type == "identifier" and (
             source(callee) in {"text", "store", "load", "exit"}
-            or self.data_only
-            and environment.get(source(callee), (None,))[0] == "function"
-            or self.data_only
-            and source(callee) == "String"
+            or environment.get(source(callee), (None,))[0] == "function"
+            or source(callee) == "String"
             and len(args) <= 1
         ):
             pass
@@ -237,12 +235,7 @@ class JavascriptData:
             method = property_name(callee.child_by_field_name("property"))
             native = source(receiver) if receiver.type == "identifier" else ""
             if native == "tools" and method in SHELL_TOOLS | {"apply_patch", "clock__curr_time", "web__run"}:
-                if (
-                    self.data_only
-                    and method in SHELL_TOOLS
-                    and literal_commands(arguments, LITERAL_SHELL_VALUE, LITERAL_LOOP_VALUES, LITERAL_EXPANSION_BYTES) is None
-                ):
-                    raise ValueError("computed shell")
+                pass
             elif native == "Promise" and method in {"all", "allSettled"} and len(args) == 1:
                 result_kind = "array"
             elif native == "JSON" and method in {"parse", "stringify"} and len(args) == 1:
@@ -287,7 +280,7 @@ class JavascriptData:
                     method in {"replace", "replaceAll"}
                     and len(args) == 2
                     and args[1].type == "string"
-                    and (args[0].type == "string" or self.data_only and args[0].type == "regex")
+                    and (args[0].type == "string" or args[0].type == "regex")
                 )
                 if method not in DATA_METHODS and not literal_replacement:
                     raise ValueError(method)
@@ -663,7 +656,7 @@ def analyse(text: str) -> tuple[bool, list[tuple[Node, bool]]]:
         pending.extend(reversed(node.named_children))
         if node.is_missing:
             lexical = False
-        if node.type in {"string", "string_fragment", "escape_sequence", "comment", "hash_bang_line"}:
+        if node.type in {"string", "string_fragment", "escape_sequence", "comment", "hash_bang_line", "regex"}:
             if node.type == "comment" and source(node).startswith(("<!--", "-->")):
                 lexical = False
             if node.type == "hash_bang_line" and node.start_byte != 0:
@@ -683,17 +676,11 @@ def analyse(text: str) -> tuple[bool, list[tuple[Node, bool]]]:
     visible = bytearray(data)
     for start, end in inert:
         visible[start:end] = bytes(value if value in {10, 13} else 32 for value in data[start:end])
-    if b"<!--" in visible or b"#!" in visible or b"-->" in visible:
+    if b"\\" in visible or b"<!--" in visible or b"#!" in visible or b"-->" in visible:
         return False, sites
     try:
-        if b"\\" in visible:
-            raise ValueError("escaped syntax")
         checker = JavascriptData()
         checker.statement(root, checker.environment)
     except (KeyError, ValueError, SyntaxError, RecursionError):
-        try:
-            checker = JavascriptData(data_only=True)
-            checker.statement(root, checker.environment)
-        except (KeyError, ValueError, SyntaxError, RecursionError):
-            return False, sites
+        return False, sites
     return True, sites

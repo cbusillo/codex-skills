@@ -67,25 +67,29 @@ templates stay conditional. Duplicate command fields, spreads, computed keys
 and accessors also stay conditional. Quoted command strings support only escapes
 shared by JavaScript and Python. This is literal decoding, never execution.
 
-In claim-related code-mode cells, a Tree-sitter JavaScript syntax tree checks
+In code-mode cells, a Tree-sitter JavaScript syntax tree checks
 that every effect belongs to a bounded data language. It accepts direct native
 shell/output calls, literal arrays, plain loops and conditions, and immutable
 native or JSON data reads. Read-only string/array methods support the recorded
 JSON parsing, filtering, mapping and output-formatting shapes. Inline callbacks
-are checked under their own data bindings. Calls are limited to supported
-non-constructor builtins and checked inline callbacks; callback references stay
-conditional except `forEach(text)`. Function literals cannot enter data directly.
-Only numeric `let` counters may be incremented. Explicit property writes,
+and local arrow functions are checked under their own data bindings. Calls are
+limited to supported non-constructor builtins, checked local functions and inline
+callbacks; callback references stay conditional except `forEach(text)`.
+Local reassignment preserves the data kind; number, array and function kinds
+cannot be reassigned. Only numeric `let` counters may be incremented. Explicit property writes,
 mutating method names and loop assignment targets stay conditional. Literal
 arrays used to decode targets remain immutable. Prototype/constructor access, capability aliases, unknown calls,
-named functions, executable options, computed callees, division syntax,
+function declarations, executable options, computed callees, division syntax,
 identifier escapes and unsupported syntax keep coverage conditional. A parse
 error alone never proves nonexecution. The reader assumes native results,
 `load` values and tool metadata obey the harness's serializable-data contract;
 every opaque cell stays conditional because hidden or computed access cannot
 prove that it did not execute a claim, even without literal claim text.
-Keep subsequent diagnostics bounded or use direct literal shell/output calls;
-keeping `store` separate from claim-related code also avoids that uncertainty.
+Keep subsequent diagnostics bounded or use direct literal shell/output calls.
+Every shell command and interactive input must decode completely. Known literal
+string concatenation and array/object indexing share the existing expansion limits.
+A loaded report inside a shell heredoc cannot prove that the report will not end
+the heredoc and execute a claim; use the native patch tool for report text.
 Complete output alone does not resolve older opaque evidence; use the existing
 Director-decision route when native evidence cannot establish coverage. Use direct
 literal shell calls and `text(result)` outside this subset. Known shell calls
@@ -97,7 +101,9 @@ verification even when the surrounding cell is conditional. A direct expression-
 predicate in a checked inline data callback may call a literal regex's `test`
 with one checked data argument and no gap before `.test`. Its pattern contains only letters, digits,
 underscore, space, dot, pipe or hyphen, and its flags are empty or `i`.
-Regex values, aliases, constructors, other methods and other syntax remain
+Inline regexes in `split`, `replace` and `replaceAll` accept a formatting subset
+of letters, digits, underscore, space, dot, pipe, plus, star, hyphen and `\s`,
+with `g`/`i` flags. Regex values, aliases, constructors and other methods remain
 conditional. The serializable-data and unchanged-builtins assumption also
 covers `RegExp.prototype.exec`; no recorded regex is executed by the reader.
 
@@ -220,13 +226,3 @@ short evaluator flags with program-shaped payloads; arbitrary attached runtime
 names cannot be distinguished from data option values. Shell evaluator payloads
 skip recognized option operands and terminators; ambiguous options stay conditional.
 
-Report formatting can also use checked local arrow functions, reassignment of
-local data variables, and literal regexes in data operations. This additional
-proof requires every shell command and interactive input to decode completely;
-it does not execute the JavaScript or resolve stored values. Concatenation of
-known literal strings is decoded under the same expansion limits. Tool aliases,
-unknown callbacks, property mutation and computed shell text remain conditional.
-In particular, placing a loaded report inside a shell heredoc does not prove
-that the report cannot terminate the heredoc and execute a claim. Use the native
-patch tool for report text instead. Opaque code stays conditional even when it contains no literal claim text;
-absence of that text cannot prove that an unknown helper did not claim.

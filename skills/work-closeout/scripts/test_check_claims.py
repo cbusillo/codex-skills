@@ -1817,6 +1817,13 @@ class ClaimCloseoutTests(unittest.TestCase):
     def test_report_formatting_cannot_hide_executable_claim_capabilities(self) -> None:
         sources = [
             'text(await tools.unknown_helper({}));',
+            'let i=0; let f=x=>x; if(1){i=load("k");} if(1){f=load("k")[i][i];} '
+            'const h=f(load("code")); await {then:h};',
+            'let i=0; const g=()=>load("r")[i]; i=load("k"); text(g());',
+            'let a=[]; {a=load("o");} text(load("r")[a.length]);',
+            'text(load("r").split(/"/));',
+            'text(load("r").split(/`/));',
+            r'text(load("r").split(/\\/\\//));',
             'const f=x=>tools.exec_command({cmd:x}); text(f(load("command")));',
             'let r=load("draft"); r=eval(r); text(r);',
             'const f=load("callback"); text(f("claim"));',
