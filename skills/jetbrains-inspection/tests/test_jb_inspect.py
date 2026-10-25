@@ -2949,7 +2949,9 @@ class LaneIdeAdviceTest(unittest.TestCase):
                                            "JETBRAINS_INSPECTION_GLOBAL_CONFIG": str(root / "absent.json")}),
                     patch.object(jb_inspect.Path, "home", return_value=root.parent),
                     patch.object(jb_inspect, "run_prepared_inspection", side_effect=inspect_lane),
-                    patch.object(sys, "argv", [str(SCRIPT_PATH), command, "--repo", str(root), "--scope", "files",
+                    patch.object(sys, "argv", [str(SCRIPT_PATH), command,
+                                               *(["--backend", "api"] if command == "agent-inspect" else []),
+                                               "--repo", str(root), "--scope", "files",
                                                "--file", "App.kt", "--file", "backend/app.py", "--json"]),
                     redirect_stdout(io.StringIO()),
                 ):
@@ -3060,7 +3062,7 @@ class LaneIdeAdviceTest(unittest.TestCase):
                 patch.object(jb_inspect.Path, "home", return_value=home),
                 patch.object(jb_inspect, "find_exact_route", return_value=None),
                 patch.object(jb_inspect, "open_project_for_lifecycle") as opened,
-                patch.object(sys, "argv", [str(SCRIPT_PATH), "agent-inspect", "--repo", str(root),
+                patch.object(sys, "argv", [str(SCRIPT_PATH), "agent-inspect", "--backend", "api", "--repo", str(root),
                                            "--scope", "files", "--file", "backend/app.py"]),
                 redirect_stdout(output),
             ):
@@ -8992,7 +8994,7 @@ class AgentInspectContractTest(unittest.TestCase):
                 self.fail("contended lifecycle must not start inspection")
 
         with (
-            patch.object(sys, "argv", [str(SCRIPT_PATH), "agent-inspect"]),
+            patch.object(sys, "argv", [str(SCRIPT_PATH), "agent-inspect", "--backend", "api"]),
             patch.object(jb_inspect, "build_context", return_value={"scope": "files"}),
             patch.object(jb_inspect.lifecycle_lock, try_lock.__name__, side_effect=lambda handle:
                          False if Path(handle.name) == jb_inspect.lifecycle_lock_path() else try_lock(handle)),
@@ -9012,7 +9014,7 @@ class AgentInspectContractTest(unittest.TestCase):
         paths = ["src/first.py", "src/file with spaces.py"]
         output = io.StringIO()
         with (
-            patch.object(sys, "argv", [str(SCRIPT_PATH), "agent-inspect", "--scope", "files",
+            patch.object(sys, "argv", [str(SCRIPT_PATH), "agent-inspect", "--backend", "api", "--scope", "files",
                                       "--file", paths[0], "--file", paths[1]]),
             patch.object(jb_inspect, "build_context", return_value={"scope": "files"}),
             patch.object(jb_inspect, "command_run", return_value={"status": "clean"}) as inspect,
@@ -9412,7 +9414,7 @@ class AgentInspectContractTest(unittest.TestCase):
     def test_unexpected_agent_exception_emits_terminal_envelope(self):
         output = io.StringIO()
         with (
-            patch.object(sys, "argv", [str(SCRIPT_PATH), "agent-inspect"]),
+            patch.object(sys, "argv", [str(SCRIPT_PATH), "agent-inspect", "--backend", "api"]),
             patch.object(jb_inspect, "build_context", side_effect=ValueError("unexpected failure")),
             patch.object(jb_inspect, "log_assessment_records"),
             redirect_stdout(output),

@@ -111,7 +111,9 @@ tool calls.
 On macOS, `agent-inspect` defaults to isolated native PyCharm for Python-only
 selections and Odoo Python/XML selections in root PyCharm lanes when an eligible
 independent worker, interpreter and profile are configured. Otherwise the
-existing Qodana/API selection remains available. Read
+qualified Qodana selection remains available. Automatic selection never enters the
+desktop API lifecycle: unsupported selections return UNKNOWN with
+`isolated_backend_unavailable` before contacting an IDE. Read
 [native PyCharm](references/native-backend.md) before configuring, diagnosing
 or changing that runner. It uses the independently Director-activated worker
 in place, with its shared exclusive lock and private system/cache/log paths;
@@ -122,8 +124,17 @@ and post an `Owner question:` on the item. The Director restores activation
 through the normal product UI using existing entitlements.
 
 Hosts without eligible native prerequisites retain the qualified local Qodana
-Python default when available; other selections retain the API. Explicit Qodana options select Qodana. Choose with
-`--backend native|api|qodana` or `JB_INSPECT_DEFAULT_BACKEND`. Read
+Python default when available. In repositories with inspection lanes, headless
+selection follows the lane router and omits unmatched files (such as Markdown).
+Receipts name unmatched and excluded files. Explicit `--scope files` overrides
+lane exclusions; implicit scopes honor them. Other selections stay UNKNOWN
+without desktop contact on every platform. Explicit
+Qodana options select Qodana. The API remains available with explicit
+`--backend api` for an intended API session; a Supervisor brief that prohibits
+desktop IDE use still prohibits that route. Choose with
+`--backend native|api|qodana`. `JB_INSPECT_DEFAULT_BACKEND` can prefer native
+or Qodana; an API preference still returns UNKNOWN and requires explicit
+`--backend api`. Read
 [local Qodana](references/qodana-backend.md) before diagnosing or changing it.
 Never copy license or credential files into a Qodana profile either. Run one
 capped, niced headless worker at a time and pause above load1 64. Report the
@@ -167,10 +178,10 @@ commands run that exact repository command in the exact linked worktree before
 opening it. Start the assessment directly:
 
 ```bash
-uv run "$HELPER" agent-inspect --repo "$PWD" --scope changed_files
+uv run "$HELPER" agent-inspect --backend api --repo "$PWD" --scope changed_files
 ```
 
-This also handles repositories with `qualityGate.inspection.lanes` and no
+This explicit API session also handles repositories with `qualityGate.inspection.lanes` and no
 top-level IDE: shared preparation runs before the non-empty lanes, then each
 lane selects its configured IDE and project path. A separate `open-worktree`
 step is not required. Read [inspection configuration](references/inspection-config.md)
@@ -498,11 +509,12 @@ scope, never source code or a mixed scope containing source code.
   A non-clean response with `capture_incomplete`, `non_empty_unmapped_tree`, or
   zero returned problems proves only that the plugin could not prove clean; it
   is not proof that agents can see and act on the IDE's red state.
-- readiness inspections should use `agent-inspect` or `inspect-closeout`, not
-  plain `get-status`.
-  `open-worktree`, `prepare-worktree`, `prepare`, `agent-inspect`, `inspect`,
-  and `inspect-closeout` always lifecycle-open the
-  exact worktree when needed. Use `resolve-route`, `get-status`, `get-problems`,
+- Readiness inspections use `agent-inspect`. `inspect`, `inspect-closeout`,
+  and `agent-inspect --backend api` are API-session commands; they and
+  `open-worktree`, `prepare-worktree`, and `prepare` lifecycle-open the exact
+  worktree when needed. They are unavailable when the task prohibits desktop
+  IDE use; do not switch to them after an isolated-backend refusal.
+  Use `resolve-route`, `get-status`, `get-problems`,
   or `claim-worktree` for observation-only workflows that must not open an IDE;
   do not turn an assessment command into a route-only probe.
   If lifecycle cleanup is skipped or fails for a helper-opened project, the

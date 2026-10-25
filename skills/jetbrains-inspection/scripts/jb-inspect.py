@@ -556,6 +556,15 @@ def main() -> int:
                 host_default = os.environ.get("JB_INSPECT_DEFAULT_BACKEND")
                 args.backend, backend_selection = native_backend_module().select_backend(
                     args, sys.modules[__name__], host_default if host_default in {"api", "qodana", "native"} else None)
+                if args.backend == "api":
+                    common_backend.scope_selection(args, sys.modules[__name__])
+                    raise InspectError(
+                        "Automatic inspection has no isolated backend for this selection; the desktop API was not contacted.",
+                        2,
+                        {"error_reason": "isolated_backend_unavailable", "backend_selection": backend_selection,
+                         "hint": "Select files supported by the configured native or Qodana backend. Keep unsupported coverage UNKNOWN. "
+                                 "API commands (inspect, inspect-closeout, or --backend api) require an intended API session; never use them when the task prohibits desktop IDE use."},
+                    )
             if args.backend == "native":
                 result = command_native(args)
                 result["backend_selection"] = backend_selection
@@ -836,7 +845,7 @@ def build_parser() -> argparse.ArgumentParser:
         subparsers.choices[name].add_argument("--timeout-ms", type=int, default=DEFAULT_WAIT_TIMEOUT_MS)
         subparsers.choices[name].add_argument("--poll-ms", type=int, default=DEFAULT_POLL_MS)
     agent = subparsers.choices["agent-inspect"]
-    agent.add_argument("--backend", choices=("auto", "api", "qodana", "native"), default="auto", help="Per-run backend. auto uses native PyCharm for Python/Odoo and the existing routes otherwise.")
+    agent.add_argument("--backend", choices=("auto", "api", "qodana", "native"), default="auto", help="Per-run backend. auto uses isolated native PyCharm or Qodana and refuses desktop API fallback.")
     agent.add_argument("--native-worker", help="Independent Director-activated worker directory; config and credentials remain in place.")
     agent.add_argument("--native-recover-only", action="store_true", help="Clean only the journaled native run and exact helper SDK, without inspection or clearing activation stops.")
     agent.add_argument("--native-reconcile-result", help="Saved terminal native result for the same interrupted run; requires --native-recover-only and never clears licensing stops.")
@@ -7184,6 +7193,8 @@ def disk_freshness_recovery(reason: str, payload: dict[str, Any]) -> str | None:
 
 def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     reason = normalize_reason(reason)
+    if reason == "isolated_backend_unavailable":
+        return str(payload["hint"])
     if reason == "ide_memory_exhausted":
         action = "Ask the Director to dismiss any memory-error dialog (such as Java heap space) and restart the IDE before inspecting again."
         cleanup = dict_field(payload, "cleanup")
@@ -7451,6 +7462,7 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "ide_not_ready_timeout",
         "ide_open_failed",
         "ide_launch_disabled",
+        "isolated_backend_unavailable",
         "ide_launch_refused",
         "project_open_blocked",
         "already_opening_stuck",
@@ -7891,6 +7903,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         "inspection_api_unavailable",
         "ide_open_failed",
         "ide_launch_disabled",
+        "isolated_backend_unavailable",
         "ide_launch_refused",
         "untrusted_auto_open_root",
         "project_open_blocked",

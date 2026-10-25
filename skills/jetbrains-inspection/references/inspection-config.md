@@ -7,7 +7,7 @@ For the macOS native backend's independently activated worker, host configuratio
 snapshot preparation and recovery, read [native PyCharm](native-backend.md).
 `jetbrains.nativeWorker` belongs in the shared helper config, not repository
 metadata or a desktop IDE profile. The API lane/lifecycle behavior below remains
-the route for other supported language models.
+an explicit API-session route for other supported language models.
 
 The helper reads `.github/github.json` when present:
 
@@ -47,8 +47,10 @@ Optional-lane failures remain visible without changing the required-lane
 aggregate, including when only optional lanes run. When `lanes` is absent, the existing single-IDE path remains
 unchanged.
 
-For lane-configured repositories, start `agent-inspect`, `inspect`, or
-`inspect-closeout` directly with the desired scope. These commands perform
+For an intended API session in lane-configured repositories, start
+`agent-inspect --backend api`, `inspect`, or `inspect-closeout` directly with the
+desired scope. These API commands are prohibited when the task forbids desktop
+IDE use. They perform
 shared repository preparation before opening any non-empty lane, then select
 each lane's IDE and optional `projectPath`. No separate `open-worktree` or
 top-level IDE is needed.
@@ -88,7 +90,8 @@ before preparing. The path must be relative and stay inside the exact worktree,
 including after symlink resolution. Git mutation checks still cover the whole
 worktree, and only the nested Python project receives SDK provisioning. Omit
 the field for root preparation. The Qodana and native backends currently refuse
-this nested preparation shape; the configured API lanes remain available.
+this nested preparation shape; configured API lanes require an explicit API
+session, for example `agent-inspect --backend api`.
 [SKILL.md](../SKILL.md) owns selection. This does not authorize opening a desktop IDE.
 
 An assessment invoked with `--native-project-scope --repo <projectPath>`

@@ -745,6 +745,20 @@ os.kill(os.getpid(), signal.SIGKILL)
         args.scope, args.files = "files", ["fixtures/defect.py"]
         self.assertIn("fixtures/defect.py", backend.scope_selection(args, host)[3])
 
+    def test_headless_mixed_selection_uses_declared_lanes(self) -> None:
+        inspection = {"lanes": [{"id": "python", "ide": "PyCharm", "required": True, "include": ["**/*.py"]}]}
+        (self.repo / ".github/github.json").write_text(json.dumps({"qualityGate": {"inspection": inspection}}))
+        (self.repo / "README.md").write_text("Fixture documentation\n")
+        args = host.build_parser().parse_args(["agent-inspect", "--repo", str(self.repo), "--scope", "changed_files"])
+        with patch.object(host, "inspection_scope_paths", return_value=["src/a.py", "README.md"]):
+            self.assertEqual(backend.scope_selection(args, host)[3], {"src/a.py"})
+        args.scope, args.files = "files", ["src/a.py", "README.md"]
+        self.assertEqual(backend.scope_selection(args, host)[3], {"src/a.py"})
+        receipt = {}
+        backend.scope_selection(args, host, receipt)
+        self.assertEqual(receipt["unmatched_files"], ["README.md"])
+        self.assertEqual(receipt["excluded_files"], [])
+
     def test_detached_monitor_deletes_copies_when_parent_is_killed_during_load_pause(self):
         import time
         state = self.root / "state"
