@@ -2080,6 +2080,14 @@ within the invocation. The `work_graph_context` reports observed and unread
 nodes and batch request count; those counts do not prove complete portfolio
 coverage. Per-repository planning calls retain their existing read routes.
 
+The goal board and direction audit consume the same native graph and discussion
+reading functions. The board keeps its bounded view of recent
+decisions and PR handoffs. A weekly audit shares one invocation cache from
+repository discovery through its per-repository, capacity, outcome and stale-wait
+projections, including unread responses. Audit attribution retains full native
+relationship metadata and reads the canonical issue when a minimal projection
+lacks it. None of this cache is a persisted record of work or offline authority.
+
 Global `next` bounds network work with `--time-budget SECONDS`
 and `--read-workers COUNT`; `--help` reports the current defaults and bounds.
 Increase the budget for broader evidence;

@@ -97,6 +97,39 @@ def evaluate(row: dict[str, Any], *, limit: int = 100, read_comments: Any = unav
 
 
 class WorkGraphTests(unittest.TestCase):
+    def test_invocation_cache_shares_equivalent_reads_without_sharing_mutable_bodies(self) -> None:
+        fetch = Mock(return_value=[{"number": 1, "body": "Provider body"}])
+        read = graph.cached_reads(fetch)
+        first = read(["api", "/repos/Owner/Repo/issues?state=all&page=1", "-X", "get"])
+        first[0]["body"] = "Enriched body"
+        second = read(["api", "repos/owner/repo/issues?page=1&state=all", "--method", "GET"])
+        self.assertEqual(second, fetch.return_value)
+        self.assertEqual(fetch.call_count, 1)
+        failure = ValueError("Provider unavailable")
+        fetch.side_effect = failure
+        for args in (["api", "repos/owner/repo/issues/2"], ["api", "/repos/OWNER/REPO/issues/2", "--method", "GET"]):
+            with self.assertRaises(ValueError) as caught:
+                read(args)
+            self.assertIs(caught.exception, failure)
+        self.assertEqual(fetch.call_count, 2)
+
+    def test_raw_relationship_rows_preserve_attribution_metadata_before_compaction(self) -> None:
+        source = {
+            "number": 2,
+            "title": "Delivered",
+            "state": "closed",
+            "html_url": "https://github.com/owner/repo/issues/2",
+            "closed_at": "2026-10-21T12:00:00Z",
+            "updated_at": "2026-10-21T12:00:00Z",
+            "state_reason": "completed",
+        }
+        read = Mock(return_value=([source], False))
+        rows, truncated = graph.read_relationship_rows("owner/repo", 1, {}, read, fields=("sub_issues",))
+        self.assertFalse(truncated)
+        self.assertEqual(rows["sub_issues"], [source])
+        compact, _ = graph.read_relationships("owner/repo", 1, {}, read, fields=("sub_issues",))
+        self.assertEqual(compact["sub_issues"], [graph.compact_relationship_issue(source, "sub_issues")])
+
     def test_batches_publish_native_issue_discussion_and_complete_relationship_pages(self) -> None:
         import math
 

@@ -4797,15 +4797,7 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
             evidence[repo] = observed
             try:
                 bound = NEXT_PLAN_INVENTORY_LIMIT
-                _, pulls = collect_paged_rest_items(f"/repos/{repo}/pulls", query={"state": "open", "sort": "created", "direction": "asc"},
-                    bucket="rest_core", step_prefix="next_queue_pulls", limit=bound + 1)
-                _, branches = collect_paged_rest_items(f"/repos/{repo}/branches", query={},
-                    bucket="rest_core", step_prefix="next_queue_branches", limit=bound + 1)
-                observed.update(pulls=pulls[:bound], complete=len(pulls) <= bound and len(branches) <= bound,
-                    inventory={"remote_branches": [branch["name"] for branch in branches[:bound]],
-                               "local_branches": [], "worktrees": []})
-                observed["coverage"].update(pull_count=min(len(pulls), bound), branch_count=min(len(branches), bound),
-                    truncated=not observed["complete"], local_artifacts="not_read")
+                observed.update(github_work_graph.ownership_inventory(collect_paged_rest_items, repo, limit=bound))
                 # Local artifacts are supplementary evidence. Do not claim a
                 # complete peer inventory even when the native registry works.
                 target = pathlib.Path.home() / "Developer" / repo.split("/")[1]

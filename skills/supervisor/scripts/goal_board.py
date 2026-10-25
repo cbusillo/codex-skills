@@ -33,8 +33,8 @@ PR_LIMIT = github_work_graph.PR_LIMIT
 NEXT_ACTION_CHARS = 200
 OPEN_LABELS = tuple(github_plan_status.DEFAULT_STATUS_LABELS[key] for key in ("active", "blocked", "waiting", "stale"))
 
-def login(author):
-    return github_plan_status.normalize_author({"author": author})["login"].casefold()
+def login(author: dict[str, Any] | None) -> str:
+    return github_work_graph.graphql_author(author)["login"].casefold()
 
 
 def truncated(connection):
@@ -50,17 +50,16 @@ def status_label(labels, unread):
     return found
 
 
-def derived_status(node, trusted, unread):
+def derived_status(node: dict[str, Any], trusted: set[str], unread: list[str]) -> dict[str, Any]:
     """Native blockers and the last trusted structured wait own current status."""
     unknown = {"status": UNKNOWN, "blocked_by": [], "waits": [], "structured_wait": None}
     blockers = node.get("blockedBy")
     if not isinstance(blockers, dict) or truncated(blockers):
         unread.append("native blockers")
         return unknown
-    comments = [{"body": comment.get("body") or "", "user": {"login": login(comment.get("author"))}}
-                for comment in node["comments"]["nodes"]]
+    comments = [github_work_graph.graphql_comment(comment) for comment in node["comments"]["nodes"]]
     source = {"body": node.get("body") or "", "state": node["state"], "state_reason": node.get("stateReason"),
-              "user": {"login": login(node.get("author"))},
+              "user": github_work_graph.graphql_author(node.get("author")),
               "labels": [item["name"] for item in node["labels"]["nodes"]]}
     try:
         # The shared resolver validates historical trusted records too. A clear
@@ -69,9 +68,7 @@ def derived_status(node, trusted, unread):
             unread.append("structured wait")
             return unknown
         wait = github_plan_wait.current(source, comments, trusted)
-        relationships = {"blocked_by": [{"repo": item["repository"]["nameWithOwner"],
-            "number": item["number"], "state": item["state"].lower(), "html_url": item["url"]}
-            for item in blockers["nodes"]]}
+        relationships = {"blocked_by": [github_work_graph.graphql_relationship(item) for item in blockers["nodes"]]}
         derived = github_plan_status.derive(source, relationships, wait)
     except (ValueError, KeyError, TypeError, AttributeError):
         unread.append("structured wait or native blockers")
