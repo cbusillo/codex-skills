@@ -17,6 +17,9 @@ import github_direction_next
 import github_next_reads
 import github_plan_graph
 import github_read
+from github_plan_graph import rest_author as graphql_author
+from github_plan_graph import rest_comment as graphql_comment
+from github_plan_graph import rest_related_issue as graphql_relationship
 
 CHILD_LIMIT = 50
 TRACK_COMMENTS = 100
@@ -406,7 +409,7 @@ def compact_relationship_issue(issue: dict[str, Any], relationship: str) -> dict
     }
 
 
-def read_relationships(
+def read_relationship_rows(
     repo: str,
     number: int,
     issue: dict[str, Any],
@@ -433,7 +436,112 @@ def read_relationships(
                 relationships[field] = []
                 continue
             rows, cut = read(f"/repos/{repo}/issues/{number}/{endpoint}", limit)
-        relationships[field] = [compact_relationship_issue(row, field) for row in rows[:limit]]
+        relationships[field] = rows[:limit]
         if cut:
             truncated.append(field)
     return relationships, truncated
+
+
+def read_relationships(
+    repo: str,
+    number: int,
+    issue: dict[str, Any],
+    read: Callable[[str, int], tuple[list[dict[str, Any]], bool]],
+    *,
+    limit: int = 100,
+    fields: tuple[str, ...] = ("blocked_by", "blocking", "sub_issues"),
+) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
+    rows, truncated = read_relationship_rows(repo, number, issue, read, limit=limit, fields=fields)
+    return {field: [compact_relationship_issue(row, field) for row in values] for field, values in rows.items()}, truncated
+
+
+@dataclass
+class NativeGraphRead:
+    nodes: dict[tuple[str, int], dict[str, Any]]
+    unavailable: list[str]
+    truncated: bool
+
+
+def read_native_graph(
+    roots: list[dict[str, Any]],
+    read: Callable[[str, int], tuple[list[dict[str, Any]], bool]],
+    *,
+    max_nodes: int = 500,
+    relationship_limit: int = 2000,
+) -> NativeGraphRead:
+    records = {(row["repo"].casefold(), int(row["number"])): row for row in roots}
+    unavailable: list[str] = []
+
+    def read_edges(repo: str, number: int) -> list[tuple[str, int]]:
+        related: list[tuple[str, int]] = []
+        for field, endpoint in (("blocked_by", "dependencies/blocked_by"), ("sub_issues", "sub_issues")):
+            source = f"{repo}#{number}:{endpoint}"
+            try:
+                fields, truncated = read_relationship_rows(repo, number, {}, read, limit=relationship_limit, fields=(field,))
+                if truncated:
+                    unavailable.append(source)
+                for row in fields[field]:
+                    key = github_plan_graph.native_issue_key(row)
+                    records.setdefault(key, row)
+                    related.append(key)
+            except ValueError:
+                unavailable.append(source)
+        return related
+
+    graph = github_plan_graph.walk_native_issues(list(records), read_edges=read_edges, max_nodes=max_nodes)
+    return NativeGraphRead({key: records[key] for key in graph.nodes}, sorted(set(unavailable)), not graph.complete)
+
+
+def cached_reads(fetch: Callable[[list[str]], Any]) -> Callable[[list[str]], Any]:
+    cache: dict[tuple[str, ...], Any] = {}
+
+    def read(args: list[str]) -> Any:
+        normalized = list(args)
+        if len(normalized) >= 2 and normalized[0] == "api":
+            path = github_next_reads.observation_key("/" + normalized[1].lstrip("/"))
+            parsed = urllib.parse.urlsplit(path)
+            query = urllib.parse.urlencode(
+                sorted(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True), key=lambda pair: pair[0])
+            )
+            normalized[1] = urllib.parse.urlunsplit(parsed._replace(query=query)).lstrip("/")
+            for index in range(2, len(normalized) - 1):
+                if normalized[index] in {"--method", "-X"}:
+                    normalized[index : index + 2] = ["--method", normalized[index + 1].upper()]
+            if len(normalized) == 2 and normalized[1] != "graphql":
+                normalized.extend(["--method", "GET"])
+        key = tuple(normalized)
+        if key not in cache:
+            try:
+                cache[key] = fetch(args)
+            except Exception as exc:
+                cache[key] = exc
+                raise
+        value = cache[key]
+        if isinstance(value, Exception):
+            raise value
+        return copy.deepcopy(value)
+
+    return read
+
+
+def ownership_inventory(read: Callable[..., Any], repo: str, *, limit: int) -> dict[str, Any]:
+    _, pulls = read(
+        f"/repos/{repo}/pulls",
+        query={"state": "open", "sort": "created", "direction": "asc"},
+        bucket="rest_core",
+        step_prefix="next_queue_pulls",
+        limit=limit + 1,
+    )
+    _, branches = read(f"/repos/{repo}/branches", query={}, bucket="rest_core", step_prefix="next_queue_branches", limit=limit + 1)
+    complete = len(pulls) <= limit and len(branches) <= limit
+    return {
+        "pulls": pulls[:limit],
+        "complete": complete,
+        "inventory": {"remote_branches": [branch["name"] for branch in branches[:limit]], "local_branches": [], "worktrees": []},
+        "coverage": {
+            "pull_count": min(len(pulls), limit),
+            "branch_count": min(len(branches), limit),
+            "truncated": not complete,
+            "local_artifacts": "not_read",
+        },
+    }
