@@ -2270,7 +2270,7 @@ class ClaimCloseoutTests(unittest.TestCase):
                 },
             ):
                 rows.append({"payload": payload})
-        input_bytes = sum(len(text) for _, text, _ in helper.history.tool_inputs(rows))
+        input_bytes = sum(len(call.text) for call in helper.history.tool_details(rows))
         scanned = 0
 
         def meter(method: Callable[..., object]) -> Callable[..., object]:
