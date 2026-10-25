@@ -145,16 +145,21 @@ def scope_api_search(args: list[str], *, include_archived: bool) -> list[str]:
     return [scoped_endpoint if argument == parsed.endpoint else argument for argument in args]
 
 
-def scope_gh_arguments(args: list[str]) -> list[str]:
-    include_archived = args[:1] == ["--include-archived"]
-    if include_archived:
-        args = args[1:]
+def gh_command_index(args: list[str]) -> int:
     index = 0
     while index < len(args) and args[index].startswith("-"):
         if args[index] == "--":
             index += 1
             break
         index += 2 if args[index] in {"-R", "--repo", "--hostname"} else 1
+    return index
+
+
+def scope_gh_arguments(args: list[str]) -> list[str]:
+    include_archived = args[:1] == ["--include-archived"]
+    if include_archived:
+        args = args[1:]
+    index = gh_command_index(args)
     if args[index : index + 2] in (["search", "issues"], ["search", "prs"]):
         prefix = ["--include-archived"] if include_archived else []
         return args[: index + 2] + scope_cli_search(prefix + args[index + 2 :])
@@ -163,5 +168,28 @@ def scope_gh_arguments(args: list[str]) -> list[str]:
     return args
 
 
+def main() -> int:
+    arguments_file, include_archived, actor_probe, *arguments = sys.argv[1:]
+    original_arguments = arguments
+    try:
+        if not actor_probe:
+            prefix = ["--include-archived"] if include_archived == "1" else []
+            arguments = scope_gh_arguments(prefix + arguments)
+        if arguments != original_arguments:
+            Path(arguments_file).write_text(shlex.join(arguments))
+    except (OSError, UnicodeError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    index = gh_command_index(arguments)
+    if arguments[index : index + 1] == ["api"]:
+        from github_api import parse_gh_api_args
+
+        parsed = parse_gh_api_args(arguments[index + 1 :])
+        if parsed is not None:
+            print(parsed.sent_method)
+            print(parsed.endpoint)
+    return 0
+
+
 if __name__ == "__main__":
-    print(shlex.join(scope_gh_arguments(sys.argv[1:])))
+    raise SystemExit(main())

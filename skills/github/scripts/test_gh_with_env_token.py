@@ -59,6 +59,7 @@ def run_wrapper(
     *args: str,
     gh_command: Path | None = None,
     extra_env: dict[str, str] | None = None,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = {
         "PATH": os.environ["PATH"],
@@ -76,6 +77,7 @@ def run_wrapper(
         env=env,
         text=True,
         capture_output=True,
+        input=input_text,
         timeout=10,
     )
 
@@ -180,7 +182,17 @@ print(json.dumps({{"args": args, "repositories": [row["full_name"] for row in ro
             assert result.returncode == 0, result.stderr
             payload = json.loads(result.stdout)
             assert payload["repositories"] == current
-            assert not any(argument.startswith("q=@") for argument in payload["args"])
+        missing_query = root / "missing.txt"
+        binary_query = root / "binary.txt"
+        binary_query.write_bytes(b"\xff")
+        for query_path in (missing_query, binary_query):
+            result = run_wrapper(env_file, classifier, identity, "api", "-XGET", "search/issues", "-F", f"q=@{query_path}", gh_command=fake_gh)
+            assert result.returncode == 2, result
+            assert "error:" in result.stderr
+            assert "Traceback" not in result.stderr
+        result = run_wrapper(env_file, classifier, identity, "api", "-XGET", "search/issues", "-F", "q=@-", gh_command=fake_gh, input_text="user:owner")
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["repositories"] == current
 
 
 def test_check_preserves_user_token_fallback_when_app_is_absent() -> None:

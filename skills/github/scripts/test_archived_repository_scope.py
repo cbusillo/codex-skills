@@ -27,6 +27,7 @@ import director_waits
 import direction_audit
 import github_work_rollup as rollup
 import github_unanswered_comments as attention
+import github_read
 from test_gh_with_env_token import run_wrapper, user_token_fixture, write
 
 SPEC = importlib.util.spec_from_file_location("archive_plan", SCRIPTS / "gh-plan.py")
@@ -60,6 +61,8 @@ class ArchiveTests(unittest.TestCase):
 import json, sys
 from urllib.parse import parse_qs, urlsplit
 args = sys.argv[1:]
+if "--include-archived" in args:
+    raise SystemExit("unknown flag: --include-archived")
 query = " ".join(args)
 for arg in args:
     query += " " + " ".join(parse_qs(urlsplit(arg).query).get("q", []))
@@ -78,18 +81,27 @@ print(json.dumps({{"items": rows, "total_count": len(rows), "incomplete_results"
 
             for included in (False, True):
                 expected = len(REPOS) if included else sum(not repo["archived"] for repo in REPOS)
+                fixture_environment = {"PATH": os.environ["PATH"], "HOME": str(root), "CODEX_SKILLS_ENV_FILE": str(env_file),
+                                       "GH_WITH_ENV_TOKEN_CLASSIFIER": str(classifier), "GH_WITH_ENV_TOKEN_IDENTITY_HELPER": str(identity),
+                                       "GH_WITH_ENV_TOKEN_PYTHON": sys.executable, "GH_WITH_ENV_TOKEN_GH": str(fake_gh)}
                 result = subprocess.run(
                     [sys.executable, str(SCRIPTS / "gh-plan.py"), "search", "user:owner", *(["--include-archived"] if included else [])],
                     cwd=root, text=True, capture_output=True, timeout=20,
-                    env={"PATH": os.environ["PATH"], "HOME": str(root), "CODEX_SKILLS_ENV_FILE": str(env_file),
-                         "GH_WITH_ENV_TOKEN_CLASSIFIER": str(classifier), "GH_WITH_ENV_TOKEN_IDENTITY_HELPER": str(identity),
-                         "GH_WITH_ENV_TOKEN_PYTHON": sys.executable, "GH_WITH_ENV_TOKEN_GH": str(fake_gh)},
+                    env=fixture_environment,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(json.loads(result.stdout)["total_count"], expected)
                 settings = {"subjects": ["owner"], "window": rollup.Window(NOW, NOW, "today"), "include_bots": True, "include_archived": included}
                 with patch_attr(rollup, "run", delegate), patch_attr(rollup, "subject_item_in_window", return_value=True):
                     self.assertEqual(len(rollup.collect_subject_items(settings)), expected)
+                with patch.dict(os.environ, fixture_environment, clear=True):
+                    reader = github_read.GitHubReader(gh_cmd=str(SCRIPTS / "gh-with-env-token"), expected_actor="fixture",
+                                                     actor="fixture", include_archived=included)
+                    body = reader.request("GET", "search/issues?q=user:owner", bucket="search", step="archive_fixture").body
+                    self.assertEqual(body["total_count"], expected)
+                    native_reader = github_read.GitHubReader(gh_cmd=str(fake_gh), expected_actor="fixture", actor="fixture", include_archived=True)
+                    body = native_reader.request("GET", "search/issues?q=user:owner", bucket="search", step="native_archive_fixture").body
+                    self.assertEqual(body["total_count"], len(REPOS))
 
     def test_plan_search_count_excludes_archived_repository(self):
         def read(path, **kwargs):

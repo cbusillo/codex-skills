@@ -347,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
         return refuse(f"checkout origin is {checkout_slug or 'not GitHub'}, not {args.repo}")
     import github_read
 
-    reader = github_read.GitHubReader(operation="github.worktree.retire_landed")
+    reader = github_read.GitHubReader(operation="github.worktree.retire_landed", include_archived=True)
     try:
         if args.branch:
             summary, rows = branch_rows(reader, github_read, args.repo, args.branch, args.checkout, root)

@@ -16,8 +16,13 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 from types import SimpleNamespace
+from typing import Any
 
 import check_claims as helper
+
+
+def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    return patch.object(target, name, *args, **kwargs)
 
 ACTOR = "fixture[bot]"
 SESSION = "native-session"
@@ -103,6 +108,7 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.issue = {"body": "", "number": 1}
         self.pulls = []
         self.reader = Mock()
+        self.repository_reader = helper.repository_reader
         self.reader.requests = []
         self.reader.expected_actor = ACTOR
         self.reader.deadline_at = None
@@ -1590,6 +1596,21 @@ class ClaimCloseoutTests(unittest.TestCase):
             [held] if path.endswith("/issues/5/comments") else self.paged(path, **kw))
         self.search_finds(1, 5)
         report = helper.check([root])
+        self.assertFalse(report["claims_clear"])
+        self.assertTrue(any(line.startswith(f"{REPO}#5:") for line in report["blocked"]))
+
+    def test_an_archived_repository_claim_still_blocks_closeout(self) -> None:
+        root = self.undecodable_claim_session()
+        held = {**self.source, "id": 50}
+        self.reader.paged_json.side_effect = lambda path, **kw: (
+            [held] if path.endswith("/issues/5/comments") else self.paged(path, **kw))
+
+        def make_reader(**options: object) -> Mock:
+            self.search_finds(1, *([5] if options.get("include_archived") else []))
+            return self.reader
+
+        with patch_attr(helper, "repository_reader", side_effect=self.repository_reader), patch_attr(helper, "GitHubReader", side_effect=make_reader):
+            report = helper.check([root])
         self.assertFalse(report["claims_clear"])
         self.assertTrue(any(line.startswith(f"{REPO}#5:") for line in report["blocked"]))
 
