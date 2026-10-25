@@ -568,6 +568,8 @@ def main() -> int:
             if args.backend == "native":
                 result = command_native(args)
                 result["backend_selection"] = backend_selection
+                if not args.native_recover_only:
+                    log_native_assessment(result)
                 print(public_json(result))
                 return 0
             if args.backend == "qodana":
@@ -640,6 +642,28 @@ def native_backend_module() -> Any:
 
 def command_native(args: argparse.Namespace) -> dict[str, Any]:
     return native_backend_module().run(args, sys.modules[__name__])
+
+
+def log_native_assessment(result: dict[str, Any]) -> None:
+    agent_result = dict_field(result, "agent_result")
+    outcome = dict_field(result, "inspection_outcome")
+    diagnostic = dict_field(result, "diagnostic")
+    verdict = agent_result.get("verdict") or outcome.get("verdict")
+    started = verdict in {"GREEN", "RED"} or "engine_exit_code" in dict_field(diagnostic, "native")
+    payload = {
+        **result,
+        "client_run_id": _ACTIVE_CLIENT_RUN_ID,
+        "verdict": verdict,
+        "bucket": agent_result.get("bucket"),
+        "verdict_reason": outcome.get("reason"),
+        "verdict_next_action": agent_result.get("next_action"),
+        "retry_policy": agent_result.get("retry_policy"),
+        "inspection_started": started,
+        "total_problems": result.get("finding_count") if started else None,
+    }
+    log_assessment_records(payload, 0)
+    if isinstance(result.get("diagnostic"), dict):
+        diagnostic.update({key: value for key, value in payload.items() if key.endswith(("_log_path", "_log_error"))})
 
 
 def error_payload(error: InspectError, args: argparse.Namespace | None = None) -> dict[str, Any]:
@@ -8397,6 +8421,7 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
         "timestamp": timestamp,
         "timestamp_ms": timestamp_ms,
         "command": command,
+        "backend": public.get("backend"),
         "verdict": public.get("verdict"),
         "bucket": public.get("bucket"),
         "verdict_reason": public.get("verdict_reason"),
@@ -8445,6 +8470,10 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
         "python_sdk_preparation": python_sdk_preparation_for_payload(public),
         "total_problems": public.get("total_problems"),
         "problems_shown": public.get("problems_shown"),
+        "proof_failure_count": len(public["proof_failures"]) if isinstance(public.get("proof_failures"), list) else None,
+        "uncovered_inspection_count": (
+            len(public["uncovered_inspections"]) if isinstance(public.get("uncovered_inspections"), list) else None
+        ),
         "internal_attempts": ordered_internal_attempts(public),
         "internal_retry_count": public.get("internal_retry_count"),
         "internal_retry_reason": public.get("internal_retry_reason"),
@@ -8986,6 +9015,8 @@ def qualification_event_candidate(
     line_number: int,
     criteria: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if event.get("backend") not in (None, "api"):
+        return None, qualification_exclusion(event, line_number, "backend_not_qualified", False)
     client_run_id = clean_optional(event.get("client_run_id"))
     assessment_id = clean_optional(event.get("assessment_id"))
     if client_run_id is None or assessment_id is None:
