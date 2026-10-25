@@ -291,7 +291,8 @@ changes all count. A changed file whose lines cannot be read from the diff
 counts in full. A finding that an edit causes on an unchanged line, including
 after a deletion, is not counted; tests, type checks and broad scopes catch
 those. The findings artifact keeps every finding with its `introduced` value;
-the result lists counted findings and `preexisting_finding_count`. Without a
+the result lists counted findings, `advisory_findings` for spelling and grammar
+severities that never count, and `preexisting_finding_count`. Without a
 resolvable merge base or diff, `changed_lines` is `unavailable` and every
 finding counts. Coverage proof is unaffected. `directory` and `whole_project`
 scopes count every finding.
