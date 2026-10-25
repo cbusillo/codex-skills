@@ -2630,6 +2630,10 @@ def milestone_claim_track(issue: dict[str, Any], links: list[str]) -> dict[str, 
     ancestry = milestone_claim_ancestry(issue)
     if track := valid_track(sorted(number for repo, number in ancestry.nodes if repo == direction_repo)):
         return track
+    milestone = issue.get("milestone") or {}
+    if (ancestry.complete and milestone.get("state") == "open" and milestone.get("title") not in titles
+            and milestone.get("title") in direction_milestone_titles(load_direction(issue["repo"]) or "")):
+        return issue
     code = "claim_admission_unlinked" if ancestry.complete else "claim_milestone_graph_incomplete"
     raise ClassifiedPlanError(code,
         f"Milestone admission needs an open Track in {direction_repo} under a listed milestone. "
