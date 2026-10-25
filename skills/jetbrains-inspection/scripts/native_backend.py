@@ -44,7 +44,7 @@ ACTIVE_PROCESSORS = 2
 NICE = 10
 DRAIN_SECONDS = 2
 DRAIN_BYTES = 4 * 1024 * 1024
-NATIVE_SUFFIXES = frozenset({".py", ".xml"})
+NATIVE_SUFFIXES = frozenset({".py", ".xml", ".yaml", ".yml"})
 
 
 def sibling_module(name, filename):
@@ -85,6 +85,8 @@ def select_backend(args, host, host_default=None):
                 return "native", "odoo_native_route"
             if all(f.endswith(".py") for f in selected):
                 return "native", "python_native_route"
+            if all(Path(f).suffix in {".py", ".yaml", ".yml"} for f in selected):
+                return "native", "configuration_native_route"
     except (Blocked, host.InspectError, OSError, subprocess.SubprocessError, ValueError):
         pass
     return common.select_backend(args, host)
@@ -969,7 +971,7 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
     elif reason == "native_scope_too_large":
         action = "Reduce the selected scope or set --max-files to the intended file limit before reassessing."
     elif reason == "native_scope_unsupported":
-        action = "Select .py and Odoo .xml files assigned to the root PyCharm lane; other language or nested-project models require their existing qualified backend."
+        action = "Select .py, .yaml, .yml and Odoo .xml files assigned to the root PyCharm lane; other language or nested-project models require their existing qualified backend."
     elif reason in {"native_recovery_process_group_unproven", "native_recovery_process_identity_changed", "native_recovery_process_identity_unproven"}:
         identity = receipt.get("recovery_process", {})
         pid = identity.get("pid") or "<journaled-pid>"
@@ -1179,7 +1181,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         trace_tools, trace_failed = proof.read_trace(private / "inspection-trace.json", project)
         control_root = next(iter(controls)).split("/", 1)[0]
         receipt["coverage"], gaps = proof.assess(expected, registered, trace_tools, trace_failed, selected,
-                                                all_findings, control_root=control_root, tool_languages=languages)
+                                                all_findings, control_root=control_root, tool_languages=languages, scope=scope)
         receipt["coverage"]["profile_requested"] = sorted(profile_requested)
         allowed = selected | controls
         if set(receipt.get("inspected_files", [])) - allowed:

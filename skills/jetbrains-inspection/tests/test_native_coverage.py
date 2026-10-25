@@ -24,13 +24,43 @@ def canary(tool, *, root=CONTROL_ROOT, file=None):
 
 class CoverageTests(unittest.TestCase):
     @staticmethod
-    def assess(requested, traces, *, selected=None, registered=None, findings=None, failed=(), languages=None):
+    def assess(requested, traces, *, selected=None, registered=None, findings=None, failed=(), languages=None, scope="files"):
         return coverage.assess(
             set(requested), set(requested) if registered is None else set(registered), traces, set(failed),
             {"models.py"} if selected is None else set(selected),
             [canary(tool) for tool in requested if tool in coverage.CANARY_FILES] if findings is None else findings,
-            control_root=CONTROL_ROOT, tool_languages=languages,
+            control_root=CONTROL_ROOT, tool_languages=languages, scope=scope,
         )
+
+    def test_yaml_and_general_checks_require_execution_on_each_selected_file(self) -> None:
+        tools = {"InconsistentLineSeparators", "IncorrectFormatting", "ProblematicWhitespace", "TodoComment", "YAMLDuplicatedKeys"}
+        selected = {"compose.yml", "workflow.yaml"}
+        traces = {tool: selected for tool in tools}
+        result, gaps = self.assess(tools, traces, selected=selected)
+        self.assertTrue(result["complete"], gaps)
+        for tool in tools:
+            with self.subTest(tool=tool):
+                incomplete = {**traces, tool: {"compose.yml"}}
+                result, _ = self.assess(tools, incomplete, selected=selected)
+                self.assertFalse(result["complete"])
+                self.assertEqual(result["missing_execution"][tool], ["workflow.yaml"])
+
+    def test_yaml_language_metadata_does_not_drop_checks_from_mixed_selections(self) -> None:
+        selected = {"model.py", "compose.yml", "workflow.yaml"}
+        result, gaps = self.assess({"VendorYamlRule", "PyCompatibilityInspection"},
+                                  {"VendorYamlRule": selected - {"model.py"}, "PyCompatibilityInspection": {"model.py"}},
+                                  selected=selected, languages={"VendorYamlRule": "YAML"})
+        self.assertTrue(result["complete"], gaps)
+        self.assertEqual(result["selected_execution"]["VendorYamlRule"], sorted(selected - {"model.py"}))
+        result, _ = self.assess({"VendorYamlRule"}, {}, selected=selected, languages={"VendorYamlRule": "YAML"})
+        self.assertFalse(result["complete"])
+
+    def test_directory_check_is_inapplicable_only_to_file_scopes(self) -> None:
+        for scope in ("files", "changed_files", "directory", "whole_project"):
+            with self.subTest(scope=scope):
+                tools = {"EmptyDirectory", "TodoComment"}
+                result, _ = self.assess(tools, {"TodoComment": {"compose.yml"}}, selected={"compose.yml"}, scope=scope)
+                self.assertEqual(result["complete"], scope in {"files", "changed_files"})
 
     def test_controls_and_user_findings_cannot_replace_selected_execution(self):
         tool = "PyTypeCheckerInspection"

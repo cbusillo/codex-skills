@@ -87,7 +87,7 @@ uv run <skill-dir>/scripts/jb-inspect.py agent-inspect \
   --backend native --repo "$PWD" --scope files --file addons/example/models.py
 ```
 
-Selections support `.py` and Odoo `.xml` in a root PyCharm model. Unsupported
+Selections support `.py`, `.yaml`, `.yml` and Odoo `.xml` in a root PyCharm model. Unsupported
 languages, filters or nested models remain UNKNOWN with a supported next step.
 Use explicit source files when a broader scope also contains documentation or
 other file types. Native assessment requires the same declared trusted roots
@@ -275,7 +275,11 @@ Completed stock `inspectionRun` telemetry proves each applicable inspection on
 each selected physical file, including clean files. `coverage.selected_execution`
 and `missing_execution` expose the exact matrix. Findings or controls cannot
 substitute for a missing selected-file pair. Unknown applicability stays UNKNOWN;
-Python tools apply to Python, OdooXml to XML, and explicit universal tools to both.
+Python tools apply to Python, OdooXml to XML, YAML tools to YAML, and explicit
+universal tools to every selected file. General whitespace, formatting, line
+separator and TODO checks require completed tool/file pairs too. `EmptyDirectory`
+checks directories and is inapplicable to exact-file and changed-file selections;
+broad scopes retain UNKNOWN until directory execution can be proved.
 
 Distinct private defect canaries independently prove the named tools detect
 known defects. `coverage.canary_results` records their expected source and
