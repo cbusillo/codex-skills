@@ -31,6 +31,8 @@ LOG_EVENT = re.compile(r"^\d{4}-\d\d-\d\d\s+[\d:, .]+\[\s*\d+]\s+\w+\s+-\s+\S+\s
 LICENSE_PROMPT = re.compile(
     r"^(?:no valid licen[cs]e\b|checking trial availability\b|"
     r"(?:start|activate|try|begin|offer) (?:a |your |free )?trial\b|"
+    r"(?:start(?:ed|ing)|activat(?:ed|ing)|issu(?:ed|ing)|obtain(?:ed|ing)|grant(?:ed|ing)) (?:a |the |your |free )?(?:trial|evaluation)\b|"
+    r"(?:trial|evaluation)(?: licen[cs]e| period)? (?:has been |was |is being )?(?:started|activated|issued|obtained|granted)\b|"
     r"(?:your |the |a )?(?:trial|evaluation) (?:is |has )?(?:expired|period|available|active|licen[cs]e|expires|ends)\b|"
     r"you are using (?:a )?trial\b|(?:your |the |this |a )?licen[cs]e.{0,40}(?:expired|invalid|missing|required)|"
     r"(?:activate|purchase|buy|log.?in).{0,40}licen[cs]e|third.party privacy notice.*not accepted)", re.I)

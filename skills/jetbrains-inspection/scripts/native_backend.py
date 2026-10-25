@@ -21,6 +21,7 @@ import select
 import selectors
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -345,11 +346,51 @@ def sdk_tree(path):
         raise Blocked("native_sdk_table_malformed") from None
 
 
+RECOVERY_LOG_LINE = re.compile(r"^\d{4}-\d\d-\d\d\s+[\d:, .]+\[\s*\d+]\s+\w+\s+-\s+(\S+)\s+-\s+(.*)$")
+RECOVERY_LICENSING_WORD = re.compile(r"licen[cs]|trial|evaluation", re.I)
+HEALTHY_LICENSING_LINES = (("#c.i.p.trialPromotion", "IDE is not managed"),
+                           ("#c.i.p.i.b.AppStarter", "Will skip the config import to directory "))
+LOCAL_INSPECTION_PREFIX = "Running local inspections on "
+RECOVERY_LOG_LIMIT = 64 * 1024 * 1024
+
+
+def logged_licensed_inspection(private: Path) -> bool:
+    logs, project = private / "logs", private / "project"
+    if logs.is_symlink() or not logs.is_dir():
+        return False
+    inspected = False
+    try:
+        for path in sorted(logs.glob("*.log")):
+            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, "rb") as log:
+                status = os.fstat(log.fileno())
+                if not stat.S_ISREG(status.st_mode) or status.st_size > RECOVERY_LOG_LIMIT:
+                    return False
+                data = log.read()
+            scanner = observations.LicenseScanner()
+            scanner.feed(data, final=True)
+            if scanner.observed or not scanner.complete:
+                return False
+            for line in data.decode(errors="replace").splitlines():
+                framed = RECOVERY_LOG_LINE.match(line)
+                logger, message = framed.groups() if framed else ("", line)
+                if logger == "#c.i.c.e.GlobalInspectionContextImpl" and message.startswith(LOCAL_INSPECTION_PREFIX):
+                    inspected = inspected or Path(message[len(LOCAL_INSPECTION_PREFIX):]).is_relative_to(project)
+                elif RECOVERY_LICENSING_WORD.search(line) and not any(
+                        logger == healthy_logger and message.startswith(healthy_message)
+                        for healthy_logger, healthy_message in HEALTHY_LICENSING_LINES):
+                    return False
+    except OSError:
+        return False
+    return inspected
+
+
 def recover_run(worker, receipt=None, result_path=None, release_run=None, process_proof=None):
     current = receipt if receipt is not None else {"private_deleted": True, "sdk_removed": True}
     try:
         lifecycle.recover(worker, current, common, write_record, remove_sdk, result_path=result_path,
-                          release_run=release_run, process_proof=process_proof)
+                          release_run=release_run, process_proof=process_proof,
+                          licensed_inspection_logged=logged_licensed_inspection)
     except lifecycle.LifecycleError as error:
         raise Blocked(str(error)) from None
 

@@ -368,7 +368,8 @@ class NativeTests(unittest.TestCase):
             self.assertEqual(target.read_text(), "preserve")
 
     def test_license_prompt_and_trial_availability_stop_without_returning_contents(self):
-        for line in ("No valid license found", "Checking trial availability for product [PY]", "Start trial", "Activate your license", "Your trial has expired", "Trial is active", "You are using a trial license"):
+        for line in ("No valid license found", "Checking trial availability for product [PY]", "Start trial", "Activate your license", "Your trial has expired", "Trial is active", "You are using a trial license",
+                     "Started trial for PyCharm", "Trial license was issued", "Issued a trial", "Evaluation period has been started"):
             self.assertTrue(native.license_boundary(line), line)
         self.assertFalse(native.license_boundary("Loaded custom plugins: Odoo IDE"))
 
@@ -1226,6 +1227,54 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
         self.assertEqual(recovered["inspection_outcome"]["reason"], "native_interrupted_run_unresolved")
         self.assertEqual(recovered["cleanup"]["status"], "closed")
         self.assertTrue(journal.exists())
+
+    STAMP = "2026-10-25 13:07:13,056 [  12257]"
+    RUNNING = STAMP + "   FINE - #c.i.c.e.GlobalInspectionContextImpl - Running local inspections on {project}/src/a.py\n"
+    HEALTHY = (STAMP + "   INFO - #c.i.p.trialPromotion - IDE is not managed\n"
+               + STAMP + '   INFO - #c.i.p.i.b.AppStarter - Will skip the config import to directory "/w/config" ["plugin_PODOO.license"]\n')
+
+    def interrupt_engine_after_logging(self, log_text):
+        self.script.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nimport time\n"
+                               f"Path('logs/idea.log').write_text({log_text!r}.format(project=Path.cwd() / 'project'))\n"
+                               "time.sleep(30)\n")
+        with patch.object(native, native.group_gone.__name__, return_value=False):
+            self.assess()
+        self.assertTrue((self.worker / "native-run.json").exists())
+        self.args.native_recover_only = True
+        return self.assess()
+
+    def test_interrupted_run_that_logged_licensed_inspection_clears_its_hold(self) -> None:
+        recovered = self.interrupt_engine_after_logging(self.HEALTHY + self.RUNNING)
+        self.assertEqual(recovered["inspection_outcome"]["reason"], "native_recovery_only_no_inspection")
+        self.assertEqual(recovered["diagnostic"]["native"]["interrupted_run_cleared"], "licensed_execution_observed")
+        self.assertFalse((self.worker / "native-run.json").exists())
+        self.assertEqual(recovered["cleanup"]["status"], "closed")
+
+    def test_recovery_never_blocks_on_a_log_that_is_not_a_regular_file(self) -> None:
+        private = self.root / "fifo-private"
+        (private / "logs").mkdir(parents=True)
+        (private / "logs" / "idea.log").write_text(self.RUNNING.format(project=private / "project"))
+        self.assertTrue(native.logged_licensed_inspection(private))
+        os.mkfifo(private / "logs" / "pipe.log")
+        self.assertFalse(native.logged_licensed_inspection(private))
+
+    def test_interrupted_run_keeps_its_hold_without_clean_licensed_execution(self) -> None:
+        running = self.HEALTHY + self.RUNNING
+        for log_text in (running + "Your trial has expired\n",
+                         running + self.STAMP + "   INFO - #c.i.p.trialPromotion - Trial started for PyCharm\n",
+                         running + self.STAMP + "   INFO - #c.i.p.l.LicensingFacade - license state changed\n",
+                         self.HEALTHY,
+                         self.RUNNING.replace("{project}", "/elsewhere"),
+                         "Running local inspections on {project}/src/a.py\n",
+                         "x" * 70000 + "\n" + running):
+            with self.subTest(log_text=log_text[:40]):
+                self.args.native_recover_only = False
+                recovered = self.interrupt_engine_after_logging(log_text)
+                self.assertIn(recovered["inspection_outcome"]["reason"],
+                              {"native_interrupted_run_unresolved", "native_activation_stop_recorded"})
+                self.assertNotIn("interrupted_run_cleared", recovered["diagnostic"]["native"])
+                for held in ("native-run.json", "native-activation-stop.json"):
+                    (self.worker / held).unlink(missing_ok=True)
 
     def test_durable_license_stop_does_not_dispose_an_unproved_group(self):
         self.script.write_text(f"#!{sys.executable}\nimport time\nprint('No valid license found',flush=True)\ntime.sleep(30)\n")

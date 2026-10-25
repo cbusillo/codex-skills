@@ -166,7 +166,17 @@ retains its unknown-outcome hold even after process recovery. Older engine-only
 journals remain recoverable through the same ownership proof.
 
 The durable licensed-launch phase is a hold. Resource recovery alone cannot
-clear an unresolved outcome and start another licensed process. A licensing
+clear an unresolved outcome and start another licensed process, with one
+exception: before disposing of the private directory, recovery reads every
+retained engine log. The hold clears, recording
+`interrupted_run_cleared: licensed_execution_observed`, only when every log is a
+regular file that reads completely, no line is a licensing event or mentions a
+licence, trial or evaluation outside the two known healthy startup lines, and a
+`GlobalInspectionContextImpl` log line shows local inspections running on a file
+inside that run's project. The engine had then passed licensing. The next
+assessment starts normally. Anything else keeps the hold. Output that only
+reached the killed guardian's pipe cannot be read, so this rule relies on the
+logs alone. A licensing
 boundary persists independently in a count-only stop receipt or journal, even
 when a later write fails. Artifact and stop-receipt persistence failures do not
 skip independently permitted cleanup or lock release. SDK/private disposal
@@ -222,7 +232,8 @@ A bounded group-exit proof follows both a kill and an absent leader. Neither
 leader exit nor released locks alone permits SDK/private deletion. A live
 guardian or an unproved process identity is preserved.
 A different process birth at the journaled PID proves reuse; recovery sends it
-no signal and proceeds with resource disposal while retaining the outcome hold.
+no signal and proceeds with resource disposal while retaining the outcome hold,
+unless the retained logs clear it as described above.
 Birth comparisons require the same recorded UTC/C-locale clock; legacy or
 incomparable observations remain unproved.
 The same birth with a changed command/group remains unproved. A dead leader
