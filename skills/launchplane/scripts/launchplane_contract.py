@@ -295,6 +295,16 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/product-profiles/repository-identity/apply",
         "mode": "apply",
     },
+    "service-runtime-setting-dry-run": {
+        "method": "POST",
+        "path": "/v1/service/runtime-settings",
+        "mode": "dry-run",
+    },
+    "service-runtime-setting-apply": {
+        "method": "POST",
+        "path": "/v1/service/runtime-settings",
+        "mode": "apply",
+    },
     "product-owner-dry-run": {
         "method": "POST",
         "path": "/v1/product-profiles/{product}/owner",

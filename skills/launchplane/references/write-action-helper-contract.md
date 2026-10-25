@@ -850,6 +850,25 @@ recorded identity is never overwritten. This route has a local helper binding.
 - Output shows the repository, identity before and after (decimal ids only), the
   inventory record, revision and digest, and read-back.
 
+## Service settings
+
+`service-runtime-setting-dry-run` and `service-runtime-setting-apply` call
+`POST /v1/service/runtime-settings`. The service sets one key it declares as a
+non-secret service setting in Launchplane's own `launchplane` context record,
+checks the value with that setting's own parser, and keeps the record's other
+keys. It refuses any other key. This route has a local helper binding.
+
+- Both commands take `--key`, `--value` and `--reason`; there is no payload
+  file. The value is sent to the service and never printed: output and the
+  saved request show its SHA-256 only.
+- Save the dry-run output. Apply requires `--reviewed-dry-run`,
+  `--expected-plan-digest` equal to the saved `plan_digest`,
+  `--dry-run-evidence-file` for the same key and value, and `--idempotency-key`.
+- Output shows the key, value digest, plan digest and the record's changed and
+  unchanged key names. The caller's actor is dropped. A repeated apply with the
+  same key is marked `replayed`.
+- Confirm the result with `context-runtime-settings-read --context launchplane`.
+
 ## Setting up a lane for promotion
 
 These commands record what a product needs before Launchplane can promote it
