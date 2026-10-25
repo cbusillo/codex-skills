@@ -21,6 +21,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 
 import digest_summary
@@ -62,10 +63,19 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise DeliveryError("digest_http_redirect")
 
 
-def request_json(opener, url, payload=None):
+def request_json(opener: urllib.request.OpenerDirector, url: str, payload: dict | None = None,
+                 attachment: str | None = None) -> dict:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
+    content_type = "application/json"
+    if attachment is not None:
+        boundary = uuid.uuid4().hex
+        content_type = f"multipart/form-data; boundary={boundary}"
+        data = (f'--{boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\n'
+                f'Content-Type: application/json\r\n\r\n{json.dumps(payload)}\r\n'
+                f'--{boundary}\r\nContent-Disposition: form-data; name="files[0]"; filename="stranded-work.md"\r\n'
+                f'Content-Type: text/plain; charset=utf-8\r\n\r\n{attachment}\r\n--{boundary}--\r\n').encode()
     request = urllib.request.Request(url, data=data, headers={
-        "Content-Type": "application/json", "User-Agent": "codex-skills-digest/1.0"})
+        "Content-Type": content_type, "User-Agent": "codex-skills-digest/1.0"})
     try:
         with opener.open(request, timeout=20) as response:
             result = json.load(response)
@@ -121,15 +131,19 @@ def validate(report, url):
         raise DeliveryError("digest_report_contains_credential")
 
 
-def deliver(report, url):
+def deliver(report: str, url: str, attachment: str | None = None) -> None:
     validate(report, url)
+    if attachment is not None:
+        validate(attachment, url)
+        if digest_summary.units(report) >= 2000:
+            raise DeliveryError("digest_summary_too_large")
     opener = urllib.request.build_opener(NoRedirect())
     metadata = request_json(opener, url)
     guild = snowflake(metadata.get("guild_id"))
     channel = snowflake(metadata.get("channel_id"))
     for part in chunks(report):
         message = request_json(opener, url + "?wait=true", {
-            "content": part, "allowed_mentions": {"parse": []}})
+            "content": part, "allowed_mentions": {"parse": []}}, attachment)
         message_id = snowflake(message.get("id"))
         if snowflake(message.get("channel_id")) != channel:
             raise DeliveryError("digest_response_invalid")
@@ -142,22 +156,33 @@ def main(argv=None):
     parser.add_argument("--tracking-issue", default=DEFAULT_TRACKING_ISSUE,
                         help="Pinned OWNER/REPO#NUMBER for stranded-work full lists")
     args = parser.parse_args(argv)
+    stage = "digest_webhook_read_failed"
     try:
         url = webhook_url()
+        stage = "digest_report_read_failed"
         report = args.file.read_text(encoding="utf-8") if args.file else sys.stdin.read()
+        stage = "digest_report_validation_failed"
         validate(report, url)
+        attachment = None
         if report.startswith("Daily stranded-work sweep\n"):
-            # Validate the size before writing the full list. Never send a
-            # multipart stranded digest or truncate person waits.
-            digest_summary.summary(report, "https://github.com/" + args.tracking_issue.replace("#", "/issues/")
-                                   + "#issuecomment-" + "9" * 20)
-            report = digest_summary.summary(report, digest_summary.archive(report, args.tracking_issue))
-        deliver(report, url)
+            stage = "digest_summary_failed"
+            digest_summary.presentation(report, "https://github.com/" + args.tracking_issue.replace("#", "/issues/")
+                                        + "#issuecomment-" + "9" * 20)
+            stage = "digest_archive_failed"
+            archive_url = digest_summary.archive(report, args.tracking_issue)
+            stage = "digest_summary_failed"
+            prepared = digest_summary.presentation(report, archive_url)
+            report, attachment = prepared.content, prepared.attachment
+        stage = "digest_delivery_failed"
+        if attachment is None:
+            deliver(report, url)
+        else:
+            deliver(report, url, attachment)
         return 0
-    except DeliveryError as error:
+    except (DeliveryError, digest_summary.DigestError) as error:
         print(str(error), file=sys.stderr)
     except (OSError, ValueError):
-        print("digest_input_invalid", file=sys.stderr)
+        print(stage, file=sys.stderr)
     return 1
 
 

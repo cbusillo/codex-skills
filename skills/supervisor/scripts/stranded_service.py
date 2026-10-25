@@ -106,7 +106,7 @@ def command(argv, cwd, stdin, stdout, stderr, stopped, timeout):
         services.stop_child(child)
 
 
-def run_once(config_path, stopped):
+def run_once(config_path: Path, stopped: threading.Event, retry_unsent: bool = False) -> int:
     config = load_config(config_path)
     state = Path(config["state_dir"])
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -114,21 +114,33 @@ def run_once(config_path, stopped):
     # A sender can succeed just before the runner dies: never replay blindly.
     with services.service_lock(state / "daily", "stranded"):
         marker = services.reconciliation_marker(state / "daily", "stranded")
-        if marker.exists():
+        if marker.exists() and not retry_unsent:
             raise ValueError("previous delivery needs reconciliation")
         day = dt.datetime.now().astimezone().date().isoformat()
         receipt = state / f"{day}.delivered.json"
         if receipt.exists():
             services.emit("already_delivered", day=day)
             return 0
+        retained_report = b""
+        if retry_unsent:
+            retained = json.loads(marker.read_text())
+            source = Path(retained["report"]).resolve()
+            if (retained["day"] != day or retained["scan_exit_code"] not in (0, 3)
+                    or source.parent.parent != state.resolve() or source.name != "report.md"):
+                raise ValueError("retained report does not match today's scan")
+            retained_report = source.read_bytes()
+            scan_code = retained["scan_exit_code"]
         attempt = Path(tempfile.mkdtemp(prefix=f"{day}-", dir=state))
         report = attempt / "report.md"
         catalog = Path(config["catalog"])
-        scan = [config["uv"], "run", "--no-project", "--no-cache",
-                str(catalog / "skills/direction/scripts/direction_audit.py"),
-                *config["scan_args"], "--stranded-work-only", "--stranded-format", "markdown"]
-        with report.open("wb") as out, (attempt / "scan.stderr").open("wb") as err:
-            scan_code = command(scan, catalog, subprocess.DEVNULL, out, err, stopped, 900)
+        if retry_unsent:
+            report.write_bytes(retained_report)
+        else:
+            scan = [config["uv"], "run", "--no-project", "--no-cache",
+                    str(catalog / "skills/direction/scripts/direction_audit.py"),
+                    *config["scan_args"], "--stranded-work-only", "--stranded-format", "markdown"]
+            with report.open("wb") as out, (attempt / "scan.stderr").open("wb") as err:
+                scan_code = command(scan, catalog, subprocess.DEVNULL, out, err, stopped, 900)
         services.emit("scanned", exit_code=scan_code, report=str(report))
         if scan_code not in (0, 3) or not report.stat().st_size:
             raise ValueError("scan did not produce a digest")
@@ -189,7 +201,7 @@ def run_weekly(config_path, stopped):
 def guarded(action):
     try:
         return action()
-    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
         services.emit("reconciliation_required", reason="inspect retained scan and delivery evidence")
         return 1
 
@@ -199,7 +211,7 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     prepare = sub.add_parser("render", help="write a plist only; never install or start")
     prepare.add_argument("--output", type=Path, required=True)
-    for name in ("render", "run", "clear"):
+    for name in ("render", "run", "retry-unsent", "clear"):
         item = prepare if name == "render" else sub.add_parser(name)
         item.add_argument("--config", type=Path, required=True)
         if name == "clear":
@@ -229,9 +241,9 @@ def main(argv=None):
             services.emit("reconciled")
             return 0
         config_path = args.config.resolve()
-        daily_code = guarded(lambda: run_once(config_path, stopped))
+        daily_code = guarded(lambda: run_once(config_path, stopped, retry_unsent=args.command == "retry-unsent"))
         return guarded(lambda: run_weekly(config_path, stopped)) or daily_code
-    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
         services.emit("reconciliation_required", reason="inspect retained scan and delivery evidence")
         return 1
     finally:

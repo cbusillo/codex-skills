@@ -73,16 +73,56 @@ class SummaryTests(unittest.TestCase):
         # An empty person queue still says so on its heading line, not a bare heading.
         self.assertRegex(message, r"(?m)^Waiting on [^:\n]*:[ \t]*\S")
 
-    def test_overflow_or_malformed_report_never_posts(self):
-        rows = [("aged_structured_wait", i, "age unknown", "Chris", "🧭" * 100) for i in range(100)]
-        for source in (report(rows), report(rows).replace("100 candidates", "101 candidates")):
+    def test_person_queue_overflow_sends_one_message_with_every_wait_attached(self) -> None:
+        rows = [("unanswered_question", i, "age unknown", "Chris", "🧭" * 100) for i in range(51)]
+        source = report(rows)
+        with mock.patch.object(sender, "webhook_url", return_value="http://localhost/api/webhooks/1/fixture-secret"), \
+                mock.patch.object(sys, "stdin", io.StringIO(source)), \
+                mock.patch.object(digest, "archive", return_value=FULL) as archive, \
+                mock.patch.object(sender, "deliver") as deliver:
+            self.assertEqual(sender.main([]), 0)
+        archive.assert_called_once_with(source, sender.DEFAULT_TRACKING_ISSUE)
+        deliver.assert_called_once()
+        message, _, attachment = deliver.call_args.args
+        self.assertLess(digest.units(message), 2000)
+        self.assertIn(FULL, message)
+        self.assertEqual(attachment, source)
+        self.assertIn(str(len(rows)), message)
+        for row in rows:
+            self.assertIn(row[4], attachment)
+            self.assertIn(f"/issues/{row[1]}", attachment)
+
+    def test_malformed_report_never_posts_and_names_the_failure(self) -> None:
+        source = report([]).replace("0 candidates", "1 candidates")
+        error = io.StringIO()
+        with mock.patch.object(sender, "webhook_url", return_value="http://localhost/api/webhooks/1/fixture-secret"), \
+                mock.patch.object(sys, "stdin", io.StringIO(source)), \
+                mock.patch.object(digest, "archive") as archive, \
+                mock.patch.object(sender, "deliver") as deliver, contextlib.redirect_stderr(error):
+            self.assertEqual(sender.main([]), 1)
+        archive.assert_not_called()
+        deliver.assert_not_called()
+        self.assertTrue(error.getvalue().strip())
+        self.assertNotIn(source, error.getvalue())
+
+    def test_stage_failures_name_the_operation_without_exception_values(self) -> None:
+        names = []
+        for module, operation, source in ((sender, "webhook_url", "plain report"),
+                                          (sender, "validate", "plain report"),
+                                          (sender, "deliver", "plain report"),
+                                          (digest, "presentation", report([])),
+                                          (digest, "archive", report([]))):
+            error = io.StringIO()
             with mock.patch.object(sender, "webhook_url", return_value="http://localhost/api/webhooks/1/fixture-secret"), \
                     mock.patch.object(sys, "stdin", io.StringIO(source)), \
-                    mock.patch.object(digest, "archive") as archive, \
-                    mock.patch.object(sender, "deliver") as deliver, contextlib.redirect_stderr(io.StringIO()):
+                    mock.patch.object(module, operation, side_effect=OSError("private credential")), \
+                    contextlib.redirect_stderr(error):
                 self.assertEqual(sender.main([]), 1)
-            archive.assert_not_called()
-            deliver.assert_not_called()
+            name = error.getvalue().strip()
+            self.assertTrue(name.isidentifier())
+            self.assertNotIn("private credential", name)
+            names.append(name)
+        self.assertEqual(len(set(names)), len(names))
 
     def test_archive_failure_never_sends_discord(self):
         with mock.patch.object(sender, "webhook_url", return_value="http://localhost/api/webhooks/1/fixture-secret"), \

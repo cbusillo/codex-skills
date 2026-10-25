@@ -833,8 +833,13 @@ identical bot-authored comment on a reconciled retry. `--tracking-issue
 OWNER/REPO#NUMBER` selects another archive. It then sends one message below
 2,000 UTF-16 units: date and coverage, counts by kind, all Director waits by
 name, oldest five links for each other kind, and the full-list link. If that
-cannot fit, delivery fails and retains the reconciliation boundary; no required
-item is silently dropped. Archive errors prevent Discord delivery.
+cannot fit, the same single message carries counts, the full-list link, and the
+complete original report as a `stranded-work.md` attachment. Every person wait
+is preserved in that attachment. Archive errors prevent Discord delivery.
+Input, summary, archive, and delivery failures have distinct value-free names
+in retained sender stderr. The full-list archive still depends on GitHub
+accepting the report as one comment; an archive rejection stops delivery with
+`digest_archive_failed`, preserving the report for reconciliation.
 
 The sender reads the guild and channel from the webhook metadata and posts with
 `wait=true` and mentions disabled. Each confirmed message prints its
@@ -891,7 +896,20 @@ replaying that day's digest:
 uv run /runtime/catalog/skills/supervisor/scripts/stranded_service.py clear --config /private/stranded.json --delivered-url https://discord.com/channels/GUILD/CHANNEL/MESSAGE
 ```
 
-If confirmed unsent, clear the marker and kickstart once:
+If confirmed unsent and the marker references today's completed scan, retry that
+retained report without scanning again. This command is only for a
+confirmed unsent delivery; an empty stdout alone does not prove that when a
+network request could have succeeded. Input, webhook configuration, summary and
+archive-stage failures precede Discord delivery. An HTTP or response failure,
+`digest_delivery_failed`, a timeout, or an interrupted sender can follow an
+accepted POST and require checking the receiver first. The runner uses its existing lock, reservation and daily
+receipt, retains the original attempt, and records retry output separately:
+
+```sh
+uv run /runtime/catalog/skills/supervisor/scripts/stranded_service.py retry-unsent --config /private/stranded.json
+```
+
+If confirmed unsent and a fresh scan is needed, clear the marker and kickstart once:
 
 ```sh
 uv run /runtime/catalog/skills/supervisor/scripts/stranded_service.py clear --config /private/stranded.json
