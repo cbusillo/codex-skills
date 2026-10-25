@@ -557,12 +557,13 @@ def main() -> int:
                 args.backend, backend_selection = native_backend_module().select_backend(
                     args, sys.modules[__name__], host_default if host_default in {"api", "qodana", "native"} else None)
                 if args.backend == "api":
+                    common_backend.scope_selection(args, sys.modules[__name__])
                     raise InspectError(
                         "Automatic inspection has no isolated backend for this selection; the desktop API was not contacted.",
                         2,
                         {"error_reason": "isolated_backend_unavailable", "backend_selection": backend_selection,
                          "hint": "Select files supported by the configured native or Qodana backend. Keep unsupported coverage UNKNOWN. "
-                                 "Use --backend api only for an explicitly intended API session outside briefs that prohibit desktop IDE use."},
+                                 "API commands (inspect, inspect-closeout, or --backend api) require an intended API session; never use them when the task prohibits desktop IDE use."},
                     )
             if args.backend == "native":
                 result = command_native(args)

@@ -178,10 +178,10 @@ commands run that exact repository command in the exact linked worktree before
 opening it. Start the assessment directly:
 
 ```bash
-uv run "$HELPER" agent-inspect --repo "$PWD" --scope changed_files
+uv run "$HELPER" agent-inspect --backend api --repo "$PWD" --scope changed_files
 ```
 
-This also handles repositories with `qualityGate.inspection.lanes` and no
+This explicit API session also handles repositories with `qualityGate.inspection.lanes` and no
 top-level IDE: shared preparation runs before the non-empty lanes, then each
 lane selects its configured IDE and project path. A separate `open-worktree`
 step is not required. Read [inspection configuration](references/inspection-config.md)
@@ -509,11 +509,12 @@ scope, never source code or a mixed scope containing source code.
   A non-clean response with `capture_incomplete`, `non_empty_unmapped_tree`, or
   zero returned problems proves only that the plugin could not prove clean; it
   is not proof that agents can see and act on the IDE's red state.
-- readiness inspections should use `agent-inspect` or `inspect-closeout`, not
-  plain `get-status`.
-  `open-worktree`, `prepare-worktree`, `prepare`, `agent-inspect`, `inspect`,
-  and `inspect-closeout` always lifecycle-open the
-  exact worktree when needed. Use `resolve-route`, `get-status`, `get-problems`,
+- Readiness inspections use `agent-inspect`. `inspect`, `inspect-closeout`,
+  and `agent-inspect --backend api` are API-session commands; they and
+  `open-worktree`, `prepare-worktree`, and `prepare` lifecycle-open the exact
+  worktree when needed. They are unavailable when the task prohibits desktop
+  IDE use; do not switch to them after an isolated-backend refusal.
+  Use `resolve-route`, `get-status`, `get-problems`,
   or `claim-worktree` for observation-only workflows that must not open an IDE;
   do not turn an assessment command into a route-only probe.
   If lifecycle cleanup is skipped or fails for a helper-opened project, the

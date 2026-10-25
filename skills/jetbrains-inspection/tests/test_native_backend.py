@@ -236,8 +236,11 @@ class NativeTests(unittest.TestCase):
     def test_automatic_api_fallback_never_enters_desktop_lifecycle(self) -> None:
         with patch.object(host, "native_backend_module", return_value=native), \
                 patch.object(native, "select_backend", return_value=("api", "selection_not_python_only")), \
+                patch.object(host, "qodana_backend_module", return_value=native.common), \
+                patch.object(native.common, "scope_selection"), \
                 patch.object(host, "build_context") as context, \
                 patch.object(host, "command_run") as api, \
+                patch.object(host, "log_assessment_records"), \
                 patch.object(sys, "argv", ["jb-inspect", "agent-inspect"]), \
                 redirect_stdout(io.StringIO()) as output:
             self.assertEqual(host.main(), 0)
@@ -248,6 +251,22 @@ class NativeTests(unittest.TestCase):
             self.assertEqual(result["bucket"], "environment_blocked")
             self.assertTrue(result["next_action"])
             self.assertFalse(result["retry_policy"]["retry"])
+
+    def test_automatic_fallback_preserves_scope_errors_without_desktop_contact(self) -> None:
+        error = host.InspectError("Scope exceeds file limit", payload={"error_reason": "inspection_lane_scope_too_large"})
+        with patch.object(host, "native_backend_module", return_value=native), \
+                patch.object(native, "select_backend", return_value=("api", "qodana_selection_unavailable")), \
+                patch.object(host, "qodana_backend_module", return_value=native.common), \
+                patch.object(native.common, "scope_selection", side_effect=error), \
+                patch.object(host, "build_context") as context, \
+                patch.object(host, "log_assessment_records"), \
+                patch.object(sys, "argv", ["jb-inspect", "agent-inspect"]), \
+                redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(host.main(), 0)
+            context.assert_not_called()
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["diagnostic"]["error_reason"], error.payload["error_reason"])
+            self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
 
     def test_explicit_existing_backends_do_not_import_native_components(self):
         for backend in ("api", "qodana"):

@@ -1018,8 +1018,7 @@ def scope_selection(args: Any, host: Any, receipt: dict[str, Any] | None = None)
             "_inspection_lanes": host.parse_inspection_lanes(config),
         })
         selected -= set(selection["unmatched_files"])
-        if scope != "files":
-            selected -= {entry["file"] for entry in selection["excluded_files"]}
+        selected -= {entry["file"] for entry in selection["excluded_files"]}
         if receipt is not None:
             receipt.update(unmatched_files=selection["unmatched_files"], excluded_files=selection["excluded_files"])
     return repo, config, scope, selected
