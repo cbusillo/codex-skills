@@ -462,6 +462,9 @@ class OverdueTriggerTests(unittest.TestCase):
             self.issue(14, comments=[waiting(14, 140, 1, "Director approval to resume deployment")]),
             self.issue(15, comments=[comment(15, 151, 1.5, "Director decision: park this until the trip ends."),
                                      waiting(15, 150, 1, "Chris to resume after the trip")]),
+            self.issue(16, comments=[comment(16, 161, 1.5, 'Director decision: "try it for a few days before the App Store"'),
+                                     waiting(16, 160, 1, "Chris to dogfood 1.0.76", evidence=(
+                                         "https://github.com/example/catalog/issues/16#issuecomment-161"))]),
         ]
         records[9]["item"]["state"] = "closed"
         result = self.report(records, director_names=("Chris",))

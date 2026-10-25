@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["aiohttp==3.14.5", "tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
+# dependencies = ["PyYAML==6.0.3", "aiohttp==3.14.5", "tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
 # ///
 """Behavioral tests for claim ownership, races, and partial recovery."""
 
@@ -5281,6 +5281,17 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(visible, ["Waiting for <code>@mike-b</code> to confirm the run. This ends when Mike replies on the issue.",
                                    "Nothing here is waiting on a person or event."])
 
+    def test_unasked_director_decision_wait_is_refused_before_any_write(self):
+        self.args.all = self.args.clear = False
+        self.args.waiting_for = "Director approves the live install"
+        self.args.ends_when = "Director replies"
+        self.args.evidence = "Recorded in the session"
+        with patch.object(PLAN.director_question_gate, "configured_queue", return_value=None), \
+                self.assertRaises(PLAN.PlanError) as caught:
+            self.run_claim(command=PLAN.cmd_wait)
+        self.assertIn("Director question:", str(caught.exception))
+        self.assert_no_writes()
+
     def test_wait_review_requires_evidence_and_an_ending_condition_before_writes(self):
         self.args.all = self.args.clear = False
         self.args.waiting_for = "Client accepts"
@@ -5304,7 +5315,7 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(wait_record.records(self.comments[-1]["body"])[0]["state"], "waiting")
 
     def test_new_issue_creation_records_all_waits_or_reviewed_absence(self):
-        for flags in (("--wait-clear",), ("--waiting-for", "Director test", "--ends-when", "Test accepted",
+        for flags in (("--wait-clear",), ("--waiting-for", "Mike's device test", "--ends-when", "Test accepted",
                       "--waiting-for", "Client price", "--ends-when", "Price confirmed")):
             with self.subTest(flags=flags):
                 args = PLAN.build_parser().parse_args(["--repo", "owner/repo", "create", "Repair",
