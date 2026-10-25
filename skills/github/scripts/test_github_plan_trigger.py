@@ -4,6 +4,7 @@
 # ///
 """Reopen event boundaries and the wait parser's shared authority contract."""
 import datetime as dt
+import json
 import unittest
 from unittest.mock import Mock
 
@@ -18,6 +19,16 @@ def record(kind, **fields):
 
 
 class TriggerTests(unittest.TestCase):
+    def test_record_text_stays_hidden_and_legacy_records_still_read(self) -> None:
+        event = record("recurrence", symptom="failure --> @someone --!>")
+        encoded = trigger.marker(event)
+        self.assertEqual(encoded.count(">"), 1)
+        legacy = trigger.PREFIX + json.dumps(event, sort_keys=True) + " -->"
+        for body in (encoded, legacy):
+            with self.subTest(body=body):
+                issue = {"user": {"login": "owner"}, "body": body}
+                self.assertEqual(trigger.current(issue, [], {"owner"}), event)
+
     def test_date_fires_at_boundary_and_not_before_including_timezone(self):
         for at, expected in (("2026-10-16", True), (NOW.isoformat(), True),
                              ("2026-10-16T09:00:00-04:00", False), ("2026-10-17", False)):
