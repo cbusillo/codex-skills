@@ -134,7 +134,7 @@ desktop IDE use still prohibits that route. Choose with
 preference still returns UNKNOWN and requires explicit `--backend api`. Run one
 capped, niced headless worker at a time and pause above load1 64. Report the
 backend and coverage with every verdict. Missing or unproven required checks
-remain UNKNOWN; Q481 accepted no coverage gap. Native retains current findings
+remain UNKNOWN. Native retains current findings
 alongside UNKNOWN and separates registration from positive execution evidence.
 
 When IDE configuration appears in the change set, use

@@ -152,6 +152,39 @@ class NativeCommonTests(unittest.TestCase):
         args.scope, args.files = "files", ["fixtures/defect.py"]
         self.assertIn("fixtures/defect.py", common.scope_selection(args, host)[3])
 
+    def test_scope_modes_and_legacy_config_fallback_resolve_real_file_sets(self) -> None:
+        (self.repo / "src/b.py").write_text("print(other)\n")
+        (self.repo / "top.py").write_text("print(top)\n")
+        (self.repo / ".github").mkdir(exist_ok=True)
+        (self.repo / ".github/github.json").write_text(json.dumps({"jetbrains": {"scopePreference": "whole_project"}}))
+        subprocess.run(["git", "-C", str(self.repo), "add", "--all"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                        "commit", "--quiet", "-m", "fixture"], check=True)
+        args = host.build_parser().parse_args(["agent-inspect", "--repo", str(self.repo)])
+        self.assertEqual(common.scope_selection(args, host)[3], {".github/github.json", "src/a.py", "src/b.py", "top.py"})
+        args.scope, args.directory = "directory", str(self.repo / "src")
+        self.assertEqual(common.scope_selection(args, host)[3], {"src/a.py", "src/b.py"})
+        (self.repo / "src/a.py").write_text("print(other_missing)\n")
+        args.scope, args.changed_files_mode, args.include_unversioned = "changed_files", "unstaged", False
+        self.assertEqual(common.scope_selection(args, host)[3], {"src/a.py"})
+
+    def test_failed_private_deletion_keeps_the_ownership_marker_for_recovery(self) -> None:
+        private = self.root / "private-partial"
+        (private / "config").mkdir(parents=True)
+        (private / "config/state.dat").write_bytes(b"synthetic")
+        (private / "owner.json").write_text("{}")
+        (private / "trace.json").write_text("{}")
+        removed = []
+        unlink, iterdir = Path.unlink, Path.iterdir
+        with patch.object(Path, Path.iterdir.__name__, lambda path: iter(sorted(iterdir(path)))), \
+                patch.object(Path, Path.unlink.__name__, lambda path, *args, **kwargs: removed.append(path.name) or unlink(path, *args, **kwargs)):
+            with patch.object(shutil, shutil.rmtree.__name__, side_effect=PermissionError), self.assertRaises(PermissionError):
+                common.delete_private(private)
+            self.assertTrue((private / "owner.json").exists())
+            common.delete_private(private)
+        self.assertEqual(removed, ["trace.json", "owner.json"])
+        self.assertFalse(private.exists())
+
     def test_mixed_selection_uses_declared_lanes(self) -> None:
         self.declare_inspection({"lanes": [{"id": "python", "ide": "PyCharm", "required": True, "include": ["**/*.py"]}]})
         (self.repo / "README.md").write_text("Fixture documentation\n")
