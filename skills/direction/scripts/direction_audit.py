@@ -20,6 +20,8 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.parse
+from functools import partial
 from typing import Any, Callable
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -29,7 +31,7 @@ if str(GITHUB_SCRIPTS) not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_read
+from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_read, github_work_graph
 from skills.github.scripts import github_repository_scope as repository_scope
 from skills.direction.scripts import direction_mark, direction_reporting
 
@@ -391,6 +393,15 @@ def fetch_paginated(
         if page >= max_pages:
             return items, True
         page += 1
+
+
+def fetch_inventory(
+    path: str, *, fetch: Callable[[list[str]], Any], query: dict[str, Any], limit: int,
+    collection_key: str | None = None, **_transport: Any,
+) -> tuple[list[dict[str, Any]], bool]:
+    encoded = urllib.parse.urlencode(query, safe=":,/")
+    return fetch_paginated(path.lstrip("/") + (f"?{encoded}" if encoded else ""), fetch=fetch,
+        max_pages=math.ceil(limit / 100), key=collection_key)
 
 
 def enrich_admission_actors(
@@ -1086,12 +1097,14 @@ def fetch_audit_issues(
     audit_since: dt.datetime | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Open issues plus recently closed milestone and audit-labeled issues."""
-    issues, open_cut = fetch_paginated(f"repos/{repo}/issues?state=open", fetch=fetch)
+    inventory = partial(github_work_graph.issue_inventory, partial(fetch_inventory, fetch=fetch), repo)
+    issues, open_cut = inventory(query={"state": "open"}, limit=MAX_PAGES * 100, step_prefix="audit_open_issues")
     truncated = ["issues"] if open_cut else []
     if open_cut:
         # The general issue scan may be capped while the audit queue is small.
         # Still surface its questions, including older ones beyond that cap.
-        open_audit, audit_cut = fetch_paginated(f"repos/{repo}/issues?state=open&labels={AUDIT_LABEL}", fetch=fetch)
+        open_audit, audit_cut = inventory(query={"state": "open", "labels": AUDIT_LABEL},
+            limit=MAX_PAGES * 100, step_prefix="audit_open_labeled_issues")
         issues.extend(open_audit)
         if audit_cut:
             truncated.append("open_audit_issues")
@@ -1100,18 +1113,15 @@ def fetch_audit_issues(
     for milestone in milestones:
         if str(milestone.get("title") or "") not in milestone_lines:
             continue
-        closed, cut = fetch_paginated(
-            f"repos/{repo}/issues?milestone={milestone.get('number')}&state=closed&since={since_text}",
-            fetch=fetch, max_pages=2,
-        )
+        closed, cut = inventory(query={"milestone": milestone.get("number"), "state": "closed", "since": since_text},
+                                limit=200, step_prefix="audit_closed_milestone_issues")
         issues.extend(closed)
         closed_cut = closed_cut or cut
     if closed_cut:
         truncated.append("recent_closed_milestone_issues")
     audit_since_text = (audit_since or since).astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    closed_audit, cut = fetch_paginated(
-        f"repos/{repo}/issues?state=closed&labels={AUDIT_LABEL}&since={audit_since_text}", fetch=fetch,
-    )
+    closed_audit, cut = inventory(query={"state": "closed", "labels": AUDIT_LABEL, "since": audit_since_text},
+                                limit=MAX_PAGES * 100, step_prefix="audit_closed_labeled_issues")
     issues.extend(closed_audit)
     if cut:
         truncated.append("recent_closed_audit_issues")
@@ -1157,31 +1167,28 @@ def enrich_milestone_waits(
             raw = seeds.get((target_repo.casefold(), number))
             if raw is None:
                 raw = fetch(["api", f"repos/{target_repo}/issues/{number}", "--method", "GET"])
-            relations: dict[str, list[dict[str, Any]]] = {}
-            for field, endpoint in (("blocked_by", "dependencies/blocked_by"), ("sub_issues", "sub_issues")):
-                values, cut = fetch_paginated(f"repos/{target_repo}/issues/{number}/{endpoint}", fetch=fetch, max_pages=2)
-                if cut:
-                    raise AuditError("milestone wait relationships truncated")
-                refs = []
-                for value in values:
-                    url = str(value.get("html_url") or "")
-                    match = re.search(r"github\.com/([^/]+/[^/]+)/issues/(\d+)", url)
-                    if not match or value.get("state") not in {"open", "closed"}:
-                        raise AuditError("milestone wait relationship identity unknown")
-                    refs.append({"repo": match.group(1), "number": int(match.group(2)),
-                                 "url": url, "state": value["state"]})
-                relations[field] = refs
-            comments, cut = fetch_paginated(f"repos/{target_repo}/issues/{number}/comments", fetch=fetch, max_pages=2)
-            incomplete |= cut
-            try:
-                wait = wait_helpers["current_wait"](raw, comments, target_repo) if not cut else None
-            except (ValueError, KeyError, TypeError, wait_helpers["PlanError"]):
-                wait = None
-            if wait is None:
-                wait = {"version": 1, "state": "review", "evidence": "", "waits": []}
-            return github_direction_next.evaluate_direction_node({**raw, "repo": target_repo}, config=config(target_repo),
-                                                                  focus=None, relationships=relations, structured_wait=wait)
-        except AuditError:
+
+            def read_pages(path: str, _bound: int) -> tuple[list[dict[str, Any]], bool]:
+                nonlocal incomplete
+                rows, cut = fetch_paginated(path.lstrip("/"), fetch=fetch, max_pages=2)
+                incomplete |= cut
+                return rows, cut
+
+            def read_comments(_bound: int) -> tuple[list[dict[str, Any]], bool]:
+                rows, cut = read_pages(f"repos/{target_repo}/issues/{number}/comments", 200)
+                return rows, not cut
+
+            def resolve_wait(comments: list[dict[str, Any]]) -> dict[str, Any] | None:
+                try:
+                    return wait_helpers["current_wait"](raw, comments, target_repo)
+                except wait_helpers["PlanError"]:
+                    return None
+
+            return github_work_graph.read_direction_node({**raw, "repo": target_repo}, config=config(target_repo),
+                focus=None, comment_limit=200, read_comments=read_comments,
+                read_relationships=lambda: github_work_graph.read_relationships(target_repo, number, raw, read_pages,
+                    limit=200, fields=("blocked_by", "sub_issues")), resolve_wait=resolve_wait)
+        except (AuditError, ValueError):
             incomplete = True
             return {"item": {"repo": target_repo, "number": number,
                              "url": f"https://github.com/{target_repo}/issues/{number}",
@@ -1283,54 +1290,36 @@ def tracked_capacity_issues(
             recent = milestone.get("state") == "closed" and closed_at is not None and closed_at >= since
             if milestone.get("title") not in titles and not recent:
                 continue
-            roots, cut = fetch_paginated(
-                f"repos/{direction_repo}/issues?state=all&milestone={milestone['number']}", fetch=fetch,
-            )
+            roots, cut = github_work_graph.issue_inventory(partial(fetch_inventory, fetch=fetch), direction_repo,
+                query={"state": "all", "milestone": milestone["number"]}, limit=MAX_PAGES * 100,
+                step_prefix="audit_capacity_tracks")
             if cut:
                 errors.append(f"capacity_tracks:{milestone['number']}")
             pending.extend((direction_repo.casefold(), row["number"]) for row in roots
                            if "pull_request" not in row and str(row.get("title", "")).startswith("Track:"))
     except AuditError:
         errors.append("capacity_tracks")
-    seen: set[tuple[str, int]] = set()
-    while pending:
-        key = pending.pop()
-        if key in seen:
-            continue
-        if len(seen) >= max_nodes:
-            errors.append("capacity_graph_limit")
-            break
-        seen.add(key)
-        repo, number = key
-        for endpoint in ("dependencies/blocked_by", "sub_issues"):
-            try:
-                edges, cut = fetch_paginated(f"repos/{repo}/issues/{number}/{endpoint}", fetch=fetch)
-                if cut:
-                    errors.append(f"capacity_graph:{repo}#{number}:{endpoint}")
-                for edge in edges:
-                    match = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)", str(edge.get("html_url") or ""))
-                    if not match or "pull_request" in edge:
-                        raise AuditError("capacity graph relationship identity unknown")
-                    pending.append((match[1].casefold(), int(match[2])))
-            except AuditError:
-                errors.append(f"capacity_graph:{repo}#{number}:{endpoint}")
-    return seen, sorted(set(errors))
+    graph = read_audit_graph([{"repo": repo, "number": number} for repo, number in pending], fetch=fetch, max_nodes=max_nodes)
+    errors.extend(f"capacity_graph:{source}" for source in graph.unavailable)
+    if graph.truncated:
+        errors.append("capacity_graph_limit")
+    return set(graph.nodes), sorted(set(errors))
 
 
 CHECKBOX = re.compile(r"^\s*[-*]\s+\[([ xX])]\s+(.+?)\s*$", re.M)
 MAX_OUTCOME_READS = 200
 
 
-def cached_reads(fetch: Callable[[list[str]], Any]) -> Callable[[list[str]], Any]:
-    """Share identical reads between the capacity count and milestone outcomes."""
-    cache: dict[tuple[str, ...], Any] = {}
+def read_audit_graph(
+    roots: list[dict[str, Any]], *, fetch: Callable[[list[str]], Any], max_nodes: int,
+) -> github_work_graph.NativeGraphRead:
+    def read(path: str, bound: int) -> tuple[list[dict[str, Any]], bool]:
+        try:
+            return fetch_paginated(path.lstrip("/"), fetch=fetch, max_pages=math.ceil(bound / 100))
+        except AuditError as exc:
+            raise ValueError(str(exc)) from exc
 
-    def read(args: list[str]) -> Any:
-        key = tuple(args)
-        if key not in cache:
-            cache[key] = fetch(args)
-        return cache[key]
-    return read
+    return github_work_graph.read_native_graph(roots, read, max_nodes=max_nodes, relationship_limit=MAX_PAGES * 100)
 
 
 def checked_items(before: str | None, after: str) -> list[str]:
@@ -1412,48 +1401,34 @@ def milestone_outcomes(
             row["unavailable"].append("milestone_missing")
             continue
         nodes: dict[tuple[str, int], dict[str, Any]] = {}
-        pending: list[tuple[str, int]] = []
         try:
-            roots, root_cut = fetch_paginated(
-                f"repos/{direction_repo}/issues?state=all&milestone={milestone['number']}", fetch=fetch,
-            )
+            roots, root_cut = github_work_graph.issue_inventory(partial(fetch_inventory, fetch=fetch), direction_repo,
+                query={"state": "all", "milestone": milestone["number"]}, limit=MAX_PAGES * 100,
+                step_prefix="audit_outcome_tracks")
             if root_cut:
                 row["unavailable"].append("tracks")
             for root in roots:
                 if "pull_request" not in root and str(root.get("title", "")).startswith("Track:"):
                     key = (direction_repo, int(root["number"]))
                     nodes[key] = root
-                    pending.append(key)
                     row["tracks"].append(f"https://github.com/{direction_repo}/issues/{root['number']}")
         except AuditError:
             row["unavailable"].append("tracks")
-        seen: set[tuple[str, int]] = set()
-        while pending:
-            key = pending.pop()
-            if key in seen:
-                continue
-            if len(seen) >= max_nodes:
-                row["unavailable"].append("graph_limit")
-                break
-            seen.add(key)
-            repo, number = key
-            for endpoint in ("dependencies/blocked_by", "sub_issues"):
-                try:
-                    edges, edge_cut = fetch_paginated(f"repos/{repo}/issues/{number}/{endpoint}", fetch=fetch)
-                    if edge_cut:
-                        row["unavailable"].append(f"graph:{repo}#{number}:{endpoint}")
-                    for edge in edges:
-                        match = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)", str(edge.get("html_url") or ""))
-                        if not match:
-                            raise AuditError("milestone graph relationship identity unknown")
-                        child = (match[1], int(match[2]))
-                        nodes.setdefault(child, edge)
-                        pending.append(child)
-                except AuditError:
-                    row["unavailable"].append(f"graph:{repo}#{number}:{endpoint}")
-        for (repo, number) in sorted(seen):
-            node = nodes.get((repo, number)) or {}
+        graph = read_audit_graph([{**node, "repo": key[0], "number": key[1]} for key, node in nodes.items()],
+                                fetch=fetch, max_nodes=max_nodes)
+        row["unavailable"].extend(f"graph:{source}" for source in graph.unavailable)
+        if graph.truncated:
+            row["unavailable"].append("graph_limit")
+        for (repo, number), node in sorted(graph.nodes.items()):
             url = f"https://github.com/{repo}/issues/{number}"
+            if "updated_at" not in node or (node.get("state") == "closed" and "closed_at" not in node):
+                try:
+                    node = fetch(["api", f"repos/{repo}/issues/{number}", "--method", "GET"])
+                    if not isinstance(node, dict):
+                        raise AuditError("milestone graph node metadata unavailable")
+                except AuditError:
+                    row["unavailable"].append(f"node:{repo}#{number}")
+                    continue
             if node.get("state") == "closed" and _within(node.get("closed_at"), since, until):
                 row["issues_closed"].append({"url": url, "title": node.get("title"), "closed_at": node.get("closed_at")})
             updated = _parse_time(node.get("updated_at"))
@@ -1700,11 +1675,13 @@ def own_project_label(repo: str) -> str:
 def owner_repositories(owner: str, *, fetch: Callable[[list[str]], Any], include_archived: bool = False) -> tuple[dict[str, dict[str, Any]], bool]:
     """The owner's repositories the reader can see, and whether the listing was cut short."""
     try:
-        listed, cut = fetch_paginated("installation/repositories", fetch=fetch, key="repositories")
+        listed, cut = github_work_graph.repository_inventory(partial(fetch_inventory, fetch=fetch),
+            installed=True, limit=MAX_PAGES * 100)
     except AuditError as installation_error:
         # The Director's own login has no installation; it lists what it owns.
         try:
-            listed, cut = fetch_paginated("user/repos?affiliation=owner", fetch=fetch)
+            listed, cut = github_work_graph.repository_inventory(partial(fetch_inventory, fetch=fetch),
+                installed=False, affiliation="owner", limit=MAX_PAGES * 100)
         except AuditError as exc:
             raise AuditError(f"could not list repositories: {installation_error}; {exc}") from exc
     return {
@@ -1749,7 +1726,7 @@ def weekly_audit(
     owner: str, *, gh: str, automation: str | None = None, include_archived: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     started = dt.datetime.now(dt.timezone.utc)
-    fetch = lambda a: gh_json(a, gh=gh)  # noqa: E731
+    fetch = github_work_graph.cached_reads(lambda args: gh_json(args, gh=gh))
     direction_repo = f"{owner}/direction"
     discovery: dict[str, Any] = {"complete": False, "gaps": [], "unknown": {}}
     adopted: list[str] = []
@@ -1774,7 +1751,8 @@ def weekly_audit(
     held: dict[str, str] = {}
     marker_error = None
     for repo in repos:
-        _code, result = audit_one(repo, gh=gh, owner=owner, automation=automation, include_archived=include_archived)
+        _code, result = audit_one(repo, gh=gh, owner=owner, automation=automation,
+                                  include_archived=include_archived, fetch=fetch)
         audits[repo] = result
         if "error" in result:
             unread[repo] = f"reads failed: {result['error']}"
@@ -2009,6 +1987,7 @@ def held_reads(truncated: list[str]) -> list[str]:
 
 def audit_one(
     repo: str, *, gh: str, owner: str | None = None, automation: str | None = None, include_archived: bool = False,
+    fetch: Callable[[list[str]], Any] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Audit one repository and stamp its own window; never the weekly audit.
 
@@ -2016,7 +1995,7 @@ def audit_one(
     """
     automation_arg = automation
     owner_reader = pathlib.Path(shutil.which(str(gh)) or gh).resolve() == pathlib.Path(shutil.which("gh") or "gh").resolve()
-    fetch = lambda a: gh_json(a, gh=gh)  # noqa: E731
+    fetch = fetch or github_work_graph.cached_reads(lambda args: gh_json(args, gh=gh))
     try:
         # The merged default-branch file is the owner-approved one; a checkout may hold an unapproved edit.
         direction_text = merged_direction(repo, fetch=fetch)
@@ -2048,14 +2027,13 @@ def audit_one(
         capacity = None
         unadopted = None
         if repo.split("/")[1].casefold() == "direction":
-            shared = cached_reads(fetch)
             # The next window starts at the persisted marker, whose formatter
             # owns timestamp precision. Use that same instant as this end.
             capacity_until = dt.datetime.fromisoformat(direction_mark.utc_stamp(now))
-            capacity, cut = fetch_capacity(repo, audit_since, capacity_until, fetch=shared, include_archived=include_archived)
+            capacity, cut = fetch_capacity(repo, audit_since, capacity_until, fetch=fetch, include_archived=include_archived)
             truncated.extend(cut)
-            capacity["milestone_outcomes"] = milestone_outcomes(repo, direction_text or "", audit_since, now, fetch=shared)
-            unadopted = active_unadopted_report(repo, audit_since, fetch=shared, include_archived=include_archived)
+            capacity["milestone_outcomes"] = milestone_outcomes(repo, direction_text or "", audit_since, now, fetch=fetch)
+            unadopted = active_unadopted_report(repo, audit_since, fetch=fetch, include_archived=include_archived)
     except AuditError as exc:
         error: dict[str, Any] = {"ok": False, "error": str(exc)}
         if gh == str(WRAPPER):

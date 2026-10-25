@@ -142,6 +142,16 @@ def rest_author(author: dict[str, Any] | None) -> dict[str, str]:
     return github_plan_status.normalize_author({"author": author})
 
 
+def rest_related_issue(node: dict[str, Any]) -> dict[str, Any]:
+    return {"repo": node["repository"]["nameWithOwner"], "number": node["number"],
+        "title": node.get("title"), "state": node["state"].lower(), "html_url": node["url"]}
+
+
+def rest_comment(node: dict[str, Any]) -> dict[str, Any]:
+    return {"id": node["databaseId"], "body": node["body"], "created_at": node["createdAt"],
+        "updated_at": node["updatedAt"], "html_url": node["url"], "user": rest_author(node["author"])}
+
+
 def rest_issue(node: dict[str, Any]) -> dict[str, Any]:
     # Keep the planner's single representation and selection implementation.
     deps, sub = node["issueDependenciesSummary"], node["subIssuesSummary"]
@@ -180,16 +190,7 @@ def rest_issue(node: dict[str, Any]) -> dict[str, Any]:
             "percent_completed": sub["percentCompleted"],
         },
         "_graph_relationships": {
-            key: [
-                {
-                    "repo": n["repository"]["nameWithOwner"],
-                    "number": n["number"],
-                    "title": n["title"],
-                    "state": n["state"].lower(),
-                    "html_url": n["url"],
-                }
-                for n in node[field]
-            ]
+            key: [rest_related_issue(n) for n in node[field]]
             for key, field in [
                 ("blocked_by", "blockedBy"),
                 ("blocking", "blocking"),
@@ -197,14 +198,7 @@ def rest_issue(node: dict[str, Any]) -> dict[str, Any]:
             ]
         },
         **({"_graph_comments": [
-            {
-                "id": n["databaseId"],
-                "body": n["body"],
-                "created_at": n["createdAt"],
-                "updated_at": n["updatedAt"],
-                "html_url": n["url"],
-                "user": rest_author(n["author"]),
-            }
+            rest_comment(n)
             for n in node.get("comments", [])
         ]} if "comments" in node else {}),
     }
