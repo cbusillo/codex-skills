@@ -169,7 +169,7 @@ class MainTests(Fixture):
         self.git(self.repo, "remote", "set-url", "origin", "https://github.com/o/sample.git")
 
     def run_main(self, pull, repo="o/sample", commits=(), discussions=None, bodies=None, branch=None, branch_pulls=(),
-                 claim_issues=(), search=None):
+                 claim_issues=(), search=None, archived_claim=False):
         config = self.base / "worktrees.json"
         config.write_text(json.dumps({"root": str(self.root), "hostHelper": str(self.base / "host-helper")}))
         discussions = discussions or {}
@@ -196,9 +196,14 @@ class MainTests(Fixture):
             "pullRequest": {"merged": True, "baseRefName": "main", "url": "u", "mergeCommit": {"oid": "1" * 40},
                             "closingIssuesReferences": {"nodes": [{"number": 3, "repository": {"nameWithOwner": repo}}],
                                                         "pageInfo": {"hasNextPage": False}}}}}})
+        def make_reader(**options: object) -> mock.Mock:
+            if archived_claim and options.get("include_archived") is not True:
+                reader.request.return_value = mock.Mock(body={"total_count": 0, "incomplete_results": False, "items": []})
+            return reader
+
         read_errors = mock.Mock(GitHubReadError=type("ReadError", (Exception,), {}),
                                 GitHubReadShapeError=type("ShapeError", (Exception,), {}),
-                                GitHubReader=mock.Mock(return_value=reader))
+                                GitHubReader=mock.Mock(side_effect=make_reader))
         out = io.StringIO()
         with mock.patch.dict(os.environ, {"DEV_WORKTREE_CONFIG": str(config)}), \
                 mock.patch.dict("sys.modules", {"github_read": read_errors}), \
@@ -247,9 +252,10 @@ class MainTests(Fixture):
         claim = {"id": 11, "user": {"login": "bot"}, "created_at": "2026-10-22T00:00:00Z",
                  "body": "Claimed by worker\n" + github_plan_claim.marker(
                      {"worker": "worker", "session": "s1", "branch": "work/claimed", "claimed_at": "2026-10-22T00:00:00Z"})}
-        _, result, run = self.run_main(None, branch="work/claimed", claim_issues=[4], discussions={"4": [claim]})
-        self.assertEqual([r["reason"] for r in result["worktrees"]], ["an open claim names this branch"])
-        run.assert_not_called()
+        for archived in (False, True):
+            _, result, run = self.run_main(None, branch="work/claimed", claim_issues=[4], discussions={"4": [claim]}, archived_claim=archived)
+            self.assertEqual([r["decision"] for r in result["worktrees"]], ["kept"])
+            run.assert_not_called()
 
     def test_branch_without_a_pr_retires_nothing_when_the_claim_search_is_unproven(self):
         self.settled_worktree("unsearched")

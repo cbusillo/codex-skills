@@ -27,6 +27,7 @@ import github_api as github_api_core
 import github_http_cache
 import github_identity
 import github_request_usage
+import github_repository_scope
 from github_plan_status.workflow_runs import current_workflow_runs, workflow_execution_identity
 
 
@@ -242,6 +243,7 @@ class GitHubReader:
         deadline_at: Optional[float] = None,
         retry_runtime: Optional[github_api_core.RetryRuntime] = None,
         repository: Optional[str] = None,
+        include_archived: bool = False,
     ) -> None:
         self.gh_cmd = gh_cmd
         # Resolve before constructing the opt-in cache: bodies and actor checks
@@ -258,7 +260,7 @@ class GitHubReader:
         self.operation = operation
         self.actor = actor
         self.request_actor = actor
-        self.gh_prefix_args = list(gh_prefix_args or [])
+        self.gh_prefix_args = [*(gh_prefix_args or []), *github_repository_scope.include_archived_arguments(include_archived, gh_command=gh_cmd)]
         self.strict_actor = strict_actor
         self.cache_enabled = cache_enabled
         self.cache_coalesce_seconds = cache_coalesce_seconds
