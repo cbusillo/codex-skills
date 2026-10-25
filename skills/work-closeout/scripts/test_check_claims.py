@@ -1468,6 +1468,46 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertTrue(report["claims_clear"])
         self.assertEqual([item["call_id"] for item in report["settled_invocations"]], ["opaque"])
 
+    def test_mixed_metadata_wrapper_needs_whole_results_and_its_own_terminal_poll(self) -> None:
+        command = (
+            "cat > /fixture/status.md <<'EOF'\nThe source claim is released.\nEOF\n"
+            "uv run gh-plan.py --repo test/a update-section 1 'Current Status' --body-file /fixture/status.md\n"
+            "gh-with-env-token api repos/test/a/pulls/2 --jq .body > /fixture/pr.md\n"
+            "ruby -e 'p=ARGV[0];File.write(p,File.read(p).sub(\"before\",\"after\"))' /fixture/pr.md\n"
+            "uv run gh-pr.py --repo test/a edit 2 --body-file /fixture/pr.md"
+        )
+        for variant in ("complete", "missing_poll", "wrong_process", "missing_result", "projected", "input"):
+            with self.subTest(variant=variant):
+                self.setUp()
+                poll = 'text(await tools.write_stdin({session_id:41,chars:""}));'
+                if variant == "projected":
+                    poll = 'text((await tools.write_stdin({session_id:41,chars:""})).output);'
+                if variant == "input":
+                    poll = 'text(await tools.write_stdin({session_id:41,chars:"uv run gh-plan.py claim 5\\n"}));'
+                results = [{"exit_code": 0, "output": ""}, {"session_id": 17, "output": ""}]
+                if variant == "missing_result":
+                    results.pop(0)
+                rows = [
+                    {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "metadata",
+                                 "input": poll + "\ntext(await tools.exec_command({cmd:" + json.dumps(command) + "}));"}},
+                    {"payload": {"type": "custom_tool_call_output", "call_id": "metadata",
+                                 "output": [{"type": "input_text", "text": json.dumps(result)} for result in results]}},
+                ]
+                if variant != "missing_poll":
+                    process = 99 if variant == "wrong_process" else 17
+                    rows.extend([
+                        {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "finish",
+                                     "input": f'text(await tools.write_stdin({{session_id:{process},chars:""}}));'}},
+                        native_terminal_result("finish", javascript=True),
+                    ])
+                root = self.undecodable_claim_session(*[{**row, "timestamp": SETTLED_AT} for row in rows])
+                self.search_finds(1)
+                report = helper.check([root])
+                self.assertEqual(report["claims_clear"], variant == "complete")
+                self.assertEqual(report["coverage"]["complete"], variant == "complete")
+                if variant == "complete":
+                    self.assertEqual([item["call_id"] for item in report["settled_invocations"]], ["metadata"])
+
     def test_github_search_finds_the_unreleased_claim_an_undecodable_cell_made(self) -> None:
         root = self.undecodable_claim_session()
         held = comment(50, "Claimed by worker\n\n" + helper.claim.marker(SOURCE))

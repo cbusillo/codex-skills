@@ -541,8 +541,15 @@ def literal_javascript_shell_sequence(text: str, *, whole_result: bool = False) 
         if tokens[:2] != ["text", "("]:
             return False
         end = javascript_object_end(tokens[1:])
-        if end is None or not single_javascript_shell(" ".join(tokens[: end + 2]), whole_result=whole_result):
+        if end is None:
             return False
+        part = " ".join(tokens[: end + 2])
+        if not single_javascript_shell(part, whole_result=whole_result):
+            if not single_javascript_shell(part, whole_result=whole_result, stdin=True):
+                return False
+            bounded, sites = claim_javascript.analyse(part)
+            if not bounded or len(sites) != 1 or not claim_javascript.closed_stdin(sites[0][0]):
+                return False
         tokens = tokens[end + 2 :]
         if tokens[:1] == [";"]:
             tokens = tokens[1:]
