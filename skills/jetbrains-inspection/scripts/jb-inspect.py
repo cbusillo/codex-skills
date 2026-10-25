@@ -564,7 +564,7 @@ def main() -> int:
                         "Automatic inspection has no isolated backend for this selection; the desktop API was not contacted.",
                         2,
                         {"error_reason": "isolated_backend_unavailable", "backend_selection": backend_selection,
-                         "hint": "Configure the isolated native PyCharm worker on macOS (jetbrains.nativeWorkers.pycharm in the shared helper config; "
+                         "hint": "Configure the isolated native worker on macOS (jetbrains.nativeWorkers.pycharm or .webstorm in the shared helper config; "
                                  "see references/native-backend.md) and select files it supports. Keep unsupported coverage UNKNOWN. "
                                  "API commands (inspect, inspect-closeout, or --backend api) require an intended API session; never use them when the task prohibits desktop IDE use."},
                     )

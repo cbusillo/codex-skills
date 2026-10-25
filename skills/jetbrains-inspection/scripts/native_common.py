@@ -179,16 +179,31 @@ def preparation(config, private):
     return argv
 
 
-def lane_gaps(host, config, selected):
+def lane_gaps(host, config, selected, product_key="pycharm"):
     if not config.get("lanes"):
         return []
     lanes = host.parse_inspection_lanes(config)
     for path in selected:
         owners = [candidate for candidate in lanes
                   if any(host.inspection_lane_pattern_matches(path, pattern) for pattern in candidate.include)]
-        if not owners or owners[0].ide.strip().lower() != "pycharm" or owners[0].project_path:
+        if not owners or host.product_for_selector(owners[0].ide) is not host.IDE_PRODUCTS[product_key] or owners[0].project_path:
             return ["native_lane_models_unqualified"]
     return []
+
+
+def configured_product_key(host, config, selected):
+    if config.get("lanes"):
+        return "webstorm" if selected and not lane_gaps(host, config, selected, "webstorm") else "pycharm"
+    product = host.product_for_selector(config.get("ide")) if isinstance(config.get("ide"), str) else None
+    return "webstorm" if product is host.IDE_PRODUCTS["webstorm"] else "pycharm"
+
+
+def npm_lockfile(root):
+    if (root / "pnpm-lock.yaml").is_file():
+        raise Blocked("native_pnpm_unsupported")
+    if not (root / "package.json").is_file() or not (root / "package-lock.json").is_file():
+        raise Blocked("native_npm_lockfile_required")
+    return root / "package-lock.json"
 
 
 def requested_python_version(config):

@@ -203,3 +203,26 @@ build and cache directories. A candidate containing tracked files, or a
 declared test root, stays in content. These exclusions do not remove the SDK's
 library roots or disable inspections. Their generated module model participates
 in the same preparation receipt and mutation checks as the other project files.
+
+## Inspections Covered By Repository Gates
+
+Some IDE inspections, such as `Eslint`, run as annotators and leave no per-file
+proof in a headless run. A repository may declare that one of its own gates
+covers such an inspection:
+
+```json
+{
+  "qualityGate": {
+    "lint": { "eslint": "npm run lint" },
+    "inspection": { "coveredBy": { "Eslint": "lint.eslint" } }
+  }
+}
+```
+
+Each key is an inspection short name; each value is the dotted key of a gate
+already declared in the same file. A declaration naming a missing or empty gate
+is refused as `native_covered_by_invalid`. A covered inspection that the run
+cannot prove is reported under `covered_by` rather than making the verdict
+UNKNOWN; its findings still count when the IDE does report them. Declare only
+inspections whose gate runs the same tool in readiness and CI; nothing is
+covered by default.

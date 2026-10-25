@@ -47,6 +47,10 @@ NICE = 10
 DRAIN_SECONDS = 2
 DRAIN_BYTES = 4 * 1024 * 1024
 PYTHON_PRODUCT_KEY = "pycharm"
+WEBSTORM_PRODUCT_KEY = "webstorm"
+PREPARATION_CACHES = {PYTHON_PRODUCT_KEY: {"UV_CACHE_DIR": "uv-cache", "UV_PYTHON_INSTALL_DIR": "uv-python"},
+                      WEBSTORM_PRODUCT_KEY: {"npm_config_cache": "npm-cache"}}
+CONTROL_ASSETS = Path(__file__).parents[1] / "assets/native-controls"
 
 
 def sibling_module(name, filename):
@@ -78,10 +82,13 @@ def select_backend(args, host, host_default=None):
         return "api", "native_ineligible=native_macos_not_available"
     try:
         repo, config, _scope, selected = common.scope_selection(args, host)
-        if not eligible(args, host, repo, config):
-            return "api", "native_ineligible=" + str(eligibility_reason(args, host, repo, config))
+        product_key = native_product_key(host, config, selected)
+        if not eligible(args, host, repo, config, product_key):
+            return "api", "native_ineligible=" + str(eligibility_reason(args, host, repo, config, product_key))
         if not selected:
             return "api", "selection_empty"
+        if product_key == WEBSTORM_PRODUCT_KEY:
+            return "native", "webstorm_native_route"
         if any(Path(f).suffix not in NATIVE_SUFFIXES for f in selected):
             return "api", "selection_file_type_unsupported"
         if common.lane_gaps(host, config, selected):
@@ -97,20 +104,45 @@ def select_backend(args, host, host_default=None):
         return "api", "native_selection_unavailable"
 
 
-def eligible(args, host, repo, settings):
-    return eligibility_reason(args, host, repo, settings) is None
+def native_product_key(host, config, selected):
+    if (any(Path(f).suffix in proof.SCRIPT_SUFFIXES for f in selected)
+            and all(Path(f).suffix in proof.WEBSTORM_PROVEN_SUFFIXES for f in selected)
+            and common.configured_product_key(host, config, selected) == WEBSTORM_PRODUCT_KEY):
+        return WEBSTORM_PRODUCT_KEY
+    return PYTHON_PRODUCT_KEY
+
+
+def requested_product_key(args, host):
+    if args.native_recover_only:
+        return PYTHON_PRODUCT_KEY
+    try:
+        _repo, config, _scope, selected = common.scope_selection(args, host)
+    except (Blocked, host.InspectError, OSError, subprocess.SubprocessError, ValueError):
+        return PYTHON_PRODUCT_KEY
+    return native_product_key(host, config, selected)
+
+
+def eligible(args, host, repo, settings, product_key=PYTHON_PRODUCT_KEY):
+    return eligibility_reason(args, host, repo, settings, product_key) is None
 
 
 def framework_available(roots):
     return bool(roots) and all(root.is_dir() for root in roots) and any((root / "odoo/release.py").is_file() for root in roots)
 
 
-def eligibility_reason(args, host, repo, settings):
+def eligibility_reason(args, host, repo, settings, product_key=PYTHON_PRODUCT_KEY):
     """Public configuration checks only; never inspect activation or start an IDE."""
     try:
-        configured_worker = worker_settings(args, host)
+        configured_worker = worker_settings(args, host, product_key)
         roots = configured_worker.framework_roots
         launcher_paths(configured_worker.worker)
+        if product_key == WEBSTORM_PRODUCT_KEY:
+            node_executable(host)
+            if settings.get("prepare"):
+                return "native_preparation_shape_unsupported"
+            common.npm_lockfile(repo)
+            common.profile_for(repo, args.profile or settings.get("profile", ""))
+            return None
         if settings.get("prepare") and common.requested_python_version(settings) is None:
             return "native_preparation_shape_unsupported"
         if is_odoo(repo) and not framework_available(roots):
@@ -227,13 +259,34 @@ def runtime_storage(host, worker, product_key=PYTHON_PRODUCT_KEY):
         shared.mkdir(parents=True, exist_ok=True, mode=0o700)
     state = host.cache_dir() / "native" if os.environ.get("JETBRAINS_INSPECTION_CACHE_DIR") else shared
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
-    cache = shared / "uv-cache"
-    pythons = shared / "uv-python"
-    for path in (cache, pythons):
+    caches = {name: shared / directory for name, directory in PREPARATION_CACHES[product_key].items()}
+    for path in caches.values():
         if path.is_symlink():
             raise Blocked("native_cache_path_unsafe")
         path.mkdir(exist_ok=True, mode=0o700)
-    return state, {"UV_CACHE_DIR": str(cache), "UV_PYTHON_INSTALL_DIR": str(pythons)}
+    return state, {name: str(path) for name, path in caches.items()}
+
+
+def node_executable(host):
+    raw = native_worker_config(host, WEBSTORM_PRODUCT_KEY).get("node")
+    node = Path(raw).expanduser() if isinstance(raw, str) and raw else None
+    if node is None or not node.is_absolute():
+        raise Blocked("native_node_not_configured")
+    if not node.is_file() or not os.access(node, os.X_OK) or not os.access(node.parent / "npm", os.X_OK):
+        raise Blocked("native_node_unavailable")
+    return node
+
+
+def npm_preparation(node, project, private, caches):
+    empty_configs = [private / "npm-user.npmrc", private / "npm-global.npmrc"]
+    for config in empty_configs:
+        config.write_text("")
+    argv = [str(node.parent / "npm"), "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--no-update-notifier",
+            "--userconfig", str(empty_configs[0]), "--globalconfig", str(empty_configs[1]),
+            "--cache", caches["npm_config_cache"], "--prefix", str(project)]
+    env = {"PATH": str(node.parent) + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
+           "HOME": str(private / "prepare-home"), "TMPDIR": str(private / "tmp")}
+    return argv, env
 
 
 def wait_for_host_capacity(wait_until, on_wait, receipt):
@@ -875,6 +928,37 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
         raise Blocked("native_execution_incomplete" if require_completion else "native_preparation_failed")
 
 
+def write_selection_scope(idea: Path, selected: set[str]):
+    scope = ElementTree.Element("component", name="DependencyValidationManager")
+    if any(re.search(r'[\s"!&|()*?:\[\]\\]', path) for path in selected):
+        raise Blocked("native_scope_path_unsupported")
+    ElementTree.SubElement(scope, "scope", name="JBNativeSelection", pattern="||".join("file:" + path for path in sorted(selected)))
+    (idea / "scopes").mkdir(exist_ok=True)
+    ElementTree.ElementTree(scope).write(idea / "scopes/JBNativeSelection.xml", encoding="unicode")
+
+
+def write_module_manager(idea: Path, module: ElementTree.Element):
+    ElementTree.ElementTree(module).write(idea / "Native.iml", encoding="unicode")
+    modules = ElementTree.Element("project", version="4")
+    component = ElementTree.SubElement(modules, "component", name="ProjectModuleManager")
+    ElementTree.SubElement(ElementTree.SubElement(component, "modules"), "module", fileurl=(idea / "Native.iml").as_uri(), filepath=str(idea / "Native.iml"))
+    ElementTree.ElementTree(modules).write(idea / "modules.xml", encoding="unicode")
+
+
+def prepare_web_model(project: Path, selected: set[str]):
+    idea = project / ".idea"
+    idea.mkdir(exist_ok=True)
+    if not (idea / "modules.xml").is_file():
+        module = ElementTree.Element("module", type="WEB_MODULE", version="4")
+        manager = ElementTree.SubElement(module, "component", name="NewModuleRootManager")
+        content = ElementTree.SubElement(manager, "content", url=project.as_uri())
+        ElementTree.SubElement(content, "excludeFolder", url=(project / ".git").as_uri())
+        ElementTree.SubElement(manager, "orderEntry", type="inheritedJdk")
+        ElementTree.SubElement(manager, "orderEntry", type="sourceFolder", forTests="false")
+        write_module_manager(idea, module)
+    write_selection_scope(idea, selected)
+
+
 def prepare_model(project: Path, sdk_name: str, framework_roots: list[Path], selected: set[str]):
     idea = project / ".idea"
     idea.mkdir(exist_ok=True)
@@ -891,11 +975,7 @@ def prepare_model(project: Path, sdk_name: str, framework_roots: list[Path], sel
                 ElementTree.SubElement(content, "excludeFolder", url=(root / excluded).as_uri())
     ElementTree.SubElement(manager, "orderEntry", type="jdk", jdkName=sdk_name, jdkType="Python SDK")
     ElementTree.SubElement(manager, "orderEntry", type="sourceFolder", forTests="false")
-    ElementTree.ElementTree(module).write(idea / "Native.iml", encoding="unicode")
-    modules = ElementTree.Element("project", version="4")
-    component = ElementTree.SubElement(modules, "component", name="ProjectModuleManager")
-    ElementTree.SubElement(ElementTree.SubElement(component, "modules"), "module", fileurl=(idea / "Native.iml").as_uri(), filepath=str(idea / "Native.iml"))
-    ElementTree.ElementTree(modules).write(idea / "modules.xml", encoding="unicode")
+    write_module_manager(idea, module)
     misc = ElementTree.Element("project", version="4")
     ElementTree.SubElement(misc, "component", name="ProjectRootManager", version="2", attrib={"project-jdk-name": sdk_name, "project-jdk-type": "Python SDK"})
     ElementTree.ElementTree(misc).write(idea / "misc.xml", encoding="unicode")
@@ -903,22 +983,20 @@ def prepare_model(project: Path, sdk_name: str, framework_roots: list[Path], sel
     component = ElementTree.SubElement(pyproject_model, "component", name="PyProjectModelSettings")
     ElementTree.SubElement(component, "option", name="usePyprojectToml", value="false")
     ElementTree.ElementTree(pyproject_model).write(idea / "pyProjectModel.xml", encoding="unicode")
-    scope = ElementTree.Element("component", name="DependencyValidationManager")
-    if any(re.search(r'[\s"!&|()*?:\[\]\\]', path) for path in selected):
-        raise Blocked("native_scope_path_unsupported")
-    ElementTree.SubElement(scope, "scope", name="JBNativeSelection", pattern="||".join("file:" + path for path in sorted(selected)))
-    (idea / "scopes").mkdir(exist_ok=True)
-    ElementTree.ElementTree(scope).write(idea / "scopes/JBNativeSelection.xml", encoding="unicode")
+    write_selection_scope(idea, selected)
 
 
-def plant_controls(project, run_id, odoo):
-    fixtures = Path(__file__).parents[1] / "assets/native-controls"
+def plant_controls(project, run_id, odoo, product_key=PYTHON_PRODUCT_KEY):
+    fixtures = CONTROL_ASSETS
     prefix = "jb_native_controls_" + run_id.replace("-", "")
     destination = project / prefix
     destination.mkdir()
     names = ["coverage.py", "duplicates.py", "python_types.py"]
     if odoo:
         names += ["__init__.py", "__manifest__.py", "models.py", "views/defect.xml"]
+    if product_key == WEBSTORM_PRODUCT_KEY:
+        fixtures = CONTROL_ASSETS / WEBSTORM_PRODUCT_KEY
+        names = sorted({*proof.WEBSTORM_CANARY_FILES.values(), *proof.WEBSTORM_CLEAN_TWINS.values()})
     for name in names:
         target = destination / name
         target.parent.mkdir(exist_ok=True)
@@ -1083,7 +1161,42 @@ def attribute_to_change(receipt: dict[str, Any], findings: list[dict[str, Any]],
             finding["introduced"] = lines is None or finding["line"] in lines
 
 
+ADVISORY_TOOL_PREFIX = "Grazie"
+SETTLEABLE_GAP_KINDS = frozenset({"execution_unproven", "inspection_applicability_unproven"})
+
+
+def covered_by_gates(repository_config: dict[str, Any]) -> dict[str, str]:
+    gates = repository_config.get("qualityGate", {})
+    declared = gates.get("inspection", {}).get("coveredBy", {}) if isinstance(gates, dict) else None
+    if not isinstance(declared, dict):
+        raise Blocked("native_covered_by_invalid")
+    for tool, gate_key in declared.items():
+        gate: Any = gates
+        for part in gate_key.split(".") if isinstance(gate_key, str) else [None]:
+            gate = gate.get(part) if isinstance(gate, dict) and part else None
+        if not isinstance(tool, str) or not isinstance(gate, str) or not gate.strip():
+            raise Blocked("native_covered_by_invalid")
+    return declared
+
+
+def settle_declared_gaps(coverage: dict[str, Any], gaps: list[str], covered_by: dict[str, str]) -> list[str]:
+    remaining, covered, advisory = [], {}, []
+    for gap in gaps:
+        kind, _, tool = gap.partition(":")
+        if kind in SETTLEABLE_GAP_KINDS and tool in covered_by:
+            covered[tool] = covered_by[tool]
+        elif kind in SETTLEABLE_GAP_KINDS and tool.startswith(ADVISORY_TOOL_PREFIX):
+            advisory.append(gap)
+        else:
+            remaining.append(gap)
+    settled = set(covered) | {gap.partition(":")[2] for gap in advisory}
+    coverage["unproven"] = [tool for tool in coverage.get("unproven", []) if tool not in settled]
+    coverage.update(covered_by=covered, advisory_gaps=advisory)
+    return remaining
+
+
 def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]], reason: str, gaps: list[str], artifact: str | None = None) -> dict[str, Any]:
+    product = host.IDE_PRODUCTS[receipt.get("product", PYTHON_PRODUCT_KEY)]
     preexisting = [finding for finding in findings if finding.get("introduced") is False]
     introduced = [finding for finding in findings if finding.get("introduced") is not False]
     advisory = [finding for finding in introduced if finding["severity"] in ADVISORY_SEVERITIES]
@@ -1097,7 +1210,13 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
     if reason in {"native_owner_activation_required", "native_activation_stop_recorded"}:
         action = "Owner question: the Director must restore the configured independent worker's activation through the product UI using existing entitlements. Stop licensed runs; never start a trial or copy credentials."
     elif reason in {"native_worker_not_configured", "native_app_not_configured"}:
-        action = "Configure jetbrains.nativeWorkers.pycharm.path/app (or the older jetbrains.nativeWorker) in the shared helper config for the independently Director-activated worker, or supply --native-worker and --ide-app. See references/native-backend.md."
+        action = f"Configure jetbrains.nativeWorkers.{product.key}.path/app in the shared helper config for the independently Director-activated worker, or supply --native-worker and --ide-app. See references/native-backend.md."
+    elif reason in {"native_node_not_configured", "native_node_unavailable"}:
+        action = "Set jetbrains.nativeWorkers.webstorm.node in the shared helper config to the absolute path of an executable node with npm in the same directory. See references/native-backend.md."
+    elif reason == "native_npm_lockfile_required":
+        action = "Native WebStorm needs a root package.json and package-lock.json; it runs only npm ci --ignore-scripts and never npm install. Commit the lockfile or keep this selection UNKNOWN."
+    elif reason == "native_pnpm_unsupported":
+        action = "Native WebStorm does not prepare pnpm projects yet. Keep this selection UNKNOWN and rely on the repository's own lint and tests."
     elif reason == "native_trusted_root_required":
         action = "Use the intended repository under jetbrains.trustedAutoOpenRoots in the standard helper config; native preparation executes only for a trusted source root."
     elif reason == "native_python_environment_required":
@@ -1139,8 +1258,10 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
         action = "Final stdout and logs exceeded their shared read bound. Narrow the inspection scope or diagnose the noisy helper or log writer before a fresh assessment. Finalization still stops the owned group and independently scans for licensing events; preserve any resulting hold and use --native-recover-only for retained custody."
     elif reason in {"native_exit_observer_unavailable", "native_exit_observation_unproven"}:
         action = "Restore non-reaping child-exit observation in the documented native Python setup (waitid/WNOWAIT or kqueue/NOTE_EXIT). Registration is required before the launch gate opens. Preserve any held custody and use --native-recover-only first; never substitute a reaping poll before stopping the owned group."
-    report = (f"{verdict}: native PyCharm; {reason}; {len(findings)} findings; {len(advisory)} advisory spelling or grammar findings; "
+    report = (f"{verdict}: native {product.display_name}; {reason}; {len(findings)} findings; {len(advisory)} advisory spelling or grammar findings; "
               f"{len(preexisting)} preexisting findings not counted; "
+              f"{len(receipt.get('coverage', {}).get('covered_by', {}))} inspections covered by repository gates; "
+              f"{len(receipt.get('coverage', {}).get('advisory_gaps', []))} advisory coverage gaps; "
               f"{len(gaps)} proof gaps; {len(receipt.get('coverage', {}).get('unproven', []))} inspections unproven.")
     return {"schema_version": host.AGENT_RESULT_SCHEMA_VERSION, "command": "agent-inspect", "backend": "native",
             "status": {"GREEN": "clean", "RED": "findings"}.get(verdict, "error"),
@@ -1150,6 +1271,8 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
             "scope": receipt.get("scope"), "selected_file_count": receipt.get("selected_file_count"),
             "finding_count": len(findings), "preexisting_finding_count": len(preexisting),
             "advisory_finding_count": len(advisory), "advisory_findings": advisory[:common.FINDING_LIMIT],
+            "covered_by": receipt.get("coverage", {}).get("covered_by", {}),
+            "advisory_coverage_gaps": receipt.get("coverage", {}).get("advisory_gaps", []),
             "advisory_findings_truncated": len(advisory) > common.FINDING_LIMIT,
             "changed_lines": receipt.get("changed_lines"), "findings": findings[:common.FINDING_LIMIT], "findings_artifact": artifact,
             "findings_truncated": len(findings) > common.FINDING_LIMIT, "proof_failures": gaps,
@@ -1190,9 +1313,12 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_reconciliation_requires_recovery_only")
         if args.native_reconcile_result and release_run:
             raise Blocked("native_reconciliation_release_conflict")
-        worker, app, framework, product = worker_settings(args, host)
+        worker, app, framework, product = worker_settings(args, host, requested_product_key(args, host))
+        receipt["product"] = product.key
+        webstorm = product.key == WEBSTORM_PRODUCT_KEY
         context.worker = worker
         config, plugins, home = launcher_paths(worker)
+        node = node_executable(host) if webstorm and not args.native_recover_only else None
         if not args.native_recover_only:
             distribution = json.loads((app / "Contents/Resources/product-info.json").read_text())
             receipt.update(ide_version=distribution.get("version"), ide_build=distribution.get("buildNumber"))
@@ -1222,7 +1348,10 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         repo, settings, scope, selected = common.scope_selection(args, host, receipt)
         if not any(repo.is_relative_to(Path(root)) for root in host.trusted_auto_open_roots()):
             raise Blocked("native_trusted_root_required")
-        if not is_odoo(repo):
+        if selected and native_product_key(host, settings, selected) != product.key:
+            raise Blocked("native_source_selection_changed")
+        odoo = not webstorm and is_odoo(repo)
+        if not odoo:
             framework = []
         elif not framework:
             raise Blocked("native_odoo_framework_required")
@@ -1230,13 +1359,14 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_odoo_framework_unavailable")
         receipt.update(scope=scope, selected_file_count=len(selected), repo_head_sha=host.git_head_sha(repo))
         receipt["framework_revisions"] = [host.git_head_sha(root) for root in framework]
-        if is_odoo(repo):
+        if odoo:
             receipt["odoo_context"] = framework_context(repo, selected, framework)
         if any(common.checked(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=normal"]).strip() for root in framework):
             raise Blocked("native_framework_inputs_unproven")
         if not selected:
             raise Blocked("native_scope_empty")
-        if any(Path(f).suffix not in NATIVE_SUFFIXES for f in selected) or common.lane_gaps(host, settings, selected):
+        suffixes = proof.WEBSTORM_PROVEN_SUFFIXES if webstorm else NATIVE_SUFFIXES
+        if any(Path(f).suffix not in suffixes for f in selected) or common.lane_gaps(host, settings, selected, product.key):
             raise Blocked("native_scope_unsupported")
         if args.max_files is not None and len(selected) > args.max_files:
             raise Blocked("native_scope_too_large")
@@ -1246,13 +1376,18 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         profile_requested = set(expected)
         if any(f.endswith(".py") for f in selected):
             expected |= NAMED_PYTHON
-        if is_odoo(repo):
+        if odoo:
             expected |= NAMED_ODOO
+        if webstorm:
+            if settings.get("prepare"):
+                raise Blocked("native_preparation_shape_unsupported")
+            common.npm_lockfile(repo)
+            expected |= set(proof.WEBSTORM_CANARY_FILES)
         receipt["profile_sha256"] = common.digest(profile)
         planned_private = state / ("private-" + receipt["run_id"])
         source_interpreter = repo / ".venv/bin/python"
-        requested = common.requested_python_version(settings)
-        interpreter = planned_private / "project/.venv/bin/python" if requested is not None else source_interpreter
+        requested = None if webstorm else common.requested_python_version(settings)
+        interpreter = node if webstorm else planned_private / "project/.venv/bin/python" if requested is not None else source_interpreter
         context.reserve(state, worker, config, interpreter)
         private = context.private
         sdk_name = context.identity["sdk_name"]
@@ -1265,7 +1400,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         if any((project / path).stat().st_size > common.MAX_ANALYZED_FILE_KB * 1024 for path in selected):
             raise Blocked("native_selected_file_over_analysis_limit")
         receipt["source_manifest_sha256"] = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
-        controls = plant_controls(project, receipt["run_id"], is_odoo(repo))
+        controls = plant_controls(project, receipt["run_id"], odoo, product.key)
         def record_process(kind, pid):
             identity = process_identity(pid, private)
             if identity is None or identity["pgid"] != pid or identity["private"] != str(private):
@@ -1275,26 +1410,31 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         def record_exit():
             context.attempt("process_exit_record", context.process_finished)
 
-        check_lifetime(parent_fd, deadline)
-        # Use the declared version, or the exact worktree's prepared venv.
-        if requested is not None:
-            preparation_argv = common.preparation(settings, private)
-            preparation_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(private / "prepare-home"), "TMPDIR": str(private / "tmp")}
-            preparation_env.update(preparation_caches)
+        def prepare(preparation_argv, preparation_env):
             (private / "prepare-home").mkdir()
             execute(preparation_argv, preparation_env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(),
                     global_lock_fd=global_lock.fileno(), require_completion=False,
                     on_spawn=lambda pid: record_process("preparation", pid), on_exit=record_exit)
-            interpreter = project / ".venv/bin/python"
-        elif source_interpreter.is_file():
-            interpreter = source_interpreter
+
+        check_lifetime(parent_fd, deadline)
+        version = None
+        if webstorm:
+            prepare(*npm_preparation(node, project, private, preparation_caches))
+            prepare_web_model(project, selected | controls)
         else:
-            raise Blocked("native_python_environment_required")
-        version = common.checked([str(interpreter), "-c", "import sys; print('.'.join(map(str,sys.version_info[:3])))"]).decode().strip()
-        if requested and not (version == requested or version.startswith(requested + ".")):
-            raise Blocked("native_python_version_mismatch")
-        receipt["python_version"] = version
-        prepare_model(project, sdk_name, framework, selected | controls)
+            if requested is not None:
+                prepare(common.preparation(settings, private), {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(private / "prepare-home"),
+                                                                "TMPDIR": str(private / "tmp"), **preparation_caches})
+                interpreter = project / ".venv/bin/python"
+            elif source_interpreter.is_file():
+                interpreter = source_interpreter
+            else:
+                raise Blocked("native_python_environment_required")
+            version = common.checked([str(interpreter), "-c", "import sys; print('.'.join(map(str,sys.version_info[:3])))"]).decode().strip()
+            if requested and not (version == requested or version.startswith(requested + ".")):
+                raise Blocked("native_python_version_mismatch")
+            receipt["python_version"] = version
+            prepare_model(project, sdk_name, framework, selected | controls)
         shutil.copyfile(profile, private / "profile.xml")
         properties = {"config": config, "plugins": plugins, "system": private / "system", "log": private / "logs"}
         (private / "idea.properties").write_text("".join(f"idea.{name}.path={path}\n" for name, path in properties.items()) + "idea.initially.ask.config=never\n")
@@ -1307,13 +1447,15 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
                "-Didea.diagnostic.opentelemetry.detailed.scopes=inspection"]
         vm += [f"-XX:ErrorFile={private}/logs/java-error-%p.log", f"-XX:HeapDumpPath={private}/logs"]
         (private / "native.vmoptions").write_text("\n".join(vm) + "\n")
-        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(home), "TMPDIR": str(private / "tmp"),
+        engine_path = os.environ.get("PATH", "/usr/bin:/bin")
+        env = {"PATH": str(node.parent) + os.pathsep + engine_path if node else engine_path, "HOME": str(home), "TMPDIR": str(private / "tmp"),
                f"{product.env_var_base_name}_PROPERTIES": str(private / "idea.properties"),
                f"{product.env_var_base_name}_VM_OPTIONS": str(private / "native.vmoptions"),
                "JETBRAINS_INSPECTION_REGISTRY_DIR": str(private / "registry")}
         argv = ["/usr/bin/nice", "-n", str(NICE), str(app / "Contents/bin/inspect.sh"), str(project), str(private / "profile.xml"), str(private / "results"), "-v2"]
-        register_sdk(config, interpreter, version, sdk_name,
-                     on_attempt=lambda: context.sdk_attempt(config, interpreter, sdk_name))
+        if not webstorm:
+            register_sdk(config, interpreter, version, sdk_name,
+                         on_attempt=lambda: context.sdk_attempt(config, interpreter, sdk_name))
         context.phase("engine_running")
         execute(argv, env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(), global_lock_fd=global_lock.fileno(),
                 on_spawn=lambda pid: record_process("engine", pid), on_exit=record_exit)
@@ -1321,9 +1463,13 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         findings = [finding for finding in all_findings if finding["file"] in selected]
         trace_tools, trace_failed = proof.read_trace(private / "inspection-trace.json", project)
         control_root = next(iter(controls)).split("/", 1)[0]
+        product_proof = ({"proven_suffixes": proof.WEBSTORM_PROVEN_SUFFIXES, "canary_files": proof.WEBSTORM_CANARY_FILES,
+                          "clean_twins": proof.WEBSTORM_CLEAN_TWINS} if webstorm else {})
         receipt["coverage"], gaps = proof.assess(expected, registered, trace_tools, trace_failed, selected,
-                                                all_findings, control_root=control_root, tool_languages=languages, scope=scope)
+                                                all_findings, control_root=control_root, tool_languages=languages, scope=scope,
+                                                **product_proof)
         receipt["coverage"]["profile_requested"] = sorted(profile_requested)
+        gaps = settle_declared_gaps(receipt["coverage"], gaps, covered_by_gates(host.read_repo_config(repo)))
         allowed = selected | controls
         if set(receipt.get("inspected_files", [])) - allowed:
             gaps.append("native_unselected_file_traversal")
@@ -1344,7 +1490,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_profile_inputs_changed")
         if [host.git_head_sha(root) for root in framework] != receipt["framework_revisions"]:
             raise Blocked("native_framework_inputs_changed")
-        if is_odoo(repo) and framework_context(repo, selected, framework) != receipt["odoo_context"]:
+        if odoo and framework_context(repo, selected, framework) != receipt["odoo_context"]:
             raise Blocked("native_odoo_context_changed")
         if any(common.checked(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=normal"]).strip() for root in framework):
             raise Blocked("native_framework_inputs_changed")

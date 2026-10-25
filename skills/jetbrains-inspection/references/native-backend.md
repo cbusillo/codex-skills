@@ -36,9 +36,41 @@ Configure the **helper's** shared JSON config at
 ```
 
 `nativeWorkers` holds one entry per product (`pycharm`, `intellij`, `webstorm`);
-each worker's `app` must be that product's distribution. Only `pycharm` runs
-today. The older single `nativeWorker` object is still read as the `pycharm`
-entry; configure one or the other, not both.
+each worker's `app` must be that product's distribution. `pycharm` and
+`webstorm` run today. The older single `nativeWorker` object is still read as
+the `pycharm` entry; configure one or the other, not both.
+
+### WebStorm
+
+The `webstorm` entry takes `path`, `app` and `cacheRoot` like `pycharm`, plus a
+required absolute `node` path to an executable `node` with `npm` in the same
+directory (on Chris-Studio the nvm install's `bin/node`, which is not on the
+runner's PATH). That directory goes first on the preparation and engine PATH.
+A missing or non-executable `node` is UNKNOWN with its setup step.
+
+A selection routes to WebStorm when the repository's `ide` (or each owning
+lane's `ide`) is WebStorm and every file is `.ts`, `.tsx`, `.mts`, `.cts`,
+`.js`, `.jsx`, `.mjs`, `.cjs` or `.json`, with at least one script file so the
+TypeScript canary applies. JSON-only selections and other files, including
+`.css`, `.scss` and `.svelte`, stay UNKNOWN. In the snapshot the runner runs
+`npm ci --ignore-scripts --no-audit --no-fund` with `--cache
+cacheRoot/npm-cache` and no user or global npm config, honouring only the
+repository's own `.npmrc`, through the same journalled, unlicensed preparation
+path as Python. It needs a root `package.json` and `package-lock.json` and never runs
+`npm install`; `pnpm-lock.yaml` is refused for now. The snapshot excludes
+ignored files, so `node_modules` comes only from that step.
+
+The snapshot's tracked `.idea` is used when it has `modules.xml`; otherwise a
+minimal `WEB_MODULE` is generated. No SDK is registered. JavaScript, TypeScript
+and JSON tools must execute on each selected file of their language, and a
+TypeScript defect control and its clean twin (`WEBSTORM_CANARY_FILES` and
+`WEBSTORM_CLEAN_TWINS` in `native_coverage.py`) must both behave. ESLint stays
+UNKNOWN. `inspect.sh` does not report TypeScript compiler errors
+([WEB-44161](https://youtrack.jetbrains.com/issue/WEB-44161)); `tsc`,
+`svelte-check` and ESLint belong in the repository's tests and CI. The canary
+rule and trace evidence still need a licensed run, and no WebStorm-specific
+healthy licence lines are allowed. `--native-recover-only` recovers the PyCharm
+worker unless `--native-worker` names another.
 
 The standard `JETBRAINS_INSPECTION_GLOBAL_CONFIG` override selects a helper
 config. `--native-worker` (or `JETBRAINS_INSPECTION_NATIVE_WORKER`), `--ide-app`
@@ -94,7 +126,8 @@ uv run <skill-dir>/scripts/jb-inspect.py agent-inspect \
   --backend native --repo "$PWD" --scope files --file addons/example/models.py
 ```
 
-Selections support `.py`, `.yaml`, `.yml` and Odoo `.xml` in a root PyCharm model. Unsupported
+PyCharm selections support `.py`, `.yaml`, `.yml` and Odoo `.xml` in a root PyCharm model;
+WebStorm selections are listed above. Unsupported
 languages, filters or nested models remain UNKNOWN with a supported next step.
 Use explicit source files when a broader scope also contains documentation or
 other file types. Native assessment requires the same declared trusted roots
