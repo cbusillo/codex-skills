@@ -254,14 +254,18 @@ active issue labels and continuing background jobs do not lift a hold.
    `gh-plan.py --repo OWNER/REPO claim <issue> --worker <worker> --session <session-id>
    --branch <task-branch> --next-action "<action>"` before creating a
    branch or worktree, adding `--admission <kind>` when the overall Order
-   admits the work: live-site breakage, a named `milestone` item (linked into
-   that milestone's Track graph during planning, with the evidence cited), a
+   admits the work: live-site breakage, a named `milestone` item (cite its overall Track
+   with `--admission-link`; claim automatically links the issue into its native graph), a
    `repeat-stop` with both occurrences, `own-project` work from the Order's
    weekly own-projects share, or `spare-capacity`. Name the
    real kind: work that clears a milestone blocker is milestone work once
    linked, not spare capacity. Evidence may cite a decision comment, for example
    `--admission spare-capacity --admission-link https://github.com/OWNER/REPO/issues/123#issuecomment-456`.
    The claim retains that exact comment URL; admission grants no authority.
+   A repository milestone absent from overall direction uses its open native
+   milestone membership and that repository's merged `DIRECTION.md` instead;
+   do not invent an overall Track dependency for it.
+   A citation into the overall direction repository must still name a valid Track.
    Claim using exactly the branch the worktree helper will create
    (`work/<task-slug>` for the catalog's `github/scripts/dev-worktree`). Read
    [task worktrees](../github/references/worktrees.md) for its callable path,
@@ -398,8 +402,11 @@ inspect the helper's provenance and keep unknown ownership or disallowed
 section updates read-only.
 
 Use `create` for a new plan and `update-section` for an owned section. Use body
-files or stdin for multiline content through the maintained helpers. Keep the
-finish line observable, with scope, acceptance evidence, and one next action.
+files or stdin for multiline content through the maintained helpers. Correct
+Current Status on waiting issues without an execution claim; the writer
+preserves wait and ownership records. Use `wait` for wait changes; source edits
+and execution still require their normal claim.
+Keep the finish line observable, with scope, acceptance evidence, and one next action.
 Size implementation issues and record event waits under GitHub's
 [issue closing and post-merge proof](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof).
 Keep Current Status concise:

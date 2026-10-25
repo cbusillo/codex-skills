@@ -774,12 +774,18 @@ class ClaimCloseoutTests(unittest.TestCase):
             path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
             self.native_index.execute("INSERT INTO threads VALUES(?,?)", (native, str(path)))
             self.native_index.execute("INSERT INTO thread_spawn_edges VALUES(?,?)", (SESSION, native))
-        for released in (False, True):
-            self.comments = [self.source, self.release] if released else [self.source]
-            with self.subTest(released=released), patch.object(helper, "check_record", wraps=helper.check_record) as check:
-                report = helper.check([root])
-                self.assertEqual(report["claims_clear"], released)
-                self.assertEqual({call.args[3] for call in check.call_args_list}, {SESSION, "first", "second"})
+        for kind in ("interacted", "completed"):
+            for child in children:
+                path = Path(child["transcript"])
+                rows = [json.loads(line) for line in path.read_text().splitlines()]
+                rows[-1]["payload"]["item"]["kind"] = kind
+                path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+            for released in (False, True):
+                self.comments = [self.source, self.release] if released else [self.source]
+                with self.subTest(kind=kind, released=released), patch.object(helper, "check_record", wraps=helper.check_record) as check:
+                    report = helper.check([root])
+                    self.assertEqual(report["claims_clear"], released)
+                    self.assertEqual({call.args[3] for call in check.call_args_list}, {SESSION, "first", "second"})
         self.native_index.execute("DELETE FROM thread_spawn_edges")
         self.native_index.executemany(
             "INSERT INTO thread_spawn_edges VALUES(?,?)", [(SESSION, "second"), (SESSION, "first"), ("second", "first")]

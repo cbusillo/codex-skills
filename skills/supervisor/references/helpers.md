@@ -1735,6 +1735,15 @@ inspect the daemon's active threads and refuse while one is running or their
 state is unknown. Terminal clients and dead tmux panes cannot prove a worker
 has ended; a remote Codex thread can continue after its terminal disappears.
 
+Both terminal backends extend the launch command timeout to preparation reads,
+including worktree trust discovery and resume source files. A stalled read returns
+`preparation_unavailable` with input paths and target identity. Inspect the
+preserved attempt and any pending macOS file-access prompt before deciding what
+to do. Account probes and writes retain their own bounds and cleanup. This is
+qualified with interruptible FIFO reads; interruption of a real pending macOS
+privacy check has not been observed. The launcher never relaunches, changes
+permissions or restarts a server to recover from this timeout.
+
 Both terminal backends observe the first two seconds after submission. An early
 exit, including a failed Codex bootstrap, returns `launch_failed`, retaining the exact
 terminal identity, any already-written count-only receipt, and available last
@@ -1968,6 +1977,17 @@ not a credential. A busy reused TTY still refuses when current process identity
 cannot establish that the source is ended. Resolve that identity rather than
 assuming terminal reuse proves inactivity.
 
+After a host reboot, the helper can use the kernel's boot time as the exit
+cutoff independently of the original recorded termination time. Every matching
+native transcript across the supplied account roots must have its last activity
+and file modification strictly before boot, with unchanged snapshots during
+verification. This proves the original processes ended even if their PIDs and
+TTYs have been reused. Native resumed-client checks, the new TTY occupant's
+process and harness checks, terminal identity, quiet period and retained-artifact
+guards still apply. Missing boot evidence or a boot before the source's activity
+keeps the ordinary strict route. This proof applies to crash termination;
+ordinary finished-session and historical-exit routes keep their existing checks.
+
 Verify native task status and any remote peers yourself too: an idle desktop
 thread or an ID-less picker may not yet write a new transcript. The existing
 `--confirm-session-ended` attestation includes those unavailable peers.
@@ -1992,7 +2012,8 @@ only when its start time is after termination and the original launch nonce
 is absent; reused pane numbers supply no identity evidence. Retained paths
 must still be worktree roots with their recorded branches preserved. It refuses a running process,
 transcript activity within five minutes, activity after the actual termination,
-a live/uncertain terminal, or a changed record. PID reuse refuses too. It never
+a live/uncertain terminal, or a changed record. PID reuse without verified reboot
+proof refuses too. It never
 stops a process or removes a terminal. The release records the retained
 artifacts; claim release does not clear waits, native blockers or retained-work
 ownership gates. Keep the original termination time across retries.

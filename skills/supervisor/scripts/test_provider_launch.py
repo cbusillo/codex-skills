@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 import uuid
@@ -38,6 +39,19 @@ HARNESS_CHOICES = (
 
 
 class ResumeLaunchTests(unittest.TestCase):
+    def test_preparation_read_deadline_leaves_account_probes_and_writes_their_own_bounds(self) -> None:
+        def select(*args: object) -> dict:
+            time.sleep(0.1)
+            return self.choice
+
+        self.select.side_effect = select
+        self.prepare.side_effect = lambda *args: time.sleep(0.1)
+        with patch.object(iterm_tab, "LAUNCH_TIMEOUT", 0.05):
+            commands, choices = iterm_tab.prepare_launches(self.args)
+        self.assertEqual(choices, [self.choice])
+        self.assertEqual(len(commands), 1)
+        self.prepare.assert_called_once_with(self.choice)
+
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory(dir="/tmp", prefix="resume-tab-"))).resolve()
         self.enterContext(patch.dict(os.environ, {"HOME": str(self.root), "CODEX_HOME": str(self.root / "account")}))

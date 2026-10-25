@@ -136,7 +136,8 @@ def release_stop(worker, run_id):
     return False
 
 
-def recover(worker, receipt, common, write_record, remove_sdk, *, result_path=None, release_run=None, process_proof=None):
+def recover(worker, receipt, common, write_record, remove_sdk, *, result_path=None, release_run=None, process_proof=None,
+            licensed_inspection_logged=lambda _private: False):
     journal = worker / "native-run.json"
     if not journal.exists():
         if release_run:
@@ -172,6 +173,8 @@ def recover(worker, receipt, common, write_record, remove_sdk, *, result_path=No
                        identity["table_existed"], missing_ok=True)
         receipt["sdk_removed"] = True
         private = Path(identity["private"])
+        interrupted_cleared = (record["phase"] == "engine_running" and record.get("license_boundary") is not True
+                               and private.exists() and licensed_inspection_logged(private))
         if private.exists():
             common.delete_private(private)
         receipt["private_deleted"] = True
@@ -184,8 +187,10 @@ def recover(worker, receipt, common, write_record, remove_sdk, *, result_path=No
         if record.get("license_boundary") is True:
             write_record(worker / "native-activation-stop.json",
                          {"run_id": identity["run_id"], "boundary_event_count": 1})
-        elif record["phase"] == "engine_running":
+        elif record["phase"] == "engine_running" and not interrupted_cleared:
             raise LifecycleError("native_interrupted_run_unresolved")
+        if interrupted_cleared:
+            receipt["interrupted_run_cleared"] = "licensed_execution_observed"
         journal.unlink()
         receipt["custody_retained"] = False
     except LifecycleError:

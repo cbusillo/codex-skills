@@ -21,6 +21,7 @@ import select
 import selectors
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -216,6 +217,18 @@ def runtime_storage(host, worker):
     return state, {"UV_CACHE_DIR": str(cache), "UV_PYTHON_INSTALL_DIR": str(pythons)}
 
 
+def wait_for_host_capacity(wait_until, on_wait, receipt):
+    started = time.monotonic()
+    try:
+        while os.getloadavg()[0] > LOAD_LIMIT:
+            if time.monotonic() >= wait_until:
+                raise Blocked("native_host_load_paused")
+            on_wait()
+            time.sleep(max(0.0, min(1.0, wait_until - time.monotonic())))
+    finally:
+        receipt["load_wait_ms"] = round((time.monotonic() - started) * 1000)
+
+
 @contextlib.contextmanager
 def profile_lock(worker, name="worker.lock", wait_until=None, on_wait=None):
     """Exclusive kernel lock; an admitted request waits until `wait_until` for its owner to release it."""
@@ -345,11 +358,51 @@ def sdk_tree(path):
         raise Blocked("native_sdk_table_malformed") from None
 
 
+RECOVERY_LOG_LINE = re.compile(r"^\d{4}-\d\d-\d\d\s+[\d:, .]+\[\s*\d+]\s+\w+\s+-\s+(\S+)\s+-\s+(.*)$")
+RECOVERY_LICENSING_WORD = re.compile(r"licen[cs]|trial|evaluation", re.I)
+HEALTHY_LICENSING_LINES = (("#c.i.p.trialPromotion", "IDE is not managed"),
+                           ("#c.i.p.i.b.AppStarter", "Will skip the config import to directory "))
+LOCAL_INSPECTION_PREFIX = "Running local inspections on "
+RECOVERY_LOG_LIMIT = 64 * 1024 * 1024
+
+
+def logged_licensed_inspection(private: Path) -> bool:
+    logs, project = private / "logs", private / "project"
+    if logs.is_symlink() or not logs.is_dir():
+        return False
+    inspected = False
+    try:
+        for path in sorted(logs.glob("*.log")):
+            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, "rb") as log:
+                status = os.fstat(log.fileno())
+                if not stat.S_ISREG(status.st_mode) or status.st_size > RECOVERY_LOG_LIMIT:
+                    return False
+                data = log.read()
+            scanner = observations.LicenseScanner()
+            scanner.feed(data, final=True)
+            if scanner.observed or not scanner.complete:
+                return False
+            for line in data.decode(errors="replace").splitlines():
+                framed = RECOVERY_LOG_LINE.match(line)
+                logger, message = framed.groups() if framed else ("", line)
+                if logger == "#c.i.c.e.GlobalInspectionContextImpl" and message.startswith(LOCAL_INSPECTION_PREFIX):
+                    inspected = inspected or Path(message[len(LOCAL_INSPECTION_PREFIX):]).is_relative_to(project)
+                elif RECOVERY_LICENSING_WORD.search(line) and not any(
+                        logger == healthy_logger and message.startswith(healthy_message)
+                        for healthy_logger, healthy_message in HEALTHY_LICENSING_LINES):
+                    return False
+    except OSError:
+        return False
+    return inspected
+
+
 def recover_run(worker, receipt=None, result_path=None, release_run=None, process_proof=None):
     current = receipt if receipt is not None else {"private_deleted": True, "sdk_removed": True}
     try:
         lifecycle.recover(worker, current, common, write_record, remove_sdk, result_path=result_path,
-                          release_run=release_run, process_proof=process_proof)
+                          release_run=release_run, process_proof=process_proof,
+                          licensed_inspection_logged=logged_licensed_inspection)
     except lifecycle.LifecycleError as error:
         raise Blocked(str(error)) from None
 
@@ -952,7 +1005,63 @@ def read_results(results: Path, project: Path) -> tuple[list[dict[str, Any]], se
 
 
 
+HUNK = re.compile(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@")
+
+
+def changed_line_map(repo: Path, selected: set[str]) -> dict[str, set[int] | None] | None:
+    def git(*argv: str) -> str | None:
+        result = common.command(["git", "-c", "core.quotePath=false", "-C", str(repo), *argv])
+        return None if result.returncode else result.stdout.decode(errors="replace")
+
+    upstream = git("rev-parse", "--symbolic-full-name", "origin/HEAD")
+    base = git("merge-base", "HEAD", upstream.strip()) if upstream else None
+    if not base or not selected:
+        return None
+    paths = sorted(selected)
+    present = git("ls-tree", "-r", "-z", "--name-only", base.strip(), "--", *paths)
+    differing = git("diff", "-z", "--name-only", "--no-renames", base.strip(), "--", *paths)
+    diff = git("diff", "--unified=0", "--no-color", "--no-ext-diff", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/",
+               base.strip(), "--", *paths)
+    if present is None or differing is None or diff is None:
+        return None
+    edited: dict[str, set[int]] = {}
+    current: str | None = None
+    in_header = False
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            in_header, current = True, None
+        elif in_header and line.startswith("+++ "):
+            name = line[len("+++ "):].rstrip("\t")
+            current = name[len("b/"):] if name.startswith("b/") else None
+        elif hunk := HUNK.match(line):
+            in_header = False
+            if current is not None:
+                start, count = int(hunk[1]), int(hunk[2] if hunk[2] is not None else 1)
+                edited.setdefault(current, set()).update(range(start, start + count))
+    changed: dict[str, set[int] | None] = {path: None for path in selected - set(present.split("\0"))}
+    for path in selected & set(differing.split("\0")):
+        changed.setdefault(path, edited.get(path))
+    return changed
+
+
+def attribute_to_change(receipt: dict[str, Any], findings: list[dict[str, Any]], repo: Path, scope: str, selected: set[str]) -> None:
+    if scope not in {"changed_files", "files"}:
+        return
+    changed = changed_line_map(repo, selected)
+    receipt["changed_lines"] = "unavailable" if changed is None else "computed"
+    for finding in findings:
+        if changed is None:
+            finding["introduced"] = None
+        elif finding["file"] not in changed:
+            finding["introduced"] = False
+        else:
+            lines = changed[finding["file"]]
+            finding["introduced"] = lines is None or finding["line"] in lines
+
+
 def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]], reason: str, gaps: list[str], artifact: str | None = None) -> dict[str, Any]:
+    preexisting = [finding for finding in findings if finding.get("introduced") is False]
+    findings = [finding for finding in findings if finding.get("introduced") is not False]
     clean = reason == "native_completed" and not gaps
     verdict = "GREEN" if clean and not findings else "RED" if clean else "UNKNOWN"
     action = "Fix current findings." if verdict == "RED" else "None." if verdict == "GREEN" else "Resolve the reported native prerequisite or execution-coverage gap before a fresh assessment."
@@ -1001,14 +1110,16 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
         action = "Final stdout and logs exceeded their shared read bound. Narrow the inspection scope or diagnose the noisy helper or log writer before a fresh assessment. Finalization still stops the owned group and independently scans for licensing events; preserve any resulting hold and use --native-recover-only for retained custody."
     elif reason in {"native_exit_observer_unavailable", "native_exit_observation_unproven"}:
         action = "Restore non-reaping child-exit observation in the documented native Python setup (waitid/WNOWAIT or kqueue/NOTE_EXIT). Registration is required before the launch gate opens. Preserve any held custody and use --native-recover-only first; never substitute a reaping poll before stopping the owned group."
-    report = f"{verdict}: native PyCharm; {reason}; {len(findings)} findings; {len(gaps)} proof gaps; {len(receipt.get('coverage', {}).get('unproven', []))} inspections unproven."
+    report = (f"{verdict}: native PyCharm; {reason}; {len(findings)} findings; {len(preexisting)} preexisting findings not counted; "
+              f"{len(gaps)} proof gaps; {len(receipt.get('coverage', {}).get('unproven', []))} inspections unproven.")
     return {"schema_version": host.AGENT_RESULT_SCHEMA_VERSION, "command": "agent-inspect", "backend": "native",
             "status": {"GREEN": "clean", "RED": "findings"}.get(verdict, "error"),
             "agent_result": {"verdict": verdict, "bucket": {"GREEN": "clean", "RED": "findings"}.get(verdict, "environment_blocked"),
                              "retry_policy": {"retry": False, "max_attempts": 0, "wait_ms": 0}, "terminal": True,
                              "next_action": action, "agent_report": report},
             "scope": receipt.get("scope"), "selected_file_count": receipt.get("selected_file_count"),
-            "finding_count": len(findings), "findings": findings[:common.FINDING_LIMIT], "findings_artifact": artifact,
+            "finding_count": len(findings), "preexisting_finding_count": len(preexisting),
+            "changed_lines": receipt.get("changed_lines"), "findings": findings[:common.FINDING_LIMIT], "findings_artifact": artifact,
             "findings_truncated": len(findings) > common.FINDING_LIMIT, "proof_failures": gaps,
             "coverage": receipt.get("coverage", {}), "uncovered_inspections": receipt.get("coverage", {}).get("unproven", []),
             "inspection_outcome": {"verdict": verdict, "reason": reason},
@@ -1062,6 +1173,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             # Ordinary requests queue for the same locks; recovery never waits.
             held_lock.enter_context(host.fifo_turn(state_dir() / "native-queue", "Native inspection", on_wait))
             wait_until = time.monotonic() + max(0, getattr(args, "lifecycle_lock_timeout_ms", host.DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)) / 1000
+            wait_for_host_capacity(wait_until, on_wait, receipt)
         held_lock.enter_context(profile_lock(worker, "native-control.lock", wait_until, on_wait))
         process_proof = stop_orphan(worker, receipt)
         global_lock = held_lock.enter_context(profile_lock(state_dir(), wait_until=wait_until, on_wait=on_wait))
@@ -1075,8 +1187,6 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         if args.native_recover_only:
             raise Blocked("native_recovery_only_no_inspection")
         state, preparation_caches = runtime_storage(host, worker)
-        if os.getloadavg()[0] > LOAD_LIMIT:
-            raise Blocked("native_host_load_paused")
         repo, settings, scope, selected = common.scope_selection(args, host, receipt)
         if not any(repo.is_relative_to(Path(root)) for root in host.trusted_auto_open_roots()):
             raise Blocked("native_trusted_root_required")
@@ -1209,6 +1319,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_framework_inputs_changed")
         if args.severity != "all":
             findings = [finding for finding in findings if finding["severity"].lower() == args.severity.lower()]
+        attribute_to_change(receipt, findings, repo, scope, selected)
         reason = "native_completed" if not gaps else "native_coverage_unproven"
         known_terminal = True
     except Blocked as error:

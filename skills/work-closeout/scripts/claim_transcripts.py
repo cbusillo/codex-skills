@@ -75,7 +75,7 @@ def metadata(records: list[dict]) -> dict:
     )
 
 
-def codex_children(records: list[dict]) -> set[str]:
+def codex_children(records: list[dict], indexed_peers: set[str]) -> set[str]:
     return {
         item["agent_thread_id"]
         for row in records
@@ -85,6 +85,7 @@ def codex_children(records: list[dict]) -> set[str]:
         and isinstance(item := row["payload"].get("item"), dict)
         and item.get("type") == "SubAgentActivity"
         and item.get("kind") != "interacted"
+        and (item.get("kind") != "completed" or item.get("agent_thread_id") not in indexed_peers)
         and isinstance(item.get("agent_thread_id"), str)
     }
 
@@ -158,7 +159,9 @@ def codex_entries(root: dict, supplied: dict[str, set[Path]]) -> list[dict]:
                     records = claim_history.child_records(records, "codex", native, {"parent": parent, "ancestors": ancestors})
                 for claim_session in {root_id, root_identity, native}:
                     expanded.append(entry(claim_session, path, records, native))
-                for child in codex_children(records):
+                indexed_peers = {sibling for ancestor in ancestors for sibling in indexed_children(databases, ancestor)}
+                indexed_peers.difference_update(children, {native})
+                for child in codex_children(records, indexed_peers):
                     children.setdefault(child, set()).update(indexed_paths(databases, child))
             for child, paths in children.items():
                 if child not in supplied and paths:
@@ -692,11 +695,7 @@ def terminal_command(item: dict, text: str) -> bool:
     )
 
 
-def window_completions(records: list[dict], inputs: dict, identifier: str, sources: ShellTexts, session: str) -> list[bool]:
-    text, javascript, name, start = inputs[identifier]
-    missing = [False] * len(sources.commands)
-    if not javascript and name != "exec_command":
-        return missing
+def response_positions(records: list[dict]) -> dict[str, int]:
     responses = {
         str(payload.get("call_id", "")): index
         for index, row in enumerate(records)
@@ -707,6 +706,16 @@ def window_completions(records: list[dict], inputs: dict, identifier: str, sourc
         payload = row.get("payload") or {}
         if payload.get("type") == "custom_tool_call_output" and "Script running with cell ID" in str(payload.get("output", "")):
             responses.pop(str(payload.get("call_id", "")), None)
+    return responses
+
+
+def window_completions(
+    records: list[dict], inputs: dict, identifier: str, sources: ShellTexts, session: str, responses: dict[str, int]
+) -> list[bool]:
+    text, javascript, name, start = inputs[identifier]
+    missing = [False] * len(sources.commands)
+    if not javascript and name != "exec_command":
+        return missing
     end = responses.get(identifier)
     if end is None or any(
         other != identifier and tool != "command" and index < end and responses.get(other, len(records)) > start
@@ -764,7 +773,7 @@ def window_completions(records: list[dict], inputs: dict, identifier: str, sourc
 
 
 def completed_sources(
-    records: list[dict], inputs: dict, outputs: dict, identifier: str, sources: ShellTexts, session: str
+    records: list[dict], inputs: dict, outputs: dict, identifier: str, sources: ShellTexts, session: str, responses: dict[str, int]
 ) -> list[bool]:
     text, javascript, name, _ = inputs[identifier]
     own = outputs.get(identifier, [])
@@ -794,7 +803,7 @@ def completed_sources(
                 background = background or (isinstance(result, dict) and bool(result.get("backgroundTaskId")))
         ended = bool(own) and not background
         return [ended] * len(sources.commands)
-    window = window_completions(records, inputs, identifier, sources, session)
+    window = window_completions(records, inputs, identifier, sources, session, responses)
     bound = bound_shell_results(text, javascript, name, own)
     if len(bound) != len(sources.commands):
         return window
@@ -2840,6 +2849,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
     outputs = tool_outputs(records)
     own_outputs = tool_outputs(records, followups=False)
     inputs = {identifier: (text, javascript, name, index) for identifier, text, javascript, name, index in tool_details(records)}
+    responses = response_positions(records)
     denied = denied_invocations(records)
     non_tty_stdin_closed = closed_stdin_runtime(records)
     finished = {
@@ -2881,7 +2891,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         launched_in_background = False
         try:
             sources = shell_texts(text, javascript, exec_command=name == "exec_command")
-            source_ended = completed_sources(records, inputs, own_outputs, identifier, sources, session)
+            source_ended = completed_sources(records, inputs, own_outputs, identifier, sources, session, responses)
             opaque = sources.opaque
             if not unexecuted and identifier not in finished:
                 claim_may_be_interactive = (
@@ -2963,7 +2973,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
                 saved = persisted_output(records, directory, session, identifier)
                 blocks = [*blocks, *tool_outputs(saved).get(identifier, [])]
                 restored = {**own_outputs, identifier: [*own_outputs.get(identifier, []), *tool_outputs(saved).get(identifier, [])]}
-                restored_flags = completed_sources(records, inputs, restored, identifier, sources, session)
+                restored_flags = completed_sources(records, inputs, restored, identifier, sources, session, responses)
                 ended_invocations = [
                     ended and not discovery.asynchronous
                     for source, ended in zip(sources.commands, restored_flags, strict=True)

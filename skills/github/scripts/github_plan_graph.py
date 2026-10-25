@@ -9,10 +9,44 @@ from __future__ import annotations
 
 import json
 import copy
-from typing import Any
+import re
+from typing import Any, Callable, NamedTuple
 
 import github_read
 import github_plan_status
+
+
+class NativeIssueGraph(NamedTuple):
+    nodes: set[tuple[str, int]]
+    complete: bool
+
+
+def native_issue_key(issue: dict[str, Any]) -> tuple[str, int]:
+    match = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)", str(issue.get("html_url") or ""))
+    if not match or "pull_request" in issue:
+        raise ValueError("native graph relationship identity unknown")
+    return match[1].casefold(), int(match[2])
+
+
+def walk_native_issues(
+    roots: list[tuple[str, int]], *, read_edges: Callable[[str, int], list[tuple[str, int]]],
+    max_nodes: int = 500, target: tuple[str, int] | None = None,
+) -> NativeIssueGraph:
+    pending = list(roots)
+    seen: set[tuple[str, int]] = set()
+    while pending:
+        repo, number = pending.pop()
+        key = repo.casefold(), number
+        if key in seen:
+            continue
+        if len(seen) >= max_nodes:
+            return NativeIssueGraph(seen, False)
+        seen.add(key)
+        if key == target:
+            return NativeIssueGraph(seen, False)
+        pending.extend(read_edges(repo, number))
+    return NativeIssueGraph(seen, True)
+
 
 ISSUE_FIELDS = """number title body state stateReason createdAt updatedAt url
  author { __typename login } authorAssociation repository { nameWithOwner }

@@ -1532,6 +1532,25 @@ class ProcessArgumentsTests(unittest.TestCase):
         # Kernel existence is a fixture fact, never a host PID assumption.
         self.enterContext(patch.object(session_liveness.os, "kill", return_value=None))
 
+    def test_kernel_boot_time_reads_both_hosts_and_unknown_keeps_strict_route(self) -> None:
+        boot_seconds = 1792934190
+        expected = datetime.fromtimestamp(boot_seconds, timezone.utc)
+        with (patch.object(session_liveness.sys, "platform", "darwin"),
+              patch.object(session_liveness.subprocess, "run", return_value=SimpleNamespace(
+                  stdout=f"{{ sec = {boot_seconds}, usec = 167419 }}\n")) as kernel):
+            self.assertEqual(session_liveness.host_boot_time(), expected)
+            kernel.return_value.stdout = "unavailable"
+            self.assertIsNone(session_liveness.host_boot_time())
+            kernel.side_effect = OSError("unavailable")
+            self.assertIsNone(session_liveness.host_boot_time())
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with patch.object(session_liveness.sys, "platform", "linux"), patch.object(session_liveness, "PROC_ROOT", root):
+                (root / "stat").write_text(f"cpu 1 2 3\nbtime {boot_seconds}\n")
+                self.assertEqual(session_liveness.host_boot_time(), expected)
+                (root / "stat").write_text("cpu 1 2 3\nbtime unknown\n")
+                self.assertIsNone(session_liveness.host_boot_time())
+
     def test_kernel_process_details_bind_executable_incarnation_and_owner(self):
         import ctypes
         import struct

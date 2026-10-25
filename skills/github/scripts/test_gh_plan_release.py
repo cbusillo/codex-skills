@@ -554,6 +554,7 @@ class ReleaseTests(ReleaseHarness):
         for mock in (patch.object(release.termination, "datetime", Clock),
                      patch.object(release.termination.socket, "gethostname", return_value="source-host"),
                      self.cutoff_patch,
+                     patch.object(shared, "host_boot_time", return_value=None),
                      patch.object(release.termination, "inventory", return_value=[]),
                      patch.object(release.termination, "run_terminal", return_value=SimpleNamespace(
                          returncode=1, stdout="", stderr="no server running on /fixture/socket"))):
@@ -589,6 +590,94 @@ class ReleaseTests(ReleaseHarness):
                 with self.assertRaises(PLAN.PlanError):
                     self.run_release()
                 self.f.assert_no_writes()
+
+    def test_reboot_releases_with_reused_pid_and_tty_but_preserves_resume_and_transcript_guards(self) -> None:
+        for harness in ("codex", "claude"):
+            with self.subTest(harness=harness):
+                self.setUp()
+                transcript = self.termination_setup(harness)
+                shared = release.termination.native_helpers()[1]
+                booted = release.stamp(self.termination_record["ended_at"])
+                rows = [(12345, "other", "unrelated"), (88, "ttys123", "unrelated")]
+                with (patch.object(shared, "host_boot_time", return_value=booted),
+                      patch.object(shared, "process_started_at", return_value=booted + timedelta(seconds=1)),
+                      patch.object(release.termination, "inventory", return_value=rows)):
+                    observed = release.termination.verify(self.termination_record, "session-b")
+                    self.evidence["body"] = release.termination.body(observed)
+                    self.run_release()
+                    self.assertTrue(release.receipt_for(self.f.comments[-1]))
+                    self.assertEqual(observed["booted_at"], booted.isoformat())
+                    posts = self.f.events.count("post")
+                    for command in ("codex resume session-b", "claude --resume session-b"):
+                        with (self.subTest(command=command),
+                              patch.object(release.termination, "inventory", return_value=[(12345, "other", command)]),
+                              self.assertRaises(ValueError)):
+                            release.termination.verify(self.termination_record, "session-b")
+                    original = transcript.read_bytes()
+                    for path in (transcript, transcript.with_name("resumed-session-b.jsonl")):
+                        with self.subTest(path=path.name):
+                            os.utime(transcript, ((booted - timedelta(minutes=1)).timestamp(),) * 2)
+                            path.write_bytes(original)
+                            os.utime(path, (booted.timestamp(),) * 2)
+                            with self.assertRaises(ValueError):
+                                release.termination.verify(self.termination_record, "session-b")
+                    self.assertEqual(self.f.events.count("post"), posts)
+
+    def test_missing_or_future_boot_keeps_strict_pid_and_tty_checks(self) -> None:
+        self.termination_setup()
+        shared = release.termination.native_helpers()[1]
+        for booted in (None, release.stamp("2026-10-02T01:00:01Z")):
+            with (self.subTest(booted=booted), patch.object(shared, "host_boot_time", return_value=booted),
+                  patch.object(release.termination, "inventory", return_value=[(12345, "other", "unrelated")]),
+                  self.assertRaises(ValueError)):
+                release.termination.verify(self.termination_record, "session-b")
+        self.f.assert_no_writes()
+
+    def test_shutdown_before_boot_releases_with_reused_pid_and_tty(self) -> None:
+        self.termination_setup()
+        shared = release.termination.native_helpers()[1]
+        booted = release.stamp(self.termination_record["ended_at"]) + timedelta(minutes=5)
+        with (patch.object(shared, "host_boot_time", return_value=booted),
+              patch.object(shared, "process_started_at", return_value=booted + timedelta(seconds=1)),
+              patch.object(release.termination, "inventory", return_value=[(12345, "ttys123", "unrelated")])):
+            self.evidence["body"] = release.termination.body(release.termination.verify(self.termination_record, "session-b"))
+            self.run_release()
+            self.assertTrue(release.receipt_for(self.f.comments[-1]))
+
+    def test_reboot_queue_recheck_refuses_a_transcript_modified_since_boot(self) -> None:
+        transcript = self.termination_setup()
+        shared = release.termination.native_helpers()[1]
+        booted = release.stamp(self.termination_record["ended_at"])
+        with patch.object(shared, "host_boot_time", return_value=booted):
+            process = release.termination._verify_queue_source(self.termination_record, "session-b")
+            os.utime(transcript, (booted.timestamp(),) * 2)
+            with self.assertRaises(ValueError):
+                release.termination._recheck_queue_process(process)
+
+    def test_reboot_proof_does_not_waive_a_new_generation_launch_pid(self) -> None:
+        self.termination_setup()
+        shared = release.termination.native_helpers()[1]
+        booted = release.stamp(self.termination_record["ended_at"])
+        with patch.object(shared, "host_boot_time", return_value=booted):
+            process = release.termination._verify_queue_source(self.termination_record, "session-b", latest_pid=88)
+            with patch.object(release.termination, "inventory", return_value=[(88, "other", "unidentified")]):
+                with self.assertRaises(ValueError):
+                    release.termination._verify_queue_source(self.termination_record, "session-b", latest_pid=88)
+                with self.assertRaises(ValueError):
+                    release.termination._recheck_queue_process(process)
+
+    def test_terminal_crash_during_current_uptime_uses_strict_route(self) -> None:
+        self.termination_setup()
+        shared = release.termination.native_helpers()[1]
+        with patch.object(shared, "host_boot_time", return_value=release.stamp("2026-10-01T23:58:00Z")):
+            observed = release.termination.verify(self.termination_record, "session-b")
+            self.assertNotIn("booted_at", observed)
+            self.evidence["body"] = release.termination.body(observed)
+            self.run_release()
+            self.assertTrue(release.receipt_for(self.f.comments[-1]))
+            with (patch.object(release.termination, "inventory", return_value=[(12345, "other", "unrelated")]),
+                  self.assertRaises(ValueError)):
+                release.termination.verify(self.termination_record, "session-b")
 
     def test_termination_tty_reuse_requires_native_cutoff_and_pending_action_veto(self):
         self.termination_setup()
