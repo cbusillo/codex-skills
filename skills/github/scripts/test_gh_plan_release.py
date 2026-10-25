@@ -759,6 +759,9 @@ class ReleaseTests(ReleaseHarness):
             self.assertFalse(lease.exists())
             with patch.object(github_plan_closure, "lease_state", return_value=action), self.assertRaises(ValueError):
                 release.termination.verify(self.termination_record, "session-b")
+            with patch.object(github_plan_closure, "lease_state", side_effect=[{}, action]), self.assertRaises(ValueError):
+                release.termination.verify(self.termination_record, "session-b")
+            self.assertFalse(lease.exists())
 
     def test_termination_tty_reuse_requires_native_cutoff_and_pending_action_veto(self):
         self.termination_setup()
