@@ -28,7 +28,7 @@ class Blocked(Exception):
 
 
 def command(argv, *, cwd=None, env=None, timeout=30):
-    return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=timeout, check=False)
+    return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=timeout)
 
 
 def checked(argv, **kwargs):
