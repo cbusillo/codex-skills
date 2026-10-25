@@ -227,7 +227,7 @@ def _initial_source(record, session, independent_harness, *, latest_pid=None):
         raise ValueError("Native pane exit or termination time is in the future")
     roots = frozenset(_transcript_roots(record))
     booted = shared.host_boot_time()
-    activity = _verify_transcripts(record, roots) if booted is not None and booted <= ended else None
+    activity = _verify_transcripts(record, roots) if booted is not None and booted <= datetime.now(timezone.utc) else None
     rebooted_at = booted if activity is not None and activity.latest < booted else None
     process = _TerminationProcess(dict(record), physical, rebooted_at or cutoff, roots, rebooted_at)
     _physical_exit(process, independent_harness)

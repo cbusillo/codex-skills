@@ -1969,7 +1969,7 @@ cannot establish that the source is ended. Resolve that identity rather than
 assuming terminal reuse proves inactivity.
 
 After a host reboot, the helper can use the kernel's boot time as the exit
-cutoff when it is no later than the recorded termination bound. Every matching
+cutoff independently of the original recorded termination time. Every matching
 native transcript across the supplied account roots must have its last activity
 and file modification strictly before boot, with unchanged snapshots during
 verification. This proves the original processes ended even if their PIDs and
