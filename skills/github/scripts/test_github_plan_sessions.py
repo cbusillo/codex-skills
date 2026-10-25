@@ -67,6 +67,7 @@ class ReceiptFixture:
         self.stack.enter_context(patch.dict(os.environ, {"HOME": str(self.root), "CODE_HOME": str(self.log.parent.parent), "CODEX_HOME": str(self.home)}))
         self.stack.enter_context(patch.object(CLOSURE, "closed_log", return_value=self.log))
         self.stack.enter_context(patch.object(CLOSURE, "host_identity", return_value={"boot": "fixture-boot", "uid": os.getuid()}))
+        self.stack.enter_context(patch.object(SESSIONS.process_liveness(), "host_boot_time", return_value=None))
         self.stack.enter_context(patch.object(SESSIONS, "configured_homes", side_effect=lambda **_kw: sorted(self.homes)))
         SESSIONS.native_helpers()
         self.stack.enter_context(patch.object(SESSIONS.process_liveness(), "process_arguments",
