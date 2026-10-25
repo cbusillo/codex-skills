@@ -1487,6 +1487,29 @@ class LegacyReleaseTests(ReleaseHarness):
                 with self.assertRaises(PLAN.PlanError): self.run_release()
                 self.f.assert_no_writes()
 
+    def test_source_worker_comment_can_name_the_legacy_branch_pr(self):
+        cases = {'named before the session ended': ('{worker} handoff: draft PR #99.', '2026-10-01T03:00:00Z', None, True),
+                 'pull request URL': ('{worker} landed https://github.com/owner/repo/pull/99', '2026-10-01T03:00:00Z', None, True),
+                 'named after the session ended': ('{worker} handoff: draft PR #99.', '2026-10-03T00:00:00Z', None, False),
+                 'another author': ('{worker} handoff: draft PR #99.', '2026-10-01T03:00:00Z', 'stranger', False),
+                 'longer worker name': ('{worker}B handoff: draft PR #99.', '2026-10-01T03:00:00Z', None, False),
+                 'longer PR number': ('{worker} handoff: draft PR #990.', '2026-10-01T03:00:00Z', None, False)}
+        cases['open pull request'] = ('{worker} handoff: draft PR #99.', '2026-10-01T03:00:00Z', None, True)
+        for name, (body, created_at, author, released) in cases.items():
+            with self.subTest(name):
+                _, worker = self.legacy_setup()
+                self.f.pulls[0].update(body='', title='Legacy task')
+                if name == 'open pull request': self.f.pulls[0].update(state='open', merged_at=None)
+                named = self.comment(2, body.format(worker=worker), created_at)
+                if author: named['user']['login'] = author
+                self.f.comments.append(named)
+                if released:
+                    self.run_release()
+                    self.assertTrue(self.f.emitted.call_args.args[0]['ok'])
+                else:
+                    with self.assertRaises(PLAN.PlanError): self.run_release()
+                    self.f.assert_no_writes()
+
     def test_legacy_receipt_invalidates_on_changed_source_or_evidence(self):
         for mode in ('source', 'evidence', 'missing', 'renewed'):
             self.legacy_setup()

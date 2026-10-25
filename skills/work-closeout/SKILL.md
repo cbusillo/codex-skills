@@ -306,6 +306,18 @@ before posting. Failed or interrupted attempts stay targets until GitHub
 readback accounts for them. Children claiming under the root session ID enter
 the same journal even when their output is absent from the root transcript.
 
+For a session that began after the journal shipped (`JOURNAL_SHIPPED` in
+`check_claims.py`), the journal replaces the reconstruction below when this host
+holds the session's journal rows, every claim result in its transcripts has a
+row, and no claim result names another session. Invocations the reader cannot
+decode are then listed under `journal_covered_invocations` and leave coverage
+complete. Every claim attempt must also have settled: before and after the
+GitHub reads, no process outside the check's own callers is a `gh-plan` command
+naming the session or a comment POST to one of its journal targets; no journal
+row was written in the last 10 minutes; and the journal is unchanged from the
+one snapshot the check read its targets from. The GitHub search below still runs, and each claim it finds is
+checked. Other sessions keep the reconstruction.
+
 For older helpers and mixed sessions, the check reads linked local native child
 transcripts recursively: Claude's own `subagents` directory, Codex's existing
 native child index and non-interaction `SubAgentActivity.agent_thread_id` events. Peer

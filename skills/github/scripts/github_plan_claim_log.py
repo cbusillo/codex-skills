@@ -84,18 +84,23 @@ def record(session: str, repo: str, number: int) -> None:
 
 
 def read(session: str) -> set[tuple[str, int]]:
+    return set(written_at(session))
+
+
+def written_at(session: str) -> dict[tuple[str, int], float]:
     try:
         directory = log_path(session)
     except FileNotFoundError:
-        return set()
-    targets = set()
+        return {}
+    targets = {}
     for path in directory.glob("*.json"):
         lease.require_private(path.lstat(), stat.S_ISREG)
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, encoding="utf-8") as stream:
-            lease.require_private(os.fstat(stream.fileno()), stat.S_ISREG)
+            status = os.fstat(stream.fileno())
+            lease.require_private(status, stat.S_ISREG)
             row = json.load(stream)
         if not isinstance(row, dict):
             raise ValueError("claim journal has an invalid record")
-        targets.add(target(row, session))
+        targets[target(row, session)] = status.st_mtime
     return targets
