@@ -202,6 +202,8 @@ def repository_inventory(
     )
     return rows[:limit], {
         "source": path,
+        "repository_limit": limit,
+        "inventory_observed_count": len(rows),
         "inventory_count": min(len(rows), limit),
         "inventory_truncated": len(rows) > limit,
         "complete": len(rows) <= limit,
@@ -230,6 +232,12 @@ def live_breakage_inventory(
     except ValueError as exc:
         return [], {**context, "error": str(exc)}
     context.update(complete=inventory["complete"], repository_inventory=inventory)
+    if inventory["inventory_truncated"]:
+        context.update(
+            error=f"Repository inventory reached --repo-limit {repo_limit}; "
+            f"at least {inventory['inventory_observed_count']} repositories were observed. Raise --repo-limit to establish live priority.",
+            recommended_next_action="increase_repo_limit",
+        )
     eligible = []
     for repository in repositories:
         name = repository.get("full_name")
@@ -255,10 +263,17 @@ def live_breakage_inventory(
                 limit=issue_limit + 1,
                 issue_only=True,
             )
+            seen = set()
             for row in rows:
                 number = row.get("number")
-                if type(number) is not int or number <= 0 or (issue_repository_name(row) or "").casefold() != name.casefold():
+                if (
+                    type(number) is not int
+                    or number <= 0
+                    or number in seen
+                    or (issue_repository_name(row) or "").casefold() != name.casefold()
+                ):
                     raise ValueError("live-breakage issue identity is incomplete")
+                seen.add(number)
             return [{**row, "repo": name} for row in rows[:issue_limit]], {
                 "repo": name,
                 "count": min(len(rows), issue_limit),

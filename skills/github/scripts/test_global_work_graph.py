@@ -129,6 +129,7 @@ class GlobalWorkGraphTests(unittest.TestCase):
                 module.cmd_next(cli.next_args())
             self.assertEqual(caught.exception.code, "live_breakage_unread")
             self.assertEqual({row["state"] for row in caught.exception.payload["milestone_summary"]}, {"unknown"})
+            self.assertEqual(caught.exception.payload["recommended_next_action"], "review_partial_coverage")
         with cli.global_fixture([], [], {}) as (module, _result, _reads):
             collect = module.collect_paged_rest_items
 
@@ -141,11 +142,40 @@ class GlobalWorkGraphTests(unittest.TestCase):
                 module.cmd_next(cli.next_args())
             self.assertEqual(caught.exception.code, "work_graph_unread")
             self.assertEqual({row["state"] for row in caught.exception.payload["milestone_summary"]}, {"unknown"})
+            self.assertNotEqual(module.CURRENT_RETRY_FIELDS["recommended_next_action"], "none")
+
+    def test_live_inventory_wrapper_reports_bounds_and_preserves_terminal_read_failures(self) -> None:
+        module = cli.load_module()
+        args = cli.next_args()
+        args.repo_limit = 1
+        repositories = [{"full_name": "someone/one"}, {"full_name": "someone/two"}]
+        with patch.dict(module.github_identity.__dict__, {"github_app_config": lambda: {}}):
+            module.collect_paged_rest_items = Mock(
+                side_effect=lambda path, **_kwargs: ("fixture", repositories if path == "/installation/repositories" else [])
+            )
+            _rows, context = module.real_next_live_breakage("someone/direction", args)
+            self.assertFalse(context["complete"])
+            self.assertEqual(context["repository_inventory"]["repository_limit"], args.repo_limit)
+            self.assertEqual(context["repository_inventory"]["inventory_observed_count"], len(repositories))
+            self.assertEqual(context["recommended_next_action"], "increase_repo_limit")
+            module.collect_paged_rest_items = Mock(side_effect=module.PlanError("Inventory unavailable"))
+            self.assertFalse(module.real_next_live_breakage("someone/direction", args)[1]["complete"])
+            terminal = module.ClassifiedPlanError("fixture_terminal", "Stop at the configured reader")
+            module.collect_paged_rest_items = Mock(side_effect=terminal)
+            with self.assertRaises(module.ClassifiedPlanError) as caught:
+                module.real_next_live_breakage("someone/direction", args)
+            self.assertIs(caught.exception, terminal)
+        with cli.global_fixture([], [], {}) as (module, _result, _reads):
+            module.next_live_breakage = lambda *_args: ([], context)
+            with self.assertRaises(module.ClassifiedPlanError) as caught:
+                module.cmd_next(cli.next_args())
+            self.assertEqual(caught.exception.payload["recommended_next_action"], "increase_repo_limit")
 
     def test_unavailable_track_inventory_or_all_track_bodies_cannot_report_empty_success(self) -> None:
         root = cli.track("someone/direction", 1, "First")
         for inventory_failed in (True, False):
             with cli.global_fixture([root], [], {}) as (module, _result, _reads):
+                module.CURRENT_RETRY_FIELDS["recommended_next_action"] = "retry_after_reported_reset"
                 inventory = module.github_work_graph.TrackInventory("fixture", [root], {}, True)
                 with patch.dict(
                     module.github_work_graph.__dict__,
@@ -159,6 +189,7 @@ class GlobalWorkGraphTests(unittest.TestCase):
                     with self.assertRaises(module.ClassifiedPlanError) as caught:
                         module.cmd_next(cli.next_args())
                 self.assertEqual(caught.exception.code, "work_graph_unread")
+                self.assertEqual(caught.exception.payload["recommended_next_action"], "retry_after_reported_reset")
                 self.assertEqual({row["state"] for row in caught.exception.payload["milestone_summary"]}, {"unknown"})
 
     def test_marked_live_work_is_evaluated_before_milestone_work(self) -> None:
@@ -171,14 +202,18 @@ class GlobalWorkGraphTests(unittest.TestCase):
         with cli.global_fixture(roots, [leaf, incident], edges, discovered=[incident]) as (module, result, _reads):
             relationship_reads = module.read_next_issue_relationships
             observed = []
+            get_issue = Mock(wraps=module.get_issue)
+            module.get_issue = get_issue
 
             def read(repo: str, number: int, *args: Any, **kwargs: Any) -> Any:
                 observed.append(number)
                 return relationship_reads(repo, number, *args, **kwargs)
 
             module.read_next_issue_relationships = read
-            module.next_live_breakage = lambda *_args: ([incident], {"complete": True})
+            reference = {key: incident[key] for key in ("repo", "number", "title", "html_url", "state")}
+            module.next_live_breakage = lambda *_args: ([reference], {"complete": True})
             module.cmd_next(cli.next_args())
+            get_issue.assert_any_call(str(incident["number"]), incident["repo"])
             self.assertLess(observed.index(incident["number"]), observed.index(roots[0]["number"]))
             self.assertEqual(result["candidates"][0]["number"], incident["number"])
 

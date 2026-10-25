@@ -4906,7 +4906,7 @@ def discover_direction_work(
     issue_limit = getattr(args, "repository_issue_limit", None) or NEXT_DEFAULT_SCAN_LIMIT
     app_configured = github_identity.github_app_config() is not None
     coverage: dict[str, Any] = {
-        "source": "configured_actor_repository_inventory", "owner": repo.split("/")[0], "repository_limit": repo_limit,
+        "owner": repo.split("/")[0], "repository_limit": repo_limit,
         "issue_limit_per_repository": issue_limit, "repositories": [],
         "complete": True, "capacity_complete": True, "inventory_truncated": False,
         "scope": "repositories accessible to the configured actor; owner repositories only",
@@ -5315,16 +5315,20 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             graph_readers[issue_repo] = next_graph_reader(issue_repo)
         return graph_readers[issue_repo]
 
-    def unread(code: str, message: str, **evidence: Any) -> NoReturn:
+    def unread(code: str, message: str, *, action: str = "review_partial_coverage", **evidence: Any) -> NoReturn:
         summary = github_direction_next.milestone_summary(titles, completed=completed_titles,
             candidates=[], graph_waits=[], track_next_actions={}, graph_complete=False)
-        raise ClassifiedPlanError(code, message, payload={"milestone_summary": summary, **evidence})
+        if CURRENT_RETRY_FIELDS.get("recommended_next_action") in {None, "none", "inspect_last_failure"}:
+            CURRENT_RETRY_FIELDS["recommended_next_action"] = action
+        raise ClassifiedPlanError(code, message, payload={"milestone_summary": summary,
+            "recommended_next_action": CURRENT_RETRY_FIELDS["recommended_next_action"], **evidence})
 
     NEXT_READS.start_phase("live_breakage_inventory")
     incident_inventory, live_breakage_context = next_live_breakage(repo, args, graph_reader(repo)) if scope is None else (
         [], {"complete": True, "exclusion": "explicit_milestone_scope"})
     if not live_breakage_context["complete"]:
         unread("live_breakage_unread", "Live-breakage inventory is unread or partial; priority cannot be established",
+               action=live_breakage_context.get("recommended_next_action", "review_partial_coverage"),
                live_breakage_context=live_breakage_context)
     NEXT_READS.start_phase("track_inventory")
     try:
@@ -5336,7 +5340,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         unread("work_graph_unread", "Track inventory is unread; milestones are unknown", detail=detail)
     actor, issues, seeds = root_inventory.actor, root_inventory.issues, root_inventory.seeds
     inventory_truncated = not root_inventory.complete
-    graph_inventory_complete = root_inventory.complete and not NEXT_READS.expired
+    graph_inventory_complete = root_inventory.complete
     if NEXT_READS.expired:
         unread("work_graph_unread", "Track graph is unread within the deadline; milestones are unknown")
     for item in incident_inventory:
@@ -5533,7 +5537,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         [compact_list_issue(row["repo"], row) for row in incident_inventory], read_node=read_node,
         scan_limit=args.scan_limit, prefetch_nodes=prefetch_nodes if NEXT_READS.workers > 1 else None)
     if not early_incidents["context"]["complete"]:
-        unread("live_breakage_unread", "Live-breakage paths are unread or partial; priority cannot be established",
+        unread("live_breakage_unread", "Live-breakage priority is incomplete: cyclic or unavailable native paths, or the --scan-limit bound was reached",
+               action="increase_scan_limit" if early_incidents["context"]["truncated"] else "review_live_breakage_paths",
                live_breakage_context=live_breakage_context, incident_context=early_incidents["context"])
     NEXT_READS.start_phase("milestone_graph")
     roots = [{
@@ -5916,7 +5921,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         CURRENT_RETRY_FIELDS["recommended_next_action"] = recommendation
     payload["recommended_next_action"] = recommendation
     if not incidents["context"]["complete"]:
-        raise ClassifiedPlanError("live_breakage_unread", "Live-breakage paths are unread; priority remains unknown", payload=payload)
+        raise ClassifiedPlanError("live_breakage_unread", "Live-breakage native paths or ancestry are incomplete; priority remains unknown", payload=payload)
     emit(payload)
 
 
