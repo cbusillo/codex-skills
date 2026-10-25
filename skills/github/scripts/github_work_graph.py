@@ -203,7 +203,9 @@ def read_issues(
                     raise github_read.GitHubReadShapeError("Work graph issue identity changed")
                 rows.append(row)
             except (github_read.GitHubReadShapeError, KeyError, TypeError, ValueError, AttributeError) as exc:
-                unread[(ref["repo"].casefold(), ref["number"])] = exc
+                error = github_read.GitHubReadShapeError(str(exc))
+                error.__cause__ = exc
+                unread[(ref["repo"].casefold(), ref["number"])] = error
     return BatchRead(rows, unread)
 
 

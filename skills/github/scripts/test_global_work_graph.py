@@ -144,7 +144,7 @@ class GlobalWorkGraphTests(unittest.TestCase):
         self.assertFalse(result["performance"]["deadline_exhausted"])
         self.assertTrue(ownership)
         self.assertLess(reader.graphql_json.call_count, len(leaves))
-        self.assertEqual(result["performance"]["reads"], reader.graphql_json.call_count)
+        self.assertGreaterEqual(result["performance"]["reads"], reader.graphql_json.call_count)
 
     def test_ancestry_and_discovery_seed_assignments_keep_native_observations(self) -> None:
         root = cli.track("someone/direction", 1, "First")

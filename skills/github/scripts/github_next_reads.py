@@ -127,6 +127,13 @@ class NextReads:
         with self.lock:
             return self.observations.get(observation_key(path))
 
+    def request(self, read: Callable[[], T]) -> T:
+        if self.expired:
+            raise ReadDeadline("global next time budget exhausted; evidence unread")
+        with self.lock:
+            self.requests += 1
+        return self._read(read)
+
     def observe(self, path: str, read: Callable[[], T]) -> T:
         path = observation_key(path)
         with self.lock:
@@ -139,11 +146,7 @@ class NextReads:
                 self.reused += 1
         if first:
             try:
-                if self.expired:
-                    raise ReadDeadline("global next time budget exhausted; evidence unread")
-                with self.lock:
-                    self.requests += 1
-                future.set_result(self._read(read))
+                future.set_result(self.request(read))
             except BaseException as exc:
                 future.set_exception(exc)
         # Consumers may annotate their own copy, never another observation.

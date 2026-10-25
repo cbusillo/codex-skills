@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 from datetime import datetime, timezone
 import json
 import os
@@ -5111,27 +5110,24 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
 class PlanningGraphReader(github_read.GitHubReader):
     def graphql_json(self, query: str, variables: dict[str, Any], *, step: str, **kwargs: Any) -> github_api_core.ApiResult:
         read = super().graphql_json
-        key = "graphql:work_graph:" + hashlib.sha256(json.dumps(
-            [self.request_actor, self.expected_actor, query, variables], sort_keys=True).encode()).hexdigest()
+        policy = kwargs.get("retry_policy") or github_api_core.default_retry_policy()
+        bounded = replace(policy, max_wait_seconds=min(30, policy.max_wait_seconds))
+        deadline = min(self.deadline_at or float("inf"), kwargs.get("deadline_at") or float("inf"),
+                       time.time() + bounded.max_wait_seconds)
+        if NEXT_READS is not None and NEXT_READS.deadline is not None:
+            reserved = NEXT_READS.deadline - NEXT_READS.final_evidence_reserve
+            if time.time() >= reserved:
+                raise github_next_reads.ReadDeadline("Global next reserved its remaining evidence budget")
+            deadline = min(deadline, reserved)
 
         def fetch() -> github_api_core.ApiResult:
-            policy = kwargs.get("retry_policy") or github_api_core.default_retry_policy()
-            bounded = replace(policy, max_wait_seconds=min(30, policy.max_wait_seconds))
-            deadline = min(self.deadline_at or float("inf"), kwargs.get("deadline_at") or float("inf"),
-                           time.time() + bounded.max_wait_seconds)
-            if NEXT_READS is not None and NEXT_READS.deadline is not None:
-                reserved = NEXT_READS.deadline - NEXT_READS.final_evidence_reserve
-                if time.time() >= reserved:
-                    raise github_next_reads.ReadDeadline("Global next reserved its remaining evidence budget")
-                deadline = min(deadline, reserved)
             result = read(query, variables, step=step, **{**kwargs, "retry_policy": bounded, "deadline_at": deadline})
             record_retry_fields(result)
-            if (NEXT_READS is not None and NEXT_READS.deadline is not None and deadline == reserved
-                    and result.failure is not None and result.failure.cause == "deadline_exceeded"):
-                raise github_next_reads.ReadDeadline("Global next reserved its remaining evidence budget")
+            if result.failure is not None and result.failure.cause == "deadline_exceeded":
+                raise github_next_reads.ReadDeadline("Work graph read reached its bounded deadline")
             return result
 
-        return NEXT_READS.observe(key, fetch) if NEXT_READS is not None else fetch()
+        return NEXT_READS.request(fetch) if NEXT_READS is not None else fetch()
 
 
 def next_graph_reader(repo: str) -> github_read.GitHubReader | None:
@@ -5412,6 +5408,10 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     # Establish useful native-frontier evidence before optional portfolio work.
     NEXT_READS.start_phase("milestone_ownership")
     graph_queue_context = annotate_next_queue(ranked["candidates"], args)
+    NEXT_READS.start_phase("milestone_wait_evidence")
+    next_wait_context([seeds[key] for key in nodes if key in seeds], scan_limit=args.scan_limit * 2,
+        inventory_complete=graph_coverage["complete"],
+        structured_waits={key: node["item"]["structured_wait"] for key, node in nodes.items() if "structured_wait" in node["item"]})
     NEXT_READS.start_phase("repository_inventory")
     discoveries: list[dict[str, Any]] = []
     inventory: list[dict[str, Any]] = []
@@ -5737,11 +5737,6 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         "observed_nodes": sum(future.done() and not future.cancelled() and future.exception() is None for future in issue_observations),
         "unread_nodes": sum(future.done() and not future.cancelled() and future.exception() is not None for future in issue_observations),
         "batch_requests": sum(len(reader.results) for reader in graph_readers.values() if reader is not None)}
-    recommendation = CURRENT_RETRY_FIELDS.get("recommended_next_action")
-    if recommendation in {None, "none", "inspect_last_failure"}:
-        recommendation = "none" if candidate_coverage_complete else "review_partial_coverage"
-        CURRENT_RETRY_FIELDS["recommended_next_action"] = recommendation
-    payload["recommended_next_action"] = recommendation
     emit(payload)
 
 

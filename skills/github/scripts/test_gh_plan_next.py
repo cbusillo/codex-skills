@@ -3587,7 +3587,6 @@ def test_global_reserves_final_evidence_time_without_claiming_a_complete_scan() 
         assert not result["performance"]["deadline_exhausted"]
         assert not result["candidate_coverage"]["milestone_ranking_complete"]
         assert result["graph_context"]["complete"]
-        assert result["recommended_next_action"] != "inspect_last_failure"
         reported = next(row for row in result["candidates"] if row["number"] == leaf["number"])
         assert reported["queue"]["claim_required"]
 

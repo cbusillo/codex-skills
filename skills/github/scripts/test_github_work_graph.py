@@ -242,6 +242,16 @@ class WorkGraphTests(unittest.TestCase):
         self.assertEqual(row["closed_at"], raw["closedAt"])
         self.assertEqual(row["last_edited_at"], raw["lastEditedAt"])
 
+    def test_malformed_alias_uses_the_shared_unread_response_error(self) -> None:
+        raw = node(1)
+        del raw["authorAssociation"]
+        reader = replay([raw])
+        with graph.github_next_reads.NextReads(workers=2, seconds=0) as reads:
+            graph.prefetch_issues(lambda _repo: reader, [{"repo": "owner/repo", "number": 1}], reads)
+            with self.assertRaises(graph.github_read.GitHubReadShapeError):
+                cached_issue(reads)
+            reads.drain()
+
     def test_concurrent_consumers_share_the_reserved_rest_future(self) -> None:
         from concurrent.futures import ThreadPoolExecutor
         from threading import Event

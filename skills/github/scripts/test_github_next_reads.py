@@ -455,6 +455,10 @@ def test_graph_transport_respects_earlier_deadline_reserve_and_receipt_ownership
 
     def transport(_self: Any, _query: str, _variables: dict[str, Any], **kwargs: Any) -> Any:
         calls.append(kwargs)
+        if "limited" in _query:
+            return module.github_api_core.ApiResult(ok=False, status=0, body=None,
+                failure=module.github_api_core.FailureDetail(cause="deadline_exceeded", message="Read deadline reached",
+                    retryable=False, fallback_eligible=False, disposition="stop"))
         return module.github_api_core.ApiResult(ok=True, status=200, body={"data": {}})
 
     with patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": ""}), patch.object(time, "time", lambda: clock["now"]), patch.object(
@@ -464,9 +468,17 @@ def test_graph_transport_respects_earlier_deadline_reserve_and_receipt_ownership
             try:
                 earlier = clock["now"] + 1
                 reader.graphql_json("query { viewer { login } }", {}, step="first", deadline_at=earlier)
-                reader.graphql_json("query { viewer { login } }", {}, step="same")
                 assert len(calls) == receipts.call_count == 1
                 assert calls[0]["deadline_at"] == earlier
+                try:
+                    reader.graphql_json("query { limited }", {}, step="per_read_cap")
+                except ReadDeadline:
+                    pass
+                else:
+                    raise AssertionError("A bounded graph timeout escaped the unread-evidence path")
+                assert reads.remaining_seconds > reads.final_evidence_reserve
+                assert len(calls) == receipts.call_count == 2
+                assert reads.requests == len(calls)
                 clock["now"] = reads.deadline - reads.final_evidence_reserve
                 try:
                     reader.graphql_json("query { viewer { id } }", {}, step="reserved")
@@ -474,7 +486,7 @@ def test_graph_transport_respects_earlier_deadline_reserve_and_receipt_ownership
                     pass
                 else:
                     raise AssertionError("Graph read entered the final evidence reserve")
-                assert len(calls) == receipts.call_count == 1
+                assert len(calls) == receipts.call_count == 2
             finally:
                 module.NEXT_READS = None
 
@@ -521,7 +533,6 @@ def test_unused_batch_failure_keeps_independent_work_but_never_hides_auth_failur
                 else:
                     module.cmd_next(args)
                     assert any(row["number"] == selected["number"] for row in result["candidates"])
-                    assert result["recommended_next_action"] != "inspect_last_failure"
                     if cause == "network_provider_failure":
                         assert result["performance"]["read_ahead_failures"][cause] == 1
                     else:
