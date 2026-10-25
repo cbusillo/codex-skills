@@ -30,7 +30,8 @@ def marker(record: dict[str, Any]) -> str:
 
 
 def reviewed(*, evidence: str, waiting_for: str | list[str] | None = None,
-             ends_when: str | list[str] | None = None) -> dict[str, Any]:
+             ends_when: str | list[str] | None = None, release_product: str | None = None,
+             release_commit: str | None = None, release_next_action: str | None = None) -> dict[str, Any]:
     if not evidence.strip():
         raise ValueError("Wait review requires existing evidence")
     actors = [waiting_for] if isinstance(waiting_for, str) else waiting_for or []
@@ -39,6 +40,11 @@ def reviewed(*, evidence: str, waiting_for: str | list[str] | None = None,
         raise ValueError("Each --waiting-for requires a corresponding --ends-when")
     record = {"version": 1, "state": "waiting" if waiting_for else "clear", "evidence": evidence,
               "waits": [{"waiting_for": actor, "ends_when": end} for actor, end in zip(actors, endings)]}
+    if any(value is not None for value in (release_product, release_commit, release_next_action)):
+        if not actors:
+            raise ValueError("A release pointer requires a wait")
+        record["waits"][0]["release"] = {"product": release_product.strip().casefold() if release_product else release_product, "source_commit": release_commit.strip().lower() if release_commit else release_commit,
+                                         "next_action": release_next_action}
     validate(record)
     return record
 
@@ -54,9 +60,34 @@ def validate(record: Any) -> None:
     if bool(record["waits"]) != (record["state"] == "waiting"):
         raise ValueError("Structured wait state and entries disagree")
     for wait in record["waits"]:
-        if (not isinstance(wait, dict) or set(wait) != {"waiting_for", "ends_when"}
-                or any(not isinstance(value, str) or not value.strip() for value in wait.values())):
+        if (not isinstance(wait, dict) or set(wait) not in ({"waiting_for", "ends_when"}, {"waiting_for", "ends_when", "release"})
+                or any(not isinstance(value, str) or not value.strip() for value in (wait["waiting_for"], wait["ends_when"]))):
             raise ValueError("A structured wait needs its actor/event and ending condition")
+
+        if "release" in wait:
+            release = wait["release"]
+            if (not isinstance(release, dict) or set(release) != {"product", "source_commit", "next_action"}
+                    or any(not isinstance(value, str) or not value.strip() for value in release.values())):
+                raise ValueError("A release wait needs a product, source commit and next agent action")
+            if re.fullmatch(r"[0-9a-f]{40}", release["source_commit"]) is None:
+                raise ValueError("A release wait needs its full source commit")
+
+
+def resolve_release(record: dict[str, Any], *, product: str, contains_commit: Callable[[str], bool],
+                    evidence: str) -> tuple[dict[str, Any], list[str]]:
+    validate(record)
+    matched = [entry for entry in record["waits"] if "release" in entry
+               and entry["release"]["product"].casefold() == product.strip().casefold()
+               and contains_commit(entry["release"]["source_commit"])]
+    if not matched:
+        return record, []
+    if not evidence.strip():
+        raise ValueError("Release resolution requires completion evidence")
+    remaining = [entry for entry in record["waits"] if entry not in matched]
+    resolved = {**record, "state": "waiting" if remaining else "clear", "waits": remaining,
+                "evidence": record["evidence"] + "\n" + evidence}
+    validate(resolved)
+    return resolved, [entry["release"]["next_action"] for entry in matched]
 
 
 def live_lines(text: str, *, prefix: str = PREFIX) -> list[tuple[int, str]]:

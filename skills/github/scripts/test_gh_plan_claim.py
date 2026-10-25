@@ -5309,6 +5309,23 @@ class ClaimTests(unittest.TestCase):
         self.run_claim()
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
+    def test_wait_writer_records_visible_release_pointer(self) -> None:
+        self.args.all = self.args.clear = False
+        self.args.waiting_for = "Next accepted release"
+        self.args.ends_when = "Release reaches production"
+        self.args.evidence = "Merged fix"
+        self.args.release_product = "fixture-product"
+        self.args.release_commit = "a" * 40
+        self.args.release_next_action = "Next agent: verify production flow"
+        self.run_claim(command=PLAN.cmd_wait)
+        record = self.emitted.call_args.args[0]["structured_wait"]
+        pointer = record["waits"][0]["release"]
+        self.assertEqual(pointer["product"], self.args.release_product)
+        self.assertEqual(pointer["next_action"], self.args.release_next_action)
+        self.assertEqual(pointer["source_commit"], self.args.release_commit)
+        self.assertIn(self.args.release_next_action, self.comments[-1]["body"])
+        self.assertEqual(wait_record.records(self.comments[-1]["body"]), [record])
+
     def test_wait_comment_says_what_it_waits_for_without_notifying_anyone(self):
         self.args.all = self.args.clear = False
         self.args.waiting_for = "@mike-b to confirm the run"
