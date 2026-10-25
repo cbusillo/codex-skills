@@ -225,4 +225,3 @@ not identify programs. Unknown commands need explicit long evaluator flags or
 short evaluator flags with program-shaped payloads; arbitrary attached runtime
 names cannot be distinguished from data option values. Shell evaluator payloads
 skip recognized option operands and terminators; ambiguous options stay conditional.
-
