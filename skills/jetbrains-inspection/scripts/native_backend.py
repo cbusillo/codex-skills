@@ -1008,6 +1008,7 @@ def read_results(results: Path, project: Path) -> tuple[list[dict[str, Any]], se
 
 
 
+ADVISORY_SEVERITIES = frozenset({"TYPO", "GRAMMAR_ERROR", "STYLE_SUGGESTION"})
 HUNK = re.compile(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@")
 
 
@@ -1064,10 +1065,15 @@ def attribute_to_change(receipt: dict[str, Any], findings: list[dict[str, Any]],
 
 def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]], reason: str, gaps: list[str], artifact: str | None = None) -> dict[str, Any]:
     preexisting = [finding for finding in findings if finding.get("introduced") is False]
-    findings = [finding for finding in findings if finding.get("introduced") is not False]
+    introduced = [finding for finding in findings if finding.get("introduced") is not False]
+    advisory = [finding for finding in introduced if finding["severity"] in ADVISORY_SEVERITIES]
+    findings = [finding for finding in introduced if finding["severity"] not in ADVISORY_SEVERITIES]
     clean = reason == "native_completed" and not gaps
     verdict = "GREEN" if clean and not findings else "RED" if clean else "UNKNOWN"
     action = "Fix current findings." if verdict == "RED" else "None." if verdict == "GREEN" else "Resolve the reported native prerequisite or execution-coverage gap before a fresh assessment."
+    if advisory and verdict != "UNKNOWN":
+        action += (" Review the advisory spelling and grammar findings: fix real mistakes, and add real tool, library"
+                   " or product names to the repository's .idea/dictionaries/project.xml.")
     if reason in {"native_owner_activation_required", "native_activation_stop_recorded"}:
         action = "Owner question: the Director must restore the configured independent worker's activation through the product UI using existing entitlements. Stop licensed runs; never start a trial or copy credentials."
     elif reason in {"native_worker_not_configured", "native_app_not_configured"}:
@@ -1113,7 +1119,8 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
         action = "Final stdout and logs exceeded their shared read bound. Narrow the inspection scope or diagnose the noisy helper or log writer before a fresh assessment. Finalization still stops the owned group and independently scans for licensing events; preserve any resulting hold and use --native-recover-only for retained custody."
     elif reason in {"native_exit_observer_unavailable", "native_exit_observation_unproven"}:
         action = "Restore non-reaping child-exit observation in the documented native Python setup (waitid/WNOWAIT or kqueue/NOTE_EXIT). Registration is required before the launch gate opens. Preserve any held custody and use --native-recover-only first; never substitute a reaping poll before stopping the owned group."
-    report = (f"{verdict}: native PyCharm; {reason}; {len(findings)} findings; {len(preexisting)} preexisting findings not counted; "
+    report = (f"{verdict}: native PyCharm; {reason}; {len(findings)} findings; {len(advisory)} advisory spelling or grammar findings; "
+              f"{len(preexisting)} preexisting findings not counted; "
               f"{len(gaps)} proof gaps; {len(receipt.get('coverage', {}).get('unproven', []))} inspections unproven.")
     return {"schema_version": host.AGENT_RESULT_SCHEMA_VERSION, "command": "agent-inspect", "backend": "native",
             "status": {"GREEN": "clean", "RED": "findings"}.get(verdict, "error"),
@@ -1122,6 +1129,7 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
                              "next_action": action, "agent_report": report},
             "scope": receipt.get("scope"), "selected_file_count": receipt.get("selected_file_count"),
             "finding_count": len(findings), "preexisting_finding_count": len(preexisting),
+            "advisory_finding_count": len(advisory), "advisory_findings": advisory[:common.FINDING_LIMIT],
             "changed_lines": receipt.get("changed_lines"), "findings": findings[:common.FINDING_LIMIT], "findings_artifact": artifact,
             "findings_truncated": len(findings) > common.FINDING_LIMIT, "proof_failures": gaps,
             "coverage": receipt.get("coverage", {}), "uncovered_inspections": receipt.get("coverage", {}).get("unproven", []),
