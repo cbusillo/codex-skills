@@ -5390,7 +5390,10 @@ class ClaimTests(unittest.TestCase):
 
     def test_new_issue_creation_records_all_waits_or_reviewed_absence(self):
         for flags in (("--wait-clear",), ("--waiting-for", "Mike's device test", "--ends-when", "Test accepted",
-                      "--waiting-for", "Client price", "--ends-when", "Price confirmed")):
+                      "--waiting-for", "Client price", "--ends-when", "Price confirmed"),
+                      ("--waiting-for", "Next release", "--ends-when", "Production includes fix",
+                       "--release-product", "fixture", "--release-commit", "a" * 40,
+                       "--release-next-action", "Next agent: verify production")):
             with self.subTest(flags=flags):
                 args = PLAN.build_parser().parse_args(["--repo", "owner/repo", "create", "Repair",
                     *flags, "--wait-evidence", "Full request reviewed"])
@@ -5407,6 +5410,8 @@ class ClaimTests(unittest.TestCase):
                 wait = wait_record.records(create.call_args.args[1])[0]
                 self.assertEqual(len(wait["waits"]), len(args.waiting_for or []))
                 self.assertEqual(wait["evidence"], args.wait_evidence)
+                if args.release_product:
+                    self.assertIn(wait_record.release_event_hint(args.release_product, args.release_commit), create.call_args.args[1])
 
     def test_wait_inventory_reports_each_unreviewed_open_issue_and_never_drops_prose(self):
         self.args.all = True

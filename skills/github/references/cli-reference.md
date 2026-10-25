@@ -993,7 +993,6 @@ The [daily sweep](../../direction/references/stranded-work.md) reports fired
 triggers and coverage gaps without reopening issues. This option records a
 condition, not authority to close protected work or perform the triggered action.
 
-
 ### Planning: Claim
 
 Before an authorized `go` creates a branch or worktree, run from a checkout of

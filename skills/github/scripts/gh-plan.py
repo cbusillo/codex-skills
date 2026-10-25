@@ -3926,6 +3926,7 @@ def cmd_create(args: argparse.Namespace) -> None:
         raise PlanError("Choose --wait-clear or --waiting-for with --ends-when and --wait-evidence")
     if wait is not None:
         require_asked_director_wait(repo, wait, creating=True)
+    release_summary = wait_summary(wait) if wait and any("release" in entry for entry in wait["waits"]) else ""
     completed_steps: list[str] = []
     actor, exact = find_existing_plan_issues(repo, title, completed_steps=completed_steps)
     if exact and not args.force:
@@ -3969,7 +3970,7 @@ def cmd_create(args: argparse.Namespace) -> None:
         body = replace_section(body, "Finish Line", args.finish_line)
     body = ensure_managed_provenance(body)
     if wait is not None:
-        body = github_plan_wait.without_records(body) + "\n\n" + github_plan_wait.marker(wait)
+        body = github_plan_wait.without_records(body) + "\n\n" + (release_summary + "\n\n" if release_summary else "") + github_plan_wait.marker(wait)
     project_config = config.get("projects") or {}
     project = args.project
     if project is None and project_config.get("enabled", True):

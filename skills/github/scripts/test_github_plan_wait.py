@@ -60,8 +60,13 @@ class WaitRecordTests(unittest.TestCase):
         issue = {"user": {"login": "owner"}, "body": waits.marker(release)}
         completion = {"user": {"login": "owner"}, "body": waits.marker(resolved)}
         renewed = {"user": {"login": "owner"}, "body": waits.marker(self.hold)}
-        self.assertEqual(waits.current(issue, [completion], {"owner"}), resolved)
+        selected = waits.current(issue, [completion], {"owner"})
+        self.assertEqual(selected, waits.snapshot(resolved))
+        copied = {**issue, "body": waits.marker(selected)}
+        copied_claim = {"user": {"login": "owner"}, "body": waits.marker(selected)}
+        self.assertEqual(waits.current(copied, [completion, copied_claim], {"owner"}), selected)
         self.assertEqual(waits.current(issue, [renewed, completion], {"owner"}), self.hold)
+        self.assertIs(waits.current_source(issue, [renewed, completion], {"owner"}), renewed)
 
     def test_release_pointer_requires_a_wait_and_full_source_commit(self) -> None:
         for commit in ("", "main", "abc123"):
