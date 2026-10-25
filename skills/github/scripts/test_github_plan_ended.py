@@ -458,6 +458,26 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
         with self.assertRaises(ValueError):
             self.attest()
 
+    def test_forked_observer_authenticates_its_own_exit_without_reslicing_local_rows(self) -> None:
+        import claim_history
+        session = self.record["exit_record"]["session_id"]
+        parent = "parent-native"
+        rows = [{"type": "session_meta", "payload": {"id": session, "forked_from_id": parent,
+                 "parent_thread_id": parent, "subagent_history_start_ordinal": 2,
+                 "source": {"subagent": {"thread_spawn": {"parent_thread_id": parent}}}}},
+                {"type": "session_meta", "payload": {"id": parent}},
+                {"type": "event_msg", "payload": {"type": "thread_settings_applied", "thread_id": session}},
+                self.exit_row]
+        for index, row in enumerate(rows):
+            row["ordinal"] = index
+        with patch.object(claim_history, "root_context", return_value={"parent": parent, "ancestors": (parent,)}):
+            self.observer.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            self.attest()
+            rows[-1]["isSidechain"] = True
+            self.observer.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            with self.assertRaises(ValueError):
+                self.attest()
+
     def test_plain_or_uncertain_or_preexisting_native_process_refuses(self) -> None:
         shared = ended.sessions.process_liveness()
         other = "claude --resume f5bd6d9f-d638-4a78-a6d1-ae9f8944beca"

@@ -547,6 +547,32 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertFalse(json.loads(output.getvalue())["claims_clear"])
 
+    def test_termination_process_failures_return_conditional_json(self) -> None:
+        entry = self.entry()
+        for failure in (helper.subprocess.CalledProcessError(1, ["git"]), helper.subprocess.TimeoutExpired(["tmux"], 10)):
+            with self.subTest(failure=type(failure).__name__), patch.object(helper, "check", side_effect=failure), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                code = helper.main(["--session", SESSION, "--transcript", entry["transcript"]])
+            report = json.loads(output.getvalue())
+            self.assertNotEqual(code, 0)
+            self.assertFalse(report["claims_clear"])
+            self.assertFalse(report["coverage"]["complete"])
+
+    def test_cli_passes_one_bounded_read_budget_and_rejects_unbounded_values(self) -> None:
+        entry = self.entry()
+        with patch.object(helper, "check", return_value={"claims_clear": True}) as read:
+            for budget in ("0", "-1", "nan", "inf"):
+                with self.subTest(budget=budget), contextlib.redirect_stdout(io.StringIO()) as output:
+                    code = helper.main(["--session", SESSION, "--transcript", entry["transcript"], "--read-timeout", budget])
+                self.assertNotEqual(code, 0)
+                self.assertFalse(json.loads(output.getvalue())["coverage"]["complete"])
+            read.assert_not_called()
+            requested = 1800.0
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(helper.main(["--session", SESSION, "--transcript", entry["transcript"],
+                                              "--read-timeout", str(requested)]), 0)
+            self.assertEqual(read.call_args.kwargs["read_timeout"], requested)
+
     def test_reader_gets_the_checks_deadline_before_its_first_read(self) -> None:
         self.comments.append(self.release)
         started = helper.time.time()
@@ -1482,6 +1508,21 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertTrue(report["claims_clear"])
         self.assertEqual([item["call_id"] for item in report["settled_invocations"]], ["opaque"])
 
+    def test_completed_bound_results_scale_with_the_record_count(self) -> None:
+        visits = []
+        for count in (10, 100):
+            rows = [{"timestamp": "2026-01-01T00:00:00Z", "payload": payload} for index in range(count) for payload in (
+                {"type": "function_call", "name": "exec_command", "call_id": str(index),
+                 "arguments": json.dumps({"cmd": "uv run gh-plan.py --repo test/a claim 1"})},
+                {"type": "function_call_output", "call_id": str(index), "output": json.dumps({"exit_code": 0, "output": ""})},
+            )]
+            with patch.object(helper.history, "execution_item", wraps=helper.history.execution_item) as inspected:
+                report = helper.history.literal_targets(rows, SESSION)
+                visits.append(inspected.call_count)
+            self.assertEqual(report["targets"], {(REPO, 1)})
+            self.assertFalse(report["unresolved_invocations"])
+        self.assertLessEqual(visits[1], visits[0] * 10)
+
     def test_mixed_metadata_wrapper_needs_whole_results_and_its_own_terminal_poll(self) -> None:
         command = (
             "cat > /fixture/status.md <<'EOF'\nThe source claim is released.\nEOF\n"
@@ -1651,6 +1692,57 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertFalse(report["claims_clear"])
                 self.assertEqual([item["call_id"] for item in report["unresolved_invocations"]], ["opaque"])
                 self.assertTrue(report["coverage"]["search_errors"])
+
+    def test_reboot_bound_settles_interrupted_calls_only_with_fresh_proof_and_complete_releases(self) -> None:
+        for variant in ("clear", "held", "incomplete", "recent", "no_boot", "resumed", "changed"):
+            with self.subTest(variant=variant):
+                self.setUp()
+                root = self.undecodable_claim_session(*finished_opaque_call(result=False))
+                record = {**root, "harness": "codex"}
+                boot = time.time() if variant == "recent" else helper.release.stamp(SETTLED_AT).timestamp()
+                proof = {"booted_at": helper.datetime.fromtimestamp(boot, helper.UTC).isoformat()}
+                if variant == "no_boot":
+                    proof = {}
+                verify = self.enterContext(patch.object(helper.termination, "verify", return_value=proof))
+                if variant == "resumed":
+                    verify.side_effect = ValueError("source resumed")
+                if variant == "changed":
+                    def unchanged(*_args: object, **_kwargs: object) -> dict:
+                        if self.reader.get_json.called:
+                            raise ValueError("source changed")
+                        return proof
+                    verify.side_effect = unchanged
+                if variant == "held":
+                    self.comments.remove(self.release)
+                self.search_finds(1, incomplete=variant == "incomplete")
+                if variant in {"no_boot", "resumed", "changed"}:
+                    with self.assertRaises(ValueError):
+                        helper.check([root], termination_record=record)
+                    continue
+                report = helper.check([root], termination_record=record)
+                self.assertEqual(report["claims_clear"], variant == "clear")
+                if variant == "clear":
+                    self.assertEqual([item["call_id"] for item in report["settled_invocations"]], ["opaque"])
+
+    def test_reboot_recovery_checks_each_native_child_and_matching_source_context(self) -> None:
+        root = self.entry()
+        child = self.entry("native-child")
+        record = {**root, "harness": "codex"}
+        proof = {"booted_at": SETTLED_AT}
+        with patch.object(helper.termination, "verify", return_value=proof) as verify:
+            bounds = helper.reboot_bounds([root], [root, child], record)
+            self.assertEqual(set(bounds), {root["transcript"], child["transcript"]})
+            self.assertEqual({call.args[1] for call in verify.call_args_list}, {SESSION, "native-child"})
+            for wrong in ({**record, "session_id": "another-native"}, {**record, "transcript": child["transcript"]}):
+                with self.assertRaises(ValueError):
+                    helper.reboot_bounds([root], [root, child], wrong)
+        with patch.object(helper.termination, "verify", side_effect=[proof, ValueError("child resumed")]):
+            with self.assertRaises(ValueError):
+                helper.reboot_bounds([root], [root, child], record)
+        with patch.object(helper.history, "expand", side_effect=[[root], [root, child]]), \
+                patch.object(helper.termination, "verify", return_value=proof):
+            with self.assertRaises(ValueError):
+                helper.check([root], termination_record=record)
 
     def test_one_search_covers_only_a_single_app_installation(self) -> None:
         config = SimpleNamespace(installation_id="1")

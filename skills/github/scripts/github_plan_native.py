@@ -15,9 +15,11 @@ import stat
 import time
 import uuid
 from typing import NamedTuple
+from collections.abc import Callable, Iterable
 from datetime import datetime
 
 import github_plan_closure as closure
+from github_plan_termination import _TerminationProcess
 
 
 @asynccontextmanager
@@ -663,12 +665,20 @@ def _cancel_origin(entry, action):
     return primary, home, configured, known
 
 
-def _cancel_files(entry, action, reader=None, retained_homes=(), transcript_roots=None):
-    from github_plan_sessions import observation_homes
+def _cancel_files(entry, action, reader=None, retained_homes=(), transcript_roots=None, *, identity_only=False):
     primary, home, _configured, known = _cancel_origin(entry, action)
+    return _source_files(entry, primary, home, known, reader, retained_homes, transcript_roots, identity_only=identity_only)
+
+
+def _source_files(entry: dict, primary: Path, home: Path, known: set[Path],
+                  reader: Callable[[list[str]], tuple[list[dict], bool]] | None = None,
+                  retained_homes: Iterable[Path] = (), transcript_roots: Iterable[Path] | None = None,
+                  *, identity_only: bool = False, deadline: float | None = None) -> dict:
+    from github_plan_sessions import observation_homes
     homes = {home, *known, *retained_homes}
-    snapshots = closure.transcript_facts(entry["session_id"], str(primary), include_status=True,
-                                         additional_homes=homes, additional_roots=transcript_roots, reader=reader)
+    snapshots = closure.transcript_facts(entry["session_id"], str(primary), include_status=not identity_only,
+                                         additional_homes=homes, additional_roots=transcript_roots, reader=reader,
+                                         identity_only=identity_only, deadline=deadline)
     paths = _authenticated_paths(snapshots, observation_homes(strict=True, additional_homes=homes))
     homes.update(Path(value) for value in paths)
     return {"home": str(home), "path": str(primary), "homes": sorted(str(value) for value in homes),
@@ -683,6 +693,60 @@ def _cancel_quiet(facts, snapshot, home, target):
         raise ValueError("queue cleanup requires a NotLoaded target and quiet empty loaded peers")
     statuses = [snapshot["transcripts"][path]["status"] for path in snapshot["home_paths"][home]]
     _require_runtime_quiet(facts, statuses)
+
+
+async def prove_crash_end(entry: dict, *, deadline: float | None = None, process: _TerminationProcess | None = None) -> None:
+    import github_plan_termination as termination
+    from github_plan_sessions import observation_homes
+    session = entry["session_id"]
+    deadline = time.monotonic() + 600 if deadline is None else deadline
+    if entry.get("harness") != "codex":
+        raise ValueError("native crash proof requires the original Codex source")
+    with closure.ownership(session) as held:
+        if not held:
+            raise ValueError("native crash proof requires the existing source ownership lease")
+        saved, action = _cancel_saved(session), closure.lease_state(session)
+        original = dict(entry)
+        if not entry.get("codex_home"):
+            _primary, original_home, _configured, _known = _cancel_origin(entry, action)
+            entry = {**entry, "codex_home": str(original_home)}
+        current = _cancel_generation(entry, saved)
+        latest_pid = current.get("launch_pid") if current else None
+        if process is None or latest_pid not in {None, entry.get("pid"), entry.get("launch_pid")}:
+            process = termination._verify_queue_source(entry, session, latest_pid=latest_pid)
+        elif process.original != original:
+            raise ValueError("native crash proof belongs to another original source")
+        if process.rebooted_at is None:
+            raise ValueError("native crash proof requires verified reboot termination")
+        termination.require_preboot_action(action, process.rebooted_at)
+        reader = lambda lines: termination.native_transcript_records(entry, lines)
+        home, primary = Path(entry["codex_home"]).expanduser().resolve(strict=True), Path(entry["transcript"]).resolve(strict=True)
+        observed = observation_homes(strict=True, sources=[entry], actions=[action])
+        if not any(primary.is_relative_to((candidate / name).resolve()) for candidate in observed for name in ("sessions", "archived_sessions")):
+            raise ValueError("native crash transcript is outside established account roots")
+        known = {Path(value).resolve(strict=True) for value in closure.action_homes(action)["known"]}
+        def files() -> dict:
+            snapshot = _source_files(entry, primary, home, known, reader, transcript_roots=process.roots,
+                                     identity_only=True, deadline=deadline)
+            snapshot["home_paths"].setdefault(str(home), [])
+            if str(primary) not in snapshot["home_paths"][str(home)]:
+                snapshot["home_paths"][str(home)].append(str(primary))
+            return snapshot
+        before = await asyncio.to_thread(files)
+        for _ in range(2):
+            for observed_home in before["homes"]:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("manual crash proof exceeded its deadline")
+                async with connection(Path(observed_home), deadline_at=time.time() + min(read_timeout(), remaining)) as request:
+                    facts = {**await read_thread(request, session), "queue": await read_queue(request, session)}
+                    local_snapshot(before, facts, observed_home)
+                    if facts["state"] != "notLoaded" or facts["queue"]:
+                        raise ValueError("native crash source remains loaded or queued; preserve claims")
+            await asyncio.to_thread(termination._recheck_queue_process, process)
+            after = await asyncio.to_thread(files)
+            if _cancel_saved(session) != saved or closure.lease_state(session) != action or after != before:
+                raise ValueError("native crash source changed during verification")
 
 
 async def cancel_queue(home: Path, session: str, *, ledger: Path | None = None,
@@ -707,7 +771,7 @@ async def cancel_queue(home: Path, session: str, *, ledger: Path | None = None,
     with _queue_outcome("deletion") as mark_sent:
         with closure.ownership(session, create=apply) as held:
             entry, saved, action = authority(), _cancel_saved(session), closure.lease_state(session)
-            reader = None if ledger is not None else lambda lines: termination.transcript_records(entry, lines)
+            reader = None if ledger is not None else lambda lines: termination.native_transcript_records(entry, lines)
             retained_homes = {Path(saved["codex_home"]).expanduser().resolve(strict=True)} if saved and saved.get("codex_home") else set()
             _primary, original_home, configured, _known = _cancel_origin(entry, action)
             current = _cancel_generation({**entry, "codex_home": str(original_home)}, saved)

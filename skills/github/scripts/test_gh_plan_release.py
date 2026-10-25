@@ -14,6 +14,7 @@ import re
 import tempfile
 import subprocess
 from datetime import datetime, timedelta, timezone
+from contextlib import nullcontext
 from types import SimpleNamespace
 from pathlib import Path
 from argparse import Namespace
@@ -565,6 +566,29 @@ class ReleaseTests(ReleaseHarness):
         self.evidence["body"] = release.termination.body(data)
         return transcript
 
+    def test_termination_uses_verified_native_fork_ancestry_for_copied_parent_metadata(self) -> None:
+        transcript = self.termination_setup()
+        import claim_history
+        rows = [json.loads(line) for line in transcript.read_text().splitlines()]
+        rows[0]["payload"].update(forked_from_id="native-parent", parent_thread_id="native-parent",
+            subagent_history_start_ordinal=2,
+            source={"subagent": {"thread_spawn": {"parent_thread_id": "native-parent"}}})
+        rows[1:1] = [{"type": "session_meta", "timestamp": rows[0]["timestamp"], "payload": {"id": "native-parent"}},
+            {"type": "event_msg", "timestamp": rows[0]["timestamp"],
+             "payload": {"type": "thread_settings_applied", "thread_id": "session-b"}}]
+        for index, row in enumerate(rows):
+            row["ordinal"] = index
+        context = {"parent": "native-parent", "ancestors": ("native-parent",)}
+        with patch.object(claim_history, "root_context", return_value=context):
+            transcript.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            os.utime(transcript, (release.stamp(rows[0]["timestamp"]).timestamp(),) * 2)
+            self.assertEqual(release.termination.verify(self.termination_record, "session-b")["session_id"], "session-b")
+            rows[1]["payload"]["id"] = "foreign-native"
+            transcript.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            os.utime(transcript, (release.stamp(rows[0]["timestamp"]).timestamp(),) * 2)
+            with self.assertRaises(ValueError):
+                release.termination.verify(self.termination_record, "session-b")
+
     def test_terminated_session_releases_without_verdict_and_successor_can_claim(self):
         for harness in ("codex", "claude"):
             with self.subTest(harness=harness):
@@ -679,6 +703,66 @@ class ReleaseTests(ReleaseHarness):
                   self.assertRaises(ValueError)):
                 release.termination.verify(self.termination_record, "session-b")
 
+    def test_reboot_proof_refuses_a_later_native_action_without_tty_reuse(self) -> None:
+        self.termination_setup()
+        shared = release.termination.native_helpers()[1]
+        boot = release.stamp(self.termination_record["ended_at"])
+        with patch.object(shared, "host_boot_time", return_value=boot), \
+                patch.object(github_plan_closure, "ownership", return_value=nullcontext(True)), \
+                patch.object(github_plan_closure, "lease_state", return_value={"action_pending": True, "action_at": boot.isoformat()}):
+            with self.assertRaises(ValueError):
+                release.termination.verify(self.termination_record, "session-b")
+
+    def test_reboot_pending_source_requires_native_empty_proof_without_tty_reuse(self) -> None:
+        self.termination_setup()
+        import github_plan_native
+        shared = release.termination.native_helpers()[1]
+        boot = release.stamp(self.termination_record["ended_at"])
+        action = {"action_pending": True, "action_at": (boot - timedelta(minutes=1)).isoformat()}
+        for blocked in (False, True):
+            with self.subTest(blocked=blocked), patch.object(shared, "host_boot_time", return_value=boot), \
+                    patch.object(github_plan_closure, "ownership", return_value=nullcontext(True)), \
+                    patch.object(github_plan_closure, "lease_state", return_value=action), \
+                    patch.object(github_plan_native, "prove_crash_end", **(
+                        {"side_effect": ValueError("native source is queued")} if blocked else {"return_value": None})):
+                if blocked:
+                    with self.assertRaises(ValueError):
+                        release.termination.verify(self.termination_record, "session-b")
+                else:
+                    release.termination.verify(self.termination_record, "session-b")
+
+    def test_reboot_source_lease_covers_the_checks_after_native_proof_without_creating_missing_state(self) -> None:
+        import sys
+        import github_plan_native
+        transcript = self.termination_setup()
+        shared = release.termination.native_helpers()[1]
+        boot = release.stamp(self.termination_record["ended_at"])
+        lease = transcript.parent / "owned.lock"
+        action = {"session_id": "session-b", "action_pending": True, "action_kind": "opaque",
+                  "action_at": (boot - timedelta(minutes=1)).isoformat(), "action_homes": {"known": [], "unscoped": True}}
+        lease.write_text(json.dumps(action))
+        lease.chmod(0o600)
+        before = lease.read_bytes()
+        original_artifacts = release.termination._verify_artifacts
+        def checked(artifacts: list[dict]) -> None:
+            probe = "import fcntl,sys\nwith open(sys.argv[1]) as stream:\n try: fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)\n except BlockingIOError: sys.exit(0)\n sys.exit(1)\n"
+            self.assertEqual(subprocess.run([sys.executable, "-c", probe, str(lease)], check=False, timeout=5).returncode, 0)
+            original_artifacts(artifacts)
+        with patch.object(shared, "host_boot_time", return_value=boot), \
+                patch.object(github_plan_closure, "lease_path", return_value=lease), \
+                patch.object(github_plan_native, "prove_crash_end", return_value=None):
+            with patch.object(release.termination, "_verify_artifacts", side_effect=checked):
+                release.termination.verify(self.termination_record, "session-b")
+            self.assertEqual(lease.read_bytes(), before)
+            lease.unlink()
+            release.termination.verify(self.termination_record, "session-b")
+            self.assertFalse(lease.exists())
+            with patch.object(github_plan_closure, "lease_state", return_value=action), self.assertRaises(ValueError):
+                release.termination.verify(self.termination_record, "session-b")
+            with patch.object(github_plan_closure, "lease_state", side_effect=[{}, action]), self.assertRaises(ValueError):
+                release.termination.verify(self.termination_record, "session-b")
+            self.assertFalse(lease.exists())
+
     def test_termination_tty_reuse_requires_native_cutoff_and_pending_action_veto(self):
         self.termination_setup()
         self.cutoff_patch.stop()
@@ -714,6 +798,18 @@ class ReleaseTests(ReleaseHarness):
                 release.termination.verify(self.termination_record, "session-b")
             with self.assertRaises(ValueError):
                 release.termination._verify_queue_source(self.termination_record, "session-b")
+
+    def test_termination_covers_configured_account_transcripts_outside_declared_roots(self) -> None:
+        transcript = self.termination_setup()
+        import github_plan_sessions
+        configured = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        sessions = configured / "sessions"
+        sessions.mkdir()
+        (sessions / "resumed-session-b.jsonl").write_text(transcript.read_text() + json.dumps({
+            "type": "event_msg", "timestamp": "2026-10-02T00:30:00Z", "payload": {"type": "agent_message", "message": "resumed"}}) + "\n")
+        with patch.object(github_plan_sessions, "observation_homes", return_value=[configured]):
+            with self.assertRaises(ValueError):
+                release.termination.verify(self.termination_record, "session-b")
 
     def test_public_termination_rechecks_terminal_after_transcript_quietness(self):
         self.termination_setup()

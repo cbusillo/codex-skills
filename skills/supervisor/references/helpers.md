@@ -1988,6 +1988,26 @@ guards still apply. Missing boot evidence or a boot before the source's activity
 keeps the ordinary strict route. This proof applies to crash termination;
 ordinary finished-session and historical-exit routes keep their existing checks.
 
+A pending opaque action requires source-native proof under verified reboot
+termination, including when the original TTY was never reused. Then
+the verifier reads every authenticated account copy twice under the existing
+source ownership lease. Each must be NotLoaded with an empty queue, and the
+source files, generation and action state must remain unchanged. It repeats
+physical exit checks and preserves the action barrier. A loaded or queued copy,
+an unavailable account or changed evidence refuses; no client is stopped.
+An action at or after boot refuses even without a reused TTY. If a required
+account's daemon is stopped, verify that fact and use the existing exact-home
+`codex app-server daemon start` recovery route below, then retry; never restart it.
+Manual crash proof uses one bounded read deadline across its file scans and
+both native passes. The standalone verifier allows up to ten minutes for that
+proof; claim checks pass their remaining operation deadline through every
+lineage proof and recheck. Short native RPC connections retain their own bound.
+The three-second file budget for idle observation below remains unchanged.
+An original retained account may report its original canonical rollout under
+another established account root. Read-only crash proof authenticates that
+original account/path binding and every observed copy without moving files;
+queue-deletion origin checks remain unchanged.
+
 Verify native task status and any remote peers yourself too: an idle desktop
 thread or an ID-less picker may not yet write a new transcript. The existing
 `--confirm-session-ended` attestation includes those unavailable peers.

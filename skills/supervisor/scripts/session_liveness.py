@@ -535,6 +535,8 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
                 born = started_at(pid) if ended_at is not None else None
                 newer = ended_at is not None and ended_at < born <= datetime.now(timezone.utc)
             except (OSError, ValueError, TypeError, subprocess.SubprocessError) as error:
+                if scope == "session" and process_absent(pid):
+                    continue
                 raise ValueError("process birth is unavailable; terminal kept") from error
             if not newer:
                 raise ValueError("source PID (possibly reused) or work on its TTY remains; preserve claims and verify native identity")
@@ -547,8 +549,8 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
         ):
             explicit_other = native_uuid(exact_resume) is not None
             noninteractive = command_kind == "exec"
-            guarded = independent_harness is not None and independent_harness(pid, argv)
-            if not (explicit_other or noninteractive or guarded):
+            if not (explicit_other or noninteractive
+                    or independent_harness is not None and independent_harness(pid, argv)):
                 raise ValueError("unidentified harness on the recorded TTY; preserve claims and verify native identity")
     return rows
 
