@@ -52,6 +52,17 @@ class WaitRecordTests(unittest.TestCase):
         self.assertEqual(waits.resolve_release(resolved, product="fixture-product",
             contains_commit=lambda _: True, evidence="Retry"), (resolved, []))
 
+    def test_stale_release_resolution_cannot_replace_a_renewed_human_wait(self) -> None:
+        release = waits.reviewed(evidence="Merged fix", waiting_for="Release", ends_when="Production",
+            release_product="fixture", release_commit="a" * 40, release_next_action="Next agent: verify")
+        resolved, _ = waits.resolve_release(release, product="fixture", contains_commit=lambda _: True,
+                                           evidence="Release passed")
+        issue = {"user": {"login": "owner"}, "body": waits.marker(release)}
+        completion = {"user": {"login": "owner"}, "body": waits.marker(resolved)}
+        renewed = {"user": {"login": "owner"}, "body": waits.marker(self.hold)}
+        self.assertEqual(waits.current(issue, [completion], {"owner"}), resolved)
+        self.assertEqual(waits.current(issue, [renewed, completion], {"owner"}), self.hold)
+
     def test_release_pointer_requires_a_wait_and_full_source_commit(self) -> None:
         for commit in ("", "main", "abc123"):
             with self.subTest(commit=commit), self.assertRaises(ValueError):

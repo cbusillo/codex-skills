@@ -1855,7 +1855,9 @@ competitor's record.
 `--release-next-action "Next agent: verify the repaired flow in production"`
 alongside `--waiting-for` and `--ends-when`. The pointer binds the first wait
 and is shown next to it in the published summary; other waits stay separate.
-It records the product, required source commit and next agent action for
+Release resolutions bind to the previous record, so they cannot erase a newer
+wait recorded concurrently. The writer records the product, required source
+commit and next agent action for
 [Launchplane's release-completion resolver](https://github.com/cbusillo/launchplane/issues/4908).
 Before writing these pointers, deploy the matching Launchplane planning-package
 pin and update installed catalog readers. Older readers preserve the wait as

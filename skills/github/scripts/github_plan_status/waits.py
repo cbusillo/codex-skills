@@ -1,6 +1,7 @@
 """Pure structured-wait format and trusted-record selection."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Callable, Iterable
@@ -50,11 +51,14 @@ def reviewed(*, evidence: str, waiting_for: str | list[str] | None = None,
 
 
 def validate(record: Any) -> None:
-    if (not isinstance(record, dict) or set(record) != {"version", "state", "evidence", "waits"}
+    if (not isinstance(record, dict) or set(record) not in ({"version", "state", "evidence", "waits"},
+                                                   {"version", "state", "evidence", "waits", "replaces"})
             or type(record["version"]) is not int or record["version"] != 1
             or not isinstance(record["state"], str) or record["state"] not in {"clear", "waiting", "review"}
             or not isinstance(record["evidence"], str) or not isinstance(record["waits"], list)):
         raise ValueError("Malformed structured wait record; review with gh-plan.py wait")
+    if "replaces" in record and (not isinstance(record["replaces"], str) or re.fullmatch(r"[0-9a-f]{64}", record["replaces"]) is None):
+        raise ValueError("A conditional wait resolution needs its previous record digest")
     if record["state"] != "review" and not record["evidence"].strip():
         raise ValueError("Structured wait record lacks review evidence")
     if bool(record["waits"]) != (record["state"] == "waiting"):
@@ -73,6 +77,14 @@ def validate(record: Any) -> None:
                 raise ValueError("A release wait needs its full source commit")
 
 
+def record_digest(record: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(record, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def release_event_hint(product: str, source_commit: str = "") -> str:
+    return f"Release event: {product} includes {source_commit}".strip()
+
+
 def resolve_release(record: dict[str, Any], *, product: str, contains_commit: Callable[[str], bool],
                     evidence: str) -> tuple[dict[str, Any], list[str]]:
     validate(record)
@@ -85,7 +97,7 @@ def resolve_release(record: dict[str, Any], *, product: str, contains_commit: Ca
         raise ValueError("Release resolution requires completion evidence")
     remaining = [entry for entry in record["waits"] if entry not in matched]
     resolved = {**record, "state": "waiting" if remaining else "clear", "waits": remaining,
-                "evidence": record["evidence"] + "\n" + evidence}
+                "evidence": record["evidence"] + "\n" + evidence, "replaces": record_digest(record)}
     validate(resolved)
     return resolved, [entry["release"]["next_action"] for entry in matched]
 
@@ -145,7 +157,11 @@ def current_record(issue: dict[str, Any], comments: list[dict[str, Any]], truste
         if len(found) > 1:
             raise ValueError("Multiple structured records in one source; preserve them for review")
         if found:
-            selected = found[0]
+            record = found[0]
+            if prefix == PREFIX and "replaces" in record:
+                if selected is None or record["replaces"] != record_digest(selected):
+                    continue
+            selected = record
     return selected
 
 
