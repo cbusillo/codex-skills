@@ -234,6 +234,7 @@ class SettledQuestionTests(unittest.TestCase):
             "**Q611** withdrawn by the Supervisor. Existing authority covers this.",
             "Supervisor answer to Q611 (this is the Supervisor's brief wording, not a Director decision). Yes: continue.",
             "Supervisor answer to **Q611**: yes, continue under the existing decision.",
+            "Supervisor answer to Q611: No: the existing decision prohibits that.",
             "Supervisor answer to Q611: this is already decided, so it does not go to Chris.\n\nQ645's Director decision authorizes this.",
         ):
             for open_inventory in (True, False):
@@ -250,6 +251,7 @@ class SettledQuestionTests(unittest.TestCase):
         for changes in (
             {"body": "Q611 still needs an answer. Q645 is already decided."},
             {"body": "Supervisor answer to Q6110: continue."},
+            {"body": "Supervisor answer to Q611: this is not mine to decide; it stays with the Director."},
             {"body": "Q645 withdrawn by the Supervisor. Q611 is a separate question."},
             {"body": "> Q611 withdrawn by the Supervisor."},
             {"body": "Supervisor answer to Q611: continue.", "user": {"login": "untrusted"}},

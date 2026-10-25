@@ -45,7 +45,9 @@ unknown), next actor and review requirement:
   delivery inventory supplies registration, acknowledgement and resurfacing
   evidence when `--question-queue` is selected and available.
   The digest also omits questions with a later trusted comment headed
-  `Q<number> withdrawn by the Supervisor` or `Supervisor answer to Q<number>`.
+  `Q<number> withdrawn by the Supervisor`, or `Supervisor answer to Q<number>`
+  with an explicit `Yes`, `No` or `this is already decided` disposition in the
+  heading. Markdown emphasis around the number is accepted.
   These existing records settle the exact question for digest reporting, including
   recovered registrations; they do not become Director decisions. Quoted text,
   ordinary mentions, untrusted authors and replies predating the question do
