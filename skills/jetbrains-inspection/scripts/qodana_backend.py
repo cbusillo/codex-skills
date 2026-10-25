@@ -1001,7 +1001,7 @@ def python_proof_gaps(private, hashes, selected, canaries, requested, receipt):
     return gaps + failures
 
 
-def scope_selection(args, host):
+def scope_selection(args: Any, host: Any, receipt: dict[str, Any] | None = None) -> tuple[Path, dict[str, Any], str, set[str]]:
     repo = Path(host.git_root(Path(args.repo).expanduser().resolve()) or args.repo).resolve()
     repository_config = host.read_repo_config(repo)
     config = repository_config.get("qualityGate", {}).get("inspection", {})
@@ -1012,12 +1012,16 @@ def scope_selection(args, host):
         path = host.normalize_inspection_lane_path(raw, repo)
         if path.is_file():
             selected.add(path.relative_to(repo).as_posix())
-    if config.get("lanes") and scope != "files":
+    if config.get("lanes"):
         selection = host.resolve_inspection_lane_selection(args, {
             "worktree_root": str(repo), "scope": scope,
             "_inspection_lanes": host.parse_inspection_lanes(config),
         })
-        selected -= set(selection["unmatched_files"]) | {entry["file"] for entry in selection["excluded_files"]}
+        selected -= set(selection["unmatched_files"])
+        if scope != "files":
+            selected -= {entry["file"] for entry in selection["excluded_files"]}
+        if receipt is not None:
+            receipt.update(unmatched_files=selection["unmatched_files"], excluded_files=selection["excluded_files"])
     return repo, config, scope, selected
 
 
@@ -1030,13 +1034,6 @@ def backend_options(args, backend):
 
 
 def select_backend(args, host, host_default=None):
-    """Default backend for one agent-inspect run: (backend, reason).
-
-    Python is the qualified language (codex-skills#2155): a selection of only
-    Python files, outside Odoo and owned by PyCharm lanes, runs headless when
-    the pinned image is already local. Everything else keeps the API. A host
-    may pin the choice with JB_INSPECT_DEFAULT_BACKEND.
-    """
     if backend_options(args, "qodana"):
         return "qodana", "qodana_options_supplied"
     if host_default:
@@ -1111,7 +1108,7 @@ def run(args, host):
             raise Blocked("qodana_recovery_only_no_inspection")
         if os.getloadavg()[0] > LOAD_LIMIT:
             raise Blocked("qodana_host_load_paused")
-        repo, config, scope, selected = scope_selection(args, host)
+        repo, config, scope, selected = scope_selection(args, host, receipt)
         receipt["scope"] = scope
         receipt["selected_file_count"] = len(selected)
         receipt["selected_files"] = sorted(selected)

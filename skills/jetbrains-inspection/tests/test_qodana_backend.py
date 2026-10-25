@@ -753,7 +753,11 @@ os.kill(os.getpid(), signal.SIGKILL)
         with patch.object(host, "inspection_scope_paths", return_value=["src/a.py", "README.md"]):
             self.assertEqual(backend.scope_selection(args, host)[3], {"src/a.py"})
         args.scope, args.files = "files", ["src/a.py", "README.md"]
-        self.assertEqual(backend.scope_selection(args, host)[3], set(args.files))
+        self.assertEqual(backend.scope_selection(args, host)[3], {"src/a.py"})
+        receipt = {}
+        backend.scope_selection(args, host, receipt)
+        self.assertEqual(receipt["unmatched_files"], ["README.md"])
+        self.assertEqual(receipt["excluded_files"], [])
 
     def test_detached_monitor_deletes_copies_when_parent_is_killed_during_load_pause(self):
         import time

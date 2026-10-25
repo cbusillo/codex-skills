@@ -124,14 +124,17 @@ and post an `Owner question:` on the item. The Director restores activation
 through the normal product UI using existing entitlements.
 
 Hosts without eligible native prerequisites retain the qualified local Qodana
-Python default when available. For implicit scopes in repositories with inspection
-lanes, headless selection follows the lane router and omits unmatched files
-(such as Markdown) and lane exclusions. Explicit `--scope files` preserves every
-requested file. Other selections stay UNKNOWN without desktop contact. Explicit
+Python default when available. In repositories with inspection lanes, headless
+selection follows the lane router and omits unmatched files (such as Markdown).
+Receipts name unmatched and excluded files. Explicit `--scope files` overrides
+lane exclusions; implicit scopes honor them. Other selections stay UNKNOWN
+without desktop contact on every platform. Explicit
 Qodana options select Qodana. The API remains available with explicit
 `--backend api` for an intended API session; a Supervisor brief that prohibits
 desktop IDE use still prohibits that route. Choose with
-`--backend native|api|qodana` or `JB_INSPECT_DEFAULT_BACKEND`. Read
+`--backend native|api|qodana`. `JB_INSPECT_DEFAULT_BACKEND` can prefer native
+or Qodana; an API preference still returns UNKNOWN and requires explicit
+`--backend api`. Read
 [local Qodana](references/qodana-backend.md) before diagnosing or changing it.
 Never copy license or credential files into a Qodana profile either. Run one
 capped, niced headless worker at a time and pause above load1 64. Report the

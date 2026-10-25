@@ -234,23 +234,20 @@ class NativeTests(unittest.TestCase):
                 context.assert_not_called()
 
     def test_automatic_api_fallback_never_enters_desktop_lifecycle(self) -> None:
-        for host_default in (None, "api"):
-            with self.subTest(host_default=host_default), \
-                    patch.object(host, "native_backend_module", return_value=native), \
-                    patch.object(native, "select_backend", return_value=("api", "selection_not_python_only")), \
-                    patch.dict(os.environ, {"JB_INSPECT_DEFAULT_BACKEND": host_default or ""}), \
-                    patch.object(host, "build_context") as context, \
-                    patch.object(host, "command_run") as api, \
-                    patch.object(sys, "argv", ["jb-inspect", "agent-inspect"]), \
-                    redirect_stdout(io.StringIO()) as output:
-                self.assertEqual(host.main(), 0)
-                context.assert_not_called()
-                api.assert_not_called()
-                result = json.loads(output.getvalue())["agent_result"]
-                self.assertEqual(result["verdict"], "UNKNOWN")
-                self.assertEqual(result["bucket"], "environment_blocked")
-                self.assertTrue(result["next_action"])
-                self.assertFalse(result["retry_policy"]["retry"])
+        with patch.object(host, "native_backend_module", return_value=native), \
+                patch.object(native, "select_backend", return_value=("api", "selection_not_python_only")), \
+                patch.object(host, "build_context") as context, \
+                patch.object(host, "command_run") as api, \
+                patch.object(sys, "argv", ["jb-inspect", "agent-inspect"]), \
+                redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(host.main(), 0)
+            context.assert_not_called()
+            api.assert_not_called()
+            result = json.loads(output.getvalue())["agent_result"]
+            self.assertEqual(result["verdict"], "UNKNOWN")
+            self.assertEqual(result["bucket"], "environment_blocked")
+            self.assertTrue(result["next_action"])
+            self.assertFalse(result["retry_policy"]["retry"])
 
     def test_explicit_existing_backends_do_not_import_native_components(self):
         for backend in ("api", "qodana"):

@@ -1075,7 +1075,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         state, preparation_caches = runtime_storage(host, worker)
         if os.getloadavg()[0] > LOAD_LIMIT:
             raise Blocked("native_host_load_paused")
-        repo, settings, scope, selected = common.scope_selection(args, host)
+        repo, settings, scope, selected = common.scope_selection(args, host, receipt)
         if not any(repo.is_relative_to(Path(root)) for root in host.trusted_auto_open_roots()):
             raise Blocked("native_trusted_root_required")
         if not is_odoo(repo):
