@@ -1564,8 +1564,10 @@ class WebStormLifecycleTests(unittest.TestCase):
         npm = self.node.parent / "npm"
         npm.write_text(f"#!{sys.executable}\nimport json,os,pathlib,sys\n"
                        "prefix=pathlib.Path(sys.argv[sys.argv.index('--prefix')+1])\n"
+                       "configs=[sys.argv[sys.argv.index(f)+1] for f in ('--userconfig','--globalconfig')]\n"
+                       "assert configs[0]!=configs[1], 'double-loading config'\n"
                        "(prefix/'node_modules').mkdir()\n(prefix/'node_modules/.fixture').touch()\n"
-                       f"pathlib.Path({str(self.npm_record)!r}).write_text(json.dumps({{'argv':sys.argv[1:],'env':dict(os.environ)}}))\n")
+                       f"pathlib.Path({str(self.npm_record)!r}).write_text(json.dumps({{'argv':sys.argv[1:],'env':dict(os.environ),'config_sizes':[pathlib.Path(c).stat().st_size for c in configs]}}))\n")
         npm.chmod(0o755)
         self.cache = self.root / "host-caches"
         self.cache.mkdir()
@@ -1674,7 +1676,9 @@ print('Done.')
         self.assertTrue(prefix.is_relative_to(self.cache))
         self.assertFalse(prefix.exists())
         self.assertEqual(Path(npm["argv"][npm["argv"].index("--cache") + 1]), self.cache / "npm-cache")
-        self.assertEqual([npm["argv"][npm["argv"].index(flag) + 1] for flag in ("--userconfig", "--globalconfig")], [os.devnull] * 2)
+        configs = [npm["argv"][npm["argv"].index(flag) + 1] for flag in ("--userconfig", "--globalconfig")]
+        self.assertEqual((len(set(configs)), npm["config_sizes"]), (2, [0, 0]))
+        self.assertTrue(all(Path(config).is_relative_to(prefix.parent) for config in configs))
         self.assertTrue((self.cache / "npm-cache").is_dir())
         self.assertEqual(npm["env"]["PATH"].split(os.pathsep)[0], str(self.node.parent))
         engine = json.loads(self.engine_record.read_text())

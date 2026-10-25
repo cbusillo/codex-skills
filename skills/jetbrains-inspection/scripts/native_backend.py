@@ -278,9 +278,12 @@ def node_executable(host):
 
 
 def npm_preparation(node, project, private, caches):
+    empty_configs = [private / "npm-user.npmrc", private / "npm-global.npmrc"]
+    for config in empty_configs:
+        config.write_text("")
     argv = [str(node.parent / "npm"), "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--no-update-notifier",
-            "--userconfig", os.devnull, "--globalconfig", os.devnull, "--cache", caches["npm_config_cache"],
-            "--prefix", str(project)]
+            "--userconfig", str(empty_configs[0]), "--globalconfig", str(empty_configs[1]),
+            "--cache", caches["npm_config_cache"], "--prefix", str(project)]
     env = {"PATH": str(node.parent) + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
            "HOME": str(private / "prepare-home"), "TMPDIR": str(private / "tmp")}
     return argv, env
