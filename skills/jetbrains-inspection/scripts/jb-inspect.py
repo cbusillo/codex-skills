@@ -568,7 +568,8 @@ def main() -> int:
             if args.backend == "native":
                 result = command_native(args)
                 result["backend_selection"] = backend_selection
-                log_native_assessment(result)
+                if not args.native_recover_only:
+                    log_native_assessment(result)
                 print(public_json(result))
                 return 0
             if args.backend == "qodana":
@@ -646,15 +647,23 @@ def command_native(args: argparse.Namespace) -> dict[str, Any]:
 def log_native_assessment(result: dict[str, Any]) -> None:
     agent_result = dict_field(result, "agent_result")
     outcome = dict_field(result, "inspection_outcome")
+    diagnostic = dict_field(result, "diagnostic")
+    verdict = agent_result.get("verdict") or outcome.get("verdict")
+    started = verdict in {"GREEN", "RED"} or "engine_exit_code" in dict_field(diagnostic, "native")
     payload = {
         **result,
-        "verdict": agent_result.get("verdict") or outcome.get("verdict"),
+        "client_run_id": _ACTIVE_CLIENT_RUN_ID,
+        "verdict": verdict,
         "bucket": agent_result.get("bucket"),
         "verdict_reason": outcome.get("reason"),
-        "total_problems": result.get("finding_count"),
+        "verdict_next_action": agent_result.get("next_action"),
+        "retry_policy": agent_result.get("retry_policy"),
+        "inspection_started": started,
+        "total_problems": result.get("finding_count") if started else None,
     }
     log_assessment_records(payload, 0)
-    result.update({key: value for key, value in payload.items() if key.endswith(("_log_path", "_log_error"))})
+    if isinstance(result.get("diagnostic"), dict):
+        diagnostic.update({key: value for key, value in payload.items() if key.endswith(("_log_path", "_log_error"))})
 
 
 def error_payload(error: InspectError, args: argparse.Namespace | None = None) -> dict[str, Any]:
@@ -9006,6 +9015,8 @@ def qualification_event_candidate(
     line_number: int,
     criteria: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if event.get("backend") not in (None, "api"):
+        return None, qualification_exclusion(event, line_number, "backend_not_qualified", False)
     client_run_id = clean_optional(event.get("client_run_id"))
     assessment_id = clean_optional(event.get("assessment_id"))
     if client_run_id is None or assessment_id is None:
