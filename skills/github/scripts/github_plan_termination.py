@@ -127,7 +127,7 @@ def transcript_snapshot(record, path):
     before = path.stat()
     with path.open(encoding="utf-8") as stream:
         lines = list(stream)
-    records, truncated = native_transcript_records({**record, "transcript": str(path)}, lines)
+    records, truncated = native_transcript_records({**record, "transcript": str(path)}, lines, local_only=False)
     after = path.stat()
     if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
         raise ValueError("Source transcript changed during termination checks")
@@ -159,14 +159,15 @@ def transcript_records(record, lines, *, require_identity: bool = True):
     return records, truncated
 
 
-def native_transcript_records(record: dict, lines: list[str]) -> tuple[list[dict], bool]:
+def native_transcript_records(record: dict, lines: list[str], *, local_only: bool = True) -> tuple[list[dict], bool]:
     codex = record["harness"] == "codex"
     records, truncated = transcript_records(record, lines, require_identity=not codex)
+    local = records
     if codex:
         native_helpers()
         import claim_history
-        claim_history.root_records(Path(record["transcript"]), "codex", record["session_id"], records)
-    return records, truncated
+        local = claim_history.root_records(Path(record["transcript"]), "codex", record["session_id"], records)
+    return (local if local_only else records), truncated
 
 
 def require_preboot_action(action: dict, booted_at: datetime) -> None:
