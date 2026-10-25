@@ -47,8 +47,7 @@ REASON = (
 )
 
 
-def asks_director(message: str) -> bool:
-    text = QUOTED.sub(" ", message)
+def asks_director(text: str) -> bool:
     questions = (match[0] for match in SENTENCE.finditer(text)
                  if not ANSWERED.match(text, match.end()))
     # "Nothing is waiting on your approval" reports that there is no ask.
@@ -97,13 +96,14 @@ def last_message(payload: Mapping) -> str | None:
     return text
 
 
-def verdict(payload: object) -> str | None:
+def verdict(payload: object) -> tuple[str | None, str | None]:
     if not isinstance(payload, dict) or payload.get("hook_event_name") != "Stop":
-        return None
+        return None, None
     if payload.get("stop_hook_active"):
-        return "second-pass"
+        return "second-pass", None
     message = last_message(payload)
-    return "caught" if message is not None and missing_context(message) else "pass"
+    reason = missing_context(message) if message is not None else None
+    return ("caught" if reason else "pass"), reason
 
 
 def log_path(env: Mapping[str, str]) -> Path:
@@ -126,7 +126,7 @@ def append(path: Path, record: dict) -> None:
 def hook(stdin, stdout, env: Mapping[str, str]) -> int:
     try:
         payload = json.load(stdin)
-        result = verdict(payload)
+        result, reason = verdict(payload)
     except (OSError, ValueError, TypeError, AttributeError):
         # Fail open on bad input; Claude Code also lets the stop proceed if this hook crashes.
         return 0
@@ -142,7 +142,7 @@ def hook(stdin, stdout, env: Mapping[str, str]) -> int:
     except (OSError, ValueError):  # A lost log line is not a reason to change the decision.
         pass
     if result == "caught":
-        stdout.write(json.dumps({"decision": "block", "reason": missing_context(last_message(payload))}) + "\n")
+        stdout.write(json.dumps({"decision": "block", "reason": reason}) + "\n")
     return 0
 
 

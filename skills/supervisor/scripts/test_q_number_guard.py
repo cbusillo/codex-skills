@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import q_number_guard as guard
 
@@ -83,6 +84,8 @@ class GuardTests(unittest.TestCase):
                 decision = json.loads(self.run_hook(stop(last_assistant_message=message)))
                 self.assertEqual(decision["decision"], "block")
                 self.assertIn(missing, decision["reason"])
+                if context:
+                    self.assertNotIn("developer" if missing == "cost" else "cost", decision["reason"])
                 self.assertEqual(self.run_hook(stop(last_assistant_message=message, stop_hook_active=True)), "")
 
     def test_context_accepts_common_phrasings(self):
@@ -145,6 +148,21 @@ class GuardTests(unittest.TestCase):
                  {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash"}]}}]
         transcript.write_text("\n".join(map(json.dumps, lines)) + "\nnot json\n")
         self.assertIn("block", self.run_hook(stop(transcript_path=str(transcript))))
+
+    def test_transcript_disappearing_after_read_keeps_original_decision(self):
+        transcript = Path(self.home.name, "t.jsonl")
+        transcript.write_text(json.dumps({"type": "assistant", "message": {"content": UNNUMBERED_QUESTION}}))
+        read_message = guard.last_message
+
+        def read_then_remove(payload: dict) -> str | None:
+            message = read_message(payload)
+            transcript.unlink()
+            return message
+
+        with mock.patch.object(guard, "last_message", side_effect=read_then_remove):
+            decision = json.loads(self.run_hook(stop(transcript_path=str(transcript))))
+        self.assertEqual(decision["decision"], "block")
+        self.assertTrue(decision["reason"])
 
     def test_errors_and_unreadable_input_fail_open(self):
         fifo = Path(self.home.name, "fifo")
