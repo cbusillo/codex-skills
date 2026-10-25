@@ -321,7 +321,8 @@ checked. Other sessions keep the reconstruction.
 For older helpers and mixed sessions, the check reads linked local native child
 transcripts recursively: Claude's own `subagents` directory, Codex's existing
 native child index and non-interaction `SubAgentActivity.agent_thread_id` events. Peer
-interaction events do not establish parent edges. Contradictory parent edges refuse. It never
+interaction and native-indexed sibling completion events do not establish parent
+edges; each sibling stays covered through its verified native parent. Contradictory parent edges refuse. It never
 scans rollout directories. A missing indexed or advertised child refuses;
 restore its transcript on the claiming host or pass that child's native
 `--session` and `--transcript`. Supplied child paths can restore moved evidence.
