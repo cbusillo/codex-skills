@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import sys
 import threading
 import time
@@ -21,6 +22,10 @@ import github_api
 
 T = TypeVar("T")
 R = TypeVar("R")
+
+
+def observation_key(path: str) -> str:
+    return re.sub(r"^/repos/([^/]+/[^/?]+)", lambda match: f"/repos/{match[1].casefold()}", path)
 
 
 class ReadDeadline(Exception):
@@ -118,7 +123,12 @@ class NextReads:
         while not self.stop.wait(self.progress_seconds):
             self.progress()
 
+    def observation(self, path: str) -> Future[Any] | None:
+        with self.lock:
+            return self.observations.get(observation_key(path))
+
     def observe(self, path: str, read: Callable[[], T]) -> T:
+        path = observation_key(path)
         with self.lock:
             future = self.observations.get(path)
             first = future is None

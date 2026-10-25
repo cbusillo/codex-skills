@@ -2057,6 +2057,12 @@ retrying until planning stalls.
 
 ### Planning: Next Work
 
+Global `next` consumes `github_work_graph.py` for batched native issue,
+discussion, relationship and wait observations. It reuses those observations
+within the invocation. The `work_graph_context` reports observed and unread
+nodes and batch request count; those counts do not prove complete portfolio
+coverage. Per-repository planning calls retain their existing read routes.
+
 Global `next` bounds network work with `--time-budget SECONDS`
 and `--read-workers COUNT`; `--help` reports the current defaults and bounds.
 Increase the budget for broader evidence;

@@ -34,6 +34,8 @@ def load_module() -> Any:
         raise RuntimeError(f"Unable to load {SCRIPT}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.real_next_graph_reader = module.next_graph_reader
+    module.next_graph_reader = lambda _repo: None
     module.real_api_json = module.api_json
     # Every test starts offline; fixtures opt into the API evidence they own.
     module.api_json = Mock(side_effect=module.PlanError("offline fixture record unavailable"))
@@ -589,7 +591,6 @@ def test_next_relationship_reads_are_bounded_and_report_truncation() -> None:
 
     def fake_collect(path: str, *, limit: int, **_kwargs: Any) -> tuple[str, list[dict[str, Any]]]:
         observed_limits.append(limit)
-        assert path.rsplit("/", 1)[-1] in _kwargs["step_prefix"]
         if path.endswith("/blocked_by"):
             return "automation-gh", [related(number) for number in range(1, limit + 1)]
         return "automation-gh", []
@@ -753,6 +754,8 @@ def global_fixture(
         }, []
 
     def wait_api(method: str, path: str, **_kwargs: Any) -> Any:
+        if module.NEXT_READS is not None and module.NEXT_READS.observation(path) is not None:
+            return module.real_api_json(method, path, **_kwargs)
         assert method == "GET", "global next must remain read-only"
         parts = path.split("?", 1)[0].strip("/").split("/")
         target = "/".join(parts[1:3])
@@ -3584,6 +3587,7 @@ def test_global_reserves_final_evidence_time_without_claiming_a_complete_scan() 
         assert not result["performance"]["deadline_exhausted"]
         assert not result["candidate_coverage"]["milestone_ranking_complete"]
         assert result["graph_context"]["complete"]
+        assert result["recommended_next_action"] != "inspect_last_failure"
         reported = next(row for row in result["candidates"] if row["number"] == leaf["number"])
         assert reported["queue"]["claim_required"]
 

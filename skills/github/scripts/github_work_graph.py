@@ -4,11 +4,18 @@
 # ///
 from __future__ import annotations
 
+import copy
+import json
 import re
 import urllib.parse
 from collections.abc import Callable
+from concurrent.futures import CancelledError, Future
+from dataclasses import dataclass
 from typing import Any
 
+import github_direction_next
+import github_next_reads
+import github_plan_graph
 import github_read
 
 CHILD_LIMIT = 50
@@ -62,18 +69,20 @@ TRACK_FIELDS = f"""number title url state stateReason body createdAt lastEditedA
 
 def detail_query(numbers: list[int]) -> str:
     aliases = "\n".join(f"    t{number}: issue(number: {int(number)}) {{ {TRACK_FIELDS} }}" for number in numbers)
-    return ("query WorkGraphTracks($owner: String!, $name: String!) {\n"
-            f"  repository(owner: $owner, name: $name) {{\n{aliases}\n  }}\n}}")
+    return (
+        "query WorkGraphTracks($owner: String!, $name: String!) {\n"
+        f"  repository(owner: $owner, name: $name) {{\n{aliases}\n  }}\n}}"
+    )
 
 
 def discover_tracks(reader: github_read.GitHubReader, owner: str, name: str, max_pages: int) -> list[dict[str, Any]]:
     found, cursor, expected, seen, cursors = [], None, None, set(), set()
     for page in range(max_pages):
-        result = reader.graphql_json(LIST_QUERY, {"owner": owner, "name": name, "cursor": cursor},
-            step=f"work_graph_list_{page + 1}")
+        result = reader.graphql_json(
+            LIST_QUERY, {"owner": owner, "name": name, "cursor": cursor}, step=f"work_graph_list_{page + 1}"
+        )
         if not result.ok:
-            raise github_read.GitHubReadError("Track discovery read failed", result=result,
-                diagnostics=reader.diagnostics())
+            raise github_read.GitHubReadError("Track discovery read failed", result=result, diagnostics=reader.diagnostics())
         body = result.body
         if not isinstance(body, dict) or body.get("errors"):
             raise ValueError("Track discovery returned errors or invalid data")
@@ -98,15 +107,20 @@ def discover_tracks(reader: github_read.GitHubReader, owner: str, name: str, max
 
 
 def read_tracks(
-    reader: github_read.GitHubReader, owner: str, name: str = "direction", *, max_pages: int = 10,
+    reader: github_read.GitHubReader,
+    owner: str,
+    name: str = "direction",
+    *,
+    max_pages: int = 10,
 ) -> dict[str, Any]:
     tracks = discover_tracks(reader, owner, name, max_pages)
     nodes: dict[int, dict[str, Any]] = {}
     errors: list[str] = []
     for start in range(0, len(tracks), TRACKS_PER_QUERY):
-        numbers = [track["number"] for track in tracks[start:start + TRACKS_PER_QUERY]]
-        result = reader.graphql_json(detail_query(numbers), {"owner": owner, "name": name},
-            step=f"work_graph_tracks_{start // TRACKS_PER_QUERY + 1}")
+        numbers = [track["number"] for track in tracks[start : start + TRACKS_PER_QUERY]]
+        result = reader.graphql_json(
+            detail_query(numbers), {"owner": owner, "name": name}, step=f"work_graph_tracks_{start // TRACKS_PER_QUERY + 1}"
+        )
         data = result.body.get("data") if result.ok and isinstance(result.body, dict) else None
         repository = (data or {}).get("repository") or {}
         if not result.ok or not isinstance(result.body, dict) or result.body.get("errors"):
@@ -116,6 +130,231 @@ def read_tracks(
             if isinstance(node, dict) and node.get("state") == "OPEN":
                 nodes[number] = node
     return {"tracks": tracks, "nodes": nodes, "errors": errors}
+
+
+@dataclass
+class BatchRead:
+    rows: list[dict[str, Any]]
+    unread: dict[tuple[str, int], Exception]
+
+
+def read_issues(
+    reader: github_read.GitHubReader,
+    refs: list[dict[str, Any]],
+) -> BatchRead:
+    fields = (
+        github_plan_graph.ISSUE_FIELDS
+        + " closedAt lastEditedAt"
+        + " "
+        + " ".join(github_plan_graph.connection_query(field) for field in github_plan_graph.CONNECTIONS)
+    )
+    rows: list[dict[str, Any]] = []
+    unread: dict[tuple[str, int], Exception] = {}
+    for start in range(0, len(refs), TRACKS_PER_QUERY):
+        chunk = refs[start : start + TRACKS_PER_QUERY]
+        selections = []
+        for index, ref in enumerate(chunk):
+            owner, name = ref["repo"].split("/", 1)
+            selections.append(
+                f"r{index}: repository(owner:{json.dumps(owner)}, name:{json.dumps(name)}) "
+                f"{{ issue(number:{int(ref['number'])}) {{ {fields} }} }}"
+            )
+        result = reader.graphql_json(
+            "query { " + " ".join(selections) + " rateLimit { cost remaining resetAt } }",
+            {},
+            step=f"work_graph_nodes_{start // TRACKS_PER_QUERY + 1}",
+        )
+        if not result.ok:
+            raise github_read.GitHubReadError("Work graph batch unavailable", result=result, diagnostics=reader.diagnostics())
+        body = result.body
+        if not isinstance(body, dict) or not isinstance(body.get("data"), dict):
+            raise github_read.GitHubReadShapeError("Work graph batch data unavailable")
+        data = body["data"]
+        errors = body.get("errors") or []
+        for index, ref in enumerate(chunk):
+            try:
+                if any(
+                    not isinstance(error.get("path"), list) or not error["path"] or error["path"][0] == f"r{index}"
+                    for error in errors
+                ):
+                    raise github_read.GitHubReadShapeError("Work graph issue returned partial data")
+                repository = data.get(f"r{index}")
+                node = repository.get("issue") if isinstance(repository, dict) else None
+                if not isinstance(node, dict):
+                    raise github_read.GitHubReadShapeError(f"Work graph issue unavailable: {ref['repo']}#{ref['number']}")
+                connections = {field: github_plan_graph.connection_page(node.get(field)) for field in github_plan_graph.CONNECTIONS}
+                source = {**node, **{field: values[0] for field, values in connections.items()}}
+                row = github_plan_graph.rest_issue(source)
+                row["comments"] = connections["comments"][2]
+                row["closed_at"] = node.get("closedAt")
+                row["last_edited_at"] = node.get("lastEditedAt")
+                row["_graph_comments_complete"] = (
+                    connections["comments"][1] is None and len(connections["comments"][0]) == connections["comments"][2]
+                )
+                row["_graph_labels_complete"] = (
+                    connections["labels"][1] is None and len(connections["labels"][0]) == connections["labels"][2]
+                )
+                row["_graph_truncated"] = [
+                    key
+                    for key, field in (("blocked_by", "blockedBy"), ("blocking", "blocking"), ("sub_issues", "subIssues"))
+                    if connections[field][1] is not None or len(connections[field][0]) != connections[field][2]
+                ]
+                if (row["repo"].casefold(), row["number"]) != (ref["repo"].casefold(), ref["number"]):
+                    raise github_read.GitHubReadShapeError("Work graph issue identity changed")
+                rows.append(row)
+            except (github_read.GitHubReadShapeError, KeyError, TypeError, ValueError, AttributeError) as exc:
+                unread[(ref["repo"].casefold(), ref["number"])] = exc
+    return BatchRead(rows, unread)
+
+
+def issue_path(repo: str, number: int) -> str:
+    return f"/repos/{repo.casefold()}/issues/{number}"
+
+
+def complete_issue_pages(row: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    base = issue_path(row["repo"], row["number"])
+    collections = {
+        field: values
+        for field, values in row.get("_graph_relationships", {}).items()
+        if field not in row.get("_graph_truncated", [])
+    }
+    if row.get("_graph_comments_complete"):
+        collections["comments"] = row["_graph_comments"]
+    pages: dict[str, list[dict[str, Any]]] = {}
+    for field, values in collections.items():
+        endpoint = f"dependencies/{field}" if field in {"blocked_by", "blocking"} else field
+        for offset in range(0, len(values) + 1, 100):
+            pages[f"{base}/{endpoint}?per_page=100&page={offset // 100 + 1}"] = copy.deepcopy(values[offset : offset + 100])
+    return pages
+
+
+def publish_issue_pages(reads: github_next_reads.NextReads, row: dict[str, Any], actor: str | None) -> None:
+    for path, body in complete_issue_pages(row).items():
+        with reads.lock:
+            if path in reads.observations:
+                continue
+            future: Future[Any] = Future()
+            reads.observations[path] = future
+        future.set_result((actor, body))
+
+
+def prefetch_issues(
+    reader_for: Callable[[str], github_read.GitHubReader | None],
+    refs: list[dict[str, Any]],
+    reads: github_next_reads.NextReads,
+) -> None:
+    missing = {
+        issue_path(ref["repo"], ref["number"]): ref
+        for ref in refs
+        if reads.observation(issue_path(ref["repo"], ref["number"])) is None
+    }
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for ref in list(missing.values())[:TRACKS_PER_QUERY]:
+        groups.setdefault(ref["repo"].split("/", 1)[0].casefold(), []).append(ref)
+    for chunk in groups.values():
+        reader = reader_for(chunk[0]["repo"])
+        if reader is None:
+            continue
+        owned: dict[str, tuple[dict[str, Any], Future[Any]]] = {}
+        try:
+            with reads.lock:
+                for ref in chunk:
+                    path = issue_path(ref["repo"], ref["number"])
+                    if path not in reads.observations:
+                        future: Future[Any] = Future()
+                        reads.observations[path] = future
+                        owned[path] = ref, future
+            if not owned:
+                continue
+
+            def fetch(
+                reader: github_read.GitHubReader = reader, owned: dict[str, tuple[dict[str, Any], Future[Any]]] = owned
+            ) -> None:
+                try:
+                    batch = read_issues(reader, [ref for ref, _future in owned.values()])
+                    values = {issue_path(row["repo"], row["number"]): row for row in batch.rows}
+                    for path, (ref, future) in owned.items():
+                        if path in values:
+                            row = values[path]
+                            publish_issue_pages(reads, row, reader.actor)
+                            future.set_result((reader.actor, row))
+                        else:
+                            key = ref["repo"].casefold(), ref["number"]
+                            future.set_exception(batch.unread.get(key, github_read.GitHubReadShapeError("Work graph issue missing")))
+                except BaseException as exc:
+                    for _ref, future in owned.values():
+                        if not future.done():
+                            future.set_exception(exc)
+                    raise
+
+            def settle_cancelled(job: Future[Any], owned: dict[str, tuple[dict[str, Any], Future[Any]]] = owned) -> None:
+                if job.cancelled() or isinstance(job.exception(), CancelledError):
+                    for _ref, future in owned.values():
+                        if not future.done():
+                            future.set_exception(CancelledError())
+
+            job = reads.submit(("work_graph_batch", *owned), fetch)
+            job.add_done_callback(settle_cancelled)
+        except BaseException as exc:
+            for _ref, future in owned.values():
+                if not future.done():
+                    future.set_exception(exc)
+            raise
+
+
+def read_discussion(
+    issue: dict[str, Any],
+    read_comments: Callable[[int], tuple[list[dict[str, Any]], bool]],
+    *,
+    limit: int,
+) -> tuple[list[dict[str, Any]], bool]:
+    comments = issue.get("_graph_comments")
+    complete = issue.get("_graph_comments_complete", True)
+    if comments is None or (not complete and limit > len(comments)):
+        if type(issue.get("comments")) is int and issue["comments"] == 0:
+            comments, complete = [], True
+        else:
+            comments, complete = read_comments(limit + 1)
+    return copy.deepcopy(comments[:limit]), complete and len(comments) <= limit
+
+
+def read_direction_node(
+    issue: dict[str, Any],
+    *,
+    config: dict[str, Any],
+    focus: str | None,
+    comment_limit: int,
+    read_comments: Callable[[int], tuple[list[dict[str, Any]], bool]],
+    read_relationships: Callable[[], tuple[dict[str, Any], list[str]]],
+    resolve_wait: Callable[[list[dict[str, Any]]], dict[str, Any] | None],
+) -> dict[str, Any]:
+    base = {
+        **github_direction_next.compact_list_issue(issue["repo"], issue),
+        "plan_status": github_direction_next.next_plan_status(issue, config),
+        "focus": focus,
+        "milestone": github_direction_next.next_milestone_context(issue),
+    }
+    if issue.get("pull_request") is not None:
+        return {"item": {**base, "exclusion": "pull_request"}}
+    if issue.get("_graph_labels_complete") is False:
+        return {"item": {**base, "exclusion": "unknown_dependencies", "detail": "Work graph status labels are incomplete"}}
+    comments, complete = read_discussion(issue, read_comments, limit=comment_limit)
+    try:
+        wait = resolve_wait(comments) if complete else None
+    except (ValueError, KeyError, TypeError):
+        wait = None
+    if wait is None:
+        wait = {"version": 1, "state": "review", "evidence": "", "waits": []}
+    static = github_direction_next.next_static_exclusion(issue, config=config, focus=focus)
+    if static:
+        node = {"item": static}
+    else:
+        relationships, truncated = read_relationships()
+        node = github_direction_next.evaluate_direction_node(
+            issue, config=config, focus=focus, relationships=relationships, truncated_relationships=truncated, structured_wait=wait
+        )
+    node["item"]["discussion"] = github_direction_next.discussion_snapshot(issue, comments, complete=complete)
+    return node
 
 
 def issue_repository_name(issue: dict[str, Any]) -> str | None:
