@@ -50,11 +50,13 @@ A missing or non-executable `node` is UNKNOWN with its setup step.
 
 A selection routes to WebStorm when the repository's `ide` (or each owning
 lane's `ide`) is WebStorm and every file is `.ts`, `.tsx`, `.mts`, `.cts`,
-`.js`, `.jsx`, `.mjs`, `.cjs` or `.json`. Other files, including `.css`,
-`.scss` and `.svelte`, stay UNKNOWN. In the snapshot the runner runs
-`npm ci --ignore-scripts --no-audit --no-fund` with `npm_config_cache` in
-`cacheRoot/npm-cache`, through the same journalled, unlicensed preparation path
-as Python. It needs a root `package.json` and `package-lock.json` and never runs
+`.js`, `.jsx`, `.mjs`, `.cjs` or `.json`, with at least one script file so the
+TypeScript canary applies. JSON-only selections and other files, including
+`.css`, `.scss` and `.svelte`, stay UNKNOWN. In the snapshot the runner runs
+`npm ci --ignore-scripts --no-audit --no-fund` with `--cache
+cacheRoot/npm-cache` and no user or global npm config, honouring only the
+repository's own `.npmrc`, through the same journalled, unlicensed preparation
+path as Python. It needs a root `package.json` and `package-lock.json` and never runs
 `npm install`; `pnpm-lock.yaml` is refused for now. The snapshot excludes
 ignored files, so `node_modules` comes only from that step.
 

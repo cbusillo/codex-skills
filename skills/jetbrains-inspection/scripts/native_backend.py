@@ -105,7 +105,8 @@ def select_backend(args, host, host_default=None):
 
 
 def native_product_key(host, config, selected):
-    if (selected and all(Path(f).suffix in proof.WEBSTORM_PROVEN_SUFFIXES for f in selected)
+    if (any(Path(f).suffix in proof.SCRIPT_SUFFIXES for f in selected)
+            and all(Path(f).suffix in proof.WEBSTORM_PROVEN_SUFFIXES for f in selected)
             and common.configured_product_key(host, config, selected) == WEBSTORM_PRODUCT_KEY):
         return WEBSTORM_PRODUCT_KEY
     return PYTHON_PRODUCT_KEY
@@ -277,10 +278,11 @@ def node_executable(host):
 
 
 def npm_preparation(node, project, private, caches):
-    argv = [str(node.parent / "npm"), "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefix", str(project)]
+    argv = [str(node.parent / "npm"), "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--no-update-notifier",
+            "--userconfig", os.devnull, "--globalconfig", os.devnull, "--cache", caches["npm_config_cache"],
+            "--prefix", str(project)]
     env = {"PATH": str(node.parent) + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
-           "HOME": str(private / "prepare-home"), "TMPDIR": str(private / "tmp"),
-           "npm_config_update_notifier": "false", **caches}
+           "HOME": str(private / "prepare-home"), "TMPDIR": str(private / "tmp")}
     return argv, env
 
 
@@ -1157,6 +1159,7 @@ def attribute_to_change(receipt: dict[str, Any], findings: list[dict[str, Any]],
 
 
 ADVISORY_TOOL_PREFIX = "Grazie"
+SETTLEABLE_GAP_KINDS = frozenset({"execution_unproven", "inspection_applicability_unproven"})
 
 
 def covered_by_gates(repository_config: dict[str, Any]) -> dict[str, str]:
@@ -1176,10 +1179,10 @@ def covered_by_gates(repository_config: dict[str, Any]) -> dict[str, str]:
 def settle_declared_gaps(coverage: dict[str, Any], gaps: list[str], covered_by: dict[str, str]) -> list[str]:
     remaining, covered, advisory = [], {}, []
     for gap in gaps:
-        tool = gap.partition(":")[2]
-        if tool in covered_by:
+        kind, _, tool = gap.partition(":")
+        if kind in SETTLEABLE_GAP_KINDS and tool in covered_by:
             covered[tool] = covered_by[tool]
-        elif tool.startswith(ADVISORY_TOOL_PREFIX):
+        elif kind in SETTLEABLE_GAP_KINDS and tool.startswith(ADVISORY_TOOL_PREFIX):
             advisory.append(gap)
         else:
             remaining.append(gap)
@@ -1376,8 +1379,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             if settings.get("prepare"):
                 raise Blocked("native_preparation_shape_unsupported")
             common.npm_lockfile(repo)
-            if any(Path(f).suffix in proof.SCRIPT_SUFFIXES for f in selected):
-                expected |= set(proof.WEBSTORM_CANARY_FILES)
+            expected |= set(proof.WEBSTORM_CANARY_FILES)
         receipt["profile_sha256"] = common.digest(profile)
         planned_private = state / ("private-" + receipt["run_id"])
         source_interpreter = repo / ".venv/bin/python"

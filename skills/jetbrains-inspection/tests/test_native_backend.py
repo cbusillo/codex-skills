@@ -448,6 +448,8 @@ class NativeTests(unittest.TestCase):
         self.assertEqual((clean["agent_result"]["verdict"], clean["covered_by"], clean["advisory_coverage_gaps"]),
                          ("GREEN", {"Eslint": "lint.eslint"}, ["execution_unproven:GrazieInspection"]))
         self.assertEqual(native.envelope(host, receipt, [], "native_coverage_unproven", remaining)["agent_result"]["verdict"], "UNKNOWN")
+        hard = ["canary_unproven:Eslint", "inspection_unavailable:Eslint", "inspection_execution_failed:GrazieInspection:src/app.ts"]
+        self.assertEqual(native.settle_declared_gaps({"unproven": []}, hard, {"Eslint": "lint.eslint"}), hard)
 
     def test_spelling_and_grammar_are_reported_beside_the_verdict_without_counting(self) -> None:
         receipt = native.new_receipt(host) | {"scope": "files", "selected_file_count": 1}
@@ -1633,6 +1635,10 @@ print('Done.')
                 self.declare(inspection)
                 self.assertEqual(self.select("src/app.ts"), ("api", "native_ineligible=native_worker_not_configured"))
 
+    def test_json_only_webstorm_selection_has_no_canary_and_stays_unknown(self):
+        (self.repo / "tsconfig.json").write_text("{}\n")
+        self.assertEqual(self.select("tsconfig.json", "package.json")[0], "api")
+
     def test_python_selection_in_a_webstorm_repository_keeps_the_pycharm_route(self):
         (self.repo / "tool.py").write_text("print(1)\n")
         with patch_attr(native, "eligible", return_value=True) as eligible, patch_attr(native, "is_odoo", return_value=False):
@@ -1667,7 +1673,8 @@ print('Done.')
         self.assertTrue(prefix.parent.name.startswith("private-"))
         self.assertTrue(prefix.is_relative_to(self.cache))
         self.assertFalse(prefix.exists())
-        self.assertEqual(Path(npm["env"]["npm_config_cache"]), self.cache / "npm-cache")
+        self.assertEqual(Path(npm["argv"][npm["argv"].index("--cache") + 1]), self.cache / "npm-cache")
+        self.assertEqual([npm["argv"][npm["argv"].index(flag) + 1] for flag in ("--userconfig", "--globalconfig")], [os.devnull] * 2)
         self.assertTrue((self.cache / "npm-cache").is_dir())
         self.assertEqual(npm["env"]["PATH"].split(os.pathsep)[0], str(self.node.parent))
         engine = json.loads(self.engine_record.read_text())
@@ -1729,7 +1736,8 @@ print('Done.')
         self.assertEqual(set(result["coverage"]["missing_execution"]), {"JSUnusedLocalSymbols", "TypeScriptUnresolvedReference"})
 
     def test_lint_covered_eslint_and_unproven_grammar_leave_a_green_run(self):
-        self.script.write_text(self.script.read_text().replace("report_user=True", "report_user=False"))
+        self.script.write_text(self.script.read_text().replace("report_user=True", "report_user=False").replace(
+            "for tool,language in tools.items())", "for tool,language in {**tools,'Eslint':'JavaScript','GrazieInspection':''}.items())"))
         profile = self.repo / ".idea/inspectionProfiles/Test.xml"
         profile.write_text(profile.read_text().replace(
             "</profile>", '<inspection_tool class="Eslint" enabled="true"/><inspection_tool class="GrazieInspection" enabled="true"/></profile>'))
