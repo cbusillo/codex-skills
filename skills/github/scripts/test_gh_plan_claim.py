@@ -113,7 +113,8 @@ class ClaimTests(unittest.TestCase):
         self.parent = None
         self.children = {}
         self.milestone_edges = {}
-        self.milestone_blocking = []
+        self.milestone_blocking = {}
+        self.projections = []
         self.after_milestone_link = lambda: None
         self.timelines = {}
         self.history_nodes = {}
@@ -141,12 +142,13 @@ class ClaimTests(unittest.TestCase):
         return "bot", issue
 
     def read_api(self, _method, path, payload=None, **options):
-        if _method == "POST" and path in self.milestone_edges:
+        if _method == "POST" and path.endswith("/dependencies/blocked_by"):
             self.events.append("milestone_link")
             self.assertEqual(payload, {"issue_id": self.issue["id"]})
-            self.milestone_edges[path].append({**self.issue,
+            self.milestone_edges.setdefault(path, []).append({**self.issue,
                 "html_url": f"https://github.com/{self.issue['repo']}/issues/{self.issue['number']}"})
-            self.milestone_blocking.append({**self.targets["9"], "html_url": "https://github.com/owner/direction/issues/9"})
+            source_url = "https://github.com/" + path.removeprefix("/repos/").removesuffix("/dependencies/blocked_by")
+            self.milestone_blocking.setdefault("/repos/owner/repo/issues/42/dependencies/blocking", []).append({"html_url": source_url})
             self.after_milestone_link()
             return "bot", {}
         if path == "/graphql":
@@ -184,7 +186,7 @@ class ClaimTests(unittest.TestCase):
         if path in self.milestone_edges:
             items = self.milestone_edges[path]
         if path.endswith("/dependencies/blocking"):
-            items = self.milestone_blocking
+            items = self.milestone_blocking.get(path, [])
         if path.endswith("comments") and self.wait is not None:
             items = [{"id": -1, "user": {"login": TEST_BOT}, "body": wait_record.marker(self.wait)}, *items]
         if path == "/repos/other/plans/pulls": items = []
@@ -214,8 +216,10 @@ class ClaimTests(unittest.TestCase):
     def run_claim(self, *, route=None, command=None):
         # Wait-review ownership fixtures isolate record publication/readback;
         # persisted label projection has stateful mutation tests of its own.
-        projection = ({"refresh_planning_targets": lambda *_a, **_k: {
-            "ok": True, "coverage": "complete", "issues": []}} if command is PLAN.cmd_wait else {})
+        def project(targets: list[tuple[str, int]]) -> dict[str, Any]:
+            self.projections.extend(targets)
+            return {"ok": True, "coverage": "complete", "issues": []}
+        projection = {"refresh_planning_targets": project}
         with patch.multiple(PLAN, default_repo=lambda repo: repo or "owner/repo", get_issue=self.get_issue,
                             EXPECTED_ACTOR=TEST_BOT,
                             collect_paged_rest_items=self.read_pages, rest_edit_issue=self.edit,
@@ -5407,6 +5411,7 @@ class ClaimTests(unittest.TestCase):
         self.assertLess(self.events.index("milestone_link"), self.events.index("post"))
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
         self.assertIn(link, self.comments[-1]["body"])
+        self.assertEqual(self.projections, [("owner/direction", 9)])
         self.run_claim()
         self.assertEqual(self.events.count("milestone_link"), 1)
 
@@ -5426,7 +5431,7 @@ class ClaimTests(unittest.TestCase):
         self.assertNotIn("milestone_link", self.events)
 
     def test_milestone_claim_refuses_unlinked_or_invalid_track_without_publication(self) -> None:
-        for invalid in ("missing", "closed_issue", "closed_milestone", "unlisted", "not_track", "foreign"):
+        for invalid in ("missing", "closed_issue", "closed_milestone", "unlisted", "not_track", "pr"):
             with self.subTest(invalid=invalid):
                 self.setUp()
                 link = self.milestone_fixture()
@@ -5435,7 +5440,7 @@ class ClaimTests(unittest.TestCase):
                 if invalid == "closed_milestone": track["milestone"]["state"] = "closed"
                 if invalid == "unlisted": track["milestone"]["title"] = "An unapproved milestone"
                 if invalid == "not_track": track["title"] = "A decision"
-                if invalid == "foreign": link = link.replace("owner/direction", "other/direction")
+                if invalid == "pr": self.pr_fixture()
                 self.args.admission, self.args.admission_link = "milestone", [] if invalid == "missing" else [link]
                 self.args.admission_unlinked = "An explanation cannot replace the link"
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
@@ -5457,7 +5462,8 @@ class ClaimTests(unittest.TestCase):
                 else: self.after_status = remove_link
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
-                if phase == "link_readback": self.assert_no_writes()
+                self.assertEqual(caught.exception.code, "claim_admission_unlinked")
+                if phase == "link_readback": self.assertNotIn("post", self.events)
                 else: self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 
     def test_milestone_claim_recovers_recorded_admission_when_flags_are_omitted(self) -> None:
@@ -5467,9 +5473,58 @@ class ClaimTests(unittest.TestCase):
             with self.assertRaises(PLAN.PlanError):
                 self.run_claim()
         self.args.admission, self.args.admission_link = None, []
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.assertEqual(self.events.count("milestone_link"), 1)
         self.after_status = self.milestone_blocking.clear
-        with self.assertRaises(PLAN.ClassifiedPlanError):
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_admission_unlinked")
+
+    def test_legacy_milestone_claim_accepts_a_missing_track_citation_during_recovery(self) -> None:
+        link = self.milestone_fixture()
+        self.args.admission, self.args.admission_link = "milestone", [link]
+        with patch.object(self, "edit", side_effect=PLAN.PlanError("Status write failed")):
+            with self.assertRaises(PLAN.PlanError): self.run_claim()
+        self.comments[-1]["body"] = self.comments[-1]["body"].replace(link, "legacy context without a Track")
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
+    def test_milestone_claim_can_cite_the_directors_track_across_accounts(self) -> None:
+        link = self.milestone_fixture().replace("owner/direction", "director/direction")
+        self.targets["9"]["repo"] = "director/direction"
+        self.args.admission, self.args.admission_link = "milestone", [link]
+        self.run_claim()
+        self.assertEqual(self.projections, [("director/direction", 9)])
+
+    def test_milestone_claim_uses_a_cited_origin_already_in_the_graph(self) -> None:
+        link = self.milestone_fixture()
+        self.targets["50"] = {"id": 5000, "number": 50, "repo": "owner/repo", "state": "open"}
+        self.milestone_blocking["/repos/owner/repo/issues/50/dependencies/blocking"] = [
+            {"html_url": "https://github.com/owner/direction/issues/9"}]
+        self.args.admission, self.args.admission_link = "milestone", [link, "https://github.com/owner/repo/issues/50"]
+        self.run_claim()
+        self.assertEqual(self.projections, [("owner/repo", 50)])
+
+    def test_milestone_claim_preserves_a_native_parent_path(self) -> None:
+        link = self.milestone_fixture()
+        self.parent = {"html_url": "https://github.com/owner/direction/issues/9"}
+        self.args.admission, self.args.admission_link = "milestone", [link]
+        self.run_claim()
+        self.assertNotIn("milestone_link", self.events)
+
+    def test_milestone_link_failure_preserves_the_error_and_names_the_origin_route(self) -> None:
+        link = self.milestone_fixture()
+        self.args.admission, self.args.admission_link = "milestone", [link]
+        original = self.read_api
+        def read_api(method: str, path: str, *args: Any, **kwargs: Any) -> tuple[str, Any]:
+            if method == "POST": raise PLAN.PlanError("Dependency limit", api_result={"status": 422})
+            return original(method, path, *args, **kwargs)
+        with patch.object(self, "read_api", side_effect=read_api), self.assertRaises(PLAN.PlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.api_result["status"], 422)
+        self.assertIn("milestone_link_recovery", caught.exception.payload)
+        self.assert_no_writes()
 
     def test_milestone_direction_read_failure_preserves_its_original_error(self) -> None:
         link = self.milestone_fixture()

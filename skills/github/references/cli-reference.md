@@ -1156,10 +1156,14 @@ the work record without copying that history into the claim comment.
 When the overall direction's Order admits the work, name the rule with
 `--admission live-breakage|milestone|own-project|repeat-stop|spare-capacity`; the claim
 comment records it as an `Admission:` line. For milestone work, cite its open
-Track in the owner's direction with `--admission-link`. The helper follows
+Track in the Director's direction with `--admission-link`, including across
+repository owners. The helper follows
 native parents and blocking issues using the graph reader's shared traversal.
 When no path reaches that Track, it adds and reads back a native
-`Track blocked-by issue` edge before publishing the claim. It verifies the path
+`Track blocked-by issue` edge before publishing the claim. When another cited
+open issue already reaches the Track, it links under that originating issue
+instead; this also supports Tracks at their direct dependency limit.
+It verifies the path
 again before success, including recovery of an existing claim.
 The Track's milestone must be open and listed in the merged overall direction.
 Missing Track evidence or an unreadable/unconfirmed link refuses the claim.
@@ -1167,6 +1171,8 @@ Claim a canonical issue for milestone work rather than its PR.
 `--admission-unlinked REASON` records context but cannot bypass the link.
 Existing paths are preserved. Capacity classification uses that same shared
 native traversal; claim admissions do not replace graph evidence.
+An older partial claim lacking a Track citation can supply it on recovery;
+an existing authored admission keeps its kind and first valid Track.
 Ownership, actor authentication, waits and native blockers keep their independent
 checks. A plain `Admission:` line explains why the work was selected and grants
 no authority.
