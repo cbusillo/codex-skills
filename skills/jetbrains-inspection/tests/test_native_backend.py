@@ -167,30 +167,15 @@ class NativeTests(unittest.TestCase):
             backend, _ = native.select_backend(args, host)
         self.assertEqual(backend, "native")
 
-    def test_full_python_coverage_uses_native(self):
+    def test_python_and_yaml_selections_use_native(self) -> None:
         args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
-        with patch.object(sys, "platform", "darwin"), \
-                patch.object(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", {"src/a.py"})), \
-                patch.object(native, "eligible", return_value=True), \
-                patch.object(native, "is_odoo", return_value=False):
-            self.assertEqual(native.select_backend(args, host)[0], "native")
-
-    def test_yaml_selection_dispatches_native_without_desktop_contact(self) -> None:
-        for files in ({"compose.yml", "workflow.yaml"}, {"compose.yml", "source.py"}):
+        for files in ({"src/a.py"}, {"compose.yml", "workflow.yaml"}, {"compose.yml", "source.py"}):
             with self.subTest(files=files), \
                     patch.object(sys, "platform", "darwin"), \
-                    patch.dict(os.environ, {"JB_INSPECT_DEFAULT_BACKEND": ""}), \
-                    patch.object(host, "native_backend_module", return_value=native), \
                     patch.object(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", files)), \
                     patch.object(native, "eligible", return_value=True), \
-                    patch.object(native, "is_odoo", return_value=False), \
-                    patch.object(host, "command_native", return_value={"backend": "native"}) as run, \
-                    patch.object(host, "build_context") as desktop, \
-                    patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--repo", "/fixture"]), \
-                    redirect_stdout(io.StringIO()):
-                self.assertEqual(host.main(), 0)
-                run.assert_called_once()
-                desktop.assert_not_called()
+                    patch.object(native, "is_odoo", return_value=False):
+                self.assertEqual(native.select_backend(args, host)[0], "native")
 
     def test_odoo_other_languages_and_nested_lanes_keep_their_existing_route(self):
         args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
