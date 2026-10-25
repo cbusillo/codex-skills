@@ -2368,10 +2368,10 @@ SHELL_MANAGED_NAMES = frozenset(
     }
 )
 PLAIN_EXPANSION = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})")
-LITERAL_SHELL_VALUE = re.compile(r"[A-Za-z0-9_./@:+,%-][A-Za-z0-9_./@:+,%#-]*")
+LITERAL_SHELL_VALUE = claim_javascript.LITERAL_SHELL_VALUE
 LITERAL_EXPANSION_PASSES = 64
-LITERAL_EXPANSION_BYTES = 1 << 20
-LITERAL_LOOP_VALUES = 64
+LITERAL_EXPANSION_BYTES = claim_javascript.LITERAL_EXPANSION_BYTES
+LITERAL_LOOP_VALUES = claim_javascript.LITERAL_LOOP_VALUES
 
 
 def parse_shell(source: bytes) -> Node:
@@ -2870,13 +2870,11 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
             }
             for identifier in orphan_artifacts(records, session, directory)
         )
-    claim_may_be_stored = False
     claim_may_be_interactive = False
     for identifier, (text, javascript, name, _) in inputs.items():
         if identifier in denied:
             continue
         unexecuted = javascript and native_javascript_parse_failure(text, outputs.get(identifier, []))
-        names = javascript_names(text) if javascript else set()
         executable_text = without_patch_text(text) if javascript else text
         claim_related_here = "gh-plan" in executable_text or CLAIM_WORD.search(executable_text) is not None
         invocations = []
@@ -2919,11 +2917,6 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
                 )
             interactive_uncertain = opaque and sources.interactive_opaque and claim_may_be_interactive
             unclassified = opaque
-            opaque = opaque and (
-                claim_related_here
-                or claim_may_be_stored
-                or (sources.interactive_opaque and claim_may_be_interactive)
-            )
             for source, ended in zip(sources.commands, source_ended, strict=True):
                 receipt_pure = receipt_pure and not source.interactive
                 discovery = shell_claims(source.text, claim_related=source.interactive and claim_may_be_interactive)
@@ -2961,7 +2954,6 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         targets.update(found)
         if javascript:
             opaque = opaque or (unclassified and bool(found))
-            claim_may_be_stored = claim_may_be_stored or ("store" in names and (claim_related_here or bool(found)))
         if opaque:
             reason = (
                 "interactive_uncertain"

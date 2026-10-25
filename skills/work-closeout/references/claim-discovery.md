@@ -82,8 +82,8 @@ named functions, executable options, computed callees, division syntax,
 identifier escapes and unsupported syntax keep coverage conditional. A parse
 error alone never proves nonexecution. The reader assumes native results,
 `load` values and tool metadata obey the harness's serializable-data contract;
-after claim-related code may have stored data, every later opaque cell stays
-conditional because hidden or computed access cannot prove it ignored that data.
+every opaque cell stays conditional because hidden or computed access cannot
+prove that it did not execute a claim, even without literal claim text.
 Keep subsequent diagnostics bounded or use direct literal shell/output calls;
 keeping `store` separate from claim-related code also avoids that uncertainty.
 Complete output alone does not resolve older opaque evidence; use the existing
@@ -219,3 +219,14 @@ not identify programs. Unknown commands need explicit long evaluator flags or
 short evaluator flags with program-shaped payloads; arbitrary attached runtime
 names cannot be distinguished from data option values. Shell evaluator payloads
 skip recognized option operands and terminators; ambiguous options stay conditional.
+
+Report formatting can also use checked local arrow functions, reassignment of
+local data variables, and literal regexes in data operations. This additional
+proof requires every shell command and interactive input to decode completely;
+it does not execute the JavaScript or resolve stored values. Concatenation of
+known literal strings is decoded under the same expansion limits. Tool aliases,
+unknown callbacks, property mutation and computed shell text remain conditional.
+In particular, placing a loaded report inside a shell heredoc does not prove
+that the report cannot terminate the heredoc and execute a claim. Use the native
+patch tool for report text instead. Opaque code stays conditional even when it contains no literal claim text;
+absence of that text cannot prove that an unknown helper did not claim.

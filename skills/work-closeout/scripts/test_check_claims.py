@@ -1787,6 +1787,55 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertFalse(report["coverage"]["complete"])
         self.assertIn("orphan", {item["call_id"] for item in report["unresolved_invocations"]})
 
+    def test_report_only_code_cells_clear_after_claim_related_stored_prose(self) -> None:
+        sources = [
+            'store("draft", "The claim checker read gh-plan.py documentation.");',
+            'let r=load("draft"); r=r.replace(/claim/g,"ownership"); store("draft",r);',
+            'let r=load("draft"); for(const [a,b] of [["old","new"]]) { r=r.split(a).join(b); } text(r);',
+            'const fmt=xs=>xs.map(x=>"`"+x+"`").join(", "); text(fmt(load("rows")));',
+            'const r=load("draft"); text(r.replace(/old/g,"new"));',
+            'const r=load("draft"); text({words:r.split(/\\s+/).length}); '
+            'text(await tools.exec_command({cmd:"mkdir -p /fixture/evidence"}));',
+            'const r=load("draft"); text(await tools.apply_patch("*** Begin Patch\\n"+r+"\\n*** End Patch"));',
+            'let r=load("draft"); r=r.trim(); text(await tools.write_stdin({session_id:42,chars:""})); text(r);',
+
+            'const prompt="Read gh-plan.py claim examples."; '
+            'text(await tools.exec_command({cmd:"cat <<EOF\\n"+prompt+"\\nEOF"}));',
+        ]
+        root = self.entry(cli_version=SUPPORTED_CLI_VERSION)
+        with Path(root["transcript"]).open("a") as stream:
+            for index, source in enumerate(sources):
+                stream.write(json.dumps({"payload": {
+                    "type": "custom_tool_call", "name": "exec", "call_id": str(index), "input": source,
+                }}) + "\n")
+        with patch.object(helper, "repository_reader") as reader:
+            report = helper.check([root])
+        self.assertTrue(report["claims_clear"], report["unresolved_invocations"])
+        self.assertTrue(report["coverage"]["complete"])
+        reader.assert_not_called()
+
+    def test_report_formatting_cannot_hide_executable_claim_capabilities(self) -> None:
+        sources = [
+            'text(await tools.unknown_helper({}));',
+            'const f=x=>tools.exec_command({cmd:x}); text(f(load("command")));',
+            'let r=load("draft"); r=eval(r); text(r);',
+            'const f=load("callback"); text(f("claim"));',
+            'text(load("draft").replace(/old/g,tools.exec_command));',
+            'const f=tools.exec_command; text(f({cmd:load("command")}));',
+            'text(await tools.exec_command({cmd:"cat <<EOF\\n"+load("draft")+"\\nEOF"}));',
+            'const command="uv run gh-plan.py --repo test/a "+"claim 1"; '
+            'text(await tools.exec_command({cmd:command}));',
+        ]
+        prefix = {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "stored",
+                              "input": 'store("draft","gh-plan.py claim");'}}
+        for source in sources:
+            for preceding in ([], [prefix]):
+                rows = [native_runtime(), *preceding, {"payload": {
+                    "type": "custom_tool_call", "name": "exec", "call_id": "candidate", "input": source,
+                }}]
+                with self.subTest(source=source, preceding=preceding):
+                    self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
     def test_javascript_patch_text_is_not_a_shell_claim(self) -> None:
         root = self.entry()
         source = "text(await tools.apply_patch(`*** Begin Patch\n uv run gh-plan.py claim 5\n director's note\n*** End Patch`));"
@@ -1836,7 +1885,9 @@ class ClaimCloseoutTests(unittest.TestCase):
         ]
         rows.insert(0, native_runtime())
         rows.insert(2, native_terminal_result("0", javascript=True))
-        self.assertEqual(helper.history.literal_targets(rows, SESSION), {"targets": {("first/a", 5)}, "unresolved_invocations": []})
+        report = helper.history.literal_targets(rows, SESSION)
+        self.assertEqual(report["targets"], {("first/a", 5)})
+        self.assertEqual([item["call_id"] for item in report["unresolved_invocations"]], ["2"])
 
     def test_computed_cell_receipts_keep_unobserved_claim_executions_conditional(self) -> None:
         rows = [

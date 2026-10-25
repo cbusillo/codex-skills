@@ -9,7 +9,11 @@ import re
 
 from tree_sitter import Language, Node, Parser
 
-NATIVE_NAMES = {"tools", "text", "store", "load", "exit", "Promise", "JSON", "Object", "ALL_TOOLS", "undefined"}
+LITERAL_SHELL_VALUE = re.compile(r"[A-Za-z0-9_./@:+,%-][A-Za-z0-9_./@:+,%#-]*")
+LITERAL_EXPANSION_BYTES = 1 << 20
+LITERAL_LOOP_VALUES = 64
+
+NATIVE_NAMES = {"tools", "text", "store", "load", "exit", "Promise", "JSON", "Object", "String", "ALL_TOOLS", "undefined"}
 SHELL_TOOLS = {"exec_command", "shell_command", "shell", "write_stdin"}
 PROTOTYPE_NAMES = {
     "constructor",
@@ -92,7 +96,8 @@ def property_name(node: Node) -> str:
 
 
 class JavascriptData:
-    def __init__(self) -> None:
+    def __init__(self, *, data_only: bool = False) -> None:
+        self.data_only = data_only
         self.environment: dict[str, tuple[str, bool]] = {"ALL_TOOLS": ("data", False), "undefined": ("data", False)}
 
     def bind(self, node: Node | None, environment: dict, *, kind: str = "data", mutable: bool = False) -> None:
@@ -113,6 +118,36 @@ class JavascriptData:
         if node is None:
             raise ValueError("missing expression")
         kind = node.type
+        if self.data_only and kind == "regex":
+            call = node.parent.parent if node.parent.type == "arguments" else None
+            callee = call.child_by_field_name("function") if call is not None else None
+            if (
+                callee is None
+                or callee.type != "member_expression"
+                or property_name(callee.child_by_field_name("property")) not in {"split", "replace", "replaceAll"}
+            ):
+                raise ValueError("regex value")
+            return "data"
+        if self.data_only and kind == "arrow_function":
+            local = environment.copy()
+            parameters = node.child_by_field_name("parameter") or node.child_by_field_name("parameters")
+            if parameters is not None:
+                self.bind(parameters, local)
+            body = node.child_by_field_name("body")
+            if body.type == "statement_block":
+                self.statement(body, local)
+            else:
+                self.expression(body, local)
+            return "function"
+        if self.data_only and kind == "assignment_expression":
+            left = node.child_by_field_name("left")
+            if left.type != "identifier" or not environment.get(source(left), (None, False))[1]:
+                raise ValueError("assignment")
+            result = self.expression(node.child_by_field_name("right"), environment)
+            if result == "function":
+                raise ValueError("assignment")
+            environment[source(left)] = (result, True)
+            return result
         if kind in {"identifier", "shorthand_property_identifier"}:
             return environment[source(node)][0]
         if kind == "number":
@@ -188,14 +223,26 @@ class JavascriptData:
         result_kind = "data"
         if any(argument.type == "spread_element" for argument in args):
             raise ValueError("spread arguments")
-        if callee.type == "identifier" and source(callee) in {"text", "store", "load", "exit"}:
+        if callee.type == "identifier" and (
+            source(callee) in {"text", "store", "load", "exit"}
+            or self.data_only
+            and environment.get(source(callee), (None,))[0] == "function"
+            or self.data_only
+            and source(callee) == "String"
+            and len(args) <= 1
+        ):
             pass
         elif callee.type == "member_expression":
             receiver = callee.child_by_field_name("object")
             method = property_name(callee.child_by_field_name("property"))
             native = source(receiver) if receiver.type == "identifier" else ""
             if native == "tools" and method in SHELL_TOOLS | {"apply_patch", "clock__curr_time", "web__run"}:
-                pass
+                if (
+                    self.data_only
+                    and method in SHELL_TOOLS
+                    and literal_commands(arguments, LITERAL_SHELL_VALUE, LITERAL_LOOP_VALUES, LITERAL_EXPANSION_BYTES) is None
+                ):
+                    raise ValueError("computed shell")
             elif native == "Promise" and method in {"all", "allSettled"} and len(args) == 1:
                 result_kind = "array"
             elif native == "JSON" and method in {"parse", "stringify"} and len(args) == 1:
@@ -237,7 +284,10 @@ class JavascriptData:
                 if receiver_kind == "array" and method in {"slice", "concat"}:
                     result_kind = "array"
                 literal_replacement = (
-                    method in {"replace", "replaceAll"} and len(args) == 2 and all(argument.type == "string" for argument in args)
+                    method in {"replace", "replaceAll"}
+                    and len(args) == 2
+                    and args[1].type == "string"
+                    and (args[0].type == "string" or self.data_only and args[0].type == "regex")
                 )
                 if method not in DATA_METHODS and not literal_replacement:
                     raise ValueError(method)
@@ -321,6 +371,8 @@ class LiteralCommands:
         if node.type == "binary_expression" and source(node.child_by_field_name("operator")) == "+":
             left = self.value(node.child_by_field_name("left"), environment)
             right = self.value(node.child_by_field_name("right"), environment)
+            if type(left) is str and type(right) is str and len((left + right).encode()) <= self.byte_limit:
+                return left + right
             if type(left) is not int or type(right) is not int or abs(left + right) > (1 << 53) - 1:
                 raise ValueError("number")
             return left + right
@@ -329,6 +381,14 @@ class LiteralCommands:
             if len(elements) > self.count_limit:
                 raise ValueError("array limit")
             return [self.value(child, environment) for child in elements]
+        if node.type == "subscript_expression":
+            receiver = self.value(node.child_by_field_name("object"), environment)
+            index = self.value(node.child_by_field_name("index"), environment)
+            if type(receiver) is list and type(index) is int and 0 <= index < len(receiver):
+                return receiver[index]
+            if type(receiver) is dict and type(index) is str and index in receiver:
+                return receiver[index]
+            raise ValueError("subscript")
         if node.type == "object":
             result = {}
             for member in children(node):
@@ -623,11 +683,17 @@ def analyse(text: str) -> tuple[bool, list[tuple[Node, bool]]]:
     visible = bytearray(data)
     for start, end in inert:
         visible[start:end] = bytes(value if value in {10, 13} else 32 for value in data[start:end])
-    if b"\\" in visible or b"<!--" in visible or b"#!" in visible or b"-->" in visible:
+    if b"<!--" in visible or b"#!" in visible or b"-->" in visible:
         return False, sites
     try:
+        if b"\\" in visible:
+            raise ValueError("escaped syntax")
         checker = JavascriptData()
         checker.statement(root, checker.environment)
     except (KeyError, ValueError, SyntaxError, RecursionError):
-        return False, sites
+        try:
+            checker = JavascriptData(data_only=True)
+            checker.statement(root, checker.environment)
+        except (KeyError, ValueError, SyntaxError, RecursionError):
+            return False, sites
     return True, sites

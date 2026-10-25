@@ -360,13 +360,13 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                 rows = [{"type": "session_meta", "payload": {"cli_version": version}} for version in versions]
                 rows.extend(invocation('text(await tools.exec_command({cmd:"uv run gh-plan.py show 5"}));', {"session_id": 123}))
                 rows.extend(
-                    {"payload": {**row["payload"], "call_id": "later"}} for row in invocation('text(String(load("result")));')
+                    {"payload": {**row["payload"], "call_id": "later"}} for row in invocation('const t=tools;await t[load("method")]({session_id:123,chars:load("input")});')
                 )
                 self.assertTrue(check_claims.history.literal_targets(rows, SESSION)["unresolved_invocations"])
 
     def test_ambiguous_input_capabilities_keep_the_pending_context(self) -> None:
         command = '"uv run gh-plan.py --repo test/a show 5"'
-        followup = 'text(String(load("result")).replace(/x/g,"y"));'
+        followup = 'const t=tools;await t[load("method")]({session_id:123,chars:load("input")});'
         sources = [
             f"text(await tools.exec_command({{cmd:{command},{options}}}));"
             for options in (
@@ -657,7 +657,7 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             "*",
         ):
             expressions.append(f"text(ALL_TOOLS.filter(x=>/{pattern}/.test(x.name)));")
-        for method in ("split", "replace", "match"):
+        for method in ("replace", "match"):
             expressions.append(f"text(ALL_TOOLS.map(x=>x.name.{method}(/x/)));")
         expressions.append(
             "text(ALL_TOOLS.filter(x=>/'/.test(x.name)));const v=load(\"claim\");text(v);/'/;"
