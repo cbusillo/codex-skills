@@ -288,7 +288,8 @@ and closure readers retain their strict ledger validation.
 
 ### Goal board
 
-`goal_board.py` lists the open issues on OWNER/direction (100 per page) and
+`goal_board.py` consumes the shared `github_work_graph.py` read. The shared
+reader lists the open issues on OWNER/direction (100 per page) and
 keeps those titled `Track:`, whatever their milestone. It then reads up to
 ten Tracks per aliased GraphQL query: each Track's body, labels and last 100
 comments, its first 50 native children with their state, body, labels,

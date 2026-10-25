@@ -20,68 +20,18 @@ from typing import Any
 CATALOG = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(CATALOG))
 sys.path.insert(0, str(CATALOG / "skills/github/scripts"))
-from skills.github.scripts import github_direction_next, github_next_queue, github_plan_status, github_plan_wait, github_read
+from skills.github.scripts import github_direction_next, github_next_queue, github_plan_status, github_plan_wait, github_work_graph
+import github_read
 from skills.github.scripts.github_identity import automation_login
 from skills.github.scripts.ready_handoff import HEAD, READY, WAITING, handoff_line, timestamp
 
 UNKNOWN = "unknown, not refreshed"
 DECISION = re.compile(r"(?i)^\W*director decision\b")
-CHILD_LIMIT = 50
-TRACK_COMMENTS = 100
-CHILD_COMMENTS = 100
-LABEL_LIMIT = 50
-BLOCKER_LIMIT = 100
-PR_LIMIT = 5
-PR_COMMENTS = 30
-TRACKS_PER_QUERY = 10
+CHILD_LIMIT = github_work_graph.CHILD_LIMIT
+LABEL_LIMIT = github_work_graph.LABEL_LIMIT
+PR_LIMIT = github_work_graph.PR_LIMIT
 NEXT_ACTION_CHARS = 200
 OPEN_LABELS = tuple(github_plan_status.DEFAULT_STATUS_LABELS[key] for key in ("active", "blocked", "waiting", "stale"))
-
-LIST_QUERY = """query SupervisorGoalBoardList($owner: String!, $name: String!, $cursor: String) {
-  repository(owner: $owner, name: $name) {
-    issues(states: [OPEN], first: 100, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
-      totalCount
-      nodes { number title }
-      pageInfo { hasNextPage endCursor }
-    }
-  }
-}"""
-
-COMMENT = "url createdAt updatedAt databaseId body author { __typename login }"
-BLOCKERS = f"""blockedBy(first: {BLOCKER_LIMIT}) {{ totalCount nodes {{
-    number state url repository {{ nameWithOwner }} }} }}"""
-TRACK_FIELDS = f"""number title url state stateReason body createdAt lastEditedAt
-      author {{ __typename login }}
-      {BLOCKERS}
-      milestone {{ title }}
-      labels(first: {LABEL_LIMIT}) {{ totalCount nodes {{ name }} }}
-      comments(last: {TRACK_COMMENTS}) {{ totalCount nodes {{ {COMMENT} }} }}
-      subIssues(first: {CHILD_LIMIT}) {{
-        totalCount
-        nodes {{
-          number title url state stateReason body createdAt lastEditedAt
-          author {{ __typename login }}
-          {BLOCKERS}
-          repository {{ nameWithOwner }}
-          labels(first: {LABEL_LIMIT}) {{ totalCount nodes {{ name }} }}
-          subIssuesSummary {{ total completed }}
-          comments(last: {CHILD_COMMENTS}) {{ totalCount nodes {{ {COMMENT} }} }}
-          closedByPullRequestsReferences(first: {PR_LIMIT}, includeClosedPrs: false) {{
-            totalCount
-            nodes {{
-              number url state isDraft mergeable headRefOid
-              comments(last: {PR_COMMENTS}) {{ totalCount nodes {{ {COMMENT} }} }}
-            }}
-          }}
-        }}
-      }}"""
-
-
-def detail_query(numbers):
-    aliases = "\n".join(f"    t{number}: issue(number: {int(number)}) {{ {TRACK_FIELDS} }}" for number in numbers)
-    return ("query SupervisorGoalBoardTracks($owner: String!, $name: String!) {\n"
-            f"  repository(owner: $owner, name: $name) {{\n{aliases}\n  }}\n}}")
-
 
 def login(author):
     return github_plan_status.normalize_author({"author": author})["login"].casefold()
@@ -240,62 +190,20 @@ def track_row(node, trusted, wait_trusted=None):
         "unread": unread}
 
 
-def discover(reader, owner, name, max_pages):
-    """List every open issue once; return Track numbers and titles in creation order."""
-    found, cursor, expected, seen, cursors = [], None, None, set(), set()
-    for page in range(max_pages):
-        result = reader.graphql_json(LIST_QUERY, {"owner": owner, "name": name, "cursor": cursor},
-            step=f"goal_board_list_{page + 1}")
-        if not result.ok:
-            raise github_read.GitHubReadError("Track discovery read failed", result=result,
-                diagnostics=reader.diagnostics())
-        body = result.body
-        if not isinstance(body, dict) or body.get("errors"):
-            raise ValueError("Track discovery returned errors or invalid data")
-        issues = body["data"]["repository"]["issues"]
-        if expected is not None and issues["totalCount"] != expected:
-            raise ValueError("open issue inventory changed during pagination; rebuild again")
-        expected = issues["totalCount"]
-        for node in issues["nodes"]:
-            if node["number"] not in seen:
-                seen.add(node["number"])
-                if str(node["title"]).startswith("Track:"):
-                    found.append({"number": node["number"], "title": node["title"]})
-        if not issues["pageInfo"]["hasNextPage"]:
-            if len(seen) != expected:
-                raise ValueError("open issue inventory incomplete")
-            return found
-        cursor = issues["pageInfo"]["endCursor"]
-        if not isinstance(cursor, str) or not cursor or cursor in cursors:
-            raise ValueError("pagination cursor did not advance")
-        cursors.add(cursor)
-    raise ValueError("open issue pagination exceeded page bound")
-
-
 def goal_board(reader, owner, *, repo="direction", trusted, wait_trusted=None, max_pages=10):
     """Never carry an old status: an unread Track or part of one says unknown."""
     if wait_trusted is None:
         wait_trusted = github_plan_wait.authors(f"{owner}/{repo}")
-    tracks = discover(reader, owner, repo, max_pages)
-    rows, errors = [], []
-    for start in range(0, len(tracks), TRACKS_PER_QUERY):
-        chunk = tracks[start:start + TRACKS_PER_QUERY]
-        numbers = [track["number"] for track in chunk]
-        result = reader.graphql_json(detail_query(numbers), {"owner": owner, "name": repo},
-            step=f"goal_board_tracks_{start // TRACKS_PER_QUERY + 1}")
-        data = result.body.get("data") if result.ok and isinstance(result.body, dict) else None
-        repository = (data or {}).get("repository") or {}
-        if not result.ok or not isinstance(result.body, dict) or result.body.get("errors"):
-            errors.append(f"Track read failed for #{', #'.join(map(str, numbers))}")
-        for track in chunk:
-            node = repository.get(f"t{track['number']}")
-            try:
-                if not isinstance(node, dict) or node.get("state") != "OPEN":
-                    raise ValueError("missing or no longer open")
-                rows.append({**track_row(node, trusted, wait_trusted), "read": True})
-            except (KeyError, TypeError, ValueError, AttributeError):
-                rows.append({**track, "url": f"https://github.com/{owner}/{repo}/issues/{track['number']}",
-                    "read": False, "status": UNKNOWN})
+    graph = github_work_graph.read_tracks(reader, owner, repo, max_pages=max_pages)
+    tracks, errors = graph["tracks"], graph["errors"]
+    rows = []
+    for track in tracks:
+        try:
+            node = graph["nodes"][track["number"]]
+            rows.append({**track_row(node, trusted, wait_trusted), "read": True})
+        except (KeyError, TypeError, ValueError, AttributeError):
+            rows.append({**track, "url": f"https://github.com/{owner}/{repo}/issues/{track['number']}",
+                "read": False, "status": UNKNOWN})
     read = sum(1 for row in rows if row["read"])
     complete = (not errors and read == len(tracks)
         and not any(row["unread"] or any(child["unread"] for child in row["children"])
