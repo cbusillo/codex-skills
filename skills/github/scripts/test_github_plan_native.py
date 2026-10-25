@@ -232,20 +232,16 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
 
 class NativeQueueTests(unittest.TestCase):
     def test_manual_file_deadline_preserves_the_observer_default_and_still_expires(self) -> None:
-        from pathlib import Path
         from types import SimpleNamespace
         import uuid
         for kind in ("observer", "manual", "expired"):
             with self.subTest(kind=kind), ReceiptFixture(str(uuid.uuid4())) as f:
                 clock = [0.0]
-                original_open = Path.open
-                def read(path: Path, *args: object, **kwargs: object) -> io.IOBase:
-                    if path == f.transcript and args == ("rb",):
-                        clock[0] = 1_000_000.0
-                    return original_open(path, *args, **kwargs)
-                with patch.object(CLOSURE, "time", SimpleNamespace(monotonic=lambda: clock[0])), \
-                        patch.object(Path, "open", new=read):
-                    deadline = None if kind == "observer" else 1_000_000.0 + (1 if kind == "manual" else -1)
+                def now() -> float:
+                    clock[0] += 1_000_000.0
+                    return clock[0]
+                with patch.object(CLOSURE, "time", SimpleNamespace(monotonic=now)):
+                    deadline = None if kind == "observer" else (1e12 if kind == "manual" else 1.0)
                     if kind == "manual":
                         self.assertTrue(CLOSURE.transcript_facts(f.session, str(f.transcript), identity_only=True, deadline=deadline))
                     else:
@@ -259,11 +255,13 @@ class NativeQueueTests(unittest.TestCase):
         termination.native_helpers()
         import claim_history
         for variant in ("clear", "loaded", "queued", "no_boot", "changed", "new_action", "fork", "foreign_fork",
-                        "cross_home", "outside", "wrong_path"):
+                        "cross_home", "outside", "wrong_path", "missing_home"):
             with self.subTest(variant=variant), ReceiptFixture(str(uuid.uuid4())) as f:
                 other, _ledger, _selected, _retained, deleted = self.cancel_setup(f)
                 f.home_queues = {str(f.home): [], str(other): []}
                 owned = dict(f.entry)
+                if variant == "missing_home":
+                    owned.pop("codex_home")
                 if variant in {"cross_home", "outside", "wrong_path"}:
                     primary = other / "sessions" / f.transcript.name
                     owned["transcript"] = str(primary)
@@ -328,7 +326,7 @@ class NativeQueueTests(unittest.TestCase):
                         patch.object(termination, "_recheck_queue_process"), patch.object(NATIVE, "_source_files", side_effect=files), \
                         patch.object(NATIVE, "connection", side_effect=short_connection), \
                         patch.object(claim_history, "root_context", return_value={"parent": "native-parent", "ancestors": ("native-parent",)}):
-                    if variant in {"clear", "fork", "cross_home"}:
+                    if variant in {"clear", "fork", "cross_home", "missing_home"}:
                         asyncio.run(NATIVE.prove_crash_end(owned, deadline=proof_deadline))
                     else:
                         with self.assertRaises(ValueError):
@@ -899,7 +897,7 @@ class NativeQueueTests(unittest.TestCase):
         import uuid
         from types import SimpleNamespace
         import github_plan_termination as termination
-        for mode in ("minimal", "historical", "historical_markers", "known_launch_pid", "matching_generation", "stale_generation", "partial_tail", "interior", "complete_corrupt", "wrong_host", "new_generation", "inventory_marker", "backfill_marker", "gone_artifact"):
+        for mode in ("minimal", "historical", "historical_markers", "known_launch_pid", "matching_generation", "stale_generation", "partial_tail", "interior", "complete_corrupt", "wrong_host", "new_generation", "inventory_marker", "backfill_marker", "gone_artifact", "postboot_action"):
             with self.subTest(mode=mode), ReceiptFixture(str(uuid.uuid4())) as f:
                 other, _ledger, selected, _retained, deleted = self.cancel_setup(f)
                 # Preserve the original object; an output attestation is insufficient.
@@ -937,9 +935,11 @@ class NativeQueueTests(unittest.TestCase):
                 path.chmod(0o600)
                 before = {value: value.read_bytes() for value in (path, f.transcript, f.log, CLOSURE.lease_path(f.session))}
                 with patch.object(termination, "inventory", side_effect=lambda: f.process_rows), \
+                        patch.object(SESSIONS.process_liveness(), "host_boot_time", return_value=(
+                            datetime.fromisoformat(record["ended_at"]) if mode == "postboot_action" else None)), \
                         patch.object(termination, "run_terminal", return_value=SimpleNamespace(
                         returncode=0, stdout="a" * 32 + "\t1\t1\n", stderr="")):
-                    if mode not in {"minimal", "historical", "historical_markers", "matching_generation", "partial_tail", "gone_artifact"}:
+                    if mode not in {"minimal", "historical", "historical_markers", "matching_generation", "partial_tail", "gone_artifact", "postboot_action"}:
                         with self.assertRaises(ValueError): asyncio.run(NATIVE.cancel_queue(other, f.session, termination_record=path))
                         self.assertFalse(deleted)
                         continue

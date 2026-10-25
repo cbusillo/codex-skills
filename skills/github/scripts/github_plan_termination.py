@@ -245,9 +245,6 @@ def _initial_source(record, session, *, latest_pid=None):
     activity = _verify_transcripts(record, roots) if booted is not None and booted <= datetime.now(timezone.utc) else None
     original_launch = latest_pid is None or latest_pid in {record.get("pid"), record.get("launch_pid")}
     rebooted_at = booted if original_launch and activity is not None and activity.latest < booted else None
-    if rebooted_at is not None:
-        import github_plan_closure
-        require_preboot_action(github_plan_closure.lease_state(session), rebooted_at)
     process = _TerminationProcess(dict(record), physical, rebooted_at or cutoff, roots, rebooted_at)
     return process
 
@@ -270,10 +267,12 @@ def _verify(record, session, independent_harness, *, deadline: float | None = No
     import github_plan_closure
     process = _initial_source(record, session)
     action = github_plan_closure.lease_state(session)
+    if process.rebooted_at is not None:
+        require_preboot_action(action, process.rebooted_at)
     if process.rebooted_at is not None and action.get("action_pending"):
         import asyncio
         import github_plan_native
-        asyncio.run(github_plan_native.prove_crash_end(record, deadline=deadline))
+        asyncio.run(github_plan_native.prove_crash_end(record, deadline=deadline, process=process))
     _physical_exit(process, lambda pid, argv: (process.rebooted_at is not None or not github_plan_closure.action_pending(session))
                    and independent_harness(pid, argv))
     activity = _verify_transcripts(record, process.roots, before_boot=process.rebooted_at)

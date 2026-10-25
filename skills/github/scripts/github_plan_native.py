@@ -19,6 +19,7 @@ from collections.abc import Callable, Iterable
 from datetime import datetime
 
 import github_plan_closure as closure
+from github_plan_termination import _TerminationProcess
 
 
 @asynccontextmanager
@@ -694,7 +695,7 @@ def _cancel_quiet(facts, snapshot, home, target):
     _require_runtime_quiet(facts, statuses)
 
 
-async def prove_crash_end(entry: dict, *, deadline: float | None = None) -> None:
+async def prove_crash_end(entry: dict, *, deadline: float | None = None, process: _TerminationProcess | None = None) -> None:
     import github_plan_termination as termination
     from github_plan_sessions import observation_homes
     session = entry["session_id"]
@@ -705,8 +706,16 @@ async def prove_crash_end(entry: dict, *, deadline: float | None = None) -> None
         if not held:
             raise ValueError("native crash proof requires the existing source ownership lease")
         saved, action = _cancel_saved(session), closure.lease_state(session)
+        original = dict(entry)
+        if not entry.get("codex_home"):
+            _primary, original_home, _configured, _known = _cancel_origin(entry, action)
+            entry = {**entry, "codex_home": str(original_home)}
         current = _cancel_generation(entry, saved)
-        process = termination._verify_queue_source(entry, session, latest_pid=current.get("launch_pid") if current else None)
+        latest_pid = current.get("launch_pid") if current else None
+        if process is None or latest_pid not in {None, entry.get("pid"), entry.get("launch_pid")}:
+            process = termination._verify_queue_source(entry, session, latest_pid=latest_pid)
+        elif process.original != original:
+            raise ValueError("native crash proof belongs to another original source")
         if process.rebooted_at is None:
             raise ValueError("native crash proof requires verified reboot termination")
         termination.require_preboot_action(action, process.rebooted_at)

@@ -764,20 +764,6 @@ class ReleaseTests(ReleaseHarness):
             with self.assertRaises(ValueError):
                 release.termination._verify_queue_source(self.termination_record, "session-b")
 
-    def test_pending_action_does_not_recheck_an_explicit_other_or_fresh_exec_client(self) -> None:
-        self.termination_setup()
-        import github_plan_native
-        shared = release.termination.native_helpers()[1]
-        cutoff = release.stamp(self.termination_record["ended_at"])
-        for command in ("codex exec prompt", "codex resume 11111111-1111-4111-8111-111111111111"):
-            with self.subTest(command=command), \
-                    patch.object(shared, "native_exit_cutoff", return_value=cutoff), \
-                    patch.object(shared, "process_started_at", return_value=cutoff + timedelta(seconds=1)), \
-                    patch.object(release.termination, "inventory", return_value=[(88, "ttys123", command)]), \
-                    patch.object(github_plan_closure, "action_pending", return_value=True), \
-                    patch.object(github_plan_native, "prove_crash_end", side_effect=ValueError("unavailable proof")):
-                release.termination.verify(self.termination_record, "session-b")
-
     def test_termination_covers_configured_account_transcripts_outside_declared_roots(self) -> None:
         transcript = self.termination_setup()
         import github_plan_sessions

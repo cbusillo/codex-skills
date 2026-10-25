@@ -407,7 +407,7 @@ unless the release names it or it is on the claim's own branch. A PR-only claim
 uses the PR itself as its work record. Preserve the branch, worktree and the
 next actor's custody.
 
-The check does not inspect processes. Stop or hand off any background work you
+The check does not stop processes. Stop or hand off any background work you
 started before the verdict; leaving it running is a closeout problem, not
 something the check proves.
 
