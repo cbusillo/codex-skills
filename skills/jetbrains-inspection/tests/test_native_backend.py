@@ -25,6 +25,8 @@ from unittest.mock import patch
 from contextlib import contextmanager, redirect_stdout
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+os.environ["JB_INSPECT_OUTCOME_LOG"] = "0"
+os.environ["JB_INSPECT_UNKNOWN_LOG"] = "0"
 
 
 def load(name, path) -> Any:
@@ -211,6 +213,46 @@ class NativeTests(unittest.TestCase):
                 patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--backend", "native"]):
             self.assertEqual(host.main(), 0)
         run.assert_called_once()
+
+    def test_native_assessments_are_recorded_in_the_outcome_logs(self) -> None:
+        def native_result(result_verdict, result_reason, receipt):
+            return {
+                "backend": "native", "command": "agent-inspect", "scope": "files", "status": "findings",
+                "finding_count": 3 if receipt else 0, "proof_failures": [{"code": "gap"}], "uncovered_inspections": ["PyUnused"],
+                "inspection_outcome": {"verdict": result_verdict, "reason": result_reason},
+                "agent_result": {"verdict": result_verdict, "bucket": "findings", "agent_report": f"{result_verdict}: native PyCharm",
+                                 "next_action": f"Resolve {result_reason}.",
+                                 "retry_policy": {"max_attempts": 0, "retry": False, "wait_ms": 0}},
+                "diagnostic": {"error_reason": result_reason, "native": receipt},
+            }
+
+        def run(result, *flags):
+            with patch.dict(os.environ, {"JB_INSPECT_OUTCOME_LOG": str(outcomes), "JB_INSPECT_UNKNOWN_LOG": str(unknowns)}), \
+                    patch.object(host, "command_native", return_value=result), \
+                    patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--backend", "native", *flags]), \
+                    redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(host.main(), 0)
+            return json.loads(output.getvalue())
+
+        with tempfile.TemporaryDirectory() as temporary:
+            outcomes, unknowns = Path(temporary).resolve() / "outcomes.jsonl", Path(temporary).resolve() / "unknown.jsonl"
+            printed = run(native_result("RED", "native_completed", {"engine_exit_code": 0}))
+            self.assertEqual(printed["agent_result"]["verdict"], "RED")
+            self.assertEqual(printed["diagnostic"]["outcome_log_path"], str(outcomes))
+            run(native_result("UNKNOWN", "native_host_load_paused", {}))
+            run(native_result("UNKNOWN", "native_recovery_only_no_inspection", {}), "--native-recover-only")
+            records = [json.loads(line) for line in outcomes.read_text().splitlines()]
+            self.assertEqual([(r["backend"], r["verdict"], r["verdict_reason"], r["inspection_started"], r.get("total_problems"))
+                              for r in records],
+                             [("native", "RED", "native_completed", True, 3), ("native", "UNKNOWN", "native_host_load_paused", False, None)])
+            self.assertTrue(all(r["assessment_id"] and r["retry"] is False for r in records))
+            self.assertEqual({(r["proof_failure_count"], r["uncovered_inspection_count"]) for r in records}, {(1, 1)})
+            self.assertEqual([(u["verdict_reason"], u["verdict_next_action"]) for u in map(json.loads, unknowns.read_text().splitlines())],
+                             [("native_host_load_paused", "Resolve native_host_load_paused.")])
+            self.assertEqual(host.summarize_outcome_log(outcomes)["events"], 2)
+            candidate, exclusion = host.qualification_event_candidate(records[0], 1, {})
+            self.assertIsNone(candidate)
+            self.assertEqual((exclusion["reason"], exclusion["hard_failure"]), ("backend_not_qualified", False))
 
     def test_mixed_changed_files_dispatches_native_without_desktop_contact(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
