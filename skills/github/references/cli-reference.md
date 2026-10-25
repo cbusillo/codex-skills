@@ -1401,9 +1401,11 @@ operation marker), use `--legacy --legacy-branch <verified-original-branch>
 identity, session fields, or additional ownership prose cannot use this route.
 The caller verifies which branch the source worker used from the handoff.
 The helper corroborates the supplied branch by requiring an
-automation-authored PR on that branch independently linking the canonical
-issue (including a merged PR when its source branch was deleted). Never
-invent a native session ID; the PR link alone does not tie a branch to a worker.
+automation-authored PR on that branch (including a merged PR when its source
+branch was deleted) that either links the canonical issue itself, or that an
+automation-authored comment on the canonical issue names, with the source
+worker, before the attested end. Never invent a native session ID; the PR link
+alone does not tie a branch to a worker.
 PR-scoped claims keep the structured release path and cannot use `--legacy`.
 Post a separate exact-ID attestation for each legacy claim:
 

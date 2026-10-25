@@ -2243,13 +2243,17 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                         if legacy_options["legacy"] else {"state": "open"})
         _, open_pulls = collect_paged_rest_items(f"/repos/{source_issue['repo']}/pulls", query=branch_query,
             bucket="rest_core", step_prefix="release_source_branch_prs")
+        worker_named_prs = {p["number"] for p in open_pulls if legacy_options["legacy"]
+                            and github_plan_release.worker_named_pull(facts, source_comments, p["number"], repo=source_issue["repo"])}
         if legacy_options["legacy"] and not any(
                 (p.get("head") or {}).get("ref") == source_branch
                 and (p.get("user") or {}).get("login") == expected_actor
-                and github_plan_claim.pr_issue_reference(p, source_issue["number"], repo=source_issue["repo"],
-                    attestation=True, record_kind="pr" if "pull_request" in source_issue else "issue")
+                and (p["number"] in worker_named_prs
+                     or github_plan_claim.pr_issue_reference(p, source_issue["number"], repo=source_issue["repo"],
+                        attestation=True, record_kind="pr" if "pull_request" in source_issue else "issue"))
                 for p in open_pulls):
-            raise PlanError("Legacy source branch requires an automation-authored PR linking this canonical record")
+            raise PlanError("Legacy source branch requires an automation-authored PR that links this canonical record, "
+                            "or that the source worker named here before the session ended")
         branch_prs = [f"https://github.com/{source_issue['repo']}/pull/{p['number']}" for p in open_pulls
             if (p.get("head") or {}).get("ref") == source_branch]
         subject_pr = "pull_request" in source_issue
@@ -2285,7 +2289,7 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                 github_plan_release.check_retained_pr(pull, head_commit, repo=source_issue["repo"],
                     number=source_issue["number"], actor=expected_actor, ended=facts.cutoff.isoformat(),
                     subject_pr=source_issue["number"] if subject_pr else None, source_branch=source_branch,
-                    allow_closed_unmerged=legacy_options["legacy"])
+                    allow_closed_unmerged=legacy_options["legacy"], worker_named=pull["number"] in worker_named_prs)
             except github_plan_release.IssueReleaseRefusal as retained_error:
                 issue_refusal = retained_error
         github_plan_release.validate_retained_release(facts, source_inventory,
