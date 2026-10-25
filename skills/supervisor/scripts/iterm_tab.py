@@ -10,6 +10,8 @@
 
 import argparse
 import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager
 import errno
 import json
 import os
@@ -310,7 +312,7 @@ def validate_text(text, allow_tabs=False):
 
 def brief_rules_block(path=BRIEF_RULES):
     """Return the marked rules block from a brief rules reference."""
-    text = Path(path).read_text(encoding="utf-8")
+    text = read_launch_text(Path(path))
     start, end = "<!-- brief-rules:start -->", "<!-- brief-rules:end -->"
     if text.count(start) != 1 or text.count(end) != 1:
         raise ValueError(f"{path} needs exactly one marked rules block")
@@ -395,7 +397,7 @@ def claude_settings(command_text, words):
                     if not directory_path.is_absolute():
                         raise ValueError()
                     path = directory_path / path
-                settings = json.loads(path.read_text(encoding="utf-8"))
+                settings = json.loads(read_launch_text(path))
                 # Keep file settings in the file: inlining exposes private values
                 # and changes the base for relative permission rules.
                 if isinstance(settings, dict) and all(settings.get(key) is False for key in CLAUDE_UNATTENDED_SETTINGS):
@@ -893,7 +895,8 @@ def check_claude_tools(command_text, choice, without_browser=False, probes=None,
     directory = launch_parts(command_text)[1]
     if require_browser and (directory is None or not Path(directory).expanduser().is_absolute()):
         raise ValueError("required Claude browser needs cd /absolute/repository && exec claude")
-    directory = (Path(directory).expanduser() if directory else Path.cwd()).resolve()
+    with preparation_read():
+        directory = (Path(directory).expanduser() if directory else Path.cwd()).resolve()
     # The launch exports CLAUDE_CODE_ENABLE_CFC=0, so the built-in server stays off.
     tools = {"warnings": agent_tools.claude_problems(
         home, directory, {agent_tools.CHROME_ENV: "0"}, check_computer_use=False)}
@@ -934,7 +937,8 @@ def prepare_codex_tools(command_text, choice, required=False, *, gui=False):
         return command_text
     choice["require_browser"] = required
     words = launch_words(command_text)
-    choice["tool_directory"] = str(codex_directory(words).resolve())
+    with preparation_read():
+        choice["tool_directory"] = str(codex_directory(words).resolve())
     endpoints = [words[index + 1] if word == "--remote" and index + 1 < len(words)
                  else word.partition("=")[2] for index, word in enumerate(words)
                  if word == "--remote" or word.startswith("--remote=")]
@@ -1091,7 +1095,8 @@ def prepare_resume(args):
             or getattr(args, "command_file", None) or getattr(args, "brief_file", None)
             or getattr(args, "require_browser", False) or getattr(args, "without_browser", False)):
         raise ValueError("resume needs --account-provider openai and --ledger, without launch/brief files or browser flags")
-    entries = [entry for entry in session_record.load_ledger(args.ledger) if entry["session_id"] == session]
+    with preparation_read():
+        entries = [entry for entry in session_record.load_ledger(args.ledger) if entry["session_id"] == session]
     if len(entries) != 1 or entries[0].get("supervisor_owned") is not True or entries[0]["harness"] != "codex":
         raise ValueError("resume source is not uniquely Supervisor-owned in the ledger")
     entry = entries[0]
@@ -1100,19 +1105,21 @@ def prepare_resume(args):
     home = Path(entry["codex_home"]).expanduser()
     if not home.is_absolute():
         raise ValueError("resume ledger needs the source's absolute codex_home")
-    home = home.resolve(strict=True)
-    transcript = Path(entry["transcript"])
-    if not any(transcript.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions")):
-        raise ValueError("resume transcript is outside the source account")
-    source_endpoint(session, home, transcript=transcript)
-    config = account_choice.load_config(args.account_config)
-    accounts = [account for account in config["accounts"] if account["provider"] == "openai"
-                and Path(account["env"]["CODEX_HOME"]).expanduser().resolve() == home]
+    with preparation_read():
+        home = home.resolve(strict=True)
+        transcript = Path(entry["transcript"])
+        if not any(transcript.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions")):
+            raise ValueError("resume transcript is outside the source account")
+        source_endpoint(session, home, transcript=transcript)
+        config = account_choice.load_config(args.account_config)
+        accounts = [account for account in config["accounts"] if account["provider"] == "openai"
+                    and Path(account["env"]["CODEX_HOME"]).expanduser().resolve() == home]
     if len(accounts) != 1 or (args.account is not None and args.account != accounts[0]["name"]):
         raise ValueError("resume requires the source's unique configured account; account switching is unsupported")
     choice = account_choice.select("openai", args.account_config, accounts[0]["name"])
-    if Path(choice["env"]["CODEX_HOME"]).expanduser().resolve() != home:
-        raise ValueError("selected resume account differs from the source")
+    with preparation_read():
+        if Path(choice["env"]["CODEX_HOME"]).expanduser().resolve() != home:
+            raise ValueError("selected resume account differs from the source")
     # Read the existing daemon only. Recovery never starts or restarts one.
     preflight_codex_daemon(choice, exact_source=True)
     account_choice.prepare_launch(choice)
@@ -1131,10 +1138,29 @@ def expire_preparation(signum: int, frame: object) -> None:
     raise PreparationExpired
 
 
-def prepare_launches(args: argparse.Namespace) -> tuple[list[str], list[dict | None]]:
+@contextmanager
+def preparation_read() -> Iterator[None]:
     previous_handler = signal.signal(signal.SIGALRM, expire_preparation)
     started = time.monotonic()
-    previous_timer = signal.setitimer(signal.ITIMER_REAL, LAUNCH_TIMEOUT)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    signal.setitimer(signal.ITIMER_REAL, min(LAUNCH_TIMEOUT, previous_timer[0]) if previous_timer[0] else LAUNCH_TIMEOUT)
+    try:
+        try:
+            yield
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+    finally:
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0]:
+            signal.setitimer(signal.ITIMER_REAL, max(0.000001, previous_timer[0] - (time.monotonic() - started)), previous_timer[1])
+
+
+def read_launch_text(path: Path) -> str:
+    with preparation_read():
+        return path.read_text(encoding="utf-8")
+
+
+def prepare_launches(args: argparse.Namespace) -> tuple[list[str], list[dict | None]]:
     try:
         return prepare_launch_batch(args)
     except PreparationExpired:
@@ -1153,11 +1179,6 @@ def prepare_launches(args: argparse.Namespace) -> tuple[list[str], list[dict | N
             "Preserve this attempt and inspect its files, target terminals and any pending macOS file-access prompt; "
             "do not relaunch, change permissions or restart the server automatically."))
         raise error from None
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous_handler)
-        if previous_timer[0]:
-            signal.setitimer(signal.ITIMER_REAL, max(0.000001, previous_timer[0] - (time.monotonic() - started)), previous_timer[1])
 
 
 def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict | None]]:
@@ -1174,7 +1195,7 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
             and getattr(args, "account_provider", None) not in {"anthropic", "openai"}):
         raise ValueError("--require-browser needs --account-provider anthropic or openai")
     files = args.command_file if isinstance(args.command_file, list) else [args.command_file]
-    command_texts = [path.read_text(encoding="utf-8").rstrip("\n") for path in files]
+    command_texts = [read_launch_text(path).rstrip("\n") for path in files]
     for text in command_texts:
         validate_text(text)
     brief_files = getattr(args, "brief_file", None)
@@ -1183,7 +1204,7 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
     brief_files = brief_files if isinstance(brief_files, list) else [brief_files]
     if len(brief_files) != len(files):
         raise ValueError("provide one --brief-file per --command-file, in launch order")
-    briefs = [path.read_text(encoding="utf-8") for path in brief_files]
+    briefs = [read_launch_text(path) for path in brief_files]
     for brief in briefs:
         if not brief.strip():
             raise ValueError("brief must be nonempty")
@@ -1216,9 +1237,10 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         # Validate command/account/trust inputs for the whole batch first.
         # Live preflight follows; its reusable marketplace links are persistent.
         for text, choice, brief in zip(command_texts, choices, briefs):
-            with_account(text, choice, brief)
-            check_codex_project(text, choice)
-            trust_writes += claude_trust_writes(text, choice, args.account_config)
+            with preparation_read():
+                with_account(text, choice, brief)
+                check_codex_project(text, choice)
+                trust_writes += claude_trust_writes(text, choice, args.account_config)
         for text, choice in zip(command_texts, choices):
             check_claude_tools(text, choice, getattr(args, "without_browser", False), probes,
                                getattr(args, "require_browser", False))

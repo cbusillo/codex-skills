@@ -1734,14 +1734,14 @@ inspect the daemon's active threads and refuse while one is running or their
 state is unknown. Terminal clients and dead tmux panes cannot prove a worker
 has ended; a remote Codex thread can continue after its terminal disappears.
 
-Both terminal backends bound launch preparation, including direct worktree-volume
-reads and resume preparation, by the existing 30-second launch command timeout.
-An expired preparation returns `preparation_unavailable` with the input paths and
-target identity. A pending macOS file-access prompt or missing disk access is a
-possible cause, not a diagnosis. Preserve the attempt and inspect its files and
-target terminals before deciding what to do; preparation may have partly changed
-account or GUI state. The launcher never relaunches, changes permissions or
-restarts a server to recover from this timeout.
+Both terminal backends extend the launch command timeout to preparation reads,
+including worktree trust discovery and resume source files. A stalled read returns
+`preparation_unavailable` with input paths and target identity. Inspect the
+preserved attempt and any pending macOS file-access prompt before deciding what
+to do. Account probes and writes retain their own bounds and cleanup. This is
+qualified with interruptible FIFO reads; interruption of a real pending macOS
+privacy check has not been observed. The launcher never relaunches, changes
+permissions or restarts a server to recover from this timeout.
 
 Both terminal backends observe the first two seconds after submission. An early
 exit, including a failed Codex bootstrap, returns `launch_failed`, retaining the exact
