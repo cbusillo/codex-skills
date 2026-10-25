@@ -394,6 +394,10 @@ including non-dim text, establishes neither its author nor approval.
 
 ## The Pattern
 
+Before briefing work or asking a question about a product, run
+`uv run <skill-dir>/scripts/product_summary.py /path/to/repository` against a
+current default-branch checkout to read its product section.
+
 1. **One brief per session and repository.** Before launching from a survey or
    report, recheck each item's live state. Choose items that share a subsystem
    and kind of work into one session and one PR, so they share context and
