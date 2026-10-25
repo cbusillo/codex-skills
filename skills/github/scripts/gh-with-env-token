@@ -50,15 +50,17 @@ require_automation_auth=0
 require_automation_auth_from_process=0
 reader_app=0
 main_app_only=0
+include_archived=0
 require_repository_installation=0
 stdout_file=$(mktemp)
 stderr_file=$(mktemp)
 classification_file=$(mktemp)
 stdin_file=$(mktemp)
+arguments_file=$(mktemp)
 stdin_captured=0
 command_started=0
 
-trap 'rm -f "$stdout_file" "$stderr_file" "$classification_file" "$stdin_file"' EXIT INT HUP TERM
+trap 'rm -f "$stdout_file" "$stderr_file" "$classification_file" "$stdin_file" "$arguments_file"' EXIT INT HUP TERM
 
 case "${GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH:-}" in
 1 | true | TRUE | yes | YES)
@@ -78,6 +80,10 @@ readonly own_user_opt_in
 
 while [ "$#" -gt 0 ]; do
 	case "${1:-}" in
+	--include-archived)
+		include_archived=1
+		shift
+		;;
 	--main-app-only)
 		main_app_only=1
 		require_automation_auth=1
@@ -147,24 +153,19 @@ expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-${CODEX_AUTOMATION_LOGIN:-}}
 # github_api.parse_gh_api_args is the one reading of `gh api` arguments, as
 # gh's own flag parser reads them; every check below uses its answer. A `gh
 # api` command it cannot read leaves the method empty, which counts as a write.
-gh_api_shape=$(run_python - "$script_dir" "$@" <<'PY'
-import sys
-sys.path.insert(0, sys.argv[1])
-import github_api
-args = sys.argv[2:]
-# Leading global flags, read as is_write_command reads them.
-while args and args[0].startswith("-"):
-    if args[0] == "--":
-        args = args[1:]
-        break
-    args = args[2:] if args[0] in ("-R", "--repo", "--hostname") else args[1:]
-if args[:1] == ["api"]:
-    parsed = github_api.parse_gh_api_args(args[1:])
-    if parsed is not None:
-        print(parsed.sent_method)
-        print(parsed.endpoint)
-PY
-) || gh_api_shape=
+shape_status=0
+gh_api_shape=$(run_python "$script_dir/github_repository_scope.py" "$arguments_file" "$include_archived" "$write_actor_repository" "$@") || shape_status=$?
+if [ "$shape_status" -eq 64 ]; then
+	exit 2
+fi
+if [ "$shape_status" -ne 0 ]; then
+	gh_api_shape=
+fi
+if [ -s "$arguments_file" ]; then
+	scoped_arguments=$(cat "$arguments_file")
+	eval "set -- $scoped_arguments"
+fi
+rm -f "$arguments_file"
 api_sent_method=$(printf '%s\n' "$gh_api_shape" | sed -n '1p')
 api_endpoint_operand=$(printf '%s\n' "$gh_api_shape" | sed -n '2p')
 

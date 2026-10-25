@@ -6,15 +6,15 @@
 
 from __future__ import annotations
 
-import os
 import json
+import os
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 from unittest.mock import patch
-
+from urllib.parse import urlencode
 
 SCRIPT = Path(__file__).with_name("gh-with-env-token")
 
@@ -59,6 +59,7 @@ def run_wrapper(
     *args: str,
     gh_command: Path | None = None,
     extra_env: dict[str, str] | None = None,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = {
         "PATH": os.environ["PATH"],
@@ -76,6 +77,7 @@ def run_wrapper(
         env=env,
         text=True,
         capture_output=True,
+        input=input_text,
         timeout=10,
     )
 
@@ -99,6 +101,104 @@ def test_check_reports_app_identity_and_source() -> None:
         assert result.returncode == 0, result.stderr
         assert result.stdout == "GitHub automation actor: catalog-app[bot] (source: github_app)\n"
         assert "installation-token" not in result.stdout + result.stderr
+
+
+def test_search_archive_scope_through_wrapper() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        env_file, classifier, identity, fake_gh = user_token_fixture(root)
+        fixture = SCRIPT.with_name("fixtures") / "archived-repositories.json"
+        write(fake_gh, f'''#!{sys.executable}
+import json, sys
+from urllib.parse import parse_qs, urlsplit
+args = sys.argv[1:]
+queries = list(args)
+for arg in args:
+    queries.extend(parse_qs(urlsplit(arg).query).get("q", []))
+query = " ".join(queries)
+rows = json.loads({fixture.read_text()!r})
+if "archived:false" in query or "--archived=false" in args:
+    rows = [row for row in rows if not row["archived"]]
+elif "archived:true" in query or "--archived=true" in args:
+    rows = [row for row in rows if row["archived"]]
+print(json.dumps({{"args": args, "repositories": [row["full_name"] for row in rows]}}))
+''')
+        repositories = json.loads(fixture.read_text())
+        current = [row["full_name"] for row in repositories if not row["archived"]]
+        archived = [row["full_name"] for row in repositories if row["archived"]]
+        commands = (
+            ("search", "issues", "--owner", "owner", "--state", "open"),
+            ("search", "prs", "user:owner"),
+            ("--hostname", "github.com", "search", "prs", "--", "-label:bug"),
+            ("api", f"search/issues?{urlencode({'q': 'user:owner', 'per_page': 100})}"),
+            ("api", "-X", "GET", "/search/issues", "-f", "q=user:owner"),
+            ("api", "search/issues", "--method=GET", "--raw-field=q=user:owner"),
+            ("api", "-XGET", "search/issues", "-Fq=user:owner"),
+            ("api", "-XGET", "search/issues", "-ifq=user:owner"),
+        )
+        for command in commands:
+            for opt_in, expected in (((), current), (("--include-archived",), current + archived)):
+                result = run_wrapper(env_file, classifier, identity, *opt_in, *command, gh_command=fake_gh)
+                assert result.returncode == 0, (command, result.stderr)
+                payload = json.loads(result.stdout)
+                assert payload["repositories"] == expected, (command, payload)
+                assert "--include-archived" not in payload["args"]
+        for command in (
+            ("search", "issues", "archived:true"),
+            ("search", "issues", "--include-prs", "archived:true"),
+            ("search", "prs", "--archived=true"),
+            ("api", f"search/issues?{urlencode({'q': 'archived:true'})}"),
+            ("api", "-XGET", "search/issues", "-fq=archived:true"),
+        ):
+            result = run_wrapper(env_file, classifier, identity, *command, gh_command=fake_gh)
+            assert result.returncode == 0, result.stderr
+            payload = json.loads(result.stdout)
+            assert payload["repositories"] == archived, (command, payload)
+            assert payload["args"] == list(command)
+        result = run_wrapper(env_file, classifier, identity, "search", "prs", "--include-archived", gh_command=fake_gh)
+        assert json.loads(result.stdout)["repositories"] == current + archived
+        result = run_wrapper(env_file, classifier, identity, "api", "search/issues?q=user:owner", "--include-archived", gh_command=fake_gh)
+        assert json.loads(result.stdout)["repositories"] == current + archived
+        write(identity, fake_app_identity())
+        result = run_wrapper(
+            env_file, classifier, identity, "--reader", "search", "issues", "user:owner", gh_command=fake_gh,
+            extra_env={"GITHUB_READER_APP_ID": "123", "GITHUB_READER_APP_INSTALLATION_ID": "456",
+                       "GITHUB_READER_APP_PRIVATE_KEY_PATH": "/fake/key.pem"},
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["repositories"] == current
+        injected = root / "injected"
+        literal = f'quotes\' " and $(touch {injected})\n`touch {injected}`'
+        result = run_wrapper(env_file, classifier, identity, "search", "prs", literal, gh_command=fake_gh)
+        assert literal in json.loads(result.stdout)["args"]
+        assert json.loads(result.stdout)["repositories"] == current
+        assert not injected.exists()
+        result = run_wrapper(env_file, classifier, identity, "api", "search/issues?q=repo:{owner}/{repo}", gh_command=fake_gh)
+        assert "{owner}/{repo}" in " ".join(json.loads(result.stdout)["args"])
+        query_file = root / "query.txt"
+        query_file.write_text("user:owner")
+        for flag in ("-F", "--field", "-iF"):
+            result = run_wrapper(env_file, classifier, identity, "api", "-XGET", "search/issues", flag, f"q=@{query_file}", gh_command=fake_gh)
+            assert result.returncode == 0, result.stderr
+            payload = json.loads(result.stdout)
+            assert payload["repositories"] == current
+        missing_query = root / "missing.txt"
+        binary_query = root / "binary.txt"
+        binary_query.write_bytes(b"\xff")
+        for query_path in (missing_query, binary_query):
+            result = run_wrapper(env_file, classifier, identity, "api", "-XGET", "search/issues", "-F", f"q=@{query_path}", gh_command=fake_gh)
+            assert result.returncode != 0, result
+            assert result.stderr
+            assert "Traceback" not in result.stderr
+        result = run_wrapper(env_file, classifier, identity, "api", "-XGET", "search/issues", "-F", "q=@-", gh_command=fake_gh, input_text="user:owner")
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["repositories"] == current
+        temporary_files = root / "wrapper-tmp"
+        temporary_files.mkdir()
+        result = run_wrapper(env_file, classifier, identity, "search", "prs", "user:owner", gh_command=fake_gh,
+                             extra_env={"TMPDIR": str(temporary_files)})
+        assert result.returncode == 0, result.stderr
+        assert list(temporary_files.iterdir()) == []
 
 
 def test_check_preserves_user_token_fallback_when_app_is_absent() -> None:
@@ -1387,6 +1487,7 @@ def test_prewrite_receipt_requires_nonce_and_stops_at_launch() -> None:
 
 def main() -> None:
     tests: list[Callable[[], None]] = [
+        test_search_archive_scope_through_wrapper,
         test_check_reports_app_identity_and_source,
         test_write_actor_probe_preserves_repository_authorization,
         test_write_actor_probe_rejects_non_probe_commands_before_authentication,

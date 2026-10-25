@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import director_mentions
+import github_repository_scope as repository_scope
 
 APPROVAL_URL = "https://github.com/cbusillo/codex-skills/issues/2073#issuecomment-99"
 
@@ -97,7 +98,9 @@ class DirectorReadRouteTests(unittest.TestCase):
             self.assertEqual(payload["total_count"], 0)
             calls = [json.loads(line) for line in log.read_text().splitlines()]
             search = [call for call in calls if call["argv"][-1].startswith("search/issues?")]
-            self.assertEqual(search[0]["argv"], ["api", "--method", "GET", "search/issues?q=mentions%3Acbusillo&page=1"])
+            self.assertEqual(search[0]["argv"][:3], ["api", "--method", "GET"])
+            query = parse_qs(urlparse(search[0]["argv"][-1]).query)
+            self.assertEqual(query["q"], [repository_scope.search_query("mentions:cbusillo")])
             self.assertTrue(all(call["token"] is None for call in calls))
 
 

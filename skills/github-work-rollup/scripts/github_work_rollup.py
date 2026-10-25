@@ -704,7 +704,7 @@ def github_preflight(settings: dict[str, Any]) -> dict[str, Any]:
     if owners:
         scope_commands.append([GH, "repo", "list", owners[0], "--limit", "1", "--json", "nameWithOwner"])
     if subjects and not repos and not owners:
-        scope_commands.append([GH, "api", "--method", "GET", "search/issues", "-f", "q=" + repository_scope.search_query(f"author:{subjects[0]}", include_archived=settings.get("include_archived", False)), "-f", "per_page=1"])
+        scope_commands.append([GH, *repository_scope.include_archived_arguments(settings.get("include_archived", False), gh_command=GH), "api", "--method", "GET", "search/issues", "-f", "q=" + repository_scope.search_query(f"author:{subjects[0]}", include_archived=settings.get("include_archived", False)), "-f", "per_page=1"])
     for command in scope_commands:
         result = run(command)
         checks.append(command_summary(command, result))
@@ -1079,6 +1079,7 @@ def collect_subject_items(settings: dict[str, Any]) -> list[dict[str, Any]]:
                 result = run(
                     [
                         GH,
+                        *repository_scope.include_archived_arguments(settings.get("include_archived", False), gh_command=GH),
                         "api",
                         "--method",
                         "GET",

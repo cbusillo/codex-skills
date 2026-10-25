@@ -1253,7 +1253,7 @@ def structured_wait_issues(
         problems: list[str] = []
         try:
             for page in range(1, 11):
-                payload = run_json([GH, "api", "search/issues?" + urlencode({"q": query, "per_page": 100, "page": page})])
+                payload = run_json([GH, *repository_scope.include_archived_arguments(include_archived, gh_command=GH), "api", "search/issues?" + urlencode({"q": query, "per_page": 100, "page": page})])
                 total = payload.get("total_count") if isinstance(payload, dict) else None
                 if (
                     not isinstance(payload, dict) or not isinstance(payload.get("items"), list)
@@ -1388,7 +1388,7 @@ def outbound_threads(
         try:
             for page in range(1, 11):
                 endpoint = "search/issues?" + urlencode({"q": query, "per_page": 100, "page": page})
-                payload = run_json([GH, "api", endpoint])
+                payload = run_json([GH, *repository_scope.include_archived_arguments(settings.get("include_archived", False), gh_command=GH), "api", endpoint])
                 if (
                     not isinstance(payload, dict) or not isinstance(payload.get("items"), list)
                     or not isinstance(payload.get("total_count"), int)

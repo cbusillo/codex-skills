@@ -257,6 +257,7 @@ def main():
     terms = [args.owner, "Director", "owner", *people["director_names"], *args.director_name]
     reader = GitHubReader(operation="github.direction.director_waits", strict_actor=True,
                           gh_prefix_args=automation_only_gh_prefix_args(),
+                          include_archived=args.include_archived,
                           deadline_at=time.time() + args.deadline_seconds)
     result = collect(reader, args.owner, terms, datetime.now(timezone.utc), args.issue_limit, include_archived=args.include_archived)
     if (people["status"] == "error" or people["director_ambiguous"]

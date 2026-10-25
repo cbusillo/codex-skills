@@ -444,6 +444,7 @@ def repository_reader(repo: str | None, deadline: float) -> GitHubReader:
         gh_prefix_args=["--require-automation-auth"],
         deadline_at=deadline,
         cache_revalidate=True,
+        include_archived=True,
     )
 
 
