@@ -118,6 +118,7 @@ class ClaimTests(unittest.TestCase):
         self.projections = []
         self.projection_result = None
         self.direction_repo = "owner/direction"
+        self.directions = {}
         self.after_milestone_link = lambda: None
         self.timelines = {}
         self.history_nodes = {}
@@ -231,7 +232,7 @@ class ClaimTests(unittest.TestCase):
                             collect_paged_rest_items=self.read_pages, rest_edit_issue=self.edit,
                             comment_route=route or (lambda: ("bot", "bot-gh", TEST_BOT)),
                             load_config=lambda repo, **_: copy.deepcopy(self.configs.get(repo, PLAN.DEFAULT_CONFIG)),
-                            load_direction=lambda _repo: "## Milestones\n\n- `Launch the product` proves the product works.\n",
+                            load_direction=lambda repo: self.directions.get(repo, "## Milestones\n\n- `Launch the product` proves the product works.\n"),
                             emit=self.emitted, api_json=self.read_api, **projection), \
                 patch.object(CLAIM, "local_inventory", side_effect=self.inventory_for), \
                 patch.object(github_identity, "configured_bot_logins", return_value=[]), \
@@ -5420,6 +5421,59 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(self.projections, [("owner/direction", 9)])
         self.run_claim()
         self.assertEqual(self.events.count("milestone_link"), 1)
+
+    def test_repository_milestone_claim_uses_its_merged_direction_and_recovers(self) -> None:
+        self.issue["milestone"] = {"title": "Remove obsolete tools", "state": "open"}
+        self.directions["owner/repo"] = "## Milestones\n- `Remove obsolete tools` proves obsolete tools are gone.\n"
+        self.args.admission = "milestone"
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.assertNotIn("milestone_link", self.events)
+        self.args.admission = None
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.assertEqual(self.events.count("post"), 1)
+
+    def test_repository_milestone_cannot_waive_an_overall_track(self) -> None:
+        self.issue["milestone"] = {"title": "Launch the product", "state": "open"}
+        self.args.admission = "milestone"
+        with self.assertRaises(PLAN.ClassifiedPlanError):
+            self.run_claim()
+        self.assert_no_writes()
+
+    def test_repository_milestone_cannot_replace_an_invalid_cited_track(self) -> None:
+        link = self.milestone_fixture()
+        self.targets["9"]["state"] = "closed"
+        self.issue["milestone"] = {"title": "Remove obsolete tools", "state": "open"}
+        self.directions["owner/repo"] = "## Milestones\n- `Remove obsolete tools` proves obsolete tools are gone.\n"
+        self.args.admission, self.args.admission_link = "milestone", [link]
+        with self.assertRaises(PLAN.ClassifiedPlanError):
+            self.run_claim()
+        self.assert_no_writes()
+
+    def test_repository_milestone_refuses_unlisted_closed_or_missing_direction(self) -> None:
+        for invalid in ("unlisted", "closed", "missing"):
+            with self.subTest(invalid=invalid):
+                self.setUp()
+                self.issue["milestone"] = {"title": "Remove obsolete tools", "state": "open"}
+                self.directions["owner/repo"] = "## Milestones\n- `Remove obsolete tools` proves obsolete tools are gone.\n"
+                if invalid == "unlisted": self.directions["owner/repo"] = "## Milestones\n"
+                if invalid == "closed": self.issue["milestone"]["state"] = "closed"
+                if invalid == "missing": self.directions["owner/repo"] = None
+                self.args.admission = "milestone"
+                with self.assertRaises(PLAN.ClassifiedPlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+
+    def test_repository_milestone_drift_after_publication_keeps_release_recovery(self) -> None:
+        self.issue["milestone"] = {"title": "Remove obsolete tools", "state": "open"}
+        self.directions["owner/repo"] = "## Milestones\n- `Remove obsolete tools` proves obsolete tools are gone.\n"
+        self.args.admission = "milestone"
+        self.after_status = lambda: self.issue["milestone"].update(state="closed")
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertIn("post", self.events)
+        self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 
     def test_milestone_claim_preserves_an_existing_indirect_native_path(self) -> None:
         link = self.milestone_fixture()

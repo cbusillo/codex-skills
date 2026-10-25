@@ -254,7 +254,7 @@ active issue labels and continuing background jobs do not lift a hold.
    `gh-plan.py --repo OWNER/REPO claim <issue> --worker <worker> --session <session-id>
    --branch <task-branch> --next-action "<action>"` before creating a
    branch or worktree, adding `--admission <kind>` when the overall Order
-   admits the work: live-site breakage, a named `milestone` item (cite its Track
+   admits the work: live-site breakage, a named `milestone` item (cite its overall Track
    with `--admission-link`; claim automatically links the issue into its native graph), a
    `repeat-stop` with both occurrences, `own-project` work from the Order's
    weekly own-projects share, or `spare-capacity`. Name the
@@ -262,6 +262,10 @@ active issue labels and continuing background jobs do not lift a hold.
    linked, not spare capacity. Evidence may cite a decision comment, for example
    `--admission spare-capacity --admission-link https://github.com/OWNER/REPO/issues/123#issuecomment-456`.
    The claim retains that exact comment URL; admission grants no authority.
+   A repository milestone absent from overall direction uses its open native
+   milestone membership and that repository's merged `DIRECTION.md` instead;
+   do not invent an overall Track dependency for it.
+   A citation into the overall direction repository must still name a valid Track.
    Claim using exactly the branch the worktree helper will create
    (`work/<task-slug>` for the catalog's `github/scripts/dev-worktree`). Read
    [task worktrees](../github/references/worktrees.md) for its callable path,
