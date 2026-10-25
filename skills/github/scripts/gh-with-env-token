@@ -1008,6 +1008,33 @@ act_as_own_user() {
 	run_with_input env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" "$@"
 }
 
+attachment_command=0
+if { [ "${1:-}" = issue ] || [ "${1:-}" = pr ]; } && [ "${2:-}" = comment ]; then
+	for argument in "$@"; do
+		case "$argument" in --attach | --attach=*) attachment_command=1 ;; esac
+	done
+fi
+if [ "$attachment_command" -eq 1 ]; then
+	if [ "$own_user_opt_in" -ne 1 ] || [ "$require_automation_auth" -eq 1 ]; then
+		echo "error: attachment comments require GH_WITH_ENV_TOKEN_OWN_USER=1 and cannot require automation authentication" >&2
+		exit 1
+	fi
+	attachment_repository=$(run_python - "$script_dir" "$stdin_file" "$@" <<'PY'
+import pathlib
+import sys
+sys.path.insert(0, sys.argv[1])
+import github_comment
+try:
+    print(github_comment.validate_own_attachment_command(sys.argv[3:], pathlib.Path(sys.argv[2]).read_text()))
+except (ValueError, OSError, github_comment.CommentError) as error:
+    print(f"error: {error}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+	) || exit $?
+	act_as_own_user "$attachment_repository" "$@"
+	exit $?
+fi
+
 # Under the caller's opt-in, a read only the person's account can answer and a
 # fork into that account run as the declared personal login, whichever
 # credential the named repository would otherwise select.

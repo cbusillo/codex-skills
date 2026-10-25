@@ -275,6 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("comment", help="Add a PR timeline comment through the shared REST path.")
     p.add_argument("pr", help="PR number, URL, or branch.")
     p.add_argument("--body-file", required=True, help="Read comment Markdown from this file. Use '-' to read from stdin.")
+    p.add_argument("--attach", action="append", help="Attach FILE[#alt] through GitHub CLI; repeatable (images/videos only).")
     p.add_argument("--reviewed-head", help="Attest that this disposition weighs the completed review for this full head SHA.")
     p.add_argument("--edit-last", action="store_true", help="Edit the authenticated actor's latest comment.")
     p.add_argument("--edit-comment", type=int, help="Edit this exact timeline comment ID.")
@@ -544,6 +545,7 @@ def shared_comment(
     expected_body: Optional[str] = None,
     expected_updated_at: Optional[str] = None,
     create_if_none: bool = False,
+    attachments: list[str] | None = None,
 ) -> dict[str, Any]:
     retry_summaries: list[github_api_core.RetrySummary] = []
     try:
@@ -562,6 +564,7 @@ def shared_comment(
             expected_body=expected_body,
             expected_updated_at=expected_updated_at,
             create_if_none=create_if_none,
+            attachments=attachments,
             retry_summaries=retry_summaries,
         )
     except github_comment_core.CommentError as exc:
@@ -583,7 +586,7 @@ def cmd_comment(args: argparse.Namespace) -> dict[str, Any]:
         raise PrHelperError("PR comment body is empty", operation="comment", repo=repo, pr=number)
     reviewed_head = getattr(args, "reviewed_head", None)
     if reviewed_head is not None:
-        if args.edit_last or args.edit_comment is not None or args.create_if_none:
+        if args.edit_last or args.edit_comment is not None or args.create_if_none or getattr(args, "attach", None):
             raise PrHelperError("Post a new review disposition comment; do not edit an earlier result", operation="comment", repo=repo, pr=number)
         try:
             body = review_result_body(body, reviewed_head)
@@ -600,6 +603,7 @@ def cmd_comment(args: argparse.Namespace) -> dict[str, Any]:
         expected_body=read_text_file(args.expected_body_file, preserve_newlines=True, operation="comment", repo=repo, pr=number) if args.expected_body_file is not None else None,
         expected_updated_at=args.expected_updated_at,
         create_if_none=args.create_if_none,
+        attachments=getattr(args, "attach", None),
     )
     return {
         **result,

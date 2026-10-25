@@ -40,6 +40,9 @@ OPERATION_MARKER_LINE_RE = re.compile(
 )
 MENTION_RE = re.compile(r"(?<!\w)@(?P<login>[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}(?:/[A-Za-z0-9_-]+)?)")
 QUIET_MENTION_OPEN, QUIET_MENTION_CLOSE = "<code>", "</code>"
+ATTACHMENT_OWNER = "cbusillo"
+AGENT_POSTED_LINE = "Posted by an agent."
+ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".mp4", ".mov", ".webm"}
 
 
 class CommentError(Exception):
@@ -71,6 +74,16 @@ def live_mentions(body: str, *, notify: frozenset[str] = frozenset()) -> list[st
     entity_made = rendered - Counter(match["login"] for match in written)
     live = [match["login"] for match in written if not _is_quiet_mention(body, match)] + list(entity_made)
     return [f"@{login}" for login in live if login.casefold() not in notified]
+
+
+def validate_question_mentions(body: str, repo: str) -> None:
+    if question_id.QUESTION_HEADING.match(body) and (
+        mentions := live_mentions(body, notify=frozenset({repo.split("/")[0]}))
+    ):
+        raise ValueError(
+            f"A question must not notify the people it names ({', '.join(mentions)}); "
+            "write each as <code>@login</code> or drop the @, then post that text"
+        )
 
 
 def effective_expected_actor(expected_actor: Optional[str]) -> Optional[str]:
@@ -1085,6 +1098,163 @@ def _comment_impl(
     )
 
 
+def validate_attachment_request(repo: str, body: str, attachments: list[str]) -> None:
+    if (not github_identity.REPOSITORY_PATTERN.fullmatch(repo)
+            or repo.split("/")[0].casefold() != ATTACHMENT_OWNER):
+        raise ValueError("Own-user attachments are limited to Chris-owned repositories")
+    if body.splitlines()[:1] != [AGENT_POSTED_LINE]:
+        raise ValueError(f"Attachment comments must start with: {AGENT_POSTED_LINE}")
+    requested_body = body[len(AGENT_POSTED_LINE):].lstrip()
+    validate_question_mentions(requested_body, repo)
+    if question_id.QUESTION_HEADING.match(requested_body) and not question_id.heading_id(requested_body):
+        raise ValueError("Personal-identity questions need an existing Q ID; allocate with question_id.py next first")
+    if not attachments:
+        raise ValueError("Own-user attachment comments require an image or video")
+    for attachment in attachments:
+        path = pathlib.Path(attachment.split("#", 1)[0])
+        if path.suffix.casefold() not in ATTACHMENT_EXTENSIONS:
+            raise ValueError("Only images and videos can be attached; PDFs stay manual")
+        if not path.is_file() or not path.stat().st_size:
+            raise ValueError("Attachments must be nonempty regular files")
+        with path.open("rb") as stream:
+            if b"%PDF-" in stream.read(1024):
+                raise ValueError("PDFs stay manual, including PDFs renamed as images")
+
+
+def validate_own_attachment_command(arguments: list[str], body: str) -> str:
+    parser = argparse.ArgumentParser(allow_abbrev=False)
+    parser.add_argument("kind", choices=("issue", "pr"))
+    parser.add_argument("action", choices=("comment",))
+    parser.add_argument("number", type=int)
+    parser.add_argument("--repo", required=True)
+    parser.add_argument("--body-file", required=True, choices=("-",))
+    parser.add_argument("--attach", action="append", required=True)
+    args = parser.parse_args(arguments)
+    if args.number <= 0:
+        raise ValueError("Attachment comments require a positive issue or PR number")
+    validate_attachment_request(args.repo, body, args.attach)
+    if str(github_identity.configured_value("GH_WITH_ENV_TOKEN_OWN_USER_LOGIN") or "").casefold() != ATTACHMENT_OWNER:
+        raise ValueError("Own-user attachments require Chris's declared personal login")
+    result = _call_api(
+        "GET", f"/repos/{args.repo}", None, gh_cmd=DEFAULT_GH,
+        operation="github.comment.attachment_preflight", actor=None, expected_actor=EXPECTED_ACTOR,
+        completed_steps=[], failed_step="verify_attachment_owner", is_write=False,
+    )
+    if (not isinstance(result.body, dict)
+            or str((result.body.get("owner") or {}).get("login", "")).casefold() != ATTACHMENT_OWNER
+            or str(result.body.get("full_name", "")).casefold() != args.repo.casefold()):
+        raise ValueError("Attachment target must still be owned by Chris at its current repository name")
+    return args.repo
+
+
+def attachment_write_outcome(stderr: str, nonce: str) -> str:
+    for line in stderr.splitlines():
+        try:
+            receipt = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if receipt == {"schema_version": 1, "nonce": nonce, "write_outcome": "not_started"}:
+            return "not_started"
+    return "unknown"
+
+
+def attached_comment(
+    kind: str, number: int, body: str, attachments: list[str], *, repo: str | None,
+    gh_cmd: str, operation: str, retry_summaries: list[github_api_core.RetrySummary],
+) -> dict[str, Any]:
+    resolved_repo = resolve_repo(repo, gh_cmd=gh_cmd, operation=operation)
+    if body.splitlines()[:1] != [AGENT_POSTED_LINE]:
+        body = f"{AGENT_POSTED_LINE}\n\n{body}"
+    try:
+        validate_attachment_request(resolved_repo, body, attachments)
+    except (ValueError, OSError) as error:
+        raise _local_error(
+            str(error), operation=operation, cause="validation_error", failed_step="attachment_preflight",
+        ) from error
+    if not github_identity.own_user_opted_in():
+        raise _local_error(
+            "Attachments require GH_WITH_ENV_TOKEN_OWN_USER=1 on this command",
+            operation=operation, cause="validation_error", failed_step="attachment_preflight",
+        )
+    try:
+        help_result = subprocess.run(
+            [gh_cmd, "help", kind, "comment"], capture_output=True, text=True,
+        )
+    except OSError as error:
+        raise _local_error(
+            str(error), operation=operation, cause="attachment_cli_unavailable", failed_step="attachment_preflight",
+        ) from error
+    if help_result.returncode:
+        raise _local_error(
+            f"Attachment CLI preflight failed: {github_api_core.redact_string(help_result.stderr.strip())}",
+            operation=operation, cause="attachment_cli_unavailable", failed_step="attachment_preflight",
+        )
+    if "--attach" not in help_result.stdout:
+        raise _local_error(
+            "Attachments require GitHub CLI with the official --attach flag (2.103.2 or newer)",
+            operation=operation, cause="attachment_cli_unavailable", failed_step="attachment_preflight",
+        )
+    actor = ATTACHMENT_OWNER
+    command = [gh_cmd, kind, "comment", str(number), "--repo", resolved_repo, "--body-file", "-"]
+    for attachment in attachments:
+        command.extend(["--attach", attachment])
+    receipt_nonce = os.urandom(16).hex()
+    try:
+        result = subprocess.run(
+            command, input=body, capture_output=True, text=True,
+            env={**os.environ, "GH_WITH_ENV_TOKEN_RECEIPT_NONCE": receipt_nonce},
+        )
+    except OSError as error:
+        raise _local_error(
+            str(error), operation=operation, cause="attachment_comment_failed", failed_step="attach_comment",
+            actor=actor, expected_actor=actor, write_outcome="unknown",
+        ) from error
+    url = result.stdout.strip()
+    match = re.fullmatch(
+        rf"https://github\.com/{re.escape(resolved_repo)}/(?:issues|pull)/{number}#issuecomment-(\d+)", url, re.IGNORECASE,
+    )
+    if result.returncode or not match:
+        raise _local_error(
+            "GitHub CLI attachment comment failed using the opted-in personal account; no replay or identity fallback. "
+            "Only images and videos are supported; PDFs still go by hand. "
+            f"Read the thread before retrying. {github_api_core.redact_string(result.stderr.strip())}",
+            operation=operation, cause="attachment_comment_failed", actor=actor, expected_actor=actor,
+            failed_step="attach_comment", write_outcome=attachment_write_outcome(result.stderr, receipt_nonce),
+            payload={"url": url if match else None},
+        )
+    try:
+        readback = _call_api(
+            "GET", f"/repos/{resolved_repo}/issues/comments/{match[1]}", None,
+            gh_cmd=gh_cmd, operation=operation, actor=None, expected_actor=EXPECTED_ACTOR,
+            completed_steps=["attach_comment"], failed_step="attachment_readback", is_write=False,
+            retry_summaries=retry_summaries,
+        )
+    except CommentError as error:
+        raise _local_error(
+            str(error), operation=operation, cause=error.failure.cause,
+            actor=actor, expected_actor=actor, completed_steps=["attach_comment"],
+            failed_step="attachment_readback", write_outcome="applied",
+            payload={"url": url, "failed_request": error.api_result},
+        ) from error
+    saved = readback.body
+    saved_user = saved.get("user") if isinstance(saved, dict) else None
+    saved_author = str(saved_user.get("login") or "") if isinstance(saved_user, dict) else ""
+    if (not isinstance(saved, dict) or saved.get("id") != int(match[1])
+            or saved.get("html_url") != url or saved_author.casefold() != actor
+            or str(saved.get("body", "")).splitlines()[:1] != [AGENT_POSTED_LINE]
+            or "https://github.com/user-attachments/assets/" not in str(saved.get("body", ""))):
+        raise _local_error(
+            "Attachment readback did not confirm the comment, author, agent line and uploaded asset; read the thread before retrying",
+            operation=operation, cause="invalid_response", actor=actor, expected_actor=actor,
+            failed_step="attachment_readback", write_outcome="applied", payload={"url": url},
+        )
+    return _comment_payload(
+        readback.body, operation=operation, kind=kind, repo=resolved_repo, number=number,
+        actor=actor, expected_actor=actor, comment_action="created",
+        completed_steps=["attach_comment", "attachment_readback"],
+    )
+
+
 def comment(
     kind: str,
     number: int,
@@ -1102,6 +1272,7 @@ def comment(
     completed_steps: Optional[list[str]] = None,
     failed_step: Optional[str] = None,
     dedupe_body: bool = False,
+    attachments: list[str] | None = None,
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
 ) -> dict[str, Any]:
     collected_retry_summaries = retry_summaries if retry_summaries is not None else []
@@ -1109,31 +1280,43 @@ def comment(
         if question_id.QUESTION_HEADING.match(body):
             operation = operation or f"github.comment.{kind}"
             repo = resolve_repo(repo, gh_cmd=gh_cmd, operation=operation)
-            if mentions := live_mentions(body, notify=frozenset({repo.split("/")[0]})):
+            try:
+                validate_question_mentions(body, repo)
+            except ValueError as error:
                 raise _local_error(
-                    f"A question must not notify the people it names ({', '.join(mentions)}); "
-                    "write each as <code>@login</code> or drop the @, then post that text",
-                    operation=operation, cause="validation_error",
+                    str(error), operation=operation, cause="validation_error",
                     expected_actor=effective_expected_actor(expected_actor), failed_step="input_validation",
+                ) from error
+        if attachments:
+            if (kind not in ("issue", "pr") or number <= 0 or edit_last or edit_comment is not None
+                    or expected_body is not None or expected_updated_at is not None or create_if_none or dedupe_body):
+                raise _local_error(
+                    "--attach requires a new issue or PR comment with a positive target; editing and deduplication are unsupported",
+                    operation=operation or f"github.comment.{kind}", cause="validation_error", failed_step="input_validation",
                 )
-        payload = _comment_impl(
-            kind,
-            number,
-            body,
-            repo=repo,
-            edit_last=edit_last,
-            edit_comment=edit_comment,
-            expected_body=expected_body,
-            expected_updated_at=expected_updated_at,
-            create_if_none=create_if_none,
-            gh_cmd=gh_cmd,
-            expected_actor=expected_actor,
-            operation=operation,
-            completed_steps=completed_steps,
-            failed_step=failed_step,
-            dedupe_body=dedupe_body,
-            retry_summaries=collected_retry_summaries,
-        )
+            payload = attached_comment(
+                kind, number, body, attachments, repo=repo, gh_cmd=gh_cmd,
+                operation=operation or f"github.comment.{kind}", retry_summaries=collected_retry_summaries,
+            )
+        else:
+            payload = _comment_impl(
+                kind,
+                number,
+                body,
+                repo=repo,
+                edit_last=edit_last,
+                edit_comment=edit_comment,
+                expected_body=expected_body,
+                expected_updated_at=expected_updated_at,
+                create_if_none=create_if_none,
+                gh_cmd=gh_cmd,
+                expected_actor=expected_actor,
+                operation=operation,
+                completed_steps=completed_steps,
+                failed_step=failed_step,
+                dedupe_body=dedupe_body,
+                retry_summaries=collected_retry_summaries,
+            )
         if question_id.QUESTION_HEADING.match(body) and not question_id.heading_id(body):
             payload = _number_saved_question(payload, body, gh_cmd=gh_cmd, retry_summaries=collected_retry_summaries)
         return payload
@@ -1256,6 +1439,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("number", type=int)
     parser.add_argument("-R", "--repo")
     parser.add_argument("--body-file", default="-", help="Read Markdown from a file, or '-' for stdin.")
+    parser.add_argument("--attach", action="append", help="Attach FILE[#alt] through GitHub CLI; repeatable (images/videos only).")
     parser.add_argument("--edit-last", action="store_true")
     parser.add_argument("--edit-comment", type=int, help="Edit this exact timeline comment ID, after checking its thread and author.")
     parser.add_argument("--expected-body-file", help="Require an exact prior body from this UTF-8 file (including operation markers).")
@@ -1340,6 +1524,7 @@ def main() -> int:
             create_if_none=args.create_if_none,
             operation=operation,
             expected_actor=expected_actor,
+            attachments=args.attach,
         )
     except CommentError as exc:
         return github_api_core.emit_terminal(
