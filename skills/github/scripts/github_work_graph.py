@@ -443,13 +443,16 @@ def read_relationship_rows(
 
 
 def read_relationships(
-    repo: str, number: int, issue: dict[str, Any],
-    read: Callable[[str, int], tuple[list[dict[str, Any]], bool]], *, limit: int = 100,
+    repo: str,
+    number: int,
+    issue: dict[str, Any],
+    read: Callable[[str, int], tuple[list[dict[str, Any]], bool]],
+    *,
+    limit: int = 100,
     fields: tuple[str, ...] = ("blocked_by", "blocking", "sub_issues"),
 ) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
     rows, truncated = read_relationship_rows(repo, number, issue, read, limit=limit, fields=fields)
-    return {field: [compact_relationship_issue(row, field) for row in values]
-            for field, values in rows.items()}, truncated
+    return {field: [compact_relationship_issue(row, field) for row in values] for field, values in rows.items()}, truncated
 
 
 @dataclass
@@ -460,8 +463,11 @@ class NativeGraphRead:
 
 
 def read_native_graph(
-    roots: list[dict[str, Any]], read: Callable[[str, int], tuple[list[dict[str, Any]], bool]], *,
-    max_nodes: int = 500, relationship_limit: int = 2000,
+    roots: list[dict[str, Any]],
+    read: Callable[[str, int], tuple[list[dict[str, Any]], bool]],
+    *,
+    max_nodes: int = 500,
+    relationship_limit: int = 2000,
 ) -> NativeGraphRead:
     records = {(row["repo"].casefold(), int(row["number"])): row for row in roots}
     unavailable: list[str] = []
@@ -471,8 +477,7 @@ def read_native_graph(
         for field, endpoint in (("blocked_by", "dependencies/blocked_by"), ("sub_issues", "sub_issues")):
             source = f"{repo}#{number}:{endpoint}"
             try:
-                fields, truncated = read_relationship_rows(repo, number, {}, read,
-                    limit=relationship_limit, fields=(field,))
+                fields, truncated = read_relationship_rows(repo, number, {}, read, limit=relationship_limit, fields=(field,))
                 if truncated:
                     unavailable.append(source)
                 for row in fields[field]:
@@ -495,12 +500,13 @@ def cached_reads(fetch: Callable[[list[str]], Any]) -> Callable[[list[str]], Any
         if len(normalized) >= 2 and normalized[0] == "api":
             path = github_next_reads.observation_key("/" + normalized[1].lstrip("/"))
             parsed = urllib.parse.urlsplit(path)
-            query = urllib.parse.urlencode(sorted(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True),
-                                                  key=lambda pair: pair[0]))
+            query = urllib.parse.urlencode(
+                sorted(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True), key=lambda pair: pair[0])
+            )
             normalized[1] = urllib.parse.urlunsplit(parsed._replace(query=query)).lstrip("/")
             for index in range(2, len(normalized) - 1):
                 if normalized[index] in {"--method", "-X"}:
-                    normalized[index:index + 2] = ["--method", normalized[index + 1].upper()]
+                    normalized[index : index + 2] = ["--method", normalized[index + 1].upper()]
             if len(normalized) == 2 and normalized[1] != "graphql":
                 normalized.extend(["--method", "GET"])
         key = tuple(normalized)
@@ -509,6 +515,7 @@ def cached_reads(fetch: Callable[[list[str]], Any]) -> Callable[[list[str]], Any
                 cache[key] = fetch(args)
             except Exception as exc:
                 cache[key] = exc
+                raise
         value = cache[key]
         if isinstance(value, Exception):
             raise value
@@ -517,28 +524,45 @@ def cached_reads(fetch: Callable[[list[str]], Any]) -> Callable[[list[str]], Any
     return read
 
 
-def repository_inventory(read: Callable[..., Any], *, installed: bool, limit: int,
-                         affiliation: str = "owner,collaborator,organization_member") -> Any:
-    return read("/installation/repositories" if installed else "/user/repos",
+def repository_inventory(
+    read: Callable[..., Any], *, installed: bool, limit: int, affiliation: str = "owner,collaborator,organization_member"
+) -> Any:
+    return read(
+        "/installation/repositories" if installed else "/user/repos",
         query={} if installed else {"affiliation": affiliation},
-        collection_key="repositories" if installed else None, bucket="rest_core",
-        step_prefix="next_repository_inventory", limit=limit)
+        collection_key="repositories" if installed else None,
+        bucket="rest_core",
+        step_prefix="next_repository_inventory",
+        limit=limit,
+    )
 
 
-def issue_inventory(read: Callable[..., Any], repo: str, *, query: dict[str, Any], limit: int,
-                    step_prefix: str, issue_only: bool = False) -> Any:
-    return read(f"/repos/{repo}/issues", query=query, bucket="rest_core", step_prefix=step_prefix,
-        limit=limit, issue_only=issue_only)
+def issue_inventory(
+    read: Callable[..., Any], repo: str, *, query: dict[str, Any], limit: int, step_prefix: str, issue_only: bool = False
+) -> Any:
+    return read(
+        f"/repos/{repo}/issues", query=query, bucket="rest_core", step_prefix=step_prefix, limit=limit, issue_only=issue_only
+    )
 
 
 def ownership_inventory(read: Callable[..., Any], repo: str, *, limit: int) -> dict[str, Any]:
-    _, pulls = read(f"/repos/{repo}/pulls", query={"state": "open", "sort": "created", "direction": "asc"},
-        bucket="rest_core", step_prefix="next_queue_pulls", limit=limit + 1)
-    _, branches = read(f"/repos/{repo}/branches", query={}, bucket="rest_core",
-        step_prefix="next_queue_branches", limit=limit + 1)
+    _, pulls = read(
+        f"/repos/{repo}/pulls",
+        query={"state": "open", "sort": "created", "direction": "asc"},
+        bucket="rest_core",
+        step_prefix="next_queue_pulls",
+        limit=limit + 1,
+    )
+    _, branches = read(f"/repos/{repo}/branches", query={}, bucket="rest_core", step_prefix="next_queue_branches", limit=limit + 1)
     complete = len(pulls) <= limit and len(branches) <= limit
-    return {"pulls": pulls[:limit], "complete": complete,
-        "inventory": {"remote_branches": [branch["name"] for branch in branches[:limit]],
-                      "local_branches": [], "worktrees": []},
-        "coverage": {"pull_count": min(len(pulls), limit), "branch_count": min(len(branches), limit),
-                     "truncated": not complete, "local_artifacts": "not_read"}}
+    return {
+        "pulls": pulls[:limit],
+        "complete": complete,
+        "inventory": {"remote_branches": [branch["name"] for branch in branches[:limit]], "local_branches": [], "worktrees": []},
+        "coverage": {
+            "pull_count": min(len(pulls), limit),
+            "branch_count": min(len(branches), limit),
+            "truncated": not complete,
+            "local_artifacts": "not_read",
+        },
+    }

@@ -107,17 +107,22 @@ class WorkGraphTests(unittest.TestCase):
         self.assertEqual(fetch.call_count, 1)
         failure = ValueError("Provider unavailable")
         fetch.side_effect = failure
-        for args in (["api", "repos/owner/repo/issues/2"],
-                     ["api", "/repos/OWNER/REPO/issues/2", "--method", "GET"]):
+        for args in (["api", "repos/owner/repo/issues/2"], ["api", "/repos/OWNER/REPO/issues/2", "--method", "GET"]):
             with self.assertRaises(ValueError) as caught:
                 read(args)
             self.assertIs(caught.exception, failure)
         self.assertEqual(fetch.call_count, 2)
 
     def test_raw_relationship_rows_preserve_attribution_metadata_before_compaction(self) -> None:
-        source = {"number": 2, "title": "Delivered", "state": "closed",
-            "html_url": "https://github.com/owner/repo/issues/2", "closed_at": "2026-10-21T12:00:00Z",
-            "updated_at": "2026-10-21T12:00:00Z", "state_reason": "completed"}
+        source = {
+            "number": 2,
+            "title": "Delivered",
+            "state": "closed",
+            "html_url": "https://github.com/owner/repo/issues/2",
+            "closed_at": "2026-10-21T12:00:00Z",
+            "updated_at": "2026-10-21T12:00:00Z",
+            "state_reason": "completed",
+        }
         read = Mock(return_value=([source], False))
         rows, truncated = graph.read_relationship_rows("owner/repo", 1, {}, read, fields=("sub_issues",))
         self.assertFalse(truncated)

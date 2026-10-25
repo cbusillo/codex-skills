@@ -2097,6 +2097,36 @@ def test_milestone_outcomes_report_closures_links_and_checked_finish_line_items(
     assert dogfood == {"milestone": "Dogfood week", "tracks": [], "issues_closed": [], "links_added": [],
                        "items_checked": [], "unavailable": [], "complete": True}
 
+    full_nodes = {"repos/" + value["html_url"].removeprefix("https://github.com/"): value
+                  for values in edges.values() for value in values}
+    hydrated = []
+
+    def minimal_edges(args: list[str]) -> Any:
+        path = args[1].split("?")[0]
+        if path in full_nodes:
+            hydrated.append(path)
+            return full_nodes[path]
+        result = fetch(args)
+        if path in edges:
+            return [{key: value[key] for key in ("html_url", "state")} for value in result]
+        return result
+
+    projected = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW,
+        fetch=module.github_work_graph.cached_reads(minimal_edges))[0]
+    assert projected["complete"] and projected["issues_closed"] == thin["issues_closed"]
+    assert set(hydrated) == set(full_nodes)
+
+    for response in (None, {}):
+        def unread_node(args: list[str], response: dict[str, Any] | None = response) -> Any:
+            if args[1].split("?")[0] in full_nodes:
+                if response is None:
+                    raise module.AuditError("Canonical node unavailable")
+                return response
+            return minimal_edges(args)
+
+        unread = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=unread_node)[0]
+        assert not unread["complete"] and unread["issues_closed"] == []
+
     limited = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=fetch, max_reads=1)[0]
     assert not limited["complete"] and any(item.endswith(":read_limit") for item in limited["unavailable"])
     activity[("o/direction", 1)] = {**activity[("o/direction", 1)], "userContentEdits": {
@@ -3115,6 +3145,24 @@ def test_weekly_audit_records_once_every_adopted_repository_was_read() -> None:
         assert receipt["weekly_recorded"]["ran"] == saved["weekly_audit"]["ran"] == receipt["started"]
         assert saved["weekly_audit"]["record"] == "o/direction"
         assert set(saved["audits"]) == {"o/direction", "o/a", "o/b"}, "each repository's own window still advances"
+
+
+def test_weekly_discovery_and_repository_audits_share_one_invocation_read() -> None:
+    module = load()
+    account = WeeklyAccount(module)
+    fetch = account.fetch
+    calls = []
+
+    def counted(args: list[str], **kwargs: Any) -> Any:
+        calls.append(args[1])
+        return fetch(args, **kwargs)
+
+    account.fetch = counted
+    with tempfile.TemporaryDirectory() as tmp:
+        _code, receipt = account.run(["--weekly", "--owner", "o"], Path(tmp) / "marker.json")
+    assert receipt["weekly_recorded"] and not receipt["unread"]
+    for repo in receipt["repos"]:
+        assert calls.count(f"repos/{repo}/contents/DIRECTION.md") == 1
 
 
 def test_weekly_audit_counts_a_held_window_as_read_but_not_a_failed_audit() -> None:

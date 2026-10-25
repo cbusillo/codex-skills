@@ -1424,7 +1424,8 @@ def milestone_outcomes(
             if "updated_at" not in node or (node.get("state") == "closed" and "closed_at" not in node):
                 try:
                     node = fetch(["api", f"repos/{repo}/issues/{number}", "--method", "GET"])
-                    if not isinstance(node, dict):
+                    if (not isinstance(node, dict) or "updated_at" not in node
+                            or (node.get("state") == "closed" and "closed_at" not in node)):
                         raise AuditError("milestone graph node metadata unavailable")
                 except AuditError:
                     row["unavailable"].append(f"node:{repo}#{number}")
