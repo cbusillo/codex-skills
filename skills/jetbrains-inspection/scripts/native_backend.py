@@ -956,7 +956,6 @@ HUNK = re.compile(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@")
 
 
 def changed_line_map(repo: Path, selected: set[str]) -> dict[str, set[int] | None] | None:
-    """Lines each selected file adds or modifies since its default-branch merge base; None marks a new file."""
     def git(*argv: str) -> str | None:
         result = common.command(["git", "-c", "core.quotePath=false", "-C", str(repo), *argv])
         return None if result.returncode else result.stdout.decode(errors="replace")
