@@ -1085,6 +1085,60 @@ def _comment_impl(
     )
 
 
+def attached_comment(
+    kind: str, number: int, body: str, attachments: list[str], *, repo: str | None,
+    gh_cmd: str, operation: str, retry_summaries: list[github_api_core.RetrySummary],
+) -> dict[str, Any]:
+    environment = {**os.environ, "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "1"}
+    help_result = subprocess.run(
+        [gh_cmd, "help", kind, "comment"], capture_output=True, text=True, env=environment, check=False,
+    )
+    if help_result.returncode or "--attach" not in help_result.stdout:
+        raise _local_error(
+            "Attachments require GitHub CLI with the official --attach flag (2.103.2 or newer)",
+            operation=operation, cause="attachment_cli_unavailable", failed_step="attachment_preflight",
+        )
+    resolved_repo = resolve_repo(repo, gh_cmd=gh_cmd, operation=operation)
+    actor = authenticated_actor(
+        gh_cmd=gh_cmd, operation=operation, expected_actor=EXPECTED_ACTOR,
+        write_repository=resolved_repo, retry_summaries=retry_summaries,
+    )
+    command = [gh_cmd, kind, "comment", str(number), "--repo", resolved_repo, "--body-file", "-"]
+    for attachment in attachments:
+        command.extend(["--attach", attachment])
+    result = subprocess.run(
+        command, input=body, capture_output=True, text=True, env=environment, check=False,
+    )
+    url = result.stdout.strip()
+    match = re.fullmatch(
+        rf"https://github\.com/{re.escape(resolved_repo)}/(?:issues|pull)/{number}#issuecomment-(\d+)", url,
+    )
+    if result.returncode or not match:
+        raise _local_error(
+            "GitHub CLI attachment comment failed using automation authentication; no personal-account fallback. "
+            "Only images and videos are supported; PDFs still go by hand. "
+            f"Read the thread before retrying. {github_api_core.redact_string(result.stderr.strip())}",
+            operation=operation, cause="attachment_comment_failed", actor=actor,
+            failed_step="attach_comment", write_outcome="unknown", payload={"url": url if match else None},
+        )
+    try:
+        readback = _call_api(
+            "GET", f"/repos/{resolved_repo}/issues/comments/{match[1]}", None,
+            gh_cmd=gh_cmd, operation=operation, actor=actor, expected_actor=actor,
+            completed_steps=["attach_comment"], failed_step="attachment_readback", is_write=False,
+            retry_summaries=retry_summaries,
+        )
+    except CommentError as error:
+        error.failure.write_outcome = "applied"
+        error.payload["url"] = url
+        raise
+    return _comment_payload(
+        readback.body, operation=operation, kind=kind, repo=resolved_repo, number=number,
+        actor=actor, expected_actor=actor, comment_action="created",
+        completed_steps=["resolve_actor", "attach_comment", "attachment_readback"],
+    )
+
+
 def comment(
     kind: str,
     number: int,
@@ -1102,6 +1156,7 @@ def comment(
     completed_steps: Optional[list[str]] = None,
     failed_step: Optional[str] = None,
     dedupe_body: bool = False,
+    attachments: list[str] | None = None,
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
 ) -> dict[str, Any]:
     collected_retry_summaries = retry_summaries if retry_summaries is not None else []
@@ -1116,24 +1171,36 @@ def comment(
                     operation=operation, cause="validation_error",
                     expected_actor=effective_expected_actor(expected_actor), failed_step="input_validation",
                 )
-        payload = _comment_impl(
-            kind,
-            number,
-            body,
-            repo=repo,
-            edit_last=edit_last,
-            edit_comment=edit_comment,
-            expected_body=expected_body,
-            expected_updated_at=expected_updated_at,
-            create_if_none=create_if_none,
-            gh_cmd=gh_cmd,
-            expected_actor=expected_actor,
-            operation=operation,
-            completed_steps=completed_steps,
-            failed_step=failed_step,
-            dedupe_body=dedupe_body,
-            retry_summaries=collected_retry_summaries,
-        )
+        if attachments:
+            if (kind not in ("issue", "pr") or number <= 0 or edit_last or edit_comment is not None
+                    or expected_body is not None or expected_updated_at is not None or create_if_none or dedupe_body):
+                raise _local_error(
+                    "--attach requires a new issue or PR comment with a positive target; editing and deduplication are unsupported",
+                    operation=operation or f"github.comment.{kind}", cause="validation_error", failed_step="input_validation",
+                )
+            payload = attached_comment(
+                kind, number, body, attachments, repo=repo, gh_cmd=gh_cmd,
+                operation=operation or f"github.comment.{kind}", retry_summaries=collected_retry_summaries,
+            )
+        else:
+            payload = _comment_impl(
+                kind,
+                number,
+                body,
+                repo=repo,
+                edit_last=edit_last,
+                edit_comment=edit_comment,
+                expected_body=expected_body,
+                expected_updated_at=expected_updated_at,
+                create_if_none=create_if_none,
+                gh_cmd=gh_cmd,
+                expected_actor=expected_actor,
+                operation=operation,
+                completed_steps=completed_steps,
+                failed_step=failed_step,
+                dedupe_body=dedupe_body,
+                retry_summaries=collected_retry_summaries,
+            )
         if question_id.QUESTION_HEADING.match(body) and not question_id.heading_id(body):
             payload = _number_saved_question(payload, body, gh_cmd=gh_cmd, retry_summaries=collected_retry_summaries)
         return payload
@@ -1256,6 +1323,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("number", type=int)
     parser.add_argument("-R", "--repo")
     parser.add_argument("--body-file", default="-", help="Read Markdown from a file, or '-' for stdin.")
+    parser.add_argument("--attach", action="append", help="Attach FILE[#alt] through GitHub CLI; repeatable (images/videos only).")
     parser.add_argument("--edit-last", action="store_true")
     parser.add_argument("--edit-comment", type=int, help="Edit this exact timeline comment ID, after checking its thread and author.")
     parser.add_argument("--expected-body-file", help="Require an exact prior body from this UTF-8 file (including operation markers).")
@@ -1340,6 +1408,7 @@ def main() -> int:
             create_if_none=args.create_if_none,
             operation=operation,
             expected_actor=expected_actor,
+            attachments=args.attach,
         )
     except CommentError as exc:
         return github_api_core.emit_terminal(
