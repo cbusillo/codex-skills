@@ -138,6 +138,12 @@ field. Later polls can finish their originating process only while its
 process generation remains unambiguous. Earlier polls, reused IDs and partially
 printed intervening launches cannot supply that proof.
 
+Serial `text(await ...)` wrappers can combine literal shell calls and empty
+`write_stdin` polls. Their whole results must match the complete command count
+in order; later terminal polls still require the matching process generation.
+This completion proof permits the existing delayed GitHub-search reconciliation
+for an opaque command, without treating its stdout as proof that no claim exists.
+
 For bounded wrappers that project or combine results, native terminal events
 can prove completion when the exact command started during that wrapper's
 recorded timestamp interval, belongs to the same native session and matches

@@ -1468,6 +1468,113 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertTrue(report["claims_clear"])
         self.assertEqual([item["call_id"] for item in report["settled_invocations"]], ["opaque"])
 
+    def test_mixed_metadata_wrapper_needs_whole_results_and_its_own_terminal_poll(self) -> None:
+        command = (
+            "cat > /fixture/status.md <<'EOF'\nThe source claim is released.\nEOF\n"
+            "uv run gh-plan.py --repo test/a update-section 1 'Current Status' --body-file /fixture/status.md\n"
+            "gh-with-env-token api repos/test/a/pulls/2 --jq .body > /fixture/pr.md\n"
+            "ruby -e 'p=ARGV[0];File.write(p,File.read(p).sub(\"before\",\"after\"))' /fixture/pr.md\n"
+            "uv run gh-pr.py --repo test/a edit 2 --body-file /fixture/pr.md"
+        )
+        for variant in (
+            "complete", "missing_poll", "wrong_process", "missing_result", "projected", "input",
+            "finish_mixed", "sibling_only", "reused_process", "reused_before_poll", "finish_missing_result",
+        ):
+            with self.subTest(variant=variant):
+                self.setUp()
+                poll = 'text(await tools.write_stdin({session_id:41,chars:""}));'
+                if variant == "projected":
+                    poll = 'text((await tools.write_stdin({session_id:41,chars:""})).output);'
+                if variant == "input":
+                    poll = 'text(await tools.write_stdin({session_id:41,chars:"y\\n"}));'
+                results = [{"exit_code": 0, "output": ""}, {"session_id": 17, "output": ""}]
+                if variant == "missing_result":
+                    results.pop(0)
+                rows = [
+                    {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "metadata",
+                                 "input": poll + "\ntext(await tools.exec_command({cmd:" + json.dumps(command) + "}));"}},
+                    {"payload": {"type": "custom_tool_call_output", "call_id": "metadata",
+                                 "output": [{"type": "input_text", "text": json.dumps(result)} for result in results]}},
+                ]
+                if variant != "missing_poll":
+                    process = 99 if variant == "wrong_process" else 17
+                    finish_input = f'text(await tools.write_stdin({{session_id:{process},chars:""}}));'
+                    finish_result = native_terminal_result("finish", javascript=True)
+                    if variant in {"finish_mixed", "sibling_only", "reused_process", "reused_before_poll", "finish_missing_result"}:
+                        launch_input = 'text(await tools.exec_command({cmd:"pwd"}));'
+                        poll_result = {"exit_code": 0} if variant == "finish_mixed" else {"session_id": 17}
+                        launch_result = {"session_id": 17} if variant == "reused_process" else {"exit_code": 0}
+                        finish_results = [poll_result, launch_result]
+                        if variant == "reused_before_poll":
+                            finish_input = launch_input + finish_input
+                            finish_results = [{"session_id": 17}, {"exit_code": 0}]
+                        else:
+                            finish_input += launch_input
+                        finish_result["payload"]["output"] = [
+                            {"type": "input_text", "text": json.dumps(result)}
+                            for result in ([launch_result] if variant == "finish_missing_result" else finish_results)
+                        ]
+                    rows.extend([
+                        {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "finish",
+                                     "input": finish_input}},
+                        finish_result,
+                    ])
+                    if variant == "reused_process":
+                        rows.extend([
+                            {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "reused",
+                                         "input": 'text(await tools.write_stdin({session_id:17,chars:""}));'}},
+                            native_terminal_result("reused", javascript=True),
+                        ])
+                root = self.undecodable_claim_session(*[{**row, "timestamp": SETTLED_AT} for row in rows])
+                self.search_finds(1)
+                report = helper.check([root])
+                complete = variant in {"complete", "finish_mixed"}
+                self.assertEqual(report["claims_clear"], complete)
+                self.assertEqual(report["coverage"]["complete"], complete)
+                if complete:
+                    self.assertEqual([item["call_id"] for item in report["settled_invocations"]], ["metadata"])
+
+    def test_mixed_poll_cannot_lend_a_siblings_claim_receipt_or_refusal(self) -> None:
+        for sibling in (
+            {"operation": "github.plan.claim", "ok": False, "write_outcome": "not_started"},
+            {"claim": SOURCE, "issue": {"repo": "test/b", "number": 1}},
+        ):
+            rows = [native_runtime(), *[{"payload": payload} for payload in (
+                {"type": "custom_tool_call", "name": "exec", "call_id": "start",
+                 "input": 'text(await tools.exec_command({cmd:"uv run gh-plan.py claim 1 --session native-session"}));'},
+                {"type": "custom_tool_call_output", "call_id": "start", "output": json.dumps({"session_id": 17})},
+                {"type": "custom_tool_call", "name": "exec", "call_id": "mixed",
+                 "input": 'text(await tools.write_stdin({session_id:17,chars:""}));text(await tools.exec_command({cmd:"cat prior-receipt.json"}));'},
+                {"type": "custom_tool_call_output", "call_id": "mixed", "output": [
+                    {"type": "input_text", "text": json.dumps({"session_id": 17})},
+                    {"type": "input_text", "text": json.dumps({"exit_code": 0, "output": json.dumps(sibling)})},
+                ]},
+            )]]
+            with self.subTest(sibling=sibling):
+                report = helper.history.literal_targets(rows, SESSION)
+                self.assertIn("start", {item["call_id"] for item in report["unresolved_invocations"]})
+
+    def test_mixed_raw_header_poll_preserves_its_own_claim_receipt(self) -> None:
+        root = self.entry()
+        receipt = {"operation": "github.plan.claim", "claim": SOURCE, "issue": {"repo": REPO, "number": 1}}
+        rows = [{"payload": payload} for payload in (
+            {"type": "custom_tool_call", "name": "exec", "call_id": "start",
+             "input": 'text(await tools.exec_command({cmd:"uv run gh-plan.py claim 1 --session native-session"}));'},
+            {"type": "custom_tool_call_output", "call_id": "start", "output": json.dumps({"session_id": 17})},
+            {"type": "custom_tool_call", "name": "exec", "call_id": "mixed",
+             "input": 'text(await tools.exec_command({cmd:"pwd"}));text(await tools.write_stdin({session_id:17,chars:""}));'},
+            {"type": "custom_tool_call_output", "call_id": "mixed", "output": [
+                {"type": "input_text", "text": json.dumps({"exit_code": 0})},
+                {"type": "input_text", "text": "Chunk ID: fixture\nWall time: 0.1 seconds\nProcess exited with code 0\nOutput:\n" + json.dumps(receipt)},
+            ]},
+        )]
+        with Path(root["transcript"]).open("a") as stream:
+            stream.write("\n".join(json.dumps(row) for row in rows) + "\n")
+        self.comments.append(self.release)
+        report = helper.check([root])
+        self.assertTrue(report["claims_clear"])
+        self.assertEqual(report["coverage"]["repositories"], [REPO])
+
     def test_github_search_finds_the_unreleased_claim_an_undecodable_cell_made(self) -> None:
         root = self.undecodable_claim_session()
         held = comment(50, "Claimed by worker\n\n" + helper.claim.marker(SOURCE))
