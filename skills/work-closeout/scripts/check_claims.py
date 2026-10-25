@@ -312,14 +312,14 @@ def covered_by_journal(discoveries: list[dict], written: dict[tuple[str, int], f
     return bool(written) and all(found["journal_era"] and found["receipts"] <= written.keys() for found in discoveries)
 
 
-def reboot_bounds(entries: list[dict], expanded: list[dict], record: dict | None) -> dict[str, float]:
+def reboot_bounds(entries: list[dict], expanded: list[dict], record: dict | None, *, deadline: float | None = None) -> dict[str, float]:
     if record is None:
         return {}
     if len(entries) != 1 or record.get("session_id") != entries[0]["session_id"]:
         raise ValueError("reboot recovery requires one matching original session")
     if Path(record["transcript"]).resolve() != Path(entries[0]["transcript"]).resolve():
         raise ValueError("reboot recovery transcript differs from the original session")
-    proof = termination.verify(record, record["session_id"])
+    proof = termination.verify(record, record["session_id"], deadline=deadline)
     if not proof.get("booted_at"):
         raise ValueError("historical invocation recovery requires verified reboot proof")
     bounds = {}
@@ -327,7 +327,7 @@ def reboot_bounds(entries: list[dict], expanded: list[dict], record: dict | None
     for path, native in sorted(natives.items()):
         child = {**record, "session_id": native, "transcript": path}
         original = native == record["session_id"] and Path(path).resolve() == Path(record["transcript"]).resolve()
-        checked = proof if original else termination.verify(child, native)
+        checked = proof if original else termination.verify(child, native, deadline=deadline)
         if checked.get("booted_at") != proof["booted_at"]:
             raise ValueError("native lineage does not share the verified reboot bound")
         bounds[path] = release.stamp(checked["booted_at"]).timestamp()
@@ -373,12 +373,13 @@ def check(
     termination_record: dict | None = None,
 ) -> dict:
     deadline = time.time() + read_timeout
+    source_deadline = time.monotonic() + read_timeout
     native_sessions = {entry["session_id"] for entry in entries}
     targets: dict[str, set[tuple[str, int]]] = {}
     discoveries: dict[str, list[dict]] = {}
     unresolved = []
     expanded = history.expand(entries)
-    bounds = reboot_bounds(entries, expanded, termination_record)
+    bounds = reboot_bounds(entries, expanded, termination_record, deadline=source_deadline)
     written = {native: claim_log.written_at(native) for native in {entry["session_id"] for entry in expanded}}
     for entry in expanded:
         discovery = recorded_targets(entry, written[entry["session_id"]].keys())
@@ -422,7 +423,7 @@ def check(
     checked_at = time.time()
     for native in sorted(journal_covered):
         blocked.extend(f"session {native}: {reason}" for reason in unsettled_attempts(native, written[native], running_before[native], checked_at))
-    if termination_record is not None and reboot_bounds(entries, history.expand(entries), termination_record) != bounds:
+    if termination_record is not None and reboot_bounds(entries, history.expand(entries), termination_record, deadline=source_deadline) != bounds:
         raise ValueError("native reboot coverage changed during claim readback")
     repos = {repo for records in targets.values() for repo, _ in records}
     accounts = set(owners) | {repo.split("/")[0] for repo in repos}

@@ -407,11 +407,11 @@ class TranscriptChanging(ValueError):
     """A live append raced an identity read; it supplies no closure evidence."""
 
 
-def transcript_facts(session: str, primary: str, *, include_status: bool = False, additional_homes: set[Path] | None = None, additional_roots: set[Path] | frozenset[Path] | None = None, reader=None, identity_only=False) -> dict:
+def transcript_facts(session: str, primary: str, *, include_status: bool = False, additional_homes: set[Path] | None = None, additional_roots: set[Path] | frozenset[Path] | None = None, reader=None, identity_only=False, deadline: float | None = None) -> dict:
     """Authenticate stable native transcripts without deciding final-safe authority."""
     from github_plan_sessions import observation_homes, native_helpers
     from github_plan_release import stamp
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + 3 if deadline is None else deadline
     paths = {Path(primary).resolve(strict=True)}
     def fail(error):
         raise error
@@ -464,6 +464,8 @@ def transcript_facts(session: str, primary: str, *, include_status: bool = False
         if identity_only and reader is None:
             import claim_history
             records = claim_history.root_records(path, "codex", session, records)
+        if time.monotonic() > deadline:
+            raise TimeoutError("native closure read exceeded its budget")
         identities = {r.get("payload", {}).get("id") for r in records if r.get("type") == "session_meta"}
         if identities != {session}:
             raise ValueError("native transcript identity mismatch")

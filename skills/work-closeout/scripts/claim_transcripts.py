@@ -710,7 +710,8 @@ def response_positions(records: list[dict]) -> dict[str, int]:
 
 
 def window_completions(
-    records: list[dict], inputs: dict, identifier: str, sources: ShellTexts, session: str, responses: dict[str, int]
+    records: list[dict], inputs: dict, identifier: str, sources: ShellTexts, session: str, responses: dict[str, int],
+    completed_events: list[tuple[int, dict]],
 ) -> list[bool]:
     text, javascript, name, start = inputs[identifier]
     missing = [False] * len(sources.commands)
@@ -747,7 +748,9 @@ def window_completions(
         expected = Counter(source.text for source in sources.commands)
     observed = Counter()
     seen = set()
-    for row in records[start + 1 :]:
+    for index, row in completed_events:
+        if index <= start:
+            continue
         payload = row.get("payload") or {}
         item = execution_item(row)
         identity = item.get("id")
@@ -774,7 +777,7 @@ def window_completions(
 
 def completed_sources(
     records: list[dict], inputs: dict, outputs: dict, identifier: str, sources: ShellTexts, session: str, responses: dict[str, int],
-    finished: set[str],
+    finished: set[str], completed_events: list[tuple[int, dict]],
 ) -> list[bool]:
     text, javascript, name, _ = inputs[identifier]
     own = outputs.get(identifier, [])
@@ -796,21 +799,19 @@ def completed_sources(
                 background = background or (isinstance(result, dict) and bool(result.get("backgroundTaskId")))
         ended = bool(own) and not background
         return [ended] * len(sources.commands)
-    window = window_completions(records, inputs, identifier, sources, session, responses)
     bound = bound_shell_results(text, javascript, name, own)
     if len(bound) != len(sources.commands):
-        return window
-    polls = list(ordered_poll_results(identifier, inputs, outputs))
-    flags = []
-    for (_, result), completed in zip(bound, window, strict=True):
-        ended = completed or (type(result.get("exit_code")) is int and not isinstance(result.get("session_id"), int))
-        process = result.get("session_id")
-        if type(process) is int:
-            for poll in polls:
-                if poll.process_id == process:
-                    ended = ended or (type(poll.result.get("exit_code")) is int and poll.result.get("session_id") is None)
-        flags.append(ended)
-    return flags
+        return window_completions(records, inputs, identifier, sources, session, responses, completed_events)
+    flags = [type(result.get("exit_code")) is int and not isinstance(result.get("session_id"), int) for _, result in bound]
+    if not all(flags) and any(type(result.get("session_id")) is int for _, result in bound):
+        polls = list(ordered_poll_results(identifier, inputs, outputs))
+        flags = [ended or any(poll.process_id == result.get("session_id") and type(poll.result.get("exit_code")) is int
+                              and poll.result.get("session_id") is None for poll in polls)
+                 for ended, (_, result) in zip(flags, bound, strict=True)]
+    if all(flags):
+        return flags
+    window = window_completions(records, inputs, identifier, sources, session, responses, completed_events)
+    return [ended or completed for ended, completed in zip(flags, window, strict=True)]
 
 
 def native_javascript_parse_failure(text: str, blocks: list[object]) -> bool:
@@ -2845,13 +2846,12 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
     responses = response_positions(records)
     denied = denied_invocations(records)
     non_tty_stdin_closed = closed_stdin_runtime(records)
+    completed_events = [(index, row) for index, row in enumerate(records) if row.get("type") == "event_msg"
+                        and isinstance(payload := row.get("payload"), dict) and payload.get("type") == "item_completed"]
     finished = {
         "command:" + str(item.get("id", ""))
-        for row in records
-        if row.get("type") == "event_msg"
-        and isinstance(payload := row.get("payload"), dict)
-        and payload.get("type") == "item_completed"
-        and (item := execution_item(row)).get("status") in {"completed", "failed"}
+        for _, row in completed_events
+        if (item := execution_item(row)).get("status") in {"completed", "failed"}
         and type(item.get("exit_code")) is int
     }
     if directory is not None:
@@ -2884,7 +2884,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         launched_in_background = False
         try:
             sources = shell_texts(text, javascript, exec_command=name == "exec_command")
-            source_ended = completed_sources(records, inputs, own_outputs, identifier, sources, session, responses, finished)
+            source_ended = completed_sources(records, inputs, own_outputs, identifier, sources, session, responses, finished, completed_events)
             opaque = sources.opaque
             if not unexecuted and identifier not in finished:
                 claim_may_be_interactive = (
@@ -2966,7 +2966,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
                 saved = persisted_output(records, directory, session, identifier)
                 blocks = [*blocks, *tool_outputs(saved).get(identifier, [])]
                 restored = {**own_outputs, identifier: [*own_outputs.get(identifier, []), *tool_outputs(saved).get(identifier, [])]}
-                restored_flags = completed_sources(records, inputs, restored, identifier, sources, session, responses, finished)
+                restored_flags = completed_sources(records, inputs, restored, identifier, sources, session, responses, finished, completed_events)
                 ended_invocations = [
                     ended and not discovery.asynchronous
                     for source, ended in zip(sources.commands, restored_flags, strict=True)

@@ -342,7 +342,7 @@ knows; and only when the App configured now has a single installation and no
 client App. A code-mode cell settles only when the reader proves it finished,
 which it cannot for cells that leave a process running.
 
-For a source killed by a host reboot, add `--termination-record /absolute/original-record.json
+For a Codex source killed by a host reboot, add `--termination-record /absolute/original-record.json
 --confirm-session-ended` to the check after independently verifying native task
 and remote peer closure. Use the original source-host record from Supervisor's
 [crash recovery](../supervisor/references/helpers.md), with the original native

@@ -1487,6 +1487,17 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertTrue(report["claims_clear"])
         self.assertEqual([item["call_id"] for item in report["settled_invocations"]], ["opaque"])
 
+    def test_completed_bound_results_do_not_reconstruct_native_windows(self) -> None:
+        rows = [{"payload": payload} for index in range(20) for payload in (
+            {"type": "function_call", "name": "exec_command", "call_id": str(index),
+             "arguments": json.dumps({"cmd": "uv run gh-plan.py --repo test/a claim 1"})},
+            {"type": "function_call_output", "call_id": str(index), "output": json.dumps({"exit_code": 0, "output": ""})},
+        )]
+        with patch.object(helper.history, "window_completions", side_effect=AssertionError("unnecessary window scan")):
+            report = helper.history.literal_targets(rows, SESSION)
+        self.assertEqual(report["targets"], {(REPO, 1)})
+        self.assertFalse(report["unresolved_invocations"])
+
     def test_mixed_metadata_wrapper_needs_whole_results_and_its_own_terminal_poll(self) -> None:
         command = (
             "cat > /fixture/status.md <<'EOF'\nThe source claim is released.\nEOF\n"

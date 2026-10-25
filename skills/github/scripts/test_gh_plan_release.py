@@ -711,6 +711,23 @@ class ReleaseTests(ReleaseHarness):
             with self.assertRaises(ValueError):
                 release.termination.verify(self.termination_record, "session-b")
 
+    def test_reboot_pending_source_requires_native_empty_proof_without_tty_reuse(self) -> None:
+        self.termination_setup()
+        import github_plan_native
+        shared = release.termination.native_helpers()[1]
+        boot = release.stamp(self.termination_record["ended_at"])
+        action = {"action_pending": True, "action_at": (boot - timedelta(minutes=1)).isoformat()}
+        for blocked in (False, True):
+            with self.subTest(blocked=blocked), patch.object(shared, "host_boot_time", return_value=boot), \
+                    patch.object(github_plan_closure, "lease_state", return_value=action), \
+                    patch.object(github_plan_native, "prove_crash_end", **(
+                        {"side_effect": ValueError("native source is queued")} if blocked else {"return_value": None})):
+                if blocked:
+                    with self.assertRaises(ValueError):
+                        release.termination.verify(self.termination_record, "session-b")
+                else:
+                    release.termination.verify(self.termination_record, "session-b")
+
     def test_termination_tty_reuse_requires_native_cutoff_and_pending_action_veto(self):
         self.termination_setup()
         self.cutoff_patch.stop()
@@ -758,9 +775,8 @@ class ReleaseTests(ReleaseHarness):
                     patch.object(shared, "process_started_at", return_value=cutoff + timedelta(seconds=1)), \
                     patch.object(release.termination, "inventory", return_value=[(88, "ttys123", command)]), \
                     patch.object(github_plan_closure, "action_pending", return_value=True), \
-                    patch.object(github_plan_native, "prove_crash_end", side_effect=ValueError("unavailable proof")) as proof:
+                    patch.object(github_plan_native, "prove_crash_end", side_effect=ValueError("unavailable proof")):
                 release.termination.verify(self.termination_record, "session-b")
-                proof.assert_not_called()
 
     def test_termination_covers_configured_account_transcripts_outside_declared_roots(self) -> None:
         transcript = self.termination_setup()

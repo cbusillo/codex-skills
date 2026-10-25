@@ -10,6 +10,7 @@ import json
 import io
 from contextlib import asynccontextmanager, contextmanager, redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 import unittest
 from unittest.mock import patch
@@ -230,16 +231,58 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeQueueTests(unittest.TestCase):
+    def test_manual_file_deadline_preserves_the_observer_default_and_still_expires(self) -> None:
+        from pathlib import Path
+        from types import SimpleNamespace
+        import uuid
+        for kind in ("observer", "manual", "expired"):
+            with self.subTest(kind=kind), ReceiptFixture(str(uuid.uuid4())) as f:
+                clock = [0.0]
+                original_open = Path.open
+                def read(path: Path, *args: object, **kwargs: object) -> io.IOBase:
+                    if path == f.transcript and args == ("rb",):
+                        clock[0] = 1_000_000.0
+                    return original_open(path, *args, **kwargs)
+                with patch.object(CLOSURE, "time", SimpleNamespace(monotonic=lambda: clock[0])), \
+                        patch.object(Path, "open", new=read):
+                    deadline = None if kind == "observer" else 1_000_000.0 + (1 if kind == "manual" else -1)
+                    if kind == "manual":
+                        self.assertTrue(CLOSURE.transcript_facts(f.session, str(f.transcript), identity_only=True, deadline=deadline))
+                    else:
+                        with self.assertRaises(TimeoutError):
+                            CLOSURE.transcript_facts(f.session, str(f.transcript), identity_only=True, deadline=deadline)
+
     def test_crash_proof_requires_unloaded_empty_unchanged_sources_without_clearing_barriers(self) -> None:
         import uuid
         from types import SimpleNamespace
         import github_plan_termination as termination
         termination.native_helpers()
         import claim_history
-        for variant in ("clear", "loaded", "queued", "no_boot", "changed", "new_action", "fork", "foreign_fork"):
+        for variant in ("clear", "loaded", "queued", "no_boot", "changed", "new_action", "fork", "foreign_fork",
+                        "cross_home", "outside", "wrong_path"):
             with self.subTest(variant=variant), ReceiptFixture(str(uuid.uuid4())) as f:
                 other, _ledger, _selected, _retained, deleted = self.cancel_setup(f)
                 f.home_queues = {str(f.home): [], str(other): []}
+                owned = dict(f.entry)
+                if variant in {"cross_home", "outside", "wrong_path"}:
+                    primary = other / "sessions" / f.transcript.name
+                    owned["transcript"] = str(primary)
+                    if variant == "outside":
+                        primary = f.root / "outside.jsonl"
+                        primary.write_bytes(f.transcript.read_bytes())
+                        owned["transcript"] = str(primary)
+                    f.rpc_results["thread/read"] = {"thread": {"id": f.session,
+                        "path": str(f.root / "wrong.jsonl") if variant == "wrong_path" else str(primary),
+                        "status": {"type": "notLoaded"}}}
+                    saved = CLOSURE.log_rows()
+                    for row in saved:
+                        if row.get("session_id") == f.session:
+                            row["transcript"] = owned["transcript"]
+                            if row.get("resumed_generation"):
+                                row["resumed_generation"]["transcript"] = owned["transcript"]
+                    CLOSURE.replace_rows(saved)
+                    with self.assertRaises(ValueError):
+                        NATIVE._cancel_origin(owned, CLOSURE.lease_state(f.session))
                 if variant == "loaded":
                     f.home_states[str(other)] = "idle"
                 if variant == "queued":
@@ -260,20 +303,37 @@ class NativeQueueTests(unittest.TestCase):
                                           roots=frozenset({f.transcript.parent}))
                 if variant == "new_action":
                     process.rebooted_at -= timedelta(minutes=1)
-                original_files = NATIVE._cancel_files
+                original_files = NATIVE._source_files
+                original_connection = NATIVE.connection
+                connections = 0
+                proof_deadline = NATIVE.time.monotonic() + 600
+                observed_deadlines = []
+                @asynccontextmanager
+                async def short_connection(home: object, **kwargs: object) -> AsyncIterator[object]:
+                    nonlocal connections
+                    async with original_connection(home, **kwargs) as request:
+                        connections += 1
+                        try:
+                            yield request
+                        finally:
+                            connections -= 1
                 def files(*args: object, **kwargs: object) -> dict:
+                    self.assertEqual(connections, 0)
+                    observed_deadlines.append(kwargs["deadline"])
                     value = original_files(*args, **kwargs)
                     if variant == "changed" and "thread/read" in f.rpc_requests:
                         value = {**value, "changed": True}
                     return value
                 with patch.object(termination, "_verify_queue_source", return_value=process), \
-                        patch.object(termination, "_recheck_queue_process"), patch.object(NATIVE, "_cancel_files", side_effect=files), \
+                        patch.object(termination, "_recheck_queue_process"), patch.object(NATIVE, "_source_files", side_effect=files), \
+                        patch.object(NATIVE, "connection", side_effect=short_connection), \
                         patch.object(claim_history, "root_context", return_value={"parent": "native-parent", "ancestors": ("native-parent",)}):
-                    if variant in {"clear", "fork"}:
-                        asyncio.run(NATIVE.prove_crash_end(f.entry))
+                    if variant in {"clear", "fork", "cross_home"}:
+                        asyncio.run(NATIVE.prove_crash_end(owned, deadline=proof_deadline))
                     else:
                         with self.assertRaises(ValueError):
-                            asyncio.run(NATIVE.prove_crash_end(f.entry))
+                            asyncio.run(NATIVE.prove_crash_end(owned, deadline=proof_deadline))
+                self.assertTrue(all(deadline == proof_deadline for deadline in observed_deadlines))
                 self.assertEqual({path: path.read_bytes() for path in before}, before)
                 self.assertTrue(CLOSURE.action_pending(f.session))
                 self.assertFalse(deleted)

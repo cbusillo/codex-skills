@@ -14,6 +14,7 @@ import socket
 import subprocess
 from subprocess import run as run_terminal
 import sys
+import time
 from typing import NamedTuple
 
 def native_helpers():
@@ -183,18 +184,10 @@ def _transcript_activity(times, mtime_ns, truncated, now, ended):
     return max(times)
 
 
-def verify(record, session):
+def verify(record, session, *, deadline: float | None = None):
     """Never infer termination from absence alone; caller supplies original identity."""
     import github_plan_closure
-    def independent(pid: int, argv: list[str]) -> bool:
-        if github_plan_closure.guarded_launch_endpoint(pid, argv) is None:
-            return False
-        if github_plan_closure.action_pending(session):
-            import asyncio
-            import github_plan_native
-            asyncio.run(github_plan_native.prove_crash_end(record))
-        return True
-    return _verify(record, session, independent)
+    return _verify(record, session, lambda pid, argv: github_plan_closure.guarded_launch_endpoint(pid, argv) is not None, deadline=deadline)
 
 
 class _TerminationProcess(NamedTuple):
@@ -208,8 +201,8 @@ class _TerminationProcess(NamedTuple):
 def _verify_queue_source(record, session, *, latest_pid=None):
     """Bind original cleanup identity once; never grant claim-release authority."""
     import github_plan_closure
-    process = _initial_source(record, session,
-        lambda pid, argv: github_plan_closure.guarded_launch_endpoint(pid, argv) is not None, latest_pid=latest_pid)
+    process = _initial_source(record, session, latest_pid=latest_pid)
+    _physical_exit(process, lambda pid, argv: github_plan_closure.guarded_launch_endpoint(pid, argv) is not None)
     terminal_state(record)
     return process
 
@@ -226,7 +219,7 @@ def _recheck_queue_process(process):
     _physical_exit(process, lambda pid, argv: github_plan_closure.guarded_launch_endpoint(pid, argv) is not None)
 
 
-def _initial_source(record, session, independent_harness, *, latest_pid=None):
+def _initial_source(record, session, *, latest_pid=None):
     _validate_metadata(record, session)
     if record.get("session_id") != session or record.get("host") != socket.gethostname():
         raise ValueError("Run termination checks on the recorded source host with the exact native session")
@@ -256,7 +249,6 @@ def _initial_source(record, session, independent_harness, *, latest_pid=None):
         import github_plan_closure
         require_preboot_action(github_plan_closure.lease_state(session), rebooted_at)
     process = _TerminationProcess(dict(record), physical, rebooted_at or cutoff, roots, rebooted_at)
-    _physical_exit(process, independent_harness)
     return process
 
 
@@ -269,11 +261,21 @@ def _transcript_roots(record):
     return {Path(root).resolve(strict=True) for root in [*roots, *(path for path in configured if path.is_dir())]}
 
 
-def _verify(record, session, independent_harness):
+def _verify(record, session, independent_harness, *, deadline: float | None = None):
+    if deadline is not None and time.monotonic() > deadline:
+        raise TimeoutError("termination verification exceeded its deadline")
     if record.get("exit_record"):
         import github_plan_termination_history
         return github_plan_termination_history.verify(record, session)
-    process = _initial_source(record, session, independent_harness)
+    import github_plan_closure
+    process = _initial_source(record, session)
+    action = github_plan_closure.lease_state(session)
+    if process.rebooted_at is not None and action.get("action_pending"):
+        import asyncio
+        import github_plan_native
+        asyncio.run(github_plan_native.prove_crash_end(record, deadline=deadline))
+    _physical_exit(process, lambda pid, argv: (process.rebooted_at is not None or not github_plan_closure.action_pending(session))
+                   and independent_harness(pid, argv))
     activity = _verify_transcripts(record, process.roots, before_boot=process.rebooted_at)
     data = {key: record[key] for key in ("session_id", "pid", "host", "ended_at", "cause", "retained_artifacts", "tmux_session_id")}
     data.update(checked_at=datetime.now(timezone.utc).isoformat(), last_activity_at=activity.last.isoformat(), terminal_state=terminal_state(record))
@@ -281,6 +283,10 @@ def _verify(record, session, independent_harness):
         data["booted_at"] = process.rebooted_at.isoformat()
     validate(data, session)
     _verify_artifacts(data["retained_artifacts"])
+    if process.rebooted_at is not None and github_plan_closure.lease_state(session) != action:
+        raise ValueError("source native action changed during termination proof")
+    if deadline is not None and time.monotonic() > deadline:
+        raise TimeoutError("termination verification exceeded its deadline")
     return data
 
 
