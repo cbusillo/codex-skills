@@ -1494,10 +1494,12 @@ class LegacyReleaseTests(ReleaseHarness):
                  'another author': ('{worker} handoff: draft PR #99.', '2026-10-01T03:00:00Z', 'stranger', False),
                  'longer worker name': ('{worker}B handoff: draft PR #99.', '2026-10-01T03:00:00Z', None, False),
                  'longer PR number': ('{worker} handoff: draft PR #990.', '2026-10-01T03:00:00Z', None, False)}
+        cases['open pull request'] = ('{worker} handoff: draft PR #99.', '2026-10-01T03:00:00Z', None, True)
         for name, (body, created_at, author, released) in cases.items():
             with self.subTest(name):
                 _, worker = self.legacy_setup()
                 self.f.pulls[0].update(body='', title='Legacy task')
+                if name == 'open pull request': self.f.pulls[0].update(state='open', merged_at=None)
                 named = self.comment(2, body.format(worker=worker), created_at)
                 if author: named['user']['login'] = author
                 self.f.comments.append(named)

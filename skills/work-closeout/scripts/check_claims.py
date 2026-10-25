@@ -193,7 +193,7 @@ def began_after_journal(rows: list[dict], entry: dict) -> bool:
     return identity and began.tzinfo is not None and began > JOURNAL_SHIPPED
 
 
-def recorded_targets(entry: dict) -> dict:
+def recorded_targets(entry: dict, journal: AbstractSet[tuple[str, int]] | None = None) -> dict:
     require_own_transcript(entry)
     native = entry["session_id"]
     rows = entry.get("_transcript_records") or history.read_records(Path(entry["transcript"]))
@@ -202,7 +202,7 @@ def recorded_targets(entry: dict) -> dict:
     discovery = history.literal_targets(
         rows, native, directory=Path(entry["native_output_directory"]) if entry.get("native_output_directory") else None
     )
-    discovery["targets"].update(receipts | claim_log.read(native))
+    discovery["targets"].update(receipts | (claim_log.read(native) if journal is None else journal))
     discovery["receipts"] = receipts
     discovery["journal_era"] = began_after_journal(rows, entry) and not any(names_another_session(value, native) for value in values)
     unresolved = discovery["unresolved_invocations"]
@@ -311,7 +311,7 @@ def covered_by_journal(discoveries: list[dict], written: dict[tuple[str, int], f
     return bool(written) and all(found["journal_era"] and found["receipts"] <= written.keys() for found in discoveries)
 
 
-def live_claim_helpers(native: str) -> list[str]:
+def live_claim_writers(native: str, targets: AbstractSet[tuple[str, int]]) -> list[str]:
     listing = subprocess.run(["ps", "-axww", "-o", "pid=,ppid=,command="], capture_output=True, text=True, check=True).stdout
     processes = {int(pid): (int(parent), command) for pid, parent, command in
                  (line.split(None, 2) for line in listing.splitlines() if len(line.split(None, 2)) == 3)}
@@ -319,15 +319,21 @@ def live_claim_helpers(native: str) -> list[str]:
     while pid in processes and pid not in own_lineage:
         own_lineage.add(pid)
         pid = processes[pid][0]
+    posts = [f"/repos/{repo}/issues/{number}/comments" for repo, number in targets]
     return [command for pid, (_, command) in sorted(processes.items())
-            if pid not in own_lineage and native in command and "gh-plan" in command]
+            if pid not in own_lineage and ("gh-plan" in command and native in command
+                                           or "POST" in command and any(post in command for post in posts))]
 
 
-def unsettled_attempts(native: str, written: dict[tuple[str, int], float], checked_at: float) -> list[str]:
+def running_writes(native: str, written: dict[tuple[str, int], float]) -> list[str]:
     try:
-        reasons = [f"claim helper still running: {command}" for command in live_claim_helpers(native)]
+        return [f"claim write still running: {command}" for command in live_claim_writers(native, written.keys())]
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
-        reasons = [f"cannot list running claim helpers: {error}"]
+        return [f"cannot list running claim writes: {error}"]
+
+
+def unsettled_attempts(native: str, written: dict[tuple[str, int], float], running_before: list[str], checked_at: float) -> list[str]:
+    reasons = list(dict.fromkeys([*running_before, *running_writes(native, written)]))
     if any(at > checked_at - ORPHANED_WRITE_SECONDS for at in written.values()):
         reasons.append("a claim attempt began less than 10 minutes ago; check again after it settles")
     if claim_log.written_at(native) != written:
@@ -347,16 +353,18 @@ def check(
     targets: dict[str, set[tuple[str, int]]] = {}
     discoveries: dict[str, list[dict]] = {}
     unresolved = []
-    for entry in history.expand(entries):
-        discovery = recorded_targets(entry)
+    expanded = history.expand(entries)
+    written = {native: claim_log.written_at(native) for native in {entry["session_id"] for entry in expanded}}
+    for entry in expanded:
+        discovery = recorded_targets(entry, written[entry["session_id"]].keys())
         discoveries.setdefault(entry["session_id"], []).append(discovery)
         targets.setdefault(entry["session_id"], set()).update(discovery["targets"])
         unresolved.extend(
             {**item, "session": entry["session_id"], "transcript": entry["transcript"]}
             for item in discovery["unresolved_invocations"]
         )
-    written = {native: claim_log.written_at(native) for native in discoveries}
     journal_covered = {native for native, found in discoveries.items() if covered_by_journal(found, written[native])}
+    running_before = {native: running_writes(native, written[native]) for native in journal_covered}
     released, blocked, readers, pulls_cache, data_cache = [], [], {}, {}, {}
 
     def check_target(native: str, repo: str, number: int) -> None:
@@ -385,7 +393,7 @@ def check(
     unresolved = [item for item in unresolved if item not in settled]
     checked_at = time.time()
     for native in sorted(journal_covered):
-        blocked.extend(f"session {native}: {reason}" for reason in unsettled_attempts(native, written[native], checked_at))
+        blocked.extend(f"session {native}: {reason}" for reason in unsettled_attempts(native, written[native], running_before[native], checked_at))
     repos = {repo for records in targets.values() for repo, _ in records}
     accounts = set(owners) | {repo.split("/")[0] for repo in repos}
     complete = not unresolved and not blocked

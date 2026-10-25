@@ -1540,7 +1540,7 @@ class ClaimCloseoutTests(unittest.TestCase):
         with Path(root["transcript"]).open("a") as stream:
             for row in rows or finished_opaque_call():
                 stream.write(json.dumps(row) + "\n")
-        self.live_helpers = self.enterContext(patch.object(helper, "live_claim_helpers", return_value=[]))
+        self.live_writes = self.enterContext(patch.object(helper, "live_claim_writers", return_value=[]))
         self.enterContext(patch.object(helper, "search_account", side_effect=ValueError("search is not configured")))
         return root
 
@@ -1592,16 +1592,32 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertEqual([item["call_id"] for item in report["unresolved_invocations"]], ["opaque"])
 
     def test_journal_covered_session_waits_for_every_claim_attempt_to_settle(self) -> None:
+        helper_command = f"uv run gh-plan.py claim 1 --session {SESSION}"
+        read_transcript = helper.history.literal_targets
+
         def write_during_readback(path: str, **kwargs: object) -> list[dict]:
             helper.claim_log.record(SESSION, REPO, 3)
             self.age_journal()
             return self.paged(path, **kwargs)
 
+        def write_finishing_during_readback() -> None:
+            read_back = []
+            self.live_writes.side_effect = lambda *args: [] if read_back else [helper_command]
+            self.reader.paged_json.side_effect = lambda path, **kwargs: read_back.append(path) or self.paged(path, **kwargs)
+
+        def write_while_reading_transcripts(*args: object, **kwargs: object) -> dict:
+            helper.claim_log.record(SESSION, REPO, 3)
+            self.age_journal()
+            return read_transcript(*args, **kwargs)
+
         cases: dict[str, Callable[[], None]] = {
-            "helper still running": lambda: setattr(self.live_helpers, "return_value", [f"uv run gh-plan.py claim 1 --session {SESSION}"]),
-            "helpers cannot be listed": lambda: setattr(self.live_helpers, "side_effect", OSError("ps unavailable")),
+            "write still running": lambda: setattr(self.live_writes, "return_value", [helper_command]),
+            "write finished during readback": write_finishing_during_readback,
+            "writes cannot be listed": lambda: setattr(self.live_writes, "side_effect", OSError("ps unavailable")),
             "attempt began recently": lambda: self.age_journal(seconds=60),
-            "attempt began during the check": lambda: setattr(self.reader.paged_json, "side_effect", write_during_readback),
+            "attempt began during readback": lambda: setattr(self.reader.paged_json, "side_effect", write_during_readback),
+            "attempt began while transcripts were read": lambda: self.enterContext(
+                patch.object(helper.history, "literal_targets", side_effect=write_while_reading_transcripts)),
         }
         for name, unsettle in cases.items():
             with self.subTest(name):
@@ -1623,16 +1639,21 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertFalse(report["claims_clear"])
         self.assertTrue(any(line.startswith(f"{REPO}#5:") for line in report["blocked"]))
 
-    def test_live_claim_helpers_ignore_this_check_and_its_callers(self) -> None:
+    def test_live_claim_writers_ignore_this_check_and_its_callers(self) -> None:
         pid = os.getpid()
+        orphaned_post = f"gh api --method POST --include /repos/{REPO}/issues/1/comments --input -"
         listing = "\n".join([
             f"{pid} 40 uv run check_claims.py --session {SESSION}",
             f"40 1 zsh -c 'uv run gh-plan.py release 1 --session {SESSION}; uv run check_claims.py --session {SESSION}'",
             f"41 1 uv run gh-plan.py --repo {REPO} claim 2 --session {SESSION}",
             f"42 1 uv run gh-plan.py --repo {REPO} claim 3 --session other",
+            f"43 1 {orphaned_post}",
+            f"44 1 gh api --method GET --include /repos/{REPO}/issues/1/comments",
+            f"45 1 gh api --method POST --include /repos/{REPO}/issues/10/comments --input -",
         ])
         with patch.object(helper.subprocess, "run", return_value=SimpleNamespace(stdout=listing)):
-            self.assertEqual(helper.live_claim_helpers(SESSION), [f"uv run gh-plan.py --repo {REPO} claim 2 --session {SESSION}"])
+            self.assertEqual(helper.live_claim_writers(SESSION, {(REPO, 1)}),
+                             [f"uv run gh-plan.py --repo {REPO} claim 2 --session {SESSION}", orphaned_post])
 
     def test_orphan_saved_shell_output_cannot_prove_complete_claim_coverage(self) -> None:
         root = self.entry()

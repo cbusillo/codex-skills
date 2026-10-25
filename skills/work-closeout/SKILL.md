@@ -311,10 +311,11 @@ For a session that began after the journal shipped (`JOURNAL_SHIPPED` in
 holds the session's journal rows, every claim result in its transcripts has a
 row, and no claim result names another session. Invocations the reader cannot
 decode are then listed under `journal_covered_invocations` and leave coverage
-complete. Every claim attempt must also have settled: no `gh-plan` process
-naming the session still runs outside the check's own callers, no journal row
-was written in the last 10 minutes, and the journal is unchanged after the
-GitHub reads. The GitHub search below still runs, and each claim it finds is
+complete. Every claim attempt must also have settled: before and after the
+GitHub reads, no process outside the check's own callers is a `gh-plan` command
+naming the session or a comment POST to one of its journal targets; no journal
+row was written in the last 10 minutes; and the journal is unchanged from the
+one snapshot the check read its targets from. The GitHub search below still runs, and each claim it finds is
 checked. Other sessions keep the reconstruction.
 
 For older helpers and mixed sessions, the check reads linked local native child

@@ -118,7 +118,8 @@ def _check_activity(comments, source, cutoff, record):
             raise ValueError("Source session shows ownership activity after the cited evidence")
 
 
-def check_retained_pr(pull, head_commit, *, repo, number, actor, ended, subject_pr=None, source_branch=None, allow_closed_unmerged=False):
+def check_retained_pr(pull, head_commit, *, repo, number, actor, ended, subject_pr=None, source_branch=None, allow_closed_unmerged=False,
+                      worker_named=False):
     """One retained-work guard shared by write preflight and read-only planning."""
     subject = subject_pr is not None and pull.get("number") == subject_pr
     if (not subject or (pull.get("head") or {}).get("ref") == source_branch) and stamp(head_commit["commit"]["committer"]["date"]) >= stamp(ended):
@@ -139,7 +140,7 @@ def check_retained_pr(pull, head_commit, *, repo, number, actor, ended, subject_
     if ((pull.get("user") or {}).get("login") != actor
             or pull.get("state") != "open" and not pull.get("merged_at") and not (allow_closed_unmerged and pull.get("state") == "closed")
             or any(((pull.get(side) or {}).get("repo") or {}).get("full_name", "").casefold() != repo.casefold() for side in ("head", "base"))
-            or not claim.pr_issue_reference(pull, number, repo=repo, attestation=True, record_kind="pr" if subject_pr is not None else "issue")):
+            or not (worker_named or claim.pr_issue_reference(pull, number, repo=repo, attestation=True, record_kind="pr" if subject_pr is not None else "issue"))):
         raise IssueReleaseRefusal("Retained PR must independently link the canonical issue and belong to the source automation identity")
 
 
