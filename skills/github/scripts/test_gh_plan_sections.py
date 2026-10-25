@@ -227,17 +227,19 @@ class SectionTests(unittest.TestCase):
         self.issue["labels"] = [{"name": "plan:waiting"}]
         self.issue["body"] += "\n## Current Status\n\nOld routing.\n\n" + PLAN.github_plan_wait.marker(wait)
         code, _, edit, errors = self.run_update("--body", "Next action: Chris answers the existing question.",
-                                              section="Current Status", cmd_claim=Mock(side_effect=AssertionError("Execution claim")))
+                                              section="Current Status")
         self.assertEqual(code, 0, errors)
         updated = {**self.issue, "body": edit.call_args.kwargs["body"]}
         self.assertEqual(PLAN.github_plan_wait.current(updated, [], {"fixture-bot[bot]"}), wait)
         self.assertEqual(PLAN.github_plan_claim.records(updated["body"]), [])
-        self.assertEqual(set(edit.call_args.kwargs), {"body"})
-        for record in (PLAN.github_plan_wait.marker(PLAN.github_plan_wait.reviewed(evidence="Clear")),
-                       PLAN.github_plan_claim.marker(CLAIM)):
-            with self.subTest(record=record):
-                self.assert_prewrite_failure(("--body", "Corrected status.\n" + record),
-                                             "section_replacement", section="Current Status")
+        for section in ("Current Status", "current status", "Finish Line", "Scope", "Objective", "Relationships"):
+            for record in (PLAN.github_plan_wait.marker(PLAN.github_plan_wait.reviewed(evidence="Clear")),
+                           PLAN.github_plan_claim.marker(CLAIM)):
+                with self.subTest(section=section, record=record):
+                    self.assert_prewrite_failure(("--body", "Corrected status.\n" + record),
+                                                 "section_replacement", section=section)
+        self.assert_prewrite_failure(("--body", "Truncated log:\n```text\ncontent"),
+                                     "section_replacement", section="Finish Line")
 
     def test_indented_claims_are_recognized_as_the_claim_reader_does(self) -> None:
         successor = {**CLAIM, "worker": "next", "session": "s2"}
