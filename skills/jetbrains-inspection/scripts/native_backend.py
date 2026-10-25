@@ -31,7 +31,7 @@ import tomllib
 import urllib.parse
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from xml.etree import ElementTree
 
 _spec = importlib.util.spec_from_file_location("native_common", Path(__file__).with_name("native_common.py"))
@@ -47,6 +47,7 @@ NICE = 10
 DRAIN_SECONDS = 2
 DRAIN_BYTES = 4 * 1024 * 1024
 NATIVE_SUFFIXES = frozenset({".py", ".xml", ".yaml", ".yml"})
+PYTHON_PRODUCT_KEY = "pycharm"
 
 
 def sibling_module(name, filename):
@@ -107,8 +108,9 @@ def framework_available(roots):
 def eligibility_reason(args, host, repo, settings):
     """Public configuration checks only; never inspect activation or start an IDE."""
     try:
-        worker, _app, roots = worker_settings(args, host)
-        launcher_paths(worker)
+        configured_worker = worker_settings(args, host)
+        roots = configured_worker.framework_roots
+        launcher_paths(configured_worker.worker)
         if settings.get("prepare") and common.requested_python_version(settings) is None:
             return "native_preparation_shape_unsupported"
         if is_odoo(repo) and not framework_available(roots):
@@ -196,8 +198,22 @@ def framework_context(repo, selected, roots):
         raise Blocked("native_odoo_version_unproven") from None
 
 
-def runtime_storage(host, worker):
-    configured = host.read_global_config().get("jetbrains", {}).get("nativeWorker", {})
+def native_worker_config(host: Any, product_key: str) -> dict[str, Any]:
+    jetbrains = host.read_global_config().get("jetbrains", {})
+    workers = jetbrains.get("nativeWorkers", {}) if isinstance(jetbrains, dict) else None
+    if not isinstance(workers, dict):
+        raise Blocked("native_configuration_invalid")
+    legacy = product_key == PYTHON_PRODUCT_KEY and "nativeWorker" in jetbrains
+    if legacy and product_key in workers:
+        raise Blocked("native_configuration_invalid")
+    configured = jetbrains["nativeWorker"] if legacy else workers.get(product_key, {})
+    if not isinstance(configured, dict):
+        raise Blocked("native_configuration_invalid")
+    return configured
+
+
+def runtime_storage(host, worker, product_key=PYTHON_PRODUCT_KEY):
+    configured = native_worker_config(host, product_key)
     raw = configured.get("cacheRoot")
     if raw is not None:
         shared = Path(raw).expanduser()
@@ -257,12 +273,16 @@ def profile_lock(worker, name="worker.lock", wait_until=None, on_wait=None):
         yield lock
 
 
-def worker_settings(args: Any, host: Any) -> tuple[Path, Path, list[Path]]:
-    global_config = host.read_global_config()
-    jetbrains = global_config.get("jetbrains", {})
-    configured = jetbrains.get("nativeWorker", {}) if isinstance(jetbrains, dict) else None
-    if not isinstance(configured, dict):
-        raise Blocked("native_configuration_invalid")
+class WorkerSettings(NamedTuple):
+    worker: Path
+    app: Path
+    framework_roots: list[Path]
+    product: Any
+
+
+def worker_settings(args: Any, host: Any, product_key: str = PYTHON_PRODUCT_KEY) -> WorkerSettings:
+    product = host.IDE_PRODUCTS[product_key]
+    configured = native_worker_config(host, product_key)
     raw = args.native_worker or os.environ.get("JETBRAINS_INSPECTION_NATIVE_WORKER") or configured.get("path")
     if not isinstance(raw, str) or not raw:
         raise Blocked("native_worker_not_configured")
@@ -271,7 +291,7 @@ def worker_settings(args: Any, host: Any) -> tuple[Path, Path, list[Path]]:
         raise Blocked("native_worker_path_unsafe")
     app = args.ide_app or configured.get("app")
     if args.native_recover_only:
-        return worker, Path(app).expanduser().resolve() if isinstance(app, str) else worker, []
+        return WorkerSettings(worker, Path(app).expanduser().resolve() if isinstance(app, str) else worker, [], product)
     if not isinstance(app, str) or not app:
         raise Blocked("native_app_not_configured")
     candidate = Path(app).expanduser()
@@ -285,12 +305,12 @@ def worker_settings(args: Any, host: Any) -> tuple[Path, Path, list[Path]]:
     launcher = app / "Contents/bin/inspect.sh"
     if not launcher.is_file():
         raise Blocked("native_inspector_unavailable")
-    product = json.loads((app / "Contents/Resources/product-info.json").read_text())
-    if product.get("productCode") not in {"PY", "PC"} or product.get("envVarBaseName") != "PYCHARM":
-        raise Blocked("native_pycharm_distribution_required")
+    distribution = json.loads((app / "Contents/Resources/product-info.json").read_text())
+    if distribution.get("productCode") not in product.product_codes or distribution.get("envVarBaseName") != product.env_var_base_name:
+        raise Blocked(f"native_{product.key}_distribution_required")
     roots = args.native_framework_root or configured.get("frameworkRoots", [])
     roots = [Path(p).expanduser().resolve() for p in roots]
-    return worker, app, roots
+    return WorkerSettings(worker, app, roots, product)
 
 
 def launcher_paths(worker):
@@ -1077,7 +1097,7 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
     if reason in {"native_owner_activation_required", "native_activation_stop_recorded"}:
         action = "Owner question: the Director must restore the configured independent worker's activation through the product UI using existing entitlements. Stop licensed runs; never start a trial or copy credentials."
     elif reason in {"native_worker_not_configured", "native_app_not_configured"}:
-        action = "Configure jetbrains.nativeWorker.path/app in the shared helper config for the independently Director-activated worker, or supply --native-worker and --ide-app. See references/native-backend.md."
+        action = "Configure jetbrains.nativeWorkers.pycharm.path/app (or the older jetbrains.nativeWorker) in the shared helper config for the independently Director-activated worker, or supply --native-worker and --ide-app. See references/native-backend.md."
     elif reason == "native_trusted_root_required":
         action = "Use the intended repository under jetbrains.trustedAutoOpenRoots in the standard helper config; native preparation executes only for a trusted source root."
     elif reason == "native_python_environment_required":
@@ -1170,12 +1190,12 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_reconciliation_requires_recovery_only")
         if args.native_reconcile_result and release_run:
             raise Blocked("native_reconciliation_release_conflict")
-        worker, app, framework = worker_settings(args, host)
+        worker, app, framework, product = worker_settings(args, host)
         context.worker = worker
         config, plugins, home = launcher_paths(worker)
         if not args.native_recover_only:
-            product = json.loads((app / "Contents/Resources/product-info.json").read_text())
-            receipt.update(ide_version=product.get("version"), ide_build=product.get("buildNumber"))
+            distribution = json.loads((app / "Contents/Resources/product-info.json").read_text())
+            receipt.update(ide_version=distribution.get("version"), ide_build=distribution.get("buildNumber"))
         state_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
         def on_wait():
             check_lifetime(parent_fd, float("inf"))
@@ -1198,7 +1218,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_activation_stop_recorded")
         if args.native_recover_only:
             raise Blocked("native_recovery_only_no_inspection")
-        state, preparation_caches = runtime_storage(host, worker)
+        state, preparation_caches = runtime_storage(host, worker, product.key)
         repo, settings, scope, selected = common.scope_selection(args, host, receipt)
         if not any(repo.is_relative_to(Path(root)) for root in host.trusted_auto_open_roots()):
             raise Blocked("native_trusted_root_required")
@@ -1279,7 +1299,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         properties = {"config": config, "plugins": plugins, "system": private / "system", "log": private / "logs"}
         (private / "idea.properties").write_text("".join(f"idea.{name}.path={path}\n" for name, path in properties.items()) + "idea.initially.ask.config=never\n")
         # App defaults are public code; never read the activated worker's VM options.
-        vm = (app / "Contents/bin/pycharm.vmoptions").read_text().splitlines()
+        vm = (app / "Contents/bin" / product.vm_options_name).read_text().splitlines()
         vm = [line for line in vm if not line.startswith(("-Xmx", "-Xms", "-XX:HeapDump", "-XX:+HeapDump", "-XX:ErrorFile", "-Duser.home", "-Didea.", "-XX:ActiveProcessorCount"))]
         vm += ["-Xms256m", f"-Xmx{HEAP_LIMIT_MIB}m", f"-XX:ActiveProcessorCount={ACTIVE_PROCESSORS}", "-XX:-HeapDumpOnOutOfMemoryError", "-Djava.awt.headless=true", f"-Duser.home={home}", "-Didea.headless.enable.statistics=false", "-Didea.analyze.scope=JBNativeSelection", "-Didea.log.debug.categories=#com.intellij.codeInspection.ex.GlobalInspectionContextImpl", f"-Didea.max.intellisense.filesize={common.MAX_ANALYZED_FILE_KB}"]
         vm += [f"-Didea.{name}.path={path}" for name, path in properties.items()]
@@ -1288,7 +1308,8 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         vm += [f"-XX:ErrorFile={private}/logs/java-error-%p.log", f"-XX:HeapDumpPath={private}/logs"]
         (private / "native.vmoptions").write_text("\n".join(vm) + "\n")
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(home), "TMPDIR": str(private / "tmp"),
-               "PYCHARM_PROPERTIES": str(private / "idea.properties"), "PYCHARM_VM_OPTIONS": str(private / "native.vmoptions"),
+               f"{product.env_var_base_name}_PROPERTIES": str(private / "idea.properties"),
+               f"{product.env_var_base_name}_VM_OPTIONS": str(private / "native.vmoptions"),
                "JETBRAINS_INSPECTION_REGISTRY_DIR": str(private / "registry")}
         argv = ["/usr/bin/nice", "-n", str(NICE), str(app / "Contents/bin/inspect.sh"), str(project), str(private / "profile.xml"), str(private / "results"), "-v2"]
         register_sdk(config, interpreter, version, sdk_name,

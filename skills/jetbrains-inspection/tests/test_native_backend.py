@@ -580,6 +580,51 @@ print('Done.')
         self.assertEqual(result["inspection_outcome"]["reason"], "native_pycharm_distribution_required")
         self.assertNotIn("worker_pid", result["diagnostic"]["native"])
 
+    def test_engine_launches_with_the_selected_products_vm_options(self):
+        product = host.IDE_PRODUCTS[native.PYTHON_PRODUCT_KEY]
+        (self.app / "Contents/bin" / product.vm_options_name).write_text("-Dfixture.app.default=kept\n")
+        recorded = self.root / "launched-vm-options"
+        original = self.script.read_text()
+        shebang, body = original.split("\n", 1)
+        self.script.write_text(f"{shebang}\nimport os,pathlib\n"
+                               f"pathlib.Path({str(recorded)!r}).write_text(pathlib.Path(os.environ[{product.env_var_base_name + '_VM_OPTIONS'!r}]).read_text())\n{body}")
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_completed")
+        self.assertIn("-Dfixture.app.default=kept", recorded.read_text().splitlines())
+
+    def unflagged_args(self):
+        return host.build_parser().parse_args(["agent-inspect", "--backend", "native", "--repo", str(self.repo),
+                                               "--scope", "files", "--file", "source.py", "--profile", "Test"])
+
+    def test_pycharm_worker_reads_the_per_product_entry_or_the_single_entry(self):
+        entry = {"path": str(self.worker), "app": str(self.app)}
+        for config in ({"jetbrains": {"nativeWorkers": {"pycharm": entry}}}, {"jetbrains": {"nativeWorker": entry}}):
+            with self.subTest(config=config), patch_attr(host, "read_global_config", return_value=config):
+                selected = native.worker_settings(self.unflagged_args(), host)
+            self.assertEqual((selected.worker, selected.app), (self.worker, self.app.resolve()))
+
+    def test_pycharm_worker_refuses_two_entries_and_ignores_other_products(self):
+        entry = {"path": str(self.worker), "app": str(self.app)}
+        cases = (({"nativeWorkers": {"pycharm": entry}, "nativeWorker": entry}, "native_configuration_invalid"),
+                 ({"nativeWorkers": {"intellij": entry, "webstorm": entry}}, "native_worker_not_configured"))
+        for jetbrains, reason in cases:
+            with self.subTest(jetbrains=jetbrains), patch_attr(host, "read_global_config", return_value={"jetbrains": jetbrains}):
+                with self.assertRaisesRegex(native.Blocked, reason):
+                    native.worker_settings(self.unflagged_args(), host)
+
+    def test_each_product_worker_requires_its_own_distribution(self):
+        identities = {"intellij": {"productCode": "IU", "envVarBaseName": "IDEA"},
+                      "webstorm": {"productCode": "WS", "envVarBaseName": "WEBIDE"}}
+        info = self.app / "Contents/Resources/product-info.json"
+        for key, identity in identities.items():
+            config = {"jetbrains": {"nativeWorkers": {key: {"path": str(self.worker), "app": str(self.app)}}}}
+            with self.subTest(product=key), patch_attr(host, "read_global_config", return_value=config):
+                info.write_text(json.dumps(identity))
+                self.assertIs(native.worker_settings(self.unflagged_args(), host, key).product, host.IDE_PRODUCTS[key])
+                info.write_text(json.dumps({"productCode": "PY", "envVarBaseName": "PYCHARM"}))
+                with self.assertRaisesRegex(native.Blocked, f"native_{key}_distribution_required"):
+                    native.worker_settings(self.unflagged_args(), host, key)
+
     def test_nonroot_preparation_keeps_auto_route_and_explicit_native_uses_ready_venv(self):
         for prepare in ("bash scripts/prepare.sh", {"python": {"version": "3.12", "moduleName": "nested", "projectPath": "nested"}}):
             with self.subTest(prepare=prepare):
@@ -1127,6 +1172,13 @@ print('Done.')
         config["jetbrains"]["nativeWorker"].update(cacheRoot=str(existing), cacheStorageIdentity={"different": True})
         with patch_attr(host, "read_global_config", return_value=config):
             with self.assertRaisesRegex(native.Blocked, "native_cache_storage_changed"):
+                native.runtime_storage(host, self.worker)
+
+    def test_per_product_worker_entry_owns_its_cache_root(self):
+        missing = self.root / "unmounted/cache"
+        config = {"jetbrains": {"nativeWorkers": {"pycharm": {"cacheRoot": str(missing)}}}}
+        with patch_attr(host, "read_global_config", return_value=config):
+            with self.assertRaisesRegex(native.Blocked, "native_cache_root_unavailable"):
                 native.runtime_storage(host, self.worker)
 
     def declare_python_preparation(self):
