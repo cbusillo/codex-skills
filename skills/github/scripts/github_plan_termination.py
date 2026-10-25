@@ -127,7 +127,7 @@ def transcript_snapshot(record, path):
     before = path.stat()
     with path.open(encoding="utf-8") as stream:
         lines = list(stream)
-    records, truncated = native_transcript_records(record, lines)
+    records, truncated = native_transcript_records({**record, "transcript": str(path)}, lines)
     after = path.stat()
     if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
         raise ValueError("Source transcript changed during termination checks")
@@ -165,7 +165,7 @@ def native_transcript_records(record: dict, lines: list[str]) -> tuple[list[dict
     if codex:
         native_helpers()
         import claim_history
-        records = claim_history.root_records(Path(record["transcript"]), "codex", record["session_id"], records)
+        claim_history.root_records(Path(record["transcript"]), "codex", record["session_id"], records)
     return records, truncated
 
 
