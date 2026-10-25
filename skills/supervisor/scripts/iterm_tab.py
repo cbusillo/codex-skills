@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import socket
 import subprocess
 import sys
@@ -39,6 +40,7 @@ CLAUDE_QUESTION_TOOL = "AskUserQuestion"
 # on Chris-Studio; account and MCP startup add more), so watch for its
 # hook-review prompt until the brief's turn runs, within this bound.
 CODEX_PROMPT_WINDOW = 20.0
+LAUNCH_TIMEOUT = 30.0
 # The catalog's Chrome opt-in; with it, browser tools come only from the pinned server.
 CHROME_OPT_IN = Path(__file__).resolve().parents[3] / ".local" / "chrome.toml"
 # Every brief carries the reviewed rules, by link or as an unchanged copy (Q587).
@@ -667,7 +669,7 @@ def check_codex_daemon(choice):
         started = subprocess.run(
             ["codex", "app-server", "daemon", "start"],
             env={**os.environ, "CODEX_HOME": str(home)},
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=LAUNCH_TIMEOUT,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ValueError(
@@ -1121,7 +1123,44 @@ def prepare_resume(args):
     return [shlex.join(["exec", "env", *settings, *invocation])], [choice]
 
 
-def prepare_launches(args):
+class PreparationExpired(BaseException):
+    pass
+
+
+def expire_preparation(signum: int, frame: object) -> None:
+    raise PreparationExpired
+
+
+def prepare_launches(args: argparse.Namespace) -> tuple[list[str], list[dict | None]]:
+    previous_handler = signal.signal(signal.SIGALRM, expire_preparation)
+    started = time.monotonic()
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, LAUNCH_TIMEOUT)
+    try:
+        return prepare_launch_batch(args)
+    except PreparationExpired:
+        progress = {"phase": "prepare_launches", "window_id": getattr(args, "window_id", None),
+                    "backend": getattr(args, "backend", None),
+                    "tmux_socket": getattr(args, "tmux_socket", None),
+                    "resume_session_id": getattr(args, "resume_session_id", None),
+                    "readback_required": True}
+        for name in ("command_file", "brief_file", "ledger"):
+            paths = getattr(args, name, None)
+            progress[name] = [str(path) for path in paths] if isinstance(paths, list) else str(paths) if paths else None
+        error = LaunchFailure([], progress, ValueError(
+            f"launch preparation unavailable after {LAUNCH_TIMEOUT:g}s; a pending macOS file-access prompt "
+            "or missing disk access may be blocking worktree-volume reads"))
+        error.detail.update(status="preparation_unavailable", next_action=(
+            "Preserve this attempt and inspect its files, target terminals and any pending macOS file-access prompt; "
+            "do not relaunch, change permissions or restart the server automatically."))
+        raise error from None
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0]:
+            signal.setitimer(signal.ITIMER_REAL, max(0.000001, previous_timer[0] - (time.monotonic() - started)), previous_timer[1])
+
+
+def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict | None]]:
     """Validate the full batch and prepare accounts before creating terminals."""
     if getattr(args, "resume_session_id", None):
         return prepare_resume(args)
