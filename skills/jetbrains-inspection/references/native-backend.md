@@ -131,8 +131,9 @@ original no-retry policy. `--native-recover-only` never waits.
 The child has its own process group, nice 10, a 1,536 MiB JVM heap and two active
 processors. The latter is a JVM concurrency cap, not an OS CPU quota. System,
 cache, logs, temporary files and inspection results live in fresh private paths
-under the selected helper cache. A run starting above load1 64 is refused before
-launch. An active run pauses above 64 and resumes below that threshold; its
+under the selected helper cache. Above load1 64, an admitted request waits
+within `--lifecycle-lock-timeout-ms` for load to fall, reporting `load_wait_ms`,
+and returns `native_host_load_paused` only when that bound passes. An active run pauses above 64 and resumes below that threshold; its
 wall deadline continues while paused.
 
 A guardian in a separate session keeps the locks and watches the invoking
