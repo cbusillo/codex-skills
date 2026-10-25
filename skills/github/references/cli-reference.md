@@ -2081,7 +2081,7 @@ nodes and batch request count; those counts do not prove complete portfolio
 coverage. Per-repository planning calls retain their existing read routes.
 
 The default account-wide scan first reads current live-breakage labels across
-accessible owner repositories, then evaluates their native paths before
+accessible repositories belonging to the account, then evaluates their native paths before
 milestone ranking. Unread or partial priority evidence returns
 `live_breakage_unread`. Track discovery uses the same open-issue inventory as
 the goal board, including Tracks without a planning label. An unread Track
