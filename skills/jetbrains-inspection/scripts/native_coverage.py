@@ -33,7 +33,15 @@ UNIVERSAL_TOOLS = frozenset({
     "IncorrectFormatting", "ProblematicWhitespace", "TodoComment",
 })
 
+WEBSTORM_CANARY_FILES = {"JSUnusedLocalSymbols": "unused_local.ts"}
+WEBSTORM_CLEAN_TWINS = {"JSUnusedLocalSymbols": "used_local.ts"}
+
 NATIVE_PROVEN_SUFFIXES = frozenset({".py", ".xml", ".yaml", ".yml"})
+TYPESCRIPT_SUFFIXES = frozenset({".ts", ".tsx", ".mts", ".cts"})
+SCRIPT_SUFFIXES = TYPESCRIPT_SUFFIXES | {".js", ".jsx", ".mjs", ".cjs"}
+WEBSTORM_PROVEN_SUFFIXES = SCRIPT_SUFFIXES | {".json"}
+SCRIPT_LANGUAGES = frozenset({"javascript", "ecmascript 6"})
+TYPESCRIPT_LANGUAGES = frozenset({"typescript", "typescript jsx"})
 UNPROVEN_LANGUAGES = frozenset({"css", "scss", "sass", "less", "javascript", "typescript", "html", "json", "sql", "java", "kotlin"})
 
 
@@ -47,7 +55,18 @@ def migrate_expected(requested: Iterable[str], registered: Iterable[str]) -> tup
     return expected, migrations
 
 
-def applicable_files(tool: str, selected: set[str], language: str | None = None, *, scope: str = "files") -> set[str] | None:
+def web_language_suffixes(tool: str, language: str | None) -> frozenset[str] | None:
+    if tool.startswith("TypeScript") or language in TYPESCRIPT_LANGUAGES:
+        return TYPESCRIPT_SUFFIXES
+    if tool.startswith(("JS", "ES6")) or language in SCRIPT_LANGUAGES:
+        return SCRIPT_SUFFIXES
+    if tool.startswith("Json") or language == "json":
+        return frozenset({".json"})
+    return None
+
+
+def applicable_files(tool: str, selected: set[str], language: str | None = None, *, scope: str = "files",
+                     proven_suffixes: frozenset[str] = NATIVE_PROVEN_SUFFIXES) -> set[str] | None:
     """None means unknown applicability, never permission to omit the tool."""
     language = language.casefold() if isinstance(language, str) else None
     if tool in UNIVERSAL_TOOLS:
@@ -64,10 +83,15 @@ def applicable_files(tool: str, selected: set[str], language: str | None = None,
         return {path for path in selected if Path(path).suffix in {".yaml", ".yml"}}
     if tool == "EmptyDirectory" and scope in {"files", "changed_files"}:
         return set()
+    if tool == "Eslint" and any(Path(path).suffix.casefold() in SCRIPT_SUFFIXES for path in selected):
+        return None
+    web_suffixes = web_language_suffixes(tool, language)
+    if web_suffixes is not None and web_suffixes <= proven_suffixes:
+        return {path for path in selected if Path(path).suffix.casefold() in web_suffixes}
     # These established profile families can be absent from PyCharm's registry;
     # their applicability does not depend on registration succeeding.
     if tool.startswith("Css") or tool == "Eslint" or language in UNPROVEN_LANGUAGES:
-        return set() if all(Path(path).suffix.casefold() in NATIVE_PROVEN_SUFFIXES for path in selected) else None
+        return set() if all(Path(path).suffix.casefold() in proven_suffixes for path in selected) else None
     return None
 
 
@@ -77,6 +101,9 @@ def assess(
     control_findings: Iterable[Mapping[str, Any]], *, control_root: str,
     tool_languages: Mapping[str, str] | None = None,
     scope: str = "files",
+    proven_suffixes: frozenset[str] = NATIVE_PROVEN_SUFFIXES,
+    canary_files: Mapping[str, str] = CANARY_FILES,
+    clean_twins: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Assess selected execution and current-run canaries without side effects.
 
@@ -91,7 +118,7 @@ def assess(
     languages = tool_languages or {}
     required, not_applicable, unknown = {}, set(), set()
     for tool in sorted(effective):
-        files = applicable_files(tool, selected, languages.get(tool), scope=scope)
+        files = applicable_files(tool, selected, languages.get(tool), scope=scope, proven_suffixes=proven_suffixes)
         if files is None:
             unknown.add(tool)
         elif files:
@@ -109,10 +136,15 @@ def assess(
 
     finding_pairs = {(finding.get("rule_id"), finding.get("file")) for finding in control_findings}
     canaries = {}
-    for tool in sorted(set(required) & CANARY_FILES.keys()):
-        path = control_root + "/" + CANARY_FILES[tool]
+    for tool in sorted(set(required) & canary_files.keys()):
+        path = control_root + "/" + canary_files[tool]
         detected = (tool, path) in finding_pairs and (tool, path) not in failed
         canaries[tool] = {"file": path, "detected": detected}
+        if clean_twins and tool in clean_twins:
+            clean = control_root + "/" + clean_twins[tool]
+            quiet = (clean in trace_tools.get(tool, set()) and (tool, clean) not in failed
+                     and (tool, clean) not in finding_pairs)
+            canaries[tool].update(clean_file=clean, clean_quiet=quiet, detected=detected and quiet)
 
     active = set(required) | unknown
     unavailable = active - registered

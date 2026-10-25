@@ -21,6 +21,7 @@ import time
 import unittest
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 from unittest.mock import patch
 from contextlib import contextmanager, redirect_stdout
 
@@ -1497,6 +1498,222 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
         with patch.object(Path, "open", guarded_open):
             result = self.assess()
         self.assertEqual(result["inspection_outcome"]["reason"], "native_credential_input_refused")
+
+
+class WebStormLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        for target, name, kwargs in ((native, "state_dir", {"return_value": self.root / "state"}),
+                                     (native.common, "storage_identity", {"side_effect": lambda anchor: {"fixture": str(anchor)}})):
+            started = patch_attr(target, name, **kwargs)
+            started.start()
+            self.addCleanup(started.stop)
+        self.repo = self.root / "repo"
+        (self.repo / "src").mkdir(parents=True)
+        subprocess.run(["git", "init", "--quiet", str(self.repo)], check=True)
+        (self.repo / ".gitignore").write_text("node_modules/\n")
+        self.declare({"ide": "WebStorm"})
+        (self.repo / "src/app.ts").write_text("const unusedThing = 1;\nexport const used = 2;\n")
+        (self.repo / "package.json").write_text('{"name": "fixture", "version": "1.0.0"}\n')
+        (self.repo / "package-lock.json").write_text('{"name": "fixture", "lockfileVersion": 3}\n')
+        profile = self.repo / ".idea/inspectionProfiles/Test.xml"
+        profile.parent.mkdir(parents=True)
+        profile.write_text('<profile><option name="myName" value="Test"/>'
+                           '<inspection_tool class="TypeScriptUnresolvedReference" enabled="true"/></profile>')
+        self.worker = self.root / "worker"
+        for name in ("config/options", "plugins", "home"):
+            (self.worker / name).mkdir(parents=True)
+        (self.worker / "idea.properties").write_text(
+            f"idea.config.path={self.worker}/config\nidea.plugins.path={self.worker}/plugins\n")
+        self.app = self.root / "WebStorm.app"
+        (self.app / "Contents/bin").mkdir(parents=True)
+        (self.app / "Contents/Resources").mkdir()
+        (self.app / "Contents/Resources/product-info.json").write_text(json.dumps({"productCode": "WS", "envVarBaseName": "WEBIDE"}))
+        (self.app / "Contents/bin/webstorm.vmoptions").write_text("")
+        self.node = self.root / "node/bin/node"
+        self.node.parent.mkdir(parents=True)
+        self.node.write_text("#!/bin/sh\nexit 0\n")
+        self.node.chmod(0o755)
+        self.npm_record = self.root / "npm-record.json"
+        npm = self.node.parent / "npm"
+        npm.write_text(f"#!{sys.executable}\nimport json,os,pathlib,sys\n"
+                       "prefix=pathlib.Path(sys.argv[sys.argv.index('--prefix')+1])\n"
+                       "(prefix/'node_modules').mkdir()\n(prefix/'node_modules/.fixture').touch()\n"
+                       f"pathlib.Path({str(self.npm_record)!r}).write_text(json.dumps({{'argv':sys.argv[1:],'env':dict(os.environ)}}))\n")
+        npm.chmod(0o755)
+        self.cache = self.root / "host-caches"
+        self.cache.mkdir()
+        self.engine_record = self.root / "engine-record.json"
+        self.script = self.app / "Contents/bin/inspect.sh"
+        self.script.write_text(f"#!{sys.executable}\nrecord={str(self.engine_record)!r}\nconfig={str(self.worker / 'config')!r}\n"
+                               f"canary_files={native.proof.WEBSTORM_CANARY_FILES!r}\n" + '''import json,os,pathlib,sys
+report_canary=True
+report_user=True
+tools={'JSUnusedLocalSymbols':'JavaScript','TypeScriptUnresolvedReference':'TypeScript'}
+project=pathlib.Path(sys.argv[1])
+out=pathlib.Path(sys.argv[3])
+control=next(project.glob('jb_native_controls_*'))
+idea=project/'.idea'
+pathlib.Path(record).write_text(json.dumps({'path':os.environ['PATH'],'node_modules':(project/'node_modules/.fixture').is_file(),
+    'modules':(idea/'modules.xml').read_text(),'sdk_table':(pathlib.Path(config)/'options/jdk.table.xml').exists()}))
+files=[project/'src/app.ts',*control.iterdir()]
+spans=[{'operationName':'inspectionRun','duration':1,'tags':[{'key':'inspectionId','value':tool},{'key':'file','value':str(path)}]} for tool in tools for path in files]
+(out.parent/'inspection-trace.json').write_text(json.dumps({'data':[{'spans':spans}]}))
+print('Running local inspections on '+str(project/'src/app.ts'))
+(out/'.descriptions.xml').write_text('<inspections>'+''.join(f'<inspection shortName="{tool}" language="{language}"/>' for tool,language in tools.items())+'</inspections>')
+problems=[]
+for tool,name in canary_files.items():
+ if report_canary: problems.append((tool,control/name))
+ if report_user: problems.append((tool,project/'src/app.ts'))
+for tool in tools:
+ (out/(tool+'.xml')).write_text('<problems>'+''.join(f'<problem><file>{path.as_uri()}</file><line>1</line><problem_class id="{rule}" severity="WARNING"/><description>Unused</description></problem>' for rule,path in problems if rule==tool)+'</problems>')
+print('Done.')
+''')
+        self.script.chmod(0o700)
+        self.entry = {"path": str(self.worker), "app": str(self.app), "cacheRoot": str(self.cache), "node": str(self.node)}
+
+    def declare(self, inspection):
+        (self.repo / ".github").mkdir(exist_ok=True)
+        (self.repo / ".github/github.json").write_text(json.dumps({"qualityGate": {"inspection": inspection}}))
+
+    def args(self, *files, backend=("--backend", "native")):
+        selection = [argument for path in files or ("src/app.ts",) for argument in ("--file", path)]
+        return host.build_parser().parse_args(["agent-inspect", *backend, "--repo", str(self.repo), "--scope", "files", *selection, "--profile", "Test"])
+
+    @contextmanager
+    def native_host(self):
+        with patch.object(sys, "platform", "darwin"), patch.dict(os.environ, {}, clear=False), \
+                patch_attr(host, "cache_dir", return_value=self.root / "cache"), \
+                patch_attr(host, "read_global_config", return_value={"jetbrains": {"nativeWorkers": {"webstorm": self.entry}}}), \
+                patch_attr(host, "trusted_auto_open_roots", return_value=[str(self.repo)]), \
+                patch.object(os, "getloadavg", return_value=(1, 1, 1)):
+            os.environ.pop("JETBRAINS_INSPECTION_NATIVE_WORKER", None)
+            os.environ.pop("JETBRAINS_INSPECTION_CACHE_DIR", None)
+            yield
+
+    def assess(self, *files):
+        with self.native_host():
+            return native.run(self.args(*files), host)
+
+    def select(self, *files):
+        with self.native_host():
+            return native.select_backend(self.args(*files, backend=()), host)
+
+    def test_webstorm_repositories_route_script_and_json_selections_to_native_webstorm(self):
+        (self.repo / "tsconfig.json").write_text("{}\n")
+        self.assertEqual(self.select("src/app.ts", "tsconfig.json"), ("native", "webstorm_native_route"))
+        self.declare({"lanes": [{"id": "frontend", "ide": "WebStorm", "include": ["src/**"]}]})
+        self.assertEqual(self.select("src/app.ts")[0], "native")
+        for inspection in ({}, {"ide": "PyCharm"}, {"lanes": [{"id": "python", "ide": "PyCharm", "include": ["src/**"]}]}):
+            with self.subTest(inspection=inspection):
+                self.declare(inspection)
+                self.assertEqual(self.select("src/app.ts"), ("api", "native_ineligible=native_worker_not_configured"))
+
+    def test_python_selection_in_a_webstorm_repository_keeps_the_pycharm_route(self):
+        (self.repo / "tool.py").write_text("print(1)\n")
+        with patch_attr(native, "eligible", return_value=True) as eligible, patch_attr(native, "is_odoo", return_value=False):
+            self.assertEqual(self.select("tool.py"), ("native", "python_native_route"))
+            self.assertEqual(eligible.call_args.args[-1], native.PYTHON_PRODUCT_KEY)
+            self.assertEqual(self.select("tool.py", "src/app.ts")[0], "api")
+            self.assertEqual(eligible.call_args.args[-1], native.PYTHON_PRODUCT_KEY)
+
+    def test_webstorm_needs_an_executable_node_with_npm_beside_it(self):
+        for change, reason in ((lambda: self.entry.pop("node"), "native_node_not_configured"),
+                               (lambda: self.entry.update(node="bin/node"), "native_node_not_configured"),
+                               (lambda: self.node.chmod(0o644), "native_node_unavailable"),
+                               (lambda: (self.node.parent / "npm").unlink(), "native_node_unavailable")):
+            with self.subTest(reason=reason):
+                self.setUp()
+                change()
+                self.assertEqual(self.select(), ("api", "native_ineligible=" + reason))
+                result = self.assess()
+                self.assertEqual(result["inspection_outcome"]["reason"], reason)
+                self.assertNotIn("preparation_pid", result["diagnostic"]["native"])
+                self.assertFalse(self.npm_record.exists())
+
+    def test_npm_ci_installs_into_the_private_snapshot_from_the_shared_cache(self):
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_completed", result["proof_failures"])
+        self.assertEqual(result["agent_result"]["verdict"], "RED")
+        npm = json.loads(self.npm_record.read_text())
+        self.assertEqual(npm["argv"][0], "ci")
+        self.assertTrue({"--ignore-scripts", "--no-audit", "--no-fund"} <= set(npm["argv"]))
+        prefix = Path(npm["argv"][npm["argv"].index("--prefix") + 1])
+        self.assertEqual(prefix.name, "project")
+        self.assertTrue(prefix.parent.name.startswith("private-"))
+        self.assertTrue(prefix.is_relative_to(self.cache))
+        self.assertFalse(prefix.exists())
+        self.assertEqual(Path(npm["env"]["npm_config_cache"]), self.cache / "npm-cache")
+        self.assertTrue((self.cache / "npm-cache").is_dir())
+        self.assertEqual(npm["env"]["PATH"].split(os.pathsep)[0], str(self.node.parent))
+        engine = json.loads(self.engine_record.read_text())
+        self.assertTrue(engine["node_modules"])
+        self.assertEqual(engine["path"].split(os.pathsep)[0], str(self.node.parent))
+        self.assertFalse((self.repo / "node_modules").exists())
+
+    def test_missing_lockfile_and_pnpm_projects_are_refused_before_preparation(self):
+        for change, reason in ((lambda: (self.repo / "package-lock.json").unlink(), "native_npm_lockfile_required"),
+                               (lambda: (self.repo / "package.json").unlink(), "native_npm_lockfile_required"),
+                               (lambda: (self.repo / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n"), "native_pnpm_unsupported")):
+            with self.subTest(reason=reason):
+                self.setUp()
+                change()
+                self.assertEqual(self.select(), ("api", "native_ineligible=" + reason))
+                result = self.assess()
+                self.assertEqual(result["inspection_outcome"]["reason"], reason)
+                self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+                self.assertFalse(self.npm_record.exists())
+                self.assertFalse(self.engine_record.exists())
+
+    def test_tracked_project_model_is_used_and_a_web_module_is_generated_without_one(self):
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_completed", result["proof_failures"])
+        generated = ElementTree.fromstring(json.loads(self.engine_record.read_text())["modules"])
+        module = Path(generated.find(".//module").get("filepath"))
+        self.assertEqual(module.name, "Native.iml")
+        tracked = '<project version="4"><component name="ProjectModuleManager"><modules><module fileurl="file://$PROJECT_DIR$/.idea/repo.iml" filepath="$PROJECT_DIR$/.idea/repo.iml" /></modules></component></project>\n'
+        (self.repo / ".idea/modules.xml").write_text(tracked)
+        (self.repo / ".idea/repo.iml").write_text('<module type="WEB_MODULE" version="4"/>\n')
+        self.engine_record.unlink()
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_completed", result["proof_failures"])
+        self.assertEqual(json.loads(self.engine_record.read_text())["modules"], tracked)
+
+    def test_generated_web_module_has_no_python_sdk(self):
+        project = self.root / "project"
+        (project / ".idea").mkdir(parents=True)
+        native.prepare_web_model(project, {"src/app.ts"})
+        module = ElementTree.parse(project / ".idea/Native.iml").getroot()
+        self.assertEqual(module.get("type"), "WEB_MODULE")
+        self.assertFalse([entry for entry in module.iter("orderEntry") if entry.get("type") == "jdk"])
+        self.assertFalse((project / ".idea/misc.xml").exists())
+
+    def test_webstorm_run_registers_no_sdk_in_the_worker(self):
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_completed", result["proof_failures"])
+        self.assertFalse(json.loads(self.engine_record.read_text())["sdk_table"])
+        self.assertFalse((self.worker / "config/options/jdk.table.xml").exists())
+        self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def test_script_tools_must_execute_on_each_selected_typescript_file(self):
+        result = self.assess()
+        self.assertEqual(result["coverage"]["selected_execution"],
+                         {"JSUnusedLocalSymbols": ["src/app.ts"], "TypeScriptUnresolvedReference": ["src/app.ts"]})
+        self.script.write_text(self.script.read_text().replace("files=[project/'src/app.ts',*control.iterdir()]", "files=[*control.iterdir()]"))
+        result = self.assess()
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(set(result["coverage"]["missing_execution"]), {"JSUnusedLocalSymbols", "TypeScriptUnresolvedReference"})
+
+    def test_missing_typescript_canary_evidence_keeps_the_verdict_unknown(self):
+        self.script.write_text(self.script.read_text().replace("report_canary=True", "report_canary=False")
+                               .replace("report_user=True", "report_user=False"))
+        result = self.assess()
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertFalse(result["coverage"]["canary_results"]["JSUnusedLocalSymbols"]["detected"])
+        self.script.write_text(self.script.read_text().replace("report_canary=False", "report_canary=True"))
+        self.assertEqual(self.assess()["agent_result"]["verdict"], "GREEN")
 
 
 @unittest.skipUnless(os.environ.get("JB_NATIVE_LIVE") == "1", "independently activated native worker required")
