@@ -565,6 +565,29 @@ class ReleaseTests(ReleaseHarness):
         self.evidence["body"] = release.termination.body(data)
         return transcript
 
+    def test_termination_uses_verified_native_fork_ancestry_for_copied_parent_metadata(self) -> None:
+        transcript = self.termination_setup()
+        import claim_history
+        rows = [json.loads(line) for line in transcript.read_text().splitlines()]
+        rows[0]["payload"].update(forked_from_id="native-parent", parent_thread_id="native-parent",
+            subagent_history_start_ordinal=2,
+            source={"subagent": {"thread_spawn": {"parent_thread_id": "native-parent"}}})
+        rows[1:1] = [{"type": "session_meta", "timestamp": rows[0]["timestamp"], "payload": {"id": "native-parent"}},
+            {"type": "event_msg", "timestamp": rows[0]["timestamp"],
+             "payload": {"type": "thread_settings_applied", "thread_id": "session-b"}}]
+        for index, row in enumerate(rows):
+            row["ordinal"] = index
+        context = {"parent": "native-parent", "ancestors": ("native-parent",)}
+        with patch.object(claim_history, "root_context", return_value=context):
+            transcript.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            os.utime(transcript, (release.stamp(rows[0]["timestamp"]).timestamp(),) * 2)
+            self.assertEqual(release.termination.verify(self.termination_record, "session-b")["session_id"], "session-b")
+            rows[1]["payload"]["id"] = "foreign-native"
+            transcript.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            os.utime(transcript, (release.stamp(rows[0]["timestamp"]).timestamp(),) * 2)
+            with self.assertRaises(ValueError):
+                release.termination.verify(self.termination_record, "session-b")
+
     def test_terminated_session_releases_without_verdict_and_successor_can_claim(self):
         for harness in ("codex", "claude"):
             with self.subTest(harness=harness):

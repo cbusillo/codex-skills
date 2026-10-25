@@ -1988,6 +1988,14 @@ guards still apply. Missing boot evidence or a boot before the source's activity
 keeps the ordinary strict route. This proof applies to crash termination;
 ordinary finished-session and historical-exit routes keep their existing checks.
 
+A pending opaque action still requires source-native proof before a guarded
+replacement client qualifies on a reused TTY. Under verified reboot termination,
+the verifier reads every authenticated account copy twice under the existing
+source ownership lease. Each must be NotLoaded with an empty queue, and the
+source files, generation and action state must remain unchanged. It repeats
+physical exit checks and preserves the action barrier. A loaded or queued copy,
+an unavailable account or changed evidence refuses; no client is stopped.
+
 Verify native task status and any remote peers yourself too: an idle desktop
 thread or an ID-less picker may not yet write a new transcript. The existing
 `--confirm-session-ended` attestation includes those unavailable peers.

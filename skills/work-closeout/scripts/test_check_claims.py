@@ -1631,6 +1631,50 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertEqual([item["call_id"] for item in report["unresolved_invocations"]], ["opaque"])
                 self.assertTrue(report["coverage"]["search_errors"])
 
+    def test_reboot_bound_settles_interrupted_calls_only_with_fresh_proof_and_complete_releases(self) -> None:
+        for variant in ("clear", "held", "incomplete", "recent", "no_boot", "resumed", "changed"):
+            with self.subTest(variant=variant):
+                self.setUp()
+                root = self.undecodable_claim_session(*finished_opaque_call(result=False))
+                record = {**root, "harness": "codex"}
+                boot = time.time() if variant == "recent" else helper.release.stamp(SETTLED_AT).timestamp()
+                proof = {"booted_at": helper.datetime.fromtimestamp(boot, helper.UTC).isoformat()}
+                if variant == "no_boot":
+                    proof = {}
+                verify = self.enterContext(patch.object(helper.termination, "verify", return_value=proof))
+                if variant == "resumed":
+                    verify.side_effect = ValueError("source resumed")
+                if variant == "changed":
+                    verify.side_effect = [proof, proof, ValueError("source changed")]
+                if variant == "held":
+                    self.comments.remove(self.release)
+                self.search_finds(1, incomplete=variant == "incomplete")
+                if variant in {"no_boot", "resumed", "changed"}:
+                    with self.assertRaises(ValueError):
+                        helper.check([root], termination_record=record)
+                    continue
+                report = helper.check([root], termination_record=record)
+                self.assertEqual(report["claims_clear"], variant == "clear")
+                if variant == "clear":
+                    self.assertEqual([item["call_id"] for item in report["settled_invocations"]], ["opaque"])
+                    self.assertGreaterEqual(verify.call_count, 4)
+
+    def test_reboot_recovery_checks_each_native_child_and_matching_source_context(self) -> None:
+        root = self.entry()
+        child = self.entry("native-child")
+        record = {**root, "harness": "codex"}
+        proof = {"booted_at": SETTLED_AT}
+        with patch.object(helper.termination, "verify", return_value=proof) as verify:
+            bounds = helper.reboot_bounds([root], [root, child], record)
+            self.assertEqual(set(bounds), {root["transcript"], child["transcript"]})
+            self.assertEqual({call.args[1] for call in verify.call_args_list}, {SESSION, "native-child"})
+            for wrong in ({**record, "session_id": "another-native"}, {**record, "transcript": child["transcript"]}):
+                with self.assertRaises(ValueError):
+                    helper.reboot_bounds([root], [root, child], wrong)
+        with patch.object(helper.termination, "verify", side_effect=[proof, proof, ValueError("child resumed")]):
+            with self.assertRaises(ValueError):
+                helper.reboot_bounds([root], [root, child], record)
+
     def test_one_search_covers_only_a_single_app_installation(self) -> None:
         config = SimpleNamespace(installation_id="1")
         self.enterContext(patch.object(helper.github_identity, "github_app_config", return_value=config))

@@ -685,6 +685,34 @@ def _cancel_quiet(facts, snapshot, home, target):
     _require_runtime_quiet(facts, statuses)
 
 
+async def prove_crash_end(entry: dict) -> None:
+    import github_plan_termination as termination
+    session = entry["session_id"]
+    if entry.get("harness") != "codex":
+        raise ValueError("native crash proof requires the original Codex source")
+    with closure.ownership(session) as held:
+        if not held:
+            raise ValueError("native crash proof requires the existing source ownership lease")
+        saved, action = _cancel_saved(session), closure.lease_state(session)
+        current = _cancel_generation(entry, saved)
+        process = termination._verify_queue_source(entry, session, latest_pid=current.get("launch_pid") if current else None)
+        if process.rebooted_at is None:
+            raise ValueError("native crash proof requires verified reboot termination")
+        before = _cancel_files(entry, action, transcript_roots=process.roots)
+        async with AsyncExitStack() as connections:
+            readers = {home: await connections.enter_async_context(connection(Path(home))) for home in before["homes"]}
+            for _ in range(2):
+                for home, request in readers.items():
+                    facts = await read_thread_facts(request, session)
+                    local_snapshot(before, facts, home)
+                    if facts["state"] != "notLoaded" or facts["queue"]:
+                        raise ValueError("native crash source remains loaded or queued; preserve claims")
+                termination._recheck_queue_process(process)
+                if (_cancel_saved(session) != saved or closure.lease_state(session) != action
+                        or _cancel_files(entry, action, transcript_roots=process.roots) != before):
+                    raise ValueError("native crash source changed during verification")
+
+
 async def cancel_queue(home: Path, session: str, *, ledger: Path | None = None,
                        termination_record: Path | None = None, apply=False,
                        queued_submission_id: str | None = None, entry_sha256: str | None = None):

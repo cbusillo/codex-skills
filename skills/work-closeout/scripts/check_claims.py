@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
+# dependencies = ["aiohttp==3.14.5", "tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
 # ///
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ import github_identity
 import github_plan_claim as claim
 import github_plan_claim_log as claim_log
 import github_plan_release as release
+import github_plan_termination as termination
 import release_session_claims as sessions
 from github_read import (
     GitHubReader,
@@ -311,6 +312,27 @@ def covered_by_journal(discoveries: list[dict], written: dict[tuple[str, int], f
     return bool(written) and all(found["journal_era"] and found["receipts"] <= written.keys() for found in discoveries)
 
 
+def reboot_bounds(entries: list[dict], expanded: list[dict], record: dict | None) -> dict[str, float]:
+    if record is None:
+        return {}
+    if len(entries) != 1 or record.get("session_id") != entries[0]["session_id"]:
+        raise ValueError("reboot recovery requires one matching original session")
+    if Path(record["transcript"]).resolve() != Path(entries[0]["transcript"]).resolve():
+        raise ValueError("reboot recovery transcript differs from the original session")
+    proof = termination.verify(record, record["session_id"])
+    if not proof.get("booted_at"):
+        raise ValueError("historical invocation recovery requires verified reboot proof")
+    bounds = {}
+    natives = {item["transcript"]: item.get("native_child", item["session_id"]) for item in expanded}
+    for path, native in sorted(natives.items()):
+        child = {**record, "session_id": native, "transcript": path}
+        checked = termination.verify(child, native)
+        if checked.get("booted_at") != proof["booted_at"]:
+            raise ValueError("native lineage does not share the verified reboot bound")
+        bounds[path] = release.stamp(checked["booted_at"]).timestamp()
+    return bounds
+
+
 def live_claim_writers(native: str, targets: AbstractSet[tuple[str, int]]) -> list[str]:
     listing = subprocess.run(["ps", "-axww", "-o", "pid=,ppid=,command="], capture_output=True, text=True, check=True).stdout
     processes = {int(pid): (int(parent), command) for pid, parent, command in
@@ -347,6 +369,7 @@ def check(
     owners: Sequence[str] = (),
     reader_for_repo: Callable[[str | None, float], GitHubReader] | None = None,
     read_timeout: float = 600,
+    termination_record: dict | None = None,
 ) -> dict:
     deadline = time.time() + read_timeout
     native_sessions = {entry["session_id"] for entry in entries}
@@ -354,6 +377,7 @@ def check(
     discoveries: dict[str, list[dict]] = {}
     unresolved = []
     expanded = history.expand(entries)
+    bounds = reboot_bounds(entries, expanded, termination_record)
     written = {native: claim_log.written_at(native) for native in {entry["session_id"] for entry in expanded}}
     for entry in expanded:
         discovery = recorded_targets(entry, written[entry["session_id"]].keys())
@@ -363,6 +387,9 @@ def check(
             {**item, "session": entry["session_id"], "transcript": entry["transcript"]}
             for item in discovery["unresolved_invocations"]
         )
+    for item in unresolved:
+        if item["transcript"] in bounds:
+            item["finished_at"] = bounds[item["transcript"]]
     journal_covered = {native for native, found in discoveries.items() if covered_by_journal(found, written[native])}
     running_before = {native: running_writes(native, written[native]) for native in journal_covered}
     released, blocked, readers, pulls_cache, data_cache = [], [], {}, {}, {}
@@ -394,6 +421,8 @@ def check(
     checked_at = time.time()
     for native in sorted(journal_covered):
         blocked.extend(f"session {native}: {reason}" for reason in unsettled_attempts(native, written[native], running_before[native], checked_at))
+    if termination_record is not None and reboot_bounds(entries, history.expand(entries), termination_record) != bounds:
+        raise ValueError("native reboot coverage changed during claim readback")
     repos = {repo for records in targets.values() for repo, _ in records}
     accounts = set(owners) | {repo.split("/")[0] for repo in repos}
     complete = not unresolved and not blocked
@@ -457,6 +486,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--transcript", action="append", required=True, type=Path, help="Native transcript for each --session, in the same order"
     )
+    parser.add_argument("--termination-record", type=Path, help="Original source-host record for verified reboot recovery")
+    parser.add_argument("--confirm-session-ended", action="store_true", help="Attest native task and unavailable peer closure")
     args = parser.parse_args(argv)
     try:
         if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", owner) for owner in args.owner):
@@ -471,7 +502,12 @@ def main(argv: list[str] | None = None) -> int:
         ]
         for entry in entries:
             require_own_transcript(entry)
-        report = check(entries, owners=args.owner)
+        record_bytes = args.termination_record.read_bytes() if args.termination_record else None
+        if record_bytes is not None and not args.confirm_session_ended:
+            raise ValueError("reboot recovery requires --confirm-session-ended after native task and peer verification")
+        report = check(entries, owners=args.owner, termination_record=json.loads(record_bytes) if record_bytes is not None else None)
+        if args.termination_record and args.termination_record.read_bytes() != record_bytes:
+            raise ValueError("termination record changed during claim readback")
         report["checked_at"] = time.time()
         print(json.dumps(report, sort_keys=True))
         return 0 if report["claims_clear"] else 1

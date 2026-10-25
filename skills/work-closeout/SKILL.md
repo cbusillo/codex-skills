@@ -342,6 +342,20 @@ knows; and only when the App configured now has a single installation and no
 client App. A code-mode cell settles only when the reader proves it finished,
 which it cannot for cells that leave a process running.
 
+For a source killed by a host reboot, add `--termination-record /absolute/original-record.json
+--confirm-session-ended` to the check after independently verifying native task
+and remote peer closure. Use the original source-host record from Supervisor's
+[crash recovery](../supervisor/references/helpers.md), with the original native
+identity, terminal, transcript roots and retained artifacts. Pass one original
+session per recovery check. The existing termination verifier must prove that
+the source and every discovered native child ended before the current boot.
+It rechecks their transcripts, resumed processes, terminal and retained artifacts
+before and after canonical claim reads. The boot time supplies the latest possible
+completion bound for interrupted historical calls; complete GitHub search after
+the same indexing delay and exact release checks still apply. Missing reboot
+proof, a resumed child, changed lineage, or incomplete search keeps coverage
+conditional. This reads evidence only and never releases claims or edits the ledger.
+
 The search does not prove absence. It relies on GitHub's index catching up
 within those 10 minutes, and it cannot see a claim an undecodable command made
 under another session ID, through another App or account, or from a host with

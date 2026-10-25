@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
+# dependencies = ["aiohttp==3.14.5", "tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
 # ///
 """Read-only source-host checks for claims interrupted by a host/terminal crash."""
 from __future__ import annotations
@@ -125,7 +125,12 @@ def transcript_snapshot(record, path):
     before = path.stat()
     with path.open(encoding="utf-8") as stream:
         lines = list(stream)
-    records, truncated = transcript_records(record, lines)
+    codex = record["harness"] == "codex"
+    records, truncated = transcript_records(record, lines, require_identity=not codex)
+    if codex:
+        native_helpers()
+        import claim_history
+        records = claim_history.root_records(path, "codex", record["session_id"], records)
     after = path.stat()
     if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
         raise ValueError("Source transcript changed during termination checks")
@@ -171,8 +176,15 @@ def _transcript_activity(times, mtime_ns, truncated, now, ended):
 def verify(record, session):
     """Never infer termination from absence alone; caller supplies original identity."""
     import github_plan_closure
-    return _verify(record, session, lambda pid, argv: not github_plan_closure.action_pending(session)
-                   and github_plan_closure.guarded_launch_endpoint(pid, argv) is not None)
+    def independent(pid: int, argv: list[str]) -> bool:
+        if github_plan_closure.guarded_launch_endpoint(pid, argv) is None:
+            return False
+        if github_plan_closure.action_pending(session):
+            import asyncio
+            import github_plan_native
+            asyncio.run(github_plan_native.prove_crash_end(record))
+        return True
+    return _verify(record, session, independent)
 
 
 class _TerminationProcess(NamedTuple):

@@ -230,6 +230,39 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeQueueTests(unittest.TestCase):
+    def test_crash_proof_requires_unloaded_empty_unchanged_sources_without_clearing_barriers(self) -> None:
+        import uuid
+        from types import SimpleNamespace
+        import github_plan_termination as termination
+        for variant in ("clear", "loaded", "queued", "no_boot", "changed"):
+            with self.subTest(variant=variant), ReceiptFixture(str(uuid.uuid4())) as f:
+                other, _ledger, _selected, _retained, deleted = self.cancel_setup(f)
+                f.home_queues = {str(f.home): [], str(other): []}
+                if variant == "loaded":
+                    f.home_states[str(other)] = "idle"
+                if variant == "queued":
+                    f.home_queues[str(other)] = [{"id": "pending", "clientUserMessageId": "pending-client", "input": []}]
+                before = {path: path.read_bytes() for path in (f.transcript, f.log, CLOSURE.lease_path(f.session))}
+                process = SimpleNamespace(rebooted_at=None if variant == "no_boot" else datetime.now(timezone.utc),
+                                          roots=frozenset({f.transcript.parent}))
+                original_files = NATIVE._cancel_files
+                def files(*args, **kwargs):
+                    value = original_files(*args, **kwargs)
+                    if variant == "changed" and "thread/read" in f.rpc_requests:
+                        value = {**value, "changed": True}
+                    return value
+                with patch.object(termination, "_verify_queue_source", return_value=process), \
+                        patch.object(termination, "_recheck_queue_process"), patch.object(NATIVE, "_cancel_files", side_effect=files):
+                    if variant == "clear":
+                        asyncio.run(NATIVE.prove_crash_end(f.entry))
+                    else:
+                        with self.assertRaises(ValueError):
+                            asyncio.run(NATIVE.prove_crash_end(f.entry))
+                self.assertEqual({path: path.read_bytes() for path in before}, before)
+                self.assertTrue(CLOSURE.action_pending(f.session))
+                self.assertFalse(deleted)
+                self.assertFalse(f.mutations)
+
     def test_removed_pane_closure_proves_replacement_tree_and_preserves_source_vetoes(self):
         import uuid
         from github_plan_sessions import native_helpers
