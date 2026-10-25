@@ -1559,7 +1559,7 @@ class ClaimCloseoutTests(unittest.TestCase):
         receipt = {"operation": "github.plan.claim", "claim": SOURCE, "issue": {"repo": REPO, "number": 1}}
         rows = [{"payload": payload} for payload in (
             {"type": "custom_tool_call", "name": "exec", "call_id": "start",
-             "input": 'text(await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a claim 1 --session native-session"}));'},
+             "input": 'text(await tools.exec_command({cmd:"uv run gh-plan.py claim 1 --session native-session"}));'},
             {"type": "custom_tool_call_output", "call_id": "start", "output": json.dumps({"session_id": 17})},
             {"type": "custom_tool_call", "name": "exec", "call_id": "mixed",
              "input": 'text(await tools.exec_command({cmd:"pwd"}));text(await tools.write_stdin({session_id:17,chars:""}));'},

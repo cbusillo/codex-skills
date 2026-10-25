@@ -798,12 +798,13 @@ def completed_sources(
     bound = bound_shell_results(text, javascript, name, own)
     if len(bound) != len(sources.commands):
         return window
+    polls = list(ordered_poll_results(identifier, inputs, outputs))
     flags = []
     for (_, result), completed in zip(bound, window, strict=True):
         ended = completed or (type(result.get("exit_code")) is int and not isinstance(result.get("session_id"), int))
         process = result.get("session_id")
         if type(process) is int:
-            for poll in ordered_poll_results(identifier, inputs, outputs):
+            for poll in polls:
                 if poll.process_id == process:
                     ended = ended or (type(poll.result.get("exit_code")) is int and poll.result.get("session_id") is None)
         flags.append(ended)
