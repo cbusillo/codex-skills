@@ -4279,7 +4279,6 @@ def _project_service_runtime_setting_plan(
         "key": _service_runtime_setting_key(source.get("key")),
         "value_sha256": _project_sha256(source.get("value_sha256")),
         "plan_digest": _project_sha256(source.get("plan_digest")),
-        "reason": public_operator_text(source.get("reason"), redact_denied_markers=True),
         "trace_id": public_trace_id(source.get("trace_id")),
         "runtime_environment": runtime_environment,
     }

@@ -6054,6 +6054,13 @@ def test_service_runtime_setting_projection_drops_the_actor_and_fails_closed() -
         "LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS"
     ]
     assert "PRIVATE_SENTINEL" not in json.dumps(result)
+    for reason in (f"Reset floors to {SERVICE_SETTING_VALUE}", "r" * 2000):
+        projected = _saved_dry_run_output(
+            "service-runtime-setting-dry-run",
+            _service_setting_response(_service_setting_plan(reason=reason)),
+        )
+        assert SERVICE_SETTING_VALUE not in json.dumps(projected)
+        assert projected["result"]["plan_digest"] == "b" * 64
     replayed = _saved_dry_run_output(
         "service-runtime-setting-apply",
         _service_setting_response(_service_setting_plan(mode="apply"), replayed=True),

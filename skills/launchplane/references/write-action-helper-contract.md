@@ -865,8 +865,8 @@ keys. It refuses any other key. This route has a local helper binding.
   `--expected-plan-digest` equal to the saved `plan_digest`,
   `--dry-run-evidence-file` for the same key and value, and `--idempotency-key`.
 - Output shows the key, value digest, plan digest and the record's changed and
-  unchanged key names. The caller's actor is dropped. A repeated apply with the
-  same key is marked `replayed`.
+  unchanged key names. The caller's actor and free-text reason are dropped. A
+  repeated apply with the same key is marked `replayed`.
 - Confirm the result with `context-runtime-settings-read --context launchplane`.
 
 ## Setting up a lane for promotion
