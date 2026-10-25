@@ -125,12 +125,7 @@ def transcript_snapshot(record, path):
     before = path.stat()
     with path.open(encoding="utf-8") as stream:
         lines = list(stream)
-    codex = record["harness"] == "codex"
-    records, truncated = transcript_records(record, lines, require_identity=not codex)
-    if codex:
-        native_helpers()
-        import claim_history
-        records = claim_history.root_records(path, "codex", record["session_id"], records)
+    records, truncated = native_transcript_records(record, lines)
     after = path.stat()
     if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
         raise ValueError("Source transcript changed during termination checks")
@@ -160,6 +155,21 @@ def transcript_records(record, lines, *, require_identity: bool = True):
     if require_identity and identities != {record["session_id"]}:
         raise ValueError("Source transcript identity is uncertain")
     return records, truncated
+
+
+def native_transcript_records(record: dict, lines: list[str]) -> tuple[list[dict], bool]:
+    codex = record["harness"] == "codex"
+    records, truncated = transcript_records(record, lines, require_identity=not codex)
+    if codex:
+        native_helpers()
+        import claim_history
+        records = claim_history.root_records(Path(record["transcript"]), "codex", record["session_id"], records)
+    return records, truncated
+
+
+def require_preboot_action(action: dict, booted_at: datetime) -> None:
+    if action.get("action_pending") and stamp(action["action_at"]) >= booted_at:
+        raise ValueError("source native action occurred after reboot; preserve claims")
 
 
 def _transcript_activity(times, mtime_ns, truncated, now, ended):
@@ -242,6 +252,9 @@ def _initial_source(record, session, independent_harness, *, latest_pid=None):
     activity = _verify_transcripts(record, roots) if booted is not None and booted <= datetime.now(timezone.utc) else None
     original_launch = latest_pid is None or latest_pid in {record.get("pid"), record.get("launch_pid")}
     rebooted_at = booted if original_launch and activity is not None and activity.latest < booted else None
+    if rebooted_at is not None:
+        import github_plan_closure
+        require_preboot_action(github_plan_closure.lease_state(session), rebooted_at)
     process = _TerminationProcess(dict(record), physical, rebooted_at or cutoff, roots, rebooted_at)
     _physical_exit(process, independent_harness)
     return process
@@ -251,7 +264,9 @@ def _transcript_roots(record):
     roots = record.get("transcript_roots")
     if not isinstance(roots, list) or not roots or not all(isinstance(root, str) and Path(root).is_dir() for root in roots):
         raise ValueError("Supply every known source-account transcript root on the source host")
-    return {Path(root).resolve(strict=True) for root in roots}
+    from github_plan_sessions import observation_homes
+    configured = {home / name for home in observation_homes() for name in ("sessions", "archived_sessions")}
+    return {Path(root).resolve(strict=True) for root in [*roots, *(path for path in configured if path.is_dir())]}
 
 
 def _verify(record, session, independent_harness):

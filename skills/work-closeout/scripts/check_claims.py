@@ -326,7 +326,8 @@ def reboot_bounds(entries: list[dict], expanded: list[dict], record: dict | None
     natives = {item["transcript"]: item.get("native_child", item["session_id"]) for item in expanded}
     for path, native in sorted(natives.items()):
         child = {**record, "session_id": native, "transcript": path}
-        checked = termination.verify(child, native)
+        original = native == record["session_id"] and Path(path).resolve() == Path(record["transcript"]).resolve()
+        checked = proof if original else termination.verify(child, native)
         if checked.get("booted_at") != proof["booted_at"]:
             raise ValueError("native lineage does not share the verified reboot bound")
         bounds[path] = release.stamp(checked["booted_at"]).timestamp()
@@ -505,13 +506,18 @@ def main(argv: list[str] | None = None) -> int:
         record_bytes = args.termination_record.read_bytes() if args.termination_record else None
         if record_bytes is not None and not args.confirm_session_ended:
             raise ValueError("reboot recovery requires --confirm-session-ended after native task and peer verification")
-        report = check(entries, owners=args.owner, termination_record=json.loads(record_bytes) if record_bytes is not None else None)
+        record = None
+        if record_bytes is not None:
+            import github_plan_native
+            record = github_plan_native._cancel_selected(args.termination_record, args.session[0])
+        report = check(entries, owners=args.owner, termination_record=record)
         if args.termination_record and args.termination_record.read_bytes() != record_bytes:
             raise ValueError("termination record changed during claim readback")
         report["checked_at"] = time.time()
         print(json.dumps(report, sort_keys=True))
         return 0 if report["claims_clear"] else 1
-    except (ValueError, OSError, TypeError, KeyError, GitHubReadError, GitHubReadShapeError, github_identity.GitHubAppError) as error:
+    except (ValueError, OSError, TypeError, KeyError, subprocess.SubprocessError,
+            GitHubReadError, GitHubReadShapeError, github_identity.GitHubAppError) as error:
         print(json.dumps({"operation": CHECK_OPERATION, "session_ids": args.session,
                           "ok": False, "claims_clear": False, "coverage": {"complete": False},
                           "error": str(error), "next_action": "Preserve ownership, record the blocker, and use conditional/no; do not report safe exit yes."}))

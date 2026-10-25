@@ -234,7 +234,9 @@ class NativeQueueTests(unittest.TestCase):
         import uuid
         from types import SimpleNamespace
         import github_plan_termination as termination
-        for variant in ("clear", "loaded", "queued", "no_boot", "changed"):
+        termination.native_helpers()
+        import claim_history
+        for variant in ("clear", "loaded", "queued", "no_boot", "changed", "new_action", "fork", "foreign_fork"):
             with self.subTest(variant=variant), ReceiptFixture(str(uuid.uuid4())) as f:
                 other, _ledger, _selected, _retained, deleted = self.cancel_setup(f)
                 f.home_queues = {str(f.home): [], str(other): []}
@@ -242,18 +244,32 @@ class NativeQueueTests(unittest.TestCase):
                     f.home_states[str(other)] = "idle"
                 if variant == "queued":
                     f.home_queues[str(other)] = [{"id": "pending", "clientUserMessageId": "pending-client", "input": []}]
+                if variant in {"fork", "foreign_fork"}:
+                    rows = [json.loads(line) for line in f.transcript.read_text().splitlines()]
+                    rows[0]["payload"].update(forked_from_id="native-parent", parent_thread_id="native-parent",
+                        subagent_history_start_ordinal=2,
+                        source={"subagent": {"thread_spawn": {"parent_thread_id": "native-parent"}}})
+                    rows[1:1] = [{"type": "session_meta", "payload": {
+                        "id": "foreign-native" if variant == "foreign_fork" else "native-parent"}},
+                        {"type": "event_msg", "payload": {"type": "thread_settings_applied", "thread_id": f.session}}]
+                    for index, row in enumerate(rows):
+                        row["ordinal"] = index
+                    f.transcript.write_text("".join(json.dumps(row) + "\n" for row in rows))
                 before = {path: path.read_bytes() for path in (f.transcript, f.log, CLOSURE.lease_path(f.session))}
                 process = SimpleNamespace(rebooted_at=None if variant == "no_boot" else datetime.now(timezone.utc),
                                           roots=frozenset({f.transcript.parent}))
+                if variant == "new_action":
+                    process.rebooted_at -= timedelta(minutes=1)
                 original_files = NATIVE._cancel_files
-                def files(*args, **kwargs):
+                def files(*args: object, **kwargs: object) -> dict:
                     value = original_files(*args, **kwargs)
                     if variant == "changed" and "thread/read" in f.rpc_requests:
                         value = {**value, "changed": True}
                     return value
                 with patch.object(termination, "_verify_queue_source", return_value=process), \
-                        patch.object(termination, "_recheck_queue_process"), patch.object(NATIVE, "_cancel_files", side_effect=files):
-                    if variant == "clear":
+                        patch.object(termination, "_recheck_queue_process"), patch.object(NATIVE, "_cancel_files", side_effect=files), \
+                        patch.object(claim_history, "root_context", return_value={"parent": "native-parent", "ancestors": ("native-parent",)}):
+                    if variant in {"clear", "fork"}:
                         asyncio.run(NATIVE.prove_crash_end(f.entry))
                     else:
                         with self.assertRaises(ValueError):

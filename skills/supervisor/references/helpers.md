@@ -1995,6 +1995,9 @@ source ownership lease. Each must be NotLoaded with an empty queue, and the
 source files, generation and action state must remain unchanged. It repeats
 physical exit checks and preserves the action barrier. A loaded or queued copy,
 an unavailable account or changed evidence refuses; no client is stopped.
+An action at or after boot refuses even without a reused TTY. If a required
+account's daemon is stopped, verify that fact and use the existing exact-home
+`codex app-server daemon start` recovery route below, then retry; never restart it.
 
 Verify native task status and any remote peers yourself too: an idle desktop
 thread or an ID-less picker may not yet write a new transcript. The existing

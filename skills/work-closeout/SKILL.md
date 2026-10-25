@@ -355,6 +355,9 @@ completion bound for interrupted historical calls; complete GitHub search after
 the same indexing delay and exact release checks still apply. Missing reboot
 proof, a resumed child, changed lineage, or incomplete search keeps coverage
 conditional. This reads evidence only and never releases claims or edits the ledger.
+Run this recovery before retiring retained worktrees: the original record's
+artifacts remain part of termination proof. Missing or changed artifacts keep
+the result conditional and must be reconciled through their owning handoff.
 
 The search does not prove absence. It relies on GitHub's index catching up
 within those 10 minutes, and it cannot see a claim an undecodable command made

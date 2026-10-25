@@ -698,7 +698,9 @@ async def prove_crash_end(entry: dict) -> None:
         process = termination._verify_queue_source(entry, session, latest_pid=current.get("launch_pid") if current else None)
         if process.rebooted_at is None:
             raise ValueError("native crash proof requires verified reboot termination")
-        before = _cancel_files(entry, action, transcript_roots=process.roots)
+        termination.require_preboot_action(action, process.rebooted_at)
+        reader = lambda lines: termination.native_transcript_records(entry, lines)
+        before = _cancel_files(entry, action, reader, transcript_roots=process.roots)
         async with AsyncExitStack() as connections:
             readers = {home: await connections.enter_async_context(connection(Path(home))) for home in before["homes"]}
             for _ in range(2):
@@ -709,7 +711,7 @@ async def prove_crash_end(entry: dict) -> None:
                         raise ValueError("native crash source remains loaded or queued; preserve claims")
                 termination._recheck_queue_process(process)
                 if (_cancel_saved(session) != saved or closure.lease_state(session) != action
-                        or _cancel_files(entry, action, transcript_roots=process.roots) != before):
+                        or _cancel_files(entry, action, reader, transcript_roots=process.roots) != before):
                     raise ValueError("native crash source changed during verification")
 
 
@@ -735,7 +737,7 @@ async def cancel_queue(home: Path, session: str, *, ledger: Path | None = None,
     with _queue_outcome("deletion") as mark_sent:
         with closure.ownership(session, create=apply) as held:
             entry, saved, action = authority(), _cancel_saved(session), closure.lease_state(session)
-            reader = None if ledger is not None else lambda lines: termination.transcript_records(entry, lines)
+            reader = None if ledger is not None else lambda lines: termination.native_transcript_records(entry, lines)
             retained_homes = {Path(saved["codex_home"]).expanduser().resolve(strict=True)} if saved and saved.get("codex_home") else set()
             _primary, original_home, configured, _known = _cancel_origin(entry, action)
             current = _cancel_generation({**entry, "codex_home": str(original_home)}, saved)

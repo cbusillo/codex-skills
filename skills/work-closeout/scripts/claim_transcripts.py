@@ -773,20 +773,13 @@ def window_completions(
 
 
 def completed_sources(
-    records: list[dict], inputs: dict, outputs: dict, identifier: str, sources: ShellTexts, session: str, responses: dict[str, int]
+    records: list[dict], inputs: dict, outputs: dict, identifier: str, sources: ShellTexts, session: str, responses: dict[str, int],
+    finished: set[str],
 ) -> list[bool]:
     text, javascript, name, _ = inputs[identifier]
     own = outputs.get(identifier, [])
     if name == "command":
-        ended = any(
-            row.get("type") == "event_msg"
-            and (row.get("payload") or {}).get("type") == "item_completed"
-            and "command:" + str((item := execution_item(row)).get("id", "")) == identifier
-            and item.get("status") in {"completed", "failed"}
-            and type(item.get("exit_code")) is int
-            for row in records
-        )
-        return [ended] * len(sources.commands)
+        return [identifier in finished] * len(sources.commands)
     if not javascript and name in {"bash", "local_shell_call", "shell", "shell_command"}:
         background = any(value.get("backgroundTaskId") for block in own for value in values(block))
         for row in records:
@@ -2891,7 +2884,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         launched_in_background = False
         try:
             sources = shell_texts(text, javascript, exec_command=name == "exec_command")
-            source_ended = completed_sources(records, inputs, own_outputs, identifier, sources, session, responses)
+            source_ended = completed_sources(records, inputs, own_outputs, identifier, sources, session, responses, finished)
             opaque = sources.opaque
             if not unexecuted and identifier not in finished:
                 claim_may_be_interactive = (
@@ -2973,7 +2966,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
                 saved = persisted_output(records, directory, session, identifier)
                 blocks = [*blocks, *tool_outputs(saved).get(identifier, [])]
                 restored = {**own_outputs, identifier: [*own_outputs.get(identifier, []), *tool_outputs(saved).get(identifier, [])]}
-                restored_flags = completed_sources(records, inputs, restored, identifier, sources, session, responses)
+                restored_flags = completed_sources(records, inputs, restored, identifier, sources, session, responses, finished)
                 ended_invocations = [
                     ended and not discovery.asynchronous
                     for source, ended in zip(sources.commands, restored_flags, strict=True)

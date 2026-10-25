@@ -547,7 +547,7 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
         ):
             explicit_other = native_uuid(exact_resume) is not None
             noninteractive = command_kind == "exec"
-            guarded = independent_harness is not None and independent_harness(pid, argv)
+            guarded = not (explicit_other or noninteractive) and independent_harness is not None and independent_harness(pid, argv)
             if not (explicit_other or noninteractive or guarded):
                 raise ValueError("unidentified harness on the recorded TTY; preserve claims and verify native identity")
     return rows

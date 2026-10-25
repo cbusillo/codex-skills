@@ -702,6 +702,15 @@ class ReleaseTests(ReleaseHarness):
                   self.assertRaises(ValueError)):
                 release.termination.verify(self.termination_record, "session-b")
 
+    def test_reboot_proof_refuses_a_later_native_action_without_tty_reuse(self) -> None:
+        self.termination_setup()
+        shared = release.termination.native_helpers()[1]
+        boot = release.stamp(self.termination_record["ended_at"])
+        with patch.object(shared, "host_boot_time", return_value=boot), \
+                patch.object(github_plan_closure, "lease_state", return_value={"action_pending": True, "action_at": boot.isoformat()}):
+            with self.assertRaises(ValueError):
+                release.termination.verify(self.termination_record, "session-b")
+
     def test_termination_tty_reuse_requires_native_cutoff_and_pending_action_veto(self):
         self.termination_setup()
         self.cutoff_patch.stop()
@@ -737,6 +746,33 @@ class ReleaseTests(ReleaseHarness):
                 release.termination.verify(self.termination_record, "session-b")
             with self.assertRaises(ValueError):
                 release.termination._verify_queue_source(self.termination_record, "session-b")
+
+    def test_pending_action_does_not_recheck_an_explicit_other_or_fresh_exec_client(self) -> None:
+        self.termination_setup()
+        import github_plan_native
+        shared = release.termination.native_helpers()[1]
+        cutoff = release.stamp(self.termination_record["ended_at"])
+        for command in ("codex exec prompt", "codex resume 11111111-1111-4111-8111-111111111111"):
+            with self.subTest(command=command), \
+                    patch.object(shared, "native_exit_cutoff", return_value=cutoff), \
+                    patch.object(shared, "process_started_at", return_value=cutoff + timedelta(seconds=1)), \
+                    patch.object(release.termination, "inventory", return_value=[(88, "ttys123", command)]), \
+                    patch.object(github_plan_closure, "action_pending", return_value=True), \
+                    patch.object(github_plan_native, "prove_crash_end", side_effect=ValueError("unavailable proof")) as proof:
+                release.termination.verify(self.termination_record, "session-b")
+                proof.assert_not_called()
+
+    def test_termination_covers_configured_account_transcripts_outside_declared_roots(self) -> None:
+        transcript = self.termination_setup()
+        import github_plan_sessions
+        configured = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        sessions = configured / "sessions"
+        sessions.mkdir()
+        (sessions / "resumed-session-b.jsonl").write_text(transcript.read_text() + json.dumps({
+            "type": "event_msg", "timestamp": "2026-10-02T00:30:00Z", "payload": {"type": "agent_message", "message": "resumed"}}) + "\n")
+        with patch.object(github_plan_sessions, "observation_homes", return_value=[configured]):
+            with self.assertRaises(ValueError):
+                release.termination.verify(self.termination_record, "session-b")
 
     def test_public_termination_rechecks_terminal_after_transcript_quietness(self):
         self.termination_setup()

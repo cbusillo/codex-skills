@@ -541,6 +541,17 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertFalse(json.loads(output.getvalue())["claims_clear"])
 
+    def test_termination_process_failures_return_conditional_json(self) -> None:
+        entry = self.entry()
+        for failure in (helper.subprocess.CalledProcessError(1, ["git"]), helper.subprocess.TimeoutExpired(["tmux"], 10)):
+            with self.subTest(failure=type(failure).__name__), patch.object(helper, "check", side_effect=failure), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                code = helper.main(["--session", SESSION, "--transcript", entry["transcript"]])
+            report = json.loads(output.getvalue())
+            self.assertNotEqual(code, 0)
+            self.assertFalse(report["claims_clear"])
+            self.assertFalse(report["coverage"]["complete"])
+
     def test_reader_gets_the_checks_deadline_before_its_first_read(self) -> None:
         self.comments.append(self.release)
         started = helper.time.time()
@@ -1645,7 +1656,11 @@ class ClaimCloseoutTests(unittest.TestCase):
                 if variant == "resumed":
                     verify.side_effect = ValueError("source resumed")
                 if variant == "changed":
-                    verify.side_effect = [proof, proof, ValueError("source changed")]
+                    def unchanged(*_args: object, **_kwargs: object) -> dict:
+                        if self.reader.get_json.called:
+                            raise ValueError("source changed")
+                        return proof
+                    verify.side_effect = unchanged
                 if variant == "held":
                     self.comments.remove(self.release)
                 self.search_finds(1, incomplete=variant == "incomplete")
@@ -1657,7 +1672,6 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertEqual(report["claims_clear"], variant == "clear")
                 if variant == "clear":
                     self.assertEqual([item["call_id"] for item in report["settled_invocations"]], ["opaque"])
-                    self.assertGreaterEqual(verify.call_count, 4)
 
     def test_reboot_recovery_checks_each_native_child_and_matching_source_context(self) -> None:
         root = self.entry()
@@ -1671,9 +1685,13 @@ class ClaimCloseoutTests(unittest.TestCase):
             for wrong in ({**record, "session_id": "another-native"}, {**record, "transcript": child["transcript"]}):
                 with self.assertRaises(ValueError):
                     helper.reboot_bounds([root], [root, child], wrong)
-        with patch.object(helper.termination, "verify", side_effect=[proof, proof, ValueError("child resumed")]):
+        with patch.object(helper.termination, "verify", side_effect=[proof, ValueError("child resumed")]):
             with self.assertRaises(ValueError):
                 helper.reboot_bounds([root], [root, child], record)
+        with patch.object(helper.history, "expand", side_effect=[[root], [root, child]]), \
+                patch.object(helper.termination, "verify", return_value=proof):
+            with self.assertRaises(ValueError):
+                helper.check([root], termination_record=record)
 
     def test_one_search_covers_only_a_single_app_installation(self) -> None:
         config = SimpleNamespace(installation_id="1")
