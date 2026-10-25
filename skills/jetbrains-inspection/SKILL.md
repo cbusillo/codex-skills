@@ -450,7 +450,12 @@ identify arbitrary writers or prove that ignored files are quiet.
   all findings in new files. They report the rest as
   `preexisting_finding_count`; fix those only when they fall in the task's
   scope. When the merge base cannot be found, `changed_lines` is `unavailable`
-  and every finding counts.
+  and every finding counts. Native spelling and grammar findings (`TYPO`,
+  `GRAMMAR_ERROR`, `STYLE_SUGGESTION`) never make a verdict RED; they are
+  listed beside it as `advisory_findings` with `advisory_finding_count`. Fix
+  real mistakes, and add real tool, library and product names to the
+  repository's tracked `.idea/dictionaries/project.xml` rather than renaming
+  or suppressing them.
   `whole_project` and `directory` GREEN additionally require plugin capability
   `inspection_execution_proof_version >= 2`, which attests the exact native IDE
   inspection run with affirmative physical-file traversal and file-scoped tool
@@ -602,6 +607,8 @@ so the second-model review sees it. Reviewers may still reject it.
 Disabling inspections, changing inspection profiles, or changing baselines
 requires explicit approval unless the repo already has an established approved
 convention.
+Adding real names to a repository's tracked `.idea/dictionaries/project.xml`
+needs no approval; keep it sorted and add only words that are not misspellings.
 
 ## Reporting
 
