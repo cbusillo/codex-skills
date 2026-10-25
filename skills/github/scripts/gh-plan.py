@@ -903,12 +903,21 @@ def gh_json(
         raise PlanError(f"Expected JSON from gh, got: {stdout[:300]}") from exc
 
 
+def plan_read_error(exc: Exception) -> PlanError:
+    if isinstance(exc, github_read.GitHubReadError):
+        error = PlanError(str(exc), failure=exc.result.failure, api_result=exc.result.as_dict())
+    else:
+        error = PlanError(str(exc))
+    error.__cause__ = exc
+    return error
+
+
 def api_json(method: str, path: str, payload: Any = None, **kwargs: Any) -> tuple[str, Any]:
     if NEXT_READS is not None and method.upper() == "GET" and payload is None:
         try:
             return NEXT_READS.observe(path, lambda: api_json_uncached(method, path, payload, **kwargs))
-        except github_next_reads.ReadDeadline as exc:
-            raise PlanError(str(exc)) from exc
+        except (github_next_reads.ReadDeadline, github_read.GitHubReadError, github_read.GitHubReadShapeError) as exc:
+            raise plan_read_error(exc) from exc
     return api_json_uncached(method, path, payload, **kwargs)
 
 
@@ -5226,6 +5235,40 @@ def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
         NEXT_READS = None
 
 
+class PlanningGraphReader(github_read.GitHubReader):
+    def graphql_json(self, query: str, variables: dict[str, Any], *, step: str, **kwargs: Any) -> github_api_core.ApiResult:
+        read = super().graphql_json
+        policy = kwargs.get("retry_policy") or github_api_core.default_retry_policy()
+        bounded = replace(policy, max_wait_seconds=min(30, policy.max_wait_seconds))
+        deadline = min(self.deadline_at or float("inf"), kwargs.get("deadline_at") or float("inf"),
+                       time.time() + bounded.max_wait_seconds)
+        if NEXT_READS is not None and NEXT_READS.deadline is not None:
+            reserved = NEXT_READS.deadline - NEXT_READS.final_evidence_reserve
+            if time.time() >= reserved:
+                raise github_next_reads.ReadDeadline("Global next reserved its remaining evidence budget")
+            deadline = min(deadline, reserved)
+
+        def fetch() -> github_api_core.ApiResult:
+            result = read(query, variables, step=step, **{**kwargs, "retry_policy": bounded, "deadline_at": deadline})
+            record_retry_fields(result)
+            if result.failure is not None and result.failure.cause == "deadline_exceeded":
+                raise github_next_reads.ReadDeadline("Work graph read reached its bounded deadline")
+            return result
+
+        return NEXT_READS.request(fetch) if NEXT_READS is not None else fetch()
+
+
+def next_graph_reader(repo: str) -> github_read.GitHubReader | None:
+    if (not EXPECTED_ACTOR or not BOT_GH.exists() or os.environ.get("GH_PLAN_SKIP_BOT") == "1"
+            or os.environ.get("GH_PLAN_ALLOW_ACTIVE_FIRST") == "1" or github_identity.active_auth_fallback_allowed()
+            or github_identity.own_user_opted_in()):
+        return None
+    return PlanningGraphReader(gh_cmd=str(BOT_GH), expected_actor=EXPECTED_ACTOR, actor=EXPECTED_ACTOR,
+        operation=CURRENT_OPERATION, strict_actor=True, repository=repo,
+        deadline_at=NEXT_READS.deadline if NEXT_READS else None,
+        retry_runtime=NEXT_READS.retry_runtime if NEXT_READS else None)
+
+
 def direction_next(args: argparse.Namespace, repo: str) -> None:
     assert NEXT_READS is not None
     NEXT_READS.start_phase("milestone_graph")
@@ -5281,6 +5324,32 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     context_locks: dict[str, Any] = {}
     graph_read_ahead: set[tuple[str, int]] = set()
 
+    def graph_comments(issue_repo: str, number: int, rows_to_read: int) -> tuple[list[dict[str, Any]], bool]:
+        rows = collect_paged_rest_items(f"/repos/{issue_repo}/issues/{number}/comments", query={},
+            bucket="rest_core", step_prefix="next_issue_comments", limit=rows_to_read)[1]
+        return rows, len(rows) < rows_to_read
+
+    def graph_relationships(issue_repo: str, number: int, raw: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+        nonlocal actor
+        relation_actor, relations, truncated = read_next_issue_relationships(issue_repo, number, raw)
+        actor = relation_actor or actor
+        return relations, truncated
+
+    def graph_wait(raw: dict[str, Any], comments: list[dict[str, Any]], issue_repo: str) -> dict[str, Any] | None:
+        try:
+            return current_wait(raw, comments, issue_repo)
+        except PlanError as exc:
+            if exc.failure is not None:
+                raise
+            return None
+
+    graph_readers: dict[str, github_read.GitHubReader | None] = {}
+
+    def graph_reader(issue_repo: str) -> github_read.GitHubReader | None:
+        if issue_repo not in graph_readers:
+            graph_readers[issue_repo] = next_graph_reader(issue_repo)
+        return graph_readers[issue_repo]
+
     def load_node(issue_repo: str, number: int) -> dict[str, Any]:
         nonlocal actor
         key = (issue_repo.casefold(), number)
@@ -5288,10 +5357,15 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             return nodes[key]
         raw_issue = seeds.get(key)
         try:
-            if raw_issue is None:
+            path = github_work_graph.issue_path(issue_repo, number)
+            if NEXT_READS.observation(path) is not None:
+                issue_actor, raw_issue = api_json("GET", path, bucket="rest_core", failed_step="next_issue_observation")
+                actor = issue_actor or actor
+            elif raw_issue is None:
                 issue_actor, raw_issue = get_issue(str(number), issue_repo)
                 actor = issue_actor or actor
-            seeds[key] = {**raw_issue, "repo": issue_repo}
+            raw_issue = {**raw_issue, "repo": issue_repo}
+            seeds[key] = raw_issue
             context_key = issue_repo.casefold()
             with context_lock:
                 repo_lock = context_locks.setdefault(context_key, threading.Lock())
@@ -5304,47 +5378,11 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
                     focus_contexts[issue_repo] = focus_context
             target_config, focus_values = contexts[context_key]
             focus = focus_values.get(raw_issue.get("html_url") or raw_issue.get("url"))
-            base = {
-                **compact_list_issue(issue_repo, raw_issue),
-                "plan_status": next_plan_status(raw_issue, target_config),
-                "focus": focus,
-                "milestone": next_milestone_context(raw_issue),
-            }
-            if raw_issue.get("pull_request") is not None:
-                return {"item": {**base, "exclusion": "pull_request"}}
-            comment_limit = getattr(args, "comment_limit", None) or 100
-            if type(raw_issue.get("comments")) is int and raw_issue["comments"] == 0:
-                comments = []
-            else:
-                _, comments = collect_paged_rest_items(
-                    f"/repos/{issue_repo}/issues/{number}/comments", query={}, bucket="rest_core",
-                    step_prefix="next_issue_comments", limit=comment_limit + 1,
-                )
-            complete = len(comments) <= comment_limit
-            try:
-                wait = current_wait(raw_issue, comments[:comment_limit], issue_repo) if complete else None
-            except (ValueError, KeyError, TypeError):
-                wait = None
-            except PlanError as exc:
-                if exc.failure is not None:
-                    raise
-                wait = None
-            if wait is None:
-                wait = {"version": 1, "state": "review", "evidence": "", "waits": []}
-            static = next_static_exclusion(raw_issue, config=target_config, focus=focus)
-            if static:
-                evaluated_node = {"item": static}
-            else:
-                relation_actor, relationships, truncated = read_next_issue_relationships(issue_repo, number, raw_issue)
-                actor = relation_actor or actor
-                evaluated_node = github_direction_next.evaluate_direction_node(
-                    raw_issue, config=target_config, focus=focus, relationships=relationships,
-                    truncated_relationships=truncated, structured_wait=wait,
-                )
-            evaluated_node["item"]["discussion"] = github_direction_next.discussion_snapshot(
-                raw_issue, comments[:comment_limit], complete=complete,
-            )
-            return evaluated_node
+            return github_work_graph.read_direction_node(raw_issue, config=target_config, focus=focus,
+                comment_limit=getattr(args, "comment_limit", None) or 100,
+                read_comments=lambda count: graph_comments(issue_repo, number, count),
+                read_relationships=lambda: graph_relationships(issue_repo, number, raw_issue),
+                resolve_wait=lambda comments: graph_wait(raw_issue, comments, issue_repo))
         except PlanError as exc:
             # Inaccessible cross-owner nodes are unknown, not unblocked. Quota,
             # auth and provider failures retain the shared helper's stop policy.
@@ -5372,6 +5410,9 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             parent_observation(key)
 
     def prefetch_nodes(refs: list[dict[str, Any]], *, ancestry: bool = False) -> None:
+        selected = [ref for ref in refs[:NEXT_READS.workers]
+                    if seeds.get((ref["repo"].casefold(), ref["number"]), {}).get("pull_request") is None]
+        github_work_graph.prefetch_issues(graph_reader, selected, NEXT_READS)
         for ref in refs[:NEXT_READS.workers]:
             key = (ref["repo"].casefold(), ref["number"])
             issue_repo, number = ref["repo"], ref["number"]
@@ -5389,22 +5430,39 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         return nodes[key]
 
     def prefetch_graph(refs: list[dict[str, Any]]) -> None:
+        selected: list[dict[str, Any]] = []
         for ref in refs:
-            key = (ref["repo"].casefold(), ref["number"])
+            key = ref["repo"].casefold(), ref["number"]
             if key in nodes or key in graph_read_ahead:
                 continue
             if len(graph_read_ahead.difference(nodes)) >= NEXT_READS.workers:
                 break
             graph_read_ahead.add(key)
-            prefetch_nodes([ref])
+            selected.append(ref)
+        if selected:
+            prefetch_nodes(selected)
 
     unused_errors: set[BaseException] = set()
     def unused_failure(exc: BaseException) -> None:
+        source = exc.__cause__ or exc
+        if isinstance(exc, (github_read.GitHubReadError, github_read.GitHubReadShapeError, github_next_reads.ReadDeadline)):
+            exc = plan_read_error(exc)
+        if isinstance(exc, github_next_reads.CancelledError):
+            return
+        if isinstance(source, github_next_reads.ReadDeadline):
+            next_source_error(exc)
+            return
+        if isinstance(source, github_read.GitHubReadShapeError):
+            if source not in unused_errors:
+                unused_errors.add(source)
+                cause = "invalid_response_shape"
+                NEXT_READS.read_ahead_failures[cause] = NEXT_READS.read_ahead_failures.get(cause, 0) + 1
+            return
         if (isinstance(exc, PlanError) and not isinstance(exc, ClassifiedPlanError) and exc.failure
                 and exc.failure.cause in {"network_provider_failure", "provider_failure"}):
-            if exc in unused_errors:
+            if source in unused_errors:
                 return
-            unused_errors.add(exc)
+            unused_errors.add(source)
             cause = exc.failure.cause
             NEXT_READS.read_ahead_failures[cause] = NEXT_READS.read_ahead_failures.get(cause, 0) + 1
             return
@@ -5559,7 +5617,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             final_evidence_reserve = NEXT_READS.final_evidence_reserve
             if NEXT_READS.expired or NEXT_READS.remaining_seconds < final_evidence_reserve:
                 break
-            if NEXT_READS.workers > 1:
+            if NEXT_READS.workers > 1 and offset % NEXT_READS.workers == 0:
                 prefetch_nodes(scanned[offset:offset + NEXT_READS.workers], ancestry=True)
             ranked["excluded"] = [item for item in ranked["excluded"] if not (item.get("exclusion") == "outside_direction_tracks" and item["repo"].casefold() == raw["repo"].casefold() and item["number"] == raw["number"])]
             seeds[(raw["repo"].casefold(), raw["number"])] = raw
@@ -5780,7 +5838,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     ) if scope is None else {"dependabot_context": {"complete": False, "exclusion": "explicit_milestone_scope"}}
     # Account for every speculative read before emitting the terminal receipt.
     NEXT_READS.drain(unused_failure=unused_failure)
-    emit({
+    payload = {
         "ok": True, "actor": actor, "repo": repo,
         "scope": {"kind": "direction", "owner": repo.split("/")[0], "milestone": scope},
         "milestone_order": {"source": f"{repo}:{DIRECTION_FILE}", "titles": titles, "fallback_reason": None, "error": None},
@@ -5799,7 +5857,15 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             "candidates_are_possible_work_until_direction_discussion_and_ownership_review",
             "graph_coverage_is_not_portfolio_or_active_session_coverage",
         ],
-    })
+    }
+    with NEXT_READS.lock:
+        issue_observations = [future for path, future in NEXT_READS.observations.items()
+            if re.fullmatch(r"/repos/[^/]+/[^/]+/issues/\d+", path)]
+    payload["work_graph_context"] = {"source": "github",
+        "observed_nodes": sum(future.done() and not future.cancelled() and future.exception() is None for future in issue_observations),
+        "unread_nodes": sum(future.done() and not future.cancelled() and future.exception() is not None for future in issue_observations),
+        "batch_requests": sum(len(reader.results) for reader in graph_readers.values() if reader is not None)}
+    emit(payload)
 
 
 def resolve_project(owner: str, title_or_number: str, *, recoverable: bool = False) -> tuple[str, int, dict[str, Any] | None]:

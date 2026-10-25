@@ -19,6 +19,7 @@ from collections.abc import Callable
 from typing import Any
 
 import github_agent
+import github_plan_graph
 import github_plan_claim
 import github_plan_wait
 import github_plan_status
@@ -415,10 +416,10 @@ def discussion_snapshot(issue: dict[str, Any], comments: list[dict[str, Any]], *
     """Carry the discussion, not a guess about arbitrary human prose, to selection."""
     snapshot = {
         "body": issue.get("body") or "",
-        "author": (issue.get("user") or {}).get("login") or issue.get("author"),
+        "author": github_plan_graph.rest_author(issue.get("user"))["login"],
         "updated_at": issue.get("updated_at"),
         "comments": [{
-            "id": comment.get("id"), "author": (comment.get("user") or {}).get("login"),
+            "id": comment.get("id"), "author": github_plan_graph.rest_author(comment.get("user"))["login"],
             "created_at": comment.get("created_at"),
             "updated_at": comment.get("updated_at"), "url": comment.get("html_url"),
             "body": comment.get("body") or "",
