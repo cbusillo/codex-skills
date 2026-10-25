@@ -3957,6 +3957,13 @@ def cmd_update_section(args: argparse.Namespace) -> None:
         new_text = read_body(args)
         preparation_step = "section_replacement"
         updated = replace_issue_plan_section(issue, args.section, new_text)
+        if args.section == "Current Status":
+            before, after = (
+                {kind: lines for kind, lines in section_machine_markers(body).items() if kind.startswith("github-plan:")}
+                for body in (issue.get("body") or "", updated)
+            )
+            if before != after:
+                raise ValueError("Current Status corrections preserve planning records; use wait, claim or release to change them")
     except (OSError, ValueError, re.error) as exc:
         message = f"Cannot prepare plan section update: {exc}"
         failure = github_api_core.FailureDetail(

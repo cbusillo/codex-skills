@@ -222,20 +222,29 @@ class SectionTests(unittest.TestCase):
         self.assertIn(operation, body)
         self.assertTrue(PLAN.section_map(body)["Current Status"].startswith("State: Done."))
 
-    def test_supplied_record_replaces_only_its_own_kind(self) -> None:
-        old = PLAN.github_plan_wait.reviewed(evidence="Old review.")
-        new = PLAN.github_plan_wait.reviewed(evidence="New review.", waiting_for="Chris", ends_when="He answers")
-        body = self.update_status(PLAN.github_plan_claim.marker(CLAIM) + "\n" + PLAN.github_plan_wait.marker(old),
-                                  "State: Waiting.\n\n" + PLAN.github_plan_wait.marker(new))
-        self.assert_records(body, new)
+    def test_waiting_status_correction_needs_no_claim_and_preserves_execution_holds(self) -> None:
+        wait = PLAN.github_plan_wait.reviewed(evidence="Awaiting answer.", waiting_for="Chris", ends_when="He answers")
+        self.issue["labels"] = [{"name": "plan:waiting"}]
+        self.issue["body"] += "\n## Current Status\n\nOld routing.\n\n" + PLAN.github_plan_wait.marker(wait)
+        code, _, edit, errors = self.run_update("--body", "Next action: Chris answers the existing question.",
+                                              section="Current Status", cmd_claim=Mock(side_effect=AssertionError("Execution claim")))
+        self.assertEqual(code, 0, errors)
+        updated = {**self.issue, "body": edit.call_args.kwargs["body"]}
+        self.assertEqual(PLAN.github_plan_wait.current(updated, [], {"fixture-bot[bot]"}), wait)
+        self.assertEqual(PLAN.github_plan_claim.records(updated["body"]), [])
+        self.assertEqual(set(edit.call_args.kwargs), {"body"})
+        for record in (PLAN.github_plan_wait.marker(PLAN.github_plan_wait.reviewed(evidence="Clear")),
+                       PLAN.github_plan_claim.marker(CLAIM)):
+            with self.subTest(record=record):
+                self.assert_prewrite_failure(("--body", "Corrected status.\n" + record),
+                                             "section_replacement", section="Current Status")
 
     def test_indented_claims_are_recognized_as_the_claim_reader_does(self) -> None:
         successor = {**CLAIM, "worker": "next", "session": "s2"}
         body = self.update_status(" " + PLAN.github_plan_claim.marker(CLAIM), "State: Done.")
         self.assertEqual(PLAN.github_plan_claim.records(body), [CLAIM])
-        body = self.update_status(PLAN.github_plan_claim.marker(CLAIM),
-                                  "State: Active.\n " + PLAN.github_plan_claim.marker(successor))
-        self.assertEqual(PLAN.github_plan_claim.records(body), [successor])
+        self.assert_prewrite_failure(("--body", "State: Active.\n " + PLAN.github_plan_claim.marker(successor)),
+                                     "section_replacement", section="Current Status")
 
     def test_fenced_marker_examples_are_not_carried(self) -> None:
         example = PLAN.github_plan_wait.marker(PLAN.github_plan_wait.reviewed(evidence="Example."))
