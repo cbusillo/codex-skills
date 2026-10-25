@@ -957,28 +957,39 @@ HUNK = re.compile(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@")
 
 def changed_line_map(repo: Path, selected: set[str]) -> dict[str, set[int] | None] | None:
     """Lines each selected file adds or modifies since its default-branch merge base; None marks a new file."""
-    git = ["git", "-c", "core.quotePath=false", "-C", str(repo)]
-    upstream = common.command([*git, "rev-parse", "--abbrev-ref", "origin/HEAD"])
-    base = common.command([*git, "merge-base", "HEAD", upstream.stdout.decode().strip()]) if not upstream.returncode else upstream
-    if base.returncode or not selected:
+    def git(*argv: str) -> str | None:
+        result = common.command(["git", "-c", "core.quotePath=false", "-C", str(repo), *argv])
+        return None if result.returncode else result.stdout.decode(errors="replace")
+
+    upstream = git("rev-parse", "--symbolic-full-name", "origin/HEAD")
+    base = git("merge-base", "HEAD", upstream.strip()) if upstream else None
+    if not base or not selected:
         return None
-    base_sha = base.stdout.decode().strip()
-    present = set(common.checked([*git, "ls-tree", "-r", "-z", "--name-only", base_sha, "--", *sorted(selected)]).decode().split("\0"))
-    diff = common.checked([*git, "diff", "--unified=0", "--no-color", "--no-ext-diff", "--no-renames", base_sha, "--",
-                           *sorted(selected & present)]).decode(errors="replace")
+    paths = sorted(selected)
+    present = git("ls-tree", "-r", "-z", "--name-only", base.strip(), "--", *paths)
+    differing = git("diff", "-z", "--name-only", "--no-renames", base.strip(), "--", *paths)
+    diff = git("diff", "--unified=0", "--no-color", "--no-ext-diff", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/",
+               base.strip(), "--", *paths)
+    if present is None or differing is None or diff is None:
+        return None
     edited: dict[str, set[int]] = {}
     current: str | None = None
+    in_header = False
     for line in diff.splitlines():
-        if line.startswith("+++ "):
-            current = line[len("+++ b/"):] if line.startswith("+++ b/") else None
-            continue
-        hunk = HUNK.match(line)
-        if current is None or hunk is None:
-            continue
-        start, count = int(hunk[1]), int(hunk[2] if hunk[2] is not None else 1)
-        if count:
-            edited.setdefault(current, set()).update(range(start, start + count))
-    return {**edited, **{path: None for path in selected if path not in present}}
+        if line.startswith("diff --git "):
+            in_header, current = True, None
+        elif in_header and line.startswith("+++ "):
+            name = line[len("+++ "):].rstrip("\t")
+            current = name[len("b/"):] if name.startswith("b/") else None
+        elif hunk := HUNK.match(line):
+            in_header = False
+            if current is not None:
+                start, count = int(hunk[1]), int(hunk[2] if hunk[2] is not None else 1)
+                edited.setdefault(current, set()).update(range(start, start + count))
+    changed: dict[str, set[int] | None] = {path: None for path in selected - set(present.split("\0"))}
+    for path in selected & set(differing.split("\0")):
+        changed.setdefault(path, edited.get(path))
+    return changed
 
 
 def attribute_to_change(receipt: dict[str, Any], findings: list[dict[str, Any]], repo: Path, scope: str, selected: set[str]) -> None:
@@ -993,7 +1004,7 @@ def attribute_to_change(receipt: dict[str, Any], findings: list[dict[str, Any]],
             finding["introduced"] = False
         else:
             lines = changed[finding["file"]]
-            finding["introduced"] = lines is None or not finding.get("line") or finding["line"] in lines
+            finding["introduced"] = lines is None or finding["line"] in lines
 
 
 def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]], reason: str, gaps: list[str], artifact: str | None = None) -> dict[str, Any]:

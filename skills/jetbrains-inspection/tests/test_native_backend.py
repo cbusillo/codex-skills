@@ -386,7 +386,7 @@ class NativeTests(unittest.TestCase):
             git("init", "-q", "-b", "main")
             git("config", "user.email", "fixture@example.invalid")
             git("config", "user.name", "Fixture")
-            for name in ("edited.py", "committed.py", "untouched.py"):
+            for name in ("edited.py", "committed.py", "untouched.py", "spaced name.py", "trimmed.py", "header.py", 'quote"d.py'):
                 (repo / name).write_text("one\ntwo\nthree\n")
             git("add", ".")
             git("commit", "-q", "-m", "base")
@@ -399,17 +399,25 @@ class NativeTests(unittest.TestCase):
             git("commit", "-q", "-m", "change")
             (repo / "edited.py").write_text("one\ntwo\nTHREE\n")
             (repo / "untracked.py").write_text("new\n")
-            selected = {"edited.py", "committed.py", "untouched.py", "staged.py", "untracked.py"}
+            (repo / "spaced name.py").write_text("ONE\ntwo\nthree\n")
+            (repo / "trimmed.py").write_text("one\nthree\n")
+            (repo / "header.py").write_text("one\n++ b/untouched.py\ntwo\nthree\nFOUR\n")
+            (repo / 'quote"d.py').write_text("one\ntwo\nTHREE\n")
+            selected = {"edited.py", "committed.py", "untouched.py", "staged.py", "untracked.py",
+                        "spaced name.py", "trimmed.py", "header.py", 'quote"d.py'}
+            expected = {"edited.py": {3}, "committed.py": {2, 4}, "staged.py": None, "untracked.py": None,
+                        "spaced name.py": {1}, "trimmed.py": set(), "header.py": {2, 5}, 'quote"d.py': None}
 
-            self.assertEqual(native.changed_line_map(repo, selected), {
-                "edited.py": {3}, "committed.py": {2, 4}, "staged.py": None, "untracked.py": None,
-            })
+            for setting in ("diff.mnemonicPrefix", "diff.noprefix"):
+                git("config", setting, "true")
+                self.assertEqual(native.changed_line_map(repo, selected), expected, setting)
+                git("config", "--unset", setting)
             findings = [{"file": file, "line": line} for file, line in
-                        (("edited.py", 3), ("edited.py", 1), ("edited.py", None), ("untouched.py", 2), ("untracked.py", 1))]
+                        (("edited.py", 3), ("edited.py", 1), ("untouched.py", 2), ("untracked.py", 1), ("trimmed.py", 1))]
             receipt = {}
             native.attribute_to_change(receipt, findings, repo, "changed_files", selected)
             self.assertEqual(([finding["introduced"] for finding in findings], receipt["changed_lines"]),
-                             ([True, False, True, False, True], "computed"))
+                             ([True, False, False, True, False], "computed"))
             native.attribute_to_change(receipt := {}, findings, repo, "whole_project", selected)
             self.assertEqual(receipt, {})
             git("symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
