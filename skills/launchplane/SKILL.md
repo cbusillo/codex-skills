@@ -1355,6 +1355,14 @@ reviewed-inspect procedure and verify the situation.
   inventories can include inherited global records and reflect caller access.
   Read the [names-only contract](references/write-action-helper-contract.md#names-only-settings-and-secret-reads)
   for output bounds and the service's plain-value transport limitation.
+- `POST /v1/service/runtime-settings`: Bounded helper path
+  (`service-runtime-setting-dry-run` / `-apply`, with `--key`, `--value` and
+  `--reason`) for one declared non-secret setting in Launchplane's own
+  `launchplane` context record, which product-config cannot write. Apply
+  requires the saved dry-run evidence for the same key and value,
+  `--expected-plan-digest`, reviewed acknowledgement and an idempotency key.
+  Read the [service setting contract](references/write-action-helper-contract.md#service-settings)
+  before use.
 - Native testing rebuild preflight and submission (`testing-rebuild-dry-run` /
   `testing-rebuild-submit`) reuse `POST /v1/drivers/odoo/target-replacement-plan`
   and `POST /v1/drivers/odoo/target-replacement-apply`. The fixed testing-only

@@ -4249,6 +4249,45 @@ def _project_preview_history(provider_payload: dict[str, Any]) -> dict[str, obje
     return projected
 
 
+SERVICE_RUNTIME_SETTING_PLAN_FIELDS = frozenset({
+    "status", "actor", "reason", "mode", "key", "value_sha256", "plan_digest",
+    "trace_id", "runtime_environment",
+})
+SERVICE_RUNTIME_SETTING_KEY_RE = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
+
+
+def _service_runtime_setting_key(value: object) -> str:
+    if not isinstance(value, str) or SERVICE_RUNTIME_SETTING_KEY_RE.fullmatch(value) is None:
+        raise LaunchplaneSafetyError("invalid_response")
+    return value
+
+
+def _project_service_runtime_setting_plan(
+    result: object, *, replayed: object = None
+) -> dict[str, object]:
+    source = _require_dict(result)
+    if any(str(key) not in SERVICE_RUNTIME_SETTING_PLAN_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    runtime_environment = _project_runtime_environment(source.get("runtime_environment"))
+    if runtime_environment.get("scope") != "context" or runtime_environment.get("context") != "launchplane":
+        raise LaunchplaneSafetyError("invalid_response")
+    if replayed is not None and not isinstance(replayed, bool):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "status": public_code(source.get("status")),
+        "mode": _reviewed_plan_mode(source.get("mode")),
+        "key": _service_runtime_setting_key(source.get("key")),
+        "value_sha256": _project_sha256(source.get("value_sha256")),
+        "plan_digest": _project_sha256(source.get("plan_digest")),
+        "trace_id": public_trace_id(source.get("trace_id")),
+        "runtime_environment": runtime_environment,
+    }
+    if replayed:
+        projected["replayed"] = True
+    assert_public_safe_shape(projected)
+    return projected
+
+
 def _project_product_repository_identity(value: object) -> dict[str, object]:
     source = _require_dict(value)
     if any(str(key) not in PRODUCT_REPOSITORY_IDENTITY_FIELDS for key in source):
@@ -4581,6 +4620,11 @@ def _project_success_output(
             provider_payload.get("records"), {"product_profile", "repository_inventory"}
         )
         return records, _project_product_repository_identity_plan(provider_payload.get("result"))
+    if operation in {"service-runtime-setting-dry-run", "service-runtime-setting-apply"}:
+        records = _project_records(provider_payload.get("records"), {"runtime_environment"})
+        return records, _project_service_runtime_setting_plan(
+            provider_payload.get("result"), replayed=provider_payload.get("replayed")
+        )
     if operation in {"product-owner-dry-run", "product-owner-apply"}:
         records = _project_records(provider_payload.get("records"), {"product_profile"})
         return records, _project_product_owner_plan(provider_payload.get("result"))
@@ -4818,6 +4862,14 @@ def summarize_success(
                 "then apply the same product and reason with --expected-plan-digest."
                 if operation == "product-repository-identity-dry-run"
                 else "Check read_back_matches before relying on repository-id event routing."
+            )
+        elif operation in {"service-runtime-setting-dry-run", "service-runtime-setting-apply"}:
+            summary["plan_digest"] = result.get("plan_digest")
+            summary["recommendation"] = (
+                "Save this redacted dry-run output, review the key and value digest, then apply "
+                "the same key, value and reason with --expected-plan-digest."
+                if operation == "service-runtime-setting-dry-run"
+                else "Read the key back with context-runtime-settings-read --context launchplane."
             )
         elif operation in {"product-owner-dry-run", "product-owner-apply"}:
             summary["plan_sha256"] = result.get("plan_sha256")
@@ -6581,6 +6633,37 @@ def product_repository_identity_body(
     return body
 
 
+def service_runtime_setting_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
+    key = _required_argument(args, "key")
+    if SERVICE_RUNTIME_SETTING_KEY_RE.fullmatch(key) is None:
+        raise ValueError("invalid_key")
+    body: dict[str, object] = {
+        "mode": mode,
+        "key": key,
+        "value": args.value,
+        "reason": _required_argument(args, "reason"),
+    }
+    if mode == "apply":
+        expected_plan_digest = _reviewed_apply_digest(args)
+        _evidence, result = _load_reviewed_evidence(
+            args,
+            operation="service-runtime-setting-dry-run",
+            expected_digest=expected_plan_digest,
+            digest_field="plan_digest",
+        )
+        if (
+            result.get("key") != key
+            or result.get("value_sha256") != _service_runtime_setting_value_sha256(args.value)
+        ):
+            raise ValueError("reviewed_dry_run_not_apply_eligible")
+        body["expected_plan_digest"] = expected_plan_digest
+    return body
+
+
+def _service_runtime_setting_value_sha256(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
 def odoo_addon_settings_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
     body = read_payload_file(args.payload_file)
     if any(str(key) not in ODOO_ADDON_SETTINGS_PAYLOAD_FIELDS for key in body):
@@ -7807,6 +7890,7 @@ SIMPLE_APPLY_OPERATIONS = frozenset({
     "integration-allowances-apply", "testing-hold-apply",
     "product-repository-identity-apply", "generic-web-deploy-recovery-apply",
     "repository-inventory-apply", "product-expected-config-apply",
+    "service-runtime-setting-apply",
 })
 
 
@@ -11384,6 +11468,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         _add_reviewed_apply_arguments(repository_identity, apply=command.endswith("-apply"))
 
     for command, help_text in (
+        (
+            "service-runtime-setting-dry-run",
+            "Dry-run setting a declared non-secret Launchplane service setting.",
+        ),
+        (
+            "service-runtime-setting-apply",
+            "Apply a reviewed service setting bound to the saved dry-run digest.",
+        ),
+    ):
+        service_setting = subparsers.add_parser(command, help=help_text)
+        service_setting.add_argument("--key", required=True)
+        service_setting.add_argument("--value", required=True)
+        service_setting.add_argument("--reason", required=True)
+        _add_reviewed_apply_arguments(service_setting, apply=command.endswith("-apply"))
+
+    for command, help_text in (
         ("product-owner-dry-run", "Dry-run recording or clearing a product's Client."),
         ("product-owner-apply", "Apply a reviewed Client change bound to the saved dry-run digest."),
     ):
@@ -12330,6 +12430,22 @@ def main(argv: list[str]) -> int:
             request = {
                 "mode": mode,
                 "product": public_identifier(body["product"]),
+                "payload_source": "operator_argument",
+            }
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=helper_command_path(args.command),
+                request=request,
+                body=body,
+            )
+        if args.command in {"service-runtime-setting-dry-run", "service-runtime-setting-apply"}:
+            mode = "apply" if args.command == "service-runtime-setting-apply" else "dry-run"
+            body = service_runtime_setting_body(args, mode=mode)
+            request = {
+                "mode": mode,
+                "key": body["key"],
+                "value_sha256": _service_runtime_setting_value_sha256(args.value),
                 "payload_source": "operator_argument",
             }
             return execute_post(
