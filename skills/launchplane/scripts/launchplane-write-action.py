@@ -6624,14 +6624,15 @@ def product_repository_identity_body(
 
 
 def service_runtime_setting_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
+    key = _required_argument(args, "key")
+    if SERVICE_RUNTIME_SETTING_KEY_RE.fullmatch(key) is None:
+        raise ValueError("invalid_key")
     body: dict[str, object] = {
         "mode": mode,
-        "key": _required_argument(args, "key"),
+        "key": key,
         "value": args.value,
         "reason": _required_argument(args, "reason"),
     }
-    if SERVICE_RUNTIME_SETTING_KEY_RE.fullmatch(str(body["key"])) is None:
-        raise ValueError("invalid_key")
     if mode == "apply":
         expected_plan_digest = _reviewed_apply_digest(args)
         _evidence, result = _load_reviewed_evidence(
@@ -6641,7 +6642,7 @@ def service_runtime_setting_body(args: argparse.Namespace, *, mode: str) -> dict
             digest_field="plan_digest",
         )
         if (
-            result.get("key") != body["key"]
+            result.get("key") != key
             or result.get("value_sha256") != _service_runtime_setting_value_sha256(args.value)
         ):
             raise ValueError("reviewed_dry_run_not_apply_eligible")

@@ -6059,7 +6059,10 @@ def test_service_runtime_setting_projection_drops_the_actor_and_fails_closed() -
         _service_setting_response(_service_setting_plan(mode="apply"), replayed=True),
     )
     assert replayed["result"]["replayed"] is True
-    other_context = {**_service_setting_plan()["runtime_environment"], "context": "testing"}
+    other_context = {
+        **cast(dict[str, object], _service_setting_plan()["runtime_environment"]),
+        "context": "testing",
+    }
     for plan, code in (
         (_service_setting_plan(value="PRIVATE_SENTINEL"), "unsafe_response_shape"),
         (_service_setting_plan(key="lowercase-key"), "invalid_response"),
