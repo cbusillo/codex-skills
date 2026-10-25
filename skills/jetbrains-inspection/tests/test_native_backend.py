@@ -504,6 +504,32 @@ print('Done.')
         with self.native_host(loads):
             return native._run(self.args, host, None) if direct else native.run(self.args, host)
 
+    def test_admission_waits_for_host_load_to_fall_before_inspecting(self) -> None:
+        samples = iter([(native.LOAD_LIMIT + 10, 1, 1)] * 2)
+        result = self.assess(lambda: next(samples, (1, 1, 1)))
+        self.assertEqual(result["agent_result"]["verdict"], "RED")
+        self.assertGreaterEqual(result["diagnostic"]["native"]["load_wait_ms"], 1000)
+
+    def test_waiting_for_load_leaves_the_worker_free_for_recovery_and_the_gui(self) -> None:
+        held_by_others = []
+
+        def loads():
+            if not held_by_others:
+                with native.profile_lock(self.worker), native.profile_lock(self.worker, "native-control.lock"):
+                    held_by_others.append(True)
+                return native.LOAD_LIMIT + 10, 1, 1
+            return 1, 1, 1
+
+        self.assertEqual(self.assess(loads, direct=True)["agent_result"]["verdict"], "RED")
+        self.assertEqual(held_by_others, [True])
+
+    def test_admission_reports_load_only_after_its_wait_bound(self) -> None:
+        self.args.lifecycle_lock_timeout_ms = 1500
+        result = self.assess(lambda: (native.LOAD_LIMIT + 10, 1, 1))
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_host_load_paused")
+        self.assertGreaterEqual(result["diagnostic"]["native"]["load_wait_ms"], 1500)
+        self.assertEqual(result["cleanup"]["status"], "closed")
+
     def test_findings_require_current_reports_and_cleanup_sdk_in_place(self):
         result = self.assess()
         self.assertEqual(result["agent_result"]["verdict"], "RED")

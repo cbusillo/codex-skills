@@ -217,6 +217,18 @@ def runtime_storage(host, worker):
     return state, {"UV_CACHE_DIR": str(cache), "UV_PYTHON_INSTALL_DIR": str(pythons)}
 
 
+def wait_for_host_capacity(wait_until, on_wait, receipt):
+    started = time.monotonic()
+    try:
+        while os.getloadavg()[0] > LOAD_LIMIT:
+            if time.monotonic() >= wait_until:
+                raise Blocked("native_host_load_paused")
+            on_wait()
+            time.sleep(max(0.0, min(1.0, wait_until - time.monotonic())))
+    finally:
+        receipt["load_wait_ms"] = round((time.monotonic() - started) * 1000)
+
+
 @contextlib.contextmanager
 def profile_lock(worker, name="worker.lock", wait_until=None, on_wait=None):
     """Exclusive kernel lock; an admitted request waits until `wait_until` for its owner to release it."""
@@ -1161,6 +1173,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             # Ordinary requests queue for the same locks; recovery never waits.
             held_lock.enter_context(host.fifo_turn(state_dir() / "native-queue", "Native inspection", on_wait))
             wait_until = time.monotonic() + max(0, getattr(args, "lifecycle_lock_timeout_ms", host.DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)) / 1000
+            wait_for_host_capacity(wait_until, on_wait, receipt)
         held_lock.enter_context(profile_lock(worker, "native-control.lock", wait_until, on_wait))
         process_proof = stop_orphan(worker, receipt)
         global_lock = held_lock.enter_context(profile_lock(state_dir(), wait_until=wait_until, on_wait=on_wait))
@@ -1174,8 +1187,6 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         if args.native_recover_only:
             raise Blocked("native_recovery_only_no_inspection")
         state, preparation_caches = runtime_storage(host, worker)
-        if os.getloadavg()[0] > LOAD_LIMIT:
-            raise Blocked("native_host_load_paused")
         repo, settings, scope, selected = common.scope_selection(args, host, receipt)
         if not any(repo.is_relative_to(Path(root)) for root in host.trusted_auto_open_roots()):
             raise Blocked("native_trusted_root_required")
