@@ -75,6 +75,24 @@ def format_ownership(text: str) -> tuple[str, ...]:
     )
 
 
+class ClaimMarkerTests(unittest.TestCase):
+    def test_record_text_stays_hidden_and_legacy_releases_match(self) -> None:
+        record = {**OWNER, "worker": "trial --> @someone --!>"}
+        encoded = CLAIM.marker(record)
+        self.assertEqual(encoded.count(">"), 1)
+        legacy = "<!-- " + CLAIM.MARKER + json.dumps(record, sort_keys=True) + " -->"
+        for source, status in product((legacy, encoded), repeat=2):
+            with self.subTest(source=source, status=status):
+                self.assertEqual(CLAIM.records(source), [record])
+                comments = [
+                    {"id": 1, "body": source, "user": {"login": TEST_BOT},
+                     "created_at": record["claimed_at"]},
+                    {"id": 2, "body": "Released claim 1", "user": {"login": TEST_BOT},
+                     "created_at": "2026-10-02T00:00:00Z"},
+                ]
+                self.assertEqual(CLAIM.resumed_status(status, comments, 1), "")
+
+
 class ClaimTests(unittest.TestCase):
     def setUp(self):
         # Fixture sessions are labels; the harness running the tests supplies its own native IDs.

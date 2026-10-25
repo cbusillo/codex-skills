@@ -1174,6 +1174,10 @@ only those targets on GitHub. Keep the journal on the claiming host with the
 session, including interrupted attempts; it is discovery evidence, never proof
 of ownership or release. See [claim disposition](../../work-closeout/SKILL.md#claim-disposition).
 
+Claim and reopen-trigger writers JSON-escape `>` inside their hidden comments.
+Readers accept both escaped and legacy JSON; release matching compares decoded
+claim records, so encoding does not change ownership.
+
 Each claim carries a host-local lease, renewed without a GitHub write: by the
 catalog's `PreToolUse` hook on shell commands on both harnesses, on Claude Code
 also after every tool call and on prompts, stops and subagent events, and by

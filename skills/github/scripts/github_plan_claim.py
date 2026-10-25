@@ -83,7 +83,7 @@ def no_wait_reason(reason: str, *, field: str) -> bool:
 
 
 def marker(claim: dict[str, str]) -> str:
-    return "<!-- " + MARKER + json.dumps(claim, sort_keys=True) + " -->"
+    return "<!-- " + MARKER + json.dumps(claim, sort_keys=True).replace(">", "\\u003e") + " -->"
 
 
 def live_lines(text: str) -> list[str]:
