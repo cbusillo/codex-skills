@@ -189,6 +189,17 @@ def parse_release(source: dict[str, Any], evidence: dict[str, Any], *, actor: st
     return ReleaseFacts(source, evidence, record, cutoff, terminated, actor, role, releaser_session)
 
 
+def worker_named_pull(facts: ReleaseFacts, comments: list[dict[str, Any]], number: int, *, repo: str) -> bool:
+    worker = rf"(?<![\w-]){re.escape(facts.record['worker'])}(?![\w-])"
+    pull = rf"(?:(?<![\w/#&])#{number}|https://github\.com/{re.escape(repo)}/pull/{number})(?!\d)"
+    later = comments[comments.index(facts.source) + 1:]
+    return any((comment.get("user") or {}).get("login") == facts.actor
+               and stamp(comment.get("updated_at") or comment.get("created_at")) < facts.cutoff
+               and re.search(worker, body := comment.get("body") or "")
+               and re.search(pull, body, re.IGNORECASE)
+               for comment in later)
+
+
 def check_related(record: dict[str, str], comment: dict[str, Any], actor: str, cutoff: datetime) -> None:
     """Bind an unstructured follow-up to its source worker, native ID and closure."""
     if ((comment.get("user") or {}).get("login") != actor or claim.records(comment.get("body") or "")

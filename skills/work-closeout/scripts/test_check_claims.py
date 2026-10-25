@@ -8,6 +8,7 @@ import contextlib
 from collections.abc import Callable
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import sqlite3
@@ -56,6 +57,7 @@ def native_terminal_result(identifier: str, output: str = "", *, javascript: boo
 
 OPAQUE_CLAIM = 'P=gh-plan.py; uv run "$P" claim "$(next_issue)"'
 SETTLED_AT = "2026-01-01T00:00:30Z"
+JOURNAL_ERA = "2026-10-23T00:00:00Z"
 
 
 def finished_opaque_call(at: str | None = SETTLED_AT, *, result: bool = True) -> list[dict]:
@@ -1527,6 +1529,110 @@ class ClaimCloseoutTests(unittest.TestCase):
                           return_value=[*installations, {"id": 2, "account": {"login": "client"}}]), \
                 self.assertRaises(ValueError):
             helper.search_account()
+
+    def journal_era_session(self, *rows: dict, began: str | None = JOURNAL_ERA) -> dict:
+        root = self.entry()
+        meta = {"type": "session_meta", "payload": {"id": SESSION, **({"timestamp": began} if began else {})}}
+        Path(root["transcript"]).write_text(json.dumps(meta) + "\n")
+        helper.claim_log.record(SESSION, REPO, 1)
+        self.age_journal()
+        self.comments.append(self.release)
+        with Path(root["transcript"]).open("a") as stream:
+            for row in rows or finished_opaque_call():
+                stream.write(json.dumps(row) + "\n")
+        self.live_helpers = self.enterContext(patch.object(helper, "live_claim_helpers", return_value=[]))
+        self.enterContext(patch.object(helper, "search_account", side_effect=ValueError("search is not configured")))
+        return root
+
+    def age_journal(self, seconds: float = 3600) -> None:
+        written = time.time() - seconds
+        for path in helper.claim_log.log_path(SESSION).glob("*.json"):
+            os.utime(path, (written, written))
+
+    def test_journal_replaces_reconstruction_for_a_session_begun_after_it_shipped(self) -> None:
+        report = helper.check([self.journal_era_session()])
+        self.assertTrue(report["claims_clear"])
+        self.assertEqual([item["call_id"] for item in report["journal_covered_invocations"]], ["opaque"])
+        self.setUp()
+        report = helper.check([self.journal_era_session(began="2026-10-21T00:00:00Z")])
+        self.assertFalse(report["claims_clear"])
+        self.assertEqual([item["call_id"] for item in report["unresolved_invocations"]], ["opaque"])
+
+    def test_journal_covered_session_still_blocks_a_held_claim(self) -> None:
+        root = self.journal_era_session()
+        self.comments.remove(self.release)
+        report = helper.check([root])
+        self.assertFalse(report["claims_clear"])
+        self.assertTrue(any(line.startswith(f"{REPO}#1:") for line in report["blocked"]))
+
+    def test_journal_covers_only_sessions_with_an_authoritative_start_and_matching_rows(self) -> None:
+        unjournaled_receipt = {"claim": SOURCE, "issue": {"repo": REPO, "number": 2}}
+        foreign_receipt = {"claim": {**SOURCE, "session": "foreign"}, "issue": {"repo": REPO, "number": 1}}
+        cases = {
+            "no start time": ({"began": None}, ()),
+            "start without time zone": ({"began": "2026-10-23T00:00:00"}, ()),
+            "receipt without journal row": ({}, (unjournaled_receipt,)),
+            "receipt naming another session": ({}, (foreign_receipt,)),
+        }
+        for name, (options, extra) in cases.items():
+            with self.subTest(name):
+                self.setUp()
+                root = self.journal_era_session(*finished_opaque_call(), *extra, **options)
+                self.reader.paged_json.side_effect = lambda path, **kw: [] if "/issues/2/" in path else self.paged(path, **kw)
+                report = helper.check([root])
+                self.assertFalse(report["claims_clear"])
+                self.assertIn("opaque", {item["call_id"] for item in report["unresolved_invocations"]})
+
+    def test_journal_needs_rows_on_this_host(self) -> None:
+        root = self.journal_era_session()
+        for path in helper.claim_log.log_path(SESSION).glob("*.json"):
+            path.unlink()
+        report = helper.check([root])
+        self.assertFalse(report["claims_clear"])
+        self.assertEqual([item["call_id"] for item in report["unresolved_invocations"]], ["opaque"])
+
+    def test_journal_covered_session_waits_for_every_claim_attempt_to_settle(self) -> None:
+        def write_during_readback(path: str, **kwargs: object) -> list[dict]:
+            helper.claim_log.record(SESSION, REPO, 3)
+            self.age_journal()
+            return self.paged(path, **kwargs)
+
+        cases: dict[str, Callable[[], None]] = {
+            "helper still running": lambda: setattr(self.live_helpers, "return_value", [f"uv run gh-plan.py claim 1 --session {SESSION}"]),
+            "helpers cannot be listed": lambda: setattr(self.live_helpers, "side_effect", OSError("ps unavailable")),
+            "attempt began recently": lambda: self.age_journal(seconds=60),
+            "attempt began during the check": lambda: setattr(self.reader.paged_json, "side_effect", write_during_readback),
+        }
+        for name, unsettle in cases.items():
+            with self.subTest(name):
+                self.setUp()
+                root = self.journal_era_session()
+                unsettle()
+                report = helper.check([root])
+                self.assertFalse(report["claims_clear"])
+                self.assertTrue(any(line.startswith(f"session {SESSION}:") for line in report["blocked"]))
+
+    def test_search_adds_claims_the_journal_missed(self) -> None:
+        root = self.journal_era_session()
+        self.enterContext(patch.object(helper, "search_account", return_value="test"))
+        held = comment(50, "Claimed by worker\n\n" + helper.claim.marker(SOURCE))
+        self.reader.paged_json.side_effect = lambda path, **kw: (
+            [held] if path.endswith("/issues/5/comments") else self.paged(path, **kw))
+        self.search_finds(1, 5)
+        report = helper.check([root])
+        self.assertFalse(report["claims_clear"])
+        self.assertTrue(any(line.startswith(f"{REPO}#5:") for line in report["blocked"]))
+
+    def test_live_claim_helpers_ignore_this_check_and_its_callers(self) -> None:
+        pid = os.getpid()
+        listing = "\n".join([
+            f"{pid} 40 uv run check_claims.py --session {SESSION}",
+            f"40 1 zsh -c 'uv run gh-plan.py release 1 --session {SESSION}; uv run check_claims.py --session {SESSION}'",
+            f"41 1 uv run gh-plan.py --repo {REPO} claim 2 --session {SESSION}",
+            f"42 1 uv run gh-plan.py --repo {REPO} claim 3 --session other",
+        ])
+        with patch.object(helper.subprocess, "run", return_value=SimpleNamespace(stdout=listing)):
+            self.assertEqual(helper.live_claim_helpers(SESSION), [f"uv run gh-plan.py --repo {REPO} claim 2 --session {SESSION}"])
 
     def test_orphan_saved_shell_output_cannot_prove_complete_claim_coverage(self) -> None:
         root = self.entry()

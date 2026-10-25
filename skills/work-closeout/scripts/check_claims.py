@@ -7,10 +7,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import subprocess
 import sys
 import time
 from collections.abc import Callable, Sequence
+from collections.abc import Set as AbstractSet
+from datetime import UTC, datetime
 from pathlib import Path
 
 SKILLS = Path(__file__).resolve().parents[2]
@@ -30,6 +34,8 @@ from github_read import (
 )
 
 CHECK_OPERATION = "work-closeout.claims"
+JOURNAL_SHIPPED = datetime(2026, 10, 22, 3, 29, 9, tzinfo=UTC)
+ORPHANED_WRITE_SECONDS = 600
 SEARCH_INDEX_DELAY_SECONDS = 600
 SEARCH_PAGE_SIZE = 100
 SEARCH_READER = "search"
@@ -163,22 +169,42 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data
 transcript_values = history.values
 
 
+def receipt_values(rows: list[dict]) -> list[dict]:
+    blocks = [row for row in rows if "claim" in row]
+    blocks.extend(block for found in history.tool_outputs(rows).values() for block in found)
+    return [value for block in blocks for value in transcript_values(block)]
+
+
+def names_another_session(value: dict, native: str) -> bool:
+    return isinstance(source := value.get("claim"), dict) and source.get("session") != native
+
+
+def began_after_journal(rows: list[dict], entry: dict) -> bool:
+    meta = history.metadata(rows)
+    if meta:
+        first, identity = meta, meta.get("id") == entry.get("native_child", entry["session_id"])
+    else:
+        first = next((row for row in rows if "uuid" in row), {})
+        identity = first.get("sessionId") == entry["session_id"]
+    try:
+        began = datetime.fromisoformat(first["timestamp"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return identity and began.tzinfo is not None and began > JOURNAL_SHIPPED
+
+
 def recorded_targets(entry: dict) -> dict:
     require_own_transcript(entry)
     native = entry["session_id"]
-    targets = claim_log.read(native)
     rows = entry.get("_transcript_records") or history.read_records(Path(entry["transcript"]))
-    receipts = [row for row in rows if "claim" in row]
-    receipts.extend(block for blocks in history.tool_outputs(rows).values() for block in blocks)
-    for block in receipts:
-        for value in transcript_values(block):
-            target = history.claim_target(value, native)
-            if target is not None:
-                targets.add(target)
+    values = receipt_values(rows)
+    receipts = {target for value in values if (target := history.claim_target(value, native)) is not None}
     discovery = history.literal_targets(
         rows, native, directory=Path(entry["native_output_directory"]) if entry.get("native_output_directory") else None
     )
-    discovery["targets"].update(targets)
+    discovery["targets"].update(receipts | claim_log.read(native))
+    discovery["receipts"] = receipts
+    discovery["journal_era"] = began_after_journal(rows, entry) and not any(names_another_session(value, native) for value in values)
     unresolved = discovery["unresolved_invocations"]
     if unresolved:
         inputs = {call.identifier: (call.text, call.javascript, call.name, call.index) for call in history.tool_details(rows)}
@@ -237,38 +263,76 @@ def session_records(reader: GitHubReader, account: str, session: str) -> set[tup
     return found
 
 
+def search_sessions(natives: AbstractSet[str], search_reader: Callable[[], GitHubReader]) -> tuple[dict[str, set[tuple[str, int]]], list[str]]:
+    if not natives:
+        return {}, []
+    try:
+        account = search_account()
+        reader = search_reader()
+    except (ValueError, OSError, GitHubReadError, GitHubReadShapeError, github_identity.GitHubAppError) as error:
+        return {}, [str(error)]
+    found, errors = {}, []
+    for native in sorted(natives):
+        try:
+            found[native] = session_records(reader, account, native)
+        except (ValueError, OSError, GitHubReadError, GitHubReadShapeError) as error:
+            errors.append(str(error))
+    return found, errors
+
+
 def settle_from_search(
     unresolved: list[dict],
     targets: dict[str, set[tuple[str, int]]],
     released: list[dict],
     check_target: Callable[[str, str, int], None],
     search_reader: Callable[[], GitHubReader],
+    journal_covered: AbstractSet[str] = frozenset(),
 ) -> tuple[list[dict], list[str]]:
     indexed_before = time.time() - SEARCH_INDEX_DELAY_SECONDS
     eligible = [item for item in unresolved if item.get("finished_at") is not None and item["finished_at"] <= indexed_before]
-    if not eligible:
-        return [], []
-    try:
-        account = search_account()
-        reader = search_reader()
-    except (ValueError, OSError, GitHubReadError, GitHubReadShapeError, github_identity.GitHubAppError) as error:
-        return [], [str(error)]
-    settled, errors = [], []
-    for native in sorted({item["session"] for item in eligible}):
-        try:
-            found = session_records(reader, account, native)
-        except (ValueError, OSError, GitHubReadError, GitHubReadShapeError) as error:
-            errors.append(str(error))
-            continue
+    settling = {item["session"] for item in eligible}
+    found, errors = search_sessions(settling | journal_covered, search_reader)
+    settled = []
+    for native, records in sorted(found.items()):
         known = {(entry["repository"], entry["record"]) for entry in released if entry["source_session"] == native}
-        if not known <= found:
-            errors.append(f"search has not indexed every known claim of session {native} yet")
-            continue
-        for repo, number in sorted(found - targets.setdefault(native, set())):
+        for repo, number in sorted(records - targets.setdefault(native, set())):
             targets[native].add((repo, number))
             check_target(native, repo, number)
+        if native not in settling:
+            continue
+        if not known <= records:
+            errors.append(f"search has not indexed every known claim of session {native} yet")
+            continue
         settled.extend(item for item in eligible if item["session"] == native)
     return settled, errors
+
+
+def covered_by_journal(discoveries: list[dict], written: dict[tuple[str, int], float]) -> bool:
+    return bool(written) and all(found["journal_era"] and found["receipts"] <= written.keys() for found in discoveries)
+
+
+def live_claim_helpers(native: str) -> list[str]:
+    listing = subprocess.run(["ps", "-axww", "-o", "pid=,ppid=,command="], capture_output=True, text=True, check=True).stdout
+    processes = {int(pid): (int(parent), command) for pid, parent, command in
+                 (line.split(None, 2) for line in listing.splitlines() if len(line.split(None, 2)) == 3)}
+    own_lineage, pid = set(), os.getpid()
+    while pid in processes and pid not in own_lineage:
+        own_lineage.add(pid)
+        pid = processes[pid][0]
+    return [command for pid, (_, command) in sorted(processes.items())
+            if pid not in own_lineage and native in command and "gh-plan" in command]
+
+
+def unsettled_attempts(native: str, written: dict[tuple[str, int], float], checked_at: float) -> list[str]:
+    try:
+        reasons = [f"claim helper still running: {command}" for command in live_claim_helpers(native)]
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        reasons = [f"cannot list running claim helpers: {error}"]
+    if any(at > checked_at - ORPHANED_WRITE_SECONDS for at in written.values()):
+        reasons.append("a claim attempt began less than 10 minutes ago; check again after it settles")
+    if claim_log.written_at(native) != written:
+        reasons.append("the claim journal changed during this check; check again")
+    return reasons
 
 
 def check(
@@ -281,14 +345,18 @@ def check(
     deadline = time.time() + read_timeout
     native_sessions = {entry["session_id"] for entry in entries}
     targets: dict[str, set[tuple[str, int]]] = {}
+    discoveries: dict[str, list[dict]] = {}
     unresolved = []
     for entry in history.expand(entries):
         discovery = recorded_targets(entry)
+        discoveries.setdefault(entry["session_id"], []).append(discovery)
         targets.setdefault(entry["session_id"], set()).update(discovery["targets"])
         unresolved.extend(
             {**item, "session": entry["session_id"], "transcript": entry["transcript"]}
             for item in discovery["unresolved_invocations"]
         )
+    written = {native: claim_log.written_at(native) for native in discoveries}
+    journal_covered = {native for native, found in discoveries.items() if covered_by_journal(found, written[native])}
     released, blocked, readers, pulls_cache, data_cache = [], [], {}, {}, {}
 
     def check_target(native: str, repo: str, number: int) -> None:
@@ -311,8 +379,13 @@ def check(
     for native_session, records in sorted(targets.items()):
         for target in sorted(records):
             check_target(native_session, *target)
-    settled, search_errors = settle_from_search(unresolved, targets, released, check_target, search_reader)
+    covered = [item for item in unresolved if item["session"] in journal_covered]
+    unresolved = [item for item in unresolved if item["session"] not in journal_covered]
+    settled, search_errors = settle_from_search(unresolved, targets, released, check_target, search_reader, journal_covered)
     unresolved = [item for item in unresolved if item not in settled]
+    checked_at = time.time()
+    for native in sorted(journal_covered):
+        blocked.extend(f"session {native}: {reason}" for reason in unsettled_attempts(native, written[native], checked_at))
     repos = {repo for records in targets.values() for repo, _ in records}
     accounts = set(owners) | {repo.split("/")[0] for repo in repos}
     complete = not unresolved and not blocked
@@ -333,6 +406,7 @@ def check(
         "blocked": blocked,
         "unresolved_invocations": unresolved,
         "settled_invocations": settled,
+        "journal_covered_invocations": covered,
     }
 
 

@@ -2246,10 +2246,12 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         if legacy_options["legacy"] and not any(
                 (p.get("head") or {}).get("ref") == source_branch
                 and (p.get("user") or {}).get("login") == expected_actor
-                and github_plan_claim.pr_issue_reference(p, source_issue["number"], repo=source_issue["repo"],
-                    attestation=True, record_kind="pr" if "pull_request" in source_issue else "issue")
+                and (github_plan_claim.pr_issue_reference(p, source_issue["number"], repo=source_issue["repo"],
+                        attestation=True, record_kind="pr" if "pull_request" in source_issue else "issue")
+                     or github_plan_release.worker_named_pull(facts, source_comments, p["number"], repo=source_issue["repo"]))
                 for p in open_pulls):
-            raise PlanError("Legacy source branch requires an automation-authored PR linking this canonical record")
+            raise PlanError("Legacy source branch requires an automation-authored PR that links this canonical record, "
+                            "or that the source worker named here before the session ended")
         branch_prs = [f"https://github.com/{source_issue['repo']}/pull/{p['number']}" for p in open_pulls
             if (p.get("head") or {}).get("ref") == source_branch]
         subject_pr = "pull_request" in source_issue

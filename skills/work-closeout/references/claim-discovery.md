@@ -3,6 +3,12 @@
 Read this when closeout reports `unresolved_invocations`, when recovering older
 helper or remote-host evidence, or when changing the legacy reader.
 
+This reader runs only for sessions the claim journal does not cover; see the
+closeout skill's claim check. Delete it and these rules once, on every claiming
+host, no catalog checkout listed by `git worktree list` has a
+`skills/github/scripts/gh-plan.py` without `github_plan_claim_log`, and no
+session that began before `JOURNAL_SHIPPED` can still resume.
+
 Native evaluated shell commands, older shell-tool arguments and decoded literal
 commands provide targets when output was truncated. No shell or JavaScript is
 executed. Unresolved claim commands may read their own advertised saved or
