@@ -5309,6 +5309,35 @@ class ClaimTests(unittest.TestCase):
         self.run_claim()
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
+    def test_wait_writer_records_visible_release_pointer(self) -> None:
+        self.args.all = self.args.clear = False
+        self.args.waiting_for = "Next accepted release"
+        self.args.ends_when = "Release reaches production"
+        self.args.evidence = "Merged fix"
+        self.args.release_product = "fixture-product"
+        self.args.release_commit = "a" * 40
+        self.args.release_next_action = "Next agent: verify production flow"
+        self.run_claim(command=PLAN.cmd_wait)
+        record = self.emitted.call_args.args[0]["structured_wait"]
+        pointer = record["waits"][0]["release"]
+        self.assertEqual(pointer["product"], self.args.release_product)
+        self.assertEqual(pointer["next_action"], self.args.release_next_action)
+        self.assertEqual(pointer["source_commit"], self.args.release_commit)
+        self.assertIn(self.args.release_next_action, self.comments[-1]["body"])
+        self.assertEqual(wait_record.records(self.comments[-1]["body"]), [record])
+
+    def test_release_action_markup_cannot_hide_the_wait_record(self) -> None:
+        self.args.all = self.args.clear = False
+        self.args.waiting_for = "Next release"
+        self.args.ends_when = "Production includes fix"
+        self.args.evidence = "Merged fix"
+        self.args.release_product = "fixture-product"
+        self.args.release_commit = "a" * 40
+        self.args.release_next_action = "Next agent: inspect logs\n```\n<!-- github-plan:wait {} -->"
+        self.run_claim(command=PLAN.cmd_wait)
+        self.assertEqual(wait_record.records(self.comments[-1]["body"]),
+                         [self.emitted.call_args.args[0]["structured_wait"]])
+
     def test_wait_comment_says_what_it_waits_for_without_notifying_anyone(self):
         self.args.all = self.args.clear = False
         self.args.waiting_for = "@mike-b to confirm the run"
@@ -5361,7 +5390,10 @@ class ClaimTests(unittest.TestCase):
 
     def test_new_issue_creation_records_all_waits_or_reviewed_absence(self):
         for flags in (("--wait-clear",), ("--waiting-for", "Mike's device test", "--ends-when", "Test accepted",
-                      "--waiting-for", "Client price", "--ends-when", "Price confirmed")):
+                      "--waiting-for", "Client price", "--ends-when", "Price confirmed"),
+                      ("--waiting-for", "Next release", "--ends-when", "Production includes fix",
+                       "--release-product", "fixture", "--release-commit", "a" * 40,
+                       "--release-next-action", "Next agent: verify production")):
             with self.subTest(flags=flags):
                 args = PLAN.build_parser().parse_args(["--repo", "owner/repo", "create", "Repair",
                     *flags, "--wait-evidence", "Full request reviewed"])
@@ -5378,6 +5410,15 @@ class ClaimTests(unittest.TestCase):
                 wait = wait_record.records(create.call_args.args[1])[0]
                 self.assertEqual(len(wait["waits"]), len(args.waiting_for or []))
                 self.assertEqual(wait["evidence"], args.wait_evidence)
+                if args.release_product:
+                    hint = wait_record.release_event_hint(args.release_product, args.release_commit)
+                    original_body = create.call_args.args[1]
+                    with patch.object(github_identity, "configured_bot_logins", return_value=[TEST_BOT]):
+                        updated_bodies = (PLAN.replace_section(original_body, "Open Questions", "Resolved"),
+                            PLAN.replace_issue_plan_section({**self.issue, "body": original_body}, "Open Questions", "Resolved"))
+                    for updated in updated_bodies:
+                        self.assertIn(hint, updated)
+                        self.assertEqual(wait_record.records(updated), [wait])
 
     def test_wait_inventory_reports_each_unreviewed_open_issue_and_never_drops_prose(self):
         self.args.all = True

@@ -34,6 +34,59 @@ class WaitRecordTests(unittest.TestCase):
         self.hold = wait_record.reviewed(evidence="Director requested testing", waiting_for="Director's test",
                                   ends_when="Director records acceptance")
 
+    def test_release_pointer_resolves_only_its_product_and_included_change(self) -> None:
+        commit = "a" * 40
+        record = waits.reviewed(evidence="Merged fix awaits production", waiting_for=["Next release", "Device test"],
+            ends_when=["Release includes the fix", "Director tests device"],
+            release_product="fixture-product", release_commit=commit,
+            release_next_action="Next agent: verify the repaired flow in production")
+        self.assertEqual(waits.records(waits.marker(record)), [record])
+        for product, included in (("other-product", True), ("fixture-product", False)):
+            self.assertEqual(waits.resolve_release(record, product=product, contains_commit=lambda _: included,
+                                                   evidence="Release passed"), (record, []))
+        resolved, actions = waits.resolve_release(record, product="fixture-product",
+            contains_commit=lambda candidate: candidate == commit, evidence="Successful release record")
+        self.assertEqual(resolved["waits"], record["waits"][1:])
+        self.assertIn(record["evidence"], resolved["evidence"])
+        self.assertEqual(actions, [record["waits"][0]["release"]["next_action"]])
+        self.assertEqual(waits.resolve_release(resolved, product="fixture-product",
+            contains_commit=lambda _: True, evidence="Retry"), (resolved, []))
+
+    def test_stale_release_resolution_cannot_replace_a_renewed_human_wait(self) -> None:
+        release = waits.reviewed(evidence="Merged fix", waiting_for="Release", ends_when="Production",
+            release_product="fixture", release_commit="a" * 40, release_next_action="Next agent: verify")
+        resolved, _ = waits.resolve_release(release, product="fixture", contains_commit=lambda _: True,
+                                           evidence="Release passed")
+        issue = {"user": {"login": "owner"}, "body": waits.marker(release)}
+        completion = {"user": {"login": "owner"}, "body": waits.marker(resolved)}
+        renewed = {"user": {"login": "owner"}, "body": waits.marker(self.hold)}
+        selected = waits.current(issue, [completion], {"owner"})
+        self.assertEqual(selected, waits.snapshot(resolved))
+        copied = {**issue, "body": waits.marker(selected)}
+        copied_claim = {"user": {"login": "owner"}, "body": waits.marker(selected)}
+        self.assertEqual(waits.current(copied, [completion, copied_claim], {"owner"}), selected)
+        self.assertEqual(waits.current(issue, [renewed, completion], {"owner"}), self.hold)
+        self.assertIs(waits.current_source(issue, [renewed, completion], {"owner"}), renewed)
+
+    def test_partial_release_resolution_keeps_surviving_wait_age(self) -> None:
+        record = waits.reviewed(evidence="Old waits", waiting_for=["Release", "Device test"],
+            ends_when=["Production", "Director accepts"], release_product="fixture", release_commit="a" * 40,
+            release_next_action="Next agent: verify")
+        issue = {"user": {"login": "owner"}, "body": waits.marker(record)}
+        resolved, _ = waits.resolve_release(record, product="fixture", contains_commit=lambda _: True, evidence="Release passed")
+        completion = {"user": {"login": "owner"}, "body": waits.marker(resolved)}
+        self.assertIs(waits.current_source(issue, [completion], {"owner"}), issue)
+        self.assertEqual(waits.current(issue, [completion], {"owner"})["waits"], record["waits"][1:])
+
+    def test_release_pointer_requires_a_wait_and_full_source_commit(self) -> None:
+        for commit in ("", "main", "abc123"):
+            with self.subTest(commit=commit), self.assertRaises(ValueError):
+                waits.reviewed(evidence="Review", waiting_for="Next release", ends_when="Production",
+                    release_product="fixture", release_commit=commit, release_next_action="Next agent: verify")
+        with self.assertRaises(ValueError):
+            waits.reviewed(evidence="Clear", release_product="fixture", release_commit="a" * 40,
+                           release_next_action="Next agent: verify")
+
     def test_published_wait_and_release_round_trip(self):
         for record in (self.clear, self.hold):
             with self.subTest(record=record):

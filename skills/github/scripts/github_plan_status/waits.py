@@ -1,6 +1,7 @@
 """Pure structured-wait format and trusted-record selection."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Callable, Iterable
@@ -30,7 +31,8 @@ def marker(record: dict[str, Any]) -> str:
 
 
 def reviewed(*, evidence: str, waiting_for: str | list[str] | None = None,
-             ends_when: str | list[str] | None = None) -> dict[str, Any]:
+             ends_when: str | list[str] | None = None, release_product: str | None = None,
+             release_commit: str | None = None, release_next_action: str | None = None) -> dict[str, Any]:
     if not evidence.strip():
         raise ValueError("Wait review requires existing evidence")
     actors = [waiting_for] if isinstance(waiting_for, str) else waiting_for or []
@@ -39,24 +41,69 @@ def reviewed(*, evidence: str, waiting_for: str | list[str] | None = None,
         raise ValueError("Each --waiting-for requires a corresponding --ends-when")
     record = {"version": 1, "state": "waiting" if waiting_for else "clear", "evidence": evidence,
               "waits": [{"waiting_for": actor, "ends_when": end} for actor, end in zip(actors, endings)]}
+    if any(value is not None for value in (release_product, release_commit, release_next_action)):
+        if not actors:
+            raise ValueError("A release pointer requires a wait")
+        record["waits"][0]["release"] = {"product": " ".join(release_product.split()).casefold() if release_product else release_product, "source_commit": release_commit.strip().lower() if release_commit else release_commit,
+                                         "next_action": " ".join(release_next_action.split()) if release_next_action else release_next_action}
     validate(record)
     return record
 
 
 def validate(record: Any) -> None:
-    if (not isinstance(record, dict) or set(record) != {"version", "state", "evidence", "waits"}
+    if (not isinstance(record, dict) or set(record) not in ({"version", "state", "evidence", "waits"},
+                                                   {"version", "state", "evidence", "waits", "replaces"})
             or type(record["version"]) is not int or record["version"] != 1
             or not isinstance(record["state"], str) or record["state"] not in {"clear", "waiting", "review"}
             or not isinstance(record["evidence"], str) or not isinstance(record["waits"], list)):
         raise ValueError("Malformed structured wait record; review with gh-plan.py wait")
+    if "replaces" in record and (not isinstance(record["replaces"], str) or re.fullmatch(r"[0-9a-f]{64}", record["replaces"]) is None):
+        raise ValueError("A conditional wait resolution needs its previous record digest")
     if record["state"] != "review" and not record["evidence"].strip():
         raise ValueError("Structured wait record lacks review evidence")
     if bool(record["waits"]) != (record["state"] == "waiting"):
         raise ValueError("Structured wait state and entries disagree")
     for wait in record["waits"]:
-        if (not isinstance(wait, dict) or set(wait) != {"waiting_for", "ends_when"}
-                or any(not isinstance(value, str) or not value.strip() for value in wait.values())):
+        if (not isinstance(wait, dict) or set(wait) not in ({"waiting_for", "ends_when"}, {"waiting_for", "ends_when", "release"})
+                or any(not isinstance(value, str) or not value.strip() for value in (wait["waiting_for"], wait["ends_when"]))):
             raise ValueError("A structured wait needs its actor/event and ending condition")
+
+        if "release" in wait:
+            release = wait["release"]
+            if (not isinstance(release, dict) or set(release) != {"product", "source_commit", "next_action"}
+                    or any(not isinstance(value, str) or not value.strip() for value in release.values())):
+                raise ValueError("A release wait needs a product, source commit and next agent action")
+            if re.fullmatch(r"[0-9a-f]{40}", release["source_commit"]) is None:
+                raise ValueError("A release wait needs its full source commit")
+
+
+def snapshot(record: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in record.items() if key != "replaces"}
+
+
+def record_digest(record: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(snapshot(record), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def release_event_hint(product: str, source_commit: str = "") -> str:
+    return f"Release event: {product} includes {source_commit}".strip()
+
+
+def resolve_release(record: dict[str, Any], *, product: str, contains_commit: Callable[[str], bool],
+                    evidence: str) -> tuple[dict[str, Any], list[str]]:
+    validate(record)
+    matched = [entry for entry in record["waits"] if "release" in entry
+               and entry["release"]["product"].casefold() == product.strip().casefold()
+               and contains_commit(entry["release"]["source_commit"])]
+    if not matched:
+        return record, []
+    if not evidence.strip():
+        raise ValueError("Release resolution requires completion evidence")
+    remaining = [entry for entry in record["waits"] if entry not in matched]
+    resolved = {**record, "state": "waiting" if remaining else "clear", "waits": remaining,
+                "evidence": record["evidence"] + "\n" + evidence, "replaces": record_digest(record)}
+    validate(resolved)
+    return resolved, [entry["release"]["next_action"] for entry in matched]
 
 
 def live_lines(text: str, *, prefix: str = PREFIX) -> list[tuple[int, str]]:
@@ -100,10 +147,11 @@ def records(text: str, *, prefix: str = PREFIX, validator: Callable[[Any], None]
     return result
 
 
-def current_record(issue: dict[str, Any], comments: list[dict[str, Any]], trusted: set[str] | Callable[[dict[str, Any]], bool], *,
-                   prefix: str, validator: Callable[[Any], None]) -> dict[str, Any] | None:
+def _select_record(issue: dict[str, Any], comments: list[dict[str, Any]], trusted: set[str] | Callable[[dict[str, Any]], bool], *,
+                   prefix: str, validator: Callable[[Any], None]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Last authorized record wins; arbitrary discussion cannot change it."""
     selected = None
+    selected_source = None
     sources = [issue, *comments]
     for source in sources:
         from . import normalize_author
@@ -114,8 +162,35 @@ def current_record(issue: dict[str, Any], comments: list[dict[str, Any]], truste
         if len(found) > 1:
             raise ValueError("Multiple structured records in one source; preserve them for review")
         if found:
-            selected = found[0]
-    return selected
+            record = found[0]
+            keep_age = False
+            if prefix == PREFIX and "replaces" in record:
+                if selected is None or record["replaces"] != record_digest(selected):
+                    continue
+                keep_age = bool(record["waits"]) and all(entry in selected["waits"] for entry in record["waits"])
+            selected = snapshot(record) if prefix == PREFIX else record
+            if not keep_age:
+                selected_source = source
+    return selected, selected_source
+
+
+def current_record(issue: dict[str, Any], comments: list[dict[str, Any]],
+                   trusted: set[str] | Callable[[dict[str, Any]], bool], *,
+                   prefix: str, validator: Callable[[Any], None]) -> dict[str, Any] | None:
+    return _select_record(issue, comments, trusted, prefix=prefix, validator=validator)[0]
+
+
+def _wait_selection(issue: dict[str, Any], comments: list[dict[str, Any]],
+                    trusted: set[str] | Callable[[dict[str, Any]], bool]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    managed = contributor_plan_body(issue)
+    source = {**issue, "body": managed} if managed is not None else issue
+    record, origin = _select_record(source, comments, trusted, prefix=PREFIX, validator=validate)
+    return record, issue if origin is source else origin
+
+
+def current_source(issue: dict[str, Any], comments: list[dict[str, Any]],
+                   trusted: set[str] | Callable[[dict[str, Any]], bool]) -> dict[str, Any] | None:
+    return _wait_selection(issue, comments, trusted)[1]
 
 
 def resolve(issue: dict[str, Any], comments: list[dict[str, Any]],
@@ -125,9 +200,7 @@ def resolve(issue: dict[str, Any], comments: list[dict[str, Any]],
     With no trusted record the wait is an implied review. A trusted record can
     also ask for review, so readers use the flag to tell the two apart.
     """
-    managed = contributor_plan_body(issue)
-    source = {**issue, "body": managed} if managed is not None else issue
-    record = current_record(source, comments, trusted, prefix=PREFIX, validator=validate)
+    record, _ = _wait_selection(issue, comments, trusted)
     if record is None:
         return {"version": 1, "state": "review", "evidence": "", "waits": []}, False
     return record, True
