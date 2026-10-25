@@ -483,7 +483,7 @@ def stop_orphan(worker, receipt):
                 and current["started"] != engine["started"]):
             # POSIX forbids reuse of a PID while its matching process group
             # exists. A different birth proves the old group is gone; never
-            # signal the unrelated replacement. Recovery still decides the outcome hold.
+            # signal the unrelated replacement. The outcome hold remains.
             receipt["orphan_pid_reused"] = pid
             return custody_proof
         if current != engine:
