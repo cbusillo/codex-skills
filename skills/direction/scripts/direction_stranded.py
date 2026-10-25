@@ -36,9 +36,11 @@ QUESTION = re.compile(r"\bQ[1-9][0-9]*\b")
 PREFIXES = oq.QUESTION_PREFIXES
 COMMENT_LINK = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/\d+#issuecomment-\d+(?!\d)")
 SUPERVISOR_SETTLEMENT = re.compile(
-    r"^(?:Supervisor answer to (Q[1-9][0-9]*)\b|(Q[1-9][0-9]*) withdrawn by the Supervisor\b)"
+    r"^(?:Supervisor answer to (Q[1-9][0-9]*)\b"
+    r"(?:[ \t]*\([^)\n]*\))?[ \t]*[.:][ \t]*"
+    r"(?i:(?:yes|no)(?=[,.:!?]|$)|this is already decided\b)"
+    r"|(Q[1-9][0-9]*) withdrawn by the Supervisor\b)"
 )
-ANSWER_DISPOSITION = re.compile(r"[.:]\s*(?:yes\b|no\b|this is already decided\b)", re.I)
 
 
 def supervisor_settled_questions(comments: list[dict], trusted: set[str]) -> set[str]:
@@ -48,8 +50,6 @@ def supervisor_settled_questions(comments: list[dict], trusted: set[str]) -> set
             continue
         heading = question_body(comment).partition("\n")[0].replace("*", "")
         match = SUPERVISOR_SETTLEMENT.match(heading)
-        if match and match[1] and not ANSWER_DISPOSITION.search(heading, match.end()):
-            continue
         when = stamp(comment.get("created_at"))
         if match and when:
             settlements.setdefault(match[1] or match[2], []).append(when)

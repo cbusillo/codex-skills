@@ -52,6 +52,8 @@ unknown), next actor and review requirement:
   recovered registrations; they do not become Director decisions. Quoted text,
   ordinary mentions, untrusted authors and replies predating the question do
   not settle it.
+  Queue presentation keeps its existing recorded-decision contract and can still
+  present these registrations; this digest filter does not change that workflow.
 - Current-head Ready handoffs still open past the age threshold, with or
   without the enqueue label. Since
   [launchplane#3834](https://github.com/cbusillo/launchplane/pull/3834) the

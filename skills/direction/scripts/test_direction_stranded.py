@@ -250,17 +250,28 @@ class SettledQuestionTests(unittest.TestCase):
     def test_chatter_untrusted_earlier_and_unrelated_settlements_leave_question_flagged(self) -> None:
         for changes in (
             {"body": "Q611 still needs an answer. Q645 is already decided."},
-            {"body": "Supervisor answer to Q6110: continue."},
+            {"body": "Supervisor answer to Q6110: Yes, continue."},
             {"body": "Supervisor answer to Q611: this is not mine to decide; it stays with the Director."},
+            {"body": "Supervisor answer to Q611: this is not mine to decide. No change until Chris answers."},
+            {"body": "Supervisor answer to **Q611**: escalated to the Director. No Supervisor ruling is possible."},
+            {"body": "Supervisor answer to Q611 (re: yes/no still pending from Chris)"},
+            {"body": "Supervisor answer to Q611: partly. Yes for staging; production stays with the Director."},
+            {"body": "Supervisor answer to Q611: No change until Chris answers."},
             {"body": "Q645 withdrawn by the Supervisor. Q611 is a separate question."},
             {"body": "> Q611 withdrawn by the Supervisor."},
-            {"body": "Supervisor answer to Q611: continue.", "user": {"login": "untrusted"}},
+            {"body": "Supervisor answer to Q611: Yes, continue.", "user": {"login": "untrusted"}},
             {"created_at": "2026-10-01T18:00:00Z"},
             {"created_at": "invalid"},
         ):
-            with self.subTest(changes=changes):
-                self.records[0]["comments"] = [self.question, {**self.answer, **changes}]
-                self.assertEqual([r["url"] for r in self.question_findings()], [self.question["html_url"]])
+            for open_inventory in (True, False):
+                with self.subTest(changes=changes, open_inventory=open_inventory):
+                    comments = [self.question, {**self.answer, **changes}]
+                    self.records[0]["comments"] = comments if open_inventory else []
+                    url = self.question["html_url"]
+                    delivery = {"complete": True, "questions": [{"url": url, "registration_url": url + "-registration"}]}
+                    rows = self.question_findings(delivery_view=delivery,
+                                                  related_comments=[] if open_inventory else comments)
+                    self.assertEqual([r["url"] for r in rows], [url])
         self.question["body"] = "Owner question: May we continue? Q611 is context."
         self.records[0]["comments"] = [self.question, self.answer]
         self.assertEqual([r["url"] for r in self.question_findings()], [self.question["html_url"]])
