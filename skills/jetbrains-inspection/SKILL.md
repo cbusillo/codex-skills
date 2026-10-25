@@ -1,6 +1,6 @@
 ---
 name: jetbrains-inspection
-description: Use JetBrains inspections through isolated native PyCharm for Python/Odoo on macOS, local Qodana, or the Inspection API; trigger for code changes, readiness checks, PR/push validation, IDE warnings, inspection triage, worktree-safe inspection routing, or when code quality should be driven toward zero actionable IDE findings.
+description: Use JetBrains inspections through isolated native PyCharm for Python/Odoo on macOS or the Inspection API; trigger for code changes, readiness checks, PR/push validation, IDE warnings, inspection triage, worktree-safe inspection routing, or when code quality should be driven toward zero actionable IDE findings.
 metadata:
   short-description: Run JetBrains IDE inspections safely
 resources:
@@ -105,15 +105,16 @@ Apply [task scope and authorization](../references/execution-scope.md) when
 using this workflow; it defines how existing approval and task boundaries apply.
 
 Use the script-backed helper to run and interpret JetBrains inspections through
-native PyCharm, Qodana or the Inspection API. Prefer it over direct curl or MCP
+native PyCharm or the Inspection API. Prefer it over direct curl or MCP
 tool calls.
 
 On macOS, `agent-inspect` defaults to isolated native PyCharm for Python/YAML
 selections and Odoo Python/XML/YAML selections in root PyCharm lanes when an eligible
-independent worker, interpreter and profile are configured. Otherwise the
-qualified Qodana selection remains available. Automatic selection never enters the
-desktop API lifecycle: unsupported selections return UNKNOWN with
-`isolated_backend_unavailable` before contacting an IDE. Read
+independent worker, interpreter and profile are configured; it is the only
+isolated backend. Automatic selection never enters the desktop API lifecycle:
+without an eligible native worker, and for unsupported selections, it returns
+UNKNOWN with `isolated_backend_unavailable` and setup instructions before
+contacting an IDE. Read
 [native PyCharm](references/native-backend.md) before configuring, diagnosing
 or changing that runner. It uses the independently Director-activated worker
 in place, with its shared exclusive lock and private system/cache/log paths;
@@ -123,20 +124,14 @@ On a licence prompt, lapsed activation or trial offer, stop the licensed run
 and post an `Owner question:` on the item. The Director restores activation
 through the normal product UI using existing entitlements.
 
-Hosts without eligible native prerequisites retain the qualified local Qodana
-Python default when available. In repositories with inspection lanes, headless
-selection follows the lane router and omits unmatched files (such as Markdown).
-Receipts name unmatched and excluded files. Explicit `--scope files` overrides
-lane exclusions; implicit scopes honor them. Other selections stay UNKNOWN
-without desktop contact on every platform. Explicit
-Qodana options select Qodana. The API remains available with explicit
+In repositories with inspection lanes, native selection follows the lane
+router and omits unmatched files (such as Markdown). Receipts name unmatched
+and excluded files. Explicit `--scope files` overrides lane exclusions;
+implicit scopes honor them. The API remains available only with explicit
 `--backend api` for an intended API session; a Supervisor brief that prohibits
 desktop IDE use still prohibits that route. Choose with
-`--backend native|api|qodana`. `JB_INSPECT_DEFAULT_BACKEND` can prefer native
-or Qodana; an API preference still returns UNKNOWN and requires explicit
-`--backend api`. Read
-[local Qodana](references/qodana-backend.md) before diagnosing or changing it.
-Never copy license or credential files into a Qodana profile either. Run one
+`--backend native|api`. `JB_INSPECT_DEFAULT_BACKEND` can prefer native; an API
+preference still returns UNKNOWN and requires explicit `--backend api`. Run one
 capped, niced headless worker at a time and pause above load1 64. Report the
 backend and coverage with every verdict. Missing or unproven required checks
 remain UNKNOWN; Q481 accepted no coverage gap. Native retains current findings
@@ -170,8 +165,7 @@ running IDE was updated.
 ## Before The First Inspection
 
 The following desktop lifecycle procedure applies to the API backend. Native
-uses its private-snapshot preparation and cleanup from the linked reference;
-Qodana uses its isolated container procedure.
+uses its private-snapshot preparation and cleanup from the linked reference.
 
 If `.github/github.json` sets `qualityGate.inspection.prepare`, the API assessment
 commands run that exact repository command in the exact linked worktree before

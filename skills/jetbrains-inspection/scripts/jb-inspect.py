@@ -542,27 +542,22 @@ def main() -> int:
             result = command_closeout(args, context)
             return emit(result, args.json, classify_closeout_exit(result), command=args.command_input)
         if args.command == "agent":
-            common_backend = qodana_backend_module()
-            qodana_options = common_backend.backend_options(args, "qodana")
-            native_options = common_backend.backend_options(args, "native")
-            if native_options and qodana_options:
-                return emit_agent_usage_error("Native and Qodana options cannot be combined.")
-            if args.backend in {"api", "native"} and qodana_options:
-                return emit_agent_usage_error(f"Qodana options cannot be combined with --backend {args.backend}.")
-            if args.backend in {"api", "qodana"} and native_options:
-                return emit_agent_usage_error(f"Native options cannot be combined with --backend {args.backend}.")
+            if args.backend == "api" and native_common_module().native_options_supplied(args):
+                return emit_agent_usage_error("Native options cannot be combined with --backend api.")
             backend_selection = "explicit"
             if args.backend == "auto":
                 host_default = os.environ.get("JB_INSPECT_DEFAULT_BACKEND")
-                args.backend, backend_selection = native_backend_module().select_backend(
-                    args, sys.modules[__name__], host_default if host_default in {"api", "qodana", "native"} else None)
+                native_backend = native_backend_module()
+                args.backend, backend_selection = native_backend.select_backend(
+                    args, sys.modules[__name__], host_default if host_default in {"api", "native"} else None)
                 if args.backend == "api":
-                    common_backend.scope_selection(args, sys.modules[__name__])
+                    native_backend.common.scope_selection(args, sys.modules[__name__])
                     raise InspectError(
                         "Automatic inspection has no isolated backend for this selection; the desktop API was not contacted.",
                         2,
                         {"error_reason": "isolated_backend_unavailable", "backend_selection": backend_selection,
-                         "hint": "Select files supported by the configured native or Qodana backend. Keep unsupported coverage UNKNOWN. "
+                         "hint": "Configure the isolated native PyCharm worker on macOS (jetbrains.nativeWorker in the shared helper config; "
+                                 "see references/native-backend.md) and select files it supports. Keep unsupported coverage UNKNOWN. "
                                  "API commands (inspect, inspect-closeout, or --backend api) require an intended API session; never use them when the task prohibits desktop IDE use."},
                     )
             if args.backend == "native":
@@ -570,12 +565,6 @@ def main() -> int:
                 result["backend_selection"] = backend_selection
                 if not args.native_recover_only:
                     log_native_assessment(result)
-                print(public_json(result))
-                return 0
-            if args.backend == "qodana":
-                # Keep headless runs outside all desktop configuration/lifecycle paths.
-                result = command_qodana(args)
-                result["backend_selection"] = backend_selection
                 print(public_json(result))
                 return 0
             context = build_context(args)
@@ -617,18 +606,13 @@ def main() -> int:
     return 2
 
 
-def qodana_backend_module() -> Any:
-    backend_path = Path(__file__).with_name("qodana_backend.py")
-    spec = importlib.util.spec_from_file_location("jb_qodana_backend", backend_path)
+def native_common_module() -> Any:
+    spec = importlib.util.spec_from_file_location("jb_native_common", Path(__file__).with_name("native_common.py"))
     if spec is None or spec.loader is None:
-        raise RuntimeError("Qodana backend unavailable")
-    backend = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(backend)
-    return backend
-
-
-def command_qodana(args: argparse.Namespace) -> dict[str, Any]:
-    return qodana_backend_module().run(args, sys.modules[__name__])
+        raise RuntimeError("Native common helpers unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def native_backend_module() -> Any:
@@ -869,17 +853,12 @@ def build_parser() -> argparse.ArgumentParser:
         subparsers.choices[name].add_argument("--timeout-ms", type=int, default=DEFAULT_WAIT_TIMEOUT_MS)
         subparsers.choices[name].add_argument("--poll-ms", type=int, default=DEFAULT_POLL_MS)
     agent = subparsers.choices["agent-inspect"]
-    agent.add_argument("--backend", choices=("auto", "api", "qodana", "native"), default="auto", help="Per-run backend. auto uses isolated native PyCharm or Qodana and refuses desktop API fallback.")
+    agent.add_argument("--backend", choices=("auto", "api", "native"), default="auto", help="Per-run backend. auto uses isolated native PyCharm and refuses desktop API fallback.")
     agent.add_argument("--native-worker", help="Independent Director-activated worker directory; config and credentials remain in place.")
     agent.add_argument("--native-recover-only", action="store_true", help="Clean only the journaled native run and exact helper SDK, without inspection or clearing activation stops.")
     agent.add_argument("--native-reconcile-result", help="Saved terminal native result for the same interrupted run; requires --native-recover-only and never clears licensing stops.")
     agent.add_argument("--native-release-run", metavar="UUID", help="Release only this recovered run's helper metadata after recorded Director UI confirmation; requires --native-recover-only and never starts inspection.")
     agent.add_argument("--native-framework-root", action="append", default=[], help="Existing Odoo framework source root, including odoo/release.py; repeat for explicit roots.")
-    agent.add_argument("--qodana-image", help="Pinned Community Docker image repository@sha256:digest.")
-    agent.add_argument("--qodana-license-file", action="append", default=[], help="Removed: returns UNKNOWN without accessing the file. Use an independently Director-activated headless profile; see qodana-backend.md#director-activation.")
-    agent.add_argument("--qodana-plugin-zip", action="append", default=[], help="Public plugin package for the disposable profile; does not supply entitlement.")
-    agent.add_argument("--qodana-uv", help="Optional existing Linux uv executable matching the container architecture for configured Python preparation.")
-    agent.add_argument("--qodana-recover-only", action="store_true", help="Recover proved interrupted Qodana profiles/containers without starting an inspection or lifting a stop.")
     for name in ("open-worktree", "agent-inspect", "inspect", "inspect-closeout"):
         subparsers.choices[name].set_defaults(open=True)
         subparsers.choices[name].add_argument("--background-open", dest="background_open", action="store_true", default=True, help="Launch the target IDE hidden/background before lifecycle opens. Default for lifecycle opens.")

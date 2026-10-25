@@ -34,7 +34,6 @@ os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = TEST_CACHE.name
 os.environ["JETBRAINS_INSPECTION_REGISTRY_DIR"] = str(Path(TEST_CACHE.name) / "registry")
 os.environ["JB_INSPECT_OUTCOME_LOG"] = "0"
 os.environ["JB_INSPECT_UNKNOWN_LOG"] = "0"
-# API-route behavior; backend selection has its own tests in test_qodana_backend.
 os.environ["JB_INSPECT_DEFAULT_BACKEND"] = "api"
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "jb-inspect.py"
 ATTRIBUTION_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "attribution" / "cases.json"
