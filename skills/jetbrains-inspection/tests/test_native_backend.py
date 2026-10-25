@@ -1237,7 +1237,7 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
         self.script.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nimport time\n"
                                f"Path('logs/idea.log').write_text({log_text!r}.format(project=Path.cwd() / 'project'))\n"
                                "time.sleep(30)\n")
-        with patch.object(native, "group_gone", return_value=False):
+        with patch.object(native, native.group_gone.__name__, return_value=False):
             self.assess()
         self.assertTrue((self.worker / "native-run.json").exists())
         self.args.native_recover_only = True
