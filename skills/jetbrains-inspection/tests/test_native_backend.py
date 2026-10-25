@@ -606,6 +606,7 @@ print('Done.')
     def test_pycharm_worker_refuses_two_entries_and_ignores_other_products(self):
         entry = {"path": str(self.worker), "app": str(self.app)}
         cases = (({"nativeWorkers": {"pycharm": entry}, "nativeWorker": entry}, "native_configuration_invalid"),
+                 ({"nativeWorkers": {"intellij": entry}, "nativeWorker": entry}, "native_configuration_invalid"),
                  ({"nativeWorkers": {"intellij": entry, "webstorm": entry}}, "native_worker_not_configured"))
         for jetbrains, reason in cases:
             with self.subTest(jetbrains=jetbrains), patch_attr(host, "read_global_config", return_value={"jetbrains": jetbrains}):

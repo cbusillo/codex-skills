@@ -169,7 +169,9 @@ class CoverageTests(unittest.TestCase):
     def test_other_language_tools_are_never_omitted_for_files_of_their_language(self):
         cases = (("VendorJavaRule", "JAVA", "src/Main.java"), ("VendorKotlinRule", "kotlin", "src/Main.kt"),
                  ("VendorTypeScriptRule", "TypeScript", "web/app.ts"), ("VendorScriptRule", "JavaScript", "web/view.tsx"),
-                 ("CssUnknownProperty", None, "web/site.scss"), ("Eslint", None, "web/app.ts"))
+                 ("CssUnknownProperty", None, "web/site.scss"), ("Eslint", None, "web/app.ts"),
+                 ("Eslint", None, "web/App.svelte"), ("VendorJavaRule", "JAVA", "build.gradle"),
+                 ("VendorSqlRule", "SQL", "db/schema.pgsql"))
         for tool, language, path in cases:
             with self.subTest(tool=tool, path=path):
                 result, _ = self.assess({tool, "PyCompatibilityInspection"}, {"PyCompatibilityInspection": {"models.py"}},

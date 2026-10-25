@@ -33,15 +33,8 @@ UNIVERSAL_TOOLS = frozenset({
     "IncorrectFormatting", "ProblematicWhitespace", "TodoComment",
 })
 
-STYLESHEET_SUFFIXES = frozenset({".css", ".scss", ".sass", ".less"})
-SCRIPT_SUFFIXES = frozenset({".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts", ".vue"})
-MARKUP_SUFFIXES = frozenset({".html", ".htm", ".xhtml", ".vue"})
-JVM_SUFFIXES = frozenset({".java", ".kt", ".kts"})
-UNPROVEN_LANGUAGE_SUFFIXES = {
-    "css": STYLESHEET_SUFFIXES, "scss": STYLESHEET_SUFFIXES, "sass": STYLESHEET_SUFFIXES, "less": STYLESHEET_SUFFIXES,
-    "javascript": SCRIPT_SUFFIXES, "typescript": SCRIPT_SUFFIXES, "html": MARKUP_SUFFIXES,
-    "json": frozenset({".json", ".json5", ".jsonc"}), "sql": frozenset({".sql"}), "java": JVM_SUFFIXES, "kotlin": JVM_SUFFIXES,
-}
+NATIVE_PROVEN_SUFFIXES = frozenset({".py", ".xml", ".yaml", ".yml"})
+UNPROVEN_LANGUAGES = frozenset({"css", "scss", "sass", "less", "javascript", "typescript", "html", "json", "sql", "java", "kotlin"})
 
 
 def migrate_expected(requested: Iterable[str], registered: Iterable[str]) -> tuple[set[str], dict[str, list[str]]]:
@@ -73,19 +66,9 @@ def applicable_files(tool: str, selected: set[str], language: str | None = None,
         return set()
     # These established profile families can be absent from PyCharm's registry;
     # their applicability does not depend on registration succeeding.
-    if tool.startswith("Css"):
-        return unproven_when_selected(selected, STYLESHEET_SUFFIXES)
-    if tool == "Eslint":
-        return unproven_when_selected(selected, SCRIPT_SUFFIXES)
-    if language in UNPROVEN_LANGUAGE_SUFFIXES:
-        return unproven_when_selected(selected, UNPROVEN_LANGUAGE_SUFFIXES[language])
+    if tool.startswith("Css") or tool == "Eslint" or language in UNPROVEN_LANGUAGES:
+        return set() if all(Path(path).suffix.casefold() in NATIVE_PROVEN_SUFFIXES for path in selected) else None
     return None
-
-
-def unproven_when_selected(selected: set[str], suffixes: frozenset[str]) -> set[str] | None:
-    if any(Path(path).suffix.casefold() in suffixes for path in selected):
-        return None
-    return set()
 
 
 def assess(

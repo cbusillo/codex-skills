@@ -46,7 +46,6 @@ ACTIVE_PROCESSORS = 2
 NICE = 10
 DRAIN_SECONDS = 2
 DRAIN_BYTES = 4 * 1024 * 1024
-NATIVE_SUFFIXES = frozenset({".py", ".xml", ".yaml", ".yml"})
 PYTHON_PRODUCT_KEY = "pycharm"
 
 
@@ -61,6 +60,7 @@ def sibling_module(name, filename):
 
 observations: Any = sibling_module("native_observations", "native_observer.py")
 proof: Any = sibling_module("native_proof", "native_coverage.py")
+NATIVE_SUFFIXES = proof.NATIVE_PROVEN_SUFFIXES
 lifecycle: Any = sibling_module("native_custody", "native_lifecycle.py")
 NAMED_ODOO = frozenset(tool for tool in proof.CANARY_FILES if tool.startswith("Odoo"))
 NAMED_PYTHON = frozenset(proof.CANARY_FILES) - NAMED_ODOO
@@ -203,9 +203,9 @@ def native_worker_config(host: Any, product_key: str) -> dict[str, Any]:
     workers = jetbrains.get("nativeWorkers", {}) if isinstance(jetbrains, dict) else None
     if not isinstance(workers, dict):
         raise Blocked("native_configuration_invalid")
-    legacy = product_key == PYTHON_PRODUCT_KEY and "nativeWorker" in jetbrains
-    if legacy and product_key in workers:
+    if "nativeWorker" in jetbrains and workers:
         raise Blocked("native_configuration_invalid")
+    legacy = product_key == PYTHON_PRODUCT_KEY and "nativeWorker" in jetbrains
     configured = jetbrains["nativeWorker"] if legacy else workers.get(product_key, {})
     if not isinstance(configured, dict):
         raise Blocked("native_configuration_invalid")
