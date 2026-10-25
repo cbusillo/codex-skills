@@ -28,7 +28,10 @@ CANARY_FILES = {
 UNUSED_SPLIT = frozenset({
     "PyUnusedLocalVariableInspection", "PyUnusedParameterInspection", "PyUnusedFunctionInspection",
 })
-UNIVERSAL_TOOLS = frozenset({"DuplicatedCode", "HttpUrlsUsage", "SpellCheckingInspection"})
+UNIVERSAL_TOOLS = frozenset({
+    "DuplicatedCode", "HttpUrlsUsage", "SpellCheckingInspection", "InconsistentLineSeparators",
+    "IncorrectFormatting", "ProblematicWhitespace", "TodoComment",
+})
 
 
 def migrate_expected(requested: Iterable[str], registered: Iterable[str]) -> tuple[set[str], dict[str, list[str]]]:
@@ -41,7 +44,7 @@ def migrate_expected(requested: Iterable[str], registered: Iterable[str]) -> tup
     return expected, migrations
 
 
-def applicable_files(tool: str, selected: set[str], language: str | None = None) -> set[str] | None:
+def applicable_files(tool: str, selected: set[str], language: str | None = None, *, scope: str = "files") -> set[str] | None:
     """None means unknown applicability, never permission to omit the tool."""
     language = language.casefold() if isinstance(language, str) else None
     if tool in UNIVERSAL_TOOLS:
@@ -54,11 +57,15 @@ def applicable_files(tool: str, selected: set[str], language: str | None = None)
         return {path for path in selected if path.endswith(".py")}
     if language == "xml":
         return {path for path in selected if path.endswith(".xml")}
+    if language == "yaml" or tool.startswith("YAML"):
+        return {path for path in selected if Path(path).suffix in {".yaml", ".yml"}}
+    if tool == "EmptyDirectory" and scope in {"files", "changed_files"}:
+        return set()
     # These established profile families can be absent from PyCharm's registry;
     # their applicability does not depend on registration succeeding.
     if tool.startswith("Css") or tool == "Eslint":
         return set()
-    if language in {"css", "scss", "sass", "less", "javascript", "typescript", "html", "json", "yaml", "sql", "java", "kotlin"}:
+    if language in {"css", "scss", "sass", "less", "javascript", "typescript", "html", "json", "sql", "java", "kotlin"}:
         return set()
     return None
 
@@ -68,6 +75,7 @@ def assess(
     trace_failed: Iterable[tuple[str, str]], selected: Iterable[str],
     control_findings: Iterable[Mapping[str, Any]], *, control_root: str,
     tool_languages: Mapping[str, str] | None = None,
+    scope: str = "files",
 ) -> tuple[dict[str, Any], list[str]]:
     """Assess selected execution and current-run canaries without side effects.
 
@@ -82,7 +90,7 @@ def assess(
     languages = tool_languages or {}
     required, not_applicable, unknown = {}, set(), set()
     for tool in sorted(effective):
-        files = applicable_files(tool, selected, languages.get(tool))
+        files = applicable_files(tool, selected, languages.get(tool), scope=scope)
         if files is None:
             unknown.add(tool)
         elif files:

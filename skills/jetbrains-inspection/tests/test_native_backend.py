@@ -167,13 +167,15 @@ class NativeTests(unittest.TestCase):
             backend, _ = native.select_backend(args, host)
         self.assertEqual(backend, "native")
 
-    def test_full_python_coverage_uses_native(self):
+    def test_python_and_yaml_selections_use_native(self) -> None:
         args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
-        with patch.object(sys, "platform", "darwin"), \
-                patch.object(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", {"src/a.py"})), \
-                patch.object(native, "eligible", return_value=True), \
-                patch.object(native, "is_odoo", return_value=False):
-            self.assertEqual(native.select_backend(args, host)[0], "native")
+        for files in ({"src/a.py"}, {"compose.yml", "workflow.yaml"}, {"compose.yml", "source.py"}):
+            with self.subTest(files=files), \
+                    patch.object(sys, "platform", "darwin"), \
+                    patch.object(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", files)), \
+                    patch.object(native, "eligible", return_value=True), \
+                    patch.object(native, "is_odoo", return_value=False):
+                self.assertEqual(native.select_backend(args, host)[0], "native")
 
     def test_odoo_other_languages_and_nested_lanes_keep_their_existing_route(self):
         args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
