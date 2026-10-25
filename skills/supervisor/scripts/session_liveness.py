@@ -57,6 +57,24 @@ def process_started_at(pid):
     return datetime.strptime(value, "%a %b %d %H:%M:%S %Y").replace(tzinfo=timezone.utc)
 
 
+def host_boot_time() -> datetime | None:
+    try:
+        if sys.platform == "darwin":
+            value = subprocess.run(["sysctl", "-n", "kern.boottime"], check=True,
+                                   capture_output=True, text=True, timeout=2).stdout
+            match = re.match(r"\{ sec = (\d+), usec = \d+ \}", value)
+            seconds = int(match[1]) if match else None
+        elif sys.platform == "linux":
+            values = [line.split()[1] for line in (PROC_ROOT / "stat").read_text().splitlines()
+                      if line.startswith("btime ")]
+            seconds = int(values[0]) if len(values) == 1 else None
+        else:
+            return None
+        return datetime.fromtimestamp(seconds, timezone.utc) if seconds is not None else None
+    except (OSError, ValueError, IndexError, OverflowError, subprocess.SubprocessError):
+        return None
+
+
 def process_absent(pid):
     """Only the kernel's missing-PID result establishes current absence."""
     if sys.platform not in {"darwin", "linux"} or type(pid) is not int or pid <= 0:
@@ -472,10 +490,13 @@ def invocation(argv, *, bounded=True):
 
 def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
                         independent_harness=None, replacement_owner=None, require_tty=False,
-                        scope="session"):
+                        scope="session", rebooted_at=None):
     """Share process facts; physical terminal cleanup does not establish session closure."""
     if scope not in {"session", "terminal"}:
         raise ValueError("unknown process verification scope")
+    if rebooted_at is not None and (scope != "session" or ended_at != rebooted_at
+                                   or rebooted_at > datetime.now(timezone.utc)):
+        raise ValueError("reboot proof requires a verified session exit cutoff")
     rows = inventory() if rows is None else rows
     started_at = started_at or process_started_at
     tty = entry.get("tty")
@@ -494,7 +515,7 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
         raise ValueError("no process rows match the terminal TTY; inventory is uncertain")
     source = native_uuid(entry.get("session_id")) or entry.get("session_id")
     for pid, process_tty, command in rows:
-        if pid in pids:
+        if pid in pids and rebooted_at is None:
             raise ValueError("source PID (possibly reused) or work on its TTY remains; preserve claims and verify native identity")
         argv, command_kind, exact_resume = [], None, None
         if scope == "session":
