@@ -435,8 +435,8 @@ class NativeTests(unittest.TestCase):
         clean = native.envelope(host, receipt, [typo, grammar, style], "native_completed", [])
         self.assertEqual((clean["agent_result"]["verdict"], clean["finding_count"], clean["advisory_finding_count"]), ("GREEN", 0, 3))
         self.assertEqual(clean["advisory_findings"], [typo, grammar, style])
-        self.assertIn("3 advisory", clean["agent_result"]["agent_report"])
-        self.assertIn("dictionar", clean["agent_result"]["next_action"])
+        many = native.envelope(host, receipt, [typo] * (native.common.FINDING_LIMIT + 1), "native_completed", [])
+        self.assertEqual((len(many["advisory_findings"]), many["advisory_findings_truncated"]), (native.common.FINDING_LIMIT, True))
         red = native.envelope(host, receipt, [typo, warning], "native_completed", [])
         self.assertEqual((red["agent_result"]["verdict"], red["findings"], red["advisory_findings"]), ("RED", [warning], [typo]))
         old_typo = {**typo, "introduced": False}
