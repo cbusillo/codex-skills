@@ -706,10 +706,13 @@ def linked_issue_gaps(repo: str, number: int, pr: dict[str, Any]) -> dict[str, s
     try:
         _, closing = github_plan_landing.closing_references(reader, repo, number, landed=False)
         closed_by_pr = {(issue_repo.casefold(), issue_number) for issue_repo, issue_number in closing}
-        gaps = {f"{issue_repo}#{issue_number}": remaining_steps_gap(reader, issue_repo, issue_number)
-                for issue_repo, issue_number in dict.fromkeys(linked)
-                if (issue_repo.casefold(), issue_number) not in closed_by_pr}
-        return {issue: gap for issue, gap in gaps.items() if gap}
+        gaps = {}
+        for issue_repo, issue_number in dict.fromkeys(linked):
+            if (issue_repo.casefold(), issue_number) in closed_by_pr:
+                continue
+            if gap := remaining_steps_gap(reader, issue_repo, issue_number):
+                gaps[f"{issue_repo}#{issue_number}"] = gap
+        return gaps
     except github_read_core.GitHubReadError as exc:
         raise PrHelperError(f"Linked-issue follow-up evidence is unavailable: {exc}", failure=exc.result.failure,
                             api_result=exc.result.as_dict(), diagnostics=exc.diagnostics, repo=repo, pr=number) from exc

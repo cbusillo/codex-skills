@@ -90,8 +90,7 @@ class DirectorQuestionGateTests(unittest.TestCase):
         self.assertEqual(self.queue_reads, 2)
 
     def test_unregistered_unnumbered_or_untrusted_links_still_refuse(self) -> None:
-        COMMENTS[17] = comment(17, BOT, "Director question: Q814. Approve the install?")
-        self.addCleanup(COMMENTS.pop, 17)
+        self.enterContext(patch.dict(COMMENTS, {17: comment(17, BOT, "Director question: Q814. Approve the install?")}))
         for evidence in (link(12), link(15), link(17)):
             with self.subTest(evidence=evidence):
                 self.assertIsNotNone(self.gap(wait("Chris approves the live install", evidence)))

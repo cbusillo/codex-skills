@@ -4,6 +4,7 @@
 # ///
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -123,7 +124,7 @@ def director_question_gap(repo: str, wait: dict[str, Any], *, read_comment: Call
         return None
     queue = configured_queue()
     trusted = github_plan_wait.authors(repo)
-    registered: set[str] | None = None
+    registered = functools.cache(lambda: registered_question_ids(queue, read_pages))
     unreadable = []
     for url, comment_repo, comment_id in comment_links(wait):
         comment = read_comment(f"/repos/{comment_repo}/issues/comments/{comment_id}")
@@ -134,10 +135,6 @@ def director_question_gap(repo: str, wait: dict[str, Any], *, read_comment: Call
             return None
         if not is_numbered_question(comment, trusted):
             continue
-        if queue is None:
-            return None
-        if registered is None:
-            registered = registered_question_ids(queue, read_pages)
-        if comment_id in registered:
+        if queue is None or comment_id in registered():
             return None
     return unasked_message(owner, director_waits, queue, unreadable)
