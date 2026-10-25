@@ -24,6 +24,11 @@ from typing import Any
 from unittest.mock import patch
 from contextlib import contextmanager, redirect_stdout
 
+
+def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    return patch.object(target, name, *args, **kwargs)
+
+
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 os.environ["JB_INSPECT_OUTCOME_LOG"] = "0"
 os.environ["JB_INSPECT_UNKNOWN_LOG"] = "0"
@@ -68,26 +73,26 @@ def hold_lock(path, seconds, held, release_when=None):
 
 class NativeTests(unittest.TestCase):
     def test_process_group_exit_waits_through_permission_transition(self):
-        with patch.object(native.os, "killpg", side_effect=[PermissionError(errno.EPERM, "exiting"), PermissionError(errno.EPERM, "exiting"), ProcessLookupError(errno.ESRCH, "gone")]), \
-                patch.object(native.time, "sleep"):
+        with patch.object(os, os.killpg.__name__, side_effect=[PermissionError(errno.EPERM, "exiting"), PermissionError(errno.EPERM, "exiting"), ProcessLookupError(errno.ESRCH, "gone")]), \
+                patch.object(time, "sleep"):
             self.assertTrue(native.group_gone(123456))
 
     def test_persistent_group_permission_failure_is_bounded_and_unproved(self):
         receipt = {}
-        with patch.object(native.os, "killpg", side_effect=PermissionError(errno.EPERM, "denied")), \
-                patch.object(native.time, "monotonic", side_effect=[0, 1, 2]), patch.object(native.time, "sleep"):
+        with patch.object(os, os.killpg.__name__, side_effect=PermissionError(errno.EPERM, "denied")), \
+                patch.object(time, "monotonic", side_effect=[0, 1, 2]), patch.object(time, "sleep"):
             self.assertFalse(native.group_gone(123456, receipt=receipt))
         self.assertEqual(receipt["process_group_probe"], {"pgid": 123456, "last_errno": errno.EPERM})
 
     def test_other_process_group_errors_never_prove_exit(self):
-        with patch.object(native.os, "killpg", side_effect=OSError(errno.EINVAL, "invalid")), \
-                patch.object(native.time, "sleep") as sleep:
+        with patch.object(os, os.killpg.__name__, side_effect=OSError(errno.EINVAL, "invalid")), \
+                patch.object(time, "sleep") as sleep:
             self.assertFalse(native.group_gone(123456))
         sleep.assert_not_called()
 
     def test_process_reader_reports_foreign_group_and_command_before_matching(self):
         result = subprocess.CompletedProcess([], 0, b"123456 42 Tue Oct 20 12:00:00 2026 S unrelated-process\n")
-        with patch.object(native.common, "command", return_value=result):
+        with patch_attr(native.common, "command", return_value=result):
             identity = native.process_identity(123456, Path("/private/owned"))
         self.assertEqual(identity["pgid"], 42)
         self.assertIsNone(identity["private"])
@@ -163,9 +168,9 @@ class NativeTests(unittest.TestCase):
     def test_native_is_default_for_odoo_xml_without_desktop_or_docker(self):
         args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
         with patch.object(sys, "platform", "darwin"), \
-                patch.object(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", {"views/form.xml"})), \
-                patch.object(native, "eligible", return_value=True), \
-                patch.object(native, "is_odoo", return_value=True):
+                patch_attr(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", {"views/form.xml"})), \
+                patch_attr(native, "eligible", return_value=True), \
+                patch_attr(native, "is_odoo", return_value=True):
             backend, _ = native.select_backend(args, host)
         self.assertEqual(backend, "native")
 
@@ -174,20 +179,20 @@ class NativeTests(unittest.TestCase):
         for files in ({"src/a.py"}, {"compose.yml", "workflow.yaml"}, {"compose.yml", "source.py"}):
             with self.subTest(files=files), \
                     patch.object(sys, "platform", "darwin"), \
-                    patch.object(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", files)), \
-                    patch.object(native, "eligible", return_value=True), \
-                    patch.object(native, "is_odoo", return_value=False):
+                    patch_attr(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", files)), \
+                    patch_attr(native, "eligible", return_value=True), \
+                    patch_attr(native, "is_odoo", return_value=False):
                 self.assertEqual(native.select_backend(args, host)[0], "native")
 
     def test_odoo_other_languages_and_nested_lanes_keep_their_existing_route(self):
         args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
         for selected, lane_gaps in (({"assets/app.js"}, []), ({"nested/model.py"}, ["nested_lane"])):
             with self.subTest(selected=selected), patch.object(sys, "platform", "darwin"), \
-                    patch.object(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", selected)), \
-                    patch.object(native, "eligible", return_value=True), \
-                    patch.object(native, "is_odoo", return_value=True), \
-                    patch.object(native.common, "lane_gaps", return_value=lane_gaps), \
-                    patch.object(native.common, "select_backend", return_value=("api", "existing_lane")):
+                    patch_attr(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", selected)), \
+                    patch_attr(native, "eligible", return_value=True), \
+                    patch_attr(native, "is_odoo", return_value=True), \
+                    patch_attr(native.common, "lane_gaps", return_value=lane_gaps), \
+                    patch_attr(native.common, "select_backend", return_value=("api", "existing_lane")):
                 self.assertEqual(native.select_backend(args, host), ("api", "existing_lane"))
 
     def test_explicit_community_options_and_host_choice_still_work(self):
@@ -199,17 +204,17 @@ class NativeTests(unittest.TestCase):
     def test_unconfigured_native_preserves_the_existing_route(self):
         args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
         with patch.object(sys, "platform", "darwin"), \
-                patch.object(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", {"src/a.py"})), \
-                patch.object(host, "read_global_config", return_value={}), \
-                patch.object(native, "is_odoo", return_value=False), \
-                patch.object(native.common, "select_backend", return_value=("qodana", "qualified")):
+                patch_attr(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", {"src/a.py"})), \
+                patch_attr(host, "read_global_config", return_value={}), \
+                patch_attr(native, "is_odoo", return_value=False), \
+                patch_attr(native.common, "select_backend", return_value=("qodana", "qualified")):
             backend, reason = native.select_backend(args, host)
             self.assertEqual(backend, "qodana")
             self.assertIn("native_worker_not_configured", reason)
 
     def test_cli_dispatch_does_not_enter_desktop_lifecycle(self):
-        with patch.object(host, "command_native", return_value={"backend": "native"}) as run, \
-                patch.object(host, "build_context", side_effect=AssertionError("desktop opened")), \
+        with patch_attr(host, "command_native", return_value={"backend": "native"}) as run, \
+                patch_attr(host, "build_context", side_effect=AssertionError("desktop opened")), \
                 patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--backend", "native"]):
             self.assertEqual(host.main(), 0)
         run.assert_called_once()
@@ -228,7 +233,7 @@ class NativeTests(unittest.TestCase):
 
         def run(result, *flags):
             with patch.dict(os.environ, {"JB_INSPECT_OUTCOME_LOG": str(outcomes), "JB_INSPECT_UNKNOWN_LOG": str(unknowns)}), \
-                    patch.object(host, "command_native", return_value=result), \
+                    patch_attr(host, "command_native", return_value=result), \
                     patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--backend", "native", *flags]), \
                     redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(host.main(), 0)
@@ -263,14 +268,14 @@ class NativeTests(unittest.TestCase):
                 {"id": "python", "ide": "PyCharm", "required": True, "include": ["**/*.py"]}]}}}
             with patch.object(sys, "platform", "darwin"), \
                     patch.dict(os.environ, {"JB_INSPECT_DEFAULT_BACKEND": ""}), \
-                    patch.object(host, "native_backend_module", return_value=native), \
-                    patch.object(host, "git_root", return_value=str(repo)), \
-                    patch.object(host, "read_repo_config", return_value=settings), \
-                    patch.object(host, "inspection_scope_paths", return_value=["source.py", "README.md"]), \
-                    patch.object(native, "eligible", return_value=True), \
-                    patch.object(native, "is_odoo", return_value=False), \
-                    patch.object(host, "command_native", return_value={"backend": "native"}) as run, \
-                    patch.object(host, "build_context") as context, \
+                    patch_attr(host, "native_backend_module", return_value=native), \
+                    patch_attr(host, "git_root", return_value=str(repo)), \
+                    patch_attr(host, "read_repo_config", return_value=settings), \
+                    patch_attr(host, "inspection_scope_paths", return_value=["source.py", "README.md"]), \
+                    patch_attr(native, "eligible", return_value=True), \
+                    patch_attr(native, "is_odoo", return_value=False), \
+                    patch_attr(host, "command_native", return_value={"backend": "native"}) as run, \
+                    patch_attr(host, "build_context") as context, \
                     patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--repo", str(repo), "--scope", "changed_files"]), \
                     redirect_stdout(io.StringIO()):
                 self.assertEqual(host.main(), 0)
@@ -278,13 +283,13 @@ class NativeTests(unittest.TestCase):
                 context.assert_not_called()
 
     def test_automatic_api_fallback_never_enters_desktop_lifecycle(self) -> None:
-        with patch.object(host, "native_backend_module", return_value=native), \
-                patch.object(native, "select_backend", return_value=("api", "selection_not_python_only")), \
-                patch.object(host, "qodana_backend_module", return_value=native.common), \
-                patch.object(native.common, "scope_selection"), \
-                patch.object(host, "build_context") as context, \
-                patch.object(host, "command_run") as api, \
-                patch.object(host, "log_assessment_records"), \
+        with patch_attr(host, "native_backend_module", return_value=native), \
+                patch_attr(native, "select_backend", return_value=("api", "selection_not_python_only")), \
+                patch_attr(host, "qodana_backend_module", return_value=native.common), \
+                patch_attr(native.common, "scope_selection"), \
+                patch_attr(host, "build_context") as context, \
+                patch_attr(host, "command_run") as api, \
+                patch_attr(host, "log_assessment_records"), \
                 patch.object(sys, "argv", ["jb-inspect", "agent-inspect"]), \
                 redirect_stdout(io.StringIO()) as output:
             self.assertEqual(host.main(), 0)
@@ -298,12 +303,12 @@ class NativeTests(unittest.TestCase):
 
     def test_automatic_fallback_preserves_scope_errors_without_desktop_contact(self) -> None:
         error = host.InspectError("Scope exceeds file limit", payload={"error_reason": "inspection_lane_scope_too_large"})
-        with patch.object(host, "native_backend_module", return_value=native), \
-                patch.object(native, "select_backend", return_value=("api", "qodana_selection_unavailable")), \
-                patch.object(host, "qodana_backend_module", return_value=native.common), \
-                patch.object(native.common, "scope_selection", side_effect=error), \
-                patch.object(host, "build_context") as context, \
-                patch.object(host, "log_assessment_records"), \
+        with patch_attr(host, "native_backend_module", return_value=native), \
+                patch_attr(native, "select_backend", return_value=("api", "qodana_selection_unavailable")), \
+                patch_attr(host, "qodana_backend_module", return_value=native.common), \
+                patch_attr(native.common, "scope_selection", side_effect=error), \
+                patch_attr(host, "build_context") as context, \
+                patch_attr(host, "log_assessment_records"), \
                 patch.object(sys, "argv", ["jb-inspect", "agent-inspect"]), \
                 redirect_stdout(io.StringIO()) as output:
             self.assertEqual(host.main(), 0)
@@ -315,11 +320,11 @@ class NativeTests(unittest.TestCase):
     def test_explicit_existing_backends_do_not_import_native_components(self):
         for backend in ("api", "qodana"):
             with self.subTest(backend=backend), \
-                    patch.object(host, "native_backend_module", side_effect=AssertionError("native import")) as native_import, \
-                    patch.object(host, "command_qodana", return_value={}) as qodana, \
-                    patch.object(host, "build_context", return_value={}), \
-                    patch.object(host, "command_run", return_value={}) as api, \
-                    patch.object(host, "emit_agent_result", return_value=0), \
+                    patch_attr(host, "native_backend_module", side_effect=AssertionError("native import")) as native_import, \
+                    patch_attr(host, "command_qodana", return_value={}) as qodana, \
+                    patch_attr(host, "build_context", return_value={}), \
+                    patch_attr(host, "command_run", return_value={}) as api, \
+                    patch_attr(host, "emit_agent_result", return_value=0), \
                     patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--backend", backend]), \
                     redirect_stdout(io.StringIO()):
                 self.assertEqual(host.main(), 0)
@@ -333,9 +338,9 @@ class NativeTests(unittest.TestCase):
         for options in cases:
             with self.subTest(options=options), \
                     patch.object(sys, "argv", ["jb-inspect", "agent-inspect", *options]), \
-                    patch.object(host, "build_context", side_effect=AssertionError("desktop opened")), \
-                    patch.object(host, "command_native", side_effect=AssertionError("worker started")), \
-                    patch.object(host, "command_qodana", side_effect=AssertionError("container started")), \
+                    patch_attr(host, "build_context", side_effect=AssertionError("desktop opened")), \
+                    patch_attr(host, "command_native", side_effect=AssertionError("worker started")), \
+                    patch_attr(host, "command_qodana", side_effect=AssertionError("container started")), \
                     redirect_stdout(io.StringIO()) as output:
                 host.main()
                 self.assertEqual(json.loads(output.getvalue())["agent_result"]["verdict"], "UNKNOWN")
@@ -443,10 +448,10 @@ class NativeLifecycleTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
-        state_patch = patch.object(native, "state_dir", return_value=self.root / "state")
+        state_patch = patch_attr(native, "state_dir", return_value=self.root / "state")
         state_patch.start()
         self.addCleanup(state_patch.stop)
-        storage_patch = patch.object(native.common, "storage_identity", side_effect=lambda anchor: {"fixture": str(anchor)})
+        storage_patch = patch_attr(native.common, "storage_identity", side_effect=lambda anchor: {"fixture": str(anchor)})
         storage_patch.start()
         self.addCleanup(storage_patch.stop)
         self.repo = self.root / "repo"
@@ -494,9 +499,9 @@ print('Done.')
     @contextmanager
     def native_host(self, loads=None):
         with patch.object(sys, "platform", "darwin"), \
-                patch.object(host, "cache_dir", return_value=self.root / "cache"), \
-                patch.object(host, "read_global_config", return_value={}), \
-                patch.object(host, "trusted_auto_open_roots", return_value=[str(self.repo)]), \
+                patch_attr(host, "cache_dir", return_value=self.root / "cache"), \
+                patch_attr(host, "read_global_config", return_value={}), \
+                patch_attr(host, "trusted_auto_open_roots", return_value=[str(self.repo)]), \
                 patch.object(os, "getloadavg", side_effect=loads or (lambda: (1, 1, 1))):
             yield
 
@@ -552,7 +557,7 @@ print('Done.')
     def test_exit_observer_registration_failure_never_releases_the_launch_gate(self):
         marker = self.root / "must-not-launch"
         self.script.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n")
-        with patch.object(native, "ChildExitObserver", side_effect=OSError(errno.EPERM, "registration unavailable")):
+        with patch_attr(native, "ChildExitObserver", side_effect=OSError(errno.EPERM, "registration unavailable")):
             result = self.assess()
         self.assertFalse(marker.exists())
         self.assertEqual(result["inspection_outcome"]["reason"], "native_exit_observer_unavailable")
@@ -573,7 +578,7 @@ print('Done.')
                 self.assertEqual(self.assess()["inspection_outcome"]["reason"], "native_completed")
                 auto = host.build_parser().parse_args(["agent-inspect", "--repo", str(self.repo), "--scope", "files", "--file", "source.py", "--profile", "Test"])
                 config = {"jetbrains": {"nativeWorker": {"path": str(self.worker), "app": str(self.app)}}}
-                with patch.object(sys, "platform", "darwin"), patch.object(host, "read_global_config", return_value=config):
+                with patch.object(sys, "platform", "darwin"), patch_attr(host, "read_global_config", return_value=config):
                     backend, reason = native.select_backend(auto, host)
                 self.assertEqual(backend, "api")
                 self.assertIn("native_preparation_shape_unsupported", reason)
@@ -594,7 +599,7 @@ print('Done.')
 
     def test_lane_scope_limit_keeps_its_specific_reason(self):
         error = host.InspectError("fixture scope exceeds limit", payload={"error_reason": "inspection_lane_scope_too_large"})
-        with patch.object(native.common, "scope_selection", side_effect=error):
+        with patch_attr(native.common, "scope_selection", side_effect=error):
             result = self.assess()
         self.assertEqual(result["inspection_outcome"]["reason"], "native_scope_too_large")
         self.assertNotIn("worker_pid", result["diagnostic"]["native"])
@@ -757,7 +762,7 @@ print('Done.')
             self.assertEqual(json.loads((project.parent / "owner.json").read_text()), native.lifecycle.identity_from(record))
             return snapshot(repo, project)
 
-        with patch.object(native.common, "snapshot", side_effect=check_custody):
+        with patch_attr(native.common, "snapshot", side_effect=check_custody):
             result = self.assess()
             self.assertEqual(result["cleanup"]["status"], "closed")
             self.assertEqual(result["agent_result"]["verdict"], "RED")
@@ -773,7 +778,7 @@ print('Done.')
         self.assertTrue(journal.exists())
         self.assertTrue(private.exists())
         marker.write_text(json.dumps(context.identity))
-        with patch.object(native.common, "storage_identity", return_value={"changed": True}):
+        with patch_attr(native.common, "storage_identity", return_value={"changed": True}):
             with self.assertRaisesRegex(native.Blocked, "native_recovery_storage_changed"):
                 native.recover_run(self.worker)
         self.assertTrue(private.exists())
@@ -799,11 +804,11 @@ print('Done.')
     def test_recovery_storage_and_deletion_failures_are_not_closed(self):
         context = self.reserve_run()
         self.args.native_recover_only = True
-        with patch.object(native.common, "storage_identity", side_effect=OSError("offline storage")):
+        with patch_attr(native.common, "storage_identity", side_effect=OSError("offline storage")):
             result = self.assess()
         self.assertEqual(result["cleanup"]["status"], "failed")
         self.assertTrue(context.journal.exists())
-        with patch.object(native.common, "delete_private", side_effect=OSError("interrupted deletion")):
+        with patch_attr(native.common, "delete_private", side_effect=OSError("interrupted deletion")):
             result = self.assess()
         self.assertEqual(result["cleanup"]["status"], "failed")
         self.assertTrue(context.private.exists())
@@ -827,7 +832,7 @@ print('Done.')
             path.write_text('{"run_id":')
             raise OSError("interrupted marker write")
 
-        with patch.object(native.lifecycle, "write_owner", side_effect=partial_write):
+        with patch_attr(native.lifecycle, "write_owner", side_effect=partial_write):
             result = self.assess()
         self.assertEqual(result["cleanup"]["status"], "closed")
         self.assertFalse((self.worker / "native-run.json").exists())
@@ -861,7 +866,7 @@ print('Done.')
                 raise OSError("full output storage")
             write(path, payload)
 
-        with patch.object(native, "write_record", side_effect=fail_artifact):
+        with patch_attr(native, "write_record", side_effect=fail_artifact):
             result = self.assess()
         self.assertEqual(result["inspection_outcome"]["reason"], "native_persistence_failed")
         self.assertEqual(result["cleanup"]["status"], "closed")
@@ -877,7 +882,7 @@ print('Done.')
                 raise OSError("full profile storage")
             write(path, payload)
 
-        with patch.object(native, "write_record", side_effect=fail_terminal_writes):
+        with patch_attr(native, "write_record", side_effect=fail_terminal_writes):
             result = self.assess()
         self.assertEqual(result["inspection_outcome"]["reason"], "native_owner_activation_required")
         self.assertEqual(result["cleanup"]["status"], "closed")
@@ -913,7 +918,7 @@ print('Done.')
         self.assertFalse((self.worker / "native-run.json").exists())
 
     def test_saved_nonlicensing_terminal_result_reconciles_a_persistence_failure(self):
-        with patch.object(native, "write_record", side_effect=self.interrupted_terminal_writer()):
+        with patch_attr(native, "write_record", side_effect=self.interrupted_terminal_writer()):
             result = self.assess()
         self.assertEqual(result["inspection_outcome"]["reason"], "native_persistence_failed")
         self.reconcile_saved_result(result)
@@ -922,11 +927,11 @@ print('Done.')
         execute = native.execute
 
         def failed_spawn(*args, **kwargs):
-            with patch.object(native.subprocess, "Popen", side_effect=OSError("spawn failed")):
+            with patch.object(subprocess, subprocess.Popen.__name__, side_effect=OSError("spawn failed")):
                 return execute(*args, **kwargs)
 
-        with patch.object(native, "execute", side_effect=failed_spawn), \
-                patch.object(native, "write_record", side_effect=self.interrupted_terminal_writer()):
+        with patch_attr(native, "execute", side_effect=failed_spawn), \
+                patch_attr(native, "write_record", side_effect=self.interrupted_terminal_writer()):
             result = self.assess()
         self.assertTrue(result["diagnostic"]["native"]["worker_exited"])
         self.assertNotIn("worker_pid", result["diagnostic"]["native"])
@@ -956,8 +961,8 @@ print('Done.')
             contexts.append(context)
             return context
 
-        with patch.object(native, "new_context", side_effect=remember), \
-                patch.object(native, "execute", side_effect=RuntimeError("unexpected engine wrapper failure")):
+        with patch_attr(native, "new_context", side_effect=remember), \
+                patch_attr(native, "execute", side_effect=RuntimeError("unexpected engine wrapper failure")):
             result = self.assess()
         self.assertEqual(result["inspection_outcome"]["reason"], "native_internal_error")
         self.assertEqual(result["diagnostic"]["native"]["terminal_reason"], "native_internal_error")
@@ -970,7 +975,7 @@ print('Done.')
         import fcntl
         state = self.root / "state"
         state.mkdir()
-        with patch.object(native.common, "state_dir", return_value=state):
+        with patch_attr(native.common, "state_dir", return_value=state):
             with native.common.worker_lock_path().open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 self.args.lifecycle_lock_timeout_ms = 0
@@ -998,7 +1003,7 @@ print('Done.')
                 marker.touch()
             return original(parent_fd, deadline)
 
-        patcher = patch.object(native, "check_lifetime", side_effect=check_and_mark)
+        patcher = patch_attr(native, "check_lifetime", side_effect=check_and_mark)
         patcher.start()
         self.addCleanup(patcher.stop)
         return marker
@@ -1091,10 +1096,10 @@ print('Done.')
         shared = self.root / "shared-caches"
         shared.mkdir()
         config = {"jetbrains": {"nativeWorker": {"cacheRoot": str(shared)}}}
-        with patch.object(host, "read_global_config", return_value=config):
-            with patch.object(host, "cache_dir", return_value=self.root / "run-a"), patch.dict(os.environ, {"JETBRAINS_INSPECTION_CACHE_DIR": "override"}):
+        with patch_attr(host, "read_global_config", return_value=config):
+            with patch_attr(host, "cache_dir", return_value=self.root / "run-a"), patch.dict(os.environ, {"JETBRAINS_INSPECTION_CACHE_DIR": "override"}):
                 first, first_env = native.runtime_storage(host, self.worker)
-            with patch.object(host, "cache_dir", return_value=self.root / "run-b"), patch.dict(os.environ, {"JETBRAINS_INSPECTION_CACHE_DIR": "override"}):
+            with patch_attr(host, "cache_dir", return_value=self.root / "run-b"), patch.dict(os.environ, {"JETBRAINS_INSPECTION_CACHE_DIR": "override"}):
                 second, second_env = native.runtime_storage(host, self.worker)
         self.assertNotEqual(first, second)
         self.assertEqual(first_env, second_env)
@@ -1104,14 +1109,14 @@ print('Done.')
     def test_missing_or_changed_host_cache_storage_is_not_recreated(self):
         missing = self.root / "unmounted/cache"
         config: dict[str, Any] = {"jetbrains": {"nativeWorker": {"cacheRoot": str(missing)}}}
-        with patch.object(host, "read_global_config", return_value=config):
+        with patch_attr(host, "read_global_config", return_value=config):
             with self.assertRaisesRegex(native.Blocked, "native_cache_root_unavailable"):
                 native.runtime_storage(host, self.worker)
         self.assertFalse(missing.parent.exists())
         existing = self.root / "existing-cache"
         existing.mkdir()
         config["jetbrains"]["nativeWorker"].update(cacheRoot=str(existing), cacheStorageIdentity={"different": True})
-        with patch.object(host, "read_global_config", return_value=config):
+        with patch_attr(host, "read_global_config", return_value=config):
             with self.assertRaisesRegex(native.Blocked, "native_cache_storage_changed"):
                 native.runtime_storage(host, self.worker)
 
@@ -1223,7 +1228,7 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
     def test_failed_engine_identity_persistence_never_releases_the_launch_gate(self):
         marker = self.root / "must-not-start"
         self.script.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n")
-        with patch.object(native.lifecycle.RunContext, "process_spawned", side_effect=OSError("journal storage full")):
+        with patch_attr(native.lifecycle.RunContext, "process_spawned", side_effect=OSError("journal storage full")):
             result = self.assess()
         self.assertFalse(marker.exists())
         self.assertEqual(result["cleanup"]["status"], "closed")
@@ -1232,14 +1237,14 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
         marker = self.root / "must-not-prepare"
         self.declare_python_preparation()
         command = [sys.executable, "-c", f"from pathlib import Path;Path({str(marker)!r}).touch()", native.common.WORK + "/project"]
-        with patch.object(native.common, "preparation", return_value={"commands": [command]}), \
-                patch.object(native.lifecycle.RunContext, "process_spawned", side_effect=OSError("journal storage full")):
+        with patch_attr(native.common, "preparation", return_value={"commands": [command]}), \
+                patch_attr(native.lifecycle.RunContext, "process_spawned", side_effect=OSError("journal storage full")):
             result = self.assess()
         self.assertFalse(marker.exists())
         self.assertEqual(result["cleanup"]["status"], "closed")
 
     def test_unproved_engine_group_keeps_sdk_private_and_licensed_hold(self):
-        with patch.object(native, "group_gone", return_value=False):
+        with patch_attr(native, "group_gone", return_value=False):
             result = self.assess()
         self.assertEqual(result["cleanup"]["status"], "failed")
         self.assertFalse(result["diagnostic"]["native"]["license_observation_complete"])
@@ -1263,7 +1268,7 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
         self.script.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nimport time\n"
                                f"Path('logs/idea.log').write_text({log_text!r}.format(project=Path.cwd() / 'project'))\n"
                                "time.sleep(30)\n")
-        with patch.object(native, native.group_gone.__name__, return_value=False):
+        with patch_attr(native, native.group_gone.__name__, return_value=False):
             self.assess()
         self.assertTrue((self.worker / "native-run.json").exists())
         self.args.native_recover_only = True
@@ -1304,7 +1309,7 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
 
     def test_durable_license_stop_does_not_dispose_an_unproved_group(self):
         self.script.write_text(f"#!{sys.executable}\nimport time\nprint('No valid license found',flush=True)\ntime.sleep(30)\n")
-        with patch.object(native, "group_gone", return_value=False):
+        with patch_attr(native, "group_gone", return_value=False):
             result = self.assess()
         self.assertEqual(result["inspection_outcome"]["reason"], "native_owner_activation_required")
         self.assertEqual(result["cleanup"]["status"], "failed")
@@ -1316,7 +1321,7 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
     def test_foreign_launch_identity_never_releases_the_engine_gate(self):
         marker = self.root / "must-not-start"
         self.script.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n")
-        with patch.object(native, "process_identity", return_value={"pgid": 42, "private": None}):
+        with patch_attr(native, "process_identity", return_value={"pgid": 42, "private": None}):
             result = self.assess()
         self.assertFalse(marker.exists())
         self.assertEqual(result["inspection_outcome"]["reason"], "native_process_identity_unproven")
@@ -1330,7 +1335,7 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
                 context.phase("engine_running", engine_identity=identity)
                 self.args.native_recover_only = True
                 current = {**identity, "started": "later", "pgid": pgid, "private": str(context.private) if private else None}
-                with patch.object(native, "process_identity", return_value=current), patch.object(native.os, "killpg") as kill:
+                with patch_attr(native, "process_identity", return_value=current), patch.object(os, os.killpg.__name__) as kill:
                     result = self.assess(direct=True)
                     self.assertEqual(result["inspection_outcome"]["reason"], "native_interrupted_run_unresolved")
                     self.assertEqual(result["cleanup"]["status"], "closed")
@@ -1347,8 +1352,8 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
                 identity = {"pid": 123456, "pgid": 123456, "started": "old", "birth_clock": native.PROCESS_BIRTH_CLOCK, "private": str(context.private)}
                 context.phase("engine_running", engine_identity=identity)
                 self.args.native_recover_only = True
-                with patch.object(native, "process_identity", return_value=identity), \
-                        patch.object(native.os, "killpg", side_effect=[error, ProcessLookupError(errno.ESRCH, "gone")]):
+                with patch_attr(native, "process_identity", return_value=identity), \
+                        patch.object(os, os.killpg.__name__, side_effect=[error, ProcessLookupError(errno.ESRCH, "gone")]):
                     result = self.assess(direct=True)
                 self.assertEqual(result["inspection_outcome"]["reason"], "native_interrupted_run_unresolved")
                 self.assertEqual(result["cleanup"]["status"], "closed")
@@ -1369,7 +1374,7 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
                 context.phase("engine_running", engine_identity={"pid": 123456, "pgid": 123456, "started": "old", "private": str(context.private)})
                 self.args.native_recover_only = True
                 current = {"pid": 123456, "pgid": pgid, "started": started, "private": str(context.private) if same_path else None}
-                with patch.object(native, "process_identity", return_value=current), patch.object(native.os, "killpg") as kill:
+                with patch_attr(native, "process_identity", return_value=current), patch.object(os, os.killpg.__name__) as kill:
                     result = self.assess(direct=True)
                 self.assertEqual(result["inspection_outcome"]["reason"], "native_recovery_process_identity_changed")
                 self.assertEqual(result["cleanup"]["status"], "failed")
@@ -1383,8 +1388,8 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
         identity = {"pid": 123456, "pgid": 123456, "started": "old", "private": str(context.private)}
         context.phase("engine_running", engine_identity=identity)
         self.args.native_recover_only = True
-        with patch.object(native, "process_identity", side_effect=native.Blocked("native_recovery_process_identity_unproven")), \
-                patch.object(native.os, "killpg") as kill:
+        with patch_attr(native, "process_identity", side_effect=native.Blocked("native_recovery_process_identity_unproven")), \
+                patch.object(os, os.killpg.__name__) as kill:
             result = self.assess(direct=True)
         self.assertEqual(result["inspection_outcome"]["reason"], "native_recovery_process_identity_unproven")
         self.assertEqual(result["cleanup"]["status"], "failed")
@@ -1398,8 +1403,8 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
                 context = self.reserve_run()
                 context.phase("engine_running", engine_identity={"pid": 123456, "pgid": 123456, "started": "old", "private": str(context.private)})
                 self.args.native_recover_only = recover_only
-                with patch.object(native, "process_identity", return_value=None), \
-                        patch.object(native, "group_gone", return_value=False), patch.object(native.os, "killpg") as kill:
+                with patch_attr(native, "process_identity", return_value=None), \
+                        patch_attr(native, "group_gone", return_value=False), patch.object(os, os.killpg.__name__) as kill:
                     result = self.assess(direct=True)
                 self.assertEqual(result["inspection_outcome"]["reason"], "native_recovery_process_group_unproven")
                 self.assertEqual(result["cleanup"]["status"], "failed")
@@ -1410,8 +1415,8 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
         context = self.reserve_run()
         context.phase("engine_running", engine_identity={"pid": 123456, "pgid": 123456, "started": "old", "private": str(context.private)})
         self.args.native_recover_only = True
-        with patch.object(native, "process_identity", return_value=None), \
-                patch.object(native.os, "killpg", side_effect=[None, ProcessLookupError()]) as probe:
+        with patch_attr(native, "process_identity", return_value=None), \
+                patch.object(os, os.killpg.__name__, side_effect=[None, ProcessLookupError()]) as probe:
             result = self.assess(direct=True)
         self.assertEqual(result["inspection_outcome"]["reason"], "native_interrupted_run_unresolved")
         self.assertEqual(result["cleanup"]["status"], "closed")
