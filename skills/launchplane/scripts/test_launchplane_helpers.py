@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import importlib.util
 import io
 import http.client
@@ -6004,6 +6005,147 @@ def test_product_repository_identity_apply_requires_saved_dry_run() -> None:
     assert calls[0]["body"]["mode"] == "dry-run"
 
 
+SERVICE_SETTING_VALUE = '{"synthetic-execution-host":5368709120}'
+
+
+def _service_setting_plan(**overrides: object) -> dict[str, object]:
+    plan: dict[str, object] = {
+        "status": "ok",
+        "actor": "local-operator|director|PRIVATE_SENTINEL",
+        "reason": "Activate the preview floor.",
+        "mode": "dry-run",
+        "key": "LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS",
+        "value_sha256": hashlib.sha256(SERVICE_SETTING_VALUE.encode()).hexdigest(),
+        "plan_digest": "b" * 64,
+        "trace_id": "launchplane_req_service_setting",
+        "runtime_environment": {
+            "action": "updated",
+            "scope": "context",
+            "context": "launchplane",
+            "instance": "",
+            "keys": ["LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS"],
+            "changed_keys": ["LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS"],
+            "unchanged_keys": [],
+            "env_value_count_after": 5,
+            "retired_provider_keys_before": [],
+            "retired_provider_keys_after": [],
+        },
+    }
+    plan.update(overrides)
+    return plan
+
+
+def _service_setting_response(plan: dict[str, object], **top: object) -> dict[str, object]:
+    return {
+        "status": "accepted",
+        "trace_id": "launchplane_req_service_setting",
+        "records": {"runtime_environment": "context:launchplane"},
+        "result": plan,
+        **top,
+    }
+
+
+def test_service_runtime_setting_projection_drops_the_actor_and_fails_closed() -> None:
+    result = _saved_dry_run_output(
+        "service-runtime-setting-dry-run", _service_setting_response(_service_setting_plan())
+    )
+    assert result["summary"]["plan_digest"] == "b" * 64
+    assert result["result"]["runtime_environment"]["changed_keys"] == [
+        "LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS"
+    ]
+    assert "PRIVATE_SENTINEL" not in json.dumps(result)
+    for reason in (f"Reset floors to {SERVICE_SETTING_VALUE}", "r" * 2000):
+        projected = _saved_dry_run_output(
+            "service-runtime-setting-dry-run",
+            _service_setting_response(_service_setting_plan(reason=reason)),
+        )
+        assert SERVICE_SETTING_VALUE not in json.dumps(projected)
+        assert projected["result"]["plan_digest"] == "b" * 64
+    replayed = _saved_dry_run_output(
+        "service-runtime-setting-apply",
+        _service_setting_response(_service_setting_plan(mode="apply"), replayed=True),
+    )
+    assert replayed["result"]["replayed"] is True
+    other_context = {
+        **cast(dict[str, object], _service_setting_plan()["runtime_environment"]),
+        "context": "testing",
+    }
+    for plan, code in (
+        (_service_setting_plan(value="PRIVATE_SENTINEL"), "unsafe_response_shape"),
+        (_service_setting_plan(key="lowercase-key"), "invalid_response"),
+        (_service_setting_plan(plan_digest="not-a-digest"), "invalid_response"),
+        (_service_setting_plan(runtime_environment=other_context), "invalid_response"),
+    ):
+        _expect_error(
+            lambda candidate=plan: write_action._project_service_runtime_setting_plan(candidate), code
+        )
+
+
+def test_service_runtime_setting_apply_requires_the_reviewed_key_and_value() -> None:
+    base = argparse.Namespace(
+        key="LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS",
+        value=SERVICE_SETTING_VALUE,
+        reason="Activate the preview floor.",
+        idempotency_key="",
+    )
+    assert write_action.service_runtime_setting_body(base, mode="dry-run") == {
+        "mode": "dry-run",
+        "key": "LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS",
+        "value": SERVICE_SETTING_VALUE,
+        "reason": "Activate the preview floor.",
+    }
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        evidence_path = Path(directory) / "service-setting-dry-run.json"
+        evidence_path.write_text(
+            json.dumps(
+                _saved_dry_run_output(
+                    "service-runtime-setting-dry-run",
+                    _service_setting_response(_service_setting_plan()),
+                )
+            ),
+            encoding="utf-8",
+        )
+        hold_evidence_path = Path(directory) / "testing-hold-dry-run.json"
+        hold_evidence_path.write_text(
+            json.dumps(
+                _saved_dry_run_output("testing-hold-dry-run", _testing_hold_response(_testing_hold_plan()))
+            ),
+            encoding="utf-8",
+        )
+        apply_args = argparse.Namespace(
+            **{**vars(base), "idempotency_key": "service-setting-1"},
+            reviewed_dry_run=True,
+            expected_plan_digest="b" * 64,
+            dry_run_evidence_file=str(evidence_path),
+        )
+        assert write_action.service_runtime_setting_body(apply_args, mode="apply")[
+            "expected_plan_digest"
+        ] == "b" * 64
+        for overrides, code in (
+            ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
+            ({"idempotency_key": " "}, "idempotency_key_required"),
+            ({"expected_plan_digest": "d" * 64}, "reviewed_dry_run_not_apply_eligible"),
+            ({"value": '{"synthetic-execution-host":1}'}, "reviewed_dry_run_not_apply_eligible"),
+            ({"key": "LAUNCHPLANE_DISCUSSION_REMINDERS"}, "reviewed_dry_run_not_apply_eligible"),
+            ({"dry_run_evidence_file": str(hold_evidence_path)}, "reviewed_dry_run_not_apply_eligible"),
+        ):
+            args = argparse.Namespace(**{**vars(apply_args), **overrides})
+            _expect_error(
+                lambda candidate=args: write_action.service_runtime_setting_body(candidate, mode="apply"), code
+            )
+
+    calls: list[dict[str, Any]] = []
+    with temporary_attribute(write_action, "execute_post", lambda **kwargs: calls.append(kwargs) or 0):
+        assert write_action.main([
+            "service-runtime-setting-dry-run",
+            "--key", "LAUNCHPLANE_PREVIEW_HOST_MEMORY_FLOORS",
+            "--value", SERVICE_SETTING_VALUE,
+            "--reason", "Activate the preview floor.",
+        ]) == 0
+    assert calls[0]["path"] == contract.LOCAL_EXTENSION_ROUTES["service-runtime-setting-apply"]["path"]
+    assert SERVICE_SETTING_VALUE not in json.dumps(calls[0]["request"])
+
+
 def test_product_config_projection_accepts_context_scoped_runtime_environment() -> None:
     result = write_action.summarize_success(
         operation="product-config-dry-run",
@@ -11833,6 +11975,7 @@ def test_runtime_sync_failure_diagnostics_follow_the_current_exchange(phase, fai
     "integration-allowances-apply", "testing-hold-apply",
     "product-repository-identity-apply", "generic-web-deploy-recovery-apply",
     "repository-inventory-apply", "product-expected-config-apply",
+    "service-runtime-setting-apply",
 ])
 @pytest.mark.parametrize("body", [b"null", b"PRIVATE_SENTINEL"])
 def test_simple_apply_unreadable_receipts_keep_projection_recovery(operation, body):
