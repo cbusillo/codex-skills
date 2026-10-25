@@ -641,7 +641,9 @@ sub-issue or a recorded wait
 The refusal names each issue. Close it with the PR, or split every remaining
 step into an open sub-issue that names its next actor, or record the event it
 waits on under
-[issue closing](repo-workflow.md#issue-closing-and-post-merge-proof).
+[issue closing](repo-workflow.md#issue-closing-and-post-merge-proof). A
+recorded wait on a decision for the Director also needs its registered
+question linked, under the [wait rule](#planning-claim).
 
 Post the disposition through the existing comment command:
 
@@ -1091,8 +1093,21 @@ actual person, decision, external-event or prose-only executing-session hold:
 uv run scripts/gh-plan.py wait 123 \
   --waiting-for "Director's device test" \
   --ends-when "Director records acceptance on this issue" \
-  --evidence "Existing test request comment URL"
+  --evidence "Asked in https://github.com/OWNER/REPO/issues/123#issuecomment-456"
 ```
+
+A wait that the comment radar's Director-wait classifier reads as on the
+Director now is refused unless the record links, by full comment URL, either a
+numbered `Director question:` or `Owner question:` registered in the
+Supervisor question queue, or the Director's own comment or a
+`Director decision:` record for a hold the Director set or agreed to. A wait
+whose current step is a timer or someone else's ("Two weeks with no use, then
+the Director retires it") is not on the Director. A linked comment that cannot
+be read is skipped, and the refusal names it. The queue is `[questions] queue` in the private `skill-data/supervisor.toml`
+([question delivery](../../supervisor/references/helpers.md#acknowledged-question-delivery));
+with none configured, a numbered question is enough. The refusal names the
+registration command. On `create`, the issue has no question yet: create it
+without the wait, post and register the question on it, then run `wait`.
 
 Repeat `--waiting-for` and `--ends-when` in matching order when several holds
 remain. To record verified absence or a resolved hold, use
@@ -1173,6 +1188,10 @@ Closeout reads this journal plus recorded transcript claim results, then checks
 only those targets on GitHub. Keep the journal on the claiming host with the
 session, including interrupted attempts; it is discovery evidence, never proof
 of ownership or release. See [claim disposition](../../work-closeout/SKILL.md#claim-disposition).
+
+Claim and reopen-trigger writers JSON-escape `>` inside their hidden comments.
+Readers accept both escaped and legacy JSON; release matching compares decoded
+claim records, so encoding does not change ownership.
 
 Each claim carries a host-local lease, renewed without a GitHub write: by the
 catalog's `PreToolUse` hook on shell commands on both harnesses, on Claude Code

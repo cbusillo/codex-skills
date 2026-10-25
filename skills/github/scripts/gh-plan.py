@@ -45,6 +45,7 @@ from github_plan_body import (
 )
 import github_repository_scope as repository_scope
 import github_close_attention
+import director_question_gate
 import github_comment as github_comment_core
 import github_issue as github_issue_core
 import github_milestone as github_milestone_core
@@ -3677,6 +3678,31 @@ def reviewed_wait(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     return wait, wait_summary(wait)
 
 
+def readable_comment(path: str) -> dict[str, Any] | None:
+    try:
+        return api_json("GET", path)[1]
+    except PlanError as exc:
+        raise_if_cancelled(exc)
+        return None
+
+
+def require_asked_director_wait(repo: str, wait: dict[str, Any], *, creating: bool = False) -> None:
+    try:
+        gap = director_question_gate.director_question_gap(
+            repo, wait, read_comment=readable_comment,
+            read_pages=lambda path: collect_paged_rest_items(path, query={}, bucket="rest_core",
+                                                             step_prefix="director_question")[1])
+    except ValueError as exc:
+        raise PlanError(str(exc)) from exc
+    if gap and creating:
+        gap += (" A new issue has no question yet: create it without --waiting-for, post and register the "
+                "question on it, then run gh-plan.py wait.")
+    if gap:
+        raise PlanError(gap, failure=github_api_core.FailureDetail(
+            cause="director_question_missing", message=gap, retryable=False, fallback_eligible=False,
+            disposition="stop", write_outcome="not_started", failed_step="director_question"))
+
+
 def wait_once(args: argparse.Namespace) -> None:
     """Review a legacy record once, or explicitly maintain a structured wait."""
     repo = default_repo(args.repo)
@@ -3721,6 +3747,7 @@ def wait_once(args: argparse.Namespace) -> None:
                              "The review also covers any prose-only current owner; preserve it as a wait until released."})
         return
     wait, summary = recorded
+    require_asked_director_wait(issue["repo"], wait)
     # A dedicated authored comment works for PRs and contributor issues without
     # replacing anyone's prose. Later status edits do not erase the record.
     actor, gh_cmd, expected_actor = comment_route()
@@ -3767,6 +3794,8 @@ def cmd_create(args: argparse.Namespace) -> None:
             raise PlanError(str(exc)) from exc
     elif getattr(args, "ends_when", None) or getattr(args, "wait_evidence", None):
         raise PlanError("Choose --wait-clear or --waiting-for with --ends-when and --wait-evidence")
+    if wait is not None:
+        require_asked_director_wait(repo, wait, creating=True)
     completed_steps: list[str] = []
     actor, exact = find_existing_plan_issues(repo, title, completed_steps=completed_steps)
     if exact and not args.force:

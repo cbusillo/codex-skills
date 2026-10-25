@@ -421,6 +421,16 @@ uv run skills/supervisor/scripts/oq.py --owner OWNER --decision-author TRUSTED_B
 uv run skills/supervisor/scripts/oq.py --owner OWNER --decision-author TRUSTED_BOT --queue OWNER/CATALOG#QUEUE --ack ORIGINAL_QUESTION_URL --delivery-url PRESENTATION_RECEIPT_URL
 ```
 
+Name the queue once in the private `skill-data/supervisor.toml`, beside
+`[handoff]`. The planning helpers read it to refuse a wait on the Director
+whose question is not registered there
+([wait records](../../github/references/cli-reference.md#planning-claim)):
+
+```toml
+[questions]
+queue = "OWNER/CATALOG#QUEUE"
+```
+
 Pass each trusted decision/registration author's login with `--decision-author`.
 The read-only queue view recovers registered source discussions on takeover and
 also accepts source items from the worker ledger/handoffs. Normal queue reads

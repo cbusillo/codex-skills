@@ -77,7 +77,7 @@ def describe(record: dict) -> str:
 
 
 def marker(record: dict) -> str:
-    return PREFIX + json.dumps(record, sort_keys=True) + " -->"
+    return PREFIX + json.dumps(record, sort_keys=True).replace(">", "\\u003e") + " -->"
 
 
 def current(issue: dict, comments: list[dict], trusted: set[str]) -> dict | None:
