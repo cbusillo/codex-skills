@@ -1156,6 +1156,12 @@ def merged_pull(number: int, merged: dt.datetime | None, *, title: str = "Change
             "updated_at": stamp(merged or SINCE)}
 
 
+def train_batch(module: Any, repo: str, number: int) -> dict[str, Any]:
+    return {**merged_pull(number, NOW, title="Revert wrapper", body=module.github_plan_claim.TRAIN_BATCH_MARKER + " {} -->"),
+            "head": {"ref": module.github_plan_claim.TRAIN_BRANCH_PREFIX + "batch", "repo": {"full_name": repo}},
+            "base": {"repo": {"full_name": repo}}}
+
+
 def summary(module: Any, **overrides: Any) -> dict[str, Any]:
     params: dict[str, Any] = {
         "own_projects": module.own_project_patterns(OWN_DIRECTION), "tracked_issues": {("o/live", 10)},
@@ -1172,11 +1178,14 @@ def test_capacity_counts_merges_inside_the_window_by_rank() -> None:
     result = summary(module, pulls={
         "o/live": [merged_pull(1, SINCE, body="Fixes #10"), merged_pull(2, SINCE - second), merged_pull(3, None)],
         "o/fun": [merged_pull(4, NOW), merged_pull(5, NOW + second), merged_pull(4, NOW)],
-        "o/tools": [merged_pull(6, NOW - second)],
+        "o/tools": [merged_pull(6, NOW - second), train_batch(module, "o/tools", 7)],
+        "o/wrappers": [train_batch(module, "o/wrappers", 8)],
     })
     assert result["merged_by_rank"] == {"milestone": 1, "tooling": 1, "own": 1}
     assert result["merged_total"] == 3
     assert result["by_repository"]["o/live"] == {"merged": 1, "merged_by_rank": {"milestone": 1, "tooling": 0, "own": 0}}
+    assert "o/wrappers" not in result["by_repository"]
+    assert not result["revert_pulls"]
 
 
 def test_capacity_uses_per_pull_links_before_own_and_tooling_fallback() -> None:
@@ -1401,7 +1410,7 @@ def test_capacity_fetch_attribution_and_retired_milestone_window() -> None:
         if path.startswith("repos/o/fun/pulls"):
             return [merged_pull(1, NOW), merged_pull(2, NOW),
                     merged_pull(3, NOW, body="Refs: \n- [tracked](https://github.com/o/live/issues/10)\n- #99"),
-                    merged_pull(4, NOW, body="Doesn't fix o/live#10")]
+                    merged_pull(4, NOW, body="Doesn't fix o/live#10"), train_batch(module, "o/fun", 5)]
         if path == "graphql" and any("REOPENED_EVENT" in arg for arg in args):
             return reopened_page([])
         if path == "graphql":
