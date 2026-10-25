@@ -1178,7 +1178,7 @@ def attached_comment(
         )
     try:
         help_result = subprocess.run(
-            [gh_cmd, "help", kind, "comment"], capture_output=True, text=True, check=False,
+            [gh_cmd, "help", kind, "comment"], capture_output=True, text=True,
         )
     except OSError as error:
         raise _local_error(
@@ -1201,7 +1201,7 @@ def attached_comment(
     receipt_nonce = os.urandom(16).hex()
     try:
         result = subprocess.run(
-            command, input=body, capture_output=True, text=True, check=False,
+            command, input=body, capture_output=True, text=True,
             env={**os.environ, "GH_WITH_ENV_TOKEN_RECEIPT_NONCE": receipt_nonce},
         )
     except OSError as error:

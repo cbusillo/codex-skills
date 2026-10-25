@@ -1403,7 +1403,7 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                         return subprocess.CompletedProcess(command, 1, "", json.dumps(receipt))
                     return subprocess.CompletedProcess(command, 1 if mode == "failed_upload" else 0, url, "upload failed")
 
-                readback = dict(saved)
+                readback: dict[str, Any] = dict(saved)
                 if mode == "bad_readback":
                     readback["body"] = "no uploaded image"
                 if mode in ("wrong_author", "missing_author"):
@@ -1416,7 +1416,7 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                         raise github_comment._local_error(
                             "Read unavailable", operation="github.comment.issue", cause="permission_denied",
                             actor="fixture-automation", expected_actor="fixture-automation",
-                            failed_step="attachment_readback", write_outcome="not_started",
+                            failed_step="attachment_readback",
                         )
                     return success(readback)
 
