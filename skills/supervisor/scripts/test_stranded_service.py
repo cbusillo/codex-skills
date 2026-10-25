@@ -129,6 +129,7 @@ class DailyTests(unittest.TestCase):
         marker = services.reconciliation_marker(self.state / "daily", "stranded")
         argv = [sys.executable, str(daily.__file__), "retry-unsent", "--config", str(self.config)]
         self.assertEqual(subprocess.run(argv, capture_output=True, timeout=5, check=False).returncode, 1)
+        self.assertFalse(any(path.is_dir() for path in self.state.iterdir()))
         source = self.state / "attempt" / "report.md"
         source.parent.mkdir()
         source.write_text(self.payload)
@@ -138,8 +139,10 @@ class DailyTests(unittest.TestCase):
                          {"report": str(self.root / "payload")}):
             marker.write_text(json.dumps({**valid, **override}))
             before = marker.read_bytes()
+            before_paths = set(self.state.iterdir())
             self.assertEqual(subprocess.run(argv, capture_output=True, timeout=5, check=False).returncode, 1)
             self.assertEqual(marker.read_bytes(), before)
+            self.assertEqual(set(self.state.iterdir()), before_paths)
         self.assertFalse((self.root / "received").exists())
 
     def test_scan_error_is_retained_without_sending_and_next_run_can_recover(self):

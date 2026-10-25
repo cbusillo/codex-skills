@@ -837,7 +837,9 @@ cannot fit, the same single message carries counts, the full-list link, and the
 complete original report as a `stranded-work.md` attachment. Every person wait
 is preserved in that attachment. Archive errors prevent Discord delivery.
 Input, summary, archive, and delivery failures have distinct value-free names
-in retained sender stderr.
+in retained sender stderr. The full-list archive still depends on GitHub
+accepting the report as one comment; an archive rejection stops delivery with
+`digest_archive_failed`, preserving the report for reconciliation.
 
 The sender reads the guild and channel from the webhook metadata and posts with
 `wait=true` and mentions disabled. Each confirmed message prints its
@@ -897,8 +899,10 @@ uv run /runtime/catalog/skills/supervisor/scripts/stranded_service.py clear --co
 If confirmed unsent and the marker references today's completed scan, retry that
 retained report without scanning again. This operator command is only for a
 confirmed unsent delivery; an empty stdout alone does not prove that when a
-network request could have succeeded. Inspect sender stderr and reconcile at
-the receiver first. The runner uses its existing lock, reservation and daily
+network request could have succeeded. Input, webhook configuration, summary and
+archive-stage failures precede Discord delivery. An HTTP or response failure,
+`digest_delivery_failed`, a timeout, or an interrupted sender can follow an
+accepted POST and require checking the receiver first. The runner uses its existing lock, reservation and daily
 receipt, retains the original attempt, and records retry output separately:
 
 ```sh

@@ -121,17 +121,20 @@ def run_once(config_path: Path, stopped: threading.Event, retry_unsent: bool = F
         if receipt.exists():
             services.emit("already_delivered", day=day)
             return 0
-        attempt = Path(tempfile.mkdtemp(prefix=f"{day}-", dir=state))
-        report = attempt / "report.md"
-        catalog = Path(config["catalog"])
+        retained_report = b""
         if retry_unsent:
             retained = json.loads(marker.read_text())
             source = Path(retained["report"]).resolve()
             if (retained["day"] != day or retained["scan_exit_code"] not in (0, 3)
                     or source.parent.parent != state.resolve() or source.name != "report.md"):
                 raise ValueError("retained report does not match today's scan")
-            report.write_bytes(source.read_bytes())
+            retained_report = source.read_bytes()
             scan_code = retained["scan_exit_code"]
+        attempt = Path(tempfile.mkdtemp(prefix=f"{day}-", dir=state))
+        report = attempt / "report.md"
+        catalog = Path(config["catalog"])
+        if retry_unsent:
+            report.write_bytes(retained_report)
         else:
             scan = [config["uv"], "run", "--no-project", "--no-cache",
                     str(catalog / "skills/direction/scripts/direction_audit.py"),

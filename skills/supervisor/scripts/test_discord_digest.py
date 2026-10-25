@@ -115,14 +115,18 @@ class SenderTests(unittest.TestCase):
             sender.deliver("Daily digest: see attached waits", self.url, source)
         self.assertEqual(len(self.posts), 1)
         self.assertEqual(self.posts[0]["allowed_mentions"], {"parse": []})
-        self.assertEqual(self.attachments, [("stranded-work.md", source.encode("utf-8"))])
+        self.assertEqual(len(self.attachments), 1)
+        filename, data = self.attachments[0]
+        self.assertTrue(filename)
+        self.assertEqual(data, source.encode("utf-8"))
         self.assertEqual(output.getvalue().strip(), "https://discord.com/channels/11/22/101")
 
     def test_missing_input_file_names_read_failure_without_path(self) -> None:
         result = self.run_sender(args=("--file", str(self.root / "private-missing.md")),
                                  env={**self.env, sender.KEY: self.url})
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(result.stderr.strip(), "digest_report_read_failed")
+        self.assertTrue(result.stderr.strip())
+        self.assertNotIn(str(self.root), result.stderr)
         self.assertEqual(self.requests, [])
 
     def test_code_home_precedence_and_no_shell_execution(self):

@@ -101,8 +101,8 @@ def presentation(report: str, full_list_url: str) -> Presentation:
         lines = [f"Daily digest · {date} · {coverage}"]
         lines.extend(f"{kind}: {count}" for kind, count in sorted(counts.items()))
         waiting = sum(row["person"] for row in rows)
-        lines.extend([f"Waiting on Chris: {waiting} (all waits in attached full report)",
-                      f"[Full list](<{full_list_url}>)"])
+        lines.append(f"Waiting on Chris: {waiting} (all waits in attached full report)" if waiting else "Waiting on Chris: none")
+        lines.append(f"[Full list](<{full_list_url}>)")
         content = "\n".join(lines)
         if units(content) >= 2000:
             raise SummaryTooLarge("digest_summary_too_large") from None
