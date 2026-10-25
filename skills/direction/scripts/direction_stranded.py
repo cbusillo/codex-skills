@@ -45,7 +45,7 @@ def supervisor_settled_questions(comments: list[dict], trusted: set[str]) -> set
     for comment in comments:
         if login(comment) not in trusted:
             continue
-        match = SUPERVISOR_SETTLEMENT.match(question_body(comment))
+        match = SUPERVISOR_SETTLEMENT.match(question_body(comment).partition("\n")[0].replace("*", ""))
         when = stamp(comment.get("created_at"))
         if match and when:
             settlements.setdefault(match[1] or match[2], []).append(when)
@@ -684,6 +684,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
         question_queue = question_queue.casefold()
         queue_repo, queue_number = question_queue.split("#")
         queue = listing(f"repos/{queue_repo}/issues/{queue_number}/comments")
+        related_comments.extend(queue)
         try:
             from skills.supervisor.scripts import question_delivery
 

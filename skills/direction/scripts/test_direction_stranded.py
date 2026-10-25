@@ -231,7 +231,9 @@ class SettledQuestionTests(unittest.TestCase):
     def test_existing_supervisor_settlements_remove_both_digest_question_kinds(self) -> None:
         for body in (
             "Q611 withdrawn by the Supervisor. Existing authority covers this.",
+            "**Q611** withdrawn by the Supervisor. Existing authority covers this.",
             "Supervisor answer to Q611 (this is the Supervisor's brief wording, not a Director decision). Yes: continue.",
+            "Supervisor answer to **Q611**: yes, continue under the existing decision.",
             "Supervisor answer to Q611: this is already decided, so it does not go to Chris.\n\nQ645's Director decision authorizes this.",
         ):
             for open_inventory in (True, False):
@@ -887,6 +889,24 @@ class InventoryTests(unittest.TestCase):
         with patch.dict(sys.modules, {"skills.supervisor.scripts.question_delivery": SimpleNamespace(inventory=inventory, records=lambda *_: [])}):
             result = self.collect(question_queue="test/repo#123")
         self.assertTrue(result["complete"], result)
+
+    def test_queue_settlement_is_applied_to_a_recovered_registered_question(self) -> None:
+        from skills.supervisor.scripts import question_delivery
+
+        url = "https://github.com/test/other/issues/1#issuecomment-100"
+        self.reader.pages[("repos/test/other/issues/1/comments", 1, None)] = [
+            {"id": 100, "html_url": url, "created_at": "2026-10-14T01:00:00Z",
+             "user": {"login": "test"}, "body": "Owner question: Q611. Continue?"}]
+        self.reader.pages[("repos/test/repo/issues/123/comments", 1, None)] = [
+            {"id": 101, "html_url": "https://github.com/test/repo/issues/123#issuecomment-101",
+             "created_at": "2026-10-14T02:00:00Z", "user": {"login": "test"},
+             "body": question_delivery.marker_body("registered", url)},
+            {"id": 102, "html_url": "https://github.com/test/repo/issues/123#issuecomment-102",
+             "created_at": "2026-10-14T03:00:00Z", "user": {"login": "test"},
+             "body": "Q611 withdrawn by the Supervisor. Existing authority covers this."}]
+        result = self.collect(question_queue="test/repo#123")
+        self.assertTrue(result["complete"], result)
+        self.assertFalse(any(row["url"] == url for row in result["findings"]))
 
     def test_transport_quota_or_deadline_stop_is_aggregated_immediately(self):
         for cause in ("quota_reserve", "deadline_exceeded"):
