@@ -554,6 +554,7 @@ class ReleaseTests(ReleaseHarness):
         for mock in (patch.object(release.termination, "datetime", Clock),
                      patch.object(release.termination.socket, "gethostname", return_value="source-host"),
                      self.cutoff_patch,
+                     patch.object(shared, "host_boot_time", return_value=None),
                      patch.object(release.termination, "inventory", return_value=[]),
                      patch.object(release.termination, "run_terminal", return_value=SimpleNamespace(
                          returncode=1, stdout="", stderr="no server running on /fixture/socket"))):
@@ -622,15 +623,28 @@ class ReleaseTests(ReleaseHarness):
                                 release.termination.verify(self.termination_record, "session-b")
                     self.assertEqual(self.f.events.count("post"), posts)
 
-    def test_missing_or_older_boot_keeps_strict_pid_and_tty_checks(self) -> None:
+    def test_missing_or_newer_boot_keeps_strict_pid_and_tty_checks(self) -> None:
         self.termination_setup()
         shared = release.termination.native_helpers()[1]
-        for booted in (None, release.stamp("2026-10-01T23:58:00Z"), release.stamp("2026-10-02T00:00:01Z")):
+        for booted in (None, release.stamp("2026-10-02T00:00:01Z")):
             with (self.subTest(booted=booted), patch.object(shared, "host_boot_time", return_value=booted),
                   patch.object(release.termination, "inventory", return_value=[(12345, "other", "unrelated")]),
                   self.assertRaises(ValueError)):
                 release.termination.verify(self.termination_record, "session-b")
         self.f.assert_no_writes()
+
+    def test_terminal_crash_during_current_uptime_uses_strict_route(self) -> None:
+        self.termination_setup()
+        shared = release.termination.native_helpers()[1]
+        with patch.object(shared, "host_boot_time", return_value=release.stamp("2026-10-01T23:58:00Z")):
+            observed = release.termination.verify(self.termination_record, "session-b")
+            self.assertNotIn("booted_at", observed)
+            self.evidence["body"] = release.termination.body(observed)
+            self.run_release()
+            self.assertTrue(release.receipt_for(self.f.comments[-1]))
+            with (patch.object(release.termination, "inventory", return_value=[(12345, "other", "unrelated")]),
+                  self.assertRaises(ValueError)):
+                release.termination.verify(self.termination_record, "session-b")
 
     def test_termination_tty_reuse_requires_native_cutoff_and_pending_action_veto(self):
         self.termination_setup()

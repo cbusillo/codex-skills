@@ -1975,7 +1975,9 @@ and file modification strictly before boot, with unchanged snapshots during
 verification. This proves the original processes ended even if their PIDs and
 TTYs have been reused. Native resumed-client checks, the new TTY occupant's
 process and harness checks, terminal identity, quiet period and retained-artifact
-guards still apply. Missing boot evidence keeps the ordinary strict route.
+guards still apply. Missing boot evidence or a boot before the source's activity
+keeps the ordinary strict route. This proof applies to crash termination;
+ordinary finished-session and historical-exit routes keep their existing checks.
 
 Verify native task status and any remote peers yourself too: an idle desktop
 thread or an ID-less picker may not yet write a new transcript. The existing
