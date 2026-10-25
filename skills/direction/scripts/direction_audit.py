@@ -1618,7 +1618,8 @@ def capacity_summary(
     for repo in sorted(pulls):
         # A pull request updated mid-read can shift into the next page twice.
         unique = {pull.get("number"): pull for pull in pulls[repo]}
-        merged = [pull for pull in unique.values() if _within(pull.get("merged_at"), since, until, end_exclusive=True)]
+        merged = [pull for pull in unique.values() if not github_plan_claim.is_train_batch(pull)
+                  and _within(pull.get("merged_at"), since, until, end_exclusive=True)]
         if not merged:
             continue
         counts = dict.fromkeys(RANKS, 0)
@@ -1961,7 +1962,8 @@ def fetch_capacity(
                 )
                 truncated += [f"capacity_pulls:{name}"] if cut else []
                 for pull in {row.get("number"): row for row in pulls[name]}.values():
-                    if not _within(pull.get("merged_at"), since, until, end_exclusive=True):
+                    if (github_plan_claim.is_train_batch(pull)
+                            or not _within(pull.get("merged_at"), since, until, end_exclusive=True)):
                         continue
                     legacy_tracked = bool(pull_issue_refs(name, pull) & tracked_issues)
                     if not reporting_rules and legacy_tracked:
