@@ -198,7 +198,7 @@ def recover(worker, receipt, common, write_record, remove_sdk, *, result_path=No
     except Exception as error:
         # Recovery cannot attest absence after any failed operation. Never use
         # an exception-name prefix to infer which resources were removed.
-        code = str(error).replace("qodana_", "native_")
+        code = str(error)
         receipt["recovery_failure"] = code if re.fullmatch(r"native_[a-z_]+", code) else type(error).__name__
         raise LifecycleError("native_recovery_failed") from None
 
