@@ -906,6 +906,7 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
         assert json.loads(refused.stdout)["write_outcome"] == "not_started", refused.stdout
         cases = [
             (args, "ordinary text", {}),
+            (args, github_comment.AGENT_POSTED_LINE + "\r\n\r\nOwner question: Q123. Decide about @outside?", {}),
             ([*args[:-1], str(pdf)], body, {}),
             ([*args, "--edit-last"], body, {}),
             ([*args[:5], "--body", "replacement", *args[5:]], body, {}),

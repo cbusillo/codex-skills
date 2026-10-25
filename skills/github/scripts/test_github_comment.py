@@ -1345,6 +1345,7 @@ def test_attachment_limits_refuse_before_cli() -> None:
             {"attachments": [str(image.with_name("missing.png"))]},
             {"edit_last": True}, {"edit_comment": 1}, {"dedupe_body": True},
             {"body": "Owner question: decide"},
+            {"body": github_comment.AGENT_POSTED_LINE + "\n\nOwner question: Q123. Decide about @outside?"},
         ]
         with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}), patch.object(
             github_comment.subprocess, "run", side_effect=AssertionError("must not call CLI")
@@ -1377,8 +1378,14 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
         url = f"https://github.com/{github_comment.ATTACHMENT_OWNER}/repo/issues/42#issuecomment-1001"
         saved = {**comment_body(1001, github_comment.ATTACHMENT_OWNER), "html_url": url,
                  "body": github_comment.AGENT_POSTED_LINE + "\n\n![proof](https://github.com/user-attachments/assets/example)"}
+        modes = (
+            "success", "old_cli", "failed_upload", "bad_readback", "wrong_author", "missing_author",
+            "canonical_case", "prewrite_refusal", "forged_receipt", "help_failure", "crlf_body", "readback_failure",
+            "attributed_question",
+        )
+        successful_modes = {"success", "canonical_case", "crlf_body", "attributed_question"}
         for kind in ("issue", "pr"):
-            for mode in ("success", "old_cli", "failed_upload", "bad_readback", "wrong_author", "missing_author", "canonical_case", "prewrite_refusal", "forged_receipt", "help_failure"):
+            for mode in modes:
                 calls: list[list[str]] = []
 
                 def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -1401,18 +1408,46 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                     readback["body"] = "no uploaded image"
                 if mode in ("wrong_author", "missing_author"):
                     readback["user"] = {"login": "someone-else" if mode == "wrong_author" else None}
+                if mode == "crlf_body":
+                    readback["body"] = readback["body"].replace("\n", "\r\n")
+
+                def read_api(*_args: Any, **_kwargs: Any) -> github_api.ApiResult:
+                    if mode == "readback_failure":
+                        raise github_comment._local_error(
+                            "Read unavailable", operation="github.comment.issue", cause="permission_denied",
+                            actor="fixture-automation", expected_actor="fixture-automation",
+                            failed_step="attachment_readback", write_outcome="not_started",
+                        )
+                    return success(readback)
+
+                requested = (github_comment.AGENT_POSTED_LINE + "\r\n\r\nproof") if mode == "crlf_body" else "proof"
+                if mode == "attributed_question":
+                    requested = github_comment.AGENT_POSTED_LINE + "\n\nOwner question: Q123. Decide about <code>@outside</code>?"
+                requested_repo = f"{github_comment.ATTACHMENT_OWNER}/repo"
+                if mode == "canonical_case":
+                    requested_repo = requested_repo.upper()
                 with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}), patch.object(
                     github_comment.subprocess, "run", side_effect=run
-                ), patch.object(github_comment, "_call_api", return_value=success(readback)):
+                ), patch.object(github_comment, "_call_api", side_effect=read_api):
                     try:
-                        result = github_comment.comment(kind, 42, "proof", repo=f"{github_comment.ATTACHMENT_OWNER}/repo".upper() if mode == "canonical_case" else f"{github_comment.ATTACHMENT_OWNER}/repo",
-                                                        gh_cmd="fake-gh", attachments=attachments)
+                        result = github_comment.comment(
+                            kind, 42, requested, repo=requested_repo, gh_cmd="fake-gh", attachments=attachments,
+                        )
                     except github_comment.CommentError as error:
-                        assert mode not in ("success", "canonical_case"), error
+                        assert mode not in successful_modes, error
                         assert error.failure.write_outcome == ("not_started" if mode in ("old_cli", "prewrite_refusal", "help_failure") else
                                                               "unknown" if mode in ("failed_upload", "forged_receipt") else "applied")
+                        terminal = github_comment._terminal_failure(
+                            error, "github.comment.issue", expected_actor="fixture-automation",
+                        )
+                        if mode not in ("old_cli", "help_failure"):
+                            assert terminal["actor"] == terminal["expected_actor"] == github_comment.ATTACHMENT_OWNER, terminal
+                        if mode == "readback_failure":
+                            assert terminal["write_outcome"] == "applied", terminal
+                            assert terminal["failed_request"]["actor"] == "fixture-automation", terminal
+                            assert terminal["failed_request"]["write_outcome"] == "not_started", terminal
                     else:
-                        assert mode in ("success", "canonical_case")
+                        assert mode in successful_modes
                         assert result["actor"] == github_comment.ATTACHMENT_OWNER
                         assert result["url"] == url
                 assert len(calls) == (1 if mode in ("old_cli", "help_failure") else 2)

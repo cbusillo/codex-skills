@@ -76,6 +76,16 @@ def live_mentions(body: str, *, notify: frozenset[str] = frozenset()) -> list[st
     return [f"@{login}" for login in live if login.casefold() not in notified]
 
 
+def validate_question_mentions(body: str, repo: str) -> None:
+    if question_id.QUESTION_HEADING.match(body) and (
+        mentions := live_mentions(body, notify=frozenset({repo.split("/")[0]}))
+    ):
+        raise ValueError(
+            f"A question must not notify the people it names ({', '.join(mentions)}); "
+            "write each as <code>@login</code> or drop the @, then post that text"
+        )
+
+
 def effective_expected_actor(expected_actor: Optional[str]) -> Optional[str]:
     if github_identity.active_auth_fallback_allowed():
         return None
@@ -1095,6 +1105,7 @@ def validate_attachment_request(repo: str, body: str, attachments: list[str]) ->
     if body.splitlines()[:1] != [AGENT_POSTED_LINE]:
         raise ValueError(f"Attachment comments must start with: {AGENT_POSTED_LINE}")
     requested_body = body[len(AGENT_POSTED_LINE):].lstrip()
+    validate_question_mentions(requested_body, repo)
     if question_id.QUESTION_HEADING.match(requested_body) and not question_id.heading_id(requested_body):
         raise ValueError("Personal-identity questions need an existing Q ID; allocate with question_id.py next first")
     if not attachments:
@@ -1196,7 +1207,7 @@ def attached_comment(
     except OSError as error:
         raise _local_error(
             str(error), operation=operation, cause="attachment_comment_failed", failed_step="attach_comment",
-            write_outcome="unknown",
+            actor=actor, expected_actor=actor, write_outcome="unknown",
         ) from error
     url = result.stdout.strip()
     match = re.fullmatch(
@@ -1207,7 +1218,7 @@ def attached_comment(
             "GitHub CLI attachment comment failed using the opted-in personal account; no replay or identity fallback. "
             "Only images and videos are supported; PDFs still go by hand. "
             f"Read the thread before retrying. {github_api_core.redact_string(result.stderr.strip())}",
-            operation=operation, cause="attachment_comment_failed", actor=actor,
+            operation=operation, cause="attachment_comment_failed", actor=actor, expected_actor=actor,
             failed_step="attach_comment", write_outcome=attachment_write_outcome(result.stderr, receipt_nonce),
             payload={"url": url if match else None},
         )
@@ -1219,15 +1230,18 @@ def attached_comment(
             retry_summaries=retry_summaries,
         )
     except CommentError as error:
-        error.failure.write_outcome = "applied"
-        error.payload["url"] = url
-        raise
+        raise _local_error(
+            str(error), operation=operation, cause=error.failure.cause,
+            actor=actor, expected_actor=actor, completed_steps=["attach_comment"],
+            failed_step="attachment_readback", write_outcome="applied",
+            payload={"url": url, "failed_request": error.api_result},
+        ) from error
     saved = readback.body
     saved_user = saved.get("user") if isinstance(saved, dict) else None
     saved_author = str(saved_user.get("login") or "") if isinstance(saved_user, dict) else ""
     if (not isinstance(saved, dict) or saved.get("id") != int(match[1])
             or saved.get("html_url") != url or saved_author.casefold() != actor
-            or not str(saved.get("body", "")).startswith(f"{AGENT_POSTED_LINE}\n")
+            or str(saved.get("body", "")).splitlines()[:1] != [AGENT_POSTED_LINE]
             or "https://github.com/user-attachments/assets/" not in str(saved.get("body", ""))):
         raise _local_error(
             "Attachment readback did not confirm the comment, author, agent line and uploaded asset; read the thread before retrying",
@@ -1266,13 +1280,13 @@ def comment(
         if question_id.QUESTION_HEADING.match(body):
             operation = operation or f"github.comment.{kind}"
             repo = resolve_repo(repo, gh_cmd=gh_cmd, operation=operation)
-            if mentions := live_mentions(body, notify=frozenset({repo.split("/")[0]})):
+            try:
+                validate_question_mentions(body, repo)
+            except ValueError as error:
                 raise _local_error(
-                    f"A question must not notify the people it names ({', '.join(mentions)}); "
-                    "write each as <code>@login</code> or drop the @, then post that text",
-                    operation=operation, cause="validation_error",
+                    str(error), operation=operation, cause="validation_error",
                     expected_actor=effective_expected_actor(expected_actor), failed_step="input_validation",
-                )
+                ) from error
         if attachments:
             if (kind not in ("issue", "pr") or number <= 0 or edit_last or edit_comment is not None
                     or expected_body is not None or expected_updated_at is not None or create_if_none or dedupe_body):
