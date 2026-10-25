@@ -1349,9 +1349,10 @@ in a visible iTerm tab with Chris's approval for that session, never under the
 launchd tmux server. Tool discovery alone does not authorize screen use.
 Do not change his logins, Chrome profiles, app settings or privacy grants.
 
-For Codex Computer Use briefs, use `iterm_tab.py new --require-computer-use
---account-provider openai`; the launcher enforces the local route and checks the
-selected home's plugin. `--require-browser` checks `chrome` and `browser` too.
+For Codex Computer Use, use `iterm_tab.py new --require-computer-use` with the
+[app declaration](#opt-in-codex-gui-work); launch validation enforces that route.
+Local Codex plugin setup uses the account-relative marketplace;
+`--require-browser` requires `chrome` and `browser`.
 Remote launches keep
 their endpoint; `--require-browser` makes `--remote unix://` check the selected
 daemon's `plugin/list` for the launch's `-C` directory, refusing inventory

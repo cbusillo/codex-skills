@@ -82,7 +82,46 @@ class GuiLaunchTests(unittest.TestCase):
             + 'env={CODEX_HOME=' + json.dumps(str(self.account)) + '}\n')
         patch.dict(os.environ, {"CODE_HOME": str(code)}).start()
 
+    def test_computer_use_brief_requires_explicit_flag_before_account_selection(self) -> None:
+        for name in ("Computer Use", "computer-use", "COMPUTER USE"):
+            with self.subTest(name=name):
+                self.brief.write_text(f"Use {name} on the named app." + RULES)
+                with (patch.object(account_choice, "select") as select,
+                      self.assertRaisesRegex(ValueError, "--require-computer-use")):
+                    iterm_tab.prepare_launches(self.args)
+                select.assert_not_called()
+
+    def test_shared_rules_copy_does_not_require_computer_use_for_source_work(self) -> None:
+        self.brief.write_text("Fix the launcher.\n" + iterm_tab.brief_rules_block())
+        commands, _ = iterm_tab.prepare_launches(self.args)
+        self.assertNotIn("gui", shlex.split(commands[0])[0])
+        self.assertFalse(self.state.exists())
+
+    def test_computer_use_flag_requires_the_existing_app_scope(self) -> None:
+        self.args.require_computer_use = True
+        self.brief.write_text("Use Computer Use on the named app." + RULES)
+        with (patch.object(account_choice, "select") as select,
+              self.assertRaisesRegex(ValueError, "GUI task:")):
+            iterm_tab.prepare_launches(self.args)
+        select.assert_not_called()
+        self.assertFalse(self.state.exists())
+
+    def test_computer_use_flag_rejects_remote_and_wrong_provider_before_effects(self) -> None:
+        self.args.require_computer_use = True
+        for option in ("--remote unix://", "--remote=unix://", "--remote=wss://example.invalid"):
+            with self.subTest(option=option):
+                self.command.write_text(f"exec codex {option} -C " + shlex.quote(str(self.repo)))
+                with (patch.object(account_choice, "select") as select,
+                      self.assertRaisesRegex(ValueError, "--remote")):
+                    iterm_tab.prepare_launches(self.args)
+                select.assert_not_called()
+        self.args.account_provider = "anthropic"
+        with self.assertRaisesRegex(ValueError, "--account-provider openai"):
+            iterm_tab.prepare_launches(self.args)
+        self.assertFalse(self.state.exists())
+
     def test_desktop_only_gui_does_not_require_browser_plugins(self):
+        self.args.require_computer_use = True
         with patch.object(agent_tools, "codex_plugins", return_value=[{
                 "name": agent_tools.COMPUTER_USE, "marketplaceName": "openai-bundled",
                 "enabled": True, "installed": True}]):
@@ -91,13 +130,23 @@ class GuiLaunchTests(unittest.TestCase):
         gui_launch.release(Path(choices[0]["gui"]["state_path"]), choices[0]["gui"]["token"])
 
     def test_gui_still_refuses_when_computer_use_is_missing(self):
-        with patch.object(agent_tools, "codex_plugins", return_value=[{
-                "name": name, "marketplaceName": "openai-bundled", "enabled": True, "installed": True}
-                for name in agent_tools.CODEX_BROWSER_PLUGINS]):
-            with self.assertRaises(ValueError):
-                iterm_tab.prepare_launches(self.args)
+        self.args.require_computer_use = True
+        for enabled, installed in ((False, True), (True, False)):
+            with self.subTest(enabled=enabled, installed=installed):
+                plugins = [{"name": name, "marketplaceName": "openai-bundled", "enabled": True, "installed": True}
+                           for name in agent_tools.CODEX_BROWSER_PLUGINS]
+                plugins.append({"name": agent_tools.COMPUTER_USE, "marketplaceName": "openai-bundled",
+                                "enabled": enabled, "installed": installed})
+                with (patch.object(agent_tools, "codex_plugins", return_value=plugins),
+                      self.assertRaises(ValueError) as caught):
+                    iterm_tab.prepare_launches(self.args)
+                self.assertIn(agent_tools.COMPUTER_USE, str(caught.exception))
+                self.assertIn(str(self.account), str(caught.exception))
+                self.assertFalse(self.state.exists())
+        self.daemon.assert_not_called()
 
     def test_selected_home_override_reaches_agent_and_receipt_without_config_changes(self):
+        self.args.require_computer_use = True
         fake = self.root / "codex"
         output = self.root / "argv.json"
         fake.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
@@ -314,6 +363,7 @@ class GuiLaunchTests(unittest.TestCase):
         self.assertFalse(self.state.exists())
 
     def test_locked_preflight_refuses_before_daemon_link_and_receipt(self):
+        self.args.require_computer_use = True
         self.unlocked.side_effect = ValueError("locked")
         with self.assertRaises(ValueError):
             iterm_tab.prepare_launches(self.args)
@@ -335,6 +385,9 @@ class GuiLaunchTests(unittest.TestCase):
     def test_single_slot_blocks_pending_and_running_workers_and_live_release(self):
         reservation = gui_launch.reserve("com.example.Task")
         command = gui_launch.stage_command(reservation, "fake-agent")
+        self.args.require_computer_use = True
+        with self.assertRaises(ValueError):
+            iterm_tab.prepare_launches(self.args)
         with self.assertRaises(ValueError):
             gui_launch.reserve("com.example.Other")
 
@@ -354,6 +407,7 @@ class GuiLaunchTests(unittest.TestCase):
         gui_launch.release(self.state, next_reservation["token"])
 
     def test_invalid_gui_requests_and_batches_do_not_reserve(self):
+        self.args.require_computer_use = True
         for brief in ("GUI task: Terminal", "GUI task: com.apple.Terminal",
                       "GUI task: com.example.One\nGUI task: com.example.Two"):
             with self.subTest(brief=brief):

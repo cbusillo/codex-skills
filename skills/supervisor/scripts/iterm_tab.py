@@ -1194,9 +1194,12 @@ def validate_computer_use_launch(args: argparse.Namespace, commands: list[str], 
             task = " ".join(brief.split()).replace(" ".join(brief_rules_block().split()), "")
             if re.search(r"\bcomputer[\s-]+use\b", task, re.IGNORECASE):
                 raise ValueError("Computer Use brief needs iterm_tab.py new --require-computer-use "
-                                 "--account-provider openai; remove --remote from the run file; "
+                                 "--account-provider openai and a first-line GUI task: <app-bundle-id> declaration; "
                                  "the launcher checks computer-use in the selected CODEX_HOME")
             continue
+        if not gui_launch.declared_app(brief):
+            raise ValueError("--require-computer-use needs GUI task: <app-bundle-id> as the brief's first nonblank line; "
+                             "use the named app's bundle ID to keep the existing GUI safety checks")
         words = launch_words(command)
         if Path(words[0]).name != "codex" or "--" in words:
             raise ValueError("--require-computer-use needs a direct local Codex invocation without a prompt")
@@ -1270,7 +1273,7 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
             check_claude_tools(text, choice, getattr(args, "without_browser", False), probes,
                                getattr(args, "require_browser", False))
         command_texts = [prepare_codex_tools(text, choice, getattr(args, "require_browser", False),
-                                            gui=bool(apps[index]) or getattr(args, "require_computer_use", False))
+                                            gui=bool(apps[index]))
                          for index, (text, choice) in enumerate(zip(command_texts, choices))]
         claude_trust.apply(trust_writes)
         if apps[0]:
