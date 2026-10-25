@@ -1968,6 +1968,15 @@ not a credential. A busy reused TTY still refuses when current process identity
 cannot establish that the source is ended. Resolve that identity rather than
 assuming terminal reuse proves inactivity.
 
+After a host reboot, the helper can use the kernel's boot time as the exit
+cutoff when it is no later than the recorded termination bound. Every matching
+native transcript across the supplied account roots must have its last activity
+and file modification strictly before boot, with unchanged snapshots during
+verification. This proves the original processes ended even if their PIDs and
+TTYs have been reused. Native resumed-client checks, the new TTY occupant's
+process and harness checks, terminal identity, quiet period and retained-artifact
+guards still apply. Missing boot evidence keeps the ordinary strict route.
+
 Verify native task status and any remote peers yourself too: an idle desktop
 thread or an ID-less picker may not yet write a new transcript. The existing
 `--confirm-session-ended` attestation includes those unavailable peers.
@@ -1992,7 +2001,8 @@ only when its start time is after termination and the original launch nonce
 is absent; reused pane numbers supply no identity evidence. Retained paths
 must still be worktree roots with their recorded branches preserved. It refuses a running process,
 transcript activity within five minutes, activity after the actual termination,
-a live/uncertain terminal, or a changed record. PID reuse refuses too. It never
+a live/uncertain terminal, or a changed record. PID reuse without verified reboot
+proof refuses too. It never
 stops a process or removes a terminal. The release records the retained
 artifacts; claim release does not clear waits, native blockers or retained-work
 ownership gates. Keep the original termination time across retries.

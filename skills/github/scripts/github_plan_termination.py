@@ -180,6 +180,7 @@ class _TerminationProcess(NamedTuple):
     physical: dict
     cutoff: datetime | None
     roots: frozenset[Path]
+    rebooted_at: datetime | None
 
 
 def _verify_queue_source(record, session, *, latest_pid=None):
@@ -192,8 +193,10 @@ def _verify_queue_source(record, session, *, latest_pid=None):
 
 
 def _physical_exit(process, independent_harness):
+    if process.rebooted_at is not None:
+        _verify_transcripts(process.original, process.roots, before_boot=process.rebooted_at)
     native_helpers()[1].verify_process_exit(process.physical, rows=inventory(), ended_at=process.cutoff,
-                                           independent_harness=independent_harness)
+                                           independent_harness=independent_harness, rebooted_at=process.rebooted_at)
 
 
 def _recheck_queue_process(process):
@@ -222,7 +225,10 @@ def _initial_source(record, session, independent_harness, *, latest_pid=None):
     ended = stamp(record["ended_at"])
     if ended > datetime.now(timezone.utc) or cutoff is not None and cutoff > ended:
         raise ValueError("Native pane exit or termination time is in the future")
-    process = _TerminationProcess(dict(record), physical, cutoff, frozenset(_transcript_roots(record)))
+    roots = frozenset(_transcript_roots(record))
+    booted = shared.host_boot_time()
+    rebooted_at = booted if booted is not None and booted <= ended else None
+    process = _TerminationProcess(dict(record), physical, rebooted_at or cutoff, roots, rebooted_at)
     _physical_exit(process, independent_harness)
     return process
 
@@ -239,7 +245,18 @@ def _verify(record, session, independent_harness):
         import github_plan_termination_history
         return github_plan_termination_history.verify(record, session)
     process = _initial_source(record, session, independent_harness)
-    roots = process.roots
+    last = _verify_transcripts(record, process.roots, before_boot=process.rebooted_at)
+    data = {key: record[key] for key in ("session_id", "pid", "host", "ended_at", "cause", "retained_artifacts", "tmux_session_id")}
+    data.update(checked_at=datetime.now(timezone.utc).isoformat(), last_activity_at=last.isoformat(), terminal_state=terminal_state(record))
+    if process.rebooted_at is not None:
+        data["booted_at"] = process.rebooted_at.isoformat()
+    validate(data, session)
+    _verify_artifacts(data["retained_artifacts"])
+    return data
+
+
+def _verify_transcripts(record: dict, roots: frozenset[Path], *, before_boot: datetime | None = None) -> datetime:
+    session = record["session_id"]
     paths = {Path(record["transcript"]).resolve()}
     for root in roots:
         paths.update(path.resolve() for path in Path(root).rglob(f"*{session}*.jsonl"))
@@ -251,14 +268,12 @@ def _verify(record, session, independent_harness):
         records, mtime_ns, _size, truncated = before
         times = [stamp(row["timestamp"]) for row in records if row.get("timestamp")]
         _transcript_activity(times, mtime_ns, truncated, now, ended)
+        if before_boot is not None and max(*times, datetime.fromtimestamp(mtime_ns / 1e9, timezone.utc)) >= before_boot:
+            raise ValueError("Source transcript has activity since host boot; preserve claims")
         if transcript_snapshot(record, path) != before:
             raise ValueError("Source transcript changed during termination checks")
         last = max(last, max(times)) if last else max(times)
-    data = {key: record[key] for key in ("session_id", "pid", "host", "ended_at", "cause", "retained_artifacts", "tmux_session_id")}
-    data.update(checked_at=now.isoformat(), last_activity_at=last.isoformat(), terminal_state=terminal_state(record))
-    validate(data, session)
-    _verify_artifacts(data["retained_artifacts"])
-    return data
+    return last
 
 
 def _verify_artifacts(artifacts):
@@ -320,7 +335,7 @@ def verify_attestation(record_path, text, session, *, source=None, source_url=No
             raise ValueError("Termination alias no longer matches the exact original claim")
     observed = verify(record, session)
     keys = ((set(observed) | set(attested)) - {"checked_at"} if record.get("exit_record") else
-            {"session_id", "pid", "host", "ended_at", "cause", "retained_artifacts", "tmux_session_id"})
+            {"session_id", "pid", "host", "ended_at", "cause", "retained_artifacts", "tmux_session_id", "booted_at"})
     for key in keys:
         if observed.get(key) != attested.get(key):
             raise ValueError("Termination record no longer matches the attested source identity or retained artifacts")
