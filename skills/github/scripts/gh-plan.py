@@ -4905,26 +4905,20 @@ def discover_direction_work(
     repo_limit = getattr(args, "repo_limit", None) or 100
     issue_limit = getattr(args, "repository_issue_limit", None) or NEXT_DEFAULT_SCAN_LIMIT
     app_configured = github_identity.github_app_config() is not None
-    path = "/installation/repositories" if app_configured else "/user/repos"
     coverage: dict[str, Any] = {
-        "source": path, "owner": repo.split("/")[0], "repository_limit": repo_limit,
+        "owner": repo.split("/")[0], "repository_limit": repo_limit,
         "issue_limit_per_repository": issue_limit, "repositories": [],
         "complete": True, "capacity_complete": True, "inventory_truncated": False,
         "scope": "repositories accessible to the configured actor; owner repositories only",
         "outside_scope": ["repositories not accessible to this actor", "closed issues", "pull requests", "active session inventory"],
     }
     try:
-        _, repositories = collect_paged_rest_items(
-            path, query={} if app_configured else {"affiliation": "owner,collaborator,organization_member"},
-            collection_key="repositories" if app_configured else None,
-            bucket="rest_core", step_prefix="next_repository_inventory", limit=repo_limit + 1,
-        )
+        repositories, repository_coverage = github_work_graph.repository_inventory(collect_paged_rest_items,
+            installed=app_configured, limit=repo_limit)
     except PlanError as exc:
         coverage.update(complete=False, error=next_source_error(exc), inventory_count=None)
         return [], coverage
-    coverage["inventory_count"] = min(len(repositories), repo_limit)
-    coverage["inventory_truncated"] = len(repositories) > repo_limit
-    coverage["complete"] = not coverage["inventory_truncated"]
+    coverage.update(repository_coverage)
     queues: list[list[dict[str, Any]]] = []
     def read_repository(repository: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]], bool, bool]:
         name = repository.get("full_name")
@@ -5261,9 +5255,27 @@ def next_graph_reader(repo: str) -> github_read.GitHubReader | None:
         retry_runtime=NEXT_READS.retry_runtime if NEXT_READS else None)
 
 
+def next_live_breakage(repo: str, args: argparse.Namespace,
+                      reader: github_read.GitHubReader | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    def read(*values: Any, **kwargs: Any) -> tuple[str, list[dict[str, Any]]]:
+        try:
+            return collect_paged_rest_items(*values, **kwargs)
+        except PlanError as exc:
+            raise ValueError(next_source_error(exc)) from exc
+
+    try:
+        return github_work_graph.live_breakage_inventory(read, owner=repo.split("/", 1)[0],
+            installed=github_identity.github_app_config() is not None,
+            repo_limit=getattr(args, "repo_limit", None) or 100, issue_limit=NEXT_PLAN_INVENTORY_LIMIT,
+            include_archived=getattr(args, "include_archived", False), map_reads=NEXT_READS.map if NEXT_READS else None,
+            reader=reader)
+    except (github_read.GitHubReadError, github_read.GitHubReadShapeError, github_next_reads.ReadDeadline) as exc:
+        return [], {"complete": False, "error": next_source_error(plan_read_error(exc))}
+
+
 def direction_next(args: argparse.Namespace, repo: str) -> None:
     assert NEXT_READS is not None
-    NEXT_READS.start_phase("milestone_graph")
+    NEXT_READS.start_phase("direction_context")
     selection_context = next_selection_context(args)
     direction_text = load_direction(repo)
     titles = direction_milestone_titles(direction_text or "")
@@ -5296,16 +5308,44 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             raise PlanError("The selected milestone is not listed in the owner's direction")
         titles = [scope["title"]]
     config = load_config(repo)
-    query = {"labels": config["labels"]["plan"], "state": "open", "sort": "created", "direction": "asc"}
-    if scope:
-        query["milestone"] = scope["number"]
-    actor, issues = collect_paged_rest_items(
-        f"/repos/{repo}/issues", query=query, bucket="rest_core",
-        step_prefix="next_plan_issues", limit=NEXT_PLAN_INVENTORY_LIMIT + 1, issue_only=True,
-    )
-    inventory_truncated = len(issues) > NEXT_PLAN_INVENTORY_LIMIT
-    issues = issues[:NEXT_PLAN_INVENTORY_LIMIT]
-    seeds = {(repo.casefold(), item["number"]): {**item, "repo": repo} for item in issues}
+    graph_readers: dict[str, github_read.GitHubReader | None] = {}
+
+    def graph_reader(issue_repo: str) -> github_read.GitHubReader | None:
+        if issue_repo not in graph_readers:
+            graph_readers[issue_repo] = next_graph_reader(issue_repo)
+        return graph_readers[issue_repo]
+
+    def unread(code: str, message: str, *, action: str = "review_partial_coverage", **evidence: Any) -> NoReturn:
+        summary = github_direction_next.milestone_summary(titles, completed=completed_titles,
+            candidates=[], graph_waits=[], track_next_actions={}, graph_complete=False)
+        if CURRENT_RETRY_FIELDS.get("recommended_next_action") in {None, "none", "inspect_last_failure"}:
+            CURRENT_RETRY_FIELDS["recommended_next_action"] = action
+        raise ClassifiedPlanError(code, message, payload={"milestone_summary": summary,
+            "recommended_next_action": CURRENT_RETRY_FIELDS["recommended_next_action"], **evidence})
+
+    NEXT_READS.start_phase("live_breakage_inventory")
+    incident_inventory, live_breakage_context = next_live_breakage(repo, args, graph_reader(repo)) if scope is None else (
+        [], {"complete": True, "exclusion": "explicit_milestone_scope"})
+    if not live_breakage_context["complete"]:
+        unread("live_breakage_unread", "Live-breakage inventory is unread or partial; priority cannot be established",
+               action=live_breakage_context.get("recommended_next_action", "review_partial_coverage"),
+               live_breakage_context=live_breakage_context)
+    NEXT_READS.start_phase("track_inventory")
+    try:
+        root_inventory = github_work_graph.track_inventory(graph_reader(repo), collect_paged_rest_items, repo,
+            limit=NEXT_PLAN_INVENTORY_LIMIT, milestone=scope["number"] if scope else None)
+    except (github_read.GitHubReadError, github_read.GitHubReadShapeError, github_next_reads.ReadDeadline,
+            ValueError, KeyError, TypeError, AttributeError) as exc:
+        detail = next_source_error(plan_read_error(exc))
+        unread("work_graph_unread", "Track inventory is unread; milestones are unknown", detail=detail)
+    actor, issues, seeds = root_inventory.actor, root_inventory.issues, root_inventory.seeds
+    inventory_truncated = not root_inventory.complete
+    graph_inventory_complete = root_inventory.complete
+    if NEXT_READS.expired:
+        unread("work_graph_unread", "Track graph is unread within the deadline; milestones are unknown")
+    for item in incident_inventory:
+        if "body" in item:
+            seeds.setdefault((item["repo"].casefold(), item["number"]), item)
     client_records: dict[str, dict[str, Any]] = {}
     client_bot_logins = github_identity.configured_bot_logins()
     contexts: dict[str, tuple[dict[str, Any], dict[str, str]]] = {}
@@ -5334,13 +5374,6 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             if exc.failure is not None:
                 raise
             return None
-
-    graph_readers: dict[str, github_read.GitHubReader | None] = {}
-
-    def graph_reader(issue_repo: str) -> github_read.GitHubReader | None:
-        if issue_repo not in graph_readers:
-            graph_readers[issue_repo] = next_graph_reader(issue_repo)
-        return graph_readers[issue_repo]
 
     def load_node(issue_repo: str, number: int) -> dict[str, Any]:
         nonlocal actor
@@ -5499,6 +5532,15 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             annotated_item["detail"] = detail
         return annotated_item
 
+    NEXT_READS.start_phase("live_breakage_paths")
+    early_incidents = github_direction_next.incident_work_paths(
+        [compact_list_issue(row["repo"], row) for row in incident_inventory], read_node=read_node,
+        scan_limit=args.scan_limit, prefetch_nodes=prefetch_nodes if NEXT_READS.workers > 1 else None)
+    if not early_incidents["context"]["complete"]:
+        unread("live_breakage_unread", "Live-breakage priority is incomplete: cyclic or unavailable native paths, or the --scan-limit bound was reached",
+               action="increase_scan_limit" if early_incidents["context"]["truncated"] else "review_live_breakage_paths",
+               live_breakage_context=live_breakage_context, incident_context=early_incidents["context"])
+    NEXT_READS.start_phase("milestone_graph")
     roots = [{
         **compact_list_issue(repo, item), "milestone": next_milestone_context(item),
     } for item in issues]
@@ -5525,6 +5567,9 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     ranked["dependency_context"]["milestone_inventory_truncated"] = milestones_truncated
     graph_coverage = {"complete": ranked["dependency_context"]["complete"], "evaluated": ranked["evaluated"],
                       "truncated": ranked["truncated"], "evaluation_note": graph_evaluation_note}
+    tracking_keys = [(row["repo"].casefold(), row["number"]) for row in ranked["tracking_roots"]]
+    if tracking_keys and not any(key in seeds and "body" in seeds[key] for key in tracking_keys):
+        unread("work_graph_unread", "Track graph nodes are unread; milestones are unknown", graph_context=graph_coverage)
     # Establish useful native-frontier evidence before optional portfolio work.
     NEXT_READS.start_phase("milestone_ownership")
     graph_queue_context = annotate_next_queue(ranked["candidates"], args)
@@ -5532,6 +5577,12 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     next_wait_context([seeds[key] for key in nodes if key in seeds], scan_limit=args.scan_limit * 2,
         inventory_complete=graph_coverage["complete"],
         structured_waits={key: node["item"]["structured_wait"] for key, node in nodes.items() if "structured_wait" in node["item"]})
+
+    def evidence_complete(queue: dict[str, Any], waits: dict[str, Any], focuses: list[dict[str, Any]]) -> bool:
+        return bool(waits.get("complete") and all(item.get("complete") is True
+            for item in queue.get("repositories", {}).values())
+            and all(not (item.get("error") or item.get("truncated")) for item in focuses))
+
     NEXT_READS.start_phase("repository_inventory")
     discoveries: list[dict[str, Any]] = []
     inventory: list[dict[str, Any]] = []
@@ -5686,6 +5737,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         return {**incident_node, "item": incident_item}
     incidents = github_direction_next.incident_work_paths(
         incident_roots, read_node=read_incident_node, scan_limit=args.scan_limit,
+        prefetch_nodes=prefetch_nodes if NEXT_READS.workers > 1 else None,
     )
     incident_keys = {(item["repo"].casefold(), item["number"]) for item in incidents["items"]}
     ranked["excluded"] = [item for item in ranked["excluded"] if not (
@@ -5793,22 +5845,23 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         titles, completed=ranked.get("completed_milestones", []), candidates=ranked["candidates"],
         graph_waits=[*graph_waits, *ranked["waiting"], *ranked["recorded_waits"]], track_next_actions=track_next_actions,
         underway=ranked["underway"], verification_only=ranked["verification_only"], scope_review=ranked["scope_review"],
+        graph_complete=graph_inventory_complete and (not ranked["tracking_roots"] or graph_coverage["complete"]),
     )
     ranked["candidates"] = ranked["candidates"][:args.limit]
     ranked["available_candidates"] = ranked["available_candidates"][:args.limit]
     ranked["graph_context"] = graph_coverage
     ranked["discovery_context"] = discovery
-    milestone_ranking_complete = bool(graph_coverage["complete"] and not unevaluated_milestones and not incomplete_milestone_sources
-                                      and not NEXT_READS.expired and not discovery.get("time_budget_limited"))
-    candidate_coverage_complete &= not NEXT_READS.expired
+    milestone_ranking_complete = bool(graph_coverage["complete"] and graph_inventory_complete
+                                      and not unevaluated_milestones and not incomplete_milestone_sources)
+    candidate_coverage_complete &= (not NEXT_READS.expired and incidents["context"]["complete"]
+        and evidence_complete(queue_context, wait_context, list(focus_contexts.values())))
     if not incidents["context"]["complete"]:
         coverage_warning = ("Incident-path coverage is partial: a native path was truncated, cyclic or unavailable. "
                             "Unseen incident work may outrank milestone and other candidates.")
     elif candidate_coverage_complete:
         coverage_warning = None
     elif milestone_ranking_complete:
-        coverage_warning = ("Milestone ranking is complete; portfolio discovery is partial, so unseen work outside "
-                            "the listed milestones may outrank the non-milestone candidates, never milestone work. "
+        coverage_warning = ("Milestone graph ranking is complete; discovery or availability evidence remains partial. "
                             "milestone_summary names each milestone's work or waits.")
     else:
         coverage_warning = ("Milestone ranking is partial: the milestone graph or a milestone repository was not "
@@ -5828,6 +5881,10 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         discovery.get("repositories", []), scan_limit=args.scan_limit, limit=args.limit,
         inventory_complete=not discovery.get("inventory_truncated", False) and "error" not in discovery,
     ) if scope is None else {"dependabot_context": {"complete": False, "exclusion": "explicit_milestone_scope"}}
+    if scope is None and dependabot.get("dependabot_context", {}).get("complete") is False:
+        if candidate_coverage_complete:
+            ranked["candidate_coverage"]["warning"] = "Dependency-update reads are incomplete; ordinary work evidence is reported separately."
+        candidate_coverage_complete = ranked["candidate_coverage"]["complete"] = False
     # Account for every speculative read before emitting the terminal receipt.
     NEXT_READS.drain(unused_failure=unused_failure)
     payload = {
@@ -5838,6 +5895,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         "focus_context": {"repositories": focus_contexts},
         "inventory_count": len(issues), "inventory_limit": NEXT_PLAN_INVENTORY_LIMIT,
         "performance": NEXT_READS.receipt(),
+        "live_breakage_context": live_breakage_context,
         **ranked,
         **dependabot,
         "notes": [
@@ -5857,6 +5915,13 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         "observed_nodes": sum(future.done() and not future.cancelled() and future.exception() is None for future in issue_observations),
         "unread_nodes": sum(future.done() and not future.cancelled() and future.exception() is not None for future in issue_observations),
         "batch_requests": sum(len(reader.results) for reader in graph_readers.values() if reader is not None)}
+    recommendation = CURRENT_RETRY_FIELDS.get("recommended_next_action")
+    if recommendation in {None, "none", "inspect_last_failure"}:
+        recommendation = "none" if candidate_coverage_complete else "review_partial_coverage"
+        CURRENT_RETRY_FIELDS["recommended_next_action"] = recommendation
+    payload["recommended_next_action"] = recommendation
+    if not incidents["context"]["complete"]:
+        raise ClassifiedPlanError("live_breakage_unread", "Live-breakage native paths or ancestry are incomplete; priority remains unknown", payload=payload)
     emit(payload)
 
 

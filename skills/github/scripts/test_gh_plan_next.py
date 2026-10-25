@@ -36,6 +36,8 @@ def load_module() -> Any:
     spec.loader.exec_module(module)
     module.real_next_graph_reader = module.next_graph_reader
     module.next_graph_reader = lambda _repo: None
+    module.real_next_live_breakage = module.next_live_breakage
+    module.next_live_breakage = lambda *_args: ([], {"complete": True, "source": "offline_fixture"})
     module.real_api_json = module.api_json
     # Every test starts offline; fixtures opt into the API evidence they own.
     module.api_json = Mock(side_effect=module.PlanError("offline fixture record unavailable"))
@@ -788,6 +790,15 @@ def global_fixture(
         emit=captured.update,
     ), patch.multiple(module.github_milestone_core, list_milestones=lambda *_args, **_kwargs: {"milestones": [root["milestone"] for root in roots if root.get("milestone")]}):
         yield module, captured, reads
+
+
+def next_failure(module: Any, args: Any, *, code: str) -> dict[str, Any]:
+    try:
+        module.cmd_next(args)
+    except module.ClassifiedPlanError as exc:
+        assert exc.code == code
+        return exc.payload
+    raise AssertionError("Unread required evidence returned success")
 
 
 def next_args(*, repo: str | None = "someone/direction", scan_limit: int = 50, milestone: str | None = None) -> Any:
@@ -1955,13 +1966,18 @@ def test_live_breakage_marker_preserves_holds_dependencies_waits_and_review() ->
     incidents[2]["_fixture_waiting_for"] = "Director reports the incident's device test"
     edges = {(incidents[1]["repo"], 2): relationships(blocked_by=[global_issue("someone/gate", 99)])}
     with global_fixture([], [], edges, discovered=incidents, clear_waits=[row for row in incidents if row["number"] != 3]) as (module, result, _reads):
-        module.cmd_next(next_args(scan_limit=1))
+        def select() -> None:
+            payload = next_failure(module, next_args(scan_limit=1), code="live_breakage_unread")
+            result.clear()
+            result.update(payload)
+
+        select()
         reviews = {f"{item['repo']}#{item['number']}": reviewed(item) for item in result["candidates"]}
         reviews["someone/p4#4"]["state"] = "underway"
         context = {"issues": reviews, "repository_holds": {"someone/p1": {"reason": "Owner hold", "evidence": ["owner decision"]}}}
         with patch.multiple(module, next_selection_context=lambda _args: context,
                             load_direction=lambda *_: "# Direction\n## Milestones\n"):
-            module.cmd_next(next_args(scan_limit=1))
+            select()
         assert [item["number"] for item in result["available_candidates"]] == [5]
         assert {item["exclusion"] for item in result["excluded"]} >= {"repository_held", "blocked_by_open_dependency", "waiting"}
         assert result["underway"][0]["number"] == 4
@@ -3349,10 +3365,10 @@ def test_incident_paths_stop_whole_parent_waits_and_report_bounds_and_cycles() -
              ("someone/live", 91): relationships(blocked_by=[later]),
              ("someone/live", 92): relationships(blocked_by=[root])}
     with global_fixture([], [leaf, later], edges, discovered=[root]) as (module, result, _reads):
-        module.cmd_next(next_args(scan_limit=1))
+        result.update(next_failure(module, next_args(scan_limit=1), code="live_breakage_unread"))
         assert result["discovery_context"]["incident_context"]["truncated"]
         assert not result["candidate_coverage"]["complete"]
-        module.cmd_next(next_args(scan_limit=3))
+        result.update(next_failure(module, next_args(scan_limit=3), code="live_breakage_unread"))
         assert result["discovery_context"]["incident_context"]["cycles"]
         assert not result["candidate_coverage"]["complete"]
         assert not result["candidates"]
@@ -3585,7 +3601,8 @@ def test_global_reserves_final_evidence_time_without_claiming_a_complete_scan() 
         assert result["discovery_context"]["time_budget_limited"]
         assert result["discovery_context"]["unevaluated_count"] == 1
         assert not result["performance"]["deadline_exhausted"]
-        assert not result["candidate_coverage"]["milestone_ranking_complete"]
+        assert result["candidate_coverage"]["milestone_ranking_complete"]
+        assert result["recommended_next_action"] == "review_partial_coverage"
         assert result["graph_context"]["complete"]
         reported = next(row for row in result["candidates"] if row["number"] == leaf["number"])
         assert reported["queue"]["claim_required"]
