@@ -459,8 +459,7 @@ def tool_outputs(records: list[dict], *, followups: bool = True) -> dict[str, li
     inputs = {identifier: (text, javascript, name, index) for identifier, text, javascript, name, index in tool_details(records)}
     recorded = {identifier: list(blocks) for identifier, blocks in outputs.items()}
     for identifier in recorded:
-        for followup in ordered_polls(identifier, inputs, recorded):
-            outputs[identifier].extend(recorded.get(followup, []))
+        outputs[identifier].extend(json.dumps(poll.result) for poll in ordered_poll_results(identifier, inputs, recorded))
     return outputs
 
 
@@ -583,6 +582,7 @@ def native_results(blocks: list[object]) -> list[dict]:
                     part = {
                         "exit_code": int(header["exit"]) if header["exit"] is not None else None,
                         "session_id": int(header["process"]) if header["process"] is not None else None,
+                        "output": part[header.end():],
                     }
             if isinstance(part, dict):
                 results.append(part)
@@ -635,9 +635,16 @@ def poll_process(text: str, javascript: bool, name: str) -> int | None:
         return None
 
 
-def ordered_polls(identifier: str, inputs: dict, outputs: dict) -> list[str]:
+@dataclass(frozen=True)
+class PollResult:
+    call_id: str
+    process_id: int
+    result: dict
+
+
+def ordered_poll_results(identifier: str, inputs: dict, outputs: dict) -> Iterator[PollResult]:
     if identifier not in inputs:
-        return []
+        return
     text, javascript, name, start = inputs[identifier]
     processes = {
         value["session_id"]
@@ -645,33 +652,32 @@ def ordered_polls(identifier: str, inputs: dict, outputs: dict) -> list[str]:
         if type(value.get("session_id")) is int
     }
     if not processes:
-        return []
-    polls = []
+        return
     for other, (source, code, tool, index) in inputs.items():
         if index <= start:
             continue
         bound = bound_shell_results(source, code, tool, outputs.get(other, []))
-        if any(poll_process(part, code, tool) in processes for part, _ in bound):
-            polls.append(other)
-        if poll_process(source, code, tool) in processes:
-            continue
         bounded, sites = claim_javascript.analyse(source) if code else (True, [])
         launch = (
             code and (not bounded or any(claim_javascript.shell_method(arguments) == "exec_command" for arguments, _ in sites))
         ) or tool == "exec_command"
-        if not launch:
-            continue
-        results = [result for part, result in bound if poll_process(part, code, tool) is None]
-        visible = {value["session_id"] for value in results if type(value.get("session_id")) is int}
-        commands = shell_texts(source, code).commands
-        covered = bool(bound) and len(bound) == len(commands)
-        if (
-            visible & processes
-            or not covered
-            or any(type(value.get("exit_code")) is not int and type(value.get("session_id")) is not int for value in results)
-        ):
-            break
-    return polls
+        if launch and (not bound or len(bound) != len(shell_texts(source, code).commands)):
+            return
+        for part, result in bound:
+            process = poll_process(part, code, tool)
+            if process is not None:
+                if process in processes:
+                    yield PollResult(other, process, result)
+                continue
+            if launch and (
+                (type(result.get("session_id")) is int and result["session_id"] in processes)
+                or (type(result.get("exit_code")) is not int and type(result.get("session_id")) is not int)
+            ):
+                return
+
+
+def ordered_polls(identifier: str, inputs: dict, outputs: dict) -> list[str]:
+    return list(dict.fromkeys(poll.call_id for poll in ordered_poll_results(identifier, inputs, outputs)))
 
 
 def terminal_command(item: dict, text: str) -> bool:
@@ -797,12 +803,9 @@ def completed_sources(
         ended = completed or (type(result.get("exit_code")) is int and not isinstance(result.get("session_id"), int))
         process = result.get("session_id")
         if type(process) is int:
-            for poll in ordered_polls(identifier, inputs, outputs):
-                poll_text, poll_js, poll_name, _ = inputs[poll]
-                for part, value in bound_shell_results(poll_text, poll_js, poll_name, outputs.get(poll, [])):
-                    if poll_process(part, poll_js, poll_name) != process:
-                        continue
-                    ended = ended or (type(value.get("exit_code")) is int and value.get("session_id") is None)
+            for poll in ordered_poll_results(identifier, inputs, outputs):
+                if poll.process_id == process:
+                    ended = ended or (type(poll.result.get("exit_code")) is int and poll.result.get("session_id") is None)
         flags.append(ended)
     return flags
 
