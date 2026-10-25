@@ -1476,14 +1476,17 @@ class ClaimCloseoutTests(unittest.TestCase):
             "ruby -e 'p=ARGV[0];File.write(p,File.read(p).sub(\"before\",\"after\"))' /fixture/pr.md\n"
             "uv run gh-pr.py --repo test/a edit 2 --body-file /fixture/pr.md"
         )
-        for variant in ("complete", "missing_poll", "wrong_process", "missing_result", "projected", "input"):
+        for variant in (
+            "complete", "missing_poll", "wrong_process", "missing_result", "projected", "input",
+            "finish_mixed", "sibling_only", "reused_process", "finish_missing_result",
+        ):
             with self.subTest(variant=variant):
                 self.setUp()
                 poll = 'text(await tools.write_stdin({session_id:41,chars:""}));'
                 if variant == "projected":
                     poll = 'text((await tools.write_stdin({session_id:41,chars:""})).output);'
                 if variant == "input":
-                    poll = 'text(await tools.write_stdin({session_id:41,chars:"uv run gh-plan.py claim 5\\n"}));'
+                    poll = 'text(await tools.write_stdin({session_id:41,chars:"y\\n"}));'
                 results = [{"exit_code": 0, "output": ""}, {"session_id": 17, "output": ""}]
                 if variant == "missing_result":
                     results.pop(0)
@@ -1495,17 +1498,34 @@ class ClaimCloseoutTests(unittest.TestCase):
                 ]
                 if variant != "missing_poll":
                     process = 99 if variant == "wrong_process" else 17
+                    finish_input = f'text(await tools.write_stdin({{session_id:{process},chars:""}}));'
+                    finish_result = native_terminal_result("finish", javascript=True)
+                    if variant in {"finish_mixed", "sibling_only", "reused_process", "finish_missing_result"}:
+                        finish_input += 'text(await tools.exec_command({cmd:"pwd"}));'
+                        poll_result = {"exit_code": 0} if variant == "finish_mixed" else {"session_id": 17}
+                        launch_result = {"session_id": 17} if variant == "reused_process" else {"exit_code": 0}
+                        finish_result["payload"]["output"] = [
+                            {"type": "input_text", "text": json.dumps(result)}
+                            for result in ([launch_result] if variant == "finish_missing_result" else [poll_result, launch_result])
+                        ]
                     rows.extend([
                         {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "finish",
-                                     "input": f'text(await tools.write_stdin({{session_id:{process},chars:""}}));'}},
-                        native_terminal_result("finish", javascript=True),
+                                     "input": finish_input}},
+                        finish_result,
                     ])
+                    if variant == "reused_process":
+                        rows.extend([
+                            {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "reused",
+                                         "input": 'text(await tools.write_stdin({session_id:17,chars:""}));'}},
+                            native_terminal_result("reused", javascript=True),
+                        ])
                 root = self.undecodable_claim_session(*[{**row, "timestamp": SETTLED_AT} for row in rows])
                 self.search_finds(1)
                 report = helper.check([root])
-                self.assertEqual(report["claims_clear"], variant == "complete")
-                self.assertEqual(report["coverage"]["complete"], variant == "complete")
-                if variant == "complete":
+                complete = variant in {"complete", "finish_mixed"}
+                self.assertEqual(report["claims_clear"], complete)
+                self.assertEqual(report["coverage"]["complete"], complete)
+                if complete:
                     self.assertEqual([item["call_id"] for item in report["settled_invocations"]], ["metadata"])
 
     def test_github_search_finds_the_unreleased_claim_an_undecodable_cell_made(self) -> None:

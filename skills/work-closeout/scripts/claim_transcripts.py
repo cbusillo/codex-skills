@@ -535,25 +535,27 @@ def single_javascript_shell(text: str, *, whole_result: bool = False, stdin: boo
     )
 
 
-def literal_javascript_shell_sequence(text: str, *, whole_result: bool = False) -> bool:
+def literal_javascript_shell_parts(text: str, *, whole_result: bool = False) -> list[str] | None:
     tokens = javascript_tokens(text)
+    parts = []
     while tokens:
         if tokens[:2] != ["text", "("]:
-            return False
+            return None
         end = javascript_object_end(tokens[1:])
         if end is None:
-            return False
+            return None
         part = " ".join(tokens[: end + 2])
         if not single_javascript_shell(part, whole_result=whole_result):
             if not single_javascript_shell(part, whole_result=whole_result, stdin=True):
-                return False
+                return None
             bounded, sites = claim_javascript.analyse(part)
             if not bounded or len(sites) != 1 or not claim_javascript.closed_stdin(sites[0][0]):
-                return False
+                return None
+        parts.append(part)
         tokens = tokens[end + 2 :]
         if tokens[:1] == [";"]:
             tokens = tokens[1:]
-    return True
+    return parts
 
 
 def native_results(blocks: list[object]) -> list[dict]:
@@ -587,16 +589,20 @@ def native_results(blocks: list[object]) -> list[dict]:
     return results
 
 
-def whole_shell_result(text: str, javascript: bool, name: str) -> bool:
-    return (
-        (
-            single_javascript_shell(text, whole_result=True)
-            or single_javascript_shell(text, whole_result=True, stdin=True)
-            or literal_javascript_shell_sequence(text, whole_result=True)
-        )
-        if javascript
-        else name in {"exec_command", "write_stdin"}
-    )
+def whole_shell_parts(text: str, javascript: bool, name: str) -> list[str] | None:
+    if not javascript:
+        return [text] if name in {"exec_command", "write_stdin"} else None
+    if single_javascript_shell(text, whole_result=True) or single_javascript_shell(text, whole_result=True, stdin=True):
+        return [text]
+    return literal_javascript_shell_parts(text, whole_result=True)
+
+
+def bound_shell_results(text: str, javascript: bool, name: str, blocks: list[object]) -> list[tuple[str, dict]]:
+    parts = whole_shell_parts(text, javascript, name)
+    results = native_results(blocks)
+    if parts is None or len(parts) != len(results):
+        return []
+    return list(zip(parts, results, strict=True))
 
 
 def poll_process(text: str, javascript: bool, name: str) -> int | None:
@@ -633,10 +639,10 @@ def ordered_polls(identifier: str, inputs: dict, outputs: dict) -> list[str]:
     if identifier not in inputs:
         return []
     text, javascript, name, start = inputs[identifier]
-    if not whole_shell_result(text, javascript, name):
-        return []
     processes = {
-        value["session_id"] for value in native_results(outputs.get(identifier, [])) if type(value.get("session_id")) is int
+        value["session_id"]
+        for _, value in bound_shell_results(text, javascript, name, outputs.get(identifier, []))
+        if type(value.get("session_id")) is int
     }
     if not processes:
         return []
@@ -644,8 +650,10 @@ def ordered_polls(identifier: str, inputs: dict, outputs: dict) -> list[str]:
     for other, (source, code, tool, index) in inputs.items():
         if index <= start:
             continue
-        if poll_process(source, code, tool) in processes:
+        bound = bound_shell_results(source, code, tool, outputs.get(other, []))
+        if any(poll_process(part, code, tool) in processes for part, _ in bound):
             polls.append(other)
+        if poll_process(source, code, tool) in processes:
             continue
         bounded, sites = claim_javascript.analyse(source) if code else (True, [])
         launch = (
@@ -653,10 +661,10 @@ def ordered_polls(identifier: str, inputs: dict, outputs: dict) -> list[str]:
         ) or tool == "exec_command"
         if not launch:
             continue
-        results = native_results(outputs.get(other, [])) if whole_shell_result(source, code, tool) else []
+        results = [result for part, result in bound if poll_process(part, code, tool) is None]
         visible = {value["session_id"] for value in results if type(value.get("session_id")) is int}
         commands = shell_texts(source, code).commands
-        covered = bool(results) and len(results) == len(commands)
+        covered = bool(bound) and len(bound) == len(commands)
         if (
             visible & processes
             or not covered
@@ -781,25 +789,20 @@ def completed_sources(
         ended = bool(own) and not background
         return [ended] * len(sources.commands)
     window = window_completions(records, inputs, identifier, sources, session)
-    if not whole_shell_result(text, javascript, name):
-        return window
-    results = native_results(own)
-    if len(results) != len(sources.commands):
+    bound = bound_shell_results(text, javascript, name, own)
+    if len(bound) != len(sources.commands):
         return window
     flags = []
-    for source, result, completed in zip(sources.commands, results, window, strict=True):
+    for (_, result), completed in zip(bound, window, strict=True):
         ended = completed or (type(result.get("exit_code")) is int and not isinstance(result.get("session_id"), int))
         process = result.get("session_id")
         if type(process) is int:
             for poll in ordered_polls(identifier, inputs, outputs):
                 poll_text, poll_js, poll_name, _ = inputs[poll]
-                if poll_process(poll_text, poll_js, poll_name) == process and (
-                    not poll_js or single_javascript_shell(poll_text, whole_result=True, stdin=True)
-                ):
-                    ended = ended or any(
-                        type(value.get("exit_code")) is int and value.get("session_id") is None
-                        for value in native_results(outputs.get(poll, []))
-                    )
+                for part, value in bound_shell_results(poll_text, poll_js, poll_name, outputs.get(poll, [])):
+                    if poll_process(part, poll_js, poll_name) != process:
+                        continue
+                    ended = ended or (type(value.get("exit_code")) is int and value.get("session_id") is None)
         flags.append(ended)
     return flags
 
@@ -815,7 +818,7 @@ def native_javascript_parse_failure(text: str, blocks: list[object]) -> bool:
     if len(messages) != 2 or messages[0] != "Script failed\nWall time 0.0 seconds\nOutput:\n":
         return False
     if messages[1] != "Script error:\nSyntaxError: Invalid or unexpected token" or not (
-        single_javascript_shell(text) or literal_javascript_shell_sequence(text)
+        single_javascript_shell(text) or literal_javascript_shell_parts(text) is not None
     ):
         return False
     return any(
