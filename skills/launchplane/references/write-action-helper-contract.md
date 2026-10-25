@@ -2455,7 +2455,10 @@ repository branch (`unpaired_enrollment_arguments`), a repository branch is
 already enrolled (`repository_already_enrolled`), the template branch is not
 (`template_not_enrolled`), or the template uses any credential source besides
 a GitHub App (`template_not_github_app`). The service's review still decides
-whether the App installation and required checks support it.
+whether the App installation and required checks support it. A 422 response
+with `merge_train_target_not_ready` returns local repair advice for the standard
+ruleset pair, required CI checks and policy enqueue label before proposing again;
+it does not expose the service's error prose or grant permission to apply changes.
 
 On a timeout, HTTP 5xx or response-verification failure, retain the same envelope and
 source event for reconciliation/replay. Never substitute a new identity or a new

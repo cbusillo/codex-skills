@@ -11982,13 +11982,15 @@ def _active_merge_train_policy_read(trusted: dict[str, list[int]]) -> dict[str, 
 
 
 def _run_merge_train_proposal(
-    argv: list[str], read_payload: dict[str, object]
+    argv: list[str], read_payload: dict[str, object], *, post_error: urllib.error.HTTPError | None = None,
 ) -> tuple[int, dict[str, Any], list[dict[str, object]]]:
     posted: list[dict[str, object]] = []
 
     def post(**kwargs: Any) -> dict[str, object]:
         assert kwargs["path"] == contract.helper_command_path("privileged-policy-propose")
         posted.append(kwargs["body"])
+        if post_error is not None:
+            raise post_error
         return {
             "status": "ok",
             "trace_id": "launchplane_req_" + "b" * 32,
@@ -12150,6 +12152,25 @@ def test_enrollment_proposal_adds_a_copy_of_the_template_for_the_new_repository(
     assert targets[2] == expected
     assert output["request"]["changed_target_count"] == 1
     assert "private-key-context" not in json.dumps(output)
+
+
+def test_enrollment_target_not_ready_returns_repair_advice_without_service_prose() -> None:
+    response = {
+        "trace_id": "launchplane_req_enrollment",
+        "error": {"code": "merge_train_target_not_ready", "message": "Bearer private-fixture-value"},
+    }
+    refusal = urllib.error.HTTPError(
+        "https://launchplane.example.invalid/proposal", 422, "Rejected", Message(),
+        io.BytesIO(json.dumps(response).encode()),
+    )
+    exit_code, output, _posted = _run_merge_train_proposal(
+        _enrollment_argv("owner/new", "owner/alpha"), _enrollment_policy_read(), post_error=refusal,
+    )
+    assert exit_code == 1
+    assert output["summary"]["error_code"] == response["error"]["code"]
+    assert output["summary"]["recommendation"] == write_action.http_error_recommendation(response["error"]["code"])
+    assert output["summary"]["recommendation"] != write_action.http_error_recommendation(output["status"])
+    assert "private-fixture-value" not in json.dumps(output)
 
 
 def test_enrollment_proposal_enrolls_several_branches_from_one_template_in_one_record() -> None:
