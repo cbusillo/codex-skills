@@ -63,8 +63,8 @@ class DirectorQuestionGateTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     @staticmethod
-    def read_comment(path: str) -> dict[str, Any] | None:
-        return COMMENTS.get(int(path.rsplit("/", 1)[1]))
+    def read_comment(path: str) -> Any:
+        return COMMENTS.get(int(path.rsplit("/", 1)[1]), "<html>gateway error</html>" if path.endswith("/500") else None)
 
     def read_pages(self, path: str) -> list[dict[str, Any]]:
         self.assertEqual(path, "/repos/director/catalog/issues/9/comments")
@@ -105,9 +105,10 @@ class DirectorQuestionGateTests(unittest.TestCase):
                 self.assertIsNotNone(self.gap(wait(waiting_for)))
 
     def test_unreadable_link_is_skipped_and_named_when_nothing_else_qualifies(self) -> None:
-        missing = f"{ISSUE}#issuecomment-404"
-        self.assertIsNone(self.gap(wait("Chris approves the live install", f"{missing} then {link(11)}")))
-        self.assertIn(missing, self.refusal(wait("Chris approves the live install", missing)))
+        for missing in (f"{ISSUE}#issuecomment-404", f"{ISSUE}#issuecomment-500"):
+            with self.subTest(missing=missing):
+                self.assertIsNone(self.gap(wait("Chris approves the live install", f"{missing} then {link(11)}")))
+                self.assertIn(missing, self.refusal(wait("Chris approves the live install", missing)))
 
     def test_timers_and_other_peoples_steps_are_not_on_the_director(self) -> None:
         for waiting_for in ("Two weeks with no use of the token, then Chris retires it",

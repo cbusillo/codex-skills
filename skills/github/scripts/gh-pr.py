@@ -739,7 +739,9 @@ def remaining_steps_gap(reader: github_read_core.GitHubReader, repo: str, number
 def readable_comment(reader: github_read_core.GitHubReader, path: str) -> dict[str, Any] | None:
     try:
         return reader.get_json(path, step="director_question")
-    except github_read_core.GitHubReadError:
+    except github_read_core.GitHubReadError as exc:
+        if exc.result.failure is not None and exc.result.failure.cause == "cancelled":
+            raise
         return None
 
 

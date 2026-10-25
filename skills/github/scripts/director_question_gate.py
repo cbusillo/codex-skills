@@ -115,7 +115,7 @@ def unasked_message(owner: str, director_waits: list[str], queue: str | None, un
             + unread)
 
 
-def director_question_gap(repo: str, wait: dict[str, Any], *, read_comment: Callable[[str], dict[str, Any] | None],
+def director_question_gap(repo: str, wait: dict[str, Any], *, read_comment: Callable[[str], Any],
                           read_pages: Callable[[str], list[dict[str, Any]]]) -> str | None:
     owner = repo.split("/")[0]
     director_waits = waits_on_director(owner, wait) if wait["state"] == "waiting" else []
@@ -127,7 +127,7 @@ def director_question_gap(repo: str, wait: dict[str, Any], *, read_comment: Call
     unreadable = []
     for url, comment_repo, comment_id in comment_links(wait):
         comment = read_comment(f"/repos/{comment_repo}/issues/comments/{comment_id}")
-        if comment is None:
+        if not isinstance(comment, dict):
             unreadable.append(url)
             continue
         if is_director_record(comment, owner, trusted):

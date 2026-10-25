@@ -840,6 +840,28 @@ class ReadyTests(unittest.TestCase):
                     else:
                         self.post()
 
+    def test_cancelled_question_read_stops_ready_instead_of_refusing(self):
+        self.link_open_issue()
+        self.reader.issues[7]["user"] = {"login": "example"}
+        record = helper.github_plan_wait.reviewed(evidence=f"https://github.com/{REPO}/issues/7#issuecomment-55",
+                                                  waiting_for="Director approves the live install", ends_when="Director replies")
+        self.reader.issues[7]["body"] = helper.github_plan_wait.marker(record)
+        failure = helper.github_api_core.FailureDetail(cause="cancelled", message="cancelled", retryable=False,
+                                                       fallback_eligible=False, disposition="stop")
+        cancelled = GitHubReadError("cancelled", result=ApiResult(ok=False, status=0, body=None, failure=failure), diagnostics={})
+        read = self.reader.get_json
+
+        def cancel_comment_reads(path, **kwargs):
+            if "/issues/comments/" in path:
+                raise cancelled
+            return read(path, **kwargs)
+
+        with patch.object(self.reader, "get_json", side_effect=cancel_comment_reads), \
+                patch.object(helper.director_question_gate, "configured_queue", return_value=None):
+            message = self.refuse()
+        self.assertIn("unavailable", message)
+        self.assertNotIn("Director question:", message)
+
     def test_closed_issues_pull_requests_and_other_owners_need_no_follow_up(self):
         self.reader.pr["body"] = "Refs #7, #8 and other/tool#9"
         self.reader.issues[7] = {"number": 7, "state": "closed", "body": ""}

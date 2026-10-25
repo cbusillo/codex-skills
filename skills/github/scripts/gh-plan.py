@@ -3681,7 +3681,8 @@ def reviewed_wait(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
 def readable_comment(path: str) -> dict[str, Any] | None:
     try:
         return api_json("GET", path)[1]
-    except PlanError:
+    except PlanError as exc:
+        raise_if_cancelled(exc)
         return None
 
 
