@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -488,10 +489,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--transcript", action="append", required=True, type=Path, help="Native transcript for each --session, in the same order"
     )
-    parser.add_argument("--termination-record", type=Path, help="Original source-host record for verified reboot recovery")
+    parser.add_argument("--termination-record", type=Path, help="Original Codex source-host record for verified reboot recovery")
     parser.add_argument("--confirm-session-ended", action="store_true", help="Attest native task and unavailable peer closure")
+    parser.add_argument("--read-timeout", type=float, default=600, help="Bounded aggregate claim/source read budget in seconds")
     args = parser.parse_args(argv)
     try:
+        if not math.isfinite(args.read_timeout) or args.read_timeout <= 0:
+            raise ValueError("read timeout must be a positive finite number of seconds")
         if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", owner) for owner in args.owner):
             raise ValueError("owner must be a GitHub login")
         if any(not sessions.REPO.fullmatch(repo) for repo in args.repository):
@@ -511,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
         if record_bytes is not None:
             import github_plan_native
             record = github_plan_native._cancel_selected(args.termination_record, args.session[0])
-        report = check(entries, owners=args.owner, termination_record=record)
+        report = check(entries, owners=args.owner, termination_record=record, read_timeout=args.read_timeout)
         if args.termination_record and args.termination_record.read_bytes() != record_bytes:
             raise ValueError("termination record changed during claim readback")
         report["checked_at"] = time.time()

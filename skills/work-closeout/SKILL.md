@@ -358,6 +358,10 @@ conditional. This reads evidence only and never releases claims or edits the led
 Run this recovery before retiring retained worktrees: the original record's
 artifacts remain part of termination proof. Missing or changed artifacts keep
 the result conditional and must be reconciled through their owning handoff.
+For large historical lineages, `--read-timeout SECONDS` selects a positive finite
+aggregate read budget (ten minutes by default). The same deadline covers
+canonical reads and all source proofs/rechecks; it never resets per child or
+pass. Idle-observation and native RPC limits remain unchanged.
 
 The search does not prove absence. It relies on GitHub's index catching up
 within those 10 minutes, and it cannot see a claim an undecodable command made

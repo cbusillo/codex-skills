@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta, timezone
+from contextlib import nullcontext
 import json
 from pathlib import Path
 import re
@@ -254,7 +255,8 @@ def _transcript_roots(record):
     if not isinstance(roots, list) or not roots or not all(isinstance(root, str) and Path(root).is_dir() for root in roots):
         raise ValueError("Supply every known source-account transcript root on the source host")
     from github_plan_sessions import observation_homes
-    configured = {home / name for home in observation_homes() for name in ("sessions", "archived_sessions")}
+    configured = ({home / name for home in observation_homes() for name in ("sessions", "archived_sessions")}
+                  if record["harness"] == "codex" else set())
     return {Path(root).resolve(strict=True) for root in [*roots, *(path for path in configured if path.is_dir())]}
 
 
@@ -266,27 +268,30 @@ def _verify(record, session, independent_harness, *, deadline: float | None = No
         return github_plan_termination_history.verify(record, session)
     import github_plan_closure
     process = _initial_source(record, session)
-    action = github_plan_closure.lease_state(session)
-    if process.rebooted_at is not None:
-        require_preboot_action(action, process.rebooted_at)
-    if process.rebooted_at is not None and action.get("action_pending"):
-        import asyncio
-        import github_plan_native
-        asyncio.run(github_plan_native.prove_crash_end(record, deadline=deadline, process=process))
-    _physical_exit(process, lambda pid, argv: (process.rebooted_at is not None or not github_plan_closure.action_pending(session))
-                   and independent_harness(pid, argv))
-    activity = _verify_transcripts(record, process.roots, before_boot=process.rebooted_at)
-    data = {key: record[key] for key in ("session_id", "pid", "host", "ended_at", "cause", "retained_artifacts", "tmux_session_id")}
-    data.update(checked_at=datetime.now(timezone.utc).isoformat(), last_activity_at=activity.last.isoformat(), terminal_state=terminal_state(record))
-    if process.rebooted_at is not None:
-        data["booted_at"] = process.rebooted_at.isoformat()
-    validate(data, session)
-    _verify_artifacts(data["retained_artifacts"])
-    if process.rebooted_at is not None and github_plan_closure.lease_state(session) != action:
-        raise ValueError("source native action changed during termination proof")
-    if deadline is not None and time.monotonic() > deadline:
-        raise TimeoutError("termination verification exceeded its deadline")
-    return data
+    with (github_plan_closure.ownership(session) if process.rebooted_at is not None else nullcontext(False)) as held:
+        action = github_plan_closure.lease_state(session)
+        if process.rebooted_at is not None and not held and action:
+            raise ValueError("source ownership appeared during termination proof")
+        if process.rebooted_at is not None:
+            require_preboot_action(action, process.rebooted_at)
+        if process.rebooted_at is not None and action.get("action_pending"):
+            import asyncio
+            import github_plan_native
+            asyncio.run(github_plan_native.prove_crash_end(record, deadline=deadline, process=process))
+        _physical_exit(process, lambda pid, argv: (process.rebooted_at is not None or not github_plan_closure.action_pending(session))
+                       and independent_harness(pid, argv))
+        activity = _verify_transcripts(record, process.roots, before_boot=process.rebooted_at)
+        data = {key: record[key] for key in ("session_id", "pid", "host", "ended_at", "cause", "retained_artifacts", "tmux_session_id")}
+        data.update(checked_at=datetime.now(timezone.utc).isoformat(), last_activity_at=activity.last.isoformat(), terminal_state=terminal_state(record))
+        if process.rebooted_at is not None:
+            data["booted_at"] = process.rebooted_at.isoformat()
+        validate(data, session)
+        _verify_artifacts(data["retained_artifacts"])
+        if process.rebooted_at is not None and not held and github_plan_closure.lease_state(session) != action:
+            raise ValueError("source native action changed during termination proof")
+        if deadline is not None and time.monotonic() > deadline:
+            raise TimeoutError("termination verification exceeded its deadline")
+        return data
 
 
 class _TranscriptActivity(NamedTuple):

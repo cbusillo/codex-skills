@@ -255,13 +255,21 @@ class NativeQueueTests(unittest.TestCase):
         termination.native_helpers()
         import claim_history
         for variant in ("clear", "loaded", "queued", "no_boot", "changed", "new_action", "fork", "foreign_fork",
-                        "cross_home", "outside", "wrong_path", "missing_home"):
+                        "cross_home", "outside", "wrong_path", "missing_home", "supplied", "wrong_process", "supplied_new_pid"):
             with self.subTest(variant=variant), ReceiptFixture(str(uuid.uuid4())) as f:
                 other, _ledger, _selected, _retained, deleted = self.cancel_setup(f)
                 f.home_queues = {str(f.home): [], str(other): []}
                 owned = dict(f.entry)
                 if variant == "missing_home":
                     owned.pop("codex_home")
+                if variant == "supplied_new_pid":
+                    for key in ("launch_pid", "launch_generation", "launch_started_at"):
+                        owned.pop(key)
+                    saved_rows = CLOSURE.log_rows()
+                    for row in saved_rows:
+                        if row.get("session_id") == f.session:
+                            row["launch_pid"] = 456
+                    CLOSURE.replace_rows(saved_rows)
                 if variant in {"cross_home", "outside", "wrong_path"}:
                     primary = other / "sessions" / f.transcript.name
                     owned["transcript"] = str(primary)
@@ -301,6 +309,13 @@ class NativeQueueTests(unittest.TestCase):
                                           roots=frozenset({f.transcript.parent}))
                 if variant == "new_action":
                     process.rebooted_at -= timedelta(minutes=1)
+                supplied = None
+                if variant in {"supplied", "wrong_process", "supplied_new_pid"}:
+                    supplied = termination._TerminationProcess(
+                        {**owned, **({"session_id": "foreign-native"} if variant == "wrong_process" else {})},
+                        dict(owned), process.rebooted_at, process.roots, process.rebooted_at)
+                    if variant == "supplied_new_pid":
+                        process.rebooted_at = None
                 original_files = NATIVE._source_files
                 original_connection = NATIVE.connection
                 connections = 0
@@ -326,11 +341,11 @@ class NativeQueueTests(unittest.TestCase):
                         patch.object(termination, "_recheck_queue_process"), patch.object(NATIVE, "_source_files", side_effect=files), \
                         patch.object(NATIVE, "connection", side_effect=short_connection), \
                         patch.object(claim_history, "root_context", return_value={"parent": "native-parent", "ancestors": ("native-parent",)}):
-                    if variant in {"clear", "fork", "cross_home", "missing_home"}:
-                        asyncio.run(NATIVE.prove_crash_end(owned, deadline=proof_deadline))
+                    if variant in {"clear", "fork", "cross_home", "missing_home", "supplied"}:
+                        asyncio.run(NATIVE.prove_crash_end(owned, deadline=proof_deadline, process=supplied))
                     else:
                         with self.assertRaises(ValueError):
-                            asyncio.run(NATIVE.prove_crash_end(owned, deadline=proof_deadline))
+                            asyncio.run(NATIVE.prove_crash_end(owned, deadline=proof_deadline, process=supplied))
                 self.assertTrue(all(deadline == proof_deadline for deadline in observed_deadlines))
                 self.assertEqual({path: path.read_bytes() for path in before}, before)
                 self.assertTrue(CLOSURE.action_pending(f.session))

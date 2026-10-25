@@ -14,6 +14,7 @@ import re
 import tempfile
 import subprocess
 from datetime import datetime, timedelta, timezone
+from contextlib import nullcontext
 from types import SimpleNamespace
 from pathlib import Path
 from argparse import Namespace
@@ -707,6 +708,7 @@ class ReleaseTests(ReleaseHarness):
         shared = release.termination.native_helpers()[1]
         boot = release.stamp(self.termination_record["ended_at"])
         with patch.object(shared, "host_boot_time", return_value=boot), \
+                patch.object(github_plan_closure, "ownership", return_value=nullcontext(True)), \
                 patch.object(github_plan_closure, "lease_state", return_value={"action_pending": True, "action_at": boot.isoformat()}):
             with self.assertRaises(ValueError):
                 release.termination.verify(self.termination_record, "session-b")
@@ -719,6 +721,7 @@ class ReleaseTests(ReleaseHarness):
         action = {"action_pending": True, "action_at": (boot - timedelta(minutes=1)).isoformat()}
         for blocked in (False, True):
             with self.subTest(blocked=blocked), patch.object(shared, "host_boot_time", return_value=boot), \
+                    patch.object(github_plan_closure, "ownership", return_value=nullcontext(True)), \
                     patch.object(github_plan_closure, "lease_state", return_value=action), \
                     patch.object(github_plan_native, "prove_crash_end", **(
                         {"side_effect": ValueError("native source is queued")} if blocked else {"return_value": None})):
@@ -727,6 +730,35 @@ class ReleaseTests(ReleaseHarness):
                         release.termination.verify(self.termination_record, "session-b")
                 else:
                     release.termination.verify(self.termination_record, "session-b")
+
+    def test_reboot_source_lease_covers_the_checks_after_native_proof_without_creating_missing_state(self) -> None:
+        import sys
+        import github_plan_native
+        transcript = self.termination_setup()
+        shared = release.termination.native_helpers()[1]
+        boot = release.stamp(self.termination_record["ended_at"])
+        lease = transcript.parent / "owned.lock"
+        action = {"session_id": "session-b", "action_pending": True, "action_kind": "opaque",
+                  "action_at": (boot - timedelta(minutes=1)).isoformat(), "action_homes": {"known": [], "unscoped": True}}
+        lease.write_text(json.dumps(action))
+        lease.chmod(0o600)
+        before = lease.read_bytes()
+        original_artifacts = release.termination._verify_artifacts
+        def checked(artifacts: list[dict]) -> None:
+            probe = "import fcntl,sys\nwith open(sys.argv[1]) as stream:\n try: fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)\n except BlockingIOError: sys.exit(0)\n sys.exit(1)\n"
+            self.assertEqual(subprocess.run([sys.executable, "-c", probe, str(lease)], check=False, timeout=5).returncode, 0)
+            original_artifacts(artifacts)
+        with patch.object(shared, "host_boot_time", return_value=boot), \
+                patch.object(github_plan_closure, "lease_path", return_value=lease), \
+                patch.object(github_plan_native, "prove_crash_end", return_value=None):
+            with patch.object(release.termination, "_verify_artifacts", side_effect=checked):
+                release.termination.verify(self.termination_record, "session-b")
+            self.assertEqual(lease.read_bytes(), before)
+            lease.unlink()
+            release.termination.verify(self.termination_record, "session-b")
+            self.assertFalse(lease.exists())
+            with patch.object(github_plan_closure, "lease_state", return_value=action), self.assertRaises(ValueError):
+                release.termination.verify(self.termination_record, "session-b")
 
     def test_termination_tty_reuse_requires_native_cutoff_and_pending_action_veto(self):
         self.termination_setup()

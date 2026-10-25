@@ -552,6 +552,21 @@ class ClaimCloseoutTests(unittest.TestCase):
             self.assertFalse(report["claims_clear"])
             self.assertFalse(report["coverage"]["complete"])
 
+    def test_cli_passes_one_bounded_read_budget_and_rejects_unbounded_values(self) -> None:
+        entry = self.entry()
+        with patch.object(helper, "check", return_value={"claims_clear": True}) as read:
+            for budget in ("0", "-1", "nan", "inf"):
+                with self.subTest(budget=budget), contextlib.redirect_stdout(io.StringIO()) as output:
+                    code = helper.main(["--session", SESSION, "--transcript", entry["transcript"], "--read-timeout", budget])
+                self.assertNotEqual(code, 0)
+                self.assertFalse(json.loads(output.getvalue())["coverage"]["complete"])
+            read.assert_not_called()
+            requested = 1800.0
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(helper.main(["--session", SESSION, "--transcript", entry["transcript"],
+                                              "--read-timeout", str(requested)]), 0)
+            self.assertEqual(read.call_args.kwargs["read_timeout"], requested)
+
     def test_reader_gets_the_checks_deadline_before_its_first_read(self) -> None:
         self.comments.append(self.release)
         started = helper.time.time()
