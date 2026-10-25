@@ -345,11 +345,36 @@ def sdk_tree(path):
         raise Blocked("native_sdk_table_malformed") from None
 
 
+LICENSED_INSPECTION_LOG = re.compile(rb"GlobalInspectionContextImpl - Running local inspections on ")
+RECOVERY_LOG_LIMIT = 64 * 1024 * 1024
+
+
+def logged_licensed_inspection(private: Path) -> bool:
+    logs = private / "logs"
+    if logs.is_symlink() or not logs.is_dir():
+        return False
+    inspected = False
+    try:
+        for path in sorted(logs.glob("*.log")):
+            if path.is_symlink() or path.stat().st_size > RECOVERY_LOG_LIMIT:
+                return False
+            data = path.read_bytes()
+            scanner = observations.LicenseScanner()
+            scanner.feed(data, final=True)
+            if scanner.observed or not scanner.complete:
+                return False
+            inspected = inspected or bool(LICENSED_INSPECTION_LOG.search(data))
+    except OSError:
+        return False
+    return inspected
+
+
 def recover_run(worker, receipt=None, result_path=None, release_run=None, process_proof=None):
     current = receipt if receipt is not None else {"private_deleted": True, "sdk_removed": True}
     try:
         lifecycle.recover(worker, current, common, write_record, remove_sdk, result_path=result_path,
-                          release_run=release_run, process_proof=process_proof)
+                          release_run=release_run, process_proof=process_proof,
+                          licensed_inspection_logged=logged_licensed_inspection)
     except lifecycle.LifecycleError as error:
         raise Blocked(str(error)) from None
 

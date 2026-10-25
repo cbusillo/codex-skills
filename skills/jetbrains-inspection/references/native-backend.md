@@ -166,7 +166,14 @@ retains its unknown-outcome hold even after process recovery. Older engine-only
 journals remain recoverable through the same ownership proof.
 
 The durable licensed-launch phase is a hold. Resource recovery alone cannot
-clear an unresolved outcome and start another licensed process. A licensing
+clear an unresolved outcome and start another licensed process, with one
+exception: before disposing of the private directory, recovery reads every
+retained engine log. When each log reads completely, none shows a licensing
+event, and one shows `GlobalInspectionContextImpl` running local inspections,
+the engine had passed licensing, so recovery clears the hold and records
+`interrupted_run_cleared: licensed_execution_observed`. The next assessment then
+starts normally. Any unreadable, oversized or missing log, any licensing line, or
+no inspection line keeps the hold. A licensing
 boundary persists independently in a count-only stop receipt or journal, even
 when a later write fails. Artifact and stop-receipt persistence failures do not
 skip independently permitted cleanup or lock release. SDK/private disposal

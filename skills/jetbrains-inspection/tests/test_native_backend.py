@@ -1227,6 +1227,36 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
         self.assertEqual(recovered["cleanup"]["status"], "closed")
         self.assertTrue(journal.exists())
 
+    def interrupt_engine_after_logging(self, log_text):
+        self.script.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nimport time\n"
+                               f"Path('logs/idea.log').write_text({log_text!r})\ntime.sleep(30)\n")
+        with patch.object(native, "group_gone", return_value=False):
+            self.assess()
+        self.assertTrue((self.worker / "native-run.json").exists())
+        self.args.native_recover_only = True
+        return self.assess()
+
+    def test_interrupted_run_that_logged_licensed_inspection_clears_its_hold(self) -> None:
+        recovered = self.interrupt_engine_after_logging(
+            "FINE - #c.i.c.e.GlobalInspectionContextImpl - Running local inspections on /private/project/src/a.py\n")
+        self.assertEqual(recovered["inspection_outcome"]["reason"], "native_recovery_only_no_inspection")
+        self.assertEqual(recovered["diagnostic"]["native"]["interrupted_run_cleared"], "licensed_execution_observed")
+        self.assertFalse((self.worker / "native-run.json").exists())
+        self.assertEqual(recovered["cleanup"]["status"], "closed")
+
+    def test_interrupted_run_keeps_its_hold_without_clean_licensed_execution(self) -> None:
+        running = "FINE - #c.i.c.e.GlobalInspectionContextImpl - Running local inspections on /private/project/src/a.py\n"
+        for log_text in (running + "Your trial has expired\n", "INFO - #c.i.p.trialPromotion - IDE is not managed\n",
+                         "x" * 70000 + "\n" + running):
+            with self.subTest(log_text=log_text[:40]):
+                self.args.native_recover_only = False
+                recovered = self.interrupt_engine_after_logging(log_text)
+                self.assertIn(recovered["inspection_outcome"]["reason"],
+                              {"native_interrupted_run_unresolved", "native_activation_stop_recorded"})
+                self.assertNotIn("interrupted_run_cleared", recovered["diagnostic"]["native"])
+                for held in ("native-run.json", "native-activation-stop.json"):
+                    (self.worker / held).unlink(missing_ok=True)
+
     def test_durable_license_stop_does_not_dispose_an_unproved_group(self):
         self.script.write_text(f"#!{sys.executable}\nimport time\nprint('No valid license found',flush=True)\ntime.sleep(30)\n")
         with patch.object(native, "group_gone", return_value=False):
