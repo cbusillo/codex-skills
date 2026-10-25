@@ -33,10 +33,10 @@ class ProductSummaryTests(unittest.TestCase):
     def test_cli_prints_section_and_reports_missing_section_or_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             agents = Path(directory) / "AGENTS.md"
-            for document, expected in (
-                (None, "does not exist"),
-                ("# Instructions\nOnly unrelated guidance.", "No What <product> does section"),
-                ("## What Product does\nUseful facts.\n## Other\nHidden.", "## What Product does\nUseful facts.\n"),
+            for document in (
+                None,
+                "# Instructions\nOnly unrelated guidance.",
+                "## What Product does\nUseful facts.\n## Other\nHidden.",
             ):
                 with self.subTest(document=document):
                     if document is not None:
@@ -44,9 +44,21 @@ class ProductSummaryTests(unittest.TestCase):
                     output = io.StringIO()
                     with contextlib.redirect_stdout(output):
                         self.assertEqual(main([directory]), 0)
-                    self.assertIn(expected, output.getvalue())
+                    if document and product_section(document):
+                        self.assertEqual(output.getvalue().strip(), product_section(document))
+                    else:
+                        self.assertTrue(output.getvalue().strip())
                     self.assertNotIn("Hidden", output.getvalue())
                     self.assertNotIn("unrelated", output.getvalue())
+
+    def test_bad_repository_path_fails_instead_of_reporting_absent_section(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            for path in (Path(directory) / "missing", Path(directory) / "file"):
+                if path.name == "file":
+                    path.write_text("Not a directory", encoding="utf-8")
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                    main([str(path)])
+                self.assertEqual(raised.exception.code, 1)
 
     def test_unreadable_input_is_an_error_not_missing_facts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -37,6 +37,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Print only a repository's What <product> does section from AGENTS.md.")
     parser.add_argument("repository", type=Path, help="Local repository checkout")
     args = parser.parse_args(argv)
+    if not args.repository.is_dir():
+        parser.exit(1, f"Repository directory does not exist: {args.repository}\n")
     agents = args.repository / "AGENTS.md"
     try:
         text = agents.read_text(encoding="utf-8")
