@@ -612,7 +612,7 @@ the train, run the workflow by hand on its branch and wait for it to pass.
 
 ## JetBrains inspections
 
-On macOS, `jetbrains-inspection` runs Python and Odoo assessments through stock
+On macOS, `jetbrains-inspection` runs Python, YAML and Odoo assessments through stock
 PyCharm `inspect.sh` when an independently Director-activated worker and its
 project prerequisites are configured. Other hosts retain their existing route.
 The worker uses its activated profile in place.
