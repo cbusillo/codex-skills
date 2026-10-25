@@ -426,6 +426,22 @@ class NativeTests(unittest.TestCase):
             native.attribute_to_change(receipt, findings, repo, "files", selected)
             self.assertEqual(({finding["introduced"] for finding in findings}, receipt["changed_lines"]), ({None}, "unavailable"))
 
+    def test_spelling_and_grammar_are_reported_beside_the_verdict_without_counting(self) -> None:
+        receipt = native.new_receipt(host) | {"scope": "files", "selected_file_count": 1}
+        typo = {"file": "a.py", "line": 2, "rule_id": "SpellCheckingInspection", "severity": "TYPO", "message": "Typo", "introduced": True}
+        grammar = {**typo, "rule_id": "GrazieInspection", "severity": "GRAMMAR_ERROR"}
+        style = {**typo, "rule_id": "GrazieStyle", "severity": "STYLE_SUGGESTION"}
+        warning = {**typo, "rule_id": "PyUnusedLocalInspection", "severity": "WARNING"}
+        clean = native.envelope(host, receipt, [typo, grammar, style], "native_completed", [])
+        self.assertEqual((clean["agent_result"]["verdict"], clean["finding_count"], clean["advisory_finding_count"]), ("GREEN", 0, 3))
+        self.assertEqual(clean["advisory_findings"], [typo, grammar, style])
+        many = native.envelope(host, receipt, [typo] * (native.common.FINDING_LIMIT + 1), "native_completed", [])
+        self.assertEqual((len(many["advisory_findings"]), many["advisory_findings_truncated"]), (native.common.FINDING_LIMIT, True))
+        red = native.envelope(host, receipt, [typo, warning], "native_completed", [])
+        self.assertEqual((red["agent_result"]["verdict"], red["findings"], red["advisory_findings"]), ("RED", [warning], [typo]))
+        old_typo = {**typo, "introduced": False}
+        self.assertEqual(native.envelope(host, receipt, [old_typo], "native_completed", [])["advisory_finding_count"], 0)
+
     def test_verdict_counts_only_findings_on_changed_lines(self) -> None:
         receipt = native.new_receipt(host) | {"scope": "files", "selected_file_count": 1}
         old = {"file": "a.py", "line": 1, "rule_id": "Old", "severity": "WARNING", "message": "", "introduced": False}
