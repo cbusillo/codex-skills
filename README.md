@@ -614,8 +614,7 @@ the train, run the workflow by hand on its branch and wait for it to pass.
 
 On macOS, `jetbrains-inspection` runs Python, YAML and Odoo assessments through stock
 PyCharm `inspect.sh` when an independently Director-activated worker and its
-project prerequisites are configured. Other hosts retain their existing route.
-The worker uses its activated profile in place.
+project prerequisites are configured. The worker uses its activated profile in place.
 It keeps exclusive ownership and private system/cache/log paths, without
 opening the desktop IDE or copying activation or credentials. Configure the
 worker once in the [native runner reference](skills/jetbrains-inspection/references/native-backend.md).
@@ -623,9 +622,9 @@ Reports name the backend, requested checks and execution gaps; an unavailable
 or unproven check keeps the verdict UNKNOWN. Planted controls cover Odoo Python,
 XML, `odoo.model.*` types, duplicates and insecure HTTP links.
 
-Other platforms retain qualified local Qodana for Python when available;
-other languages retain the Inspection API. `--backend native|qodana|api` and
-`JB_INSPECT_DEFAULT_BACKEND` select explicitly. The
+Without an eligible native worker, automatic selection returns UNKNOWN
+`isolated_backend_unavailable` with setup instructions; the Inspection API runs
+only with explicit `--backend api`. The
 [inspection skill](skills/jetbrains-inspection/SKILL.md) owns routing and safety.
 
 ## Reviews By Another Model

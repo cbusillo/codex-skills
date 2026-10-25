@@ -184,33 +184,39 @@ class NativeTests(unittest.TestCase):
                     patch_attr(native, "is_odoo", return_value=False):
                 self.assertEqual(native.select_backend(args, host)[0], "native")
 
-    def test_odoo_other_languages_and_nested_lanes_keep_their_existing_route(self):
+    def test_odoo_other_languages_and_nested_lanes_fall_back_to_api(self):
         args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
         for selected, lane_gaps in (({"assets/app.js"}, []), ({"nested/model.py"}, ["nested_lane"])):
             with self.subTest(selected=selected), patch.object(sys, "platform", "darwin"), \
                     patch_attr(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", selected)), \
                     patch_attr(native, "eligible", return_value=True), \
                     patch_attr(native, "is_odoo", return_value=True), \
-                    patch_attr(native.common, "lane_gaps", return_value=lane_gaps), \
-                    patch_attr(native.common, "select_backend", return_value=("api", "existing_lane")):
-                self.assertEqual(native.select_backend(args, host), ("api", "existing_lane"))
+                    patch_attr(native.common, "lane_gaps", return_value=lane_gaps):
+                self.assertEqual(native.select_backend(args, host)[0], "api")
 
-    def test_explicit_community_options_and_host_choice_still_work(self):
-        args = host.build_parser().parse_args(["agent-inspect", "--qodana-recover-only"])
-        self.assertEqual(native.select_backend(args, host)[0], "qodana")
-        args.qodana_recover_only = False
+    def test_explicit_native_options_and_host_choice_still_work(self):
+        args = host.build_parser().parse_args(["agent-inspect", "--native-recover-only"])
+        self.assertEqual(native.select_backend(args, host)[0], "native")
+        args.native_recover_only = False
         self.assertEqual(native.select_backend(args, host, "api"), ("api", "host_default"))
 
-    def test_unconfigured_native_preserves_the_existing_route(self):
+    def test_unconfigured_native_falls_back_to_api_with_its_reason(self):
         args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
         with patch.object(sys, "platform", "darwin"), \
                 patch_attr(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", {"src/a.py"})), \
                 patch_attr(host, "read_global_config", return_value={}), \
-                patch_attr(native, "is_odoo", return_value=False), \
-                patch_attr(native.common, "select_backend", return_value=("qodana", "qualified")):
+                patch_attr(native, "is_odoo", return_value=False):
             backend, reason = native.select_backend(args, host)
-            self.assertEqual(backend, "qodana")
+            self.assertEqual(backend, "api")
             self.assertIn("native_worker_not_configured", reason)
+
+    def test_hosts_without_macos_fall_back_to_api_without_reading_the_selection(self):
+        args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
+        with patch.object(sys, "platform", "linux"), \
+                patch_attr(native.common, "scope_selection", side_effect=AssertionError("selection read")):
+            backend, reason = native.select_backend(args, host)
+        self.assertEqual(backend, "api")
+        self.assertIn("native_macos_not_available", reason)
 
     def test_cli_dispatch_does_not_enter_desktop_lifecycle(self):
         with patch_attr(host, "command_native", return_value={"backend": "native"}) as run, \
@@ -284,8 +290,7 @@ class NativeTests(unittest.TestCase):
 
     def test_automatic_api_fallback_never_enters_desktop_lifecycle(self) -> None:
         with patch_attr(host, "native_backend_module", return_value=native), \
-                patch_attr(native, "select_backend", return_value=("api", "selection_not_python_only")), \
-                patch_attr(host, "qodana_backend_module", return_value=native.common), \
+                patch_attr(native, "select_backend", return_value=("api", "selection_file_type_unsupported")), \
                 patch_attr(native.common, "scope_selection"), \
                 patch_attr(host, "build_context") as context, \
                 patch_attr(host, "command_run") as api, \
@@ -304,8 +309,7 @@ class NativeTests(unittest.TestCase):
     def test_automatic_fallback_preserves_scope_errors_without_desktop_contact(self) -> None:
         error = host.InspectError("Scope exceeds file limit", payload={"error_reason": "inspection_lane_scope_too_large"})
         with patch_attr(host, "native_backend_module", return_value=native), \
-                patch_attr(native, "select_backend", return_value=("api", "qodana_selection_unavailable")), \
-                patch_attr(host, "qodana_backend_module", return_value=native.common), \
+                patch_attr(native, "select_backend", return_value=("api", "native_selection_unavailable")), \
                 patch_attr(native.common, "scope_selection", side_effect=error), \
                 patch_attr(host, "build_context") as context, \
                 patch_attr(host, "log_assessment_records"), \
@@ -317,33 +321,24 @@ class NativeTests(unittest.TestCase):
             self.assertEqual(result["diagnostic"]["error_reason"], error.payload["error_reason"])
             self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
 
-    def test_explicit_existing_backends_do_not_import_native_components(self):
-        for backend in ("api", "qodana"):
-            with self.subTest(backend=backend), \
-                    patch_attr(host, "native_backend_module", side_effect=AssertionError("native import")) as native_import, \
-                    patch_attr(host, "command_qodana", return_value={}) as qodana, \
-                    patch_attr(host, "build_context", return_value={}), \
-                    patch_attr(host, "command_run", return_value={}) as api, \
-                    patch_attr(host, "emit_agent_result", return_value=0), \
-                    patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--backend", backend]), \
-                    redirect_stdout(io.StringIO()):
-                self.assertEqual(host.main(), 0)
-                native_import.assert_not_called()
-                (api if backend == "api" else qodana).assert_called_once()
+    def test_explicit_api_backend_does_not_import_native_components(self):
+        with patch_attr(host, "native_backend_module", side_effect=AssertionError("native import")) as native_import, \
+                patch_attr(host, "build_context", return_value={}), \
+                patch_attr(host, "command_run", return_value={}) as api, \
+                patch_attr(host, "emit_agent_result", return_value=0), \
+                patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--backend", "api"]), \
+                redirect_stdout(io.StringIO()):
+            self.assertEqual(host.main(), 0)
+        native_import.assert_not_called()
+        api.assert_called_once()
 
-    def test_backend_option_conflicts_never_open_a_desktop_or_start_either_worker(self):
-        cases = (["--backend", "api", "--native-recover-only"],
-                 ["--backend", "native", "--qodana-recover-only"],
-                 ["--native-recover-only", "--qodana-recover-only"])
-        for options in cases:
-            with self.subTest(options=options), \
-                    patch.object(sys, "argv", ["jb-inspect", "agent-inspect", *options]), \
-                    patch_attr(host, "build_context", side_effect=AssertionError("desktop opened")), \
-                    patch_attr(host, "command_native", side_effect=AssertionError("worker started")), \
-                    patch_attr(host, "command_qodana", side_effect=AssertionError("container started")), \
-                    redirect_stdout(io.StringIO()) as output:
-                host.main()
-                self.assertEqual(json.loads(output.getvalue())["agent_result"]["verdict"], "UNKNOWN")
+    def test_native_options_with_api_backend_never_open_a_desktop_or_start_the_worker(self):
+        with patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--backend", "api", "--native-recover-only"]), \
+                patch_attr(host, "build_context", side_effect=AssertionError("desktop opened")), \
+                patch_attr(host, "command_native", side_effect=AssertionError("worker started")), \
+                redirect_stdout(io.StringIO()) as output:
+            host.main()
+        self.assertEqual(json.loads(output.getvalue())["agent_result"]["verdict"], "UNKNOWN")
 
     def test_profile_lock_excludes_a_second_process(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -971,15 +966,13 @@ print('Done.')
         self.assertEqual(journal["run_id"], result["identity"]["inspection_run_id"])
         self.assertFalse(result["diagnostic"]["native"]["terminal_outcome_known"])
 
-    def test_qodana_flock_excludes_native_execution(self):
+    def test_per_user_flock_excludes_native_execution(self):
         import fcntl
-        state = self.root / "state"
-        state.mkdir()
-        with patch_attr(native.common, "state_dir", return_value=state):
-            with native.common.worker_lock_path().open("a") as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                self.args.lifecycle_lock_timeout_ms = 0
-                result = self.assess()
+        native.state_dir().mkdir()
+        with (native.state_dir() / "worker.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.args.lifecycle_lock_timeout_ms = 0
+            result = self.assess()
         self.assertEqual(result["inspection_outcome"]["reason"], "native_worker_busy")
         self.assertNotIn("worker_pid", result["diagnostic"]["native"])
 
@@ -1131,7 +1124,7 @@ print('Done.')
         preparation_command = None
         if preparation:
             self.declare_python_preparation()
-            preparation_command = [sys.executable, "-c", f"import pathlib,time,os;pathlib.Path({str(started)!r}).write_text(str(os.getpid()));time.sleep(30)", native.common.WORK + "/project"]
+            preparation_command = [sys.executable, "-c", f"import pathlib,time,os;pathlib.Path({str(started)!r}).write_text(str(os.getpid()));time.sleep(30)", ]
         code = '''import json,sys
 from pathlib import Path
 from unittest.mock import patch
@@ -1139,7 +1132,7 @@ sys.path.insert(0,sys.argv[1])
 from test_native_backend import native,host
 root=Path(sys.argv[2])
 args=host.build_parser().parse_args(json.loads(sys.argv[3]))
-with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_dir',return_value=root/'state'), patch.object(native.common,'storage_identity',side_effect=lambda anchor:{'fixture':str(anchor)}), patch.object(host,'cache_dir',return_value=root/'cache'), patch.object(host,'read_global_config',return_value={}), patch.object(host,'trusted_auto_open_roots',return_value=[str(root/'repo')]), patch.object(native.os,'getloadavg',return_value=(1,1,1)), patch.object(native.common,'preparation',return_value={'commands':[json.loads(sys.argv[4])]}):
+with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_dir',return_value=root/'state'), patch.object(native.common,'storage_identity',side_effect=lambda anchor:{'fixture':str(anchor)}), patch.object(host,'cache_dir',return_value=root/'cache'), patch.object(host,'read_global_config',return_value={}), patch.object(host,'trusted_auto_open_roots',return_value=[str(root/'repo')]), patch.object(native.os,'getloadavg',return_value=(1,1,1)), patch.object(native.common,'preparation',side_effect=lambda _settings,private:json.loads(sys.argv[4])+[str(private/'project')]):
  (root/'guarded-result.json').write_text(json.dumps(native.run(args,host)))
 '''
         argv = ["agent-inspect", "--backend", "native", "--repo", str(self.repo), "--scope", "files", "--file", "source.py", "--profile", "Test", "--native-worker", str(self.worker), "--ide-app", str(self.app)]
@@ -1236,8 +1229,8 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
     def test_failed_preparation_identity_persistence_never_releases_its_gate(self):
         marker = self.root / "must-not-prepare"
         self.declare_python_preparation()
-        command = [sys.executable, "-c", f"from pathlib import Path;Path({str(marker)!r}).touch()", native.common.WORK + "/project"]
-        with patch_attr(native.common, "preparation", return_value={"commands": [command]}), \
+        command = [sys.executable, "-c", f"from pathlib import Path;Path({str(marker)!r}).touch()"]
+        with patch_attr(native.common, "preparation", side_effect=lambda _settings, private: [*command, str(private / "project")]), \
                 patch_attr(native.lifecycle.RunContext, "process_spawned", side_effect=OSError("journal storage full")):
             result = self.assess()
         self.assertFalse(marker.exists())

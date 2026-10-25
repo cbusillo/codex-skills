@@ -105,8 +105,7 @@ snapshot, with an isolated preparation home. Otherwise the exact source
 worktree must already have its documented `.venv`. Native does not guess a
 Python version. YAML selections keep this prerequisite because each run includes
 Python defect controls. Command-string and nested-project preparation remain ineligible
-for automatic native selection; without qualified Qodana they return UNKNOWN
-before desktop contact. Explicit native uses the prepared root `.venv` instead
+for automatic native selection; they return UNKNOWN before desktop contact. Explicit native uses the prepared root `.venv` instead
 of treating those commands as a structured root generator. Native does not read a
 desktop SDK table. A unique non-secret SDK entry is
 added to the independent profile's table in place and removed after execution;
@@ -115,14 +114,14 @@ roots; its private `PyProjectModelSettings.usePyprojectToml=false` preserves tha
 model when uv workspace discovery would otherwise replace module roots and
 break exact named scopes. No source project metadata is changed.
 
-A per-user lock shared with Qodana and the independent profile's lock allow one worker.
+A per-user lock and the independent profile's lock allow one worker.
 An ordinary request takes a ticket in its own queue under the per-user state
 directory, using the kernel-locked FIFO mechanism of lifecycle callers, then
 waits for the control, per-user and profile locks without taking them from a
 live holder.
 Queue time is unbounded but interruptible: parent exit or cancellation stops a
 queued request before launch. Waiting for the locks themselves, which covers
-Qodana, an independent GUI and older callers that take no ticket, is bounded by
+an independent GUI and older callers that take no ticket, is bounded by
 `--lifecycle-lock-timeout-ms`. Admission time is recorded as
 `admission_wait_ms` and does not consume `--timeout-ms`. The request then runs
 its one inspection; activation stops and journal holds still refuse it. An

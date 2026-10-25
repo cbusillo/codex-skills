@@ -89,7 +89,7 @@ report their paths relative to the Git worktree. Ignore those generated files
 before preparing. The path must be relative and stay inside the exact worktree,
 including after symlink resolution. Git mutation checks still cover the whole
 worktree, and only the nested Python project receives SDK provisioning. Omit
-the field for root preparation. The Qodana and native backends currently refuse
+the field for root preparation. The native backend currently refuses
 this nested preparation shape; configured API lanes require an explicit API
 session, for example `agent-inspect --backend api`.
 [SKILL.md](../SKILL.md) owns selection. This does not authorize opening a desktop IDE.

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import ast
+import hashlib
 import importlib.util
 import json
 import os
@@ -33,7 +34,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
-_spec = importlib.util.spec_from_file_location("native_common", Path(__file__).with_name("qodana_backend.py"))
+_spec = importlib.util.spec_from_file_location("native_common", Path(__file__).with_name("native_common.py"))
 if _spec is None or _spec.loader is None:
     raise ImportError("Native shared backend unavailable")
 common: Any = importlib.util.module_from_spec(_spec)
@@ -68,29 +69,31 @@ is_odoo = common.is_odoo
 
 
 def select_backend(args, host, host_default=None):
-    if common.backend_options(args, "qodana"):
-        return "qodana", "qodana_options_supplied"
-    if common.backend_options(args, "native"):
+    if common.native_options_supplied(args):
         return "native", "native_options_supplied"
     if host_default:
         return host_default, "host_default"
     if sys.platform != "darwin":
-        return common.select_backend(args, host)
+        return "api", "native_ineligible=native_macos_not_available"
     try:
         repo, config, _scope, selected = common.scope_selection(args, host)
         if not eligible(args, host, repo, config):
-            backend, reason = common.select_backend(args, host)
-            return backend, reason + ";native_ineligible=" + str(eligibility_reason(args, host, repo, config))
-        if selected and all(Path(f).suffix in NATIVE_SUFFIXES for f in selected) and not common.lane_gaps(host, config, selected):
-            if is_odoo(repo):
-                return "native", "odoo_native_route"
-            if all(f.endswith(".py") for f in selected):
-                return "native", "python_native_route"
-            if all(Path(f).suffix in {".py", ".yaml", ".yml"} for f in selected):
-                return "native", "configuration_native_route"
+            return "api", "native_ineligible=" + str(eligibility_reason(args, host, repo, config))
+        if not selected:
+            return "api", "selection_empty"
+        if any(Path(f).suffix not in NATIVE_SUFFIXES for f in selected):
+            return "api", "selection_file_type_unsupported"
+        if common.lane_gaps(host, config, selected):
+            return "api", "selection_outside_root_pycharm_lane"
+        if is_odoo(repo):
+            return "native", "odoo_native_route"
+        if all(f.endswith(".py") for f in selected):
+            return "native", "python_native_route"
+        if all(Path(f).suffix in {".py", ".yaml", ".yml"} for f in selected):
+            return "native", "configuration_native_route"
+        return "api", "xml_selection_requires_odoo"
     except (Blocked, host.InspectError, OSError, subprocess.SubprocessError, ValueError):
-        pass
-    return common.select_backend(args, host)
+        return "api", "native_selection_unavailable"
 
 
 def eligible(args, host, repo, settings):
@@ -117,7 +120,7 @@ def eligibility_reason(args, host, repo, settings):
         common.profile_for(repo, args.profile or settings.get("profile", ""))
         return None
     except Blocked as error:
-        return str(error).replace("qodana_", "native_")
+        return str(error)
     except (host.InspectError, OSError, ValueError):
         return "native_configuration_unavailable"
 
@@ -325,8 +328,8 @@ def check_lifetime(parent_fd, deadline):
 
 
 def state_dir():
-    # Qodana and native must exclude each other, not just their own backend.
-    return common.worker_lock_path().parent
+    import pwd
+    return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local/state/jetbrains-inspection/native"
 
 
 def atomic_write(path, data):
@@ -1130,8 +1133,8 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
 
 def new_receipt(host):
     components = {name: common.digest(Path(__file__).with_name(name)) for name in
-                  ("native_backend.py", "native_coverage.py", "native_observer.py", "native_lifecycle.py", "qodana_backend.py")}
-    revision = common.hashlib.sha256(json.dumps(components, sort_keys=True).encode()).hexdigest()
+                  ("native_backend.py", "native_coverage.py", "native_observer.py", "native_lifecycle.py", "native_common.py")}
+    revision = hashlib.sha256(json.dumps(components, sort_keys=True).encode()).hexdigest()
     return {"run_id": str(uuid.uuid4()), "private_deleted": True, "sdk_removed": True, "load_pause_count": 0, "process_custody_closed": True,
             "nice": NICE, "active_processors": ACTIVE_PROCESSORS, "heap_limit_mib": HEAP_LIMIT_MIB,
             "helper_revision": host.helper_revision(), "backend_revision": "sha256:" + revision,
@@ -1232,7 +1235,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_scope_snapshot_incomplete")
         if any((project / path).stat().st_size > common.MAX_ANALYZED_FILE_KB * 1024 for path in selected):
             raise Blocked("native_selected_file_over_analysis_limit")
-        receipt["source_manifest_sha256"] = common.hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
+        receipt["source_manifest_sha256"] = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
         controls = plant_controls(project, receipt["run_id"], is_odoo(repo))
         def record_process(kind, pid):
             identity = process_identity(pid, private)
@@ -1246,15 +1249,13 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         check_lifetime(parent_fd, deadline)
         # Use the declared version, or the exact worktree's prepared venv.
         if requested is not None:
-            prepared = common.preparation(settings, private, "python", repo, uv_supplied=True)
+            preparation_argv = common.preparation(settings, private)
             preparation_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(private / "prepare-home"), "TMPDIR": str(private / "tmp")}
             preparation_env.update(preparation_caches)
             (private / "prepare-home").mkdir()
-            for command in prepared["commands"]:
-                argv = [arg.replace(common.WORK + "/", str(private) + "/") for arg in command]
-                execute(argv, preparation_env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(),
-                        global_lock_fd=global_lock.fileno(), require_completion=False,
-                        on_spawn=lambda pid: record_process("preparation", pid), on_exit=record_exit)
+            execute(preparation_argv, preparation_env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(),
+                    global_lock_fd=global_lock.fileno(), require_completion=False,
+                    on_spawn=lambda pid: record_process("preparation", pid), on_exit=record_exit)
             interpreter = project / ".venv/bin/python"
         elif source_interpreter.is_file():
             interpreter = source_interpreter
@@ -1323,7 +1324,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         reason = "native_completed" if not gaps else "native_coverage_unproven"
         known_terminal = True
     except Blocked as error:
-        reason = str(error).replace("qodana_", "native_")
+        reason = str(error)
         known_terminal = True
     except host.InspectError as error:
         reason = "native_scope_too_large" if error.payload.get("error_reason") == "inspection_lane_scope_too_large" else "native_prerequisite_or_report_failed"
