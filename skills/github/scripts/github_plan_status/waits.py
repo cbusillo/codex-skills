@@ -43,7 +43,7 @@ def reviewed(*, evidence: str, waiting_for: str | list[str] | None = None,
     if any(value is not None for value in (release_product, release_commit, release_next_action)):
         if not actors:
             raise ValueError("A release pointer requires a wait")
-        record["waits"][0]["release"] = {"product": release_product.strip().casefold() if release_product else release_product, "source_commit": release_commit,
+        record["waits"][0]["release"] = {"product": release_product.strip().casefold() if release_product else release_product, "source_commit": release_commit.strip().lower() if release_commit else release_commit,
                                          "next_action": release_next_action}
     validate(record)
     return record
@@ -77,7 +77,7 @@ def resolve_release(record: dict[str, Any], *, product: str, contains_commit: Ca
                     evidence: str) -> tuple[dict[str, Any], list[str]]:
     validate(record)
     matched = [entry for entry in record["waits"] if "release" in entry
-               and entry["release"]["product"].casefold() == product.casefold()
+               and entry["release"]["product"].casefold() == product.strip().casefold()
                and contains_commit(entry["release"]["source_commit"])]
     if not matched:
         return record, []

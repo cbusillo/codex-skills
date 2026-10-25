@@ -993,18 +993,6 @@ The [daily sweep](../../direction/references/stranded-work.md) reports fired
 triggers and coverage gaps without reopening issues. This option records a
 condition, not authority to close protected work or perform the triggered action.
 
-#### Product release event waits
-
-`wait` and `create` accept `--release-product PRODUCT`,
-`--release-commit FULL_SOURCE_SHA` and
-`--release-next-action "Next agent: verify the repaired flow in production"`
-alongside `--waiting-for` and `--ends-when`. The pointer binds the first wait;
-other waits retain their own ending conditions. Launchplane resolves only
-matching product waits after a successful production release includes that
-source commit. A release already underway without the fix cannot resolve it.
-Failed releases and rollbacks do not resolve it. Completion evidence and the
-next agent action are recorded; resolution alone does not close an issue or
-claim its production verification.
 
 ### Planning: Claim
 
@@ -1859,6 +1847,19 @@ body through the same bot to release only that comment, then preserve the
 competing worker's state and recheck before any retry. If an owned Current
 Status was already updated, reconcile only that record too; never rewrite a
 competitor's record.
+
+#### Product release event waits
+
+`wait` and `create` accept `--release-product PRODUCT`,
+`--release-commit FULL_SOURCE_SHA` and
+`--release-next-action "Next agent: verify the repaired flow in production"`
+alongside `--waiting-for` and `--ends-when`. The pointer binds the first wait
+and is shown next to it in the published summary; other waits stay separate.
+It records the product, required source commit and next agent action for
+[Launchplane's release-completion resolver](https://github.com/cbusillo/launchplane/issues/4908).
+Before writing these pointers, deploy the matching Launchplane planning-package
+pin and update installed catalog readers. Older readers preserve the wait as
+malformed rather than ignoring its additional field.
 
 ### Planning: Management
 

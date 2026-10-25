@@ -3776,9 +3776,13 @@ def cmd_wait(args: argparse.Namespace) -> None:
 
 
 def wait_summary(wait: dict[str, Any]) -> str:
-    lines = [f"Waiting for {entry['waiting_for']}. This ends when {entry['ends_when']}." for entry in wait["waits"]]
-    lines.extend(f"Release event: {entry['release']['product']} includes {entry['release']['source_commit']}. "
-                 f"{entry['release']['next_action']}" for entry in wait["waits"] if "release" in entry)
+    lines = []
+    for entry in wait["waits"]:
+        line = f"Waiting for {entry['waiting_for']}. This ends when {entry['ends_when']}."
+        if "release" in entry:
+            release = entry["release"]
+            line += f" Release event: {release['product']} includes {release['source_commit']}. {release['next_action']}"
+        lines.append(line)
     summary = "\n\n".join(lines) or "Nothing here is waiting on a person or event."
     if mentions := github_comment_core.live_mentions(summary):
         raise PlanError(f"A wait record must not notify the people it names ({', '.join(mentions)}); "
