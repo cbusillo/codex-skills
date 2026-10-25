@@ -5441,6 +5441,16 @@ class ClaimTests(unittest.TestCase):
             self.run_claim()
         self.assert_no_writes()
 
+    def test_repository_milestone_cannot_replace_an_invalid_cited_track(self) -> None:
+        link = self.milestone_fixture()
+        self.targets["9"]["state"] = "closed"
+        self.issue["milestone"] = {"title": "Remove obsolete tools", "state": "open"}
+        self.directions["owner/repo"] = "## Milestones\n- `Remove obsolete tools` proves obsolete tools are gone.\n"
+        self.args.admission, self.args.admission_link = "milestone", [link]
+        with self.assertRaises(PLAN.ClassifiedPlanError):
+            self.run_claim()
+        self.assert_no_writes()
+
     def test_repository_milestone_refuses_unlisted_closed_or_missing_direction(self) -> None:
         for invalid in ("unlisted", "closed", "missing"):
             with self.subTest(invalid=invalid):

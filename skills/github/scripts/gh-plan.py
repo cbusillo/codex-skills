@@ -2631,13 +2631,15 @@ def milestone_claim_track(issue: dict[str, Any], links: list[str]) -> dict[str, 
     if track := valid_track(sorted(number for repo, number in ancestry.nodes if repo == direction_repo)):
         return track
     milestone = issue.get("milestone") or {}
-    if (ancestry.complete and milestone.get("state") == "open" and milestone.get("title") not in titles
+    if (ancestry.complete and not targets and milestone.get("state") == "open" and milestone.get("title") not in titles
             and milestone.get("title") in direction_milestone_titles(load_direction(issue["repo"]) or "")):
         return issue
     code = "claim_admission_unlinked" if ancestry.complete else "claim_milestone_graph_incomplete"
     raise ClassifiedPlanError(code,
-        f"Milestone admission needs an open Track in {direction_repo} under a listed milestone. "
-        "Cite it with --admission-link URL; the helper links the issue automatically. Context cannot bypass the native link.")
+        f"Milestone admission needs an open Track in {direction_repo} under a listed milestone, "
+        f"or an open repository milestone listed in {issue['repo']}'s merged DIRECTION.md and absent from overall direction. "
+        "A citation to the direction repository must name a valid Track; use --admission-link URL for that Track. "
+        "The helper proves or creates its native link; context cannot bypass it.")
 
 
 def link_native_dependency(

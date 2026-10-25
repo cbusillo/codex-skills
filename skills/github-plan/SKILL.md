@@ -265,6 +265,7 @@ active issue labels and continuing background jobs do not lift a hold.
    A repository milestone absent from overall direction uses its open native
    milestone membership and that repository's merged `DIRECTION.md` instead;
    do not invent an overall Track dependency for it.
+   A citation into the overall direction repository must still name a valid Track.
    Claim using exactly the branch the worktree helper will create
    (`work/<task-slug>` for the catalog's `github/scripts/dev-worktree`). Read
    [task worktrees](../github/references/worktrees.md) for its callable path,
