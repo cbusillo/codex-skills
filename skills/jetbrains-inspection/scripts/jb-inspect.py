@@ -8470,6 +8470,7 @@ def outcome_record_base(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[s
         "python_sdk_preparation": python_sdk_preparation_for_payload(public),
         "total_problems": public.get("total_problems"),
         "problems_shown": public.get("problems_shown"),
+        "preexisting_finding_count": public.get("preexisting_finding_count"),
         "proof_failure_count": len(public["proof_failures"]) if isinstance(public.get("proof_failures"), list) else None,
         "uncovered_inspection_count": (
             len(public["uncovered_inspections"]) if isinstance(public.get("uncovered_inspections"), list) else None

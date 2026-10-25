@@ -271,6 +271,15 @@ Results name `backend: native`, the selected scope, source/profile/helper and
 framework provenance, coverage, findings and separate cleanup. Reports must
 name the backend and any `coverage.unavailable` or `coverage.unproven` entries.
 
+For `changed_files` and `files` scopes the verdict counts a finding when its
+line was added or modified since the merge base of `HEAD` and `origin/HEAD`,
+its file is new since then, or it has no line in a changed file. Committed,
+staged, unstaged and untracked changes all count. The findings artifact keeps
+every finding with its `introduced` value; the result lists counted findings
+and `preexisting_finding_count`. Without a resolvable `origin/HEAD` merge base,
+`changed_lines` is `unavailable` and every finding counts. Coverage proof is
+unaffected. `directory` and `whole_project` scopes count every finding.
+
 The effective descriptions prove registration and supply language identity.
 Completed stock `inspectionRun` telemetry proves each applicable inspection on
 each selected physical file, including clean files. `coverage.selected_execution`

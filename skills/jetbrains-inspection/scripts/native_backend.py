@@ -952,7 +952,53 @@ def read_results(results: Path, project: Path) -> tuple[list[dict[str, Any]], se
 
 
 
+HUNK = re.compile(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@")
+
+
+def changed_line_map(repo: Path, selected: set[str]) -> dict[str, set[int] | None] | None:
+    """Lines each selected file adds or modifies since its default-branch merge base; None marks a new file."""
+    git = ["git", "-c", "core.quotePath=false", "-C", str(repo)]
+    upstream = common.command([*git, "rev-parse", "--abbrev-ref", "origin/HEAD"])
+    base = common.command([*git, "merge-base", "HEAD", upstream.stdout.decode().strip()]) if not upstream.returncode else upstream
+    if base.returncode or not selected:
+        return None
+    base_sha = base.stdout.decode().strip()
+    present = set(common.checked([*git, "ls-tree", "-r", "-z", "--name-only", base_sha, "--", *sorted(selected)]).decode().split("\0"))
+    diff = common.checked([*git, "diff", "--unified=0", "--no-color", "--no-ext-diff", "--no-renames", base_sha, "--",
+                           *sorted(selected & present)]).decode(errors="replace")
+    edited: dict[str, set[int]] = {}
+    current: str | None = None
+    for line in diff.splitlines():
+        if line.startswith("+++ "):
+            current = line[len("+++ b/"):] if line.startswith("+++ b/") else None
+            continue
+        hunk = HUNK.match(line)
+        if current is None or hunk is None:
+            continue
+        start, count = int(hunk[1]), int(hunk[2] if hunk[2] is not None else 1)
+        if count:
+            edited.setdefault(current, set()).update(range(start, start + count))
+    return {**edited, **{path: None for path in selected if path not in present}}
+
+
+def attribute_to_change(receipt: dict[str, Any], findings: list[dict[str, Any]], repo: Path, scope: str, selected: set[str]) -> None:
+    if scope not in {"changed_files", "files"}:
+        return
+    changed = changed_line_map(repo, selected)
+    receipt["changed_lines"] = "unavailable" if changed is None else "computed"
+    for finding in findings:
+        if changed is None:
+            finding["introduced"] = None
+        elif finding["file"] not in changed:
+            finding["introduced"] = False
+        else:
+            lines = changed[finding["file"]]
+            finding["introduced"] = lines is None or not finding.get("line") or finding["line"] in lines
+
+
 def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]], reason: str, gaps: list[str], artifact: str | None = None) -> dict[str, Any]:
+    preexisting = [finding for finding in findings if finding.get("introduced") is False]
+    findings = [finding for finding in findings if finding.get("introduced") is not False]
     clean = reason == "native_completed" and not gaps
     verdict = "GREEN" if clean and not findings else "RED" if clean else "UNKNOWN"
     action = "Fix current findings." if verdict == "RED" else "None." if verdict == "GREEN" else "Resolve the reported native prerequisite or execution-coverage gap before a fresh assessment."
@@ -1001,14 +1047,16 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
         action = "Final stdout and logs exceeded their shared read bound. Narrow the inspection scope or diagnose the noisy helper or log writer before a fresh assessment. Finalization still stops the owned group and independently scans for licensing events; preserve any resulting hold and use --native-recover-only for retained custody."
     elif reason in {"native_exit_observer_unavailable", "native_exit_observation_unproven"}:
         action = "Restore non-reaping child-exit observation in the documented native Python setup (waitid/WNOWAIT or kqueue/NOTE_EXIT). Registration is required before the launch gate opens. Preserve any held custody and use --native-recover-only first; never substitute a reaping poll before stopping the owned group."
-    report = f"{verdict}: native PyCharm; {reason}; {len(findings)} findings; {len(gaps)} proof gaps; {len(receipt.get('coverage', {}).get('unproven', []))} inspections unproven."
+    report = (f"{verdict}: native PyCharm; {reason}; {len(findings)} findings; {len(preexisting)} preexisting findings not counted; "
+              f"{len(gaps)} proof gaps; {len(receipt.get('coverage', {}).get('unproven', []))} inspections unproven.")
     return {"schema_version": host.AGENT_RESULT_SCHEMA_VERSION, "command": "agent-inspect", "backend": "native",
             "status": {"GREEN": "clean", "RED": "findings"}.get(verdict, "error"),
             "agent_result": {"verdict": verdict, "bucket": {"GREEN": "clean", "RED": "findings"}.get(verdict, "environment_blocked"),
                              "retry_policy": {"retry": False, "max_attempts": 0, "wait_ms": 0}, "terminal": True,
                              "next_action": action, "agent_report": report},
             "scope": receipt.get("scope"), "selected_file_count": receipt.get("selected_file_count"),
-            "finding_count": len(findings), "findings": findings[:common.FINDING_LIMIT], "findings_artifact": artifact,
+            "finding_count": len(findings), "preexisting_finding_count": len(preexisting),
+            "changed_lines": receipt.get("changed_lines"), "findings": findings[:common.FINDING_LIMIT], "findings_artifact": artifact,
             "findings_truncated": len(findings) > common.FINDING_LIMIT, "proof_failures": gaps,
             "coverage": receipt.get("coverage", {}), "uncovered_inspections": receipt.get("coverage", {}).get("unproven", []),
             "inspection_outcome": {"verdict": verdict, "reason": reason},
@@ -1209,6 +1257,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_framework_inputs_changed")
         if args.severity != "all":
             findings = [finding for finding in findings if finding["severity"].lower() == args.severity.lower()]
+        attribute_to_change(receipt, findings, repo, scope, selected)
         reason = "native_completed" if not gaps else "native_coverage_unproven"
         known_terminal = True
     except Blocked as error:
