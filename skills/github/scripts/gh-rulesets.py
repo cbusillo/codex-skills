@@ -58,7 +58,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             action="append",
             type=int,
             default=[],
-            help="Extra GitHub App id that bypasses the client lock (for example Dependabot); repeatable.",
+            help="Extra GitHub App id that bypasses the client lock; Dependabot and Renovate always bypass "
+                 "the branch lock. Repeatable.",
         )
         if command == "apply":
             sub.add_argument(

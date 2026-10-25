@@ -423,18 +423,23 @@ def lock_bypass(spec: github_rulesets.RulesetSpec) -> set[tuple[str, int]]:
 
 
 def test_client_lock_stops_every_ref_change_except_admin_and_apps() -> None:
-    branches, tags = github_rulesets.client_lock_specs(77, branches=True, tags=True, extra_integration_ids=[29110])
+    branches, tags = github_rulesets.client_lock_specs(77, branches=True, tags=True, extra_integration_ids=[9])
+    named_apps = {
+        ("RepositoryRole", github_rulesets.ADMIN_REPOSITORY_ROLE_ID),
+        ("Integration", 77),
+        ("Integration", 9),
+    }
     for spec, target in ((branches, "branch"), (tags, "tag")):
         assert spec.payload["target"] == target
         assert spec.payload["enforcement"] == "active"
         assert spec.payload["conditions"]["ref_name"]["include"] == [github_rulesets.ALL_REFS]
         assert spec.payload["conditions"]["ref_name"]["exclude"] == []
         assert {rule["type"] for rule in spec.payload["rules"]} == {"creation", "update", "deletion"}
-        assert lock_bypass(spec) == {
-            ("RepositoryRole", github_rulesets.ADMIN_REPOSITORY_ROLE_ID),
-            ("Integration", 77),
-            ("Integration", 29110),
-        }
+    assert lock_bypass(tags) == named_apps
+    assert lock_bypass(branches) == named_apps | {
+        ("Integration", github_rulesets.DEPENDABOT_APP_ID),
+        ("Integration", github_rulesets.RENOVATE_APP_ID),
+    }
     assert branches.name != tags.name
     assert {spec.name for spec in (branches, tags)}.isdisjoint(github_rulesets.required_ruleset_names())
 
@@ -446,7 +451,7 @@ def test_client_lock_tag_and_branch_specs_are_selected_separately() -> None:
     assert only_branches.payload["target"] == "branch"
     assert only_tags.payload["target"] == "tag"
     # Repeating the App or an extra id never duplicates a bypass actor.
-    (spec,) = github_rulesets.client_lock_specs(77, branches=True, tags=False, extra_integration_ids=[77, 9, 9])
+    (spec,) = github_rulesets.client_lock_specs(77, branches=False, tags=True, extra_integration_ids=[77, 9, 9])
     assert sorted(actor["actor_id"] for actor in spec.payload["bypass_actors"]) == sorted(
         [github_rulesets.ADMIN_REPOSITORY_ROLE_ID, 77, 9])
 
@@ -500,12 +505,12 @@ def test_client_lock_apply_adds_beside_standard_pair_and_converges() -> None:
 
 
 def test_client_lock_plan_names_bypass_actors_a_rerun_would_remove() -> None:
-    (with_dependabot,) = github_rulesets.client_lock_specs(77, branches=True, tags=False, extra_integration_ids=[29110])
+    (with_extra,) = github_rulesets.client_lock_specs(77, branches=True, tags=False, extra_integration_ids=[9])
     (without,) = github_rulesets.client_lock_specs(77, branches=True, tags=False)
-    (change,) = github_rulesets.plan_changes([response_ruleset(with_dependabot, 4)], (without,))
+    (change,) = github_rulesets.plan_changes([response_ruleset(with_extra, 4)], (without,))
     assert change.action == "update"
     assert change.as_dict()["bypass_removed"] == [
-        {"actor_type": "Integration", "actor_id": 29110, "bypass_mode": "always"}]
+        {"actor_type": "Integration", "actor_id": 9, "bypass_mode": "always"}]
     assert "bypass_added" not in change.as_dict()
 
 
