@@ -2080,6 +2080,18 @@ within the invocation. The `work_graph_context` reports observed and unread
 nodes and batch request count; those counts do not prove complete portfolio
 coverage. Per-repository planning calls retain their existing read routes.
 
+The default account-wide scan first reads current live-breakage labels across
+accessible owner repositories, then evaluates their native paths before
+milestone ranking. Unread or partial priority evidence returns
+`live_breakage_unread`. Track discovery uses the same open-issue inventory as
+the goal board, including Tracks without a planning label. An unread Track
+inventory returns `work_graph_unread`, unknown milestone summaries and a nonzero
+exit; a fully read empty inventory can report `no_linked_work`.
+`milestone_ranking_complete` describes the milestone graph independently of
+optional discovery. Overall candidate coverage also requires availability and
+ownership evidence. Successful partial scans recommend `review_partial_coverage`
+unless transport evidence supplies a more specific action.
+
 The goal board and direction audit consume the same native graph and discussion
 reading functions. The board keeps its bounded view of recent
 decisions and PR handoffs. A weekly audit shares one invocation cache from

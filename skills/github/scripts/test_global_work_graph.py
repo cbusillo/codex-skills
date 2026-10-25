@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 import unittest
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import test_gh_plan_next as cli
 from test_github_work_graph import connection, node, replay, unavailable
@@ -118,6 +118,93 @@ def run_native_graph(
 
 
 class GlobalWorkGraphTests(unittest.TestCase):
+    def test_unread_inventory_is_loud_while_a_read_empty_track_inventory_is_known_empty(self) -> None:
+        import time
+
+        with cli.global_fixture([], [], {}) as (module, result, _reads):
+            module.cmd_next(cli.next_args())
+            self.assertEqual({row["state"] for row in result["milestone_summary"]}, {"no_linked_work"})
+            module.next_live_breakage = lambda *_args: ([], {"complete": False})
+            with self.assertRaises(module.ClassifiedPlanError) as caught:
+                module.cmd_next(cli.next_args())
+            self.assertEqual(caught.exception.code, "live_breakage_unread")
+            self.assertEqual({row["state"] for row in caught.exception.payload["milestone_summary"]}, {"unknown"})
+        with cli.global_fixture([], [], {}) as (module, _result, _reads):
+            collect = module.collect_paged_rest_items
+
+            def expired(path: str, **kwargs: Any) -> Any:
+                module.NEXT_READS.deadline = time.time() - 1
+                return collect(path, **kwargs)
+
+            module.collect_paged_rest_items = expired
+            with self.assertRaises(module.ClassifiedPlanError) as caught:
+                module.cmd_next(cli.next_args())
+            self.assertEqual(caught.exception.code, "work_graph_unread")
+            self.assertEqual({row["state"] for row in caught.exception.payload["milestone_summary"]}, {"unknown"})
+
+    def test_unavailable_track_inventory_or_all_track_bodies_cannot_report_empty_success(self) -> None:
+        root = cli.track("someone/direction", 1, "First")
+        for inventory_failed in (True, False):
+            with cli.global_fixture([root], [], {}) as (module, _result, _reads):
+                inventory = module.github_work_graph.TrackInventory("fixture", [root], {}, True)
+                with patch.dict(
+                    module.github_work_graph.__dict__,
+                    {
+                        "track_inventory": Mock(side_effect=ValueError("Unavailable"))
+                        if inventory_failed
+                        else Mock(return_value=inventory)
+                    },
+                ):
+                    module.get_issue = Mock(side_effect=module.PlanError("Track unavailable"))
+                    with self.assertRaises(module.ClassifiedPlanError) as caught:
+                        module.cmd_next(cli.next_args())
+                self.assertEqual(caught.exception.code, "work_graph_unread")
+                self.assertEqual({row["state"] for row in caught.exception.payload["milestone_summary"]}, {"unknown"})
+
+    def test_marked_live_work_is_evaluated_before_milestone_work(self) -> None:
+        roots = [cli.track("someone/direction", 1, "First"), cli.track("someone/direction", 2, "Second")]
+        leaf = cli.global_issue("someone/product", 10)
+        incident = cli.global_issue(
+            "someone/live", 90, labels=["plan", "plan:active", cli.load_module().github_direction_next.LIVE_BREAKAGE_LABEL]
+        )
+        edges = {(roots[0]["repo"], 1): cli.relationships(sub_issues=[leaf])}
+        with cli.global_fixture(roots, [leaf, incident], edges, discovered=[incident]) as (module, result, _reads):
+            relationship_reads = module.read_next_issue_relationships
+            observed = []
+
+            def read(repo: str, number: int, *args: Any, **kwargs: Any) -> Any:
+                observed.append(number)
+                return relationship_reads(repo, number, *args, **kwargs)
+
+            module.read_next_issue_relationships = read
+            module.next_live_breakage = lambda *_args: ([incident], {"complete": True})
+            module.cmd_next(cli.next_args())
+            self.assertLess(observed.index(incident["number"]), observed.index(roots[0]["number"]))
+            self.assertEqual(result["candidates"][0]["number"], incident["number"])
+
+    def test_success_recommendation_reflects_read_coverage_and_preserves_specific_transport_guidance(self) -> None:
+        roots = [cli.track("someone/direction", 1, "First"), cli.track("someone/direction", 2, "Second")]
+        leaf = cli.global_issue("someone/product", 10)
+        edges = {(roots[0]["repo"], 1): cli.relationships(sub_issues=[leaf])}
+        with cli.global_fixture(roots, [leaf], edges) as (module, result, _reads):
+            module.CURRENT_RETRY_FIELDS["recommended_next_action"] = "inspect_last_failure"
+            module.cmd_next(cli.next_args())
+            self.assertEqual(result["recommended_next_action"], "none")
+
+            def unread_ownership(items: list[dict[str, Any]], _args: Any) -> dict[str, Any]:
+                for item in items:
+                    item["queue"] = {"state": "review", "claim_required": True}
+                return {"repositories": {leaf["repo"]: {"complete": False}}}
+
+            module.annotate_next_queue = unread_ownership
+            module.CURRENT_RETRY_FIELDS["recommended_next_action"] = "inspect_last_failure"
+            module.cmd_next(cli.next_args())
+            self.assertFalse(result["candidate_coverage"]["complete"])
+            self.assertEqual(result["recommended_next_action"], "review_partial_coverage")
+            module.CURRENT_RETRY_FIELDS["recommended_next_action"] = "retry_after_reported_reset"
+            module.cmd_next(cli.next_args())
+            self.assertEqual(result["recommended_next_action"], "retry_after_reported_reset")
+
     def test_discovery_prefetch_keeps_full_batches_until_the_final_chunk(self) -> None:
         root = cli.track("someone/direction", 1, "First")
         leaf = cli.global_issue("someone/product", 2)
