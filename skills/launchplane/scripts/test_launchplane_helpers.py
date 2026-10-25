@@ -8082,6 +8082,17 @@ def test_production_backup_authority_read_keeps_state_and_record_ids() -> None:
     assert reads[0]["query"]["promotion_action"] == "generic_web_prod_promotion.execute"
     assert payload["result"]["state"] == "stale"
     assert payload["result"]["policy"]["record_id"] == "production-backup-policy-abc-r1"
+    response = _backup_read_response(
+        state="stale", ready=False, reason_codes=["production_backup_target_stale:example-prod-guest"]
+    )
+    response["policy_configuration"] = {"provider_coordinates": "private-provider-settings"}
+    accepted_status, accepted, _posts, _reads = _run_main(argv, read=response)
+    assert accepted_status == 0, accepted
+    assert accepted["result"] == payload["result"]
+    assert "private-provider-settings" not in json.dumps(accepted)
+    response["undeclared_field"] = {}
+    unknown_status, unknown, _posts, _reads = _run_main(argv, read=response)
+    assert unknown_status == 1 and unknown["status"] == "invalid"
     status, payload, _posts, _reads = _run_main(argv, read=_backup_read_response(state="excellent"))
     assert status == 1 and payload["status"] == "invalid"
 

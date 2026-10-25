@@ -87,6 +87,7 @@
   ],
   "production-backup-authority-read": [
     "authority",
+    "policy_configuration",
     "status",
     "trace_id"
   ],
