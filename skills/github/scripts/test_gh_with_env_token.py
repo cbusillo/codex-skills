@@ -143,6 +143,7 @@ print(json.dumps({{"args": args, "repositories": [row["full_name"] for row in ro
                 assert "--include-archived" not in payload["args"]
         for command in (
             ("search", "issues", "archived:true"),
+            ("search", "issues", "--include-prs", "archived:true"),
             ("search", "prs", "--archived=true"),
             ("api", f"search/issues?{urlencode({'q': 'archived:true'})}"),
             ("api", "-XGET", "search/issues", "-fq=archived:true"),
@@ -153,6 +154,8 @@ print(json.dumps({{"args": args, "repositories": [row["full_name"] for row in ro
             assert payload["repositories"] == archived, (command, payload)
             assert payload["args"] == list(command)
         result = run_wrapper(env_file, classifier, identity, "search", "prs", "--include-archived", gh_command=fake_gh)
+        assert json.loads(result.stdout)["repositories"] == current + archived
+        result = run_wrapper(env_file, classifier, identity, "api", "search/issues?q=user:owner", "--include-archived", gh_command=fake_gh)
         assert json.loads(result.stdout)["repositories"] == current + archived
         write(identity, fake_app_identity())
         result = run_wrapper(
@@ -165,8 +168,19 @@ print(json.dumps({{"args": args, "repositories": [row["full_name"] for row in ro
         injected = root / "injected"
         literal = f'quotes\' " and $(touch {injected})\n`touch {injected}`'
         result = run_wrapper(env_file, classifier, identity, "search", "prs", literal, gh_command=fake_gh)
-        assert json.loads(result.stdout)["args"] == ["search", "prs", literal, "archived:false"]
+        assert literal in json.loads(result.stdout)["args"]
+        assert json.loads(result.stdout)["repositories"] == current
         assert not injected.exists()
+        result = run_wrapper(env_file, classifier, identity, "api", "search/issues?q=repo:{owner}/{repo}", gh_command=fake_gh)
+        assert "{owner}/{repo}" in " ".join(json.loads(result.stdout)["args"])
+        query_file = root / "query.txt"
+        query_file.write_text("user:owner")
+        for flag in ("-F", "--field", "-iF"):
+            result = run_wrapper(env_file, classifier, identity, "api", "-XGET", "search/issues", flag, f"q=@{query_file}", gh_command=fake_gh)
+            assert result.returncode == 0, result.stderr
+            payload = json.loads(result.stdout)
+            assert payload["repositories"] == current
+            assert not any(argument.startswith("q=@") for argument in payload["args"])
 
 
 def test_check_preserves_user_token_fallback_when_app_is_absent() -> None:

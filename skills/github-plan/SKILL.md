@@ -88,6 +88,16 @@ policy:
           path: ../github/scripts/gh-plan.py
           example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "index"]
           purpose: Lists durable planning issues with compact status, label, and milestone fields while excluding pull requests.
+    - id: prefer-gh-plan-search-for-issue-search
+      match:
+        argv_prefix: ["gh", "search", "issues"]
+      action: require_preferred
+      message: Raw `gh search issues` skips the planning helper's normalized output and stale/duplicate plan cues. Use the GitHub plan helper for planning discovery.
+      preferred:
+        - kind: script
+          path: ../github/scripts/gh-plan.py
+          example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "search", "<query>"]
+          purpose: Searches planning issues with compact normalized output and state handling.
     - id: prefer-gh-plan-helper-for-project-commands
       match:
         argv_prefix: ["gh", "project"]

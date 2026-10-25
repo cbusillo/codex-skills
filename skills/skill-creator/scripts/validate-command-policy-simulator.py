@@ -265,6 +265,7 @@ EXPECTATIONS: tuple[tuple[list[str], str | None, str], ...] = (
     (["git", "-c", "http.extraHeader=x", "push", "origin", "branch"], None, "github"),
     (["git", "-C", "path", "push", "origin", "branch"], None, "github"),
     (["gh", "issue", "list", "--label", "plan"], None, "github-plan"),
+    (["gh", "search", "issues", "repo:owner/repo"], None, "github-plan"),
     (["gh", "project", "item-list", "1"], None, "github-plan"),
     (["gh", "api", "graphql"], graphql_shell(), "github-plan"),
     (["curl", "inspection"], inspection_shell(), "jetbrains-inspection"),

@@ -10,8 +10,9 @@ import re
 import shlex
 import sys
 from collections.abc import Callable, Iterable
+from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import quote_plus, unquote_plus, urlsplit, urlunsplit
 
 
 def add_include_archived_argument(parser: argparse.ArgumentParser) -> None:
@@ -62,7 +63,7 @@ def scope_cli_search(args: list[str]) -> list[str]:
     scoped = []
     include_archived = False
     index = 0
-    boolean_flags = {"--archived", "--draft", "--locked", "--merged", "--web", "-w", "--help", "-h"}
+    boolean_flags = {"--archived", "--draft", "--include-prs", "--locked", "--merged", "--web", "-w", "--help", "-h"}
     while index < len(args):
         argument = args[index]
         index += 1
@@ -93,6 +94,11 @@ def scope_cli_search(args: list[str]) -> list[str]:
 def scope_api_search(args: list[str], *, include_archived: bool) -> list[str]:
     from github_api import parse_gh_api_args
 
+    if "--include-archived" in args:
+        opted_in = [argument for argument in args if argument != "--include-archived"]
+        parsed_opt_in = parse_gh_api_args(opted_in)
+        if parsed_opt_in is not None and urlsplit(parsed_opt_in.endpoint).path.strip("/") == "search/issues":
+            return opted_in
     parsed = parse_gh_api_args(args)
     if parsed is None or parsed.sent_method != "GET" or include_archived:
         return args
@@ -109,17 +115,27 @@ def scope_api_search(args: list[str], *, include_archived: bool) -> list[str]:
             if field[1] is None and (index == 0 or not re.fullmatch(r"-i*[fF]|--(?:raw-)?field", args[index - 1])):
                 continue
             query = field[2][2:]
-            scoped[index] = f"{field[1] or ''}q={search_query(query, preserve_archive_qualifiers=True)}"
+            prefix = field[1] or ""
+            flag = prefix or args[index - 1]
+            if (flag.startswith("--field") or flag.rstrip("=").endswith("F")) and query.startswith("@"):
+                query = sys.stdin.read() if query == "@-" else Path(query[1:]).read_text()
+                if prefix:
+                    prefix = prefix.replace("--field", "--raw-field").replace("F", "f")
+                else:
+                    scoped[index - 1] = flag.replace("--field", "--raw-field").replace("F", "f")
+            scoped[index] = f"{prefix}q={search_query(query, preserve_archive_qualifiers=True)}"
         return scoped
-    parameters: list[tuple[str, str]] = parse_qsl(endpoint.query, keep_blank_values=True)
-    if not any(key == "q" for key, _ in parameters):
-        return args
-    scoped_parameters = [
-        (key, search_query(value, preserve_archive_qualifiers=True) if key == "q" else value) for key, value in parameters
-    ]
+    parameters = endpoint.query.split("&")
+    scoped_parameters = []
+    for parameter in parameters:
+        key, _, value = parameter.partition("=")
+        query = unquote_plus(value)
+        if unquote_plus(key) == "q" and search_query(query, preserve_archive_qualifiers=True) != query:
+            parameter += quote_plus(f" {search_query('')}")
+        scoped_parameters.append(parameter)
     if scoped_parameters == parameters:
         return args
-    scoped_endpoint = urlunsplit((endpoint.scheme, endpoint.netloc, endpoint.path, urlencode(scoped_parameters), endpoint.fragment))
+    scoped_endpoint = urlunsplit((endpoint.scheme, endpoint.netloc, endpoint.path, "&".join(scoped_parameters), endpoint.fragment))
     return [scoped_endpoint if argument == parsed.endpoint else argument for argument in args]
 
 
