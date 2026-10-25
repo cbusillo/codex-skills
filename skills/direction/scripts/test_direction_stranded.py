@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 from types import SimpleNamespace
+from typing import Any
 import sys
 
 import direction_audit as audit
@@ -206,6 +207,59 @@ class StrandedTests(unittest.TestCase):
         rows = [r for r in self.report()["findings"] if r["number"] == 3678]
         self.assertEqual(len(rows), 1)
         self.assertIn(newer["html_url"], rows[0]["evidence"])
+
+
+class SettledQuestionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        fixture = json.loads(Path(__file__).with_name("fixtures").joinpath("stranded-week-2026-10-15.json").read_text())
+        self.records = [fixture["records"][0]]
+        self.now = dt.datetime.fromisoformat(fixture["now"])
+        self.question = self.records[0]["comments"][0]
+        self.question["body"] = "Owner question: Q611. May the rehearsal continue?"
+        self.records[0]["comments"] = [self.question]
+        self.answer = {"id": 900, "created_at": "2026-10-15T18:00:00Z",
+                       "body": "Q611 withdrawn by the Supervisor. Existing authority covers this.",
+                       "user": {"login": "shiny-code-app[bot]"},
+                       "html_url": "https://github.com/cbusillo/direction/issues/98#issuecomment-900"}
+
+    def question_findings(self, **kwargs: Any) -> list[dict]:
+        result = sweep.report(self.records, now=self.now, age_hours=2, trusted={"shiny-code-app[bot]"},
+                              owners={"cbusillo"}, **kwargs)
+        return [row for row in result["findings"]
+                if row["kind"] in {"unanswered_question", "registered_question"}]
+
+    def test_existing_supervisor_settlements_remove_both_digest_question_kinds(self) -> None:
+        for body in (
+            "Q611 withdrawn by the Supervisor. Existing authority covers this.",
+            "Supervisor answer to Q611 (this is the Supervisor's brief wording, not a Director decision). Yes: continue.",
+            "Supervisor answer to Q611: this is already decided, so it does not go to Chris.\n\nQ645's Director decision authorizes this.",
+        ):
+            for open_inventory in (True, False):
+                with self.subTest(body=body, open_inventory=open_inventory):
+                    self.answer["body"] = body
+                    url = self.question["html_url"]
+                    delivery = {"complete": True, "questions": [
+                        {"url": url, "registration_url": url + "-registration"}]}
+                    self.records[0]["comments"] = [self.question, self.answer] if open_inventory else []
+                    related = [] if open_inventory else [self.question, self.answer]
+                    self.assertEqual(self.question_findings(delivery_view=delivery, related_comments=related), [])
+
+    def test_chatter_untrusted_earlier_and_unrelated_settlements_leave_question_flagged(self) -> None:
+        for changes in (
+            {"body": "Q611 still needs an answer. Q645 is already decided."},
+            {"body": "Supervisor answer to Q6110: continue."},
+            {"body": "Q645 withdrawn by the Supervisor. Q611 is a separate question."},
+            {"body": "> Q611 withdrawn by the Supervisor."},
+            {"body": "Supervisor answer to Q611: continue.", "user": {"login": "untrusted"}},
+            {"created_at": "2026-10-01T18:00:00Z"},
+            {"created_at": "invalid"},
+        ):
+            with self.subTest(changes=changes):
+                self.records[0]["comments"] = [self.question, {**self.answer, **changes}]
+                self.assertEqual([r["url"] for r in self.question_findings()], [self.question["html_url"]])
+        self.question["body"] = "Owner question: May we continue? Q611 is context."
+        self.records[0]["comments"] = [self.question, self.answer]
+        self.assertEqual([r["url"] for r in self.question_findings()], [self.question["html_url"]])
 
 
 class MergedReviewTests(unittest.TestCase):

@@ -44,6 +44,12 @@ unknown), next actor and review requirement:
   shared `oq.questions` view supplies classification; the shared question
   delivery inventory supplies registration, acknowledgement and resurfacing
   evidence when `--question-queue` is selected and available.
+  The digest also omits questions with a later trusted comment headed
+  `Q<number> withdrawn by the Supervisor` or `Supervisor answer to Q<number>`.
+  These existing records settle the exact question for digest reporting, including
+  recovered registrations; they do not become Director decisions. Quoted text,
+  ordinary mentions, untrusted authors and replies predating the question do
+  not settle it.
 - Current-head Ready handoffs still open past the age threshold, with or
   without the enqueue label. Since
   [launchplane#3834](https://github.com/cbusillo/launchplane/pull/3834) the

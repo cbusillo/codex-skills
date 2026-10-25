@@ -19,6 +19,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import direction_audit as audit
+from skills.direction.scripts.question_id import heading_id
 from skills.github.scripts import github_identity, github_plan_wait, github_plan_trigger, github_read, ready_handoff, github_request_usage
 
 # The existing Supervisor helpers use sibling imports when called as scripts.
@@ -34,6 +35,27 @@ EASTERN = ZoneInfo("America/New_York")
 QUESTION = re.compile(r"\bQ[1-9][0-9]*\b")
 PREFIXES = oq.QUESTION_PREFIXES
 COMMENT_LINK = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/\d+#issuecomment-\d+(?!\d)")
+SUPERVISOR_SETTLEMENT = re.compile(
+    r"^(?:Supervisor answer to (Q[1-9][0-9]*)\b|(Q[1-9][0-9]*) withdrawn by the Supervisor\b)"
+)
+
+
+def supervisor_settled_questions(comments: list[dict], trusted: set[str]) -> set[str]:
+    settlements: dict[str, list[dt.datetime]] = {}
+    for comment in comments:
+        if login(comment) not in trusted:
+            continue
+        match = SUPERVISOR_SETTLEMENT.match(question_body(comment))
+        when = stamp(comment.get("created_at"))
+        if match and when:
+            settlements.setdefault(match[1] or match[2], []).append(when)
+    settled = set()
+    for comment in comments:
+        question = heading_id(question_body(comment))
+        asked = stamp(comment.get("created_at"))
+        if question and asked and any(when > asked for when in settlements.get(question, [])):
+            settled.add(comment.get("html_url") or comment["url"])
+    return settled
 
 
 def is_decision(body: str) -> bool:
@@ -293,7 +315,9 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                 question_view[row["url"]] = row
     decisions = [c for c in comments if login(c) in owners or
                  (login(c) in trusted and is_decision(question_body(c)))]
-    deliveries = {row["url"]: row for row in (delivery_view or {}).get("questions", [])}
+    supervisor_settled = supervisor_settled_questions(comments, trusted)
+    deliveries = {row["url"]: row for row in (delivery_view or {}).get("questions", [])
+                  if row["url"] not in supervisor_settled}
     if delivery_view is not None and delivery_view.get("complete") is not True:
         gaps.append({"source": "question_delivery", "reason": "queue_view_incomplete",
                      **{k: delivery_view.get(k, []) for k in
@@ -334,6 +358,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
     open_questions = {c["html_url"] for r in records if not r.get("trigger_only") and r["item"].get("state") == "open"
                       for c in r.get("comments", []) if c.get("html_url") and login(c) in trusted
                       and question_view.get(c["html_url"], {}).get("status") == "needs_review"
+                      and c["html_url"] not in supervisor_settled
                       and not answered(c, decisions)}
     open_questions |= {url for url, row in deliveries.items()
                        if row.get("registration_url") and row.get("status") != "unread_source"}
@@ -359,6 +384,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
             body = question_body(comment)
             question = question_view.get(comment.get("html_url"), {})
             if (open_item and question.get("status") == "needs_review"
+                    and comment.get("html_url") not in supervisor_settled
                     and not answered(comment, decisions)):
                 delivery = deliveries.get(comment["html_url"])
                 add("unanswered_question", record, comment["html_url"], comment.get("created_at"),
