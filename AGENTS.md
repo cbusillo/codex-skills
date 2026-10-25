@@ -1,5 +1,11 @@
 # Codex Skills Repository
 
+## What Codex Skills does
+
+Codex Skills is the shared catalog of skills and helpers that lets coding agents finish repository work consistently on Codex and Claude Code.
+It supplies the execution, review, planning, and handoff procedures; each product repository keeps its own product facts.
+Evidence: [DIRECTION.md](DIRECTION.md).
+
 ## Direction and execution
 
 - Follow the shared [executing loop](skills/references/executing-loop.md), loading
