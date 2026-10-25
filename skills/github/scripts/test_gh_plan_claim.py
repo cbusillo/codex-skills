@@ -98,6 +98,7 @@ class ClaimTests(unittest.TestCase):
         # Fixture sessions are labels; the harness running the tests supplies its own native IDs.
         self.enterContext(patch.dict(os.environ))
         os.environ["HOME"] = self.enterContext(tempfile.TemporaryDirectory())
+        os.environ.pop("DIRECTION_MARKER", None)
         self.enterContext(patch.object(Path, "home", return_value=Path(os.environ["HOME"])))
         for name in (n for names in github_agent.NATIVE_SESSION_VARS.values() for n in names):
             os.environ.pop(name, None)
@@ -115,6 +116,8 @@ class ClaimTests(unittest.TestCase):
         self.milestone_edges = {}
         self.milestone_blocking = {}
         self.projections = []
+        self.projection_result = None
+        self.direction_repo = "owner/direction"
         self.after_milestone_link = lambda: None
         self.timelines = {}
         self.history_nodes = {}
@@ -218,9 +221,12 @@ class ClaimTests(unittest.TestCase):
         # persisted label projection has stateful mutation tests of its own.
         def project(targets: list[tuple[str, int]]) -> dict[str, Any]:
             self.projections.extend(targets)
-            return {"ok": True, "coverage": "complete", "issues": []}
+            return self.projection_result or {"ok": True, "coverage": "complete", "issues": []}
         projection = {"refresh_planning_targets": project}
-        with patch.multiple(PLAN, default_repo=lambda repo: repo or "owner/repo", get_issue=self.get_issue,
+        direction_path = Path.home() / "direction-account.json"
+        direction_path.write_text(json.dumps({"turn_repo": self.direction_repo}))
+        with patch.dict(os.environ, {"DIRECTION_MARKER": str(direction_path)}), \
+                patch.multiple(PLAN, default_repo=lambda repo: repo or "owner/repo", get_issue=self.get_issue,
                             EXPECTED_ACTOR=TEST_BOT,
                             collect_paged_rest_items=self.read_pages, rest_edit_issue=self.edit,
                             comment_route=route or (lambda: ("bot", "bot-gh", TEST_BOT)),
@@ -5431,7 +5437,7 @@ class ClaimTests(unittest.TestCase):
         self.assertNotIn("milestone_link", self.events)
 
     def test_milestone_claim_refuses_unlinked_or_invalid_track_without_publication(self) -> None:
-        for invalid in ("missing", "closed_issue", "closed_milestone", "unlisted", "not_track", "pr"):
+        for invalid in ("missing", "closed_issue", "closed_milestone", "unlisted", "not_track", "pr", "foreign"):
             with self.subTest(invalid=invalid):
                 self.setUp()
                 link = self.milestone_fixture()
@@ -5441,6 +5447,7 @@ class ClaimTests(unittest.TestCase):
                 if invalid == "unlisted": track["milestone"]["title"] = "An unapproved milestone"
                 if invalid == "not_track": track["title"] = "A decision"
                 if invalid == "pr": self.pr_fixture()
+                if invalid == "foreign": link = link.replace("owner/direction", "other/direction")
                 self.args.admission, self.args.admission_link = "milestone", [] if invalid == "missing" else [link]
                 self.args.admission_unlinked = "An explanation cannot replace the link"
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
@@ -5489,22 +5496,55 @@ class ClaimTests(unittest.TestCase):
         self.comments[-1]["body"] = self.comments[-1]["body"].replace(link, "legacy context without a Track")
         self.run_claim()
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.args.admission, self.args.admission_link = None, []
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_milestone_claim_can_cite_the_directors_track_across_accounts(self) -> None:
         link = self.milestone_fixture().replace("owner/direction", "director/direction")
         self.targets["9"]["repo"] = "director/direction"
+        self.direction_repo = "director/direction"
         self.args.admission, self.args.admission_link = "milestone", [link]
         self.run_claim()
         self.assertEqual(self.projections, [("director/direction", 9)])
 
-    def test_milestone_claim_uses_a_cited_origin_already_in_the_graph(self) -> None:
+    def test_milestone_claim_does_not_read_or_change_cited_context_issues(self) -> None:
         link = self.milestone_fixture()
-        self.targets["50"] = {"id": 5000, "number": 50, "repo": "owner/repo", "state": "open"}
-        self.milestone_blocking["/repos/owner/repo/issues/50/dependencies/blocking"] = [
-            {"html_url": "https://github.com/owner/direction/issues/9"}]
-        self.args.admission, self.args.admission_link = "milestone", [link, "https://github.com/owner/repo/issues/50"]
+        self.args.admission, self.args.admission_link = "milestone", [link, "https://github.com/other/private/issues/50"]
+        original = self.get_issue
+        def get_issue(ref: str, repo: str) -> tuple[str, dict[str, Any]]:
+            if repo == "other/private": raise PLAN.PlanError("Unrelated context is not readable")
+            return original(ref, repo)
+        with patch.object(self, "get_issue", side_effect=get_issue):
+            self.run_claim()
+        self.assertEqual(self.projections, [("owner/direction", 9)])
+
+    def test_direction_repository_uses_the_shared_read_only_account_lookup(self) -> None:
+        self.assertEqual(PLAN.milestone_direction_repo("client/product"), "client/direction")
+        path = Path(os.environ["HOME"]) / "direction.json"
+        path.write_text(json.dumps({"turn_repo": "director/direction"}))
+        with patch.dict(os.environ, {"DIRECTION_MARKER": str(path)}):
+            self.assertEqual(PLAN.milestone_direction_repo("client/product"), "director/direction")
+
+    def test_existing_claim_cannot_silently_change_admission_kind(self) -> None:
+        for kind in (None, "own-project"):
+            with self.subTest(kind=kind):
+                self.setUp()
+                self.admit(kind)
+                before = len(self.events)
+                self.args.admission, self.args.admission_link = "milestone", [self.milestone_fixture()]
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_admission_changed")
+                self.assertFalse(set(self.events[before:]) & {"milestone_link", "post", "status", "labels"})
+
+    def test_milestone_label_projection_failure_is_advisory_after_native_link_proof(self) -> None:
+        self.args.admission, self.args.admission_link = "milestone", [self.milestone_fixture()]
+        self.projection_result = {"ok": False, "coverage": "partial", "issues": []}
         self.run_claim()
-        self.assertEqual(self.projections, [("owner/repo", 50)])
+        result = self.emitted.call_args.args[0]
+        self.assertTrue(result["ok"])
+        self.assertIn("recovery", result["milestone_projection"])
 
     def test_milestone_claim_preserves_a_native_parent_path(self) -> None:
         link = self.milestone_fixture()
@@ -5559,7 +5599,7 @@ class ClaimTests(unittest.TestCase):
         self.run_claim()
 
     def test_milestone_admission_records_optional_context(self):
-        context = "The Director's Track is in a different account"
+        context = "Legacy context from an existing caller"
         self.admit("milestone", links=[self.milestone_fixture()], unlinked=context)
         self.assertIn(context, self.comments[-1]["body"])
         self.assertTrue(self.emitted.call_args.args[0]["ok"])

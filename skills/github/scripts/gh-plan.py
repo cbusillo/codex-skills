@@ -19,6 +19,7 @@ import json
 import os
 import pathlib
 import re
+import runpy
 import shlex
 import shutil
 import subprocess
@@ -2600,25 +2601,15 @@ def cmd_claim(args: argparse.Namespace) -> None:
     claim_once(claim_reference(args))
 
 
-def milestone_claim_track(links: list[str]) -> dict[str, Any]:
-    for link in links:
-        target = github_plan_claim.admission_link_target(link)
-        if target is None or not target[0].endswith("/direction"):
-            continue
-        direction_repo = target[0]
-        titles = direction_milestone_titles(load_direction(direction_repo) or "")
-        _, track = get_issue(str(target[1]), direction_repo)
-        milestone = track.get("milestone") or {}
-        if ("pull_request" not in track and track.get("state") == "open"
-                and str(track.get("title", "")).startswith("Track:")
-                and milestone.get("state") == "open" and milestone.get("title") in titles):
-            return track
-    raise ClassifiedPlanError("claim_admission_unlinked",
-        "Milestone admission needs --admission-link URL naming an open Track in the Director's direction "
-        "and a listed milestone; the helper links the issue automatically. --admission-unlinked cannot bypass this.")
+def milestone_direction_repo(issue_repo: str) -> str:
+    hook = runpy.run_path(str(SKILL_DIR.parents[1] / "hooks/direction_check_hook.py"))
+    owner = hook["marker_account"](hook["read_marker"](hook["marker_path"]()))
+    return f"{owner or issue_repo.split('/')[0]}/direction".casefold()
 
 
-def milestone_claim_linked(issue: dict[str, Any], track: dict[str, Any]) -> bool:
+def milestone_claim_ancestry(
+    issue: dict[str, Any], target: tuple[str, int] | None = None,
+) -> github_plan_graph.NativeIssueGraph:
     if "pull_request" in issue:
         raise ClassifiedPlanError("claim_admission_unlinked",
             "Milestone work needs a canonical issue for the native Track link; claim that issue instead of its PR.")
@@ -2638,9 +2629,13 @@ def milestone_claim_linked(issue: dict[str, Any], track: dict[str, Any]) -> bool
         related.extend(github_plan_graph.native_issue_key(edge) for edge in edges)
         return related
 
-    target = issue["repo"].casefold(), issue["number"]
+    return github_plan_graph.walk_native_issues([(issue["repo"].casefold(), issue["number"])],
+                                                read_edges=read_edges, target=target)
+
+
+def milestone_claim_linked(issue: dict[str, Any], track: dict[str, Any]) -> bool:
     track_key = track["repo"].casefold(), track["number"]
-    graph = github_plan_graph.walk_native_issues([target], read_edges=read_edges, target=track_key)
+    graph = milestone_claim_ancestry(issue, track_key)
     if track_key in graph.nodes:
         return True
     if not graph.complete:
@@ -2649,16 +2644,31 @@ def milestone_claim_linked(issue: dict[str, Any], track: dict[str, Any]) -> bool
     return False
 
 
-def milestone_claim_origin(issue: dict[str, Any], track: dict[str, Any], links: list[str]) -> dict[str, Any]:
-    for link in links:
-        target = github_plan_claim.admission_link_target(link)
-        if target is None or target[:2] in {(issue["repo"].casefold(), issue["number"]),
-                                            (track["repo"].casefold(), track["number"])}:
-            continue
-        _, origin = get_issue(str(target[1]), target[0])
-        if "pull_request" not in origin and origin.get("state") == "open" and milestone_claim_linked(origin, track):
-            return origin
-    return track
+def milestone_claim_track(issue: dict[str, Any], links: list[str]) -> dict[str, Any]:
+    direction_repo = milestone_direction_repo(issue["repo"])
+    titles = direction_milestone_titles(load_direction(direction_repo) or "")
+    targets = [target[1] for link in links if (target := github_plan_claim.admission_link_target(link))
+               and target[0] == direction_repo]
+
+    def valid_track(numbers: list[int]) -> dict[str, Any] | None:
+        for number in dict.fromkeys(numbers):
+            _, track = get_issue(str(number), direction_repo)
+            milestone = track.get("milestone") or {}
+            if ("pull_request" not in track and track.get("state") == "open"
+                    and str(track.get("title", "")).startswith("Track:")
+                    and milestone.get("state") == "open" and milestone.get("title") in titles):
+                return track
+        return None
+
+    if track := valid_track(targets):
+        return track
+    ancestry = milestone_claim_ancestry(issue)
+    if track := valid_track(sorted(number for repo, number in ancestry.nodes if repo == direction_repo)):
+        return track
+    code = "claim_admission_unlinked" if ancestry.complete else "claim_milestone_graph_incomplete"
+    raise ClassifiedPlanError(code,
+        f"Milestone admission needs an open Track in {direction_repo} under a listed milestone. "
+        "Cite it with --admission-link URL; the helper links the issue automatically. Context cannot bypass the native link.")
 
 
 def link_native_dependency(
@@ -2724,6 +2734,7 @@ def claim_once(args: argparse.Namespace) -> None:
     previous_wait = ""
     planned_wait = ""
     ended_owners: list[dict[str, Any]] = []
+    milestone_projection = None
     resume_source_number: int | None = None
     retained_ended_sources: set[str] = set()
     planning_checkout = getattr(args, "planning_checkout", None)
@@ -3471,6 +3482,7 @@ def claim_once(args: argparse.Namespace) -> None:
         admission_record = "" if comment_recorded else admission_line()
         actor, gh_cmd, expected_actor = comment_route()
         milestone_links = admission_links if admission == "milestone" else None
+        recorded_kind = None
         for comment in reversed(comments):
             if issue_author_login(comment) != expected_actor:
                 continue
@@ -3479,12 +3491,15 @@ def claim_once(args: argparse.Namespace) -> None:
                 continue
             recorded = re.search(r"(?m)^Admission: ([\w-]+)\b[^\n]*", comment.get("body") or "")
             if recorded:
+                recorded_kind = recorded[1]
                 milestone_links = ([match[0] for match in github_plan_claim.ISSUE_URL.finditer(recorded[0])]
                                    + admission_links if recorded[1] == "milestone" else None)
                 break
-        milestone_track = milestone_claim_track(milestone_links) if milestone_links is not None else None
-        milestone_origin = (milestone_claim_origin(issue, milestone_track, milestone_links)
-                            if milestone_track is not None and not milestone_claim_linked(issue, milestone_track) else None)
+        if comment_recorded and admission is not None and admission != recorded_kind:
+            raise ClassifiedPlanError("claim_admission_changed",
+                "This claim already records another admission kind; release it before choosing a different kind.")
+        milestone_track = milestone_claim_track(issue, milestone_links) if milestone_links is not None else None
+        milestone_needs_link = milestone_track is not None and not milestone_claim_linked(issue, milestone_track)
         completed.append("ownership_preflight")
         wait_receipt = ("\n\nRetained PR waits verified for this step:\n" + "\n".join(
             f"PR #{pr}:\n" + "\n".join("> " + line for line in wait.splitlines())
@@ -3509,21 +3524,21 @@ def claim_once(args: argparse.Namespace) -> None:
         # fails, the closed source stays frozen for supported claim recovery.
         github_plan_claim_log.record(claim["session"], issue_repo, number)
         admit_observed_sources()
-        if milestone_origin is not None:
+        if milestone_needs_link:
             try:
-                _, projection = link_native_dependency(milestone_origin, issue, completed=completed,
+                _, projection = link_native_dependency(milestone_track, issue, completed=completed,
                                                        failed_step="link_claim_milestone")
             except PlanError as error:
                 error.payload["milestone_link_recovery"] = (
                     "Inspect the native edge before retrying. If the Track reached its dependency limit, add "
-                    "--admission-link URL citing an open originating issue already in that Track graph; "
-                    "the helper links under it instead.")
+                    "a deliberate native relationship with gh-plan.py link under a chosen issue already in that "
+                    "Track graph, then rerun claim; existing native paths are accepted.")
                 raise
-            if not projection["ok"]:
-                raise PlanError("Milestone link is written; its status projection needs reconciliation; do not repeat the write",
-                    payload={"projection": projection, "recovery": status_recovery(milestone_origin["repo"], milestone_origin["number"])})
+            if not projection["ok"] or projection["coverage"] != "complete":
+                milestone_projection = {"projection": projection,
+                    "recovery": status_recovery(milestone_track["repo"], milestone_track["number"])}
             _, edges = collect_paged_rest_items(
-                f"/repos/{milestone_origin['repo']}/issues/{milestone_origin['number']}/dependencies/blocked_by",
+                f"/repos/{milestone_track['repo']}/issues/{milestone_track['number']}/dependencies/blocked_by",
                 query={}, bucket="rest_core", step_prefix="claim_milestone_link_readback")
             if (issue["repo"].casefold(), issue["number"]) not in {github_plan_graph.native_issue_key(edge) for edge in edges}:
                 raise ClassifiedPlanError("claim_admission_unlinked", "Native milestone link was not visible after writing it")
@@ -3625,7 +3640,7 @@ def claim_once(args: argparse.Namespace) -> None:
             raise PlanError("Current Status claim changed during readback")
         admit_observed_sources()
         if milestone_track is not None:
-            current_track = milestone_claim_track(milestone_links)
+            current_track = milestone_claim_track(final, milestone_links)
             if not milestone_claim_linked(final, current_track):
                 raise ClassifiedPlanError("claim_admission_unlinked", "Native milestone path was not visible on final readback")
         completed.append("metadata_readback")
@@ -3692,6 +3707,7 @@ def claim_once(args: argparse.Namespace) -> None:
             "lease_minutes": github_plan_lease.lease_minutes(),
             "exclusive_lock": False,
             "completed_steps": completed,
+            **({"milestone_projection": milestone_projection} if milestone_projection is not None else {}),
         }
     )
 
@@ -7061,7 +7077,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--admission-link", action="append", default=[], metavar="URL",
                    help="Issue or PR URL, optionally with #issuecomment-ID; preserves the cited comment; repeat-stop needs both occurrences")
     p.add_argument("--admission-unlinked", metavar="REASON",
-                   help="Optional milestone context; never bypasses the native Track link")
+                   help="Deprecated compatibility context; never bypasses the native Track link")
     p.set_defaults(func=cmd_claim)
 
     p = sub.add_parser("wait", help="Report legacy evidence or record a reviewed structured wait; never parses prose")
