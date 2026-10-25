@@ -11,11 +11,12 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import q_number_guard as guard
 
 NUMBERED = """**Q590 — Move the nightly sync to the CM host?** I recommend yes: it stops the
-double import. On yes, the agent moves the job and checks one night's run. Ongoing cost: none."""
+double import. On yes, the agent moves the job and checks one night's run. Ongoing cost: none. An experienced developer would do the same."""
 
 UNNUMBERED_QUESTION = """Two PRs are green and handed to the train.
 
@@ -75,6 +76,44 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(self.run_hook(stop(last_assistant_message=NUMBERED)), "")
         self.assertEqual([r["verdict"] for r in self.logged()], ["pass"])
 
+    def test_numbered_question_context_is_checked_once(self):
+        for context, missing in (("An experienced developer would keep the job.", "cost"),
+                                 ("Ongoing cost: none.", "developer"), ("", "cost")):
+            with self.subTest(context=context):
+                message = f"**Q855** Should I move the sync? {context}"
+                decision = json.loads(self.run_hook(stop(last_assistant_message=message)))
+                self.assertEqual(decision["decision"], "block")
+                self.assertIn(missing, decision["reason"])
+                if context:
+                    self.assertNotIn("developer" if missing == "cost" else "cost", decision["reason"])
+                self.assertEqual(self.run_hook(stop(last_assistant_message=message, stop_hook_active=True)), "")
+
+    def test_context_accepts_common_phrasings(self):
+        for cost, developer in (("No ongoing cost.", "A senior dev would keep it."),
+                                ("Upkeep is one check a month.", "An experienced professional developer would simplify it."),
+                                ("Maintenance is minimal.", "The sr. developer view is to remove it.")):
+            with self.subTest(cost=cost, developer=developer):
+                self.assertEqual(self.run_hook(stop(last_assistant_message=f"**Q855** Should I proceed? {cost} {developer}")), "")
+
+    def test_quoted_context_does_not_satisfy_question(self):
+        for quote in ('"No ongoing cost. A senior dev would keep it."',
+                      "> No ongoing cost. A senior dev would keep it.",
+                      "```No ongoing cost. A senior dev would keep it.```",
+                      "`No ongoing cost. A senior dev would keep it.`"):
+            with self.subTest(quote=quote):
+                decision = json.loads(self.run_hook(stop(last_assistant_message=f"**Q855** Should I proceed?\n{quote}")))
+                self.assertEqual(decision["decision"], "block")
+                self.assertIn("cost", decision["reason"])
+                self.assertIn("developer", decision["reason"])
+
+    def test_numbered_status_and_quoted_questions_pass(self):
+        for message in ("**Q855** was approved and implemented. Nothing is needed from you.",
+                        "> **Q855** Should I proceed?\nThe work is done.",
+                        '**Q855** is settled. Chris asked "Should I proceed?" and approved it.',
+                        "**Q855** Can the train merge yet? No, CI is running."):
+            with self.subTest(message=message):
+                self.assertEqual(self.run_hook(stop(last_assistant_message=message)), "")
+
     def test_unnumbered_recommendation_question_blocks_once(self):
         decision = json.loads(self.run_hook(stop(last_assistant_message=UNNUMBERED_QUESTION)))
         self.assertEqual(decision["decision"], "block")
@@ -109,6 +148,21 @@ class GuardTests(unittest.TestCase):
                  {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash"}]}}]
         transcript.write_text("\n".join(map(json.dumps, lines)) + "\nnot json\n")
         self.assertIn("block", self.run_hook(stop(transcript_path=str(transcript))))
+
+    def test_transcript_disappearing_after_read_keeps_original_decision(self):
+        transcript = Path(self.home.name, "t.jsonl")
+        transcript.write_text(json.dumps({"type": "assistant", "message": {"content": UNNUMBERED_QUESTION}}))
+        read_message = guard.last_message
+
+        def read_then_remove(payload: dict) -> str | None:
+            message = read_message(payload)
+            transcript.unlink()
+            return message
+
+        with mock.patch.object(guard, "last_message", side_effect=read_then_remove):
+            decision = json.loads(self.run_hook(stop(transcript_path=str(transcript))))
+        self.assertEqual(decision["decision"], "block")
+        self.assertTrue(decision["reason"])
 
     def test_errors_and_unreadable_input_fail_open(self):
         fifo = Path(self.home.name, "fifo")
