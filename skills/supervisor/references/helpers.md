@@ -897,7 +897,7 @@ uv run /runtime/catalog/skills/supervisor/scripts/stranded_service.py clear --co
 ```
 
 If confirmed unsent and the marker references today's completed scan, retry that
-retained report without scanning again. This operator command is only for a
+retained report without scanning again. This command is only for a
 confirmed unsent delivery; an empty stdout alone does not prove that when a
 network request could have succeeded. Input, webhook configuration, summary and
 archive-stage failures precede Discord delivery. An HTTP or response failure,
