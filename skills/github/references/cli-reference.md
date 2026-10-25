@@ -1096,14 +1096,14 @@ uv run scripts/gh-plan.py wait 123 \
   --evidence "Asked in https://github.com/OWNER/REPO/issues/123#issuecomment-456"
 ```
 
-A wait that the comment radar's Director-wait classifier reads as a decision
-for the Director now is refused unless the record links, by full comment URL,
-either a numbered `Director question:` or `Owner question:` registered in the
+A wait that the comment radar's Director-wait classifier reads as on the
+Director now is refused unless the record links, by full comment URL, either a
+numbered `Director question:` or `Owner question:` registered in the
 Supervisor question queue, or the Director's own comment or a
-`Director decision:` record for a hold the Director set or agreed to. Hold
-wording ("Director to resume ...") and a wait whose current step is a timer or
-someone else's ("Two weeks with no use, then the Director retires it") pass.
-The queue is `[questions] queue` in the private `skill-data/supervisor.toml`
+`Director decision:` record for a hold the Director set or agreed to. A wait
+whose current step is a timer or someone else's ("Two weeks with no use, then
+the Director retires it") is not on the Director. A linked comment that cannot
+be read is skipped, and the refusal names it. The queue is `[questions] queue` in the private `skill-data/supervisor.toml`
 ([question delivery](../../supervisor/references/helpers.md#acknowledged-question-delivery));
 with none configured, a numbered question is enough. The refusal names the
 registration command. On `create`, the issue has no question yet: create it

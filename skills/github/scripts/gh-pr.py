@@ -732,8 +732,15 @@ def remaining_steps_gap(reader: github_read_core.GitHubReader, repo: str, number
     if wait["state"] != "waiting":
         return NO_OWNER
     return director_question_gate.director_question_gap(
-        repo, wait, read_json=lambda path: reader.get_json(path, step="director_question"),
+        repo, wait, read_comment=lambda path: readable_comment(reader, path),
         read_pages=lambda path: reader.paged_json(path, step_prefix="director_question"))
+
+
+def readable_comment(reader: github_read_core.GitHubReader, path: str) -> dict[str, Any] | None:
+    try:
+        return reader.get_json(path, step="director_question")
+    except github_read_core.GitHubReadError:
+        return None
 
 
 def linked_issue_gaps_message(gaps: dict[str, str]) -> str:

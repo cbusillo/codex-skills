@@ -3678,10 +3678,17 @@ def reviewed_wait(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     return wait, wait_summary(wait)
 
 
+def readable_comment(path: str) -> dict[str, Any] | None:
+    try:
+        return api_json("GET", path)[1]
+    except PlanError:
+        return None
+
+
 def require_asked_director_wait(repo: str, wait: dict[str, Any], *, creating: bool = False) -> None:
     try:
         gap = director_question_gate.director_question_gap(
-            repo, wait, read_json=lambda path: api_json("GET", path)[1],
+            repo, wait, read_comment=readable_comment,
             read_pages=lambda path: collect_paged_rest_items(path, query={}, bucket="rest_core",
                                                              step_prefix="director_question")[1])
     except ValueError as exc:
@@ -3690,7 +3697,9 @@ def require_asked_director_wait(repo: str, wait: dict[str, Any], *, creating: bo
         gap += (" A new issue has no question yet: create it without --waiting-for, post and register the "
                 "question on it, then run gh-plan.py wait.")
     if gap:
-        raise PlanError(gap)
+        raise PlanError(gap, failure=github_api_core.FailureDetail(
+            cause="director_question_missing", message=gap, retryable=False, fallback_eligible=False,
+            disposition="stop", write_outcome="not_started", failed_step="director_question"))
 
 
 def wait_once(args: argparse.Namespace) -> None:

@@ -63,8 +63,8 @@ class DirectorQuestionGateTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     @staticmethod
-    def read_json(path: str) -> dict[str, Any]:
-        return COMMENTS[int(path.rsplit("/", 1)[1])]
+    def read_comment(path: str) -> dict[str, Any] | None:
+        return COMMENTS.get(int(path.rsplit("/", 1)[1]))
 
     def read_pages(self, path: str) -> list[dict[str, Any]]:
         self.assertEqual(path, "/repos/director/catalog/issues/9/comments")
@@ -72,7 +72,7 @@ class DirectorQuestionGateTests(unittest.TestCase):
         return QUEUE_COMMENTS
 
     def gap(self, record: dict[str, Any]) -> str | None:
-        return gate.director_question_gap(REPO, record, read_json=self.read_json, read_pages=self.read_pages)
+        return gate.director_question_gap(REPO, record, read_comment=self.read_comment, read_pages=self.read_pages)
 
     def refusal(self, record: dict[str, Any]) -> str:
         message = self.gap(record)
@@ -99,8 +99,15 @@ class DirectorQuestionGateTests(unittest.TestCase):
     def test_hold_the_director_set_or_agreed_is_exempt(self) -> None:
         self.assertIsNone(self.gap(wait("Chris to dogfood 1.0.76 from TestFlight", link(13))))
         self.assertIsNone(self.gap(wait("Chris to dogfood 1.0.76 from TestFlight", link(14))))
-        self.assertIsNone(self.gap(wait("Chris to resume after the weekend")))
-        self.assertIsNotNone(self.gap(wait("Chris to dogfood 1.0.76 from TestFlight")))
+        for waiting_for in ("Chris to dogfood 1.0.76 from TestFlight", "Chris to resume after the weekend",
+                            "Chris selects the deployment architecture"):
+            with self.subTest(waiting_for=waiting_for):
+                self.assertIsNotNone(self.gap(wait(waiting_for)))
+
+    def test_unreadable_link_is_skipped_and_named_when_nothing_else_qualifies(self) -> None:
+        missing = f"{ISSUE}#issuecomment-404"
+        self.assertIsNone(self.gap(wait("Chris approves the live install", f"{missing} then {link(11)}")))
+        self.assertIn(missing, self.refusal(wait("Chris approves the live install", missing)))
 
     def test_timers_and_other_peoples_steps_are_not_on_the_director(self) -> None:
         for waiting_for in ("Two weeks with no use of the token, then Chris retires it",
