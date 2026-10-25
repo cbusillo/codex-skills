@@ -25,6 +25,10 @@ from typing import Any, cast
 from unittest.mock import ANY, MagicMock, patch
 
 
+def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    return patch.object(target, name, *args, **kwargs)
+
+
 TEST_CACHE = tempfile.TemporaryDirectory(prefix="jetbrains-inspection-tests-")
 os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = TEST_CACHE.name
 os.environ["JETBRAINS_INSPECTION_REGISTRY_DIR"] = str(Path(TEST_CACHE.name) / "registry")
@@ -40,7 +44,7 @@ jb_inspect = cast(Any, importlib.util.module_from_spec(SPEC))
 assert SPEC.loader is not None
 sys.modules["jb_inspect"] = jb_inspect
 SPEC.loader.exec_module(jb_inspect)
-NO_LIVE_IDE = patch.object(
+NO_LIVE_IDE = patch_attr(
     jb_inspect.urllib.request, "urlopen", side_effect=jb_inspect.urllib.error.URLError(ConnectionRefusedError("connection refused"))
 )
 
@@ -95,9 +99,9 @@ for command in sys.stdin:
 
                 try:
                     with chdir(task), patch.dict(os.environ, {"PWD": str(task), "CS1159_LAUNCH_TEST": "preserved"}), \
-                            patch.object(jb_inspect.sys, "platform", "darwin"), \
-                            patch.object(jb_inspect, "ide_launcher_pids", return_value=[]), \
-                            patch.object(jb_inspect.subprocess, "run", side_effect=fake_open):
+                            patch.object(sys, "platform", "darwin"), \
+                            patch_attr(jb_inspect, "ide_launcher_pids", return_value=[]), \
+                            patch.object(subprocess, "run", side_effect=fake_open):
                         result = launch({"ide": "PyCharm", "worktree_root": str(task)}, background=True)
                         self.assertEqual(Path.cwd(), task)
                         self.assertEqual(os.environ["PWD"], str(task))
@@ -138,9 +142,9 @@ class IdeMemoryTests(unittest.TestCase):
             events.append(endpoint)
             self.assertEqual(endpoint, "memory")
             return self.response()
-        with patch.object(jb_inspect, "discover_open_identities", return_value=[self.identity()]), \
-                patch.object(jb_inspect, "identity_matches_context", return_value=True), \
-                patch.object(jb_inspect, "http_get", side_effect=get):
+        with patch_attr(jb_inspect, "discover_open_identities", return_value=[self.identity()]), \
+                patch_attr(jb_inspect, "identity_matches_context", return_value=True), \
+                patch_attr(jb_inspect, "http_get", side_effect=get):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.open_via_running_ide(args, {}, lease=lease)
         self.assertEqual(events, ["memory"])
@@ -159,7 +163,7 @@ class IdeMemoryTests(unittest.TestCase):
         self.assertEqual(emitted["diagnostic"]["ide_memory"]["status"], "exhausted")
 
     def test_trigger_stops_before_inspection_request(self):
-        with patch.object(jb_inspect, "http_get", return_value=self.response()) as get:
+        with patch_attr(jb_inspect, "http_get", return_value=self.response()) as get:
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.call_endpoint(self.identity(), "trigger", {})
         self.assertEqual(raised.exception.payload["error_reason"], "ide_memory_exhausted")
@@ -178,8 +182,8 @@ class IdeMemoryTests(unittest.TestCase):
 
     def test_failure_is_classified_using_current_session_memory(self):
         failure = jb_inspect.InspectError("timed out", 3, {"error_reason": "inspection_api_timeout", "endpoint": "wait"})
-        with patch.object(jb_inspect, "execute_inspection_on_route", side_effect=failure), \
-                patch.object(jb_inspect, "http_get", return_value=self.response()):
+        with patch_attr(jb_inspect, "execute_inspection_on_route", side_effect=failure), \
+                patch_attr(jb_inspect, "http_get", return_value=self.response()):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.run_inspection_on_route(Namespace(), {}, self.identity())
         self.assertEqual(raised.exception.payload["error_reason"], "ide_memory_exhausted")
@@ -190,8 +194,8 @@ class IdeMemoryTests(unittest.TestCase):
         failure = jb_inspect.InspectError("timed out", 3, {"error_reason": "inspection_api_timeout"})
         for diagnostic in (failure, ConnectionResetError("IDE dropped connection"), jb_inspect.http.client.RemoteDisconnected("no response"), self.response(session="restarted"), self.response(status="normal")):
             with self.subTest(diagnostic=diagnostic), \
-                    patch.object(jb_inspect, "execute_inspection_on_route", side_effect=failure), \
-                    patch.object(jb_inspect, "http_get", side_effect=[diagnostic]):
+                    patch_attr(jb_inspect, "execute_inspection_on_route", side_effect=failure), \
+                    patch_attr(jb_inspect, "http_get", side_effect=[diagnostic]):
                 with self.assertRaises(jb_inspect.InspectError) as raised:
                     jb_inspect.run_inspection_on_route(Namespace(), {}, self.identity())
                 self.assertIs(raised.exception, failure)
@@ -200,11 +204,11 @@ class IdeMemoryTests(unittest.TestCase):
         route = self.identity()
         lease = {"lease_id": "owned", "opened_by_helper": True, "state": "prepared"}
         snapshot = {"status": "ok", "entries": {}}
-        with patch.object(jb_inspect, "prepare_lifecycle_details", return_value=({"route": route}, lease, "proof")), \
-                patch.object(jb_inspect, "http_get", return_value=self.response()), \
-                patch.object(jb_inspect, "cleanup_lifecycle", return_value={"status": "closed"}) as close, \
-                patch.object(jb_inspect, "git_worktree_status_snapshot", return_value=snapshot), \
-                patch.object(jb_inspect, "post_cleanup_worktree_status_snapshot", return_value=snapshot):
+        with patch_attr(jb_inspect, "prepare_lifecycle_details", return_value=({"route": route}, lease, "proof")), \
+                patch_attr(jb_inspect, "http_get", return_value=self.response()), \
+                patch_attr(jb_inspect, "cleanup_lifecycle", return_value={"status": "closed"}) as close, \
+                patch_attr(jb_inspect, "git_worktree_status_snapshot", return_value=snapshot), \
+                patch_attr(jb_inspect, "post_cleanup_worktree_status_snapshot", return_value=snapshot):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.run_prepared_inspection(helper_args(command="closeout", lifecycle_lock_timeout_ms=1000), {})
         close.assert_called_once_with(lease, route, "proof")
@@ -215,8 +219,8 @@ class IdeMemoryTests(unittest.TestCase):
     def test_problems_server_error_is_classified_after_preserving_response(self):
         failure = jb_inspect.InspectError("HTTP 500", 3, {"http_status": 500, "endpoint": "problems", "error_reason": "inspection_api_http_error"})
         result = jb_inspect.inspection_endpoint_failure_result(failure, self.identity(), {"run_id": 7}, {}, None)
-        with patch.object(jb_inspect, "execute_inspection_on_route", return_value=result), \
-                patch.object(jb_inspect, "http_get", return_value=self.response()):
+        with patch_attr(jb_inspect, "execute_inspection_on_route", return_value=result), \
+                patch_attr(jb_inspect, "http_get", return_value=self.response()):
             observed = jb_inspect.run_inspection_on_route(Namespace(), {}, self.identity())
         self.assertEqual(observed["agent_result"]["bucket"], "ide_memory_exhausted")
         self.assertEqual(observed["http_status"], 500)
@@ -227,16 +231,16 @@ class IdeMemoryTests(unittest.TestCase):
         route = self.identity() | {"base_path": "/fixture", "project_key": "path:/fixture", "project_instance_id": "current:1"}
         lease = {"lease_id": "owned", "state": "preparing"}
         failure = jb_inspect.InspectError("not ready", 3, {"error_reason": "ide_not_ready_timeout"})
-        with patch.object(jb_inspect, "run_repository_preparation", return_value={}), \
-                patch.object(jb_inspect, "create_local_lease", return_value=lease), \
-                patch.object(jb_inspect, "find_exact_route", return_value=route), \
-                patch.object(jb_inspect, "matching_deferred_lease", return_value=None), \
-                patch.object(jb_inspect, "ensure_exact_worktree"), \
-                patch.object(jb_inspect, "claim_lifecycle", return_value=unowned_lifecycle_result(route)), \
-                patch.object(jb_inspect, "wait_until_route_ready", side_effect=failure), \
-                patch.object(jb_inspect, "http_get", return_value=self.response()), \
-                patch.object(jb_inspect, "write_lease"), \
-                patch.object(jb_inspect, "remove_lease"):
+        with patch_attr(jb_inspect, "run_repository_preparation", return_value={}), \
+                patch_attr(jb_inspect, "create_local_lease", return_value=lease), \
+                patch_attr(jb_inspect, "find_exact_route", return_value=route), \
+                patch_attr(jb_inspect, "matching_deferred_lease", return_value=None), \
+                patch_attr(jb_inspect, "ensure_exact_worktree"), \
+                patch_attr(jb_inspect, "claim_lifecycle", return_value=unowned_lifecycle_result(route)), \
+                patch_attr(jb_inspect, "wait_until_route_ready", side_effect=failure), \
+                patch_attr(jb_inspect, "http_get", return_value=self.response()), \
+                patch_attr(jb_inspect, "write_lease"), \
+                patch_attr(jb_inspect, "remove_lease"):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.prepare_lifecycle_details(helper_args(open=True), {"worktree_root": "/fixture"})
         self.assertEqual(raised.exception.payload["error_reason"], "ide_memory_exhausted")
@@ -246,8 +250,8 @@ class IdeMemoryTests(unittest.TestCase):
     def test_retry_refusal_retains_first_attempt_evidence_and_transport_uncertainty(self):
         first = jb_inspect.apply_verdict({"status": "stale_results", "results_may_be_stale": True, "transport_state_unknown": True})
         refusal = jb_inspect.InspectError("memory exhausted", 3, {"error_reason": "ide_memory_exhausted", "trigger_not_sent": True})
-        with patch.object(jb_inspect, "run_inspection_on_route", side_effect=[first, refusal]), \
-                patch.object(jb_inspect, "wait_for_internal_retry_readiness", return_value={"ready": True}):
+        with patch_attr(jb_inspect, "run_inspection_on_route", side_effect=[first, refusal]), \
+                patch_attr(jb_inspect, "wait_for_internal_retry_readiness", return_value={"ready": True}):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.run_inspection_with_internal_retry(Namespace(), {}, self.identity())
         self.assertEqual(raised.exception.payload["internal_retries"][0]["verdict_reason"], "stale_results")
@@ -274,9 +278,9 @@ class IdeMemoryTests(unittest.TestCase):
         def memory(*_args, **_kwargs):
             events.append("memory")
             return self.response()
-        with patch.object(jb_inspect, "call_endpoint", side_effect=call), \
-                patch.object(jb_inspect, "cancel_timed_out_inspection", side_effect=cancel), \
-                patch.object(jb_inspect, "http_get", side_effect=memory):
+        with patch_attr(jb_inspect, "call_endpoint", side_effect=call), \
+                patch_attr(jb_inspect, "cancel_timed_out_inspection", side_effect=cancel), \
+                patch_attr(jb_inspect, "http_get", side_effect=memory):
             result = jb_inspect.run_inspection_on_route(helper_args(timeout_ms=1000, poll_ms=1), {}, route)
         self.assertEqual(events, ["trigger", "wait", "cancel", "problems", "memory"])
         self.assertEqual(result["agent_result"]["bucket"], "ide_memory_exhausted")
@@ -288,8 +292,8 @@ class IdeMemoryTests(unittest.TestCase):
 
     def test_session_drift_retains_reason_under_memory_pressure(self):
         failure = jb_inspect.InspectError("session changed", 3, {"error_reason": "session_drift", "http_status": 409})
-        with patch.object(jb_inspect, "execute_inspection_on_route", side_effect=failure), \
-                patch.object(jb_inspect, "http_get", return_value=self.response(status="low_memory")):
+        with patch_attr(jb_inspect, "execute_inspection_on_route", side_effect=failure), \
+                patch_attr(jb_inspect, "http_get", return_value=self.response(status="low_memory")):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.run_inspection_on_route(Namespace(), {}, self.identity())
         self.assertIs(raised.exception, failure)
@@ -298,16 +302,16 @@ class IdeMemoryTests(unittest.TestCase):
 
     def test_memory_preflight_releases_lease_without_any_project_open(self):
         lease = {"lease_id": "owned", "state": "preparing"}
-        with patch.object(jb_inspect, "run_repository_preparation", return_value={}), \
-                patch.object(jb_inspect, "create_local_lease", return_value=lease), \
-                patch.object(jb_inspect, "find_exact_route", return_value=None), \
-                patch.object(jb_inspect, "ensure_trusted_auto_open_root"), \
-                patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"), \
-                patch.object(jb_inspect, "discover_open_identities", return_value=[self.identity()]), \
-                patch.object(jb_inspect, "identity_matches_context", return_value=True), \
-                patch.object(jb_inspect, "http_get", return_value=self.response()), \
-                patch.object(jb_inspect, "write_lease"), \
-                patch.object(jb_inspect, "remove_lease") as remove:
+        with patch_attr(jb_inspect, "run_repository_preparation", return_value={}), \
+                patch_attr(jb_inspect, "create_local_lease", return_value=lease), \
+                patch_attr(jb_inspect, "find_exact_route", return_value=None), \
+                patch_attr(jb_inspect, "ensure_trusted_auto_open_root"), \
+                patch_attr(jb_inspect, "ensure_jetbrains_trusted_locations"), \
+                patch_attr(jb_inspect, "discover_open_identities", return_value=[self.identity()]), \
+                patch_attr(jb_inspect, "identity_matches_context", return_value=True), \
+                patch_attr(jb_inspect, "http_get", return_value=self.response()), \
+                patch_attr(jb_inspect, "write_lease"), \
+                patch_attr(jb_inspect, "remove_lease") as remove:
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.prepare_lifecycle_details(helper_args(open=True), {"worktree_root": "/fixture"})
         self.assertEqual(raised.exception.payload["cleanup"], {"status": "not_needed", "reason": "open_not_attempted"})
@@ -315,9 +319,9 @@ class IdeMemoryTests(unittest.TestCase):
 
     def test_open_probe_ignores_memory_in_another_session(self):
         identity = self.identity() | {"lifecycle_open_diagnostic_version": 1}
-        with patch.object(jb_inspect, "discover_open_identities", return_value=[identity]), \
-                patch.object(jb_inspect, "identity_matches_context", return_value=True), \
-                patch.object(jb_inspect, "http_get", return_value=jb_inspect.HttpResult(200, {"status": "opening"}, "http://fixture")) as get:
+        with patch_attr(jb_inspect, "discover_open_identities", return_value=[identity]), \
+                patch_attr(jb_inspect, "identity_matches_context", return_value=True), \
+                patch_attr(jb_inspect, "http_get", return_value=jb_inspect.HttpResult(200, {"status": "opening"}, "http://fixture")) as get:
             result = jb_inspect.probe_lifecycle_open(Namespace(), {"worktree_root": "/fixture"}, {"session_id": "healthy", "ide_port": 63343})
         self.assertEqual(result["status"], "opening")
         self.assertEqual(get.call_args.args[1], "lifecycle/open")
@@ -328,12 +332,12 @@ class IdeMemoryTests(unittest.TestCase):
         ambiguous = [{"method": "bootstrap_ide", "accepted": True, "ownership_registered": True}]
         for attempts in (bootstrap, ambiguous):
             lease = {"lease_id": "owned", "state": "open_requesting", "opened_by_helper": False, "open_attempts": attempts}
-            with patch.object(jb_inspect, "discover_open_identities", return_value=[self.identity()]), \
-                    patch.object(jb_inspect, "identity_matches_context", return_value=True), \
-                    patch.object(jb_inspect, "http_get", return_value=self.response()):
+            with patch_attr(jb_inspect, "discover_open_identities", return_value=[self.identity()]), \
+                    patch_attr(jb_inspect, "identity_matches_context", return_value=True), \
+                    patch_attr(jb_inspect, "http_get", return_value=self.response()):
                 with self.assertRaises(jb_inspect.InspectError):
                     jb_inspect.open_via_running_ide(Namespace(port=None), {}, attempts, "bootstrapped_ide", lease)
-            with patch.object(jb_inspect, "remove_lease") as remove:
+            with patch_attr(jb_inspect, "remove_lease") as remove:
                 if attempts is bootstrap:
                     result = jb_inspect.cleanup_failed_preparation(lease, None, None, jb_inspect.InspectError("memory", 3), "project_open")
                     self.assertEqual(result, {"status": "not_needed", "reason": "open_not_attempted"})
@@ -343,20 +347,20 @@ class IdeMemoryTests(unittest.TestCase):
                     remove.assert_not_called()
 
     def test_older_plugin_does_not_probe_or_change_request(self):
-        with patch.object(jb_inspect, "http_get", return_value=jb_inspect.HttpResult(200, {"status": "ok"}, "http://fixture")) as get:
+        with patch_attr(jb_inspect, "http_get", return_value=jb_inspect.HttpResult(200, {"status": "ok"}, "http://fixture")) as get:
             self.assertEqual(jb_inspect.call_endpoint({"port": 63342}, "trigger", {}), {"status": "ok"})
         self.assertEqual(get.call_args.args[1], "trigger")
         get.assert_called_once()
 
     def test_pressure_does_not_block_trigger_or_change_unknown_retry_policy(self):
         response = jb_inspect.HttpResult(200, {"status": "triggered"}, "http://fixture")
-        with patch.object(jb_inspect, "http_get", side_effect=[self.response(status="low_memory"), response]) as get:
+        with patch_attr(jb_inspect, "http_get", side_effect=[self.response(status="low_memory"), response]) as get:
             self.assertEqual(jb_inspect.call_endpoint(self.identity(), "trigger", {}), response.body)
         self.assertEqual(get.call_count, 2)
         original = jb_inspect.apply_verdict({"status": "timed_out", "timed_out": True})
         expected_retry = dict(original["retry_policy"])
-        with patch.object(jb_inspect, "execute_inspection_on_route", return_value=original), \
-                patch.object(jb_inspect, "http_get", return_value=self.response(status="low_memory")):
+        with patch_attr(jb_inspect, "execute_inspection_on_route", return_value=original), \
+                patch_attr(jb_inspect, "http_get", return_value=self.response(status="low_memory")):
             result = jb_inspect.run_inspection_on_route(Namespace(), {}, self.identity())
         self.assertEqual(result["verdict_reason"], "timeout")
         self.assertEqual(result["retry_policy"], expected_retry)
@@ -367,9 +371,9 @@ class IdeMemoryTests(unittest.TestCase):
         lease = {"session_id": identity["session_id"], "ide_port": identity["port"]}
         for status in ("exhausted", "low_memory"):
             with self.subTest(status=status), \
-                    patch.object(jb_inspect, "discover_open_identities", return_value=[identity]), \
-                    patch.object(jb_inspect, "identity_matches_context", return_value=True), \
-                    patch.object(jb_inspect, "http_get", side_effect=[self.response(status=status), jb_inspect.HttpResult(200, {"status": "opening"}, "http://fixture")]) as get:
+                    patch_attr(jb_inspect, "discover_open_identities", return_value=[identity]), \
+                    patch_attr(jb_inspect, "identity_matches_context", return_value=True), \
+                    patch_attr(jb_inspect, "http_get", side_effect=[self.response(status=status), jb_inspect.HttpResult(200, {"status": "opening"}, "http://fixture")]) as get:
                 if status == "exhausted":
                     with self.assertRaises(jb_inspect.InspectError) as raised:
                         jb_inspect.probe_lifecycle_open(Namespace(), {"worktree_root": "/fixture"}, lease)
@@ -410,9 +414,9 @@ class ProjectCacheRetirementTests(unittest.TestCase):
                         "worktree_path": str(root), "caches": entries,
                     }, "http://fixture")
                 args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
-                with (patch.object(jb_inspect, jb_inspect.discover_identities.__name__, return_value=[identity]),
-                      patch.object(jb_inspect, jb_inspect.unregister_helper_sdks.__name__, return_value=[]),
-                      patch.object(jb_inspect, jb_inspect.http_post.__name__, side_effect=post)):
+                with (patch_attr(jb_inspect, jb_inspect.discover_identities.__name__, return_value=[identity]),
+                      patch_attr(jb_inspect, jb_inspect.unregister_helper_sdks.__name__, return_value=[]),
+                      patch_attr(jb_inspect, jb_inspect.http_post.__name__, side_effect=post)):
                     if drift:
                         with self.assertRaises(jb_inspect.InspectError):
                             jb_inspect.command_retire_sdks(args)
@@ -435,7 +439,7 @@ class ProjectCacheRetirementTests(unittest.TestCase):
             return jb_inspect.HttpResult(200, {"status": "ok", "session_id": params["session_id"],
                 "project_cache_lifecycle_version": 1, "dry_run": False, "worktree_path": str(root),
                 "caches": [{"status": "removed", "reason": "helper_owned_closed_project", "worktree_path": str(root)}]}, "http://fixture")
-        with patch.object(jb_inspect, jb_inspect.http_post.__name__, side_effect=post):
+        with patch_attr(jb_inspect, jb_inspect.http_post.__name__, side_effect=post):
             completed = jb_inspect.retire_helper_project_caches([first], root, False)
             self.assertEqual(completed[0]["result"]["caches"][0]["status"], "removed")
             with self.assertRaises(jb_inspect.InspectError) as raised:
@@ -447,11 +451,11 @@ class ProjectCacheRetirementTests(unittest.TestCase):
         completed = [{"ide": {"session_id": "first"}, "result": {"caches": [{"status": "removed"}]}}]
         failure = jb_inspect.InspectError("later IDE disconnected", 3, {"completed_project_cache_cleanup": completed})
         args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
-        with (patch.object(jb_inspect, jb_inspect.retirement_worktree.__name__, return_value=root),
-              patch.object(jb_inspect, jb_inspect.git_common_worktree.__name__, return_value=root),
-              patch.object(jb_inspect, jb_inspect.discover_identities.__name__, return_value=[]),
-              patch.object(jb_inspect, jb_inspect.unregister_helper_sdks.__name__, return_value=[]),
-              patch.object(jb_inspect, jb_inspect.retire_helper_project_caches.__name__, side_effect=[[], failure])):
+        with (patch_attr(jb_inspect, jb_inspect.retirement_worktree.__name__, return_value=root),
+              patch_attr(jb_inspect, jb_inspect.git_common_worktree.__name__, return_value=root),
+              patch_attr(jb_inspect, jb_inspect.discover_identities.__name__, return_value=[]),
+              patch_attr(jb_inspect, jb_inspect.unregister_helper_sdks.__name__, return_value=[]),
+              patch_attr(jb_inspect, jb_inspect.retire_helper_project_caches.__name__, side_effect=[[], failure])):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.command_retire_sdks(args)
         self.assertEqual(raised.exception.payload["completed_project_cache_cleanup"], completed)
@@ -464,12 +468,12 @@ class ProjectCacheRetirementTests(unittest.TestCase):
                 verification = jb_inspect.InspectError("verification disconnected", 3,
                     {"completed_project_cache_preview": []}) if phase == "verification" else []
                 args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
-                with (patch.object(jb_inspect, jb_inspect.retirement_worktree.__name__, return_value=root),
-                      patch.object(jb_inspect, jb_inspect.git_common_worktree.__name__, return_value=root),
-                      patch.object(jb_inspect, jb_inspect.discover_identities.__name__, return_value=[]),
-                      patch.object(jb_inspect, jb_inspect.unregister_helper_sdks.__name__, return_value=[]),
-                      patch.object(jb_inspect, jb_inspect.retire_helper_project_caches.__name__, side_effect=[[], applied, verification]),
-                      patch.object(jb_inspect, jb_inspect.worktree_entries.__name__, side_effect=OSError("filesystem unavailable"))):
+                with (patch_attr(jb_inspect, jb_inspect.retirement_worktree.__name__, return_value=root),
+                      patch_attr(jb_inspect, jb_inspect.git_common_worktree.__name__, return_value=root),
+                      patch_attr(jb_inspect, jb_inspect.discover_identities.__name__, return_value=[]),
+                      patch_attr(jb_inspect, jb_inspect.unregister_helper_sdks.__name__, return_value=[]),
+                      patch_attr(jb_inspect, jb_inspect.retire_helper_project_caches.__name__, side_effect=[[], applied, verification]),
+                      patch_attr(jb_inspect, jb_inspect.worktree_entries.__name__, side_effect=OSError("filesystem unavailable"))):
                     with self.assertRaises(jb_inspect.InspectError) as raised:
                         jb_inspect.command_retire_sdks(args)
                 self.assertEqual(raised.exception.payload["completed_project_cache_cleanup"], applied)
@@ -482,7 +486,7 @@ class ProjectCacheRetirementTests(unittest.TestCase):
             "project_cache_lifecycle_version": 1, "dry_run": False, "worktree_path": str(root),
             "caches": [{"status": "removed", "reason": "helper_owned_closed_project", "worktree_path": str(root)}]}, "http://fixture")
         for failure in (http.client.RemoteDisconnected("IDE exited"), http.client.BadStatusLine("invalid response")):
-            with self.subTest(failure=type(failure).__name__), patch.object(jb_inspect, jb_inspect.http_post.__name__, side_effect=[success, failure]):
+            with self.subTest(failure=type(failure).__name__), patch_attr(jb_inspect, jb_inspect.http_post.__name__, side_effect=[success, failure]):
                 with self.assertRaises(jb_inspect.InspectError) as raised:
                     jb_inspect.retire_helper_project_caches(identities, root, False)
                 receipts = raised.exception.payload["completed_project_cache_cleanup"]
@@ -493,22 +497,22 @@ class ProjectCacheRetirementTests(unittest.TestCase):
 class OfflineIdeProcessTests(unittest.TestCase):
     def test_running_ide_is_visible_without_a_plugin_registry(self):
         process_list = "123 /Applications/PyCharm.app/Contents/MacOS/pycharm\n124 /bin/sh\n"
-        with patch.object(jb_inspect.subprocess, "check_output", return_value=process_list):
+        with patch.object(subprocess, "check_output", return_value=process_list):
             self.assertEqual(jb_inspect.offline_ide_processes(), [123])
-        with patch.object(jb_inspect.subprocess, "check_output", side_effect=OSError("fixture")):
+        with patch.object(subprocess, "check_output", side_effect=OSError("fixture")):
             with self.assertRaises(jb_inspect.InspectError):
                 jb_inspect.offline_ide_processes()
 
 
 class SdkRetirementTests(unittest.TestCase):
     def setUp(self):
-        processes = patch.object(jb_inspect, "offline_ide_processes", return_value=[])
+        processes = patch_attr(jb_inspect, "offline_ide_processes", return_value=[])
         processes.start()
         self.addCleanup(processes.stop)
 
     def test_running_ide_without_identity_holds_offline_retirement(self):
-        with (patch.object(jb_inspect.sys, "platform", "darwin"),
-              patch.object(jb_inspect, "offline_ide_processes", return_value=[123])):
+        with (patch.object(sys, "platform", "darwin"),
+              patch_attr(jb_inspect, "offline_ide_processes", return_value=[123])):
             with self.assertRaises(jb_inspect.InspectError) as caught:
                 jb_inspect.offline_retirement_records(Path("/fixture/task"))
             self.assertEqual(caught.exception.payload["offline_retirement_ide_pids"], [123])
@@ -518,12 +522,12 @@ class SdkRetirementTests(unittest.TestCase):
             root = Path(tmp)
             args = Namespace(command="remove-worktree", repo=str(root), dry_run=False,
                              offline_only=True, lifecycle_lock_timeout_ms=1000)
-            with (patch.object(jb_inspect.sys, "platform", "darwin"),
-                  patch.object(jb_inspect, "retirement_worktree", return_value=root),
-                  patch.object(jb_inspect, "offline_ide_processes", return_value=[123]),
-                  patch.object(jb_inspect, "discover_identities", return_value=[]) as discover,
-                  patch.object(jb_inspect, "http_post") as post,
-                  patch.object(jb_inspect.subprocess, "run") as removal):
+            with (patch.object(sys, "platform", "darwin"),
+                  patch_attr(jb_inspect, "retirement_worktree", return_value=root),
+                  patch_attr(jb_inspect, "offline_ide_processes", return_value=[123]),
+                  patch_attr(jb_inspect, "discover_identities", return_value=[]) as discover,
+                  patch_attr(jb_inspect, "http_post") as post,
+                  patch.object(subprocess, "run") as removal):
                 with self.assertRaises(jb_inspect.InspectError) as caught:
                     jb_inspect.command_retire_sdks(args)
                 self.assertEqual(caught.exception.payload["offline_retirement_ide_pids"], [123])
@@ -538,8 +542,8 @@ class SdkRetirementTests(unittest.TestCase):
                 home = Path(tmp).resolve()
                 root = home / "task"
                 root.mkdir()
-                with (patch.object(jb_inspect.Path, "home", return_value=home),
-                      patch.object(jb_inspect.sys, "platform", "darwin"),
+                with (patch_attr(jb_inspect.Path, "home", return_value=home),
+                      patch.object(sys, "platform", "darwin"),
                       patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""})):
                     if kind in {"cache", "finalizing"}:
                         projects = home / "Library/Caches/JetBrains/PyCharm2026.2/projects"
@@ -560,9 +564,9 @@ class SdkRetirementTests(unittest.TestCase):
                         record.parent.mkdir(parents=True)
                         record.write_text(f'<application><option value="{root}/.venv/bin/python" /></application>')
                     args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
-                    with (patch.object(jb_inspect, "retirement_worktree", return_value=root),
-                          patch.object(jb_inspect, "discover_identities", return_value=[]),
-                          patch.object(jb_inspect.subprocess, "run") as removal):
+                    with (patch_attr(jb_inspect, "retirement_worktree", return_value=root),
+                          patch_attr(jb_inspect, "discover_identities", return_value=[]),
+                          patch.object(subprocess, "run") as removal):
                         with self.assertRaises(jb_inspect.InspectError) as caught:
                             jb_inspect.command_retire_sdks(args)
                         self.assertEqual(caught.exception.payload["offline_retirement_record"],
@@ -578,8 +582,8 @@ class SdkRetirementTests(unittest.TestCase):
             options.mkdir(parents=True)
             (home / "another-config").mkdir()
             table = options / "jdk.table.xml"
-            with (patch.object(jb_inspect.Path, "home", return_value=home),
-                  patch.object(jb_inspect.sys, "platform", "darwin"),
+            with (patch_attr(jb_inspect.Path, "home", return_value=home),
+                  patch.object(sys, "platform", "darwin"),
                   patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": str(home / "another-config")})):
                 table.write_text(f'<application><homePath value="$USER_HOME$/task-other/.venv/bin/python" /></application>')
                 jb_inspect.offline_retirement_records(root)
@@ -589,7 +593,7 @@ class SdkRetirementTests(unittest.TestCase):
                 table.write_text("broken xml")
                 with self.assertRaises(jb_inspect.InspectError):
                     jb_inspect.offline_retirement_records(root)
-                with patch.object(jb_inspect.Path, "iterdir", side_effect=PermissionError("fixture")):
+                with patch_attr(jb_inspect.Path, "iterdir", side_effect=PermissionError("fixture")):
                     with self.assertRaises(jb_inspect.InspectError):
                         jb_inspect.offline_retirement_records(root)
 
@@ -597,8 +601,8 @@ class SdkRetirementTests(unittest.TestCase):
         for kind in ("custom-storage", "missing-cache-marker", "bad-cache-marker"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
                 home = Path(tmp).resolve()
-                with (patch.object(jb_inspect.Path, "home", return_value=home),
-                      patch.object(jb_inspect.sys, "platform", "darwin"),
+                with (patch_attr(jb_inspect.Path, "home", return_value=home),
+                      patch.object(sys, "platform", "darwin"),
                       patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""})):
                     if kind == "custom-storage":
                         config = home / "Library/Application Support/JetBrains/PyCharm2026.2"
@@ -621,8 +625,8 @@ class SdkRetirementTests(unittest.TestCase):
             projects.mkdir(parents=True)
             (projects / ".DS_Store").write_bytes(b"Finder metadata")
             (projects / "cache-index").write_text("ordinary cache metadata")
-            with (patch.object(jb_inspect.Path, "home", return_value=home),
-                  patch.object(jb_inspect.sys, "platform", "darwin"),
+            with (patch_attr(jb_inspect.Path, "home", return_value=home),
+                  patch.object(sys, "platform", "darwin"),
                   patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""})):
                 jb_inspect.offline_retirement_records(home / "task")
 
@@ -645,14 +649,14 @@ class SdkRetirementTests(unittest.TestCase):
                 return root
             args = Namespace(command="remove-worktree", repo=str(root), dry_run=False,
                              offline_only=offline_only, lifecycle_lock_timeout_ms=1000)
-            with (patch.object(jb_inspect.Path, "home", return_value=home),
-                  patch.object(jb_inspect.sys, "platform", "darwin"),
+            with (patch_attr(jb_inspect.Path, "home", return_value=home),
+                  patch.object(sys, "platform", "darwin"),
                   patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}),
-                  patch.object(jb_inspect, "retirement_worktree", side_effect=retire),
-                  patch.object(jb_inspect, "discover_identities", return_value=[]) as discover,
-                  patch.object(jb_inspect, "offline_ide_processes", side_effect=[[], [123]] if new_process else None,
+                  patch_attr(jb_inspect, "retirement_worktree", side_effect=retire),
+                  patch_attr(jb_inspect, "discover_identities", return_value=[]) as discover,
+                  patch_attr(jb_inspect, "offline_ide_processes", side_effect=[[], [123]] if new_process else None,
                                return_value=[]),
-                  patch.object(jb_inspect.subprocess, "run") as removal):
+                  patch.object(subprocess, "run") as removal):
                 with self.assertRaises(jb_inspect.InspectError) as caught:
                     jb_inspect.command_retire_sdks(args)
                 if new_process:
@@ -694,11 +698,11 @@ class SdkRetirementTests(unittest.TestCase):
                     return [self.identity()] if live else []
                 response = self.response(root, True)
                 response.body["sdks"] = []
-                with (patch.object(jb_inspect.Path, "home", return_value=home),
-                      patch.object(jb_inspect.sys, "platform", "darwin"),
+                with (patch_attr(jb_inspect.Path, "home", return_value=home),
+                      patch.object(sys, "platform", "darwin"),
                       patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}),
-                      patch.object(jb_inspect, "discover_identities", side_effect=discover) as discovery,
-                      patch.object(jb_inspect, "http_post", return_value=response) as post):
+                      patch_attr(jb_inspect, "discover_identities", side_effect=discover) as discovery,
+                      patch_attr(jb_inspect, "http_post", return_value=response) as post):
                     self.assertFalse(jb_inspect.command_retire_sdks(args)["worktree_removed"])
                     self.assertTrue(root.is_dir())
                     args.dry_run = False
@@ -743,7 +747,7 @@ class SdkRetirementTests(unittest.TestCase):
                     response.body["sdks"] = []
                 return response
             args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
-            with patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", side_effect=post):
+            with patch_attr(jb_inspect, "discover_identities", return_value=[self.identity()]), patch_attr(jb_inspect, "http_post", side_effect=post):
                 result = jb_inspect.command_retire_sdks(args)
             self.assertEqual(events, ["true", "false", "true"])
             self.assertTrue(result["worktree_removed"])
@@ -753,14 +757,14 @@ class SdkRetirementTests(unittest.TestCase):
     def test_refusal_never_removes_worktree(self):
         args = Namespace(command="remove-worktree", repo="/fixture/task", dry_run=False, lifecycle_lock_timeout_ms=1000)
         refused = jb_inspect.HttpResult(200, {"status": "refused", "sdks": [{"reason": "not_helper_owned"}]}, "http://fixture")
-        with patch.object(jb_inspect, "retirement_worktree", return_value=Path(args.repo)), patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", return_value=refused), patch.object(jb_inspect.subprocess, "run") as removal:
+        with patch_attr(jb_inspect, "retirement_worktree", return_value=Path(args.repo)), patch_attr(jb_inspect, "discover_identities", return_value=[self.identity()]), patch_attr(jb_inspect, "http_post", return_value=refused), patch.object(subprocess, "run") as removal:
             with self.assertRaises(jb_inspect.InspectError):
                 jb_inspect.command_retire_sdks(args)
             removal.assert_not_called()
 
     def test_dry_run_does_not_apply_or_remove(self):
         args = Namespace(command="remove-worktree", repo="/fixture/task", dry_run=True, lifecycle_lock_timeout_ms=1000)
-        with patch.object(jb_inspect, "retirement_worktree", return_value=Path(args.repo)), patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", return_value=self.response(Path(args.repo), True)) as post, patch.object(jb_inspect.subprocess, "run") as removal:
+        with patch_attr(jb_inspect, "retirement_worktree", return_value=Path(args.repo)), patch_attr(jb_inspect, "discover_identities", return_value=[self.identity()]), patch_attr(jb_inspect, "http_post", return_value=self.response(Path(args.repo), True)) as post, patch.object(subprocess, "run") as removal:
             self.assertFalse(jb_inspect.command_retire_sdks(args)["worktree_removed"])
             self.assertEqual(post.call_args.args[2]["dry_run"], "true")
             post.assert_called_once()
@@ -768,7 +772,7 @@ class SdkRetirementTests(unittest.TestCase):
 
     def test_missing_capability_refuses_before_any_request(self):
         for identities in ([], [self.identity(), {"port": 63343, "session_id": "old"}]):
-            with self.subTest(identities=identities), patch.object(jb_inspect, "http_post") as post:
+            with self.subTest(identities=identities), patch_attr(jb_inspect, "http_post") as post:
                 with self.assertRaises(jb_inspect.InspectError):
                     jb_inspect.unregister_helper_sdks(identities, None, False)
                 post.assert_not_called()
@@ -776,7 +780,7 @@ class SdkRetirementTests(unittest.TestCase):
     def test_session_drift_refuses(self):
         response = self.response(Path("/fixture/task"), True)
         response.body["session_id"] = "replacement"
-        with patch.object(jb_inspect, "http_post", return_value=response):
+        with patch_attr(jb_inspect, "http_post", return_value=response):
             with self.assertRaises(jb_inspect.InspectError):
                 jb_inspect.unregister_helper_sdks([self.identity()], Path("/fixture/task"), True)
 
@@ -800,7 +804,7 @@ class SdkRetirementTests(unittest.TestCase):
                 if params["dry_run"] == "false":
                     applied = True
                 return response
-            with patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", side_effect=post) as request:
+            with patch_attr(jb_inspect, "discover_identities", return_value=[self.identity()]), patch_attr(jb_inspect, "http_post", side_effect=post) as request:
                 result = jb_inspect.command_retire_sdks(args)
                 self.assertEqual([call.args[2]["dry_run"] for call in request.call_args_list], ["true", "false", "true"])
                 self.assertFalse(result["worktree_removed"])
@@ -808,7 +812,7 @@ class SdkRetirementTests(unittest.TestCase):
     def test_open_project_refuses_even_without_sdk_records(self):
         root = Path("/fixture/task")
         identity = self.identity() | {"open_projects": [{"base_path": str(root / "nested")}]}
-        with patch.object(jb_inspect, "http_post") as post:
+        with patch_attr(jb_inspect, "http_post") as post:
             with self.assertRaisesRegex(jb_inspect.InspectError, "Close every IDE project"):
                 jb_inspect.unregister_helper_sdks([identity], root, False)
             post.assert_not_called()
@@ -830,7 +834,7 @@ class SdkRetirementTests(unittest.TestCase):
             transport.status = 200
             transport.read.return_value = json.dumps(response.body).encode()
             return transport
-        with patch.object(jb_inspect, "retirement_worktree", return_value=root), patch.object(jb_inspect, "discover_identities", return_value=[self.identity(), second]), patch.object(jb_inspect.urllib.request, "urlopen", side_effect=urlopen), patch.object(jb_inspect.subprocess, "run") as removal:
+        with patch_attr(jb_inspect, "retirement_worktree", return_value=root), patch_attr(jb_inspect, "discover_identities", return_value=[self.identity(), second]), patch_attr(jb_inspect.urllib.request, "urlopen", side_effect=urlopen), patch.object(subprocess, "run") as removal:
             with self.assertRaises(jb_inspect.InspectError) as caught:
                 jb_inspect.command_retire_sdks(args)
             self.assertEqual(len(caught.exception.payload["completed_sdk_cleanup"]), 1)
@@ -856,7 +860,7 @@ class SdkRetirementTests(unittest.TestCase):
                 self.assertEqual(params["worktree_path"], str(root))
                 applied = True
                 return response
-            with patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", side_effect=post):
+            with patch_attr(jb_inspect, "discover_identities", return_value=[self.identity()]), patch_attr(jb_inspect, "http_post", side_effect=post):
                 result = jb_inspect.command_retire_sdks(args)
                 self.assertEqual(result["sdk_preview"][0]["result"]["sdks"][1]["status"], "refused")
                 self.assertEqual(len(result["sdk_cleanup"]), 1)
@@ -873,7 +877,7 @@ class SdkRetirementTests(unittest.TestCase):
                 if params["dry_run"] == "false":
                     response.body["sdks"] = []
                 return response
-            with patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", side_effect=post):
+            with patch_attr(jb_inspect, "discover_identities", return_value=[self.identity()]), patch_attr(jb_inspect, "http_post", side_effect=post):
                 with self.assertRaisesRegex(jb_inspect.InspectError, "remain registered"):
                     jb_inspect.command_retire_sdks(args)
 
@@ -891,7 +895,7 @@ class SdkRetirementTests(unittest.TestCase):
                 response.body["sdks"][0].update(status="refused", reason="not_helper_owned")
                 raise jb_inspect.InspectError("HTTP 409", 3, response.body | {"http_status": 409})
             args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
-            with patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", side_effect=post):
+            with patch_attr(jb_inspect, "discover_identities", return_value=[self.identity()]), patch_attr(jb_inspect, "http_post", side_effect=post):
                 result = jb_inspect.command_retire_sdks(args)
             self.assertTrue(result["worktree_removed"])
             self.assertEqual(result["preserved_unowned_sdk_count"], 1)
@@ -934,8 +938,8 @@ class SdkRetirementTests(unittest.TestCase):
             response.body["sdks"] = []
             return response
         args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
-        with patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), \
-                patch.object(jb_inspect, "http_post", side_effect=post), patch.object(jb_inspect.subprocess, "run", side_effect=run):
+        with patch_attr(jb_inspect, "discover_identities", return_value=[self.identity()]), \
+                patch_attr(jb_inspect, "http_post", side_effect=post), patch.object(subprocess, "run", side_effect=run):
             return jb_inspect.command_retire_sdks(args)
 
     def test_removal_finishes_when_only_finder_metadata_refills_the_checkout(self):
@@ -978,7 +982,7 @@ class SdkRetirementTests(unittest.TestCase):
                 late = root / "pkg" / "late.txt"
                 if not late.exists():
                     late.write_text("written after the leftovers were listed\n")
-            with patch.object(jb_inspect.os, "unlink", side_effect=unlink):
+            with patch.object(os, "unlink", side_effect=unlink):
                 with self.assertRaisesRegex(jb_inspect.InspectError, "not in the verified checkout") as caught:
                     self.remove_racing_finder(root, ["pkg/module.py"], ["pkg/.DS_Store"])
             self.assertEqual(caught.exception.payload["retained_entries"], ["pkg/late.txt"])
@@ -1017,7 +1021,7 @@ class SdkRetirementTests(unittest.TestCase):
                     response.body["sdks"] = []
                 return response
             args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
-            with patch.object(jb_inspect, "discover_identities", return_value=[owner, empty]), patch.object(jb_inspect, "http_post", side_effect=post):
+            with patch_attr(jb_inspect, "discover_identities", return_value=[owner, empty]), patch_attr(jb_inspect, "http_post", side_effect=post):
                 result = jb_inspect.command_retire_sdks(args)
             self.assertEqual(applied_ports, [owner["port"]])
             self.assertEqual([item["port"] for item in result["sdk_apply_skipped"]], [empty["port"]])
@@ -1036,7 +1040,7 @@ class SdkRetirementTests(unittest.TestCase):
             if previews == 1:
                 response.body["sdks"] = []
             return response
-        with patch.object(jb_inspect, "retirement_worktree", return_value=root), patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", side_effect=post), patch.object(jb_inspect.subprocess, "run") as removal:
+        with patch_attr(jb_inspect, "retirement_worktree", return_value=root), patch_attr(jb_inspect, "discover_identities", return_value=[self.identity()]), patch_attr(jb_inspect, "http_post", side_effect=post), patch.object(subprocess, "run") as removal:
             with self.assertRaisesRegex(jb_inspect.InspectError, "still needs retirement"):
                 jb_inspect.command_retire_sdks(args)
             removal.assert_not_called()
@@ -1045,7 +1049,7 @@ class SdkRetirementTests(unittest.TestCase):
         root = Path("/fixture/task")
         busy = {"status": "refused", "reason": "sdk_lifecycle_busy", "http_status": 409,
                 "session_id": "session", "sdk_lifecycle_version": 1, "dry_run": False, "sdks": []}
-        with patch.object(jb_inspect, "http_post", side_effect=jb_inspect.InspectError("HTTP 409", 3, busy)) as post:
+        with patch_attr(jb_inspect, "http_post", side_effect=jb_inspect.InspectError("HTTP 409", 3, busy)) as post:
             with self.assertRaises(jb_inspect.InspectError) as caught:
                 jb_inspect.unregister_helper_sdks([self.identity()], root, False)
             self.assertEqual(caught.exception.payload["reason"], "sdk_lifecycle_busy")
@@ -1056,7 +1060,7 @@ class SdkRetirementTests(unittest.TestCase):
         args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
         def post(_port, _endpoint, params, **_kwargs):
             return self.response(root, params["dry_run"] == "true")
-        with patch.object(jb_inspect, "retirement_worktree", return_value=root), patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", side_effect=post), patch.object(jb_inspect.subprocess, "run") as removal:
+        with patch_attr(jb_inspect, "retirement_worktree", return_value=root), patch_attr(jb_inspect, "discover_identities", return_value=[self.identity()]), patch_attr(jb_inspect, "http_post", side_effect=post), patch.object(subprocess, "run") as removal:
             with self.assertRaisesRegex(jb_inspect.InspectError, "still needs retirement"):
                 jb_inspect.command_retire_sdks(args)
             removal.assert_not_called()
@@ -1065,7 +1069,7 @@ class SdkRetirementTests(unittest.TestCase):
         for value in (None, "", "relative/path", 42):
             response = self.response(Path("/fixture/task"), True)
             response.body["sdks"][0]["worktree_path"] = value
-            with self.subTest(value=value), patch.object(jb_inspect, "http_post", return_value=response):
+            with self.subTest(value=value), patch_attr(jb_inspect, "http_post", return_value=response):
                 with self.assertRaises(jb_inspect.InspectError):
                     jb_inspect.unregister_helper_sdks([self.identity()], None, True)
 
@@ -1075,7 +1079,7 @@ class SdkRetirementTests(unittest.TestCase):
             args = Namespace(command="cleanup-helper-sdks", dry_run=False, lifecycle_lock_timeout_ms=1000)
             for selected in ([], [str(root)]):
                 args.worktree_path = selected
-                with self.subTest(selected=selected), patch.object(jb_inspect, "discover_identities", return_value=[self.identity()]), patch.object(jb_inspect, "http_post", return_value=self.response(root, True)) as post:
+                with self.subTest(selected=selected), patch_attr(jb_inspect, "discover_identities", return_value=[self.identity()]), patch_attr(jb_inspect, "http_post", return_value=self.response(root, True)) as post:
                     with self.assertRaises(jb_inspect.InspectError):
                         jb_inspect.command_retire_sdks(args)
                     self.assertEqual(post.call_count, 1)
@@ -1098,10 +1102,10 @@ class SdkRetirementTests(unittest.TestCase):
             with self.assertRaises(jb_inspect.InspectError):
                 jb_inspect.retirement_worktree(root, True)
             (root / "valuable").unlink()
-            with patch.object(jb_inspect, "read_local_leases", return_value=[(Path("lease.json"), {"worktree_root": str(root)})]):
+            with patch_attr(jb_inspect, "read_local_leases", return_value=[(Path("lease.json"), {"worktree_root": str(root)})]):
                 with self.assertRaises(jb_inspect.InspectError):
                     jb_inspect.retirement_worktree(root, True)
-            with patch.object(jb_inspect, "git_common_worktree", return_value=None):
+            with patch_attr(jb_inspect, "git_common_worktree", return_value=None):
                 with self.assertRaisesRegex(jb_inspect.InspectError, "primary checkout"):
                     jb_inspect.retirement_worktree(root, True)
             self.assertTrue(root.is_dir())
@@ -1566,7 +1570,7 @@ class BuildContextTest(unittest.TestCase):
                 },
             )
 
-            with patch.object(jb_inspect.shutil, "which", side_effect=AssertionError("runtime probed")):
+            with patch.object(shutil, "which", side_effect=AssertionError("runtime probed")):
                 context = jb_inspect.build_context(
                     Namespace(repo=str(root), ide=None, ide_app=None, scope=None, profile="")
                 )
@@ -1822,14 +1826,14 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
                     return route
 
                 with (
-                    patch.object(jb_inspect, "run_repository_preparation", side_effect=prepare) as run_preparation,
-                    patch.object(jb_inspect, "create_local_lease", return_value={"lease_id": "lease"}),
-                    patch.object(jb_inspect, "find_exact_route", side_effect=discover),
-                    patch.object(jb_inspect, "ensure_exact_worktree"),
-                    patch.object(jb_inspect, "claim_lifecycle", return_value=unowned_lifecycle_result(route)),
-                    patch.object(jb_inspect, "wait_until_route_ready_with_prepared_sdk_retry", return_value={"ready": True}),
-                    patch.object(jb_inspect, "write_lease"),
-                    patch.object(jb_inspect, "remove_lease"),
+                    patch_attr(jb_inspect, "run_repository_preparation", side_effect=prepare) as run_preparation,
+                    patch_attr(jb_inspect, "create_local_lease", return_value={"lease_id": "lease"}),
+                    patch_attr(jb_inspect, "find_exact_route", side_effect=discover),
+                    patch_attr(jb_inspect, "ensure_exact_worktree"),
+                    patch_attr(jb_inspect, "claim_lifecycle", return_value=unowned_lifecycle_result(route)),
+                    patch_attr(jb_inspect, "wait_until_route_ready_with_prepared_sdk_retry", return_value={"ready": True}),
+                    patch_attr(jb_inspect, "write_lease"),
+                    patch_attr(jb_inspect, "remove_lease"),
                 ):
                     result = jb_inspect.command_prepare(
                         jb_inspect.parse_cli_args(parser, [command, "--repo", "/tmp/repo"]),
@@ -1851,8 +1855,8 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
             },
         }
         with (
-            patch.object(jb_inspect, "run_repository_preparation") as run_preparation,
-            patch.object(jb_inspect, "create_local_lease", return_value={"lease_id": "lease"}),
+            patch_attr(jb_inspect, "run_repository_preparation") as run_preparation,
+            patch_attr(jb_inspect, "create_local_lease", return_value={"lease_id": "lease"}),
         ):
             result = jb_inspect.command_claim(Namespace(command="claim"), context)
 
@@ -1884,7 +1888,7 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
 
         with (
             patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent / "other")}),
-            patch.object(jb_inspect.subprocess, "run", side_effect=AssertionError("command executed")),
+            patch.object(subprocess, "run", side_effect=AssertionError("command executed")),
             self.assertRaises(jb_inspect.InspectError) as raised,
         ):
             jb_inspect.run_repository_preparation(self.prep_args(), context)
@@ -2110,8 +2114,8 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
 
         with (
             patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent)}),
-            patch.object(jb_inspect, "resolve_ide_selection", side_effect=resolve),
-            patch.object(jb_inspect, "run_prepared_inspection", side_effect=inspect),
+            patch_attr(jb_inspect, "resolve_ide_selection", side_effect=resolve),
+            patch_attr(jb_inspect, "run_prepared_inspection", side_effect=inspect),
         ):
             jb_inspect.run_configured_inspection_lanes(args, context)
         self.assertEqual(len(seen), 1)
@@ -2151,7 +2155,7 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
         ]})}
         with (
             patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "~/isolated-ide"}),
-            patch.object(jb_inspect, "resolve_ide_selection", return_value=Namespace(config_dir=Path("/normal"))),
+            patch_attr(jb_inspect, "resolve_ide_selection", return_value=Namespace(config_dir=Path("/normal"))),
         ):
             self.assertEqual(
                 jb_inspect.repository_preparation_sdk_table(context),
@@ -2225,7 +2229,7 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
         try:
             with (
                 patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root.parent)}),
-                patch.object(jb_inspect.subprocess, "Popen", side_effect=witnessed_popen),
+                patch.object(subprocess, subprocess.Popen.__name__, side_effect=witnessed_popen),
             ):
                 with self.assertRaises(jb_inspect.InspectError) as timed_out:
                     jb_inspect.run_repository_preparation(
@@ -2350,15 +2354,15 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
             )
 
         with (
-            patch.object(jb_inspect, "run_repository_preparation", side_effect=prepare),
-            patch.object(jb_inspect, "git_worktree_status_snapshot", side_effect=snapshot),
-            patch.object(jb_inspect, "prepare_lifecycle_details", side_effect=lifecycle),
-            patch.object(
+            patch_attr(jb_inspect, "run_repository_preparation", side_effect=prepare),
+            patch_attr(jb_inspect, "git_worktree_status_snapshot", side_effect=snapshot),
+            patch_attr(jb_inspect, "prepare_lifecycle_details", side_effect=lifecycle),
+            patch_attr(
                 jb_inspect,
                 "run_inspection_with_internal_retry",
                 return_value={"status": "clean", "total_problems": 0, "problems": []},
             ),
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "cleanup_lifecycle",
                 return_value={"status": "not_needed", "reason": "helper_did_not_open_project"},
@@ -2521,9 +2525,9 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
             stable_app = make_app(applications, "WebStorm", "WebStorm", "com.jetbrains.WebStorm", "2026.1.3")
             make_app(applications, "WebStorm 2026.2 EAP", "WebStorm", "com.jetbrains.WebStorm-EAP", "EAP WS-262.8377.39")
 
-            with patch.object(jb_inspect.sys, "platform", "darwin"), \
-                patch.object(jb_inspect.Path, "home", return_value=home), \
-                patch.object(jb_inspect, "discover_ide_app_candidates", return_value=[
+            with patch.object(sys, "platform", "darwin"), \
+                patch_attr(jb_inspect.Path, "home", return_value=home), \
+                patch_attr(jb_inspect, "discover_ide_app_candidates", return_value=[
                     jb_inspect.ide_app_candidate(stable_app),
                     jb_inspect.ide_app_candidate(applications / "WebStorm 2026.2 EAP.app"),
                 ]):
@@ -2547,9 +2551,9 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
             make_app(applications, "WebStorm", "WebStorm", "com.jetbrains.WebStorm", "2026.1.3")
             eap_app = make_app(applications, "WebStorm 2026.2 EAP", "WebStorm", "com.jetbrains.WebStorm-EAP", "EAP WS-262.8377.39")
 
-            with patch.object(jb_inspect.sys, "platform", "darwin"), \
-                patch.object(jb_inspect.Path, "home", return_value=home), \
-                patch.object(jb_inspect, "discover_ide_app_candidates", return_value=[
+            with patch.object(sys, "platform", "darwin"), \
+                patch_attr(jb_inspect.Path, "home", return_value=home), \
+                patch_attr(jb_inspect, "discover_ide_app_candidates", return_value=[
                     jb_inspect.ide_app_candidate(applications / "WebStorm.app"),
                     jb_inspect.ide_app_candidate(eap_app),
                 ]):
@@ -2571,9 +2575,9 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
             make_config_dir(home, "WebStorm2026.2")
             eap_app = make_app(applications, "WebStorm 2026.2 EAP", "WebStorm", "com.jetbrains.WebStorm-EAP", "EAP WS-262.8377.39")
 
-            with patch.object(jb_inspect.sys, "platform", "darwin"), \
-                patch.object(jb_inspect.Path, "home", return_value=home), \
-                patch.object(jb_inspect, "discover_ide_app_candidates", return_value=[jb_inspect.ide_app_candidate(eap_app)]):
+            with patch.object(sys, "platform", "darwin"), \
+                patch_attr(jb_inspect.Path, "home", return_value=home), \
+                patch_attr(jb_inspect, "discover_ide_app_candidates", return_value=[jb_inspect.ide_app_candidate(eap_app)]):
                 selection = jb_inspect.resolve_ide_selection({"ide": "WebStorm"})
 
         self.assertIsNotNone(selection)
@@ -2590,9 +2594,9 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
             eap_config = make_config_dir(home, "WebStorm2026.2")
             make_app(applications, "WebStorm", "WebStorm", "com.jetbrains.WebStorm", "2026.1.3")
 
-            with patch.object(jb_inspect.sys, "platform", "darwin"), \
-                patch.object(jb_inspect.Path, "home", return_value=home), \
-                patch.object(jb_inspect, "discover_ide_app_candidates", return_value=[
+            with patch.object(sys, "platform", "darwin"), \
+                patch_attr(jb_inspect.Path, "home", return_value=home), \
+                patch_attr(jb_inspect, "discover_ide_app_candidates", return_value=[
                     jb_inspect.ide_app_candidate(applications / "WebStorm.app"),
                 ]):
                 selection = jb_inspect.resolve_ide_selection({"ide": "WebStorm", "ide_channel": "eap", "ide_version": "2026.2"})
@@ -2610,9 +2614,9 @@ class RepositoryPreparationPreflightTest(unittest.TestCase):
             make_config_dir(home, "WebStorm2026.2")
             make_app(applications, "WebStorm", "WebStorm", "com.jetbrains.WebStorm", "2026.1.3")
 
-            with patch.object(jb_inspect.sys, "platform", "darwin"), \
-                patch.object(jb_inspect.Path, "home", return_value=home), \
-                patch.object(jb_inspect, "discover_ide_app_candidates", return_value=[
+            with patch.object(sys, "platform", "darwin"), \
+                patch_attr(jb_inspect.Path, "home", return_value=home), \
+                patch_attr(jb_inspect, "discover_ide_app_candidates", return_value=[
                     jb_inspect.ide_app_candidate(applications / "WebStorm.app"),
                 ]):
                 selection = jb_inspect.resolve_ide_selection({"ide": "WebStorm", "ide_app": "WebStorm 2026.2 EAP"})
@@ -2773,7 +2777,7 @@ class InspectionLaneConfigTest(unittest.TestCase):
 
 class LaneIdeAdviceTest(unittest.TestCase):
     def setUp(self):
-        self.enterContext(patch.object(jb_inspect, "discover_ide_app_candidates", return_value=[]))
+        self.enterContext(patch_attr(jb_inspect, "discover_ide_app_candidates", return_value=[]))
 
     def make_repo(self, root: Path) -> dict[str, Any]:
         subprocess.run(["git", "init", "-q", str(root)], check=True)
@@ -2807,11 +2811,11 @@ class LaneIdeAdviceTest(unittest.TestCase):
             with (
                 patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "", "JETBRAINS_INSPECTION_GLOBAL_CONFIG": str(home / "absent.json"),
                                        "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root)}),
-                patch.object(jb_inspect.sys, "platform", "darwin"),
-                patch.object(jb_inspect.Path, "home", return_value=home),
-                patch.object(jb_inspect, "find_exact_route", return_value=None),
-                patch.object(jb_inspect, "ensure_trusted_auto_open_root", return_value=root),
-                patch.object(jb_inspect, "open_project_for_lifecycle") as open_project,
+                patch.object(sys, "platform", "darwin"),
+                patch_attr(jb_inspect.Path, "home", return_value=home),
+                patch_attr(jb_inspect, "find_exact_route", return_value=None),
+                patch_attr(jb_inspect, "ensure_trusted_auto_open_root", return_value=root),
+                patch_attr(jb_inspect, "open_project_for_lifecycle") as open_project,
             ):
                 for command in ("open-worktree", "prepare-worktree", "prepare"):
                     (root / "prepared").unlink(missing_ok=True)
@@ -2860,10 +2864,10 @@ class LaneIdeAdviceTest(unittest.TestCase):
                     patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "",
                                            "JETBRAINS_INSPECTION_GLOBAL_CONFIG": str(home / "absent.json"),
                                            "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root)}),
-                    patch.object(jb_inspect.sys, "platform", "darwin"),
-                    patch.object(jb_inspect.Path, "home", return_value=home),
-                    patch.object(jb_inspect, "find_exact_route", return_value=None),
-                    patch.object(jb_inspect, "open_project_for_lifecycle") as opened,
+                    patch.object(sys, "platform", "darwin"),
+                    patch_attr(jb_inspect.Path, "home", return_value=home),
+                    patch_attr(jb_inspect, "find_exact_route", return_value=None),
+                    patch_attr(jb_inspect, "open_project_for_lifecycle") as opened,
                     patch.object(sys, "argv", [str(SCRIPT_PATH), "open-worktree", "--repo", str(root), "--json"]),
                     redirect_stdout(output),
                 ):
@@ -2892,10 +2896,10 @@ class LaneIdeAdviceTest(unittest.TestCase):
                 patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "",
                                        "JETBRAINS_INSPECTION_GLOBAL_CONFIG": str(home / "absent.json"),
                                        "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root)}),
-                patch.object(jb_inspect.sys, "platform", "darwin"),
-                patch.object(jb_inspect.Path, "home", return_value=home),
-                patch.object(jb_inspect, "find_exact_route", return_value=None),
-                patch.object(jb_inspect, "open_project_for_lifecycle") as opened,
+                patch.object(sys, "platform", "darwin"),
+                patch_attr(jb_inspect.Path, "home", return_value=home),
+                patch_attr(jb_inspect, "find_exact_route", return_value=None),
+                patch_attr(jb_inspect, "open_project_for_lifecycle") as opened,
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "open-worktree", "--repo", str(root), "--json"]),
                 redirect_stdout(output),
             ):
@@ -2917,8 +2921,8 @@ class LaneIdeAdviceTest(unittest.TestCase):
                 with (
                     self.subTest(context=context),
                     patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}),
-                    patch.object(jb_inspect.sys, "platform", "darwin"),
-                    patch.object(jb_inspect.Path, "home", return_value=home),
+                    patch.object(sys, "platform", "darwin"),
+                    patch_attr(jb_inspect.Path, "home", return_value=home),
                 ):
                     with self.assertRaises(jb_inspect.InspectError) as raised:
                         jb_inspect.jetbrains_config_dirs(context)
@@ -2947,8 +2951,8 @@ class LaneIdeAdviceTest(unittest.TestCase):
                 with (
                     patch.dict(os.environ, {"JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root),
                                            "JETBRAINS_INSPECTION_GLOBAL_CONFIG": str(root / "absent.json")}),
-                    patch.object(jb_inspect.Path, "home", return_value=root.parent),
-                    patch.object(jb_inspect, "run_prepared_inspection", side_effect=inspect_lane),
+                    patch_attr(jb_inspect.Path, "home", return_value=root.parent),
+                    patch_attr(jb_inspect, "run_prepared_inspection", side_effect=inspect_lane),
                     patch.object(sys, "argv", [str(SCRIPT_PATH), command,
                                                *(["--backend", "api"] if command == "agent-inspect" else []),
                                                "--repo", str(root), "--scope", "files",
@@ -2981,13 +2985,13 @@ class LaneIdeAdviceTest(unittest.TestCase):
             with (
                 patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "", "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root),
                                        "JETBRAINS_INSPECTION_GLOBAL_CONFIG": str(home / "absent.json")}),
-                patch.object(jb_inspect.sys, "platform", "darwin"),
-                patch.object(jb_inspect.Path, "home", return_value=home),
-                patch.object(jb_inspect, "find_exact_route", return_value=None),
-                patch.object(jb_inspect, "open_project_for_lifecycle", side_effect=open_project) as opened,
-                patch.object(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
-                patch.object(jb_inspect, "claim_lifecycle", return_value=unowned_lifecycle_result(route)),
-                patch.object(jb_inspect, "wait_until_route_ready_with_prepared_sdk_retry", return_value={"ready": True}),
+                patch.object(sys, "platform", "darwin"),
+                patch_attr(jb_inspect.Path, "home", return_value=home),
+                patch_attr(jb_inspect, "find_exact_route", return_value=None),
+                patch_attr(jb_inspect, "open_project_for_lifecycle", side_effect=open_project) as opened,
+                patch_attr(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
+                patch_attr(jb_inspect, "claim_lifecycle", return_value=unowned_lifecycle_result(route)),
+                patch_attr(jb_inspect, "wait_until_route_ready_with_prepared_sdk_retry", return_value={"ready": True}),
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "open-worktree", "--repo", str(root / "backend"),
                                            "--ide", "PyCharm", "--json"]),
                 redirect_stdout(io.StringIO()),
@@ -3007,10 +3011,10 @@ class LaneIdeAdviceTest(unittest.TestCase):
             with (
                 patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "", "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root),
                                        "JETBRAINS_INSPECTION_GLOBAL_CONFIG": str(home / "absent.json")}),
-                patch.object(jb_inspect.sys, "platform", "darwin"),
-                patch.object(jb_inspect.Path, "home", return_value=home),
-                patch.object(jb_inspect, "discover_identities", return_value=[]),
-                patch.object(jb_inspect, "open_project_for_lifecycle") as opened,
+                patch.object(sys, "platform", "darwin"),
+                patch_attr(jb_inspect.Path, "home", return_value=home),
+                patch_attr(jb_inspect, "discover_identities", return_value=[]),
+                patch_attr(jb_inspect, "open_project_for_lifecycle") as opened,
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "get-status", "--repo", str(root), "--open", "--json"]),
                 redirect_stdout(output),
             ):
@@ -3032,10 +3036,10 @@ class LaneIdeAdviceTest(unittest.TestCase):
             with (
                 patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "", "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root),
                                        "JETBRAINS_INSPECTION_GLOBAL_CONFIG": str(home / "absent.json")}),
-                patch.object(jb_inspect.sys, "platform", "darwin"),
-                patch.object(jb_inspect.Path, "home", return_value=home),
-                patch.object(jb_inspect, "find_exact_route", return_value=None),
-                patch.object(jb_inspect, "open_project_for_lifecycle") as opened,
+                patch.object(sys, "platform", "darwin"),
+                patch_attr(jb_inspect.Path, "home", return_value=home),
+                patch_attr(jb_inspect, "find_exact_route", return_value=None),
+                patch_attr(jb_inspect, "open_project_for_lifecycle") as opened,
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "open-worktree", "--repo", str(root), "--ide", "PyCharm", "--json"]),
                 redirect_stdout(output),
             ):
@@ -3058,10 +3062,10 @@ class LaneIdeAdviceTest(unittest.TestCase):
             with (
                 patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "", "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": str(root),
                                        "JETBRAINS_INSPECTION_GLOBAL_CONFIG": str(home / "absent.json")}),
-                patch.object(jb_inspect.sys, "platform", "darwin"),
-                patch.object(jb_inspect.Path, "home", return_value=home),
-                patch.object(jb_inspect, "find_exact_route", return_value=None),
-                patch.object(jb_inspect, "open_project_for_lifecycle") as opened,
+                patch.object(sys, "platform", "darwin"),
+                patch_attr(jb_inspect.Path, "home", return_value=home),
+                patch_attr(jb_inspect, "find_exact_route", return_value=None),
+                patch_attr(jb_inspect, "open_project_for_lifecycle") as opened,
                 patch.object(sys, "argv", [str(SCRIPT_PATH), "agent-inspect", "--backend", "api", "--repo", str(root),
                                            "--scope", "files", "--file", "backend/app.py"]),
                 redirect_stdout(output),
@@ -3083,8 +3087,8 @@ class LaneIdeAdviceTest(unittest.TestCase):
             context = {"ide": "PyCharm", "inspection_lane": {"id": "python", "ide": "PyCharm"}}
             with (
                 patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}),
-                patch.object(jb_inspect.sys, "platform", "darwin"),
-                patch.object(jb_inspect.Path, "home", return_value=home),
+                patch.object(sys, "platform", "darwin"),
+                patch_attr(jb_inspect.Path, "home", return_value=home),
             ):
                 with self.assertRaises(jb_inspect.InspectError) as raised:
                     jb_inspect.jetbrains_config_dirs(context)
@@ -3473,7 +3477,7 @@ class InspectionLaneExecutionTest(unittest.TestCase):
                     "cleanup": {"status": "closed", "reason": "helper_owned"},
                 }
 
-            with patch.object(jb_inspect, "run_prepared_inspection", side_effect=run_lane):
+            with patch_attr(jb_inspect, "run_prepared_inspection", side_effect=run_lane):
                 result = jb_inspect.run_configured_inspection_lanes(args, context)
 
         self.assertEqual([call[0] for call in calls], ["IntelliJ IDEA", "PyCharm"])
@@ -3508,7 +3512,7 @@ class InspectionLaneExecutionTest(unittest.TestCase):
                 "_inspection_lanes": lanes,
             }
             args = helper_args(scope="files", files=[str(python)], max_files=None, profile="")
-            with patch.object(
+            with patch_attr(
                 jb_inspect,
                 "run_prepared_inspection",
                 return_value={"status": "clean", "total_problems": 0, "problems": [], "cleanup": {"status": "not_needed"}},
@@ -3538,7 +3542,7 @@ class InspectionLaneExecutionTest(unittest.TestCase):
             }
             args = helper_args(scope="changed_files", changed_files_mode="all",
                                include_unversioned=True, max_files=None)
-            with patch.object(jb_inspect, "run_prepared_inspection") as inspect:
+            with patch_attr(jb_inspect, "run_prepared_inspection") as inspect:
                 result = jb_inspect.run_configured_inspection_lanes(args, context)
                 compact = jb_inspect.compact_agent_result_payload(result, 1)
                 inspect.assert_not_called()
@@ -3560,7 +3564,7 @@ class InspectionLaneExecutionTest(unittest.TestCase):
                 "scope": "files", "_inspection_lanes": lanes,
             }
             args = helper_args(scope="files", files=[str(target)], max_files=None)
-            with patch.object(jb_inspect, "run_prepared_inspection") as inspect:
+            with patch_attr(jb_inspect, "run_prepared_inspection") as inspect:
                 result = jb_inspect.run_configured_inspection_lanes(args, context)
                 compact = jb_inspect.compact_agent_result_payload(result, 1)
                 inspect.assert_not_called()
@@ -3618,8 +3622,8 @@ class InspectionLaneExecutionTest(unittest.TestCase):
                 }
 
             with (
-                patch.object(jb_inspect, "run_repository_preparation", return_value=prepared_state) as prepare,
-                patch.object(jb_inspect, "run_prepared_inspection", side_effect=run_lane),
+                patch_attr(jb_inspect, "run_repository_preparation", return_value=prepared_state) as prepare,
+                patch_attr(jb_inspect, "run_prepared_inspection", side_effect=run_lane),
             ):
                 result = jb_inspect.run_configured_inspection_lanes(args, context)
 
@@ -3666,7 +3670,7 @@ class InspectionLaneExecutionTest(unittest.TestCase):
                     )
                 return {"status": "clean", "total_problems": 0, "problems": [], "cleanup": {"status": "closed"}}
 
-            with patch.object(jb_inspect, "run_prepared_inspection", side_effect=run_lane):
+            with patch_attr(jb_inspect, "run_prepared_inspection", side_effect=run_lane):
                 result = jb_inspect.run_configured_inspection_lanes(args, context)
 
         self.assertEqual(calls, ["IntelliJ IDEA", "PyCharm"])
@@ -3707,7 +3711,7 @@ class InspectionLaneExecutionTest(unittest.TestCase):
             }
             args = helper_args(scope="files", files=[str(kotlin), str(python)], max_files=None, profile="")
 
-            with patch.object(
+            with patch_attr(
                 jb_inspect,
                 "run_prepared_inspection",
                 return_value={
@@ -3852,8 +3856,8 @@ class InspectionLaneExecutionTest(unittest.TestCase):
 
     def test_lane_mutation_snapshot_waits_for_delayed_ide_writes(self):
         with (
-            patch.object(jb_inspect.time, "sleep") as sleep,
-            patch.object(
+            patch.object(time, "sleep") as sleep,
+            patch_attr(
                 jb_inspect,
                 "git_worktree_status_snapshot",
                 return_value={"status": "ok", "entries": {".idea/modules.xml": " D"}},
@@ -4071,11 +4075,11 @@ class LifecycleTest(unittest.TestCase):
         claimed = []
 
         with (
-            patch.object(jb_inspect, "create_local_lease", return_value=lease),
-            patch.object(jb_inspect, "find_exact_route", return_value=route),
-            patch.object(jb_inspect, "matching_deferred_lease", return_value=None),
-            patch.object(jb_inspect, "ensure_exact_worktree"),
-            patch.object(
+            patch_attr(jb_inspect, "create_local_lease", return_value=lease),
+            patch_attr(jb_inspect, "find_exact_route", return_value=route),
+            patch_attr(jb_inspect, "matching_deferred_lease", return_value=None),
+            patch_attr(jb_inspect, "ensure_exact_worktree"),
+            patch_attr(
                 jb_inspect,
                 "wait_until_route_ready",
                 side_effect=jb_inspect.InspectError(
@@ -4084,13 +4088,13 @@ class LifecycleTest(unittest.TestCase):
                     {"error_reason": "ide_not_ready_timeout", "last_status": {"indexing": True}},
                 ),
             ),
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "claim_lifecycle",
                 side_effect=lambda *args: claimed.append(args) or unowned_lifecycle_result(route),
             ),
-            patch.object(jb_inspect, "write_lease"),
-            patch.object(jb_inspect, "remove_lease", side_effect=lambda removed_lease: removed.append(removed_lease["lease_id"])),
+            patch_attr(jb_inspect, "write_lease"),
+            patch_attr(jb_inspect, "remove_lease", side_effect=lambda removed_lease: removed.append(removed_lease["lease_id"])),
         ):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.prepare_lifecycle_details(
@@ -4119,17 +4123,17 @@ class LifecycleTest(unittest.TestCase):
         ]
 
         with (
-            patch.object(jb_inspect, "create_local_lease", return_value=lease),
-            patch.object(jb_inspect, "find_exact_route", return_value=None),
-            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
-            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
-            patch.object(jb_inspect, "open_project_for_lifecycle", return_value=("running_ide", open_attempts, True)),
-            patch.object(
+            patch_attr(jb_inspect, "create_local_lease", return_value=lease),
+            patch_attr(jb_inspect, "find_exact_route", return_value=None),
+            patch_attr(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch_attr(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch_attr(jb_inspect, "open_project_for_lifecycle", return_value=("running_ide", open_attempts, True)),
+            patch_attr(
                 jb_inspect,
                 "wait_for_exact_route_after_open",
                 side_effect=jb_inspect.InspectError("route missing", 3, {"error_reason": "project_open_blocked"}),
             ),
-            patch.object(jb_inspect, "write_lease", side_effect=lambda written_lease: written.append(written_lease.copy())),
+            patch_attr(jb_inspect, "write_lease", side_effect=lambda written_lease: written.append(written_lease.copy())),
         ):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.prepare_lifecycle_details(
@@ -4158,11 +4162,11 @@ class LifecycleTest(unittest.TestCase):
         cleanup_calls = []
 
         with (
-            patch.object(jb_inspect, "create_local_lease", return_value=lease),
-            patch.object(jb_inspect, "find_exact_route", return_value=None),
-            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
-            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
-            patch.object(
+            patch_attr(jb_inspect, "create_local_lease", return_value=lease),
+            patch_attr(jb_inspect, "find_exact_route", return_value=None),
+            patch_attr(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch_attr(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch_attr(
                 jb_inspect,
                 "open_project_for_lifecycle",
                 return_value=(
@@ -4178,14 +4182,14 @@ class LifecycleTest(unittest.TestCase):
                     True,
                 ),
             ),
-            patch.object(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
-            patch.object(jb_inspect, "ensure_exact_worktree", side_effect=jb_inspect.InspectError("wrong route", 3)),
-            patch.object(
+            patch_attr(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
+            patch_attr(jb_inspect, "ensure_exact_worktree", side_effect=jb_inspect.InspectError("wrong route", 3)),
+            patch_attr(
                 jb_inspect,
                 "cleanup_lifecycle",
                 side_effect=lambda *args: cleanup_calls.append("close"),
             ),
-            patch.object(jb_inspect, "write_lease"),
+            patch_attr(jb_inspect, "write_lease"),
         ):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.prepare_lifecycle_details(
@@ -4211,11 +4215,11 @@ class LifecycleTest(unittest.TestCase):
         cleanup_calls = []
 
         with (
-            patch.object(jb_inspect, "create_local_lease", return_value=lease),
-            patch.object(jb_inspect, "find_exact_route", return_value=None),
-            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
-            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
-            patch.object(
+            patch_attr(jb_inspect, "create_local_lease", return_value=lease),
+            patch_attr(jb_inspect, "find_exact_route", return_value=None),
+            patch_attr(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch_attr(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch_attr(
                 jb_inspect,
                 "open_project_for_lifecycle",
                 return_value=(
@@ -4231,19 +4235,19 @@ class LifecycleTest(unittest.TestCase):
                     True,
                 ),
             ),
-            patch.object(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
-            patch.object(jb_inspect, "ensure_exact_worktree"),
-            patch.object(
+            patch_attr(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
+            patch_attr(jb_inspect, "ensure_exact_worktree"),
+            patch_attr(
                 jb_inspect,
                 "claim_lifecycle",
                 return_value=claimed_lifecycle_result(route, "proof-1"),
             ),
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "wait_until_route_ready",
                 side_effect=jb_inspect.InspectError("not ready", 3, {"error_reason": "ide_not_ready_timeout"}),
             ),
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "cleanup_lifecycle",
                 side_effect=lambda cleanup_lease, cleanup_route, proof: cleanup_calls.append(
@@ -4251,7 +4255,7 @@ class LifecycleTest(unittest.TestCase):
                 )
                 or {"status": "closed"},
             ),
-            patch.object(jb_inspect, "write_lease"),
+            patch_attr(jb_inspect, "write_lease"),
         ):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.prepare_lifecycle_details(
@@ -4274,11 +4278,11 @@ class LifecycleTest(unittest.TestCase):
         }
 
         with (
-            patch.object(jb_inspect, "create_local_lease", return_value=lease),
-            patch.object(jb_inspect, "find_exact_route", return_value=None),
-            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
-            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
-            patch.object(
+            patch_attr(jb_inspect, "create_local_lease", return_value=lease),
+            patch_attr(jb_inspect, "find_exact_route", return_value=None),
+            patch_attr(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch_attr(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch_attr(
                 jb_inspect,
                 "open_project_for_lifecycle",
                 return_value=(
@@ -4294,20 +4298,20 @@ class LifecycleTest(unittest.TestCase):
                     True,
                 ),
             ),
-            patch.object(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
-            patch.object(jb_inspect, "ensure_exact_worktree"),
-            patch.object(
+            patch_attr(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
+            patch_attr(jb_inspect, "ensure_exact_worktree"),
+            patch_attr(
                 jb_inspect,
                 "claim_lifecycle",
                 return_value=claimed_lifecycle_result(route, "proof-1"),
             ),
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "wait_until_route_ready",
                 side_effect=jb_inspect.InspectError("not ready", 3, {"error_reason": "ide_not_ready_timeout"}),
             ),
-            patch.object(jb_inspect, "cleanup_lifecycle", side_effect=RuntimeError("close crashed")),
-            patch.object(jb_inspect, "write_lease"),
+            patch_attr(jb_inspect, "cleanup_lifecycle", side_effect=RuntimeError("close crashed")),
+            patch_attr(jb_inspect, "write_lease"),
         ):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.prepare_lifecycle_details(
@@ -4332,11 +4336,11 @@ class LifecycleTest(unittest.TestCase):
         written = []
 
         with (
-            patch.object(jb_inspect, "create_local_lease", return_value=lease),
-            patch.object(jb_inspect, "find_exact_route", return_value=None),
-            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
-            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
-            patch.object(
+            patch_attr(jb_inspect, "create_local_lease", return_value=lease),
+            patch_attr(jb_inspect, "find_exact_route", return_value=None),
+            patch_attr(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch_attr(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch_attr(
                 jb_inspect,
                 "open_project_for_lifecycle",
                 return_value=(
@@ -4352,20 +4356,20 @@ class LifecycleTest(unittest.TestCase):
                     True,
                 ),
             ),
-            patch.object(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
-            patch.object(jb_inspect, "ensure_exact_worktree"),
-            patch.object(jb_inspect, "wait_until_route_ready"),
-            patch.object(
+            patch_attr(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
+            patch_attr(jb_inspect, "ensure_exact_worktree"),
+            patch_attr(jb_inspect, "wait_until_route_ready"),
+            patch_attr(
                 jb_inspect,
                 "claim_lifecycle",
                 side_effect=jb_inspect.InspectError("HTTP 500", 3, {"error_reason": "inspection_api_http_error"}),
             ),
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "reclaim_lifecycle_claim",
                 return_value=(None, None, {"status": "unknown"}, route),
             ),
-            patch.object(jb_inspect, "write_lease", side_effect=lambda written_lease: written.append(written_lease.copy())),
+            patch_attr(jb_inspect, "write_lease", side_effect=lambda written_lease: written.append(written_lease.copy())),
         ):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.prepare_lifecycle_details(
@@ -4402,23 +4406,23 @@ class LifecycleTest(unittest.TestCase):
                     }
                 ]
                 with (
-                    patch.object(jb_inspect, "create_local_lease", return_value=lease),
-                    patch.object(jb_inspect, "find_exact_route", return_value=None),
-                    patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
-                    patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
-                    patch.object(
+                    patch_attr(jb_inspect, "create_local_lease", return_value=lease),
+                    patch_attr(jb_inspect, "find_exact_route", return_value=None),
+                    patch_attr(jb_inspect, "ensure_trusted_auto_open_root"),
+                    patch_attr(jb_inspect, "ensure_jetbrains_trusted_locations"),
+                    patch_attr(
                         jb_inspect,
                         "open_project_for_lifecycle",
                         return_value=(method, open_attempts, False),
                     ),
-                    patch.object(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
-                    patch.object(jb_inspect, "ensure_exact_worktree"),
-                    patch.object(
+                    patch_attr(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
+                    patch_attr(jb_inspect, "ensure_exact_worktree"),
+                    patch_attr(
                         jb_inspect,
                         "claim_lifecycle",
                         return_value=unowned_lifecycle_result(route),
                     ),
-                    patch.object(
+                    patch_attr(
                         jb_inspect,
                         "wait_until_route_ready",
                         side_effect=jb_inspect.InspectError(
@@ -4427,9 +4431,9 @@ class LifecycleTest(unittest.TestCase):
                             {"error_reason": "ide_not_ready_timeout"},
                         ),
                     ),
-                    patch.object(jb_inspect, "call_lifecycle_close", side_effect=lambda *args: close_calls.append(args)),
-                    patch.object(jb_inspect, "write_lease"),
-                    patch.object(jb_inspect, "remove_lease"),
+                    patch_attr(jb_inspect, "call_lifecycle_close", side_effect=lambda *args: close_calls.append(args)),
+                    patch_attr(jb_inspect, "write_lease"),
+                    patch_attr(jb_inspect, "remove_lease"),
                 ):
                     with self.assertRaises(jb_inspect.InspectError):
                         jb_inspect.prepare_lifecycle_details(
@@ -4460,20 +4464,20 @@ class LifecycleTest(unittest.TestCase):
         ]
 
         with (
-            patch.object(jb_inspect, "create_local_lease", return_value=lease),
-            patch.object(jb_inspect, "find_exact_route", return_value=None),
-            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
-            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
-            patch.object(
+            patch_attr(jb_inspect, "create_local_lease", return_value=lease),
+            patch_attr(jb_inspect, "find_exact_route", return_value=None),
+            patch_attr(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch_attr(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch_attr(
                 jb_inspect,
                 "open_project_for_lifecycle",
                 return_value=("running_ide", open_attempts, True),
             ),
-            patch.object(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
-            patch.object(jb_inspect, "ensure_exact_worktree"),
-            patch.object(jb_inspect, "claim_lifecycle", return_value=unowned_lifecycle_result(route)),
-            patch.object(jb_inspect, "wait_until_route_ready"),
-            patch.object(jb_inspect, "write_lease"),
+            patch_attr(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
+            patch_attr(jb_inspect, "ensure_exact_worktree"),
+            patch_attr(jb_inspect, "claim_lifecycle", return_value=unowned_lifecycle_result(route)),
+            patch_attr(jb_inspect, "wait_until_route_ready"),
+            patch_attr(jb_inspect, "write_lease"),
         ):
             prepared, prepared_lease, close_proof = jb_inspect.prepare_lifecycle_details(
                 helper_args(open=True, prepare_timeout_ms=1),
@@ -4505,19 +4509,19 @@ class LifecycleTest(unittest.TestCase):
         ]
 
         with (
-            patch.object(jb_inspect, "create_local_lease", return_value=lease),
-            patch.object(jb_inspect, "find_exact_route", return_value=None),
-            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
-            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
-            patch.object(
+            patch_attr(jb_inspect, "create_local_lease", return_value=lease),
+            patch_attr(jb_inspect, "find_exact_route", return_value=None),
+            patch_attr(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch_attr(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch_attr(
                 jb_inspect,
                 "open_project_for_lifecycle",
                 return_value=("running_ide", open_attempts, True),
             ),
-            patch.object(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
-            patch.object(jb_inspect, "ensure_exact_worktree"),
-            patch.object(jb_inspect, "cleanup_lifecycle", side_effect=lambda *args: cleanup_calls.append("close")),
-            patch.object(jb_inspect, "write_lease"),
+            patch_attr(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
+            patch_attr(jb_inspect, "ensure_exact_worktree"),
+            patch_attr(jb_inspect, "cleanup_lifecycle", side_effect=lambda *args: cleanup_calls.append("close")),
+            patch_attr(jb_inspect, "write_lease"),
         ):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.prepare_lifecycle_details(
@@ -4544,16 +4548,16 @@ class LifecycleTest(unittest.TestCase):
         original_lease = {"lease_id": "original"}
 
         with (
-            patch.object(jb_inspect, "create_local_lease", return_value=lease),
-            patch.object(jb_inspect, "find_exact_route", return_value=route),
-            patch.object(jb_inspect, "matching_deferred_lease", return_value=None),
-            patch.object(jb_inspect, "ensure_exact_worktree"),
-            patch.object(
+            patch_attr(jb_inspect, "create_local_lease", return_value=lease),
+            patch_attr(jb_inspect, "find_exact_route", return_value=route),
+            patch_attr(jb_inspect, "matching_deferred_lease", return_value=None),
+            patch_attr(jb_inspect, "ensure_exact_worktree"),
+            patch_attr(
                 jb_inspect,
                 "claim_lifecycle",
                 return_value=unowned_lifecycle_result(route),
             ),
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "wait_until_route_ready",
                 side_effect=jb_inspect.InspectError(
@@ -4566,8 +4570,8 @@ class LifecycleTest(unittest.TestCase):
                     },
                 ),
             ),
-            patch.object(jb_inspect, "write_lease"),
-            patch.object(jb_inspect, "remove_lease"),
+            patch_attr(jb_inspect, "write_lease"),
+            patch_attr(jb_inspect, "remove_lease"),
         ):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.prepare_lifecycle_details(
@@ -4591,12 +4595,12 @@ class LifecycleTest(unittest.TestCase):
                 raise KeyboardInterrupt()
 
         with (
-            patch.object(jb_inspect, "create_local_lease", return_value=lease),
-            patch.object(jb_inspect, "find_exact_route", return_value=None),
-            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
-            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
-            patch.object(jb_inspect, "open_project_for_lifecycle") as open_project,
-            patch.object(jb_inspect, "write_lease", side_effect=interrupt_first_write),
+            patch_attr(jb_inspect, "create_local_lease", return_value=lease),
+            patch_attr(jb_inspect, "find_exact_route", return_value=None),
+            patch_attr(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch_attr(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch_attr(jb_inspect, "open_project_for_lifecycle") as open_project,
+            patch_attr(jb_inspect, "write_lease", side_effect=interrupt_first_write),
         ):
             with self.assertRaises(KeyboardInterrupt):
                 jb_inspect.prepare_lifecycle_details(
@@ -4614,16 +4618,16 @@ class LifecycleTest(unittest.TestCase):
         written = []
 
         with (
-            patch.object(jb_inspect, "create_local_lease", return_value=lease),
-            patch.object(jb_inspect, "find_exact_route", return_value=None),
-            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
-            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
-            patch.object(
+            patch_attr(jb_inspect, "create_local_lease", return_value=lease),
+            patch_attr(jb_inspect, "find_exact_route", return_value=None),
+            patch_attr(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch_attr(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch_attr(
                 jb_inspect,
                 "open_project_for_lifecycle",
                 side_effect=KeyboardInterrupt(),
             ),
-            patch.object(jb_inspect, "write_lease", side_effect=lambda value: written.append(value.copy())),
+            patch_attr(jb_inspect, "write_lease", side_effect=lambda value: written.append(value.copy())),
         ):
             with self.assertRaises(KeyboardInterrupt):
                 jb_inspect.prepare_lifecycle_details(
@@ -4659,7 +4663,7 @@ class LifecycleTest(unittest.TestCase):
                 }
                 close_result = {"status": close_status, "reason": f"close_{close_status}"}
                 with (
-                    patch.object(
+                    patch_attr(
                         jb_inspect,
                         "reclaim_lifecycle_claim",
                         return_value=(
@@ -4669,8 +4673,8 @@ class LifecycleTest(unittest.TestCase):
                             route,
                         ),
                     ),
-                    patch.object(jb_inspect, "cleanup_lifecycle", return_value=close_result),
-                    patch.object(jb_inspect, "write_lease"),
+                    patch_attr(jb_inspect, "cleanup_lifecycle", return_value=close_result),
+                    patch_attr(jb_inspect, "write_lease"),
                 ):
                     result = jb_inspect.cleanup_failed_preparation(
                         lease,
@@ -4711,8 +4715,8 @@ class LifecycleTest(unittest.TestCase):
         )
 
         with (
-            patch.object(jb_inspect, "cleanup_lifecycle") as cleanup,
-            patch.object(jb_inspect, "write_lease"),
+            patch_attr(jb_inspect, "cleanup_lifecycle") as cleanup,
+            patch_attr(jb_inspect, "write_lease"),
         ):
             result = jb_inspect.cleanup_failed_preparation(
                 lease,
@@ -4782,10 +4786,10 @@ class LifecycleTest(unittest.TestCase):
         lease = {"lease_id": "lease-1", "state": "preparing", "opened_by_helper": False}
 
         with (
-            patch.object(jb_inspect, "create_local_lease", return_value=lease),
-            patch.object(jb_inspect, "find_exact_route", return_value=None),
-            patch.object(jb_inspect, "write_lease"),
-            patch.object(jb_inspect, "remove_lease"),
+            patch_attr(jb_inspect, "create_local_lease", return_value=lease),
+            patch_attr(jb_inspect, "find_exact_route", return_value=None),
+            patch_attr(jb_inspect, "write_lease"),
+            patch_attr(jb_inspect, "remove_lease"),
         ):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.prepare_lifecycle_details(
@@ -4998,9 +5002,9 @@ class LifecycleTest(unittest.TestCase):
         }
 
         with (
-            patch.object(jb_inspect, "read_local_leases", return_value=[(path, lease)]),
-            patch.object(jb_inspect, "pid_alive", return_value=False),
-            patch.object(jb_inspect, "discover_routes_for_cleanup") as discover_routes,
+            patch_attr(jb_inspect, "read_local_leases", return_value=[(path, lease)]),
+            patch_attr(jb_inspect, "pid_alive", return_value=False),
+            patch_attr(jb_inspect, "discover_routes_for_cleanup") as discover_routes,
             patch.object(Path, "unlink", lambda self, missing_ok=False: removed.append(str(self))),
         ):
             result = jb_inspect.cleanup_stale_helper_leases(
@@ -5057,12 +5061,12 @@ class LifecycleTest(unittest.TestCase):
         cleanup_calls = []
 
         with (
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "private_http_get_body",
                 return_value=plugin_claim_body(route, "pending-lease"),
             ),
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "cleanup_lifecycle",
                 side_effect=lambda cleanup_lease, cleanup_route, proof: cleanup_calls.append(
@@ -5093,7 +5097,7 @@ class LifecycleTest(unittest.TestCase):
             "session_id": "new-session",
         }
 
-        with patch.object(jb_inspect, "cleanup_lifecycle") as cleanup:
+        with patch_attr(jb_inspect, "cleanup_lifecycle") as cleanup:
             result = jb_inspect.cleanup_stale_helper_lease(lease, [route])
 
         cleanup.assert_not_called()
@@ -5124,7 +5128,7 @@ class LifecycleTest(unittest.TestCase):
             ],
         }
 
-        with patch.object(jb_inspect, "pid_definitively_dead", return_value=True):
+        with patch_attr(jb_inspect, "pid_definitively_dead", return_value=True):
             result = jb_inspect.cleanup_stale_helper_lease(lease, [], set())
 
         self.assertEqual(result["status"], "not_needed")
@@ -5161,9 +5165,9 @@ class LifecycleTest(unittest.TestCase):
         for candidate, routes, sessions, dead, released in cases:
             with (
                 self.subTest(candidate=candidate, routes=routes, sessions=sessions, dead=dead),
-                patch.object(jb_inspect, "pid_definitively_dead", return_value=dead),
-                patch.object(jb_inspect, "private_http_get_body") as claim,
-                patch.object(jb_inspect, "cleanup_lifecycle") as close,
+                patch_attr(jb_inspect, "pid_definitively_dead", return_value=dead),
+                patch_attr(jb_inspect, "private_http_get_body") as claim,
+                patch_attr(jb_inspect, "cleanup_lifecycle") as close,
             ):
                 result = jb_inspect.cleanup_stale_helper_lease(candidate, routes, sessions)
             claim.assert_not_called()
@@ -5175,10 +5179,10 @@ class LifecycleTest(unittest.TestCase):
         identity = {"session_id": "session", "port": 63343}
         saved = []
         with (
-            patch.object(jb_inspect, "discover_open_identities", return_value=[identity]),
-            patch.object(jb_inspect, "identity_matches_context", return_value=True),
-            patch.object(jb_inspect, "write_lease", side_effect=lambda value: saved.append(value.copy())),
-            patch.object(jb_inspect, "http_get", side_effect=ConnectionResetError()),
+            patch_attr(jb_inspect, "discover_open_identities", return_value=[identity]),
+            patch_attr(jb_inspect, "identity_matches_context", return_value=True),
+            patch_attr(jb_inspect, "write_lease", side_effect=lambda value: saved.append(value.copy())),
+            patch_attr(jb_inspect, "http_get", side_effect=ConnectionResetError()),
         ):
             with self.assertRaises(ConnectionResetError):
                 jb_inspect.open_via_running_ide(Namespace(), {"worktree_root": "/tmp/worktree"}, [], lease=lease)
@@ -5208,11 +5212,11 @@ class LifecycleTest(unittest.TestCase):
         ]:
             with (
                 self.subTest(changes=changes),
-                patch.object(jb_inspect, "read_local_leases", return_value=[(Path("/tmp/unattempted.json"), lease | changes)]),
-                patch.object(jb_inspect, "pid_alive", return_value=False),
-                patch.object(jb_inspect, "discover_routes_for_cleanup", return_value=([], set())) as discover,
-                patch.object(jb_inspect, "private_http_get_body") as claim,
-                patch.object(jb_inspect, "cleanup_lifecycle") as close,
+                patch_attr(jb_inspect, "read_local_leases", return_value=[(Path("/tmp/unattempted.json"), lease | changes)]),
+                patch_attr(jb_inspect, "pid_alive", return_value=False),
+                patch_attr(jb_inspect, "discover_routes_for_cleanup", return_value=([], set())) as discover,
+                patch_attr(jb_inspect, "private_http_get_body") as claim,
+                patch_attr(jb_inspect, "cleanup_lifecycle") as close,
                 patch.object(Path, "unlink") as unlink,
             ):
                 result = jb_inspect.cleanup_stale_helper_leases(Namespace(max_age_ms=86400000, dry_run=False))
@@ -5239,11 +5243,11 @@ class LifecycleTest(unittest.TestCase):
         ]:
             with (
                 self.subTest(changes=changes),
-                patch.object(jb_inspect, "read_local_leases", return_value=[(Path("/tmp/identity-mismatch.json"), lease | changes)]),
-                patch.object(jb_inspect, "pid_alive", return_value=False),
-                patch.object(jb_inspect, "discover_routes_for_cleanup", return_value=([], set())),
-                patch.object(jb_inspect, "private_http_get_body") as claim,
-                patch.object(jb_inspect, "cleanup_lifecycle") as close,
+                patch_attr(jb_inspect, "read_local_leases", return_value=[(Path("/tmp/identity-mismatch.json"), lease | changes)]),
+                patch_attr(jb_inspect, "pid_alive", return_value=False),
+                patch_attr(jb_inspect, "discover_routes_for_cleanup", return_value=([], set())),
+                patch_attr(jb_inspect, "private_http_get_body") as claim,
+                patch_attr(jb_inspect, "cleanup_lifecycle") as close,
                 patch.object(Path, "unlink") as unlink,
             ):
                 result = jb_inspect.cleanup_stale_helper_leases(Namespace(max_age_ms=86400000, dry_run=False))
@@ -5274,7 +5278,7 @@ class LifecycleTest(unittest.TestCase):
         }
 
     def test_cleanup_releases_timed_out_open_after_the_original_ide_process_exits(self):
-        with patch.object(jb_inspect, "pid_definitively_dead", return_value=True):
+        with patch_attr(jb_inspect, "pid_definitively_dead", return_value=True):
             result = jb_inspect.cleanup_stale_helper_lease(self.timed_out_open_lease(), [], {"new-session"})
 
         self.assertEqual(result["status"], "not_needed")
@@ -5303,8 +5307,8 @@ class LifecycleTest(unittest.TestCase):
         ]:
             with (
                 self.subTest(name),
-                patch.object(jb_inspect, "pid_definitively_dead", return_value=dead),
-                patch.object(jb_inspect, "identity_for_port", side_effect=OSError("no route")),
+                patch_attr(jb_inspect, "pid_definitively_dead", return_value=dead),
+                patch_attr(jb_inspect, "identity_for_port", side_effect=OSError("no route")),
             ):
                 result = jb_inspect.cleanup_stale_helper_lease(lease, routes, sessions)
 
@@ -5340,7 +5344,7 @@ class LifecycleTest(unittest.TestCase):
             "project_instance_id": "new-session:1",
         }
 
-        with patch.object(jb_inspect, "pid_definitively_dead", return_value=True):
+        with patch_attr(jb_inspect, "pid_definitively_dead", return_value=True):
             result = jb_inspect.cleanup_stale_helper_lease(lease, [route], {"new-session"})
 
         self.assertEqual(result["status"], "skipped")
@@ -5370,7 +5374,7 @@ class LifecycleTest(unittest.TestCase):
             ],
         }
 
-        with patch.object(jb_inspect, "pid_definitively_dead", return_value=False):
+        with patch_attr(jb_inspect, "pid_definitively_dead", return_value=False):
             result = jb_inspect.cleanup_stale_helper_lease(lease, [], set())
 
         self.assertEqual(result["status"], "skipped")
@@ -5406,7 +5410,7 @@ class LifecycleTest(unittest.TestCase):
                 "ide_port": 63343,
                 "open_attempts": open_attempts,
             }
-            with self.subTest(open_attempts=open_attempts), patch.object(
+            with self.subTest(open_attempts=open_attempts), patch_attr(
                 jb_inspect, "pid_definitively_dead", return_value=True
             ):
                 result = jb_inspect.cleanup_stale_helper_lease(lease, [], set())
@@ -5443,12 +5447,12 @@ class LifecycleTest(unittest.TestCase):
         }
 
         with (
-            patch.object(jb_inspect, "read_local_leases", return_value=[(path, lease)]),
-            patch.object(jb_inspect, "pid_alive", return_value=False),
-            patch.object(jb_inspect, "pid_definitively_dead", return_value=True),
-            patch.object(jb_inspect, "discover_routes_for_cleanup", return_value=([], set())),
-            patch.object(jb_inspect, "cleanup_lifecycle") as cleanup,
-            patch.object(jb_inspect, "private_http_get_body") as claim,
+            patch_attr(jb_inspect, "read_local_leases", return_value=[(path, lease)]),
+            patch_attr(jb_inspect, "pid_alive", return_value=False),
+            patch_attr(jb_inspect, "pid_definitively_dead", return_value=True),
+            patch_attr(jb_inspect, "discover_routes_for_cleanup", return_value=([], set())),
+            patch_attr(jb_inspect, "cleanup_lifecycle") as cleanup,
+            patch_attr(jb_inspect, "private_http_get_body") as claim,
             patch.object(Path, "unlink", lambda self, missing_ok=False: removed.append(str(self))),
         ):
             result = jb_inspect.cleanup_stale_helper_leases(
@@ -5464,13 +5468,13 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(removed, [str(path)])
 
     def test_pid_definitively_dead_fails_closed_for_unknown_process_state(self):
-        with patch.object(jb_inspect.os, "kill", side_effect=ProcessLookupError()):
+        with patch.object(os, "kill", side_effect=ProcessLookupError()):
             self.assertTrue(jb_inspect.pid_definitively_dead(753))
-        with patch.object(jb_inspect.os, "kill", side_effect=PermissionError()):
+        with patch.object(os, "kill", side_effect=PermissionError()):
             self.assertFalse(jb_inspect.pid_definitively_dead(753))
-        with patch.object(jb_inspect.os, "kill", side_effect=OSError("unknown")):
+        with patch.object(os, "kill", side_effect=OSError("unknown")):
             self.assertFalse(jb_inspect.pid_definitively_dead(753))
-        with patch.object(jb_inspect.os, "kill", return_value=None):
+        with patch.object(os, "kill", return_value=None):
             self.assertFalse(jb_inspect.pid_definitively_dead(753))
         self.assertFalse(jb_inspect.pid_definitively_dead(0))
 
@@ -5526,12 +5530,12 @@ class LifecycleTest(unittest.TestCase):
         }
 
         with (
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "private_http_get_body",
                 return_value=plugin_claim_body(route, "pending-lease", owned=False),
             ),
-            patch.object(jb_inspect, "cleanup_lifecycle") as cleanup,
+            patch_attr(jb_inspect, "cleanup_lifecycle") as cleanup,
         ):
             result = jb_inspect.cleanup_stale_helper_lease(lease, [route])
 
@@ -5557,13 +5561,13 @@ class LifecycleTest(unittest.TestCase):
         cleanup_calls = []
 
         with (
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "private_http_get_body",
                 return_value=plugin_claim_body(route, "pending-lease"),
             ),
-            patch.object(jb_inspect, "write_lease"),
-            patch.object(
+            patch_attr(jb_inspect, "write_lease"),
+            patch_attr(
                 jb_inspect,
                 "cleanup_lifecycle",
                 side_effect=lambda cleanup_lease, cleanup_route, proof: cleanup_calls.append(
@@ -5598,10 +5602,10 @@ class LifecycleTest(unittest.TestCase):
         }
 
         with (
-            patch.object(jb_inspect, "read_local_leases", return_value=[(path, lease)]),
-            patch.object(jb_inspect, "pid_alive", return_value=False),
-            patch.object(jb_inspect, "discover_routes_for_cleanup", return_value=([delayed_route], {"session"})),
-            patch.object(
+            patch_attr(jb_inspect, "read_local_leases", return_value=[(path, lease)]),
+            patch_attr(jb_inspect, "pid_alive", return_value=False),
+            patch_attr(jb_inspect, "discover_routes_for_cleanup", return_value=([delayed_route], {"session"})),
+            patch_attr(
                 jb_inspect,
                 "private_http_get_body",
                 return_value={"status": "claimed", "lease_id": "pending-lease", "route": delayed_route},
@@ -5632,9 +5636,9 @@ class LifecycleTest(unittest.TestCase):
         }
 
         with (
-            patch.object(jb_inspect, "read_local_leases", return_value=[(path, lease)]),
-            patch.object(jb_inspect, "pid_alive", return_value=False),
-            patch.object(
+            patch_attr(jb_inspect, "read_local_leases", return_value=[(path, lease)]),
+            patch_attr(jb_inspect, "pid_alive", return_value=False),
+            patch_attr(
                 jb_inspect,
                 "discover_routes_for_cleanup",
                 side_effect=jb_inspect.InspectError("registry unavailable", 3),
@@ -5663,7 +5667,7 @@ class LifecycleTest(unittest.TestCase):
             ],
         }
 
-        with patch.object(jb_inspect, "discover_identities", return_value=[identity]):
+        with patch_attr(jb_inspect, "discover_identities", return_value=[identity]):
             routes, sessions = jb_inspect.discover_routes_for_cleanup(Namespace(port=None))
 
         self.assertEqual(sessions, {"session"})
@@ -5684,12 +5688,12 @@ class LifecycleTest(unittest.TestCase):
                 events.append("exit")
 
         with (
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "lifecycle_lock",
                 side_effect=lambda timeout_ms: events.append(("timeout", timeout_ms)) or FakeLock(),
             ),
-            patch.object(jb_inspect, "cleanup_stale_helper_leases", return_value={"status": "ok", "removed": []}),
+            patch_attr(jb_inspect, "cleanup_stale_helper_leases", return_value={"status": "ok", "removed": []}),
         ):
             result = jb_inspect.command_cleanup_leases(
                 Namespace(max_age_ms=1, dry_run=True, lifecycle_lock_timeout_ms=1234)
@@ -5726,7 +5730,7 @@ class LifecycleTest(unittest.TestCase):
             "closed_at_ms": 1234,
             "close_attempts": [{"attempt": 1, "closed_verified": True}],
         }
-        with patch.object(jb_inspect, "private_http_get_body", return_value=payload):
+        with patch_attr(jb_inspect, "private_http_get_body", return_value=payload):
             result = jb_inspect.call_lifecycle_close({"port": 1}, {"project_key": "path:/tmp/worktree"})
 
         self.assertEqual(result["status"], "closed")
@@ -5986,7 +5990,7 @@ class LifecycleTest(unittest.TestCase):
             "wait": {"timed_out": True, "inspection_in_progress": True},
         }
 
-        with patch.object(
+        with patch_attr(
             jb_inspect,
             "run_inspection_on_route",
             side_effect=lambda args, context, route: calls.append(route) or timed_out.copy(),
@@ -6022,8 +6026,8 @@ class LifecycleTest(unittest.TestCase):
         )
 
         with (
-            patch.object(jb_inspect, "run_inspection_on_route", side_effect=lambda *args: next(attempts)),
-            patch.object(
+            patch_attr(jb_inspect, "run_inspection_on_route", side_effect=lambda *args: next(attempts)),
+            patch_attr(
                 jb_inspect,
                 "wait_for_internal_retry_readiness",
                 return_value={"status": "ready", "ready": True, "exit_reason": "ready"},
@@ -6066,8 +6070,8 @@ class LifecycleTest(unittest.TestCase):
         )
 
         with (
-            patch.object(jb_inspect, "run_inspection_on_route", side_effect=lambda *args: next(attempts)),
-            patch.object(
+            patch_attr(jb_inspect, "run_inspection_on_route", side_effect=lambda *args: next(attempts)),
+            patch_attr(
                 jb_inspect,
                 "wait_for_internal_retry_readiness",
                 return_value={"status": "ready", "ready": True, "exit_reason": "ready"},
@@ -6103,9 +6107,9 @@ class LifecycleTest(unittest.TestCase):
         }
 
         with (
-            patch.object(jb_inspect, "call_endpoint", side_effect=lambda route, endpoint, params: next(statuses)),
-            patch.object(jb_inspect, "monotonic_ms", side_effect=lambda: next(times)),
-            patch.object(jb_inspect.time, "sleep"),
+            patch_attr(jb_inspect, "call_endpoint", side_effect=lambda route, endpoint, params: next(statuses)),
+            patch_attr(jb_inspect, "monotonic_ms", side_effect=lambda: next(times)),
+            patch.object(time, "sleep"),
         ):
             readiness = jb_inspect.wait_for_internal_retry_readiness(
                 helper_args(poll_ms=1_000),
@@ -6142,12 +6146,12 @@ class LifecycleTest(unittest.TestCase):
         }
 
         with (
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "run_inspection_on_route",
                 side_effect=lambda *args: calls.append(args) or stale_result.copy(),
             ),
-            patch.object(jb_inspect, "wait_for_internal_retry_readiness", return_value=readiness),
+            patch_attr(jb_inspect, "wait_for_internal_retry_readiness", return_value=readiness),
         ):
             result = jb_inspect.run_inspection_with_internal_retry(Namespace(), {}, {"port": 63342})
         jb_inspect.apply_verdict(result)
@@ -6176,10 +6180,10 @@ class LifecycleTest(unittest.TestCase):
         }
 
         with (
-            patch.object(jb_inspect, "INTERNAL_RETRY_READY_TIMEOUT_MS", 2_000),
-            patch.object(jb_inspect, "call_endpoint", return_value={"status": "indexing", "indexing": True}),
-            patch.object(jb_inspect, "monotonic_ms", side_effect=lambda: next(times)),
-            patch.object(jb_inspect.time, "sleep"),
+            patch_attr(jb_inspect, "INTERNAL_RETRY_READY_TIMEOUT_MS", 2_000),
+            patch_attr(jb_inspect, "call_endpoint", return_value={"status": "indexing", "indexing": True}),
+            patch_attr(jb_inspect, "monotonic_ms", side_effect=lambda: next(times)),
+            patch.object(time, "sleep"),
         ):
             readiness = jb_inspect.wait_for_internal_retry_readiness(
                 helper_args(poll_ms=1_000),
@@ -6207,8 +6211,8 @@ class LifecycleTest(unittest.TestCase):
         )
 
         with (
-            patch.object(jb_inspect, "call_endpoint", side_effect=error),
-            patch.object(jb_inspect, "monotonic_ms", side_effect=[0, 0, 0]),
+            patch_attr(jb_inspect, "call_endpoint", side_effect=error),
+            patch_attr(jb_inspect, "monotonic_ms", side_effect=[0, 0, 0]),
         ):
             readiness = jb_inspect.wait_for_internal_retry_readiness(
                 helper_args(poll_ms=1_000),
@@ -6240,9 +6244,9 @@ class LifecycleTest(unittest.TestCase):
             self.fail(f"unexpected endpoint: {endpoint}")
 
         with (
-            patch.object(jb_inspect, "call_endpoint", side_effect=fake_call),
-            patch.object(jb_inspect, "now_ms", side_effect=[0, 0, 1000]),
-            patch.object(jb_inspect.time, "sleep"),
+            patch_attr(jb_inspect, "call_endpoint", side_effect=fake_call),
+            patch_attr(jb_inspect, "now_ms", side_effect=[0, 0, 1000]),
+            patch.object(time, "sleep"),
         ):
             result = jb_inspect.cancel_timed_out_inspection(
                 Namespace(project_key=None, project_path=None, worktree_path=None, cwd=None, project=None, ide=None, session_id=None),
@@ -6269,7 +6273,7 @@ class LifecycleTest(unittest.TestCase):
                 "expected_inspection_run_id": 7,
             }
 
-        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+        with patch_attr(jb_inspect, "call_endpoint", side_effect=fake_call):
             result = jb_inspect.cancel_timed_out_inspection(
                 helper_args(),
                 {"worktree_root": "/tmp/worktree"},
@@ -6299,7 +6303,7 @@ class LifecycleTest(unittest.TestCase):
                 }
             self.fail(f"unexpected endpoint: {endpoint}")
 
-        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+        with patch_attr(jb_inspect, "call_endpoint", side_effect=fake_call):
             result = jb_inspect.run_inspection_on_route(
                 helper_args(timeout_ms=1000, poll_ms=1),
                 {"worktree_root": "/tmp/worktree"},
@@ -6342,7 +6346,7 @@ class LifecycleTest(unittest.TestCase):
                 }
             self.fail(f"unexpected endpoint: {endpoint}")
 
-        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+        with patch_attr(jb_inspect, "call_endpoint", side_effect=fake_call):
             result = jb_inspect.run_inspection_on_route(
                 helper_args(timeout_ms=1000, poll_ms=1),
                 {"worktree_root": "/tmp/worktree"},
@@ -6374,7 +6378,7 @@ class LifecycleTest(unittest.TestCase):
                 }
             self.fail(f"unexpected endpoint: {endpoint}")
 
-        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+        with patch_attr(jb_inspect, "call_endpoint", side_effect=fake_call):
             result = jb_inspect.run_inspection_on_route(
                 helper_args(timeout_ms=1000, poll_ms=1),
                 {"worktree_root": "/tmp/worktree"},
@@ -6415,7 +6419,7 @@ class LifecycleTest(unittest.TestCase):
                 }
             self.fail(f"unexpected endpoint: {endpoint}")
 
-        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+        with patch_attr(jb_inspect, "call_endpoint", side_effect=fake_call):
             result = jb_inspect.run_inspection_on_route(
                 helper_args(timeout_ms=1000, poll_ms=1),
                 {"worktree_root": "/tmp/worktree"},
@@ -6456,8 +6460,8 @@ class LifecycleTest(unittest.TestCase):
             self.fail(f"unexpected endpoint: {endpoint}")
 
         with (
-            patch.object(jb_inspect, "call_endpoint", side_effect=fake_call),
-            patch.object(
+            patch_attr(jb_inspect, "call_endpoint", side_effect=fake_call),
+            patch_attr(
                 jb_inspect,
                 "cancel_timed_out_inspection",
                 return_value={"status": "settlement_timeout", "requested": True, "settled": False},
@@ -6493,7 +6497,7 @@ class LifecycleTest(unittest.TestCase):
                 }
             self.fail(f"unexpected endpoint: {endpoint}")
 
-        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+        with patch_attr(jb_inspect, "call_endpoint", side_effect=fake_call):
             result = jb_inspect.cancel_timed_out_inspection(
                 helper_args(),
                 {"worktree_root": "/tmp/worktree"},
@@ -6529,8 +6533,8 @@ class LifecycleTest(unittest.TestCase):
             self.fail(f"unexpected endpoint: {endpoint}")
 
         with (
-            patch.object(jb_inspect, "call_endpoint", side_effect=fake_call),
-            patch.object(
+            patch_attr(jb_inspect, "call_endpoint", side_effect=fake_call),
+            patch_attr(
                 jb_inspect,
                 "cancel_timed_out_inspection",
                 return_value={"status": "settlement_timeout", "requested": True, "settled": False},
@@ -6573,7 +6577,7 @@ class LifecycleTest(unittest.TestCase):
                 return {"status": "cancel_requested", "inspection_cancellation_requested": True, "inspection_run_id": 7}
             self.fail(f"unexpected endpoint: {endpoint}")
 
-        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+        with patch_attr(jb_inspect, "call_endpoint", side_effect=fake_call):
             result = jb_inspect.run_inspection_on_route(
                 helper_args(timeout_ms=1000, poll_ms=1),
                 {"worktree_root": "/tmp/worktree"},
@@ -6603,7 +6607,7 @@ class LifecycleTest(unittest.TestCase):
                 return {"inspection_in_progress": False, "is_scanning": False, "indexing": False}
             self.fail(f"unexpected endpoint: {endpoint}")
 
-        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+        with patch_attr(jb_inspect, "call_endpoint", side_effect=fake_call):
             result = jb_inspect.run_inspection_on_route(
                 helper_args(timeout_ms=1000, poll_ms=1),
                 {"worktree_root": "/tmp/worktree"},
@@ -6625,10 +6629,10 @@ class LifecycleTest(unittest.TestCase):
         }
 
         with (
-            patch.object(jb_inspect, "prepare_lifecycle_details", return_value=({"route": route}, lease, "proof-1")),
-            patch.object(jb_inspect, "run_inspection_with_internal_retry", return_value=timeout_result),
-            patch.object(jb_inspect, "cleanup_lifecycle") as cleanup,
-            patch.object(
+            patch_attr(jb_inspect, "prepare_lifecycle_details", return_value=({"route": route}, lease, "proof-1")),
+            patch_attr(jb_inspect, "run_inspection_with_internal_retry", return_value=timeout_result),
+            patch_attr(jb_inspect, "cleanup_lifecycle") as cleanup,
+            patch_attr(
                 jb_inspect,
                 "defer_lifecycle_cleanup",
                 return_value={"status": "deferred", "cleanup_deferred": True},
@@ -6654,10 +6658,10 @@ class LifecycleTest(unittest.TestCase):
         )
 
         with (
-            patch.object(jb_inspect, "prepare_lifecycle_details", return_value=({"route": route}, lease, "proof-1")),
-            patch.object(jb_inspect, "run_inspection_with_internal_retry", side_effect=error),
-            patch.object(jb_inspect, "cleanup_lifecycle") as cleanup,
-            patch.object(
+            patch_attr(jb_inspect, "prepare_lifecycle_details", return_value=({"route": route}, lease, "proof-1")),
+            patch_attr(jb_inspect, "run_inspection_with_internal_retry", side_effect=error),
+            patch_attr(jb_inspect, "cleanup_lifecycle") as cleanup,
+            patch_attr(
                 jb_inspect,
                 "defer_lifecycle_cleanup",
                 return_value={"status": "deferred", "cleanup_deferred": True},
@@ -6680,10 +6684,10 @@ class LifecycleTest(unittest.TestCase):
         lease = {"lease_id": "lease-1", "opened_by_helper": True, "state": "prepared"}
 
         with (
-            patch.object(jb_inspect, "prepare_lifecycle_details", return_value=({"route": route}, lease, "proof-1")),
-            patch.object(jb_inspect, "run_inspection_with_internal_retry", side_effect=KeyboardInterrupt()),
-            patch.object(jb_inspect, "cleanup_lifecycle") as cleanup,
-            patch.object(
+            patch_attr(jb_inspect, "prepare_lifecycle_details", return_value=({"route": route}, lease, "proof-1")),
+            patch_attr(jb_inspect, "run_inspection_with_internal_retry", side_effect=KeyboardInterrupt()),
+            patch_attr(jb_inspect, "cleanup_lifecycle") as cleanup,
+            patch_attr(
                 jb_inspect,
                 "defer_lifecycle_cleanup",
                 return_value={"status": "deferred", "cleanup_deferred": True},
@@ -6703,9 +6707,9 @@ class LifecycleTest(unittest.TestCase):
         lease = {"lease_id": "lease-1", "opened_by_helper": True, "state": "prepared"}
 
         with (
-            patch.object(jb_inspect, "prepare_lifecycle_details", return_value=({"route": route}, lease, "proof-1")),
-            patch.object(jb_inspect, "run_inspection_with_internal_retry", side_effect=RuntimeError("boom")),
-            patch.object(
+            patch_attr(jb_inspect, "prepare_lifecycle_details", return_value=({"route": route}, lease, "proof-1")),
+            patch_attr(jb_inspect, "run_inspection_with_internal_retry", side_effect=RuntimeError("boom")),
+            patch_attr(
                 jb_inspect,
                 "defer_lifecycle_cleanup",
                 return_value={"status": "deferred", "cleanup_deferred": True},
@@ -6821,14 +6825,14 @@ class LifecycleTest(unittest.TestCase):
             io.BytesIO(json.dumps(payload).encode()),
         )
 
-        with patch.object(jb_inspect.urllib.request, "urlopen", side_effect=error):
+        with patch_attr(jb_inspect.urllib.request, "urlopen", side_effect=error):
             result = jb_inspect.http_get(63342, "trigger", {})
 
         self.assertEqual(result.status, 409)
         self.assertEqual(result.body, payload)
 
     def test_http_get_classifies_socket_timeout_as_busy_api(self):
-        with patch.object(jb_inspect.urllib.request, "urlopen", side_effect=TimeoutError("timed out")):
+        with patch_attr(jb_inspect.urllib.request, "urlopen", side_effect=TimeoutError("timed out")):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.http_get(63342, "lifecycle/open", {})
 
@@ -6837,23 +6841,23 @@ class LifecycleTest(unittest.TestCase):
 
     def test_http_get_keeps_connection_refusal_as_unavailable_api(self):
         refused = jb_inspect.urllib.error.URLError(ConnectionRefusedError("connection refused"))
-        with patch.object(jb_inspect.urllib.request, "urlopen", side_effect=refused):
+        with patch_attr(jb_inspect.urllib.request, "urlopen", side_effect=refused):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.http_get(63342, "identity", {})
 
         self.assertEqual(raised.exception.payload["error_reason"], "inspection_api_unavailable")
 
     def test_bootstrap_ide_app_uses_hidden_launch_on_macos(self):
-        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect, "ide_launcher_pids", return_value=[]), \
-                patch.object(jb_inspect.subprocess, "run") as run:
+        with patch.object(sys, "platform", "darwin"), patch_attr(jb_inspect, "ide_launcher_pids", return_value=[]), \
+                patch.object(subprocess, "run") as run:
             run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
             jb_inspect.bootstrap_ide_app({"ide": "PyCharm", "worktree_root": "/tmp/worktree"}, background=True)
 
         run.assert_called_once_with(["open", "-g", "-j", "-a", "PyCharm"], env=ANY, check=False, capture_output=True, text=True)
 
     def test_bootstrap_ide_app_uses_explicit_app_for_hidden_launch(self):
-        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect, "ide_launcher_pids", return_value=[]), \
-                patch.object(jb_inspect.subprocess, "run") as run:
+        with patch.object(sys, "platform", "darwin"), patch_attr(jb_inspect, "ide_launcher_pids", return_value=[]), \
+                patch.object(subprocess, "run") as run:
             run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
             jb_inspect.bootstrap_ide_app({"ide": "WebStorm", "ide_app": "WebStorm 2026.2 EAP"}, background=True)
 
@@ -6861,8 +6865,8 @@ class LifecycleTest(unittest.TestCase):
 
     def test_bootstrap_ide_app_uses_resolved_app_path(self):
         app_path = Path("/Applications/WebStorm 2026.2 EAP.app")
-        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect, "ide_launcher_pids", return_value=[]), \
-                patch.object(jb_inspect.subprocess, "run") as run:
+        with patch.object(sys, "platform", "darwin"), patch_attr(jb_inspect, "ide_launcher_pids", return_value=[]), \
+                patch.object(subprocess, "run") as run:
             run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
             jb_inspect.bootstrap_ide_app({"ide_selection": {"app_path": str(app_path), "app_name": "WebStorm 2026.2 EAP"}}, background=True)
 
@@ -6870,8 +6874,8 @@ class LifecycleTest(unittest.TestCase):
 
     def test_bootstrap_ide_app_reports_failed_hidden_launch(self):
         completed = subprocess.CompletedProcess(["open"], 1, "", "Unable to find application")
-        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect, "ide_launcher_pids", return_value=[]), \
-                patch.object(jb_inspect.subprocess, "run", return_value=completed):
+        with patch.object(sys, "platform", "darwin"), patch_attr(jb_inspect, "ide_launcher_pids", return_value=[]), \
+                patch.object(subprocess, "run", return_value=completed):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.bootstrap_ide_app({"ide": "PyCharm", "ide_app": "Missing PyCharm", "worktree_root": "/tmp/worktree"}, background=True)
 
@@ -6881,8 +6885,8 @@ class LifecycleTest(unittest.TestCase):
 
     def test_bootstrap_never_launches_or_activates_a_running_app(self):
         app_path = Path("/Applications/PyCharm.app")
-        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect, "ide_launcher_pids", return_value=[783]), \
-                patch.object(jb_inspect.subprocess, "run") as run:
+        with patch.object(sys, "platform", "darwin"), patch_attr(jb_inspect, "ide_launcher_pids", return_value=[783]), \
+                patch.object(subprocess, "run") as run:
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.bootstrap_ide_app({"ide_selection": {"app_path": str(app_path), "app_name": "PyCharm"}}, background=True)
 
@@ -6903,8 +6907,8 @@ class LifecycleTest(unittest.TestCase):
             {"ide_selection": {"product_key": "pycharm", "app_path": "/Volumes/Other/Renamed.app", "app_name": "Renamed"}},
         )
         for context in selections:
-            with self.subTest(context=context), patch.object(jb_inspect.subprocess, "check_output", return_value=census), \
-                    patch.object(jb_inspect.subprocess, "run") as run:
+            with self.subTest(context=context), patch.object(subprocess, "check_output", return_value=census), \
+                    patch.object(subprocess, "run") as run:
                 with self.assertRaises(jb_inspect.InspectError) as raised:
                     jb_inspect.refuse_launch_while_app_runs(context)
                 run.assert_not_called()
@@ -6912,12 +6916,12 @@ class LifecycleTest(unittest.TestCase):
 
     def test_launch_guard_allows_launch_when_only_another_product_runs(self):
         census = "  819 /Applications/WebStorm.app/Contents/MacOS/webstorm\n 1625 /Applications/PyCharm.app/Contents/bin/fsnotifier"
-        with patch.object(jb_inspect.subprocess, "check_output", return_value=census):
+        with patch.object(subprocess, "check_output", return_value=census):
             jb_inspect.refuse_launch_while_app_runs({"ide": "PyCharm"})
 
     def test_launch_guard_refuses_a_product_whose_launcher_it_cannot_identify(self):
-        with patch.object(jb_inspect.subprocess, "check_output", return_value="") as census, \
-                patch.object(jb_inspect.subprocess, "run") as run:
+        with patch.object(subprocess, "check_output", return_value="") as census, \
+                patch.object(subprocess, "run") as run:
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.refuse_launch_while_app_runs({"ide": "GoLand", "ide_app": "/Applications/GoLand.app"})
         census.assert_not_called()
@@ -6925,8 +6929,8 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(raised.exception.payload["error_reason"], "ide_launch_refused")
 
     def test_unprovable_process_census_refuses_launch(self):
-        with patch.object(jb_inspect.subprocess, "check_output", side_effect=OSError("ps unavailable")), \
-                patch.object(jb_inspect.subprocess, "run") as run:
+        with patch.object(subprocess, "check_output", side_effect=OSError("ps unavailable")), \
+                patch.object(subprocess, "run") as run:
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.refuse_launch_while_app_runs({"ide": "PyCharm"})
 
@@ -7122,7 +7126,7 @@ class LifecycleTest(unittest.TestCase):
             root = Path(tmp) / "trusted"
             worktree = root / "repo"
             worktree.mkdir(parents=True)
-            with patch.object(jb_inspect, "trusted_auto_open_roots", return_value=[str(root)]):
+            with patch_attr(jb_inspect, "trusted_auto_open_roots", return_value=[str(root)]):
                 jb_inspect.ensure_trusted_auto_open_root({"worktree_root": str(worktree)})
 
     def test_trusted_auto_open_uses_lifecycle_target_for_nested_project(self):
@@ -7141,7 +7145,7 @@ class LifecycleTest(unittest.TestCase):
                 "lifecycle_target_path": str(nested_project),
             }
 
-            with patch.object(jb_inspect, "trusted_auto_open_roots", return_value=[str(trusted)]):
+            with patch_attr(jb_inspect, "trusted_auto_open_roots", return_value=[str(trusted)]):
                 jb_inspect.ensure_trusted_auto_open_root(context)
 
     def test_trusted_auto_open_rejects_untrusted_worktree(self):
@@ -7152,7 +7156,7 @@ class LifecycleTest(unittest.TestCase):
             worktree.mkdir(parents=True)
 
             with self.assertRaises(jb_inspect.InspectError) as raised:
-                with patch.object(jb_inspect, "trusted_auto_open_roots", return_value=[str(trusted)]):
+                with patch_attr(jb_inspect, "trusted_auto_open_roots", return_value=[str(trusted)]):
                     jb_inspect.ensure_trusted_auto_open_root({"worktree_root": str(worktree)})
 
         self.assertIn("outside trusted auto-open roots", str(raised.exception))
@@ -7173,8 +7177,8 @@ class LifecycleTest(unittest.TestCase):
             os.environ["JETBRAINS_INSPECTION_IDE_CONFIG_DIR"] = str(config_dir)
             try:
                 with (
-                    patch.object(jb_inspect.sys, "platform", "darwin"),
-                    patch.object(jb_inspect, "trusted_auto_open_roots", return_value=[str(worktree.parent)]),
+                    patch.object(sys, "platform", "darwin"),
+                    patch_attr(jb_inspect, "trusted_auto_open_roots", return_value=[str(worktree.parent)]),
                 ):
                     result = jb_inspect.ensure_jetbrains_trusted_locations({"ide": "PyCharm", "worktree_root": str(worktree)})
                 updated = trusted_file.read_text(encoding="utf-8")
@@ -7239,7 +7243,7 @@ class LifecycleTest(unittest.TestCase):
         jb_inspect.http_get = fake_http_get
         attempts = []
         try:
-            with patch.object(jb_inspect, "persist_open_request_identity"):
+            with patch_attr(jb_inspect, "persist_open_request_identity"):
                 result = jb_inspect.open_via_running_ide(
                     Namespace(port=None),
                     {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
@@ -7277,13 +7281,13 @@ class LifecycleTest(unittest.TestCase):
         lease = {"lease_id": "lease-1", "state": "open_requesting"}
 
         with (
-            patch.object(jb_inspect, "discover_open_identities", return_value=[identity]),
-            patch.object(
+            patch_attr(jb_inspect, "discover_open_identities", return_value=[identity]),
+            patch_attr(
                 jb_inspect,
                 "persist_open_request_identity",
                 side_effect=lambda *args: events.append("persist"),
             ),
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "http_get",
                 side_effect=lambda port, endpoint, params, timeout: events.append(("http", params["lease_id"]))
@@ -7310,9 +7314,9 @@ class LifecycleTest(unittest.TestCase):
         states = []
 
         with (
-            patch.object(jb_inspect, "discover_open_identities", return_value=[identity]),
-            patch.object(jb_inspect, "persist_open_request_identity"),
-            patch.object(
+            patch_attr(jb_inspect, "discover_open_identities", return_value=[identity]),
+            patch_attr(jb_inspect, "persist_open_request_identity"),
+            patch_attr(
                 jb_inspect,
                 "http_get",
                 side_effect=jb_inspect.InspectError(
@@ -7321,7 +7325,7 @@ class LifecycleTest(unittest.TestCase):
                     {"error_reason": "inspection_api_timeout"},
                 ),
             ),
-            patch.object(jb_inspect, "mark_lease_state", side_effect=lambda active_lease, state: states.append((active_lease, state))),
+            patch_attr(jb_inspect, "mark_lease_state", side_effect=lambda active_lease, state: states.append((active_lease, state))),
         ):
             attempts = []
             result = jb_inspect.open_via_running_ide(
@@ -7350,7 +7354,7 @@ class LifecycleTest(unittest.TestCase):
             }
         ]
 
-        with patch.object(
+        with patch_attr(
             jb_inspect,
             "mark_lease_state",
             side_effect=lambda active_lease, state: active_lease.update({"state": state}),
@@ -7366,8 +7370,8 @@ class LifecycleTest(unittest.TestCase):
 
         self.assertTrue(lease["open_request_may_have_been_accepted"])
         with (
-            patch.object(jb_inspect, "cleanup_lifecycle") as cleanup,
-            patch.object(
+            patch_attr(jb_inspect, "cleanup_lifecycle") as cleanup,
+            patch_attr(
                 jb_inspect,
                 "defer_failed_preparation_cleanup",
                 return_value={"status": "deferred", "reason": "ownership_unresolved"},
@@ -7394,7 +7398,7 @@ class LifecycleTest(unittest.TestCase):
         }
         attempts = [{"request_may_have_been_accepted": True}]
 
-        with patch.object(
+        with patch_attr(
             jb_inspect,
             "mark_lease_state",
             side_effect=lambda active_lease, state: active_lease.update({"state": state}),
@@ -7475,13 +7479,13 @@ class LifecycleTest(unittest.TestCase):
         routes = [None, None, route]
 
         with (
-            patch.object(jb_inspect, "find_exact_route", side_effect=lambda *_: routes.pop(0)),
-            patch.object(
+            patch_attr(jb_inspect, "find_exact_route", side_effect=lambda *_: routes.pop(0)),
+            patch_attr(
                 jb_inspect,
                 "open_via_running_ide",
                 side_effect=lambda *_args, **_kwargs: retry_results.pop(0),
             ) as retry,
-            patch.object(jb_inspect.time, "sleep"),
+            patch.object(time, "sleep"),
         ):
             result = jb_inspect.wait_for_exact_route_after_open(
                 Namespace(),
@@ -7497,13 +7501,13 @@ class LifecycleTest(unittest.TestCase):
     def test_route_wait_fails_quickly_when_already_opening_never_clears(self):
         attempts = [{"open_outcome": "already_opening"}]
         with (
-            patch.object(jb_inspect, "find_exact_route", return_value=None),
-            patch.object(
+            patch_attr(jb_inspect, "find_exact_route", return_value=None),
+            patch_attr(
                 jb_inspect,
                 "open_via_running_ide",
                 return_value={"open_outcome": "already_opening"},
             ) as retry,
-            patch.object(jb_inspect.time, "sleep"),
+            patch.object(time, "sleep"),
             self.assertRaises(jb_inspect.InspectError) as raised,
         ):
             jb_inspect.wait_for_exact_route_after_open(
@@ -7591,7 +7595,7 @@ class LifecycleTest(unittest.TestCase):
 
         jb_inspect.http_get = fake_http_get
         try:
-            with patch.object(jb_inspect, "persist_open_request_identity"):
+            with patch_attr(jb_inspect, "persist_open_request_identity"):
                 result = jb_inspect.open_via_running_ide(
                     Namespace(port=None),
                     {
@@ -7641,7 +7645,7 @@ class LifecycleTest(unittest.TestCase):
         ]
         jb_inspect.time.sleep = lambda seconds: None
         try:
-            with patch.object(jb_inspect, "now_ms", side_effect=[0, 0, 200]):
+            with patch_attr(jb_inspect, "now_ms", side_effect=[0, 0, 200]):
                 result = jb_inspect.wait_for_matching_ide_identity(Namespace(port=None, background_open=True), {"ide": "PyCharm"}, 100)
         finally:
             jb_inspect.discover_identities = original_discover
@@ -7662,7 +7666,7 @@ class LifecycleTest(unittest.TestCase):
         ]
         jb_inspect.time.sleep = lambda seconds: None
         try:
-            with patch.object(jb_inspect, "now_ms", side_effect=[0, 0, 200]):
+            with patch_attr(jb_inspect, "now_ms", side_effect=[0, 0, 200]):
                 result = jb_inspect.wait_for_matching_ide_identity(Namespace(port=None, background_open=True), {"ide": "PyCharm"}, 100)
         finally:
             jb_inspect.discover_identities = original_discover
@@ -7674,10 +7678,10 @@ class LifecycleTest(unittest.TestCase):
     def test_wait_for_matching_ide_identity_classifies_missing_plugin(self):
         args = Namespace(port=None, background_open=True)
         with (
-            patch.object(jb_inspect, "discover_open_identities", return_value=[]),
-            patch.object(jb_inspect, "now_ms", side_effect=[0, 200]),
-            patch.object(jb_inspect.time, "sleep"),
-            patch.object(jb_inspect, "auto_open_timeout_payload", return_value={}),
+            patch_attr(jb_inspect, "discover_open_identities", return_value=[]),
+            patch_attr(jb_inspect, "now_ms", side_effect=[0, 200]),
+            patch.object(time, "sleep"),
+            patch_attr(jb_inspect, "auto_open_timeout_payload", return_value={}),
         ):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.wait_for_matching_ide_identity(args, {"ide": "PyCharm"}, 100)
@@ -8166,10 +8170,10 @@ class LifecycleTest(unittest.TestCase):
             with self.subTest(launch_flags=launch_flags):
                 args = jb_inspect.build_parser().parse_args(["inspect-closeout", "--port", "63486", *launch_flags])
                 with (
-                    patch.object(jb_inspect, "open_via_running_ide", side_effect=running),
-                    patch.object(jb_inspect, "bootstrap_ide_app") as bootstrap,
-                    patch.object(jb_inspect, "wait_for_matching_ide_identity") as wait,
-                    patch.object(jb_inspect, "wait_for_lifecycle_open", return_value=None),
+                    patch_attr(jb_inspect, "open_via_running_ide", side_effect=running),
+                    patch_attr(jb_inspect, "bootstrap_ide_app") as bootstrap,
+                    patch_attr(jb_inspect, "wait_for_matching_ide_identity") as wait,
+                    patch_attr(jb_inspect, "wait_for_lifecycle_open", return_value=None),
                 ):
                     with self.assertRaises(jb_inspect.InspectError) as raised:
                         jb_inspect.open_project_for_lifecycle(args, {"ide": "PyCharm"})
@@ -8192,11 +8196,11 @@ class LifecycleTest(unittest.TestCase):
             return None
 
         with (
-            patch.object(jb_inspect.sys, "platform", "darwin"),
-            patch.object(jb_inspect, "open_via_running_ide", side_effect=running),
-            patch.object(jb_inspect, "ide_launcher_pids", return_value=[783]),
-            patch.object(jb_inspect.subprocess, "run") as run,
-            patch.object(jb_inspect, "wait_for_matching_ide_identity") as wait,
+            patch.object(sys, "platform", "darwin"),
+            patch_attr(jb_inspect, "open_via_running_ide", side_effect=running),
+            patch_attr(jb_inspect, "ide_launcher_pids", return_value=[783]),
+            patch.object(subprocess, "run") as run,
+            patch_attr(jb_inspect, "wait_for_matching_ide_identity") as wait,
         ):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.open_project_for_lifecycle(args, {"ide": "PyCharm"}, lease)
@@ -8212,15 +8216,15 @@ class LifecycleTest(unittest.TestCase):
     def test_no_ide_launch_releases_preparation_lease_when_no_open_was_sent(self):
         lease = {"lease_id": "owned", "state": "preparing"}
         with (
-            patch.object(jb_inspect, "run_repository_preparation", return_value={}),
-            patch.object(jb_inspect, "create_local_lease", return_value=lease),
-            patch.object(jb_inspect, "find_exact_route", return_value=None),
-            patch.object(jb_inspect, "ensure_trusted_auto_open_root"),
-            patch.object(jb_inspect, "ensure_jetbrains_trusted_locations"),
-            patch.object(jb_inspect, "discover_open_identities", return_value=[]),
-            patch.object(jb_inspect, "write_lease"),
-            patch.object(jb_inspect, "remove_lease") as remove,
-            patch.object(jb_inspect, "bootstrap_ide_app") as bootstrap,
+            patch_attr(jb_inspect, "run_repository_preparation", return_value={}),
+            patch_attr(jb_inspect, "create_local_lease", return_value=lease),
+            patch_attr(jb_inspect, "find_exact_route", return_value=None),
+            patch_attr(jb_inspect, "ensure_trusted_auto_open_root"),
+            patch_attr(jb_inspect, "ensure_jetbrains_trusted_locations"),
+            patch_attr(jb_inspect, "discover_open_identities", return_value=[]),
+            patch_attr(jb_inspect, "write_lease"),
+            patch_attr(jb_inspect, "remove_lease") as remove,
+            patch_attr(jb_inspect, "bootstrap_ide_app") as bootstrap,
         ):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.prepare_lifecycle_details(helper_args(open=True, no_ide_launch=True), {"worktree_root": "/fixture"})
@@ -8236,8 +8240,8 @@ class LifecycleTest(unittest.TestCase):
             "open_outcome": "already_open",
         }
         with (
-            patch.object(jb_inspect, "open_via_running_ide", return_value=attempt),
-            patch.object(jb_inspect, "bootstrap_ide_app") as bootstrap,
+            patch_attr(jb_inspect, "open_via_running_ide", return_value=attempt),
+            patch_attr(jb_inspect, "bootstrap_ide_app") as bootstrap,
         ):
             result = jb_inspect.open_project_for_lifecycle(
                 Namespace(port=None, background_open=True),
@@ -8479,8 +8483,8 @@ class LifecycleTest(unittest.TestCase):
         ]
         ticks = iter([0, 0, 2])
         with (
-            patch.object(jb_inspect, "find_exact_route", return_value=None),
-            patch.object(
+            patch_attr(jb_inspect, "find_exact_route", return_value=None),
+            patch_attr(
                 jb_inspect,
                 "probe_lifecycle_open",
                 return_value={
@@ -8489,9 +8493,9 @@ class LifecycleTest(unittest.TestCase):
                     "lifecycle_open_diagnostic": {"phase": "edt_started"},
                 },
             ) as probe,
-            patch.object(jb_inspect, "open_via_running_ide") as open_again,
-            patch.object(jb_inspect, "now_ms", side_effect=lambda: next(ticks)),
-            patch.object(jb_inspect.time, "sleep"),
+            patch_attr(jb_inspect, "open_via_running_ide") as open_again,
+            patch_attr(jb_inspect, "now_ms", side_effect=lambda: next(ticks)),
+            patch.object(time, "sleep"),
         ):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.wait_for_exact_route_after_open(
@@ -8520,11 +8524,11 @@ class LifecycleTest(unittest.TestCase):
         ]
         ticks = iter([0, 0, 2])
         with (
-            patch.object(jb_inspect, "find_exact_route", return_value=None),
-            patch.object(jb_inspect, "probe_lifecycle_open", return_value={"status": "opening"}),
-            patch.object(jb_inspect, "open_via_running_ide") as open_again,
-            patch.object(jb_inspect, "now_ms", side_effect=lambda: next(ticks)),
-            patch.object(jb_inspect.time, "sleep"),
+            patch_attr(jb_inspect, "find_exact_route", return_value=None),
+            patch_attr(jb_inspect, "probe_lifecycle_open", return_value={"status": "opening"}),
+            patch_attr(jb_inspect, "open_via_running_ide") as open_again,
+            patch_attr(jb_inspect, "now_ms", side_effect=lambda: next(ticks)),
+            patch.object(time, "sleep"),
         ):
             with self.assertRaises(jb_inspect.InspectError):
                 jb_inspect.wait_for_exact_route_after_open(
@@ -8539,7 +8543,7 @@ class LifecycleTest(unittest.TestCase):
 
     def test_probe_lifecycle_open_requires_advertised_version(self):
         with (
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "discover_open_identities",
                 return_value=[
@@ -8551,7 +8555,7 @@ class LifecycleTest(unittest.TestCase):
                     }
                 ],
             ),
-            patch.object(jb_inspect, "http_get") as http_get,
+            patch_attr(jb_inspect, "http_get") as http_get,
         ):
             result = jb_inspect.probe_lifecycle_open(
                 Namespace(port=None),
@@ -8576,7 +8580,7 @@ class LifecycleTest(unittest.TestCase):
             },
         )
         with (
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "discover_open_identities",
                 return_value=[
@@ -8589,7 +8593,7 @@ class LifecycleTest(unittest.TestCase):
                     }
                 ],
             ),
-            patch.object(jb_inspect, "http_get", side_effect=error),
+            patch_attr(jb_inspect, "http_get", side_effect=error),
         ):
             result = jb_inspect.probe_lifecycle_open(
                 Namespace(port=None),
@@ -8603,7 +8607,7 @@ class LifecycleTest(unittest.TestCase):
 
     def test_probe_lifecycle_open_uses_remaining_deadline(self):
         with (
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "discover_open_identities",
                 return_value=[
@@ -8616,8 +8620,8 @@ class LifecycleTest(unittest.TestCase):
                     }
                 ],
             ),
-            patch.object(jb_inspect, "now_ms", return_value=1_000),
-            patch.object(
+            patch_attr(jb_inspect, "now_ms", return_value=1_000),
+            patch_attr(
                 jb_inspect,
                 "http_get",
                 return_value=jb_inspect.HttpResult(200, {"status": "opening"}, "url"),
@@ -8635,7 +8639,7 @@ class LifecycleTest(unittest.TestCase):
 
     def test_probe_lifecycle_open_skips_requests_after_deadline(self):
         with (
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "discover_open_identities",
                 return_value=[
@@ -8648,8 +8652,8 @@ class LifecycleTest(unittest.TestCase):
                     }
                 ],
             ),
-            patch.object(jb_inspect, "now_ms", return_value=2_500),
-            patch.object(jb_inspect, "http_get") as http_get,
+            patch_attr(jb_inspect, "now_ms", return_value=2_500),
+            patch_attr(jb_inspect, "http_get") as http_get,
         ):
             result = jb_inspect.probe_lifecycle_open(
                 Namespace(port=None),
@@ -8663,7 +8667,7 @@ class LifecycleTest(unittest.TestCase):
 
     def test_probe_lifecycle_open_skips_request_below_viable_timeout(self):
         with (
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "discover_open_identities",
                 return_value=[
@@ -8676,8 +8680,8 @@ class LifecycleTest(unittest.TestCase):
                     }
                 ],
             ),
-            patch.object(jb_inspect, "now_ms", return_value=2_300),
-            patch.object(jb_inspect, "http_get") as http_get,
+            patch_attr(jb_inspect, "now_ms", return_value=2_300),
+            patch_attr(jb_inspect, "http_get") as http_get,
         ):
             result = jb_inspect.probe_lifecycle_open(
                 Namespace(port=None),
@@ -8712,8 +8716,8 @@ class LifecycleTest(unittest.TestCase):
             },
         ]
         with (
-            patch.object(jb_inspect, "discover_open_identities", return_value=identities),
-            patch.object(
+            patch_attr(jb_inspect, "discover_open_identities", return_value=identities),
+            patch_attr(
                 jb_inspect,
                 "http_get",
                 side_effect=[failure, jb_inspect.HttpResult(200, {"status": "opening"}, "url")],
@@ -8746,8 +8750,8 @@ class LifecycleTest(unittest.TestCase):
             },
         ]
         with (
-            patch.object(jb_inspect, "discover_open_identities", return_value=identities),
-            patch.object(
+            patch_attr(jb_inspect, "discover_open_identities", return_value=identities),
+            patch_attr(
                 jb_inspect,
                 "http_get",
                 side_effect=[
@@ -8775,7 +8779,7 @@ class LifecycleTest(unittest.TestCase):
 
     def test_probe_lifecycle_open_uses_default_timeout_without_deadline(self):
         with (
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "discover_open_identities",
                 return_value=[
@@ -8788,7 +8792,7 @@ class LifecycleTest(unittest.TestCase):
                     }
                 ],
             ),
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "http_get",
                 return_value=jb_inspect.HttpResult(200, {"status": "opening"}, "url"),
@@ -8818,10 +8822,10 @@ class LifecycleTest(unittest.TestCase):
         ])
         ticks = iter([0, 0, 1, 2])
         with (
-            patch.object(jb_inspect, "find_exact_route", return_value=None),
-            patch.object(jb_inspect, "probe_lifecycle_open", side_effect=lambda *args, **kwargs: next(probes)),
-            patch.object(jb_inspect, "now_ms", side_effect=lambda: next(ticks)),
-            patch.object(jb_inspect.time, "sleep"),
+            patch_attr(jb_inspect, "find_exact_route", return_value=None),
+            patch_attr(jb_inspect, "probe_lifecycle_open", side_effect=lambda *args, **kwargs: next(probes)),
+            patch_attr(jb_inspect, "now_ms", side_effect=lambda: next(ticks)),
+            patch.object(time, "sleep"),
         ):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.wait_for_exact_route_after_open(
@@ -8915,9 +8919,9 @@ class LifecycleTest(unittest.TestCase):
                 }
                 times = iter([0, 0, 1, 1])
                 with (
-                    patch.object(jb_inspect, "call_endpoint", return_value=status),
-                    patch.object(jb_inspect.time, "sleep"),
-                    patch.object(jb_inspect, "monotonic_ms", side_effect=lambda: next(times)),
+                    patch_attr(jb_inspect, "call_endpoint", return_value=status),
+                    patch.object(time, "sleep"),
+                    patch_attr(jb_inspect, "monotonic_ms", side_effect=lambda: next(times)),
                 ):
                     with self.assertRaises(jb_inspect.InspectError) as raised:
                         jb_inspect.wait_until_route_ready(
@@ -8936,8 +8940,8 @@ class LifecycleTest(unittest.TestCase):
             for name in ("PyCharm2026.1", "IntelliJIdea2026.1"):
                 (base / name / "options").mkdir(parents=True)
             with patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}, clear=False), \
-                patch.object(jb_inspect.sys, "platform", "darwin"), \
-                patch.object(jb_inspect.Path, "home", return_value=Path(tmp)):
+                patch.object(sys, "platform", "darwin"), \
+                patch_attr(jb_inspect.Path, "home", return_value=Path(tmp)):
                 os.environ.pop("JETBRAINS_INSPECTION_IDE_CONFIG_DIR", None)
                 with self.assertRaises(jb_inspect.InspectError) as raised:
                     jb_inspect.jetbrains_config_dirs({})
@@ -8954,8 +8958,8 @@ class LifecycleTest(unittest.TestCase):
             (pycharm / "options").mkdir(parents=True)
             (idea / "options").mkdir(parents=True)
             with patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}, clear=False), \
-                patch.object(jb_inspect.sys, "platform", "darwin"), \
-                patch.object(jb_inspect.Path, "home", return_value=Path(tmp)):
+                patch.object(sys, "platform", "darwin"), \
+                patch_attr(jb_inspect.Path, "home", return_value=Path(tmp)):
                 os.environ.pop("JETBRAINS_INSPECTION_IDE_CONFIG_DIR", None)
                 result = jb_inspect.jetbrains_config_dirs({"ide": "IntelliJ IDEA"})
 
@@ -8967,8 +8971,8 @@ class LifecycleTest(unittest.TestCase):
             stable = make_config_dir(home, "PyCharm2026.2")
             make_config_dir(home, "PyCharm2026.1")
             with patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}, clear=False), \
-                patch.object(jb_inspect.sys, "platform", "darwin"), \
-                patch.object(jb_inspect.Path, "home", return_value=home):
+                patch.object(sys, "platform", "darwin"), \
+                patch_attr(jb_inspect.Path, "home", return_value=home):
                 os.environ.pop("JETBRAINS_INSPECTION_IDE_CONFIG_DIR", None)
                 result = jb_inspect.jetbrains_config_dirs({"ide": "PyCharm"})
 
@@ -8995,11 +8999,11 @@ class AgentInspectContractTest(unittest.TestCase):
 
         with (
             patch.object(sys, "argv", [str(SCRIPT_PATH), "agent-inspect", "--backend", "api"]),
-            patch.object(jb_inspect, "build_context", return_value={"scope": "files"}),
-            patch.object(jb_inspect.lifecycle_lock, try_lock.__name__, side_effect=lambda handle:
+            patch_attr(jb_inspect, "build_context", return_value={"scope": "files"}),
+            patch_attr(jb_inspect.lifecycle_lock, try_lock.__name__, side_effect=lambda handle:
                          False if Path(handle.name) == jb_inspect.lifecycle_lock_path() else try_lock(handle)),
-            patch.object(jb_inspect, "command_run", side_effect=locked_operation),
-            patch.object(jb_inspect, "log_assessment_records"),
+            patch_attr(jb_inspect, "command_run", side_effect=locked_operation),
+            patch_attr(jb_inspect, "log_assessment_records"),
             redirect_stdout(output),
         ):
             self.assertEqual(jb_inspect.main(), 0)
@@ -9016,9 +9020,9 @@ class AgentInspectContractTest(unittest.TestCase):
         with (
             patch.object(sys, "argv", [str(SCRIPT_PATH), "agent-inspect", "--backend", "api", "--scope", "files",
                                       "--file", paths[0], "--file", paths[1]]),
-            patch.object(jb_inspect, "build_context", return_value={"scope": "files"}),
-            patch.object(jb_inspect, "command_run", return_value={"status": "clean"}) as inspect,
-            patch.object(jb_inspect, "log_assessment_records"),
+            patch_attr(jb_inspect, "build_context", return_value={"scope": "files"}),
+            patch_attr(jb_inspect, "command_run", return_value={"status": "clean"}) as inspect,
+            patch_attr(jb_inspect, "log_assessment_records"),
             redirect_stdout(output),
         ):
             self.assertEqual(jb_inspect.main(), 0)
@@ -9080,7 +9084,7 @@ class AgentInspectContractTest(unittest.TestCase):
 
     def emit_agent_payload(self, payload, helper_exit_code=None):
         output = io.StringIO()
-        with redirect_stdout(output), patch.object(jb_inspect, "log_assessment_records"):
+        with redirect_stdout(output), patch_attr(jb_inspect, "log_assessment_records"):
             exit_code = jb_inspect.emit_agent_result(
                 payload,
                 command="agent-inspect",
@@ -9176,8 +9180,8 @@ class AgentInspectContractTest(unittest.TestCase):
         stale_result = {"status": "stale_results", "results_may_be_stale": True}
         jb_inspect.apply_verdict(stale_result)
         with (
-            patch.object(jb_inspect, "run_inspection_on_route", return_value=stale_result),
-            patch.object(jb_inspect, "wait_for_internal_retry_readiness", return_value={
+            patch_attr(jb_inspect, "run_inspection_on_route", return_value=stale_result),
+            patch_attr(jb_inspect, "wait_for_internal_retry_readiness", return_value={
                 "status": "timeout", "ready": False, "exit_reason": "indexing",
             }),
         ):
@@ -9305,7 +9309,7 @@ class AgentInspectContractTest(unittest.TestCase):
 
     def test_usage_error_emits_terminal_envelope(self):
         output = io.StringIO()
-        with redirect_stdout(output), patch.object(jb_inspect, "log_assessment_records"):
+        with redirect_stdout(output), patch_attr(jb_inspect, "log_assessment_records"):
             exit_code = jb_inspect.emit_agent_usage_error(
                 "usage: jb-inspect.py agent-inspect\njb-inspect.py: error: unrecognized arguments: --no-wait-stale\n"
             )
@@ -9415,8 +9419,8 @@ class AgentInspectContractTest(unittest.TestCase):
         output = io.StringIO()
         with (
             patch.object(sys, "argv", [str(SCRIPT_PATH), "agent-inspect", "--backend", "api"]),
-            patch.object(jb_inspect, "build_context", side_effect=ValueError("unexpected failure")),
-            patch.object(jb_inspect, "log_assessment_records"),
+            patch_attr(jb_inspect, "build_context", side_effect=ValueError("unexpected failure")),
+            patch_attr(jb_inspect, "log_assessment_records"),
             redirect_stdout(output),
         ):
             exit_code = jb_inspect.main()
@@ -9499,8 +9503,8 @@ class InspectionStageDiagnosticsTest(unittest.TestCase):
         }
 
         with (
-            patch.object(jb_inspect, "resolve_route", return_value=route),
-            patch.object(jb_inspect, "call_contextual_endpoint", return_value=wait_body),
+            patch_attr(jb_inspect, "resolve_route", return_value=route),
+            patch_attr(jb_inspect, "call_contextual_endpoint", return_value=wait_body),
         ):
             result = jb_inspect.command_wait(
                 helper_args(timeout_ms=5_000, poll_ms=1_000),
@@ -12274,7 +12278,7 @@ class HumanOutputTest(unittest.TestCase):
                 }
             self.fail(f"unexpected endpoint: {endpoint}")
 
-        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+        with patch_attr(jb_inspect, "call_endpoint", side_effect=fake_call):
             result = jb_inspect.run_inspection_on_route(
                 helper_args(timeout_ms=1000, poll_ms=1),
                 {"worktree_root": "/tmp/worktree"},
@@ -12399,12 +12403,12 @@ class HumanOutputTest(unittest.TestCase):
         }
 
         with (
-            patch.object(jb_inspect, "prepare_lifecycle_details", return_value=({"route": route}, lease, "proof-1")),
-            patch.object(jb_inspect, "run_inspection_with_internal_retry", return_value=native),
-            patch.object(jb_inspect, "cleanup_lifecycle", return_value={"status": "closed"}),
-            patch.object(jb_inspect, "lease_may_own_open_project", return_value=True),
-            patch.object(jb_inspect, "git_worktree_status_snapshot", return_value=before),
-            patch.object(jb_inspect, "post_cleanup_worktree_status_snapshot", return_value=after),
+            patch_attr(jb_inspect, "prepare_lifecycle_details", return_value=({"route": route}, lease, "proof-1")),
+            patch_attr(jb_inspect, "run_inspection_with_internal_retry", return_value=native),
+            patch_attr(jb_inspect, "cleanup_lifecycle", return_value={"status": "closed"}),
+            patch_attr(jb_inspect, "lease_may_own_open_project", return_value=True),
+            patch_attr(jb_inspect, "git_worktree_status_snapshot", return_value=before),
+            patch_attr(jb_inspect, "post_cleanup_worktree_status_snapshot", return_value=after),
         ):
             result = jb_inspect.run_prepared_inspection(
                 helper_args(command="closeout", lifecycle_lock_timeout_ms=0),
@@ -13112,9 +13116,9 @@ class UnknownVerdictLogTest(unittest.TestCase):
             self.assertEqual(record["event_kind"], "inspection_assessment")
 
         with (
-            patch.object(jb_inspect, "outcome_routing_lock", return_value=RoutingLock()),
-            patch.object(jb_inspect, "outcome_log_path", side_effect=resolve_path),
-            patch.object(jb_inspect, "append_jsonl_record", side_effect=append_record),
+            patch_attr(jb_inspect, "outcome_routing_lock", return_value=RoutingLock()),
+            patch_attr(jb_inspect, "outcome_log_path", side_effect=resolve_path),
+            patch_attr(jb_inspect, "append_jsonl_record", side_effect=append_record),
         ):
             jb_inspect.log_outcome(payload, 0)
 
@@ -13134,13 +13138,13 @@ class UnknownVerdictLogTest(unittest.TestCase):
         payload = qualification_event("routing-lock-unknown", verdict="UNKNOWN")
 
         with (
-            patch.object(jb_inspect, "outcome_routing_lock", return_value=RoutingLock()),
-            patch.object(
+            patch_attr(jb_inspect, "outcome_routing_lock", return_value=RoutingLock()),
+            patch_attr(
                 jb_inspect,
                 "write_unknown_verdict_record",
                 side_effect=lambda candidate: order.append("unknown_record"),
             ),
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "write_outcome_record",
                 side_effect=lambda candidate, exit_code: order.append("outcome_record"),
@@ -13272,8 +13276,8 @@ module.log_outcome({{
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 patch.dict(os.environ, {"JETBRAINS_INSPECTION_CACHE_DIR": tmp}, clear=False),
-                patch.object(jb_inspect, "fcntl", None),
-                patch.object(jb_inspect, "msvcrt", fake_msvcrt),
+                patch_attr(jb_inspect, jb_inspect.fcntl.__name__, None),
+                patch_attr(jb_inspect, "msvcrt", fake_msvcrt),
             ):
                 with jb_inspect.outcome_routing_lock(timeout_ms=0):
                     pass
@@ -13284,7 +13288,7 @@ module.log_outcome({{
     def test_outcome_append_lock_timeout_is_bounded(self):
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "outcomes.jsonl"
-            with patch.object(jb_inspect.fcntl, "flock", side_effect=BlockingIOError()):
+            with patch_attr(jb_inspect.fcntl, "flock", side_effect=BlockingIOError()):
                 with self.assertRaisesRegex(TimeoutError, "outcome log lock"):
                     jb_inspect.append_jsonl_record(log_path, {"event_id": "blocked"}, lock_timeout_ms=0)
 
@@ -13303,8 +13307,8 @@ module.log_outcome({{
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "outcomes.jsonl"
             with (
-                patch.object(jb_inspect, "fcntl", None),
-                patch.object(jb_inspect, "msvcrt", fake_msvcrt),
+                patch_attr(jb_inspect, jb_inspect.fcntl.__name__, None),
+                patch_attr(jb_inspect, "msvcrt", fake_msvcrt),
             ):
                 jb_inspect.append_jsonl_record(log_path, {"event_id": "windows"}, lock_timeout_ms=0)
 
@@ -13323,8 +13327,8 @@ module.log_outcome({{
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "outcomes.jsonl"
             with (
-                patch.object(jb_inspect, "fcntl", None),
-                patch.object(jb_inspect, "msvcrt", BlockingMsvcrt()),
+                patch_attr(jb_inspect, jb_inspect.fcntl.__name__, None),
+                patch_attr(jb_inspect, "msvcrt", BlockingMsvcrt()),
             ):
                 with self.assertRaisesRegex(TimeoutError, "outcome log lock"):
                     jb_inspect.append_jsonl_record(log_path, {"event_id": "blocked"}, lock_timeout_ms=0)
@@ -13667,12 +13671,12 @@ module.log_outcome({{
     def test_jsonl_append_uses_one_locked_write(self):
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "events.jsonl"
-            with patch.object(jb_inspect.os, "write", wraps=jb_inspect.os.write) as write_call:
+            with patch.object(os, "write", wraps=jb_inspect.os.write) as write_call:
                 if jb_inspect.fcntl is None:
                     jb_inspect.append_jsonl_record(log_path, {"event_id": "one"})
                     lock_calls = []
                 else:
-                    with patch.object(jb_inspect.fcntl, "flock", wraps=jb_inspect.fcntl.flock) as lock_call:
+                    with patch_attr(jb_inspect.fcntl, "flock", wraps=jb_inspect.fcntl.flock) as lock_call:
                         jb_inspect.append_jsonl_record(log_path, {"event_id": "one"})
                     lock_calls = [call.args[1] for call in lock_call.call_args_list]
             written_record = json.loads(log_path.read_text(encoding="utf-8"))
@@ -13700,7 +13704,7 @@ module.log_outcome({{
                     return real_write(descriptor, bytes(payload[:5]))
                 raise OSError("simulated append failure")
 
-            with patch.object(jb_inspect.os, "write", side_effect=partial_then_fail):
+            with patch.object(os, "write", side_effect=partial_then_fail):
                 with self.assertRaisesRegex(OSError, "simulated append failure"):
                     jb_inspect.append_jsonl_record(log_path, {"event_id": "new"})
 
@@ -14446,7 +14450,7 @@ class Issue458RegressionTest(unittest.TestCase):
         route = {"port": 63342, "project_key": "path:/tmp/repo", "session_id": "session"}
 
         for name, profile, trigger_response, expected_failure in cases:
-            with self.subTest(name=name), patch.object(
+            with self.subTest(name=name), patch_attr(
                 jb_inspect,
                 "call_endpoint",
                 return_value=trigger_response,
@@ -14497,7 +14501,7 @@ class Issue458RegressionTest(unittest.TestCase):
                 }
             self.fail(f"unexpected endpoint: {endpoint}")
 
-        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+        with patch_attr(jb_inspect, "call_endpoint", side_effect=fake_call):
             result = jb_inspect.run_inspection_on_route(
                 helper_args(scope="changed_files", profile="strict", timeout_ms=1000, poll_ms=1),
                 {"scope": "changed_files"},
@@ -14542,7 +14546,7 @@ class Issue458RegressionTest(unittest.TestCase):
                 }
             self.fail(f"unexpected endpoint: {endpoint}")
 
-        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+        with patch_attr(jb_inspect, "call_endpoint", side_effect=fake_call):
             result = jb_inspect.run_inspection_on_route(
                 helper_args(scope="changed_files", profile="strict", timeout_ms=1000, poll_ms=1),
                 {"scope": "changed_files"},
@@ -14586,7 +14590,7 @@ class Issue458RegressionTest(unittest.TestCase):
                 }
             self.fail(f"unexpected endpoint: {endpoint}")
 
-        with patch.object(jb_inspect, "call_endpoint", side_effect=fake_call):
+        with patch_attr(jb_inspect, "call_endpoint", side_effect=fake_call):
             result = jb_inspect.run_inspection_on_route(
                 helper_args(scope="changed_files", profile="strict", timeout_ms=1000, poll_ms=1),
                 {"scope": "changed_files"},
@@ -14629,7 +14633,7 @@ class Issue458RegressionTest(unittest.TestCase):
                 timeout_ms=1000,
                 poll_ms=1,
             )
-            with self.subTest(include_unversioned=include_unversioned, changed_files_mode=changed_files_mode), patch.object(
+            with self.subTest(include_unversioned=include_unversioned, changed_files_mode=changed_files_mode), patch_attr(
                 jb_inspect,
                 "call_endpoint",
                 side_effect=fake_call,
@@ -15070,12 +15074,12 @@ class Issue458RegressionTest(unittest.TestCase):
         retry_readiness = {"status": "ready", "ready": True}
 
         with (
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "wait_until_route_ready",
                 side_effect=error,
             ) as wait_route,
-            patch.object(
+            patch_attr(
                 jb_inspect,
                 "wait_for_internal_retry_readiness",
                 return_value=retry_readiness,
@@ -15116,8 +15120,8 @@ class Issue458RegressionTest(unittest.TestCase):
         }
 
         with (
-            patch.object(jb_inspect, "wait_until_route_ready", side_effect=error),
-            patch.object(
+            patch_attr(jb_inspect, "wait_until_route_ready", side_effect=error),
+            patch_attr(
                 jb_inspect,
                 "wait_for_internal_retry_readiness",
                 return_value={"status": "timeout", "ready": False},
@@ -15205,8 +15209,8 @@ class Issue458RegressionTest(unittest.TestCase):
         }
 
         with (
-            patch.object(jb_inspect, "wait_until_route_ready", side_effect=error),
-            patch.object(jb_inspect, "wait_for_internal_retry_readiness") as wait_retry,
+            patch_attr(jb_inspect, "wait_until_route_ready", side_effect=error),
+            patch_attr(jb_inspect, "wait_for_internal_retry_readiness") as wait_retry,
         ):
             with self.assertRaises(jb_inspect.InspectError):
                 jb_inspect.wait_until_route_ready_with_prepared_sdk_retry(
@@ -15377,7 +15381,7 @@ class PythonSdkFailureReportingTests(unittest.TestCase):
         lease = {"lease_id": "owned-lease", "opened_by_helper": True}
         close_result = {"status": "close_skipped", "reason": "python_sdk_preparation_in_progress"}
         error = jb_inspect.InspectError("SDK deadline", 3, {"error_reason": "python_sdk_preparation_timeout"})
-        with patch.object(jb_inspect, "write_lease") as write:
+        with patch_attr(jb_inspect, "write_lease") as write:
             result = jb_inspect.defer_failed_preparation_cleanup(
                 lease, None, error, "python_sdk_preparation", cleanup_result=close_result,
             )
@@ -15435,10 +15439,10 @@ class ScopedLeaseCleanupTests(unittest.TestCase):
         write_json(self.selected_path, self.lease)
         write_json(self.foreign_path, self.lease | {"lease_id": self.foreign_id})
         self.foreign_bytes = self.foreign_path.read_bytes()
-        self.enterContext(patch.object(jb_inspect, "lease_dir", return_value=self.directory))
-        self.enterContext(patch.object(jb_inspect, "now_ms", return_value=100_000_000))
-        self.enterContext(patch.object(jb_inspect, "pid_alive", return_value=False))
-        self.discovery = self.enterContext(patch.object(
+        self.enterContext(patch_attr(jb_inspect, "lease_dir", return_value=self.directory))
+        self.enterContext(patch_attr(jb_inspect, "now_ms", return_value=100_000_000))
+        self.enterContext(patch_attr(jb_inspect, "pid_alive", return_value=False))
+        self.discovery = self.enterContext(patch_attr(
             jb_inspect, "discover_routes_for_cleanup", return_value=([], {"session"}),
         ))
 
@@ -15499,7 +15503,7 @@ class ScopedLeaseCleanupTests(unittest.TestCase):
 
     def test_live_pid_with_old_cleanup_failed_lease_is_not_forced_stale(self):
         for dry_run in (False, True):
-            with self.subTest(dry_run=dry_run), patch.object(jb_inspect, "pid_alive", return_value=True):
+            with self.subTest(dry_run=dry_run), patch_attr(jb_inspect, "pid_alive", return_value=True):
                 result = self.run_cleanup(self.selected_id, dry_run=dry_run)
                 self.assertEqual(result["unresolved"][0]["reason"], "lease_not_stale")
                 self.assertEqual(jb_inspect.classify_cleanup_leases_exit(result), 1)
@@ -15520,7 +15524,7 @@ class ScopedLeaseCleanupTests(unittest.TestCase):
             "base_path": "/tmp/selected", "project_instance_id": "foreign:1",
             "session_id": "foreign", "project_key": "path:/tmp/selected",
         }], {"foreign"})
-        with patch.object(jb_inspect, "reclaim_lifecycle_claim") as claim:
+        with patch_attr(jb_inspect, "reclaim_lifecycle_claim") as claim:
             result = self.run_cleanup(self.selected_id)
         claim.assert_not_called()
         self.assertEqual(result["unresolved"][0]["reason"], "ownership_route_unavailable")
@@ -15544,8 +15548,8 @@ class ScopedLeaseCleanupTests(unittest.TestCase):
         body = {"status": status, "reason": reason, "opened": False, "opening_scheduled": False,
                 "probe": True, "session_id": session}
         return (
-            patch.object(jb_inspect, "identity_for_port", return_value=identity),
-            patch.object(jb_inspect, "http_get", return_value=jb_inspect.HttpResult(200, body, "http://fixture")),
+            patch_attr(jb_inspect, "identity_for_port", return_value=identity),
+            patch_attr(jb_inspect, "http_get", return_value=jb_inspect.HttpResult(200, body, "http://fixture")),
         )
 
     def test_live_original_session_reporting_project_not_open_releases_lease(self):
@@ -15564,7 +15568,7 @@ class ScopedLeaseCleanupTests(unittest.TestCase):
             with self.subTest(name):
                 self.write_never_opened_lease(**({"open_attempts": attempts} if attempts else {}))
                 identity, get = self.probe_ide("not_open", "project_not_open")
-                with identity, get as http_get, patch.object(jb_inspect, "cleanup_lifecycle") as close:
+                with identity, get as http_get, patch_attr(jb_inspect, "cleanup_lifecycle") as close:
                     preview = self.run_cleanup(self.selected_id, dry_run=True)
                     self.assertEqual(preview["would_remove"], [str(self.selected_path)])
                     self.assertTrue(self.selected_path.exists())
@@ -15633,8 +15637,8 @@ class ScopedLeaseCleanupTests(unittest.TestCase):
             self.assertEqual(held, [True])
             return original_read()
         with (
-            patch.object(jb_inspect, "lifecycle_lock", return_value=Lock()),
-            patch.object(jb_inspect, "read_local_leases", side_effect=read_locked),
+            patch_attr(jb_inspect, "lifecycle_lock", return_value=Lock()),
+            patch_attr(jb_inspect, "read_local_leases", side_effect=read_locked),
         ):
             result = self.run_cleanup(self.selected_id)
         self.assertEqual(result["removed"], [str(self.selected_path)])
@@ -15704,7 +15708,7 @@ class PythonSdkPreparationTests(unittest.TestCase):
         }
 
     def test_owned_prepared_environment_uses_one_explicit_post_with_route_pins(self):
-        with patch.object(jb_inspect, "http_post", return_value=jb_inspect.HttpResult(200, self.response, "redacted")) as post:
+        with patch_attr(jb_inspect, "http_post", return_value=jb_inspect.HttpResult(200, self.response, "redacted")) as post:
             result = self.prepare()
         self.assertEqual(result, self.response)
         post.assert_called_once()
@@ -15718,18 +15722,18 @@ class PythonSdkPreparationTests(unittest.TestCase):
 
     def test_unowned_project_is_never_provisioned(self):
         self.lease["opened_by_helper"] = False
-        with patch.object(jb_inspect, "http_post") as post:
+        with patch_attr(jb_inspect, "http_post") as post:
             self.assertEqual(self.prepare()["reason"], "helper_ownership_not_proven")
         post.assert_not_called()
 
     def test_missing_proof_is_never_provisioned(self):
-        with patch.object(jb_inspect, "http_post") as post:
+        with patch_attr(jb_inspect, "http_post") as post:
             self.assertEqual(self.prepare(None)["reason"], "helper_ownership_not_proven")
         post.assert_not_called()
 
     def test_reclaimed_worker_active_lease_cannot_repeat_sdk_preparation(self):
         self.lease["cleanup_result"] = {"status": "close_skipped", "reason": "python_sdk_preparation_in_progress"}
-        with patch.object(jb_inspect, "http_post") as post:
+        with patch_attr(jb_inspect, "http_post") as post:
             with self.assertRaises(jb_inspect.InspectError) as caught:
                 self.prepare()
         post.assert_not_called()
@@ -15742,13 +15746,13 @@ class PythonSdkPreparationTests(unittest.TestCase):
             ({"product_code": "IU", "python_sdk_preparation_version": True}, "plugin_capability_unavailable"),
             ({"product_code": "WS", "python_sdk_preparation_version": 1}, "non_python_ide_lane"),
         ]:
-            with self.subTest(ide=ide), patch.object(jb_inspect, "http_post") as post:
+            with self.subTest(ide=ide), patch_attr(jb_inspect, "http_post") as post:
                 self.route["ide"] = ide
                 self.assertEqual(self.prepare()["reason"], expected)
                 post.assert_not_called()
 
     def test_failed_preparation_and_nested_target_do_not_provision_root_environment(self):
-        with patch.object(jb_inspect, "http_post") as post:
+        with patch_attr(jb_inspect, "http_post") as post:
             self.preparation["execution_state"] = "failed"
             self.assertEqual(self.prepare()["status"], "skipped")
             self.preparation["execution_state"] = "succeeded"
@@ -15758,21 +15762,21 @@ class PythonSdkPreparationTests(unittest.TestCase):
 
     def test_incomplete_route_cannot_start_sdk_mutation(self):
         del self.route["session_id"]
-        with patch.object(jb_inspect, "http_post") as post:
+        with patch_attr(jb_inspect, "http_post") as post:
             with self.assertRaises(jb_inspect.InspectError):
                 self.prepare()
         post.assert_not_called()
 
     def test_read_commands_do_not_provision_even_with_prepared_environment(self):
         for command in ("claim-worktree", "get-status", "resolve-route"):
-            with self.subTest(command=command), patch.object(jb_inspect, "http_post") as post:
+            with self.subTest(command=command), patch_attr(jb_inspect, "http_post") as post:
                 self.args.command = command
                 self.assertEqual(self.prepare()["reason"], "preparation_not_requested")
                 post.assert_not_called()
 
     def test_shared_python_preparation_does_not_mutate_a_jvm_only_lane(self):
         self.args.files = ["src/main/Main.kt", "README.md"]
-        with patch.object(jb_inspect, "http_post") as post:
+        with patch_attr(jb_inspect, "http_post") as post:
             self.assertEqual(self.prepare()["reason"], "python_not_selected")
         post.assert_not_called()
 
@@ -15787,13 +15791,13 @@ class PythonSdkPreparationTests(unittest.TestCase):
         ]:
             with self.subTest(field=field, value=value):
                 response = self.response | {field: value}
-                with patch.object(jb_inspect, "http_post", return_value=jb_inspect.HttpResult(200, response, "redacted")):
+                with patch_attr(jb_inspect, "http_post", return_value=jb_inspect.HttpResult(200, response, "redacted")):
                     with self.assertRaises(jb_inspect.InspectError):
                         self.prepare()
 
     def test_transport_failure_is_not_retried_and_preserves_preparation_diagnostic(self):
         error = jb_inspect.InspectError("Timed out", 3, {"error_reason": "timeout"})
-        with patch.object(jb_inspect, "http_post", side_effect=error) as post:
+        with patch_attr(jb_inspect, "http_post", side_effect=error) as post:
             with self.assertRaises(jb_inspect.InspectError) as caught:
                 self.prepare()
         post.assert_called_once()
@@ -15823,14 +15827,14 @@ class PythonSdkPreparationTests(unittest.TestCase):
             return {"status": "ready"}
 
         with (
-            patch.object(jb_inspect, "create_local_lease", return_value=lease),
-            patch.object(jb_inspect, "find_exact_route", return_value=self.route),
-            patch.object(jb_inspect, "matching_deferred_lease", return_value=None),
-            patch.object(jb_inspect, "ensure_exact_worktree"),
-            patch.object(jb_inspect, "claim_lifecycle", side_effect=claim),
-            patch.object(jb_inspect, "http_post", side_effect=post),
-            patch.object(jb_inspect, "wait_until_route_ready_with_prepared_sdk_retry", side_effect=readiness),
-            patch.object(jb_inspect, "write_lease", side_effect=lambda value: writes.append(value.copy())),
+            patch_attr(jb_inspect, "create_local_lease", return_value=lease),
+            patch_attr(jb_inspect, "find_exact_route", return_value=self.route),
+            patch_attr(jb_inspect, "matching_deferred_lease", return_value=None),
+            patch_attr(jb_inspect, "ensure_exact_worktree"),
+            patch_attr(jb_inspect, "claim_lifecycle", side_effect=claim),
+            patch_attr(jb_inspect, "http_post", side_effect=post),
+            patch_attr(jb_inspect, "wait_until_route_ready_with_prepared_sdk_retry", side_effect=readiness),
+            patch_attr(jb_inspect, "write_lease", side_effect=lambda value: writes.append(value.copy())),
         ):
             prepared, prepared_lease, close_proof = jb_inspect.prepare_lifecycle_details(
                 self.args, self.lifecycle_context(),
@@ -15859,14 +15863,14 @@ class PythonSdkPreparationTests(unittest.TestCase):
             return {"status": "ready"}
 
         with (
-            patch.object(jb_inspect, "create_local_lease", return_value=lease),
-            patch.object(jb_inspect, "find_exact_route", return_value=self.route),
-            patch.object(jb_inspect, "matching_deferred_lease", return_value=None),
-            patch.object(jb_inspect, "ensure_exact_worktree"),
-            patch.object(jb_inspect, "claim_lifecycle", side_effect=claim),
-            patch.object(jb_inspect, "http_post") as post,
-            patch.object(jb_inspect, "wait_until_route_ready_with_prepared_sdk_retry", side_effect=readiness),
-            patch.object(jb_inspect, "write_lease"),
+            patch_attr(jb_inspect, "create_local_lease", return_value=lease),
+            patch_attr(jb_inspect, "find_exact_route", return_value=self.route),
+            patch_attr(jb_inspect, "matching_deferred_lease", return_value=None),
+            patch_attr(jb_inspect, "ensure_exact_worktree"),
+            patch_attr(jb_inspect, "claim_lifecycle", side_effect=claim),
+            patch_attr(jb_inspect, "http_post") as post,
+            patch_attr(jb_inspect, "wait_until_route_ready_with_prepared_sdk_retry", side_effect=readiness),
+            patch_attr(jb_inspect, "write_lease"),
         ):
             prepared, prepared_lease, close_proof = jb_inspect.prepare_lifecycle_details(
                 self.args, self.lifecycle_context(),
@@ -15890,24 +15894,24 @@ class PythonSdkPreparationTests(unittest.TestCase):
         cleanup = {"status": "closed"}
 
         with (
-            patch.object(jb_inspect, "create_local_lease", return_value=lease),
-            patch.object(jb_inspect, "find_exact_route", return_value=self.route),
-            patch.object(jb_inspect, "matching_deferred_lease", return_value=None),
-            patch.object(jb_inspect, "ensure_exact_worktree"),
-            patch.object(
+            patch_attr(jb_inspect, "create_local_lease", return_value=lease),
+            patch_attr(jb_inspect, "find_exact_route", return_value=self.route),
+            patch_attr(jb_inspect, "matching_deferred_lease", return_value=None),
+            patch_attr(jb_inspect, "ensure_exact_worktree"),
+            patch_attr(
                 jb_inspect, "claim_lifecycle",
                 return_value=claimed_lifecycle_result(self.route, "private-token"),
             ),
-            patch.object(
+            patch_attr(
                 jb_inspect, "http_post",
                 return_value=jb_inspect.HttpResult(200, self.response, "redacted"),
             ),
-            patch.object(
+            patch_attr(
                 jb_inspect, "wait_until_route_ready_with_prepared_sdk_retry",
                 side_effect=readiness_error,
             ),
-            patch.object(jb_inspect, "cleanup_failed_preparation", return_value=cleanup) as cleanup_call,
-            patch.object(jb_inspect, "write_lease"),
+            patch_attr(jb_inspect, "cleanup_failed_preparation", return_value=cleanup) as cleanup_call,
+            patch_attr(jb_inspect, "write_lease"),
         ):
             with self.assertRaises(jb_inspect.InspectError) as caught:
                 jb_inspect.prepare_lifecycle_details(self.args, self.lifecycle_context())
@@ -15922,24 +15926,24 @@ class PythonSdkPreparationTests(unittest.TestCase):
         lease = {"lease_id": "lease", "state": "preparing"}
 
         with (
-            patch.object(jb_inspect, "create_local_lease", return_value=lease),
-            patch.object(jb_inspect, "find_exact_route", return_value=self.route),
-            patch.object(jb_inspect, "matching_deferred_lease", return_value=None),
-            patch.object(jb_inspect, "ensure_exact_worktree"),
-            patch.object(
+            patch_attr(jb_inspect, "create_local_lease", return_value=lease),
+            patch_attr(jb_inspect, "find_exact_route", return_value=self.route),
+            patch_attr(jb_inspect, "matching_deferred_lease", return_value=None),
+            patch_attr(jb_inspect, "ensure_exact_worktree"),
+            patch_attr(
                 jb_inspect, "claim_lifecycle",
                 return_value=claimed_lifecycle_result(self.route, "private-token"),
             ),
-            patch.object(
+            patch_attr(
                 jb_inspect, "http_post",
                 return_value=jb_inspect.HttpResult(200, self.response, "redacted"),
             ),
-            patch.object(
+            patch_attr(
                 jb_inspect, "wait_until_route_ready_with_prepared_sdk_retry",
                 side_effect=RuntimeError("readiness exploded"),
             ),
-            patch.object(jb_inspect, "cleanup_failed_preparation", return_value={"status": "closed"}),
-            patch.object(jb_inspect, "write_lease"),
+            patch_attr(jb_inspect, "cleanup_failed_preparation", return_value={"status": "closed"}),
+            patch_attr(jb_inspect, "write_lease"),
         ):
             with self.assertRaises(jb_inspect.InspectError) as caught:
                 jb_inspect.prepare_lifecycle_details(self.args, self.lifecycle_context())
@@ -15954,7 +15958,7 @@ class PythonSdkPreparationTests(unittest.TestCase):
         for operation in (None, "", "registered", "CREATED", True, 1, [], {"created": True}):
             with self.subTest(operation=operation):
                 response = self.response | {"operation": operation}
-                with patch.object(
+                with patch_attr(
                     jb_inspect, "http_post",
                     return_value=jb_inspect.HttpResult(200, response, "redacted"),
                 ):
@@ -15971,14 +15975,14 @@ class PythonSdkPreparationTests(unittest.TestCase):
         lease = {"lease_id": "lease", "state": "preparing"}
         error = RuntimeError("unrelated readiness failure")
         with (
-            patch.object(jb_inspect, "create_local_lease", return_value=lease),
-            patch.object(jb_inspect, "find_exact_route", return_value=self.route),
-            patch.object(jb_inspect, "matching_deferred_lease", return_value=None),
-            patch.object(jb_inspect, "ensure_exact_worktree"),
-            patch.object(jb_inspect, "claim_lifecycle", return_value=unowned_lifecycle_result(self.route)),
-            patch.object(jb_inspect, "wait_until_route_ready_with_prepared_sdk_retry", side_effect=error),
-            patch.object(jb_inspect, "cleanup_failed_preparation", return_value={"status": "not_needed"}),
-            patch.object(jb_inspect, "write_lease"),
+            patch_attr(jb_inspect, "create_local_lease", return_value=lease),
+            patch_attr(jb_inspect, "find_exact_route", return_value=self.route),
+            patch_attr(jb_inspect, "matching_deferred_lease", return_value=None),
+            patch_attr(jb_inspect, "ensure_exact_worktree"),
+            patch_attr(jb_inspect, "claim_lifecycle", return_value=unowned_lifecycle_result(self.route)),
+            patch_attr(jb_inspect, "wait_until_route_ready_with_prepared_sdk_retry", side_effect=error),
+            patch_attr(jb_inspect, "cleanup_failed_preparation", return_value={"status": "not_needed"}),
+            patch_attr(jb_inspect, "write_lease"),
         ):
             with self.assertRaises(RuntimeError) as caught:
                 jb_inspect.prepare_lifecycle_details(self.args, self.lifecycle_context())
@@ -15989,7 +15993,7 @@ class PythonSdkPreparationTests(unittest.TestCase):
             "inspection_in_progress": True, "reason": "python_sdk_preparation_in_progress",
         }).encode()
         error = jb_inspect.urllib.error.HTTPError("http://localhost", 409, "Conflict", {}, io.BytesIO(body))
-        with patch.object(jb_inspect.urllib.request, "urlopen", side_effect=error):
+        with patch_attr(jb_inspect.urllib.request, "urlopen", side_effect=error):
             with self.assertRaises(jb_inspect.InspectError) as caught:
                 self.prepare()
         self.assertEqual(caught.exception.payload["error_reason"], "python_sdk_preparation_in_progress")
@@ -16000,7 +16004,7 @@ class PythonSdkPreparationTests(unittest.TestCase):
             "reason": "python_sdk_preparation_sdk_conflict", "http_status": 409,
             "detail": "A different valid SDK is assigned", "registered_local_python_sdk_count": 0,
         })
-        with patch.object(jb_inspect, "http_post", side_effect=error):
+        with patch_attr(jb_inspect, "http_post", side_effect=error):
             with self.assertRaises(jb_inspect.InspectError) as caught:
                 self.prepare()
         payload = caught.exception.payload
@@ -16010,7 +16014,7 @@ class PythonSdkPreparationTests(unittest.TestCase):
         self.assertEqual(jb_inspect.outcome_bucket(payload, payload["error_reason"]), "environment_blocked")
 
     def test_post_transport_uses_post_and_redacts_the_ownership_token(self):
-        with patch.object(jb_inspect.urllib.request, "urlopen") as urlopen:
+        with patch_attr(jb_inspect.urllib.request, "urlopen") as urlopen:
             response = urlopen.return_value.__enter__.return_value
             response.status = 200
             response.read.return_value = b'{"status":"prepared"}'
@@ -16167,12 +16171,12 @@ class FindingsPreservationTests(unittest.TestCase):
             closed.append(True)
             return {"status": "closed"}
 
-        with patch.object(jb_inspect, "prepare_lifecycle_details", return_value=({"route": self.route}, {"opened_by_helper": True}, "close-proof")), \
-                patch.object(jb_inspect, "run_inspection_with_internal_retry", return_value=result), \
-                patch.object(jb_inspect, "call_endpoint", side_effect=read_page), \
-                patch.object(jb_inspect, "git_worktree_status_snapshot", return_value={"status": "ok", "entries": {}}), \
-                patch.object(jb_inspect, "post_cleanup_worktree_status_snapshot", return_value={"status": "ok", "entries": {}}), \
-                patch.object(jb_inspect, "cleanup_lifecycle", side_effect=close):
+        with patch_attr(jb_inspect, "prepare_lifecycle_details", return_value=({"route": self.route}, {"opened_by_helper": True}, "close-proof")), \
+                patch_attr(jb_inspect, "run_inspection_with_internal_retry", return_value=result), \
+                patch_attr(jb_inspect, "call_endpoint", side_effect=read_page), \
+                patch_attr(jb_inspect, "git_worktree_status_snapshot", return_value={"status": "ok", "entries": {}}), \
+                patch_attr(jb_inspect, "post_cleanup_worktree_status_snapshot", return_value={"status": "ok", "entries": {}}), \
+                patch_attr(jb_inspect, "cleanup_lifecycle", side_effect=close):
             payload = jb_inspect.run_prepared_inspection(self.args, self.context)
         compact = jb_inspect.compact_agent_result_payload(payload, 1)
         receipt = compact["findings_artifact"]
@@ -16212,12 +16216,12 @@ class FindingsPreservationTests(unittest.TestCase):
                 snapshot = {"status": "ok", "entries": {}}
                 after = snapshot | {"entries": {".idea/vcs.xml": " M"}} if mutated else snapshot
                 with (
-                    patch.object(jb_inspect, "prepare_lifecycle_details", return_value=({"route": self.route}, {"opened_by_helper": True}, "close-proof")),
-                    patch.object(jb_inspect, "run_inspection_with_internal_retry", return_value=result),
-                    patch.object(jb_inspect, "call_endpoint") as endpoint,
-                    patch.object(jb_inspect, "git_worktree_status_snapshot", return_value=snapshot),
-                    patch.object(jb_inspect, "post_cleanup_worktree_status_snapshot", return_value=after),
-                    patch.object(jb_inspect, "cleanup_lifecycle", side_effect=close),
+                    patch_attr(jb_inspect, "prepare_lifecycle_details", return_value=({"route": self.route}, {"opened_by_helper": True}, "close-proof")),
+                    patch_attr(jb_inspect, "run_inspection_with_internal_retry", return_value=result),
+                    patch_attr(jb_inspect, "call_endpoint") as endpoint,
+                    patch_attr(jb_inspect, "git_worktree_status_snapshot", return_value=snapshot),
+                    patch_attr(jb_inspect, "post_cleanup_worktree_status_snapshot", return_value=after),
+                    patch_attr(jb_inspect, "cleanup_lifecycle", side_effect=close),
                 ):
                     payload = jb_inspect.run_prepared_inspection(self.args, self.context)
                 self.assertTrue(closed)
@@ -16290,7 +16294,7 @@ class FindingsPreservationTests(unittest.TestCase):
         def read_page(route, endpoint, params, **kwargs):
             offsets.append(params["offset"])
             return self.page(params["offset"])
-        with patch.object(jb_inspect, "call_endpoint", side_effect=read_page):
+        with patch_attr(jb_inspect, "call_endpoint", side_effect=read_page):
             receipt = jb_inspect.preserve_inspection_findings(self.args, self.context, self.result())
         self.assertEqual(json.loads(Path(receipt["path"]).read_text())["problems"], self.problems)
         self.assertEqual(offsets, [0, 25, 50])
@@ -16298,14 +16302,14 @@ class FindingsPreservationTests(unittest.TestCase):
     def test_small_display_limit_preserves_omitted_findings_below_compact_limit(self):
         self.problems = self.problems[:15]
         self.args.limit = 10
-        with patch.object(jb_inspect, "call_endpoint", side_effect=lambda route, endpoint, params, **kwargs: self.page(params["offset"])):
+        with patch_attr(jb_inspect, "call_endpoint", side_effect=lambda route, endpoint, params, **kwargs: self.page(params["offset"])):
             receipt = jb_inspect.preserve_inspection_findings(self.args, self.context, self.result())
         self.assertEqual(receipt["status"], "complete")
         self.assertEqual(json.loads(Path(receipt["path"]).read_text())["problems"], self.problems)
 
     def test_connection_reset_preserves_accepted_red_and_already_read_findings(self):
         result = self.result()
-        with patch.object(jb_inspect, "call_endpoint", side_effect=ConnectionResetError("peer reset")):
+        with patch_attr(jb_inspect, "call_endpoint", side_effect=ConnectionResetError("peer reset")):
             receipt = jb_inspect.preserve_inspection_findings(self.args, self.context, result)
         self.assertEqual(receipt["status"], "incomplete")
         self.assertEqual(json.loads(Path(receipt["path"]).read_text())["problems"], self.problems[:25])
@@ -16316,7 +16320,7 @@ class FindingsPreservationTests(unittest.TestCase):
             with self.subTest(change=change):
                 result = self.result()
                 page = self.page(25) | change
-                with patch.object(jb_inspect, "call_endpoint", return_value=page):
+                with patch_attr(jb_inspect, "call_endpoint", return_value=page):
                     receipt = jb_inspect.preserve_inspection_findings(self.args, self.context, result)
                 saved = json.loads(Path(receipt["path"]).read_text())
                 self.assertEqual(receipt["status"], "incomplete")
@@ -16324,11 +16328,11 @@ class FindingsPreservationTests(unittest.TestCase):
                 self.assertEqual(result["verdict"], "RED")
 
     def test_unavailable_page_or_artifact_never_claims_full_retrieval(self):
-        with patch.object(jb_inspect, "call_endpoint", side_effect=jb_inspect.InspectError("closed", 3, {"error_reason": "target_project_not_open"})):
+        with patch_attr(jb_inspect, "call_endpoint", side_effect=jb_inspect.InspectError("closed", 3, {"error_reason": "target_project_not_open"})):
             receipt = jb_inspect.preserve_inspection_findings(self.args, self.context, self.result())
         self.assertEqual(receipt["status"], "incomplete")
-        with patch.object(jb_inspect, "call_endpoint", side_effect=lambda route, endpoint, params, **kwargs: self.page(params["offset"])), \
-                patch.object(jb_inspect.os, "open", side_effect=OSError("disk full")):
+        with patch_attr(jb_inspect, "call_endpoint", side_effect=lambda route, endpoint, params, **kwargs: self.page(params["offset"])), \
+                patch.object(os, "open", side_effect=OSError("disk full")):
             receipt = jb_inspect.preserve_inspection_findings(self.args, self.context, self.result())
         self.assertEqual(receipt["status"], "unavailable")
         self.assertNotIn("path", receipt)

@@ -102,6 +102,11 @@ unclear code stand by explaining it.
   with `&`, `|`, and `~`. An annotation alone does not make a list a `Domain`.
 - In tests, give the addon's `tests/fixtures/base.py` typed properties that
   return `self.env["..."]`, instead of suppressions spread across test files.
+- PyCharm cannot resolve `patch.object(module, "name")` when `module` came from
+  `importlib` and is typed `Any`; it reports an unresolved-reference error.
+  Patch an imported module directly (`patch.object(os, "kill")`), and route
+  patches of a loaded module through a local
+  `patch_attr(target, name, *args, **kwargs)` that returns `patch.object(...)`.
 
 ## Strings, Errors, And Logging
 
