@@ -17,7 +17,7 @@ PR_LIMIT = 5
 PR_COMMENTS = 30
 TRACKS_PER_QUERY = 10
 
-LIST_QUERY = """query SupervisorGoalBoardList($owner: String!, $name: String!, $cursor: String) {
+LIST_QUERY = """query WorkGraphTrackList($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     issues(states: [OPEN], first: 100, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
       totalCount
@@ -59,7 +59,7 @@ TRACK_FIELDS = f"""number title url state stateReason body createdAt lastEditedA
 
 def detail_query(numbers: list[int]) -> str:
     aliases = "\n".join(f"    t{number}: issue(number: {int(number)}) {{ {TRACK_FIELDS} }}" for number in numbers)
-    return ("query SupervisorGoalBoardTracks($owner: String!, $name: String!) {\n"
+    return ("query WorkGraphTracks($owner: String!, $name: String!) {\n"
             f"  repository(owner: $owner, name: $name) {{\n{aliases}\n  }}\n}}")
 
 
@@ -67,7 +67,7 @@ def discover_tracks(reader: github_read.GitHubReader, owner: str, name: str, max
     found, cursor, expected, seen, cursors = [], None, None, set(), set()
     for page in range(max_pages):
         result = reader.graphql_json(LIST_QUERY, {"owner": owner, "name": name, "cursor": cursor},
-            step=f"goal_board_list_{page + 1}")
+            step=f"work_graph_list_{page + 1}")
         if not result.ok:
             raise github_read.GitHubReadError("Track discovery read failed", result=result,
                 diagnostics=reader.diagnostics())
