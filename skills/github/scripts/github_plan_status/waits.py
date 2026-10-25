@@ -163,11 +163,14 @@ def _select_record(issue: dict[str, Any], comments: list[dict[str, Any]], truste
             raise ValueError("Multiple structured records in one source; preserve them for review")
         if found:
             record = found[0]
+            keep_age = False
             if prefix == PREFIX and "replaces" in record:
                 if selected is None or record["replaces"] != record_digest(selected):
                     continue
+                keep_age = bool(record["waits"]) and all(entry in selected["waits"] for entry in record["waits"])
             selected = snapshot(record) if prefix == PREFIX else record
-            selected_source = source
+            if not keep_age:
+                selected_source = source
     return selected, selected_source
 
 

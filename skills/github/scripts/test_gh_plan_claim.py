@@ -5411,7 +5411,12 @@ class ClaimTests(unittest.TestCase):
                 self.assertEqual(len(wait["waits"]), len(args.waiting_for or []))
                 self.assertEqual(wait["evidence"], args.wait_evidence)
                 if args.release_product:
-                    self.assertIn(wait_record.release_event_hint(args.release_product, args.release_commit), create.call_args.args[1])
+                    hint = wait_record.release_event_hint(args.release_product, args.release_commit)
+                    original_body = create.call_args.args[1]
+                    for updated in (PLAN.replace_section(original_body, "Open Questions", "Resolved"),
+                            PLAN.replace_issue_plan_section({**self.issue, "body": original_body}, "Open Questions", "Resolved")):
+                        self.assertIn(hint, updated)
+                        self.assertEqual(wait_record.records(updated), [wait])
 
     def test_wait_inventory_reports_each_unreviewed_open_issue_and_never_drops_prose(self):
         self.args.all = True

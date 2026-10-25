@@ -68,6 +68,16 @@ class WaitRecordTests(unittest.TestCase):
         self.assertEqual(waits.current(issue, [renewed, completion], {"owner"}), self.hold)
         self.assertIs(waits.current_source(issue, [renewed, completion], {"owner"}), renewed)
 
+    def test_partial_release_resolution_keeps_surviving_wait_age(self) -> None:
+        record = waits.reviewed(evidence="Old waits", waiting_for=["Release", "Device test"],
+            ends_when=["Production", "Director accepts"], release_product="fixture", release_commit="a" * 40,
+            release_next_action="Next agent: verify")
+        issue = {"user": {"login": "owner"}, "body": waits.marker(record)}
+        resolved, _ = waits.resolve_release(record, product="fixture", contains_commit=lambda _: True, evidence="Release passed")
+        completion = {"user": {"login": "owner"}, "body": waits.marker(resolved)}
+        self.assertIs(waits.current_source(issue, [completion], {"owner"}), issue)
+        self.assertEqual(waits.current(issue, [completion], {"owner"})["waits"], record["waits"][1:])
+
     def test_release_pointer_requires_a_wait_and_full_source_commit(self) -> None:
         for commit in ("", "main", "abc123"):
             with self.subTest(commit=commit), self.assertRaises(ValueError):

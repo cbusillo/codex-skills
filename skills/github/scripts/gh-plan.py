@@ -3970,7 +3970,10 @@ def cmd_create(args: argparse.Namespace) -> None:
         body = replace_section(body, "Finish Line", args.finish_line)
     body = ensure_managed_provenance(body)
     if wait is not None:
-        body = github_plan_wait.without_records(body) + "\n\n" + (release_summary + "\n\n" if release_summary else "") + github_plan_wait.marker(wait)
+        body = github_plan_wait.without_records(body)
+        if release_summary:
+            body = PLAN_MANAGED_PROVENANCE_MARKER + "\n\n" + release_summary + "\n\n" + body.replace(PLAN_MANAGED_PROVENANCE_MARKER, "", 1).lstrip()
+        body += "\n\n" + github_plan_wait.marker(wait)
     project_config = config.get("projects") or {}
     project = args.project
     if project is None and project_config.get("enabled", True):
