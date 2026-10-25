@@ -1017,7 +1017,7 @@ def scope_selection(args, host):
             "worktree_root": str(repo), "scope": scope,
             "_inspection_lanes": host.parse_inspection_lanes(config),
         })
-        selected -= {entry["file"] for entry in selection["excluded_files"]}
+        selected -= set(selection["unmatched_files"]) | {entry["file"] for entry in selection["excluded_files"]}
     return repo, config, scope, selected
 
 

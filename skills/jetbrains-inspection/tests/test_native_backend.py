@@ -210,6 +210,48 @@ class NativeTests(unittest.TestCase):
             self.assertEqual(host.main(), 0)
         run.assert_called_once()
 
+    def test_mixed_changed_files_dispatches_native_without_desktop_contact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary).resolve()
+            for name in ("source.py", "README.md"):
+                (repo / name).write_text("")
+            settings = {"qualityGate": {"inspection": {"lanes": [
+                {"id": "python", "ide": "PyCharm", "required": True, "include": ["**/*.py"]}]}}}
+            with patch.object(sys, "platform", "darwin"), \
+                    patch.dict(os.environ, {"JB_INSPECT_DEFAULT_BACKEND": ""}), \
+                    patch.object(host, "native_backend_module", return_value=native), \
+                    patch.object(host, "git_root", return_value=str(repo)), \
+                    patch.object(host, "read_repo_config", return_value=settings), \
+                    patch.object(host, "inspection_scope_paths", return_value=["source.py", "README.md"]), \
+                    patch.object(native, "eligible", return_value=True), \
+                    patch.object(native, "is_odoo", return_value=False), \
+                    patch.object(host, "command_native", return_value={"backend": "native"}) as run, \
+                    patch.object(host, "build_context") as context, \
+                    patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--repo", str(repo), "--scope", "changed_files"]), \
+                    redirect_stdout(io.StringIO()):
+                self.assertEqual(host.main(), 0)
+                run.assert_called_once()
+                context.assert_not_called()
+
+    def test_automatic_api_fallback_never_enters_desktop_lifecycle(self) -> None:
+        for host_default in (None, "api"):
+            with self.subTest(host_default=host_default), \
+                    patch.object(host, "native_backend_module", return_value=native), \
+                    patch.object(native, "select_backend", return_value=("api", "selection_not_python_only")), \
+                    patch.dict(os.environ, {"JB_INSPECT_DEFAULT_BACKEND": host_default or ""}), \
+                    patch.object(host, "build_context") as context, \
+                    patch.object(host, "command_run") as api, \
+                    patch.object(sys, "argv", ["jb-inspect", "agent-inspect"]), \
+                    redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(host.main(), 0)
+                context.assert_not_called()
+                api.assert_not_called()
+                result = json.loads(output.getvalue())["agent_result"]
+                self.assertEqual(result["verdict"], "UNKNOWN")
+                self.assertEqual(result["bucket"], "environment_blocked")
+                self.assertTrue(result["next_action"])
+                self.assertFalse(result["retry_policy"]["retry"])
+
     def test_explicit_existing_backends_do_not_import_native_components(self):
         for backend in ("api", "qodana"):
             with self.subTest(backend=backend), \

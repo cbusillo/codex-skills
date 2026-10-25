@@ -111,7 +111,9 @@ tool calls.
 On macOS, `agent-inspect` defaults to isolated native PyCharm for Python-only
 selections and Odoo Python/XML selections in root PyCharm lanes when an eligible
 independent worker, interpreter and profile are configured. Otherwise the
-existing Qodana/API selection remains available. Read
+qualified Qodana selection remains available. Automatic selection never enters the
+desktop API lifecycle: unsupported selections return UNKNOWN with
+`isolated_backend_unavailable` before contacting an IDE. Read
 [native PyCharm](references/native-backend.md) before configuring, diagnosing
 or changing that runner. It uses the independently Director-activated worker
 in place, with its shared exclusive lock and private system/cache/log paths;
@@ -122,7 +124,13 @@ and post an `Owner question:` on the item. The Director restores activation
 through the normal product UI using existing entitlements.
 
 Hosts without eligible native prerequisites retain the qualified local Qodana
-Python default when available; other selections retain the API. Explicit Qodana options select Qodana. Choose with
+Python default when available. For implicit scopes in repositories with inspection
+lanes, headless selection follows the lane router and omits unmatched files
+(such as Markdown) and lane exclusions. Explicit `--scope files` preserves every
+requested file. Other selections stay UNKNOWN without desktop contact. Explicit
+Qodana options select Qodana. The API remains available with explicit
+`--backend api` for an intended API session; a Supervisor brief that prohibits
+desktop IDE use still prohibits that route. Choose with
 `--backend native|api|qodana` or `JB_INSPECT_DEFAULT_BACKEND`. Read
 [local Qodana](references/qodana-backend.md) before diagnosing or changing it.
 Never copy license or credential files into a Qodana profile either. Run one
