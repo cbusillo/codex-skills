@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import re
 import unittest
 from pathlib import Path
@@ -54,6 +55,20 @@ def replay(nodes: list[dict[str, Any]]) -> Mock:
     lookup = {row["number"]: row for row in nodes}
 
     def query(text: str, _variables: dict[str, Any], **_kwargs: Any) -> github_api.ApiResult:
+        if "WorkGraphTrackList" in text:
+            repo = f"{_variables['owner']}/{_variables['name']}"
+            rows = [copy.deepcopy(row) for row in nodes if row["repository"]["nameWithOwner"].casefold() == repo.casefold()]
+            return github_api.ApiResult(
+                ok=True,
+                status=200,
+                body={
+                    "data": {
+                        "repository": {
+                            "issues": {"nodes": rows, "totalCount": len(rows), "pageInfo": {"hasNextPage": False, "endCursor": None}}
+                        }
+                    }
+                },
+            )
         numbers = [int(value) for value in re.findall(r"issue\(number:(\d+)\)", text)]
         return github_api.ApiResult(
             ok=True,
@@ -97,6 +112,127 @@ def evaluate(row: dict[str, Any], *, limit: int = 100, read_comments: Any = unav
 
 
 class WorkGraphTests(unittest.TestCase):
+    def test_live_label_batches_empty_repositories_and_hydrates_only_minimal_refs(self) -> None:
+        repositories = [{"full_name": f"owner/repo{index}"} for index in range(23)]
+        reader = Mock()
+
+        def query(text: str, _variables: Any, **_kwargs: Any) -> github_api.ApiResult:
+            names = re.findall(r'name:"(repo\d+)"', text)
+            return github_api.ApiResult(
+                ok=True, status=200, body={"data": {f"r{index}": {"issues": connection([])} for index, _name in enumerate(names)}}
+            )
+
+        reader.graphql_json.side_effect = query
+        read = Mock(return_value=("fixture", repositories))
+        rows, coverage = graph.live_breakage_inventory(
+            read, owner="owner", installed=True, repo_limit=len(repositories), issue_limit=100, reader=reader
+        )
+        self.assertEqual(rows, [])
+        self.assertTrue(coverage["complete"])
+        self.assertEqual(len(coverage["repositories"]), len(repositories))
+        self.assertEqual(reader.graphql_json.call_count, math.ceil(len(repositories) / graph.TRACKS_PER_QUERY))
+        self.assertEqual(read.call_count, 1)
+
+    def test_live_label_pagination_keeps_alias_failures_isolated_and_detects_incomplete_pages(self) -> None:
+        raw = node(1)
+        reader = Mock()
+        reader.graphql_json.side_effect = [
+            github_api.ApiResult(
+                ok=True,
+                status=200,
+                body={
+                    "data": {"r0": {"issues": connection([raw], total=2)}, "r1": None},
+                    "errors": [{"path": ["r1"], "message": "Unavailable"}],
+                },
+            ),
+            github_api.ApiResult(
+                ok=True, status=200, body={"data": {"r0": {"issues": connection([{**node(2), "repository": raw["repository"]}])}}}
+            ),
+        ]
+        results = graph.read_live_breakage_batch(reader, ["owner/repo", "owner/unread"], 100)
+        self.assertFalse(results[0][1]["complete"])
+        self.assertTrue(results[0][1]["error"])
+        self.assertFalse(results[1][1]["complete"])
+        self.assertEqual(reader.graphql_json.call_count, 2)
+        self.assertNotIn("body", results[0][0][0])
+        for second, expected in (
+            (connection([raw], total=2), "identity"),
+            ({"nodes": [node(2)], "totalCount": 2, "pageInfo": {"hasNextPage": False, "endCursor": None}}, None),
+        ):
+            reader.graphql_json.side_effect = [
+                github_api.ApiResult(ok=True, status=200, body={"data": {"r0": {"issues": connection([raw], total=2)}}}),
+                github_api.ApiResult(ok=True, status=200, body={"data": {"r0": {"issues": second}}}),
+            ]
+            rows, coverage = graph.read_live_breakage_batch(reader, ["owner/repo"], 100)[0]
+            self.assertEqual(coverage["complete"], expected is None)
+            if expected is not None:
+                self.assertTrue(coverage["error"])
+            else:
+                self.assertEqual([row["number"] for row in rows], [1, 2])
+        reader.graphql_json.side_effect = None
+        reader.graphql_json.return_value = github_api.ApiResult(
+            ok=True, status=200, body={"data": {"r0": {"issues": connection([raw], total=2)}}}
+        )
+        self.assertFalse(graph.read_live_breakage_batch(reader, ["owner/repo"], 1)[0][1]["complete"])
+
+    def test_track_inventory_uses_shared_discovery_without_requiring_a_plan_label(self) -> None:
+        tracked = node(1)
+        tracked["title"] = "Track: First"
+        tracked["labels"] = connection([])
+        reader = replay([tracked, node(2)])
+        observed = graph.track_inventory(reader, unavailable, "owner/repo", limit=100)
+        self.assertEqual([row["number"] for row in observed.issues], [tracked["number"]])
+        self.assertTrue(observed.complete)
+        self.assertEqual(observed.seeds, {})
+        self.assertEqual(reader.graphql_json.call_count, 1)
+
+    def test_current_live_label_inventory_respects_scope_and_marks_unread_or_truncated_sources(self) -> None:
+        label = graph.github_direction_next.LIVE_BREAKAGE_LABEL
+        source = {
+            "number": 2,
+            "title": "Live recovery",
+            "state": "open",
+            "labels": [{"name": label}],
+            "html_url": "https://github.com/owner/live/issues/2",
+        }
+        repositories = [
+            {"full_name": "owner/live", "archived": False},
+            {"full_name": "owner/archive", "archived": True},
+            {"full_name": "other/project", "archived": False},
+        ]
+        calls = []
+        responses: list[dict[str, Any]] = [source]
+        failed = False
+
+        def read(path: str, **kwargs: Any) -> tuple[str, list[dict[str, Any]]]:
+            calls.append(path)
+            if path == "/installation/repositories":
+                return "fixture", repositories
+            if failed:
+                raise ValueError("Label inventory unavailable")
+            selected = [row for row in responses if kwargs["query"]["labels"] in {item["name"] for item in row["labels"]}]
+            return "fixture", selected
+
+        rows, coverage = graph.live_breakage_inventory(
+            read, owner="owner", installed=True, repo_limit=len(repositories), issue_limit=1
+        )
+        self.assertEqual(rows, [{**source, "repo": "owner/live"}])
+        self.assertTrue(coverage["complete"])
+        self.assertEqual(calls[1:], ["/repos/owner/live/issues"])
+        responses.append({**source, "number": 3, "html_url": "https://github.com/owner/live/issues/3"})
+        self.assertFalse(
+            graph.live_breakage_inventory(read, owner="owner", installed=True, repo_limit=len(repositories), issue_limit=1)[1][
+                "complete"
+            ]
+        )
+        failed = True
+        rows, coverage = graph.live_breakage_inventory(
+            read, owner="owner", installed=True, repo_limit=len(repositories), issue_limit=1
+        )
+        self.assertEqual(rows, [])
+        self.assertFalse(coverage["complete"])
+        self.assertTrue(coverage["repositories"][0]["error"])
+
     def test_invocation_cache_shares_equivalent_reads_without_sharing_mutable_bodies(self) -> None:
         fetch = Mock(return_value=[{"number": 1, "body": "Provider body"}])
         read = graph.cached_reads(fetch)

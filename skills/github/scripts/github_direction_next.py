@@ -1259,6 +1259,7 @@ def evaluate_direction_node(
 
 def incident_work_paths(
     roots: list[dict[str, Any]], *, read_node: Callable[[str, int], dict[str, Any]], scan_limit: int,
+    prefetch_nodes: Callable[[list[dict[str, Any]]], None] | None = None,
 ) -> dict[str, Any]:
     """Follow native incident prerequisites/children with a separate bounded allowance.
 
@@ -1275,6 +1276,10 @@ def incident_work_paths(
     truncated = False
     degraded = False
     while pending:
+        if prefetch_nodes is not None:
+            allowance = max(0, scan_limit - evaluated) + len(root_keys.difference(seen))
+            prefetch_nodes([ref for ref, _path in reversed(pending)
+                            if (ref["repo"].casefold(), ref["number"]) not in seen][:allowance])
         ref, path = pending.pop()
         key = (ref["repo"].casefold(), ref["number"])
         step = {"repo": ref["repo"], "number": ref["number"], "url": ref["url"]}
@@ -1527,7 +1532,7 @@ def milestone_summary(
     milestone_titles: list[str], *, completed: list[str], candidates: list[dict[str, Any]],
     graph_waits: list[dict[str, Any]], track_next_actions: dict[str, dict[str, Any]],
     underway: list[dict[str, Any]] | None = None, verification_only: list[dict[str, Any]] | None = None,
-    scope_review: list[dict[str, Any]] | None = None,
+    scope_review: list[dict[str, Any]] | None = None, graph_complete: bool = True,
 ) -> list[dict[str, Any]]:
     """Say, for each open listed milestone, what work it offers or who it waits on.
 
@@ -1566,7 +1571,7 @@ def milestone_summary(
         summary.append({
             "milestone": title,
             "track": track.get("track"),
-            "state": "work_listed" if work or any(not row.get("wait_review_required") for row in qualification) else "underway" if owned else "waiting" if waits else "wait_review_required" if reviews else "scope_review" if scoped else "no_linked_work",
+            "state": "work_listed" if work or any(not row.get("wait_review_required") for row in qualification) else "underway" if owned else "waiting" if waits else "wait_review_required" if reviews else "scope_review" if scoped else "no_linked_work" if graph_complete else "unknown",
             "work": work, "underway": owned, "verification_only": qualification, "scope_review": scoped, "wait_reviews": reviews,
             "waits": waits,
             # Named by the Track's Next action but not reached over native edges.

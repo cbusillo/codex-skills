@@ -186,18 +186,20 @@ def rest_comment(node: dict[str, Any]) -> dict[str, Any]:
         "updated_at": node["updatedAt"], "html_url": node["url"], "user": rest_author(node["author"])}
 
 
+def rest_milestone(milestone: dict[str, Any] | None) -> dict[str, Any] | None:
+    if milestone is None:
+        return None
+    return {
+        **milestone,
+        "state": milestone["state"].lower(),
+        "created_at": milestone["createdAt"],
+        "due_on": milestone["dueOn"],
+        "html_url": milestone["url"],
+    }
+
+
 def rest_issue(node: dict[str, Any]) -> dict[str, Any]:
-    # Keep the planner's single representation and selection implementation.
     deps, sub = node["issueDependenciesSummary"], node["subIssuesSummary"]
-    milestone = node["milestone"]
-    if milestone:
-        milestone = {
-            **milestone,
-            "state": milestone["state"].lower(),
-            "created_at": milestone["createdAt"],
-            "due_on": milestone["dueOn"],
-            "html_url": milestone["url"],
-        }
     return {
         "repo": node["repository"]["nameWithOwner"],
         "number": node["number"],
@@ -211,7 +213,7 @@ def rest_issue(node: dict[str, Any]) -> dict[str, Any]:
         "user": rest_author(node["author"]),
         "author_association": node["authorAssociation"],
         "labels": node["labels"],
-        "milestone": milestone,
+        "milestone": rest_milestone(node["milestone"]),
         "issue_dependencies_summary": {
             "blocked_by": deps["blockedBy"],
             "blocking": deps["blocking"],

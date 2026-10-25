@@ -17,6 +17,7 @@ import github_direction_next
 import github_next_reads
 import github_plan_graph
 import github_read
+import github_repository_scope
 from github_plan_graph import rest_author as graphql_author
 from github_plan_graph import rest_comment as graphql_comment
 from github_plan_graph import rest_related_issue as graphql_relationship
@@ -34,7 +35,7 @@ LIST_QUERY = """query WorkGraphTrackList($owner: String!, $name: String!, $curso
   repository(owner: $owner, name: $name) {
     issues(states: [OPEN], first: 100, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
       totalCount
-      nodes { number title }
+      nodes { number title url state milestone { number title state createdAt dueOn url } }
       pageInfo { hasNextPage endCursor }
     }
   }
@@ -97,7 +98,7 @@ def discover_tracks(reader: github_read.GitHubReader, owner: str, name: str, max
             if node["number"] not in seen:
                 seen.add(node["number"])
                 if str(node["title"]).startswith("Track:"):
-                    found.append({"number": node["number"], "title": node["title"]})
+                    found.append(node)
         if not issues["pageInfo"]["hasNextPage"]:
             if len(seen) != expected:
                 raise ValueError("open issue inventory incomplete")
@@ -139,6 +140,232 @@ def read_tracks(
 class BatchRead:
     rows: list[dict[str, Any]]
     unread: dict[tuple[str, int], Exception]
+
+
+@dataclass
+class TrackInventory:
+    actor: str | None
+    issues: list[dict[str, Any]]
+    seeds: dict[tuple[str, int], dict[str, Any]]
+    complete: bool
+
+
+def track_inventory(
+    reader: github_read.GitHubReader | None,
+    read: Callable[..., tuple[str, list[dict[str, Any]]]],
+    repo: str,
+    *,
+    limit: int,
+    milestone: int | None = None,
+) -> TrackInventory:
+    if reader is not None and milestone is None:
+        owner, name = repo.split("/", 1)
+        nodes = discover_tracks(reader, owner, name, (limit + 99) // 100)
+        refs = [
+            {
+                "repo": repo,
+                "number": node["number"],
+                "title": node["title"],
+                "html_url": node["url"],
+                "state": node["state"].lower(),
+                "milestone": github_plan_graph.rest_milestone(node.get("milestone")),
+            }
+            for node in nodes
+        ]
+        return TrackInventory(reader.actor, refs, {}, True)
+    query: dict[str, Any] = {"state": "open", "sort": "created", "direction": "asc"}
+    if milestone is not None:
+        query["milestone"] = milestone
+    actor, rows = read(
+        f"/repos/{repo}/issues", query=query, bucket="rest_core", step_prefix="next_plan_issues", limit=limit + 1, issue_only=True
+    )
+    issues = rows[:limit]
+    return TrackInventory(
+        actor, issues, {(repo.casefold(), row["number"]): {**row, "repo": repo} for row in issues}, len(rows) <= limit
+    )
+
+
+def repository_inventory(
+    read: Callable[..., tuple[str, list[dict[str, Any]]]],
+    *,
+    installed: bool,
+    limit: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    path = "/installation/repositories" if installed else "/user/repos"
+    _, rows = read(
+        path,
+        query={} if installed else {"affiliation": "owner,collaborator,organization_member"},
+        collection_key="repositories" if installed else None,
+        bucket="rest_core",
+        step_prefix="next_repository_inventory",
+        limit=limit + 1,
+    )
+    return rows[:limit], {
+        "source": path,
+        "repository_limit": limit,
+        "inventory_observed_count": len(rows),
+        "inventory_count": min(len(rows), limit),
+        "inventory_truncated": len(rows) > limit,
+        "complete": len(rows) <= limit,
+    }
+
+
+def live_breakage_inventory(
+    read: Callable[..., tuple[str, list[dict[str, Any]]]],
+    *,
+    owner: str,
+    installed: bool,
+    repo_limit: int,
+    issue_limit: int,
+    include_archived: bool = False,
+    map_reads: Callable[..., list[Any]] | None = None,
+    reader: github_read.GitHubReader | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    context: dict[str, Any] = {
+        "source": "current_owner_visible_label_inventory",
+        "complete": False,
+        "scope": "owner repositories accessible to the configured actor",
+        "repositories": [],
+    }
+    try:
+        repositories, inventory = repository_inventory(read, installed=installed, limit=repo_limit)
+    except ValueError as exc:
+        return [], {**context, "error": str(exc)}
+    context.update(complete=inventory["complete"], repository_inventory=inventory)
+    if inventory["inventory_truncated"]:
+        context.update(
+            error=f"Repository inventory reached --repo-limit {repo_limit}; "
+            f"at least {inventory['inventory_observed_count']} repositories were observed. Raise --repo-limit to establish live priority.",
+            recommended_next_action="increase_repo_limit",
+        )
+    eligible = []
+    for repository in repositories:
+        name = repository.get("full_name")
+        if not isinstance(name, str) or re.fullmatch(r"[\w.-]+/[\w.-]+", name) is None:
+            context["complete"] = False
+            continue
+        if (
+            name.split("/", 1)[0].casefold() == owner.casefold()
+            and github_repository_scope.includes_repository(repository, include_archived=include_archived)
+            and not repository.get("disabled")
+            and repository.get("has_issues") is not False
+        ):
+            eligible.append(repository)
+
+    def read_repository(repository: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        name = repository["full_name"]
+        try:
+            _, rows = read(
+                f"/repos/{name}/issues",
+                query={"state": "open", "labels": github_direction_next.LIVE_BREAKAGE_LABEL},
+                bucket="rest_core",
+                step_prefix="next_live_breakage_issues",
+                limit=issue_limit + 1,
+                issue_only=True,
+            )
+            seen = set()
+            for row in rows:
+                number = row.get("number")
+                if (
+                    type(number) is not int
+                    or number <= 0
+                    or number in seen
+                    or (issue_repository_name(row) or "").casefold() != name.casefold()
+                ):
+                    raise ValueError("live-breakage issue identity is incomplete")
+                seen.add(number)
+            return [{**row, "repo": name} for row in rows[:issue_limit]], {
+                "repo": name,
+                "count": min(len(rows), issue_limit),
+                "complete": len(rows) <= issue_limit,
+            }
+        except ValueError as exc:
+            return [], {"repo": name, "complete": False, "error": str(exc)}
+
+    if reader is None:
+        results = map_reads(read_repository, eligible) if map_reads is not None else [read_repository(row) for row in eligible]
+    else:
+        chunks = [eligible[start : start + TRACKS_PER_QUERY] for start in range(0, len(eligible), TRACKS_PER_QUERY)]
+
+        def read_chunk(chunk: list[dict[str, Any]]) -> list[tuple[list[dict[str, Any]], dict[str, Any]]]:
+            return read_live_breakage_batch(reader, [row["full_name"] for row in chunk], issue_limit)
+
+        batches = map_reads(read_chunk, chunks) if map_reads is not None else [read_chunk(chunk) for chunk in chunks]
+        results = [result for batch in batches for result in batch]
+    issues = []
+    for rows, coverage in results:
+        issues.extend(rows)
+        context["repositories"].append(coverage)
+        context["complete"] &= coverage["complete"]
+    context["count"] = len(issues)
+    return issues, context
+
+
+def read_live_breakage_batch(
+    reader: github_read.GitHubReader, repositories: list[str], limit: int
+) -> list[tuple[list[dict[str, Any]], dict[str, Any]]]:
+    rows: dict[str, dict[int, dict[str, Any]]] = {name: {} for name in repositories}
+    coverage: dict[str, dict[str, Any]] = {name: {"repo": name, "complete": False} for name in repositories}
+    cursors: dict[str, str | None] = dict.fromkeys(repositories)
+    totals: dict[str, int] = {}
+    seen_cursors: dict[str, set[str]] = {name: set() for name in repositories}
+    while cursors:
+        names = list(cursors)
+        selections = []
+        for index, name in enumerate(names):
+            owner, project = name.split("/", 1)
+            selections.append(
+                f"r{index}: repository(owner:{json.dumps(owner)}, name:{json.dumps(project)}) {{ "
+                f"issues(states:[OPEN], labels:[{json.dumps(github_direction_next.LIVE_BREAKAGE_LABEL)}], "
+                f"first:{min(100, limit - len(rows[name]))}, after:{json.dumps(cursors[name])}, "
+                "orderBy:{field:CREATED_AT,direction:ASC}) { totalCount "
+                "nodes { number title state url repository { nameWithOwner } } pageInfo { hasNextPage endCursor } } }"
+            )
+        result = reader.graphql_json("query { " + " ".join(selections) + " }", {}, step="work_graph_live_breakage")
+        if not result.ok:
+            raise github_read.GitHubReadError("Live-breakage batch unavailable", result=result, diagnostics=reader.diagnostics())
+        body = result.body
+        if not isinstance(body, dict) or not isinstance(body.get("data"), dict):
+            raise github_read.GitHubReadShapeError("Live-breakage batch data unavailable")
+        errors = body.get("errors") or []
+        for index, name in enumerate(names):
+            try:
+                if any(not isinstance(error, dict) or not error.get("path") or error["path"][0] == f"r{index}" for error in errors):
+                    raise github_read.GitHubReadShapeError("Live-breakage inventory returned partial data")
+                repository = body["data"].get(f"r{index}")
+                nodes, cursor, total = github_plan_graph.connection_page(
+                    repository.get("issues") if isinstance(repository, dict) else None
+                )
+                if name in totals and totals[name] != total:
+                    raise github_read.GitHubReadShapeError("Live-breakage inventory changed during pagination")
+                totals[name] = total
+                for node in nodes:
+                    row = github_plan_graph.rest_related_issue(node)
+                    number = row["number"]
+                    if (
+                        type(number) is not int
+                        or number <= 0
+                        or row["repo"].casefold() != name.casefold()
+                        or github_plan_graph.native_issue_key(row) != (name.casefold(), number)
+                        or row["state"] != "open"
+                        or number in rows[name]
+                        or len(rows[name]) >= limit
+                    ):
+                        raise github_read.GitHubReadShapeError("Live-breakage issue identity or page is incomplete")
+                    rows[name][number] = row
+                if cursor is not None:
+                    if cursor in seen_cursors[name]:
+                        raise github_read.GitHubReadShapeError("Live-breakage cursor did not advance")
+                    seen_cursors[name].add(cursor)
+                    if len(rows[name]) < limit:
+                        cursors[name] = cursor
+                        continue
+                coverage[name]["complete"] = cursor is None and len(rows[name]) == total
+                del cursors[name]
+            except (github_read.GitHubReadShapeError, KeyError, TypeError, ValueError, AttributeError) as exc:
+                coverage[name]["error"] = str(exc)
+                del cursors[name]
+    return [(list(rows[name].values()), {**coverage[name], "count": len(rows[name])}) for name in repositories]
 
 
 def read_issues(
