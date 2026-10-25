@@ -18,18 +18,14 @@ NO_TEST_MARKERS = (NOTHING_TO_TEST, LEGACY_NOTHING_TO_TEST)
 TEST_NOTE_TITLES = {"client test notes", "owner test notes"}
 HEADING = re.compile(r"^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
-INLINE_TEST_NOTES = re.compile(
-    r"(?i)^(?:client|owner) test(?: notes|ing)(?:\*\*|[_`])*\s*(?::(?:\*\*|[_`])*|\s*$)"
-)
+INLINE_TEST_NOTES = re.compile(r"(?i)^(?:client|owner) test(?: notes|ing)(?:\*\*|[_`])*\s*(?::(?:\*\*|[_`])*|\s*$)")
 ENGINEERING_RELEASE_TESTS = "Engineering: merge to testing; Client tests at release."
 OPEN_CLIENT_QUESTIONS = "Open questions for the Client"
 CLIENT_PLACEHOLDER_PREFIX = "[[NEEDS CLIENT:"
 # "Nothing for Justin to test." means the marker but would otherwise read as steps.
 # Only the declaration's shape, so "Nothing happens when you try to test checkout."
 # stays real steps.
-NEAR_MISS_NOTHING_TO_TEST = re.compile(
-    r"(?i)^nothing(?: (?:new|else|more|further|left))?(?: for [^\n.,:;!?]{1,40}?)? to test\b"
-)
+NEAR_MISS_NOTHING_TO_TEST = re.compile(r"(?i)^nothing(?: (?:new|else|more|further|left))?(?: for [^\n.,:;!?]{1,40}?)? to test\b")
 
 
 @dataclass(frozen=True)
@@ -47,12 +43,7 @@ def _markdown_lines(body: str) -> Iterator[tuple[str, re.Match[str] | None, str]
             marker, rest = fence_match[1], fence_match[2]
             if not fence and not (marker[0] == "`" and "`" in rest):
                 fence = marker
-            elif (
-                fence
-                and marker[0] == fence[0]
-                and len(marker) >= len(fence)
-                and not rest.strip()
-            ):
+            elif fence and marker[0] == fence[0] and len(marker) >= len(fence) and not rest.strip():
                 fence = ""
         heading = HEADING.match(line) if not fence else None
         yield line, heading, fence
@@ -88,10 +79,27 @@ def test_notes_sections(body: str) -> tuple[str, ...]:
 
 
 def owner_test_notes(body: str) -> str:
-    """Collect Client test notes sections, ignoring headings inside fenced examples."""
-    return "\n".join(
-        section for section in test_notes_sections(body) if section
-    ).strip()
+    lines: list[str] = []
+    collecting = False
+    level = 0
+    for line, heading, _fence in _markdown_lines(body):
+        if heading:
+            if heading[2].strip().casefold() in TEST_NOTE_TITLES:
+                collecting = True
+                level = len(heading[1])
+                continue
+            if _questions_heading(heading[2]):
+                collecting = True
+                level = min(level or len(heading[1]), len(heading[1]))
+            elif collecting and len(heading[1]) <= level:
+                collecting = False
+        if collecting:
+            lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _questions_heading(title: str) -> bool:
+    return title.strip(" *_`:").casefold() == OPEN_CLIENT_QUESTIONS.casefold()
 
 
 def client_test_notes(notes: str, *, review_override: bool = False) -> ClientTestNotes:
@@ -100,22 +108,16 @@ def client_test_notes(notes: str, *, review_override: bool = False) -> ClientTes
     if open_client_questions(notes):
         return ClientTestNotes(
             True,
-            "Answer the open Client questions before accepting this change.",
+            "Answer the open Client questions and remove their items before accepting this change.",
             review_override,
         )
     notes = "\n".join(
-        line
-        for line, heading, _fence in _markdown_lines(notes)
-        if not heading
-        or heading[2].strip().casefold() != OPEN_CLIENT_QUESTIONS.casefold()
+        line for line, heading, _fence in _markdown_lines(notes) if not heading or not _questions_heading(heading[2])
     ).strip()
     sections = re.split(r"(?m)^### #([0-9]+)[^\n]*\n", notes)
     if len(sections) > 1:
         member_notes = ([sections[0]] if sections[0].strip() else []) + sections[2::2]
-        members = tuple(
-            client_test_notes(section, review_override=review_override)
-            for section in member_notes
-        )
+        members = tuple(client_test_notes(section, review_override=review_override) for section in member_notes)
         return ClientTestNotes(
             any(member.review_required for member in members),
             next((member.error for member in members if member.error), ""),
@@ -123,10 +125,7 @@ def client_test_notes(notes: str, *, review_override: bool = False) -> ClientTes
         )
     value = notes
     placeholder = value.casefold().rstrip(" .!?:;")
-    if not value or any(
-        placeholder == marker or placeholder.startswith(marker + " -")
-        for marker in ("none", "n/a", "todo", "tbd")
-    ):
+    if not value or any(placeholder == marker or placeholder.startswith(marker + " -") for marker in ("none", "n/a", "todo", "tbd")):
         return ClientTestNotes(True, "Client test notes are missing.", review_override)
     first, _, steps = value.partition("\n")
     if first == ENGINEERING_RELEASE_TESTS:
@@ -139,11 +138,7 @@ def client_test_notes(notes: str, *, review_override: bool = False) -> ClientTes
             )
         return ClientTestNotes(review_override, explicit_override=review_override)
     marker = next(
-        (
-            candidate
-            for candidate in NO_TEST_MARKERS
-            if value.casefold().startswith(candidate.casefold())
-        ),
+        (candidate for candidate in NO_TEST_MARKERS if value.casefold().startswith(candidate.casefold())),
         "",
     )
     if marker:
@@ -161,14 +156,10 @@ def client_test_notes(notes: str, *, review_override: bool = False) -> ClientTes
                 review_override,
             )
         if review_override:
-            return ClientTestNotes(
-                True, "The Client review label requires real Client test notes.", True
-            )
+            return ClientTestNotes(True, "The Client review label requires real Client test notes.", True)
         return ClientTestNotes(False)
     undecorated = _strip_note_decoration(value)
-    if undecorated.casefold().startswith(
-        (NOTHING_TO_TEST.casefold(), LEGACY_NOTHING_TO_TEST.casefold())
-    ):
+    if undecorated.casefold().startswith((NOTHING_TO_TEST.casefold(), LEGACY_NOTHING_TO_TEST.casefold())):
         return ClientTestNotes(
             True,
             f"Write {NOTHING_TO_TEST}: <reason> as a plain notes line.",
@@ -189,7 +180,7 @@ def open_client_questions(notes: str) -> str:
     level = 0
     for line, heading, _fence in _markdown_lines(re.sub(r"<!--[\s\S]*?-->", "", notes)):
         if heading:
-            if heading[2].strip().casefold() == OPEN_CLIENT_QUESTIONS.casefold():
+            if _questions_heading(heading[2]):
                 collecting = True
                 level = len(heading[1])
                 continue
@@ -200,14 +191,12 @@ def open_client_questions(notes: str) -> str:
     return "\n".join(questions).strip()
 
 
-def body_client_test_notes(
-    body: str, *, review_override: bool = False
-) -> ClientTestNotes:
+def body_client_test_notes(body: str, *, review_override: bool = False) -> ClientTestNotes:
     """Every notes section and batch member keeps its own acceptance requirement."""
+    if open_client_questions(body):
+        return client_test_notes(owner_test_notes(body), review_override=review_override)
     members = tuple(
-        client_test_notes(section, review_override=review_override)
-        for section in test_notes_sections(body)
-        if section
+        client_test_notes(section, review_override=review_override) for section in test_notes_sections(body) if section
     ) or (client_test_notes("", review_override=review_override),)
     return ClientTestNotes(
         any(member.review_required for member in members),

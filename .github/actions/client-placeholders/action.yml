@@ -16,5 +16,8 @@ runs:
         SHIP_PATHS: ${{ inputs.paths }}
         REPOSITORY_ROOT: ${{ inputs.repository-root }}
       run: |
-        mapfile -t paths < <(printf '%s\n' "$SHIP_PATHS" | sed '/^[[:space:]]*$/d')
+        paths=()
+        while IFS= read -r path; do
+          [[ -z "$path" ]] || paths+=("$path")
+        done <<< "$SHIP_PATHS"
         uv run --no-project --python 3.12 "$GITHUB_ACTION_PATH/../../../skills/github/scripts/check_client_placeholders.py" --repo-root "$REPOSITORY_ROOT" "${paths[@]}"

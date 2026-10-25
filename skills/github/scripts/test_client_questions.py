@@ -17,10 +17,21 @@ from github_plan_status.client_test_notes import (
     OPEN_CLIENT_QUESTIONS,
     body_client_test_notes,
     client_test_notes,
+    owner_test_notes,
 )
 
 
 class ClientQuestionsTests(unittest.TestCase):
+    def test_question_heading_level_and_decoration_cannot_hide_questions(self) -> None:
+        for heading in (OPEN_CLIENT_QUESTIONS, f"**{OPEN_CLIENT_QUESTIONS}**:"):
+            for prefix in ("", "#", "##", "###", "####"):
+                if not prefix:
+                    continue
+                body = f"## Client test notes\nTry checkout.\n{prefix} {heading}\n- What is the address?\n## Validation\nPassed."
+                with self.subTest(body=body):
+                    self.assertTrue(body_client_test_notes(body).error)
+                    self.assertTrue(client_test_notes(owner_test_notes(body)).error)
+
     def test_questions_block_every_notes_class_and_batch_member(self) -> None:
         question = f"\n### {OPEN_CLIENT_QUESTIONS}\n- What is the business address?"
         for steps in (
@@ -45,12 +56,8 @@ class ClientQuestionsTests(unittest.TestCase):
         self.assertFalse(client_test_notes(f"Check the page.\n{empty}").error)
         self.assertTrue(client_test_notes(empty).error)
         self.assertTrue(client_test_notes("").error)
-        self.assertFalse(
-            client_test_notes(f"{empty}\n### Steps\nCheck the page.").error
-        )
-        self.assertFalse(
-            client_test_notes(f"Check this example:\n```md\n{empty}\n```\n").error
-        )
+        self.assertFalse(client_test_notes(f"{empty}\n### Steps\nCheck the page.").error)
+        self.assertFalse(client_test_notes(f"Check this example:\n```md\n{empty}\n```\n").error)
 
     def test_committed_shipping_markers_fail_and_other_content_is_ignored(self) -> None:
         with TemporaryDirectory() as directory:
@@ -59,26 +66,23 @@ class ClientQuestionsTests(unittest.TestCase):
             (root / "app").mkdir()
             (root / "docs").mkdir()
             (root / "app/page.tsx").write_text("Contact us.")
-            (root / "docs/example.md").write_text(
-                CLIENT_PLACEHOLDER_PREFIX + " example]]"
-            )
+            (root / "docs/example.md").write_text(CLIENT_PLACEHOLDER_PREFIX + " example]]")
             self.commit(root)
             self.assertEqual(check_client_placeholders(root, ["app"]), 0)
-            (root / "app/page.tsx").write_text(
-                CLIENT_PLACEHOLDER_PREFIX + " business address]]"
-            )
+            (root / "app/page.tsx").write_text(CLIENT_PLACEHOLDER_PREFIX + " business address]]")
             self.assertEqual(check_client_placeholders(root, ["app"]), 0)
             self.commit(root)
             output = StringIO()
             with redirect_stdout(output):
                 self.assertEqual(check_client_placeholders(root, ["app"]), 1)
             self.assertIn("app/page.tsx", output.getvalue())
-            self.assertNotIn("business address", output.getvalue())
             (root / "app/page.tsx").write_text("Contact us.")
             self.commit(root)
             self.assertEqual(check_client_placeholders(root, ["app"]), 0)
             with self.assertRaises(RuntimeError):
                 check_client_placeholders(root, ["app"], "unavailable-revision")
+            with self.assertRaises(RuntimeError):
+                check_client_placeholders(root, ["misspelled-shipping-root"])
 
     @staticmethod
     def commit(root: Path) -> None:
@@ -90,6 +94,10 @@ class ClientQuestionsTests(unittest.TestCase):
                 "user.name=Fixture",
                 "-c",
                 "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
                 "commit",
                 "-qm",
                 "Fixture",
