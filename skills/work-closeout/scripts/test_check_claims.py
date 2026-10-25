@@ -1109,7 +1109,7 @@ class ClaimCloseoutTests(unittest.TestCase):
             f"git grep -e '-Only {mention}'",
             f"rg -- '--pre' notes; echo '{mention}'",
             f"sort -- --compress-program; echo '{mention}'",
-            f"git config --get-regexp 'gh-plan.py' claim",
+            "git config --get-regexp 'gh-plan.py' claim",
             f"sed -n '/{mention}/{{p;}}' notes.txt",
             f"sed -n 's|[|]|e|p' notes.txt; echo '{mention}'",
             f"NOTE='{mention}' git status",
@@ -2270,7 +2270,7 @@ class ClaimCloseoutTests(unittest.TestCase):
                 },
             ):
                 rows.append({"payload": payload})
-        input_bytes = sum(len(text) for _, text, _ in helper.history.tool_inputs(rows))
+        input_bytes = sum(len(call.text) for call in helper.history.tool_details(rows))
         scanned = 0
 
         def meter(method: Callable[..., object]) -> Callable[..., object]:
@@ -2694,7 +2694,7 @@ class ClaimCloseoutTests(unittest.TestCase):
             (f"from pathlib import Path; Path('fixture').write_text('{claim}')", False),
             (f"from pathlib import Path; p=Path('fixture'); p.write_text('{claim}')", False),
             (f"source='old'; source=source.replace('old', '{claim}'); print(source)", False),
-            (f"print(' '.join(['gh-plan.py', 'claim', '5']))", False),
+            ("print(' '.join(['gh-plan.py', 'claim', '5']))", False),
             (f"import ast; ast.parse({claim!r})", False),
             (f"from subprocess import *; rows='{claim}'; print(rows)", False),
             (f"loader=__import__('os'); rows='{claim}'; print(rows)", False),

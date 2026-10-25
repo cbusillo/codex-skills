@@ -414,11 +414,6 @@ def tool_details(records: list[dict]) -> Iterator[ToolCall]:
                         yield ToolCall(str(block.get("id", "")), command, False, "bash", index)
 
 
-def tool_inputs(records: list[dict]) -> Iterator[tuple[str, str, bool]]:
-    for identifier, text, javascript, _, _ in tool_details(records):
-        yield identifier, text, javascript
-
-
 def denied_invocations(records: list[dict]) -> set[str]:
     denied = set()
     for row in records:
