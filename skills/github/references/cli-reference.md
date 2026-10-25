@@ -1158,7 +1158,7 @@ When the overall direction's Order admits the work, name the rule with
 comment records it as an `Admission:` line. For milestone work, cite its open
 Track in the Director's direction with `--admission-link`. The Director account
 comes from the same read-only configuration lookup as instruction sync,
-falling back to the issue owner when none is recorded. The helper follows
+falling back to the repository owner when none is recorded. The helper follows
 native parents and blocking issues using the graph reader's shared traversal.
 When no path reaches that Track, it adds and reads back a native
 `Track blocked-by issue` edge before publishing the claim. If a Track cannot
