@@ -2,7 +2,7 @@ name: Client placeholders
 description: Reject unresolved Client facts in committed shipping content
 inputs:
   paths:
-    description: Newline-separated Git pathspecs for content included in the product
+    description: Newline-separated committed file or directory paths for content included in the product
     required: true
   repository-root:
     description: Checked-out product repository

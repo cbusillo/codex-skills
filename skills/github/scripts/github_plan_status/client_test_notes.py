@@ -78,24 +78,30 @@ def test_notes_sections(body: str) -> tuple[str, ...]:
     return tuple(sections)
 
 
-def owner_test_notes(body: str) -> str:
-    lines: list[str] = []
-    collecting = False
-    level = 0
+def _client_review_lines(body: str) -> Iterator[tuple[str, bool]]:
+    notes_level = 0
+    questions_level = 0
     for line, heading, _fence in _markdown_lines(body):
+        questions_heading = False
         if heading:
+            level = len(heading[1])
             if heading[2].strip().casefold() in TEST_NOTE_TITLES:
-                collecting = True
-                level = len(heading[1])
+                notes_level = level
+                questions_level = 0
                 continue
-            if _questions_heading(heading[2]):
-                collecting = True
-                level = min(level or len(heading[1]), len(heading[1]))
-            elif collecting and len(heading[1]) <= level:
-                collecting = False
-        if collecting:
-            lines.append(line)
-    return "\n".join(lines).strip()
+            questions_heading = _questions_heading(heading[2])
+            if notes_level and level <= notes_level and not questions_heading:
+                notes_level = 0
+            if questions_level and level <= questions_level:
+                questions_level = 0
+            if questions_heading:
+                questions_level = max(level, notes_level)
+        if notes_level or questions_level:
+            yield line, bool(questions_level and not questions_heading)
+
+
+def owner_test_notes(body: str) -> str:
+    return "\n".join(line for line, _question in _client_review_lines(body)).strip()
 
 
 def _questions_heading(title: str) -> bool:
@@ -175,20 +181,8 @@ def client_test_notes(notes: str, *, review_override: bool = False) -> ClientTes
 
 
 def open_client_questions(notes: str) -> str:
-    questions: list[str] = []
-    collecting = False
-    level = 0
-    for line, heading, _fence in _markdown_lines(re.sub(r"<!--[\s\S]*?-->", "", notes)):
-        if heading:
-            if _questions_heading(heading[2]):
-                collecting = True
-                level = len(heading[1])
-                continue
-            if collecting and len(heading[1]) <= level:
-                collecting = False
-        if collecting:
-            questions.append(line)
-    return "\n".join(questions).strip()
+    visible = re.sub(r"<!--[\s\S]*?-->", "", notes)
+    return "\n".join(line for line, question in _client_review_lines(visible) if question).strip()
 
 
 def body_client_test_notes(body: str, *, review_override: bool = False) -> ClientTestNotes:

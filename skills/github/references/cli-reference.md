@@ -785,7 +785,7 @@ An empty subsection permits acceptance only when the test notes are otherwise va
 Use `[[NEEDS CLIENT: <fact to supply>]]` for unresolved facts in shipping content.
 The shared `.github/actions/client-placeholders` action checks committed product
 content in each Client repository's ordinary CI. Pin it to a reviewed catalog
-commit and pass newline-separated shipping `paths` (and `repository-root` for
+commit and pass newline-separated shipping file or directory `paths` (and `repository-root` for
 nested checkouts). Include every shipped source and asset root; docs and test
 examples need not be scanned. It fails on a remaining marker or an unreadable
 revision; resolving review questions never bypasses this check.

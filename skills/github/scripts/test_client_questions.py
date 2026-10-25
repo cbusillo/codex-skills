@@ -17,6 +17,7 @@ from github_plan_status.client_test_notes import (
     OPEN_CLIENT_QUESTIONS,
     body_client_test_notes,
     client_test_notes,
+    open_client_questions,
     owner_test_notes,
 )
 
@@ -24,13 +25,26 @@ from github_plan_status.client_test_notes import (
 class ClientQuestionsTests(unittest.TestCase):
     def test_question_heading_level_and_decoration_cannot_hide_questions(self) -> None:
         for heading in (OPEN_CLIENT_QUESTIONS, f"**{OPEN_CLIENT_QUESTIONS}**:"):
-            for prefix in ("", "#", "##", "###", "####"):
-                if not prefix:
-                    continue
+            for prefix in ("#", "##", "###", "####"):
                 body = f"## Client test notes\nTry checkout.\n{prefix} {heading}\n- What is the address?\n## Validation\nPassed."
                 with self.subTest(body=body):
                     self.assertTrue(body_client_test_notes(body).error)
                     self.assertTrue(client_test_notes(owner_test_notes(body)).error)
+
+    def test_question_boundaries_preserve_notes_and_exclude_unrelated_sections(self) -> None:
+        internal = "Internal evidence for engineers."
+        question = "- What is the address?"
+        for item in (question, ""):
+            for body in (
+                f"## Client test notes\nTry checkout.\n## Summary\n### {OPEN_CLIENT_QUESTIONS}\n{item}\n### Risk\n{internal}",
+                f"## Client test notes\nTry checkout.\n# {OPEN_CLIENT_QUESTIONS}\n{item}\n## Validation\n{internal}",
+            ):
+                with self.subTest(body=body):
+                    self.assertEqual(open_client_questions(body), item)
+                    self.assertNotIn(internal, owner_test_notes(body))
+                    self.assertEqual(bool(body_client_test_notes(body).error), bool(item))
+        body = "## Client test notes\n\nTry checkout.\n\n## Owner test notes\n\nTry sign in.\n\n## Validation\nInternal."
+        self.assertEqual(owner_test_notes(body), "Try checkout.\n\n\nTry sign in.")
 
     def test_questions_block_every_notes_class_and_batch_member(self) -> None:
         question = f"\n### {OPEN_CLIENT_QUESTIONS}\n- What is the business address?"
