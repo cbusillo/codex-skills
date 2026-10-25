@@ -50,6 +50,7 @@ require_automation_auth=0
 require_automation_auth_from_process=0
 reader_app=0
 main_app_only=0
+include_archived=0
 require_repository_installation=0
 stdout_file=$(mktemp)
 stderr_file=$(mktemp)
@@ -78,6 +79,10 @@ readonly own_user_opt_in
 
 while [ "$#" -gt 0 ]; do
 	case "${1:-}" in
+	--include-archived)
+		include_archived=1
+		shift
+		;;
 	--main-app-only)
 		main_app_only=1
 		require_automation_auth=1
@@ -116,6 +121,13 @@ while [ "$#" -gt 0 ]; do
 		;;
 	esac
 done
+
+if [ "$include_archived" -eq 1 ]; then
+	scoped_arguments=$(run_python "$script_dir/github_repository_scope.py" --include-archived "$@") || exit $?
+else
+	scoped_arguments=$(run_python "$script_dir/github_repository_scope.py" "$@") || exit $?
+fi
+eval "set -- $scoped_arguments"
 
 if [ "$check_auth" -eq 1 ] && [ "$#" -ne 0 ]; then
 	if [ -n "$write_actor_repository" ]; then
