@@ -32,6 +32,7 @@ from typing import Any, NoReturn, Optional
 import github_api as github_api_core
 import github_read
 import github_plan_graph
+import github_work_graph
 import github_plan_body
 from github_plan_body import (
     PLAN_ORIGINAL_START as PLAN_ORIGINAL_START,
@@ -1369,50 +1370,14 @@ def compact_issue(issue: dict[str, Any]) -> dict[str, Any]:
 
 
 def issue_repository_name(issue: dict[str, Any]) -> str | None:
-    repo = issue.get("repo")
-    if isinstance(repo, str) and re.fullmatch(r"[^/\s]+/[^/\s]+", repo):
-        return repo
-    repository = issue.get("repository")
-    if isinstance(repository, str) and re.fullmatch(r"[^/\s]+/[^/\s]+", repository):
-        return repository
-    if isinstance(repository, dict):
-        full_name = repository.get("full_name")
-        if isinstance(full_name, str) and re.fullmatch(r"[^/\s]+/[^/\s]+", full_name):
-            return full_name
-    for key in ("repository_url", "html_url", "url"):
-        value = issue.get(key)
-        if not isinstance(value, str):
-            continue
-        parts = [part for part in urllib.parse.urlparse(value).path.split("/") if part]
-        if len(parts) >= 3 and parts[0] == "repos":
-            candidate = f"{parts[1]}/{parts[2]}"
-            if re.fullmatch(r"[^/\s]+/[^/\s]+", candidate):
-                return candidate
-        if len(parts) >= 4 and parts[-2] == "issues":
-            candidate = f"{parts[-4]}/{parts[-3]}"
-            if re.fullmatch(r"[^/\s]+/[^/\s]+", candidate):
-                return candidate
-    return None
+    return github_work_graph.issue_repository_name(issue)
 
 
 def compact_relationship_issue(issue: dict[str, Any], relationship: str) -> dict[str, Any]:
-    repo = issue_repository_name(issue)
-    number = issue.get("number")
-    state = issue.get("state")
-    if repo is None:
-        raise PlanError(f"GitHub {relationship} response omitted the related issue repository")
-    if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
-        raise PlanError(f"GitHub {relationship} response omitted a valid related issue number")
-    if not isinstance(state, str) or state.casefold() not in {"open", "closed"}:
-        raise PlanError(f"GitHub {relationship} response returned an ambiguous related issue state")
-    title = issue.get("title")
-    return {
-        "repo": repo,
-        "number": number,
-        "title": title if isinstance(title, str) else None,
-        "state": state.casefold(),
-        "url": issue.get("html_url") or f"https://github.com/{repo}/issues/{number}",
-    }
+    try:
+        return github_work_graph.compact_relationship_issue(issue, relationship)
+    except ValueError as exc:
+        raise PlanError(str(exc)) from exc
 
 
 def read_handoff_history_child(event: dict[str, Any], source_repo: str) -> dict[str, Any]:
@@ -4155,53 +4120,21 @@ def next_focus_context(
 
 
 def read_next_issue_relationships(
-    issue_repo: str,
-    number: int,
-    issue: dict[str, Any] | None = None,
-    *,
-    limit: int = NEXT_RELATIONSHIP_LIMIT,
+    issue_repo: str, number: int, issue: dict[str, Any] | None = None, *, limit: int = NEXT_RELATIONSHIP_LIMIT,
 ) -> tuple[str, dict[str, list[dict[str, Any]]], list[str]]:
-    if issue is not None and "_graph_relationships" in issue:
-        graph = issue["_graph_relationships"]
-        return issue.get("_graph_actor", ""), {key: [compact_relationship_issue(row, key) for row in rows[:limit]]
-            for key, rows in graph.items()}, [key for key, rows in graph.items() if len(rows) > limit]
-    relationships: dict[str, list[dict[str, Any]]] = {}
-    truncated: list[str] = []
-    actor = ""
-    endpoints = [
-        ("blocked_by", f"/repos/{issue_repo}/issues/{number}/dependencies/blocked_by"),
-        ("blocking", f"/repos/{issue_repo}/issues/{number}/dependencies/blocking"),
-        ("sub_issues", f"/repos/{issue_repo}/issues/{number}/sub_issues"),
-    ]
-    for relationship, endpoint in endpoints:
-        summary_key, total_key = {
-            "blocked_by": ("issue_dependencies_summary", "total_blocked_by"),
-            "blocking": ("issue_dependencies_summary", "total_blocking"),
-            "sub_issues": ("sub_issues_summary", "total"),
-        }[relationship]
-        summary = (issue or {}).get(summary_key)
-        total = summary.get(total_key) if isinstance(summary, dict) else None
-        # Only native total zero proves there is no history to read. Open
-        # counts, missing fields and malformed values cannot prove emptiness.
-        if type(total) is int and total == 0:
-            relationships[relationship] = []
-            continue
-        page_actor, items = collect_paged_rest_items(
-            endpoint,
-            query={},
-            bucket="rest_core",
-            step_prefix=f"next_{relationship}",
-            limit=limit + 1,
-        )
+    actor = (issue or {}).get("_graph_actor", "")
+
+    def read(path: str, bound: int) -> tuple[list[dict[str, Any]], bool]:
+        nonlocal actor
+        page_actor, rows = collect_paged_rest_items(path, query={}, bucket="rest_core", step_prefix=f"next_{path.rsplit('/', 1)[-1]}", limit=bound + 1)
         actor = page_actor or actor
-        if len(items) > limit:
-            truncated.append(relationship)
-            items = items[:limit]
-        relationships[relationship] = [
-            compact_relationship_issue(item, relationship)
-            for item in items
-        ]
-    return actor, relationships, truncated
+        return rows[:bound], len(rows) > bound
+
+    try:
+        relations, truncated = github_work_graph.read_relationships(issue_repo, number, issue or {}, read, limit=limit)
+    except ValueError as exc:
+        raise PlanError(str(exc)) from exc
+    return actor, relations, truncated
 
 
 def read_next_inbound_blockers(repo: str, *, scan_limit: int) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:

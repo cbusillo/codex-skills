@@ -589,6 +589,7 @@ def test_next_relationship_reads_are_bounded_and_report_truncation() -> None:
 
     def fake_collect(path: str, *, limit: int, **_kwargs: Any) -> tuple[str, list[dict[str, Any]]]:
         observed_limits.append(limit)
+        assert path.rsplit("/", 1)[-1] in _kwargs["step_prefix"]
         if path.endswith("/blocked_by"):
             return "automation-gh", [related(number) for number in range(1, limit + 1)]
         return "automation-gh", []
