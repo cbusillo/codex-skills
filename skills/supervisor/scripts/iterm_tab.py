@@ -981,7 +981,8 @@ def prepare_codex_tools(command_text, choice, required=False, *, gui=False):
     else:
         warnings = ["Codex bundled plugins missing or disabled: " + ", ".join(missing)] if missing else []
     if must_work and warnings:
-        raise ValueError(warnings[0] + "; install/enable them through Codex before this tool launch")
+        raise ValueError(warnings[0] + f"; install/enable them through Codex in CODEX_HOME={shlex.quote(str(home))} "
+                         "before retrying this tool launch")
     choice["tools"] = {"warnings": warnings, "marketplace": market, "route": "local"}
     choice["env"][agent_tools.CODEX_SOURCE_ENV] = market["path"]
     override = "marketplaces.openai-bundled.source=" + json.dumps(market["path"])
@@ -1093,8 +1094,9 @@ def prepare_resume(args):
     session = args.resume_session_id
     if (args.account_provider != "openai" or not getattr(args, "ledger", None)
             or getattr(args, "command_file", None) or getattr(args, "brief_file", None)
+            or getattr(args, "require_computer_use", False)
             or getattr(args, "require_browser", False) or getattr(args, "without_browser", False)):
-        raise ValueError("resume needs --account-provider openai and --ledger, without launch/brief files or browser flags")
+        raise ValueError("resume needs --account-provider openai and --ledger, without launch/brief files or browser/Computer Use flags")
     with preparation_read():
         entries = [entry for entry in session_record.load_ledger(args.ledger) if entry["session_id"] == session]
     if len(entries) != 1 or entries[0].get("supervisor_owned") is not True or entries[0]["harness"] != "codex":
@@ -1181,6 +1183,28 @@ def prepare_launches(args: argparse.Namespace) -> tuple[list[str], list[dict | N
         raise error from None
 
 
+def validate_computer_use_launch(args: argparse.Namespace, commands: list[str], briefs: list[str]) -> None:
+    required = getattr(args, "require_computer_use", False)
+    if required and getattr(args, "account_provider", None) != "openai":
+        raise ValueError("--require-computer-use needs --account-provider openai")
+    if getattr(args, "account_provider", None) != "openai":
+        return
+    for command, brief in zip(commands, briefs):
+        if not required:
+            task = " ".join(brief.split()).replace(" ".join(brief_rules_block().split()), "")
+            if re.search(r"\bcomputer[\s-]+use\b", task, re.IGNORECASE):
+                raise ValueError("Computer Use brief needs iterm_tab.py new --require-computer-use "
+                                 "--account-provider openai; remove --remote from the run file; "
+                                 "the launcher checks computer-use in the selected CODEX_HOME")
+            continue
+        words = launch_words(command)
+        if Path(words[0]).name != "codex" or "--" in words:
+            raise ValueError("--require-computer-use needs a direct local Codex invocation without a prompt")
+        if any(word == "--remote" or word.startswith("--remote=") for word in words):
+            raise ValueError("Computer Use needs local Codex; remove --remote from the run file "
+                             "and use iterm_tab.py new --require-computer-use --account-provider openai")
+
+
 def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict | None]]:
     """Validate the full batch and prepare accounts before creating terminals."""
     if getattr(args, "resume_session_id", None):
@@ -1210,6 +1234,7 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
             raise ValueError("brief must be nonempty")
         validate_text(brief, allow_tabs=True)
         validate_brief_rules(brief)
+    validate_computer_use_launch(args, command_texts, briefs)
     apps = [gui_launch.declared_app(brief) for brief in briefs]
     if any(apps):
         if len(files) != 1 or getattr(args, "account_provider", None) != "openai":
@@ -1244,7 +1269,8 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         for text, choice in zip(command_texts, choices):
             check_claude_tools(text, choice, getattr(args, "without_browser", False), probes,
                                getattr(args, "require_browser", False))
-        command_texts = [prepare_codex_tools(text, choice, getattr(args, "require_browser", False), gui=bool(apps[index]))
+        command_texts = [prepare_codex_tools(text, choice, getattr(args, "require_browser", False),
+                                            gui=bool(apps[index]) or getattr(args, "require_computer_use", False))
                          for index, (text, choice) in enumerate(zip(command_texts, choices))]
         claude_trust.apply(trust_writes)
         if apps[0]:
@@ -1671,6 +1697,8 @@ def main():
                      help="launch Claude without the connected-browser check, for briefs that need no browser")
     new.add_argument("--require-browser", action="store_true",
                      help="require a working browser route before launching a browser brief")
+    new.add_argument("--require-computer-use", action="store_true",
+                     help="require local Codex and its enabled computer-use plugin in the selected account home")
     new.add_argument("--account", help="use this configured account by name")
     new.add_argument("--account-config", type=Path)
     for name in ("send", "read", "clear"):
