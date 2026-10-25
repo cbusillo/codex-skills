@@ -4696,6 +4696,13 @@ def _status_for_http_error(code: int, provider_payload: dict[str, object]) -> st
 
 def http_error_recommendation(status: str) -> str:
     recommendations = {
+        "merge_train_target_not_ready": (
+            "Plan the standard ruleset pair with gh-rulesets.py plan --repo OWNER/REPO, "
+            "then apply it with gh-rulesets.py apply --repo OWNER/REPO under existing approval. "
+            "Use gh-rulesets.py checks-plan --repo OWNER/REPO to require the CI checks, "
+            "and create the active policy's enqueue label. Propose enrollment again once "
+            "the required checks and label exist."
+        ),
         "unauthorized": "Credential was not accepted; check the operator token source before retrying.",
         "denied": (
             "Credential was accepted but this action was denied; this is an authority-scope "
@@ -5002,6 +5009,8 @@ def summarize_http_error(
         "recommendation": http_error_recommendation(status),
     }
     error_code = summary["error_code"]
+    if exc.code == 422 and error_code == "merge_train_target_not_ready":
+        summary["recommendation"] = http_error_recommendation(error_code)
     if (
         request.get("setup_operation") == "create-application"
         and isinstance(error_code, str)
