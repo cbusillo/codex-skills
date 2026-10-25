@@ -105,10 +105,15 @@ changes on yes.
 - For a wait the Director asked for, do not invent a deadline or treat silence
   as approval. Continue independent authorized work. "Don't land yet" holds
   merging, not preparation or validation.
-- A wait on the Director is asked only by a `Director question:` on the same
-  issue, or one whose link is in the wait's `--evidence`. A wait record or a
-  plain comment alone never reaches the Director; the Supervisor raises an
-  unlinked wait at its next check.
+- A wait on the Director is asked only by a numbered `Director question:`
+  whose link is in the wait's `--evidence` and that is registered in the
+  question queue below. `gh-plan.py wait`, `create --waiting-for` and
+  `gh-pr.py ready` refuse an unasked one and name the fix
+  ([wait records](../github/references/cli-reference.md#planning-claim)). A
+  hold the Director set or agreed to links the Director's own comment or its
+  `Director decision:` record instead; record a decision made in chat that way
+  first. A wait record or a plain comment alone never reaches the Director; the
+  Supervisor raises an unlinked wait at its next check.
 - When your own question proposes a different method or scope, everything that
   depends on the answer waits, including closing the issue. Continue only
   independent work.

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["PyYAML==6.0.3"]
 # ///
 """Ready comments round-trip through the watcher and never hide red CI."""
 
@@ -55,6 +55,7 @@ class Reader:
         self.issues: dict[int, dict[str, Any]] = {}
         self.sub_issues: dict[int, list[dict[str, Any]]] = {}
         self.closing: list[int] = []
+        self.issue_comments: dict[int, dict[str, Any]] = {}
 
     def get_json(self, path, **_kwargs):
         if path.endswith("/pulls/1"):
@@ -66,6 +67,8 @@ class Reader:
             if self.config is None:
                 raise GitHubReadError("Not Found", result=ApiResult(ok=False, status=404, body=None), diagnostics={})
             return {"content": base64.b64encode(json.dumps(self.config).encode()).decode()}
+        if path.startswith(f"/repos/{REPO}/issues/comments/"):
+            return copy.deepcopy(self.issue_comments[int(path.rsplit("/", 1)[1])])
         if path.startswith(f"/repos/{REPO}/issues/"):
             number = int(path.rsplit("/", 1)[1])
             if number not in self.issues:
@@ -819,6 +822,45 @@ class ReadyTests(unittest.TestCase):
         self.reader.issues[7]["user"] = {"login": "example"}
         self.reader.issues[7]["body"] = helper.github_plan_wait.marker(record)
         self.post()
+
+    def test_director_decision_wait_needs_its_question_before_ready(self):
+        self.link_open_issue()
+        self.reader.issues[7]["user"] = {"login": "example"}
+        question = {"id": 55, "user": {"login": "example"}, "body": "Director question: Q812. Approve the live install?"}
+        self.reader.issue_comments[55] = question
+        for evidence, refused in (("Recorded in the session", True),
+                                  (f"https://github.com/{REPO}/issues/7#issuecomment-55", False)):
+            with self.subTest(evidence=evidence):
+                record = helper.github_plan_wait.reviewed(evidence=evidence, waiting_for="Director approves the live install",
+                                                          ends_when="Director replies")
+                self.reader.issues[7]["body"] = helper.github_plan_wait.marker(record)
+                with patch.object(helper.director_question_gate, "configured_queue", return_value=None):
+                    if refused:
+                        self.assertIn("Director question:", self.refuse())
+                    else:
+                        self.post()
+
+    def test_cancelled_question_read_stops_ready_instead_of_refusing(self):
+        self.link_open_issue()
+        self.reader.issues[7]["user"] = {"login": "example"}
+        record = helper.github_plan_wait.reviewed(evidence=f"https://github.com/{REPO}/issues/7#issuecomment-55",
+                                                  waiting_for="Director approves the live install", ends_when="Director replies")
+        self.reader.issues[7]["body"] = helper.github_plan_wait.marker(record)
+        failure = helper.github_api_core.FailureDetail(cause="cancelled", message="cancelled", retryable=False,
+                                                       fallback_eligible=False, disposition="stop")
+        cancelled = GitHubReadError("cancelled", result=ApiResult(ok=False, status=0, body=None, failure=failure), diagnostics={})
+        read = self.reader.get_json
+
+        def cancel_comment_reads(path, **kwargs):
+            if "/issues/comments/" in path:
+                raise cancelled
+            return read(path, **kwargs)
+
+        with patch.object(self.reader, "get_json", side_effect=cancel_comment_reads), \
+                patch.object(helper.director_question_gate, "configured_queue", return_value=None):
+            message = self.refuse()
+        self.assertIn("unavailable", message)
+        self.assertNotIn("Director question:", message)
 
     def test_closed_issues_pull_requests_and_other_owners_need_no_follow_up(self):
         self.reader.pr["body"] = "Refs #7, #8 and other/tool#9"

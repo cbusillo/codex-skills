@@ -337,6 +337,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                       and not answered(c, decisions)}
     open_questions |= {url for url, row in deliveries.items()
                        if row.get("registration_url") and row.get("status") != "unread_source"}
+    decision_urls = {c.get("html_url") for c in decisions}
     director_terms = ["Director", *sorted(owners), *director_names]
     receiver_terms = ("Supervisor", "Director", "Owner", *owners, *director_names)
 
@@ -437,7 +438,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                            and github_plan_wait.records(s.get("body") or "")), item)
             since = None if source is item else source.get("updated_at") or source.get("created_at")
             linked = (any(c.get("html_url") in open_questions for c in current)
-                      or bool(set(COMMENT_LINK.findall(json.dumps(wait))) & open_questions))
+                      or bool(set(COMMENT_LINK.findall(json.dumps(wait))) & (open_questions | decision_urls)))
             if director and not linked and not (director_spoke and all(kinds[t] == "director_hold" for t in director)):
                 add("unasked_director_wait", record, source.get("html_url") or url, since,
                     "Supervisor asks the Director",
