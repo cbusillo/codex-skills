@@ -376,6 +376,66 @@ class NativeTests(unittest.TestCase):
         for line in ("Running local inspections on /project/trial.py", "Inspecting trial-balance.xml", "building package license-required-helper"):
             self.assertFalse(native.license_boundary(line), line)
 
+    def test_changed_lines_cover_branch_commits_working_edits_and_new_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+
+            def git(*argv):
+                subprocess.run(["git", "-C", str(repo), *argv], check=True, capture_output=True)
+
+            git("init", "-q", "-b", "main")
+            git("config", "user.email", "fixture@example.invalid")
+            git("config", "user.name", "Fixture")
+            for name in ("edited.py", "committed.py", "untouched.py", "spaced name.py", "trimmed.py", "header.py", 'quote"d.py'):
+                (repo / name).write_text("one\ntwo\nthree\n")
+            git("add", ".")
+            git("commit", "-q", "-m", "base")
+            git("update-ref", "refs/remotes/origin/main", "HEAD")
+            git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+            git("switch", "-q", "-c", "work")
+            (repo / "committed.py").write_text("one\nTWO\nthree\nfour\n")
+            (repo / "staged.py").write_text("new\n")
+            git("add", ".")
+            git("commit", "-q", "-m", "change")
+            (repo / "edited.py").write_text("one\ntwo\nTHREE\n")
+            (repo / "untracked.py").write_text("new\n")
+            (repo / "spaced name.py").write_text("ONE\ntwo\nthree\n")
+            (repo / "trimmed.py").write_text("one\nthree\n")
+            (repo / "header.py").write_text("one\n++ b/untouched.py\ntwo\nthree\nFOUR\n")
+            (repo / 'quote"d.py').write_text("one\ntwo\nTHREE\n")
+            selected = {"edited.py", "committed.py", "untouched.py", "staged.py", "untracked.py",
+                        "spaced name.py", "trimmed.py", "header.py", 'quote"d.py'}
+            expected = {"edited.py": {3}, "committed.py": {2, 4}, "staged.py": None, "untracked.py": None,
+                        "spaced name.py": {1}, "trimmed.py": set(), "header.py": {2, 5}, 'quote"d.py': None}
+
+            for setting in ("diff.mnemonicPrefix", "diff.noprefix"):
+                git("config", setting, "true")
+                self.assertEqual(native.changed_line_map(repo, selected), expected, setting)
+                git("config", "--unset", setting)
+            findings = [{"file": file, "line": line} for file, line in
+                        (("edited.py", 3), ("edited.py", 1), ("untouched.py", 2), ("untracked.py", 1), ("trimmed.py", 1))]
+            receipt = {}
+            native.attribute_to_change(receipt, findings, repo, "changed_files", selected)
+            self.assertEqual(([finding["introduced"] for finding in findings], receipt["changed_lines"]),
+                             ([True, False, False, True, False], "computed"))
+            native.attribute_to_change(receipt := {}, findings, repo, "whole_project", selected)
+            self.assertEqual(receipt, {})
+            git("symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+            self.assertIsNone(native.changed_line_map(repo, selected))
+            native.attribute_to_change(receipt, findings, repo, "files", selected)
+            self.assertEqual(({finding["introduced"] for finding in findings}, receipt["changed_lines"]), ({None}, "unavailable"))
+
+    def test_verdict_counts_only_findings_on_changed_lines(self) -> None:
+        receipt = native.new_receipt(host) | {"scope": "files", "selected_file_count": 1}
+        old = {"file": "a.py", "line": 1, "rule_id": "Old", "severity": "WARNING", "message": "", "introduced": False}
+        new = {"file": "a.py", "line": 2, "rule_id": "New", "severity": "WARNING", "message": "", "introduced": True}
+        clean = native.envelope(host, receipt, [old], "native_completed", [])
+        self.assertEqual((clean["agent_result"]["verdict"], clean["finding_count"], clean["preexisting_finding_count"]), ("GREEN", 0, 1))
+        red = native.envelope(host, receipt, [old, new], "native_completed", [])
+        self.assertEqual((red["agent_result"]["verdict"], red["finding_count"], red["findings"]), ("RED", 1, [new]))
+        unattributed = native.envelope(host, receipt, [{**old, "introduced": None}], "native_completed", [])
+        self.assertEqual(unattributed["agent_result"]["verdict"], "RED")
+
 
 class NativeLifecycleTests(unittest.TestCase):
     def setUp(self):
