@@ -62,20 +62,6 @@
       "scopePreference": "changed_files",
       "lanes": [
         {
-          "id": "jvm",
-          "ide": "IntelliJ IDEA",
-          "required": true,
-          "include": [
-            "**/*.kt",
-            "**/*.java",
-            "**/*.gradle",
-            "**/*.gradle.kts"
-          ],
-          "exclude": [
-            "test-fixtures/inspection-red-lane-*/**"
-          ]
-        },
-        {
           "id": "python",
           "ide": "PyCharm",
           "required": true,

@@ -5,7 +5,7 @@ preparation receipts, or preparation override flags.
 
 For the macOS native backend's independently activated worker, host configuration,
 snapshot preparation and recovery, read [native PyCharm](native-backend.md).
-`jetbrains.nativeWorker` belongs in the shared helper config, not repository
+`jetbrains.nativeWorkers` belongs in the shared helper config, not repository
 metadata or a desktop IDE profile. The API lane/lifecycle behavior below remains
 an explicit API-session route for other supported language models.
 

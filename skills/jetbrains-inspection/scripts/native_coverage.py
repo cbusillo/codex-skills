@@ -33,6 +33,9 @@ UNIVERSAL_TOOLS = frozenset({
     "IncorrectFormatting", "ProblematicWhitespace", "TodoComment",
 })
 
+NATIVE_PROVEN_SUFFIXES = frozenset({".py", ".xml", ".yaml", ".yml"})
+UNPROVEN_LANGUAGES = frozenset({"css", "scss", "sass", "less", "javascript", "typescript", "html", "json", "sql", "java", "kotlin"})
+
 
 def migrate_expected(requested: Iterable[str], registered: Iterable[str]) -> tuple[set[str], dict[str, list[str]]]:
     expected, registered = set(requested), set(registered)
@@ -63,10 +66,8 @@ def applicable_files(tool: str, selected: set[str], language: str | None = None,
         return set()
     # These established profile families can be absent from PyCharm's registry;
     # their applicability does not depend on registration succeeding.
-    if tool.startswith("Css") or tool == "Eslint":
-        return set()
-    if language in {"css", "scss", "sass", "less", "javascript", "typescript", "html", "json", "sql", "java", "kotlin"}:
-        return set()
+    if tool.startswith("Css") or tool == "Eslint" or language in UNPROVEN_LANGUAGES:
+        return set() if all(Path(path).suffix.casefold() in NATIVE_PROVEN_SUFFIXES for path in selected) else None
     return None
 
 

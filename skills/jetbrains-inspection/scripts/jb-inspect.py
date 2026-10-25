@@ -382,6 +382,11 @@ class IdeProduct:
     app_names: tuple[str, ...]
     aliases: tuple[str, ...]
     launcher_names: tuple[str, ...]
+    env_var_base_name: str
+
+    @property
+    def vm_options_name(self) -> str:
+        return f"{self.launcher_names[0]}.vmoptions"
 
 
 @dataclass(frozen=True)
@@ -457,6 +462,7 @@ IDE_PRODUCTS = {
         app_names=("IntelliJ IDEA",),
         aliases=("intellijidea", "intellij", "idea", "iu", "ic"),
         launcher_names=("idea",),
+        env_var_base_name="IDEA",
     ),
     "pycharm": IdeProduct(
         key="pycharm",
@@ -466,6 +472,7 @@ IDE_PRODUCTS = {
         app_names=("PyCharm", "PyCharm CE"),
         aliases=("pycharm", "pycharmce", "py", "pc"),
         launcher_names=("pycharm",),
+        env_var_base_name="PYCHARM",
     ),
     "webstorm": IdeProduct(
         key="webstorm",
@@ -475,6 +482,7 @@ IDE_PRODUCTS = {
         app_names=("WebStorm",),
         aliases=("webstorm", "ws"),
         launcher_names=("webstorm",),
+        env_var_base_name="WEBIDE",
     ),
 }
 ALL_IDE_LAUNCHER_NAMES = tuple(name for product in IDE_PRODUCTS.values() for name in product.launcher_names)
@@ -556,7 +564,7 @@ def main() -> int:
                         "Automatic inspection has no isolated backend for this selection; the desktop API was not contacted.",
                         2,
                         {"error_reason": "isolated_backend_unavailable", "backend_selection": backend_selection,
-                         "hint": "Configure the isolated native PyCharm worker on macOS (jetbrains.nativeWorker in the shared helper config; "
+                         "hint": "Configure the isolated native PyCharm worker on macOS (jetbrains.nativeWorkers.pycharm in the shared helper config; "
                                  "see references/native-backend.md) and select files it supports. Keep unsupported coverage UNKNOWN. "
                                  "API commands (inspect, inspect-closeout, or --backend api) require an intended API session; never use them when the task prohibits desktop IDE use."},
                     )

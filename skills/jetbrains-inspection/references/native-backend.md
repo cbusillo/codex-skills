@@ -23,15 +23,22 @@ Configure the **helper's** shared JSON config at
 {
   "jetbrains": {
     "trustedAutoOpenRoots": ["/absolute/trusted/source/root"],
-    "nativeWorker": {
-      "path": "/absolute/independently-activated/worker",
-      "app": "/absolute/PyCharm.app",
-      "cacheRoot": "/absolute/existing/host-caches/native-inspection",
-      "frameworkRoots": ["/absolute/pinned-odoo-framework"]
+    "nativeWorkers": {
+      "pycharm": {
+        "path": "/absolute/independently-activated/worker",
+        "app": "/absolute/PyCharm.app",
+        "cacheRoot": "/absolute/existing/host-caches/native-inspection",
+        "frameworkRoots": ["/absolute/pinned-odoo-framework"]
+      }
     }
   }
 }
 ```
+
+`nativeWorkers` holds one entry per product (`pycharm`, `intellij`, `webstorm`);
+each worker's `app` must be that product's distribution. Only `pycharm` runs
+today. The older single `nativeWorker` object is still read as the `pycharm`
+entry; configure one or the other, not both.
 
 The standard `JETBRAINS_INSPECTION_GLOBAL_CONFIG` override selects a helper
 config. `--native-worker` (or `JETBRAINS_INSPECTION_NATIVE_WORKER`), `--ide-app`
