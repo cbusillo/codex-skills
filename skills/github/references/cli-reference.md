@@ -995,15 +995,16 @@ condition, not authority to close protected work or perform the triggered action
 
 #### Product release event waits
 
-`wait` and `create` accept `--release-product PRODUCT` and
+`wait` and `create` accept `--release-product PRODUCT`,
+`--release-commit FULL_SOURCE_SHA` and
 `--release-next-action "Next agent: verify the repaired flow in production"`
 alongside `--waiting-for` and `--ends-when`. The pointer binds the first wait;
-other waits retain their own ending conditions. `--release-after` accepts a
-timezone-aware boundary and defaults to the writer's current time. Launchplane
-resolves only matching product waits after a successful production release
-finishes later than that boundary. Failed releases, rollbacks and older releases
-do not resolve them. Completion evidence and the next agent action are recorded;
-resolution alone does not close an issue or claim its production verification.
+other waits retain their own ending conditions. Launchplane resolves only
+matching product waits after a successful production release includes that
+source commit. A release already underway without the fix cannot resolve it.
+Failed releases and rollbacks do not resolve it. Completion evidence and the
+next agent action are recorded; resolution alone does not close an issue or
+claim its production verification.
 
 ### Planning: Claim
 

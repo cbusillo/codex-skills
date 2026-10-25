@@ -3777,6 +3777,8 @@ def cmd_wait(args: argparse.Namespace) -> None:
 
 def wait_summary(wait: dict[str, Any]) -> str:
     lines = [f"Waiting for {entry['waiting_for']}. This ends when {entry['ends_when']}." for entry in wait["waits"]]
+    lines.extend(f"Release event: {entry['release']['product']} includes {entry['release']['source_commit']}. "
+                 f"{entry['release']['next_action']}" for entry in wait["waits"] if "release" in entry)
     summary = "\n\n".join(lines) or "Nothing here is waiting on a person or event."
     if mentions := github_comment_core.live_mentions(summary):
         raise PlanError(f"A wait record must not notify the people it names ({', '.join(mentions)}); "
@@ -3784,19 +3786,12 @@ def wait_summary(wait: dict[str, Any]) -> str:
     return summary
 
 
-def release_after(args: argparse.Namespace) -> str | None:
-    boundary = getattr(args, "release_after", None)
-    if boundary is None and getattr(args, "release_product", None):
-        return datetime.now(timezone.utc).isoformat()
-    return boundary
-
-
 def reviewed_wait(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     try:
         wait = github_plan_wait.reviewed(evidence=args.evidence or "", waiting_for=args.waiting_for,
                                         ends_when=args.ends_when,
                                         release_product=getattr(args, "release_product", None),
-                                        release_after=release_after(args),
+                                        release_commit=getattr(args, "release_commit", None),
                                         release_next_action=getattr(args, "release_next_action", None))
     except ValueError as exc:
         raise PlanError(str(exc)) from exc
@@ -3833,7 +3828,7 @@ def wait_once(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     if args.all:
         if (args.issue or args.clear or args.waiting_for or args.ends_when or args.evidence
-                or any(getattr(args, field, None) for field in ("release_product", "release_after", "release_next_action"))):
+                or any(getattr(args, field, None) for field in ("release_product", "release_commit", "release_next_action"))):
             raise PlanError("--all is a read-only inventory; choose a single issue to record a review")
         _, issues = collect_paged_rest_items(f"/repos/{repo}/issues", query={"state": "open"},
                                             bucket="rest_core", step_prefix="wait_inventory")
@@ -3864,7 +3859,7 @@ def wait_once(args: argparse.Namespace) -> None:
     current = issue["claim_wait"]
     if recorded is None:
         if (args.ends_when or args.evidence or any(getattr(args, field, None)
-                for field in ("release_product", "release_after", "release_next_action"))):
+                for field in ("release_product", "release_commit", "release_next_action"))):
             raise PlanError("Choose --clear or --waiting-for with --ends-when and --evidence")
         emit({"ok": True, "review_required": current["state"] == "review", "structured_wait": current,
               "issue": compact_issue(issue), "review_evidence": {
@@ -3918,12 +3913,12 @@ def cmd_create(args: argparse.Namespace) -> None:
             wait = github_plan_wait.reviewed(evidence=args.wait_evidence or "",
                                              waiting_for=args.waiting_for, ends_when=args.ends_when,
                                              release_product=getattr(args, "release_product", None),
-                                             release_after=release_after(args),
+                                             release_commit=getattr(args, "release_commit", None),
                                              release_next_action=getattr(args, "release_next_action", None))
         except ValueError as exc:
             raise PlanError(str(exc)) from exc
     elif (getattr(args, "ends_when", None) or getattr(args, "wait_evidence", None)
-          or any(getattr(args, field, None) for field in ("release_product", "release_after", "release_next_action"))):
+          or any(getattr(args, field, None) for field in ("release_product", "release_commit", "release_next_action"))):
         raise PlanError("Choose --wait-clear or --waiting-for with --ends-when and --wait-evidence")
     if wait is not None:
         require_asked_director_wait(repo, wait, creating=True)
@@ -7179,7 +7174,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ends-when", action="append", help="Observable ending condition; repeat in the same order as --waiting-for")
     p.add_argument("--evidence", help="Existing decision or full-record review evidence; grants no authority")
     p.add_argument("--release-product", help="Bind the first wait to this Launchplane product's next successful production release")
-    p.add_argument("--release-after", help="Release must finish after this timezone-aware timestamp; defaults to now")
+    p.add_argument("--release-commit", help="Full product source commit that production must include before resolving this wait")
     p.add_argument("--release-next-action", help="Concrete next agent action after that release")
     p.set_defaults(func=cmd_wait)
 
@@ -7203,7 +7198,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ends-when", action="append", help="Ending condition for each wait, in order")
     p.add_argument("--wait-evidence", help="Existing decision or full-record review evidence")
     p.add_argument("--release-product", help="Bind the first wait to this Launchplane product's next successful production release")
-    p.add_argument("--release-after", help="Release must finish after this timezone-aware timestamp; defaults to now")
+    p.add_argument("--release-commit", help="Full product source commit that production must include before resolving this wait")
     p.add_argument("--release-next-action", help="Concrete next agent action after that release")
     p.set_defaults(func=cmd_create)
 

@@ -34,30 +34,31 @@ class WaitRecordTests(unittest.TestCase):
         self.hold = wait_record.reviewed(evidence="Director requested testing", waiting_for="Director's test",
                                   ends_when="Director records acceptance")
 
-    def test_release_pointer_resolves_only_its_product_and_event(self) -> None:
+    def test_release_pointer_resolves_only_its_product_and_included_change(self) -> None:
+        commit = "a" * 40
         record = waits.reviewed(evidence="Merged fix awaits production", waiting_for=["Next release", "Device test"],
-            ends_when=["Release reaches production", "Director tests device"],
-            release_product="fixture-product", release_after="2026-10-25T12:00:00Z",
+            ends_when=["Release includes the fix", "Director tests device"],
+            release_product="fixture-product", release_commit=commit,
             release_next_action="Next agent: verify the repaired flow in production")
         self.assertEqual(waits.records(waits.marker(record)), [record])
-        for product, released_at in (("other-product", "2026-10-26T12:00:00Z"),
-                                     ("fixture-product", "2026-10-24T12:00:00Z")):
-            self.assertEqual(waits.resolve_release(record, product=product, released_at=released_at,
+        for product, included in (("other-product", True), ("fixture-product", False)):
+            self.assertEqual(waits.resolve_release(record, product=product, contains_commit=lambda _: included,
                                                    evidence="Release passed"), (record, []))
         resolved, actions = waits.resolve_release(record, product="fixture-product",
-            released_at="2026-10-26T12:00:00Z", evidence="Successful release record")
+            contains_commit=lambda candidate: candidate == commit, evidence="Successful release record")
         self.assertEqual(resolved["waits"], record["waits"][1:])
+        self.assertIn(record["evidence"], resolved["evidence"])
         self.assertEqual(actions, [record["waits"][0]["release"]["next_action"]])
         self.assertEqual(waits.resolve_release(resolved, product="fixture-product",
-            released_at="2026-10-26T12:00:00Z", evidence="Retry"), (resolved, []))
+            contains_commit=lambda _: True, evidence="Retry"), (resolved, []))
 
-    def test_release_pointer_requires_a_wait_and_aware_event_boundary(self) -> None:
-        for boundary in ("", "tomorrow", "2026-10-25T12:00:00"):
-            with self.subTest(boundary=boundary), self.assertRaises(ValueError):
+    def test_release_pointer_requires_a_wait_and_full_source_commit(self) -> None:
+        for commit in ("", "main", "abc123"):
+            with self.subTest(commit=commit), self.assertRaises(ValueError):
                 waits.reviewed(evidence="Review", waiting_for="Next release", ends_when="Production",
-                    release_product="fixture", release_after=boundary, release_next_action="Next agent: verify")
+                    release_product="fixture", release_commit=commit, release_next_action="Next agent: verify")
         with self.assertRaises(ValueError):
-            waits.reviewed(evidence="Clear", release_product="fixture", release_after="2026-10-25T12:00:00Z",
+            waits.reviewed(evidence="Clear", release_product="fixture", release_commit="a" * 40,
                            release_next_action="Next agent: verify")
 
     def test_published_wait_and_release_round_trip(self):
