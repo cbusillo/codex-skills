@@ -75,7 +75,7 @@ def metadata(records: list[dict]) -> dict:
     )
 
 
-def codex_children(records: list[dict]) -> set[str]:
+def codex_children(records: list[dict], indexed_peers: set[str]) -> set[str]:
     return {
         item["agent_thread_id"]
         for row in records
@@ -85,6 +85,7 @@ def codex_children(records: list[dict]) -> set[str]:
         and isinstance(item := row["payload"].get("item"), dict)
         and item.get("type") == "SubAgentActivity"
         and item.get("kind") != "interacted"
+        and (item.get("kind") != "completed" or item.get("agent_thread_id") not in indexed_peers)
         and isinstance(item.get("agent_thread_id"), str)
     }
 
@@ -158,7 +159,9 @@ def codex_entries(root: dict, supplied: dict[str, set[Path]]) -> list[dict]:
                     records = claim_history.child_records(records, "codex", native, {"parent": parent, "ancestors": ancestors})
                 for claim_session in {root_id, root_identity, native}:
                     expanded.append(entry(claim_session, path, records, native))
-                for child in codex_children(records):
+                indexed_peers = {sibling for ancestor in ancestors for sibling in indexed_children(databases, ancestor)}
+                indexed_peers.difference_update(children, {native})
+                for child in codex_children(records, indexed_peers):
                     children.setdefault(child, set()).update(indexed_paths(databases, child))
             for child, paths in children.items():
                 if child not in supplied and paths:
