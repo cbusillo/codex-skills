@@ -4914,8 +4914,11 @@ def discover_direction_work(
         "outside_scope": ["repositories not accessible to this actor", "closed issues", "pull requests", "active session inventory"],
     }
     try:
-        _, repositories = github_work_graph.repository_inventory(collect_paged_rest_items,
-            installed=app_configured, limit=repo_limit + 1)
+        _, repositories = collect_paged_rest_items(
+            path, query={} if app_configured else {"affiliation": "owner,collaborator,organization_member"},
+            collection_key="repositories" if app_configured else None,
+            bucket="rest_core", step_prefix="next_repository_inventory", limit=repo_limit + 1,
+        )
     except PlanError as exc:
         coverage.update(complete=False, error=next_source_error(exc), inventory_count=None)
         return [], coverage
@@ -4955,9 +4958,10 @@ def discover_direction_work(
         # portfolio-wide milestone waits. rank_portfolio_work still excludes it.
         try:
             source["direction"] = load_direction(name)
-            _, issues = github_work_graph.issue_inventory(collect_paged_rest_items, name,
-                query={"state": "open", "sort": "updated", "direction": "desc"},
-                step_prefix="next_repository_issues", limit=issue_limit + 1, issue_only=True)
+            _, issues = collect_paged_rest_items(
+                f"/repos/{name}/issues", query={"state": "open", "sort": "updated", "direction": "desc"},
+                bucket="rest_core", step_prefix="next_repository_issues", limit=issue_limit + 1, issue_only=True,
+            )
             source.update(issue_count=min(len(issues), issue_limit), truncated=len(issues) > issue_limit)
             source_capacity &= not source["truncated"]
             if not hold:
@@ -4967,9 +4971,12 @@ def discover_direction_work(
                 # A quiet incident can lie beyond even the per-repository list.
                 # Keep a separate bounded label inventory, independent of scan_limit.
                 try:
-                    _, incidents = github_work_graph.issue_inventory(collect_paged_rest_items, name,
+                    _, incidents = collect_paged_rest_items(
+                        f"/repos/{name}/issues",
                         query={"state": "open", "labels": github_direction_next.LIVE_BREAKAGE_LABEL},
-                        step_prefix="next_live_breakage_issues", limit=NEXT_PLAN_INVENTORY_LIMIT + 1, issue_only=True)
+                        bucket="rest_core", step_prefix="next_live_breakage_issues",
+                        limit=NEXT_PLAN_INVENTORY_LIMIT + 1, issue_only=True,
+                    )
                     source["live_breakage_inventory"] = {
                         "count": min(len(incidents), NEXT_PLAN_INVENTORY_LIMIT),
                         "limit": NEXT_PLAN_INVENTORY_LIMIT,
@@ -5292,7 +5299,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     query = {"labels": config["labels"]["plan"], "state": "open", "sort": "created", "direction": "asc"}
     if scope:
         query["milestone"] = scope["number"]
-    actor, issues = github_work_graph.issue_inventory(collect_paged_rest_items, repo, query=query,
+    actor, issues = collect_paged_rest_items(
+        f"/repos/{repo}/issues", query=query, bucket="rest_core",
         step_prefix="next_plan_issues", limit=NEXT_PLAN_INVENTORY_LIMIT + 1, issue_only=True,
     )
     inventory_truncated = len(issues) > NEXT_PLAN_INVENTORY_LIMIT

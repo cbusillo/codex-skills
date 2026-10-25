@@ -524,27 +524,6 @@ def cached_reads(fetch: Callable[[list[str]], Any]) -> Callable[[list[str]], Any
     return read
 
 
-def repository_inventory(
-    read: Callable[..., Any], *, installed: bool, limit: int, affiliation: str = "owner,collaborator,organization_member"
-) -> Any:
-    return read(
-        "/installation/repositories" if installed else "/user/repos",
-        query={} if installed else {"affiliation": affiliation},
-        collection_key="repositories" if installed else None,
-        bucket="rest_core",
-        step_prefix="next_repository_inventory",
-        limit=limit,
-    )
-
-
-def issue_inventory(
-    read: Callable[..., Any], repo: str, *, query: dict[str, Any], limit: int, step_prefix: str, issue_only: bool = False
-) -> Any:
-    return read(
-        f"/repos/{repo}/issues", query=query, bucket="rest_core", step_prefix=step_prefix, limit=limit, issue_only=issue_only
-    )
-
-
 def ownership_inventory(read: Callable[..., Any], repo: str, *, limit: int) -> dict[str, Any]:
     _, pulls = read(
         f"/repos/{repo}/pulls",

@@ -20,8 +20,6 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.parse
-from functools import partial
 from typing import Any, Callable
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -393,15 +391,6 @@ def fetch_paginated(
         if page >= max_pages:
             return items, True
         page += 1
-
-
-def fetch_inventory(
-    path: str, *, fetch: Callable[[list[str]], Any], query: dict[str, Any], limit: int,
-    collection_key: str | None = None, **_transport: Any,
-) -> tuple[list[dict[str, Any]], bool]:
-    encoded = urllib.parse.urlencode(query, safe=":,/")
-    return fetch_paginated(path.lstrip("/") + (f"?{encoded}" if encoded else ""), fetch=fetch,
-        max_pages=math.ceil(limit / 100), key=collection_key)
 
 
 def enrich_admission_actors(
@@ -1097,14 +1086,12 @@ def fetch_audit_issues(
     audit_since: dt.datetime | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Open issues plus recently closed milestone and audit-labeled issues."""
-    inventory = partial(github_work_graph.issue_inventory, partial(fetch_inventory, fetch=fetch), repo)
-    issues, open_cut = inventory(query={"state": "open"}, limit=MAX_PAGES * 100, step_prefix="audit_open_issues")
+    issues, open_cut = fetch_paginated(f"repos/{repo}/issues?state=open", fetch=fetch)
     truncated = ["issues"] if open_cut else []
     if open_cut:
         # The general issue scan may be capped while the audit queue is small.
         # Still surface its questions, including older ones beyond that cap.
-        open_audit, audit_cut = inventory(query={"state": "open", "labels": AUDIT_LABEL},
-            limit=MAX_PAGES * 100, step_prefix="audit_open_labeled_issues")
+        open_audit, audit_cut = fetch_paginated(f"repos/{repo}/issues?state=open&labels={AUDIT_LABEL}", fetch=fetch)
         issues.extend(open_audit)
         if audit_cut:
             truncated.append("open_audit_issues")
@@ -1113,15 +1100,18 @@ def fetch_audit_issues(
     for milestone in milestones:
         if str(milestone.get("title") or "") not in milestone_lines:
             continue
-        closed, cut = inventory(query={"milestone": milestone.get("number"), "state": "closed", "since": since_text},
-                                limit=200, step_prefix="audit_closed_milestone_issues")
+        closed, cut = fetch_paginated(
+            f"repos/{repo}/issues?milestone={milestone.get('number')}&state=closed&since={since_text}",
+            fetch=fetch, max_pages=2,
+        )
         issues.extend(closed)
         closed_cut = closed_cut or cut
     if closed_cut:
         truncated.append("recent_closed_milestone_issues")
     audit_since_text = (audit_since or since).astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    closed_audit, cut = inventory(query={"state": "closed", "labels": AUDIT_LABEL, "since": audit_since_text},
-                                limit=MAX_PAGES * 100, step_prefix="audit_closed_labeled_issues")
+    closed_audit, cut = fetch_paginated(
+        f"repos/{repo}/issues?state=closed&labels={AUDIT_LABEL}&since={audit_since_text}", fetch=fetch,
+    )
     issues.extend(closed_audit)
     if cut:
         truncated.append("recent_closed_audit_issues")
@@ -1290,9 +1280,9 @@ def tracked_capacity_issues(
             recent = milestone.get("state") == "closed" and closed_at is not None and closed_at >= since
             if milestone.get("title") not in titles and not recent:
                 continue
-            roots, cut = github_work_graph.issue_inventory(partial(fetch_inventory, fetch=fetch), direction_repo,
-                query={"state": "all", "milestone": milestone["number"]}, limit=MAX_PAGES * 100,
-                step_prefix="audit_capacity_tracks")
+            roots, cut = fetch_paginated(
+                f"repos/{direction_repo}/issues?state=all&milestone={milestone['number']}", fetch=fetch,
+            )
             if cut:
                 errors.append(f"capacity_tracks:{milestone['number']}")
             pending.extend((direction_repo.casefold(), row["number"]) for row in roots
@@ -1402,9 +1392,9 @@ def milestone_outcomes(
             continue
         nodes: dict[tuple[str, int], dict[str, Any]] = {}
         try:
-            roots, root_cut = github_work_graph.issue_inventory(partial(fetch_inventory, fetch=fetch), direction_repo,
-                query={"state": "all", "milestone": milestone["number"]}, limit=MAX_PAGES * 100,
-                step_prefix="audit_outcome_tracks")
+            roots, root_cut = fetch_paginated(
+                f"repos/{direction_repo}/issues?state=all&milestone={milestone['number']}", fetch=fetch,
+            )
             if root_cut:
                 row["unavailable"].append("tracks")
             for root in roots:
@@ -1420,7 +1410,6 @@ def milestone_outcomes(
         if graph.truncated:
             row["unavailable"].append("graph_limit")
         for (repo, number), node in sorted(graph.nodes.items()):
-            url = f"https://github.com/{repo}/issues/{number}"
             if "updated_at" not in node or (node.get("state") == "closed" and "closed_at" not in node):
                 try:
                     node = fetch(["api", f"repos/{repo}/issues/{number}", "--method", "GET"])
@@ -1430,6 +1419,7 @@ def milestone_outcomes(
                 except AuditError:
                     row["unavailable"].append(f"node:{repo}#{number}")
                     continue
+            url = node.get("html_url") or f"https://github.com/{repo}/issues/{number}"
             if node.get("state") == "closed" and _within(node.get("closed_at"), since, until):
                 row["issues_closed"].append({"url": url, "title": node.get("title"), "closed_at": node.get("closed_at")})
             updated = _parse_time(node.get("updated_at"))
@@ -1676,13 +1666,11 @@ def own_project_label(repo: str) -> str:
 def owner_repositories(owner: str, *, fetch: Callable[[list[str]], Any], include_archived: bool = False) -> tuple[dict[str, dict[str, Any]], bool]:
     """The owner's repositories the reader can see, and whether the listing was cut short."""
     try:
-        listed, cut = github_work_graph.repository_inventory(partial(fetch_inventory, fetch=fetch),
-            installed=True, limit=MAX_PAGES * 100)
+        listed, cut = fetch_paginated("installation/repositories", fetch=fetch, key="repositories")
     except AuditError as installation_error:
         # The Director's own login has no installation; it lists what it owns.
         try:
-            listed, cut = github_work_graph.repository_inventory(partial(fetch_inventory, fetch=fetch),
-                installed=False, affiliation="owner", limit=MAX_PAGES * 100)
+            listed, cut = fetch_paginated("user/repos?affiliation=owner", fetch=fetch)
         except AuditError as exc:
             raise AuditError(f"could not list repositories: {installation_error}; {exc}") from exc
     return {
