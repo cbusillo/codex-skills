@@ -155,7 +155,7 @@ expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-${CODEX_AUTOMATION_LOGIN:-}}
 # api` command it cannot read leaves the method empty, which counts as a write.
 shape_status=0
 gh_api_shape=$(run_python "$script_dir/github_repository_scope.py" "$arguments_file" "$include_archived" "$write_actor_repository" "$@") || shape_status=$?
-if [ "$shape_status" -eq 2 ]; then
+if [ "$shape_status" -eq 64 ]; then
 	exit 2
 fi
 if [ "$shape_status" -ne 0 ]; then
@@ -165,6 +165,7 @@ if [ -s "$arguments_file" ]; then
 	scoped_arguments=$(cat "$arguments_file")
 	eval "set -- $scoped_arguments"
 fi
+rm -f "$arguments_file"
 api_sent_method=$(printf '%s\n' "$gh_api_shape" | sed -n '1p')
 api_endpoint_operand=$(printf '%s\n' "$gh_api_shape" | sed -n '2p')
 

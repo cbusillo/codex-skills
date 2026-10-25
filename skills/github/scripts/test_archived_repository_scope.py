@@ -8,6 +8,7 @@
 import importlib.util
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -99,8 +100,12 @@ print(json.dumps({{"items": rows, "total_count": len(rows), "incomplete_results"
                                                      actor="fixture", include_archived=included)
                     body = reader.request("GET", "search/issues?q=user:owner", bucket="search", step="archive_fixture").body
                     self.assertEqual(body["total_count"], expected)
-                    native_reader = github_read.GitHubReader(gh_cmd=str(fake_gh), expected_actor="fixture", actor="fixture", include_archived=True)
-                    body = native_reader.request("GET", "search/issues?q=user:owner", bucket="search", step="native_archive_fixture").body
+            wrapper_alias = root / "wrapper-alias"
+            write(wrapper_alias, f'#!/bin/sh\nexec {shlex.quote(str(SCRIPTS / "gh-with-env-token"))} "$@"\n')
+            with patch.dict(os.environ, fixture_environment, clear=True):
+                for executable in (fake_gh, wrapper_alias):
+                    selected_reader = github_read.GitHubReader(gh_cmd=str(executable), expected_actor="fixture", actor="fixture", include_archived=True)
+                    body = selected_reader.request("GET", "search/issues?q=user:owner", bucket="search", step="archive_override_fixture").body
                     self.assertEqual(body["total_count"], len(REPOS))
 
     def test_plan_search_count_excludes_archived_repository(self):

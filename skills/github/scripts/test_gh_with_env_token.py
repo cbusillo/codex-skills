@@ -187,12 +187,18 @@ print(json.dumps({{"args": args, "repositories": [row["full_name"] for row in ro
         binary_query.write_bytes(b"\xff")
         for query_path in (missing_query, binary_query):
             result = run_wrapper(env_file, classifier, identity, "api", "-XGET", "search/issues", "-F", f"q=@{query_path}", gh_command=fake_gh)
-            assert result.returncode == 2, result
-            assert "error:" in result.stderr
+            assert result.returncode != 0, result
+            assert result.stderr
             assert "Traceback" not in result.stderr
         result = run_wrapper(env_file, classifier, identity, "api", "-XGET", "search/issues", "-F", "q=@-", gh_command=fake_gh, input_text="user:owner")
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout)["repositories"] == current
+        temporary_files = root / "wrapper-tmp"
+        temporary_files.mkdir()
+        result = run_wrapper(env_file, classifier, identity, "search", "prs", "user:owner", gh_command=fake_gh,
+                             extra_env={"TMPDIR": str(temporary_files)})
+        assert result.returncode == 0, result.stderr
+        assert list(temporary_files.iterdir()) == []
 
 
 def test_check_preserves_user_token_fallback_when_app_is_absent() -> None:

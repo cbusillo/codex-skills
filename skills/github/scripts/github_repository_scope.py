@@ -24,7 +24,7 @@ def add_include_archived_argument(parser: argparse.ArgumentParser) -> None:
 
 
 def include_archived_arguments(include_archived: bool, *, gh_command: str | None = None) -> list[str]:
-    if gh_command is not None and Path(gh_command).name != "gh-with-env-token":
+    if gh_command is not None and Path(gh_command).name == "gh":
         return []
     return ["--include-archived"] if include_archived else []
 
@@ -179,7 +179,7 @@ def main() -> int:
             Path(arguments_file).write_text(shlex.join(arguments))
     except (OSError, UnicodeError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
-        return 2
+        return 64
     index = gh_command_index(arguments)
     if arguments[index : index + 1] == ["api"]:
         from github_api import parse_gh_api_args
