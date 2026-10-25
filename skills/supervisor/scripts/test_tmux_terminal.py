@@ -19,6 +19,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -773,6 +774,47 @@ for line in sys.stdin:
 
 
 class TmuxTests(TmuxFixture):
+    def test_hanging_preparation_preserves_attempt_without_creating_or_relaunching_panes(self) -> None:
+        before = self.terminal.list()
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        for source in (self.command, self.brief):
+            with self.subTest(source=source.name):
+                content = source.read_bytes()
+                source.unlink()
+                os.mkfifo(source)
+                descriptor = os.open(source, os.O_RDWR | os.O_NONBLOCK)
+                release = threading.Event()
+
+                def unblock() -> None:
+                    release.wait(3)
+                    os.write(descriptor, content)
+                    os.close(descriptor)
+
+                writer = threading.Thread(target=unblock)
+                writer.start()
+                try:
+                    with patch.object(iterm_tab, "LAUNCH_TIMEOUT", 0.1):
+                        with self.assertRaises(iterm_tab.LaunchFailure) as raised:
+                            self.launch()
+                    detail = raised.exception.detail
+                    self.assertEqual(detail["status"], "preparation_unavailable")
+                    self.assertEqual(detail["launched"], [])
+                    progress = detail["failed_launch"]
+                    self.assertEqual(progress["window_id"], self.window)
+                    self.assertEqual(progress["tmux_socket"], self.socket)
+                    self.assertIn(str(source), progress["command_file"] + progress["brief_file"])
+                    self.assertTrue(progress["readback_required"])
+                    self.assertEqual(self.terminal.list(), before)
+                    self.assertEqual(signal.getsignal(signal.SIGALRM), previous_handler)
+                    self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0, 0))
+                finally:
+                    release.set()
+                    writer.join()
+                    source.unlink()
+                    source.write_bytes(content)
+        row = self.launch()
+        self.wait_screen(row["session_id"], "READY:")
+
     def test_exact_source_resume_keeps_receipt_read_send_and_close_routes(self):
         # Exercise the real terminal route with a disposable helper. Native
         # ingress, leases and generation publication have separate socket tests.
