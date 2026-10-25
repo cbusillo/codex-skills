@@ -29,7 +29,7 @@ if str(GITHUB_SCRIPTS) not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_read
+from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_read, github_plan_graph
 from skills.github.scripts import github_repository_scope as repository_scope
 from skills.direction.scripts import direction_mark, direction_reporting
 
@@ -1292,29 +1292,22 @@ def tracked_capacity_issues(
                            if "pull_request" not in row and str(row.get("title", "")).startswith("Track:"))
     except AuditError:
         errors.append("capacity_tracks")
-    seen: set[tuple[str, int]] = set()
-    while pending:
-        key = pending.pop()
-        if key in seen:
-            continue
-        if len(seen) >= max_nodes:
-            errors.append("capacity_graph_limit")
-            break
-        seen.add(key)
-        repo, number = key
+    def read_edges(repo: str, number: int) -> list[tuple[str, int]]:
+        related: list[tuple[str, int]] = []
         for endpoint in ("dependencies/blocked_by", "sub_issues"):
             try:
                 edges, cut = fetch_paginated(f"repos/{repo}/issues/{number}/{endpoint}", fetch=fetch)
                 if cut:
                     errors.append(f"capacity_graph:{repo}#{number}:{endpoint}")
-                for edge in edges:
-                    match = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)", str(edge.get("html_url") or ""))
-                    if not match or "pull_request" in edge:
-                        raise AuditError("capacity graph relationship identity unknown")
-                    pending.append((match[1].casefold(), int(match[2])))
-            except AuditError:
+                related.extend(github_plan_graph.native_issue_key(edge) for edge in edges)
+            except (AuditError, ValueError):
                 errors.append(f"capacity_graph:{repo}#{number}:{endpoint}")
-    return seen, sorted(set(errors))
+        return related
+
+    graph = github_plan_graph.walk_native_issues(pending, read_edges=read_edges, max_nodes=max_nodes)
+    if not graph.complete:
+        errors.append("capacity_graph_limit")
+    return graph.nodes, sorted(set(errors))
 
 
 CHECKBOX = re.compile(r"^\s*[-*]\s+\[([ xX])]\s+(.+?)\s*$", re.M)

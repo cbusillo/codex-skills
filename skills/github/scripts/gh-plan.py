@@ -2600,6 +2600,73 @@ def cmd_claim(args: argparse.Namespace) -> None:
     claim_once(claim_reference(args))
 
 
+def milestone_claim_track(issue: dict[str, Any], links: list[str]) -> dict[str, Any]:
+    direction_repo = issue["repo"].split("/")[0] + "/direction"
+    titles = direction_milestone_titles(load_direction(direction_repo) or "")
+    for link in links:
+        target = github_plan_claim.admission_link_target(link)
+        if target is None or target[0] != direction_repo.casefold():
+            continue
+        _, track = get_issue(str(target[1]), direction_repo)
+        milestone = track.get("milestone") or {}
+        if ("pull_request" not in track and track.get("state") == "open"
+                and str(track.get("title", "")).startswith("Track:")
+                and milestone.get("state") == "open" and milestone.get("title") in titles):
+            return track
+    raise ClassifiedPlanError("claim_admission_unlinked",
+        "Milestone admission needs --admission-link URL naming an open Track in the owner's direction "
+        "and a listed milestone; the helper links the issue automatically. --admission-unlinked cannot bypass this.")
+
+
+def ensure_milestone_claim_link(
+    issue: dict[str, Any], track: dict[str, Any], completed: list[str], *, create: bool,
+) -> None:
+    issue_url = f"https://github.com/{issue['repo']}/issues/{issue['number']}"
+    track_url = f"https://github.com/{track['repo']}/issues/{track['number']}"
+    if issue_url.casefold() == track_url.casefold():
+        return
+    if "pull_request" in issue:
+        raise ClassifiedPlanError("claim_admission_unlinked",
+            "Milestone work needs a canonical issue for the native Track link; claim that issue instead of its PR.")
+    endpoint = f"/repos/{track['repo']}/issues/{track['number']}/dependencies/blocked_by"
+
+    def linked() -> bool:
+        def read_edges(repo: str, number: int) -> list[tuple[str, int]]:
+            related: list[tuple[str, int]] = []
+            try:
+                _, parent = api_json("GET", f"/repos/{repo}/issues/{number}/parent", is_write=False,
+                    bucket="rest_core", failed_step="claim_milestone_parent")
+            except PlanError as error:
+                if (error.api_result or {}).get("status") != 404:
+                    raise
+            else:
+                related.append(github_plan_graph.native_issue_key(parent))
+            _, edges = collect_paged_rest_items(f"/repos/{repo}/issues/{number}/dependencies/blocking",
+                query={}, bucket="rest_core", step_prefix="claim_milestone_link")
+            related.extend(github_plan_graph.native_issue_key(edge) for edge in edges)
+            return related
+
+        target = issue["repo"].casefold(), issue["number"]
+        track_key = track["repo"].casefold(), track["number"]
+        graph = github_plan_graph.walk_native_issues([target], read_edges=read_edges, target=track_key)
+        if track_key in graph.nodes:
+            return True
+        if not graph.complete:
+            raise ClassifiedPlanError("claim_milestone_graph_incomplete",
+                "Milestone graph exceeded its read bound; no absence or claim was certified.")
+        return False
+
+    if linked():
+        return
+    if create:
+        api_json("POST", endpoint, {"issue_id": issue["id"]}, failed_step="link_claim_milestone")
+        completed.append("link_claim_milestone")
+        if linked():
+            return
+    raise ClassifiedPlanError("claim_admission_unlinked",
+        f"Native milestone link from {track_url} to {issue_url} was not visible; inspect the edge before retrying.")
+
+
 def claim_once(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     issue_repo, number = issue_ref(args.issue, repo)
@@ -3397,6 +3464,16 @@ def claim_once(args: argparse.Namespace) -> None:
         _, comment_owners = github_plan_claim.discussion_evidence("", comments, claim)
         comment_recorded = any(record.get("_legacy") != "yes" for record in comment_owners)
         admission_record = "" if comment_recorded else admission_line()
+        milestone_links = admission_links if admission == "milestone" else None
+        for comment in comments:
+            if not any(github_plan_claim.same_owner(record, claim)
+                       for record in github_plan_claim.records(comment.get("body") or "")):
+                continue
+            recorded = re.search(r"(?m)^Admission: milestone\b[^\n]*", comment.get("body") or "")
+            if recorded:
+                milestone_links = [match[0] for match in github_plan_claim.ISSUE_URL.finditer(recorded[0])]
+                break
+        milestone_track = milestone_claim_track(issue, milestone_links) if milestone_links is not None else None
         completed.append("ownership_preflight")
         actor, gh_cmd, expected_actor = comment_route()
         wait_receipt = ("\n\nRetained PR waits verified for this step:\n" + "\n".join(
@@ -3422,6 +3499,8 @@ def claim_once(args: argparse.Namespace) -> None:
         # fails, the closed source stays frozen for supported claim recovery.
         github_plan_claim_log.record(claim["session"], issue_repo, number)
         admit_observed_sources()
+        if milestone_track is not None:
+            ensure_milestone_claim_link(issue, milestone_track, completed, create=True)
         if not comment_recorded:
             claim_comment = github_comment_core.comment(
                 record_kind, number, text, repo=issue_repo, gh_cmd=gh_cmd,
@@ -3519,6 +3598,9 @@ def claim_once(args: argparse.Namespace) -> None:
                                   for record in github_plan_claim.records(final_status)):
             raise PlanError("Current Status claim changed during readback")
         admit_observed_sources()
+        if milestone_track is not None:
+            current_track = milestone_claim_track(final, milestone_links)
+            ensure_milestone_claim_link(final, current_track, completed, create=False)
         completed.append("metadata_readback")
     except github_comment_core.CommentError as exc:
         error = plan_error_from_comment(exc, completed_steps=completed)
@@ -6957,11 +7039,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--planning-checkout", help="Canonical planning repository checkout for cross-repository ownership inventory")
     p.add_argument("--wait-resolved", help="Existing resolution evidence for a recorded wait/hold; grants no new authority")
     p.add_argument("--admission", choices=github_plan_claim.ADMISSIONS,
-                   help="Which overall Order rule admits this work; recorded with evidence, without an admission graph check")
+                   help="Which overall Order rule admits this work; milestone automatically links the issue to its cited Track")
     p.add_argument("--admission-link", action="append", default=[], metavar="URL",
                    help="Issue or PR URL, optionally with #issuecomment-ID; preserves the cited comment; repeat-stop needs both occurrences")
     p.add_argument("--admission-unlinked", metavar="REASON",
-                   help="Optional context for milestone admission; recorded without a graph check")
+                   help="Optional milestone context; never bypasses the native Track link")
     p.set_defaults(func=cmd_claim)
 
     p = sub.add_parser("wait", help="Report legacy evidence or record a reviewed structured wait; never parses prose")
