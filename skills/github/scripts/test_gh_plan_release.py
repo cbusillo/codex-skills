@@ -654,6 +654,18 @@ class ReleaseTests(ReleaseHarness):
             with self.assertRaises(ValueError):
                 release.termination._recheck_queue_process(process)
 
+    def test_reboot_proof_does_not_waive_a_new_generation_launch_pid(self) -> None:
+        self.termination_setup()
+        shared = release.termination.native_helpers()[1]
+        booted = release.stamp(self.termination_record["ended_at"])
+        with patch.object(shared, "host_boot_time", return_value=booted):
+            process = release.termination._verify_queue_source(self.termination_record, "session-b", latest_pid=88)
+            with patch.object(release.termination, "inventory", return_value=[(88, "other", "unidentified")]):
+                with self.assertRaises(ValueError):
+                    release.termination._verify_queue_source(self.termination_record, "session-b", latest_pid=88)
+                with self.assertRaises(ValueError):
+                    release.termination._recheck_queue_process(process)
+
     def test_terminal_crash_during_current_uptime_uses_strict_route(self) -> None:
         self.termination_setup()
         shared = release.termination.native_helpers()[1]

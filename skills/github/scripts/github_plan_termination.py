@@ -228,7 +228,8 @@ def _initial_source(record, session, independent_harness, *, latest_pid=None):
     roots = frozenset(_transcript_roots(record))
     booted = shared.host_boot_time()
     activity = _verify_transcripts(record, roots) if booted is not None and booted <= datetime.now(timezone.utc) else None
-    rebooted_at = booted if activity is not None and activity.latest < booted else None
+    original_launch = latest_pid is None or latest_pid in {record.get("pid"), record.get("launch_pid")}
+    rebooted_at = booted if original_launch and activity is not None and activity.latest < booted else None
     process = _TerminationProcess(dict(record), physical, rebooted_at or cutoff, roots, rebooted_at)
     _physical_exit(process, independent_harness)
     return process
