@@ -28,6 +28,10 @@ DIRECTION_RULESET_NAME = "Code-owner review for DIRECTION.md"
 CLIENT_BRANCH_LOCK_NAME = "Only the owner and automation change branches"
 CLIENT_TAG_LOCK_NAME = "Only the owner and automation change tags"
 ADMIN_REPOSITORY_ROLE_ID = 5
+# https://api.github.com/apps/dependabot
+DEPENDABOT_APP_ID = 29110
+# https://api.github.com/apps/renovate
+RENOVATE_APP_ID = 2740
 DEFAULT_REF = "~DEFAULT_BRANCH"
 ALL_REFS = "~ALL"
 PER_PAGE = 100
@@ -196,12 +200,6 @@ def client_lock_specs(
     tags: bool,
     extra_integration_ids: Sequence[int] = (),
 ) -> tuple[RulesetSpec, ...]:
-    """Rulesets that stop collaborators from creating, updating or deleting any branch or tag.
-
-    Only the admin role, the configured App and the named extra Integrations
-    bypass them. Without an App the lock would also stop the automation that
-    lands work, so it is refused rather than applied owner-only.
-    """
     if not branches and not tags:
         if extra_integration_ids:
             raise RulesetError(
@@ -216,15 +214,17 @@ def client_lock_specs(
             cause="unconfigured_identity",
             payload={"failed_step": "client_lock_app_bypass", "write_attempted": False},
         )
-    bypass = _owner_and_app_bypass(positive_int(app_id, "GitHub App id"), extra_integration_ids)
+    app_id = positive_int(app_id, "GitHub App id")
+    branch_bypass = _owner_and_app_bypass(app_id, [*extra_integration_ids, DEPENDABOT_APP_ID, RENOVATE_APP_ID])
+    tag_bypass = _owner_and_app_bypass(app_id, extra_integration_ids)
     conditions = {"ref_name": {"include": [ALL_REFS], "exclude": []}}
     specs: list[RulesetSpec] = []
     selected = (
-        (branches, "client_branches", CLIENT_BRANCH_LOCK_NAME, "branch",
+        (branches, "client_branches", CLIENT_BRANCH_LOCK_NAME, "branch", branch_bypass,
          {"type": "update", "parameters": {"update_allows_fetch_and_merge": False}}),
-        (tags, "client_tags", CLIENT_TAG_LOCK_NAME, "tag", {"type": "update"}),
+        (tags, "client_tags", CLIENT_TAG_LOCK_NAME, "tag", tag_bypass, {"type": "update"}),
     )
-    for enabled, key, name, target, update_rule in selected:
+    for enabled, key, name, target, bypass, update_rule in selected:
         if not enabled:
             continue
         specs.append(RulesetSpec(

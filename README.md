@@ -1226,9 +1226,10 @@ own preflight requirement, separate from the settings snapshot.
 On a repository where Clients or their staff are collaborators, add
 `--client-lock` to also manage a ruleset that stops anyone except the admin role
 and the configured App from creating, updating or deleting any branch, and
-`--client-lock-tags` for the same lock on every tag. Repeat
-`--bypass-integration-id APP_ID` for another App that must keep pushing, such as
-Dependabot (`29110`). The lock refuses without a configured App, because it would
+`--client-lock-tags` for the same lock on every tag. Dependabot and Renovate
+always bypass the branch lock so they can open their update branches. Repeat
+`--bypass-integration-id APP_ID` for another App that must keep pushing. The
+lock refuses without a configured App, because it would
 also stop the automation that lands work. Leave tags unlocked where a workflow
 creates tags or releases with the Actions token, which cannot bypass a ruleset.
 A plan that would drop an existing bypass actor lists it under `bypass_removed`.
