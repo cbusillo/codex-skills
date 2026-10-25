@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import sys
 import threading
 import time
@@ -21,6 +22,10 @@ import github_api
 
 T = TypeVar("T")
 R = TypeVar("R")
+
+
+def observation_key(path: str) -> str:
+    return re.sub(r"^/repos/([^/]+/[^/?]+)", lambda match: f"/repos/{match[1].casefold()}", path)
 
 
 class ReadDeadline(Exception):
@@ -118,7 +123,19 @@ class NextReads:
         while not self.stop.wait(self.progress_seconds):
             self.progress()
 
+    def observation(self, path: str) -> Future[Any] | None:
+        with self.lock:
+            return self.observations.get(observation_key(path))
+
+    def request(self, read: Callable[[], T]) -> T:
+        if self.expired:
+            raise ReadDeadline("global next time budget exhausted; evidence unread")
+        with self.lock:
+            self.requests += 1
+        return self._read(read)
+
     def observe(self, path: str, read: Callable[[], T]) -> T:
+        path = observation_key(path)
         with self.lock:
             future = self.observations.get(path)
             first = future is None
@@ -129,11 +146,7 @@ class NextReads:
                 self.reused += 1
         if first:
             try:
-                if self.expired:
-                    raise ReadDeadline("global next time budget exhausted; evidence unread")
-                with self.lock:
-                    self.requests += 1
-                future.set_result(self._read(read))
+                future.set_result(self.request(read))
             except BaseException as exc:
                 future.set_exception(exc)
         # Consumers may annotate their own copy, never another observation.

@@ -18,6 +18,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from github_next_reads import NextReads, ReadDeadline
@@ -441,6 +442,102 @@ def test_local_ownership_commands_share_one_total_deadline() -> None:
     assert len(observed) == 2
     assert 0 < observed[-1] < observed[0]
 
+
+
+def test_graph_transport_respects_earlier_deadline_reserve_and_receipt_ownership() -> None:
+    from test_gh_plan_next import load_module
+    module = load_module()
+    clock = {"now": 100.0}
+    reader = object.__new__(module.PlanningGraphReader)
+    reader.request_actor = reader.expected_actor = "fixture-reader"
+    reader.deadline_at = None
+    calls = []
+
+    def transport(_self: Any, _query: str, _variables: dict[str, Any], **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        if "limited" in _query:
+            return module.github_api_core.ApiResult(ok=False, status=0, body=None,
+                failure=module.github_api_core.FailureDetail(cause="deadline_exceeded", message="Read deadline reached",
+                    retryable=False, fallback_eligible=False, disposition="stop"))
+        return module.github_api_core.ApiResult(ok=True, status=200, body={"data": {}})
+
+    with patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": ""}), patch.object(time, "time", lambda: clock["now"]), patch.object(
+            module.github_read.GitHubReader, "graphql_json", transport), patch.object(module, "record_retry_fields") as receipts:
+        with NextReads(workers=1, seconds=100) as reads:
+            module.NEXT_READS = reads
+            try:
+                earlier = clock["now"] + 1
+                reader.graphql_json("query { viewer { login } }", {}, step="first", deadline_at=earlier)
+                assert len(calls) == receipts.call_count == 1
+                assert calls[0]["deadline_at"] == earlier
+                try:
+                    reader.graphql_json("query { limited }", {}, step="per_read_cap")
+                except ReadDeadline:
+                    pass
+                else:
+                    raise AssertionError("A bounded graph timeout escaped the unread-evidence path")
+                assert reads.remaining_seconds > reads.final_evidence_reserve
+                assert len(calls) == receipts.call_count == 2
+                assert reads.requests == len(calls)
+                clock["now"] = reads.deadline - reads.final_evidence_reserve
+                try:
+                    reader.graphql_json("query { viewer { id } }", {}, step="reserved")
+                except ReadDeadline:
+                    pass
+                else:
+                    raise AssertionError("Graph read entered the final evidence reserve")
+                assert len(calls) == receipts.call_count == 2
+            finally:
+                module.NEXT_READS = None
+
+
+def test_unused_batch_failure_keeps_independent_work_but_never_hides_auth_failure() -> None:
+    import test_gh_plan_next as cli
+    from test_global_work_graph import native_nodes
+    from test_github_work_graph import replay
+
+    root = cli.track("someone/direction", 1, "First")
+    selected = cli.global_issue("someone/product", 10)
+    speculative = cli.global_issue("outside/product", 20)
+    edges = {(root["repo"], 1): cli.relationships(sub_issues=[selected])}
+    for cause in ("network_provider_failure", "invalid_credentials", "reserved_budget"):
+        with cli.global_fixture([root], [selected, speculative], edges) as (module, result, _reads):
+            reader = replay(native_nodes([root, selected, speculative], edges))
+            query = reader.graphql_json.side_effect
+            error = module.github_api_core.FailureDetail(cause=cause, message="Fixture batch unavailable",
+                retryable=False, fallback_eligible=False, disposition="stop")
+            attempted = []
+
+            def transport(text: str, variables: dict[str, Any], **kwargs: Any) -> Any:
+                if 'owner:"outside"' in text:
+                    attempted.append(speculative)
+                    if cause == "reserved_budget":
+                        raise ReadDeadline("Graph budget is reserved for final evidence")
+                    return module.github_api_core.ApiResult(ok=False, status=401 if cause == "invalid_credentials" else 502,
+                        body=None, failure=error)
+                if "issue(number:1)" in text:
+                    module.github_work_graph.prefetch_issues(lambda _repo: reader, [speculative], module.NEXT_READS)
+                return query(text, variables, **kwargs)
+
+            reader.graphql_json.side_effect = transport
+            args = cli.next_args(scan_limit=2)
+            args.read_workers = 2
+            with patch.object(module, "next_graph_reader", lambda _repo: reader):
+                if cause == "invalid_credentials":
+                    try:
+                        module.cmd_next(args)
+                    except module.PlanError as exc:
+                        assert exc.failure.cause == cause
+                    else:
+                        raise AssertionError("Unused batch authentication failure was hidden")
+                else:
+                    module.cmd_next(args)
+                    assert any(row["number"] == selected["number"] for row in result["candidates"])
+                    if cause == "network_provider_failure":
+                        assert result["performance"]["read_ahead_failures"][cause] == 1
+                    else:
+                        assert result["performance"]["budget_stops"]
+                assert attempted == [speculative]
 
 def main() -> None:
     tests = [value for name, value in globals().items() if name.startswith("test_") and callable(value)]
