@@ -6456,43 +6456,47 @@ def test_http_error_advice_follows_operation_state(http_status: int, code: str, 
     assert output["summary"]["recommendation"] == write_action.http_error_recommendation(expected)
 
 
-@pytest.mark.parametrize("suffix", ["deployment-123", "Bearer private-secret", "https://private.invalid", "record\nsecret", "a" * 600])
-def test_restart_refusal_projects_only_recognized_cause_and_safe_blocker(suffix: str) -> None:
-    message = f"A newer deployment may have changed the provider: {suffix}."
+@pytest.mark.parametrize("reason", ["newer_deployment", "Bearer private-secret", "https://private.invalid", "a" * 600, None, {}])
+@pytest.mark.parametrize("blocker", ["deployment-123", "Bearer private-secret", "https://private.invalid", "a" * 600, None, {}])
+def test_http_refusal_projects_structured_diagnostics_independently(reason: object, blocker: object) -> None:
+    message = "An otherwise ordinary private customer sentence."
     output = write_action.summarize_http_error(
         operation="lane-service-restart", request={},
         exc=urllib.error.HTTPError("https://launchplane.example.invalid", 409, "error", Message(), None),
-        provider_payload={"error": {"code": "restart_refused", "message": message, "token": "private-secret"}},
+        provider_payload={"trace_id": "launchplane_req_example", "error": {"code": "restart_refused", "reason": reason, "message": message},
+                          "details": {"blocking_deployment_id": blocker, "token": "private-secret"}},
     )
-    if suffix == "deployment-123":
-        assert output["warnings"][0]["message"] == message
-        assert output["summary"]["blocking_deployment_id"] == suffix
-    else:
-        assert "blocking_deployment_id" not in output["summary"]
-        assert message not in json.dumps(output)
+    assert output["summary"].get("error_reason") == (reason if reason == "newer_deployment" else None)
+    assert output["summary"].get("blocking_deployment_id") == (blocker if blocker == "deployment-123" else None)
+    assert output["summary"]["trace_id"] == "launchplane_req_example"
+    assert output["summary"]["error_code"] == "restart_refused"
+    assert output["status"] == "refused"
+    assert message not in json.dumps(output)
     assert "private-secret" not in json.dumps(output)
 
 
 @pytest.mark.parametrize("code", ["restart_refused", "testing_unavailable_ingress_unverified", "unknown"])
-def test_http_refusal_does_not_publish_arbitrary_prose(code: str) -> None:
-    message = "An otherwise ordinary private customer sentence."
-    output = write_action.summarize_http_error(
-        operation="testing-rebuild-dry-run", request={},
-        exc=urllib.error.HTTPError("https://launchplane.example.invalid", 409, "error", Message(), None),
-        provider_payload={"error": {"code": code, "message": message}},
-    )
-    assert message not in json.dumps(output)
-
-
-@pytest.mark.parametrize("code", ["restart_refused", "testing_unavailable_ingress_unverified"])
 @pytest.mark.parametrize("operation", ["lane-service-restart", "testing-rebuild-dry-run", "testing-rebuild"])
-def test_http_refusal_retains_recognized_service_cause(code: str, operation: str) -> None:
-    message = next(iter(write_action.SAFE_REFUSAL_MESSAGES[code]))
-    error = urllib.error.HTTPError("https://launchplane.example.invalid", 409, "error", Message(),
-        io.BytesIO(json.dumps({"error": {"code": code, "message": message}}).encode()))
-    output = write_action.summarize_http_error(operation=operation, request={}, exc=error)
-    assert output["warnings"][0]["message"] == message
-    assert output["status"] == "refused"
+def test_http_refusal_reason_is_independent_of_prose(code: str, operation: str) -> None:
+    for message in ("A changed private explanation.", "The lane has no settled current deployment."):
+        error = urllib.error.HTTPError("https://launchplane.example.invalid", 409, "error", Message(),
+            io.BytesIO(json.dumps({"error": {"code": code, "reason": "current_deployment_unsettled", "message": message}}).encode()))
+        output = write_action.summarize_http_error(operation=operation, request={}, exc=error)
+        assert output["summary"]["error_reason"] == "current_deployment_unsettled"
+        assert message not in json.dumps(output)
+
+
+@pytest.mark.parametrize("details", [None, [], "private details"])
+def test_legacy_http_refusal_keeps_safe_code_and_trace(details: object) -> None:
+    output = write_action.summarize_http_error(
+        operation="lane-service-restart", request={},
+        exc=urllib.error.HTTPError("https://launchplane.example.invalid", 409, "error", Message(), None),
+        provider_payload={"trace_id": "launchplane_req_example", "error": {"code": "restart_refused"}, "details": details},
+    )
+    assert output["summary"]["error_code"] == "restart_refused"
+    assert output["summary"]["trace_id"] == "launchplane_req_example"
+    assert "error_reason" not in output["summary"]
+    assert "blocking_deployment_id" not in output["summary"]
 
 
 @pytest.mark.parametrize("result", [None, [], 42])

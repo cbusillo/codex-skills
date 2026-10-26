@@ -5062,52 +5062,22 @@ def _controller_error_diagnostics(provider_payload: dict[str, Any]) -> dict[str,
     return diagnostics
 
 
-# https://github.com/cbusillo/codex-skills/issues/2874
-SAFE_REFUSAL_MESSAGES = {
-    "restart_refused": {
-        "Deployment history has an unavailable timestamp.",
-        "Deployment history has an ambiguous timestamp.",
-        "Deployment history has no timestamp to establish its order.",
-        "The requested active product lane is not recorded.",
-        "The lane's HTTP runtime identity endpoint is unavailable.",
-        "This driver does not support service restart with release exclusion.",
-        "Database dependency recovery is limited to Odoo testing.",
-        "The recorded provider target is ambiguous or unsupported.",
-        "The lane has no settled current deployment.",
-        "Current deployment identity is ambiguous.",
-        "Current artifact image identity is ambiguous.",
-        "Current artifact source identity is ambiguous.",
-        "The database deployment completion time is unavailable.",
-        "A Client release run holds this lane.",
-        "A release operation holds this lane.",
-        "The current production artifact has no recorded acceptance.",
-        "The live provider target identity is ambiguous.",
-        "The service has no supported container health check.",
-        "Database dependency recovery requires a stopped container.",
-        "Restart identity is ambiguous, unsupported, or the lane is held by a release.",
-    },
-    "testing_unavailable_ingress_unverified": {
-        "The stopped or absent testing copy needs its provider-owned router declaration and current managed listener configuration.",
-    },
-}
-
-
-def _safe_refusal_diagnostics(error: dict[str, object]) -> dict[str, str]:
-    message = error.get("message")
-    code = error.get("code")
-    if not isinstance(message, str) or not isinstance(code, str):
-        return {}
-    if code == "restart_refused":
-        match = re.fullmatch(r"A newer deployment may have changed the provider: ([A-Za-z0-9_-]{1,128})\.", message)
-        if match:
-            try:
-                blocker = public_identifier(match[1])
-                assert_public_safe_shape(blocker)
-            except LaunchplaneSafetyError:
-                return {}
-            return {"message": message, "blocking_deployment_id": blocker}
-    allowed = SAFE_REFUSAL_MESSAGES.get(code, set())
-    return {"message": message} if message in allowed else {}
+def _safe_refusal_diagnostics(provider_payload: dict[str, object]) -> dict[str, str]:
+    error = provider_payload.get("error")
+    details = provider_payload.get("details")
+    diagnostics: dict[str, str] = {}
+    for key, value, validate in (
+        ("error_reason", error.get("reason") if isinstance(error, dict) else None, public_code),
+        ("blocking_deployment_id", details.get("blocking_deployment_id") if isinstance(details, dict) else None, public_identifier),
+    ):
+        try:
+            projected = validate(value)
+            public_summary_string(projected, max_length=128)
+            assert_public_safe_shape(projected)
+        except (LaunchplaneSafetyError, TypeError):
+            continue
+        diagnostics[key] = projected
+    return diagnostics
 
 
 def summarize_http_error(
@@ -5117,9 +5087,6 @@ def summarize_http_error(
     if provider_payload is None:
         provider_payload = _error_payload_from_http(exc)
     status = _status_for_http_error(exc.code, provider_payload)
-    error = provider_payload.get("error")
-    if not isinstance(error, dict):
-        error = {}
     payload = base_payload(status=status, operation=operation, request=request)
     if operation == "merge-train-controller-run-once":
         diagnostics = _controller_error_diagnostics(provider_payload)
@@ -5170,10 +5137,8 @@ def summarize_http_error(
         if operation in READ_ONLY_OPERATIONS
         else "Launchplane write action was rejected; inspect the trace in an approved operator surface."
     )
-    refusal = _safe_refusal_diagnostics(error)
-    if "blocking_deployment_id" in refusal:
-        summary["blocking_deployment_id"] = refusal["blocking_deployment_id"]
-    payload["warnings"] = [warning(str(summary["error_code"]), refusal.get("message", message))]
+    summary.update(_safe_refusal_diagnostics(provider_payload))
+    payload["warnings"] = [warning(str(summary["error_code"]), message)]
     return payload
 
 

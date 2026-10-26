@@ -286,9 +286,9 @@ def test_active_operation_conflict_exposes_only_the_pollable_blocker():
     ("idempotency_key_reused", "conflict"),
 ])
 def test_native_rebuild_refusals_preserve_state_without_another_dispatch(command: str, error_code: str, expected: str) -> None:
-    message = next(iter(helper.SAFE_REFUSAL_MESSAGES["testing_unavailable_ingress_unverified"]))
+    message = "Private provider explanation."
     error = urllib.error.HTTPError(SERVICE_URL, 409, "Conflict", {}, io.BytesIO(json.dumps({
-        "trace_id": "launchplane_req_refusal", "error": {"code": error_code, "message": message},
+        "trace_id": "launchplane_req_refusal", "error": {"code": error_code, "reason": "testing_ingress_unverified", "message": message},
     }).encode()))
     code, output, post, read, _ = invoke(error=error, args=arguments(command=command))
     assert code != 0
@@ -296,7 +296,8 @@ def test_native_rebuild_refusals_preserve_state_without_another_dispatch(command
     assert output["summary"]["error_code"] == error_code
     assert output["summary"]["trace_id"] == "launchplane_req_refusal"
     if error_code == "testing_unavailable_ingress_unverified":
-        assert output["warnings"][0]["message"] == message
+        assert output["summary"]["error_reason"] == "testing_ingress_unverified"
+    assert message not in json.dumps(output)
     post.assert_called_once()
     read.assert_not_called()
 
