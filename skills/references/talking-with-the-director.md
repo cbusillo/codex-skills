@@ -92,16 +92,32 @@ changes on yes.
   `state/director-questions` branch containing only counter state, with no
   workflows or source files. GitHub's file-SHA update rejects competing writes;
   each allocation preserves its request identity for uncertain-write recovery.
-  Only numeric IDs and opaque request hashes are published, never the local
-  counter file, seed discussions or question text. Keep that runtime state branch
+  Only numeric IDs and request hashes are published, never cleartext question
+  URLs, the local counter file, seed discussions or question text. Hashes provide
+  request identity, not secrecy. Keep that runtime state branch
   when cleaning source branches. A recorded shared counter never falls back
   to local numbering after a configuration loss.
   Without a queue, the existing local counter remains available for one machine.
   On first setup, run `seed --seed-from OWNER/REPO#NUMBER`, repeating
   `--seed-from` for current question discussions belonging to this Director.
-  Before migrating existing machines to shared allocation, run `seed` on each
-  with the shared queue configured, so each publishes its existing high-water mark.
-  Only that Director's and its configured automation's question headings count;
+  To migrate, stop prior allocators and collect this Director's retained counter
+  snapshots. Run `seed --include-counter PATH` for each other machine, with
+  `--confirm-prior-counters-complete` attesting that all earlier allocators are
+  stopped and the current counter plus those snapshots cover every retained
+  counter. That explicit bootstrap alone can create shared state, importing the
+  highest ID and existing assignments before it is visible. Each joining machine
+  runs `seed` to publish its floor before `next`; a catalog pull cannot initialize
+  shared state automatically. No machine registry or manual numeric seed is needed.
+  Shared allocation requires GitHub and the existing Contents automation access;
+  local callers serialize while that request is in progress.
+  Missing shared state never resets from a machine's local value. The local
+  `counter_commit` records verified Git history. After reconciling pending writes,
+  restore only a missing branch with `seed --restore-counter-from COMMIT` and
+  `--confirm-prior-counters-complete`, using the verified full counter commit
+  and all retained counter snapshots. Restoration never overwrites an existing
+  branch. An unknown or incomplete history remains a recovery hold.
+  Only that Director's and its configured automation's question headings and
+  explicit historical `Reserved Qx–Qy` lines count, including in organization repos;
   incidental references, quoted IDs and other authors do not advance the seed.
   Existing local IDs stay unchanged. Allocation does not reread old seed sources.
   An ID never changes and is never reused: when you ask the same

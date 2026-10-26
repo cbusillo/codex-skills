@@ -18,6 +18,7 @@ import sys
 import tempfile
 import tomllib
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ QUESTION = re.compile(r"\bQ([1-9][0-9]*)\b")
 ITEM = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*")
 COUNTER_BRANCH = "state/director-questions"
 COUNTER_FILE = "counter.json"
+RESERVED_RANGE = re.compile(r"^\s*(?:Reserved|Reserving)\s+Q([1-9][0-9]*)\s*(?:[-–—]|through|to)\s*Q([1-9][0-9]*)\b", re.IGNORECASE)
 QUESTION_HEADING = re.compile(r"^\s*\**(?:Owner|Director) question:[ \t*]*")
 
 
@@ -96,8 +98,11 @@ def heading_numbers(body: str) -> list[int]:
             marker = stripped[:3]
             fence = None if fence == marker else marker if fence is None else fence
             continue
-        if fence is None and (question := heading_id(line)):
-            numbers.append(int(question[1:]))
+        if fence is None:
+            if question := heading_id(line):
+                numbers.append(int(question[1:]))
+            elif reserved := RESERVED_RANGE.match(line):
+                numbers.append(max(map(int, reserved.groups())))
     return numbers
 
 
@@ -113,9 +118,8 @@ def question_maximum(result: dict[str, Any], director: str) -> int:
 def github_seed(items: list[str]) -> tuple[int, list[str]]:
     if not items or any(not ITEM.fullmatch(item) for item in items):
         raise ValueError("--seed-from must be OWNER/REPO#NUMBER")
-    director = items[0].split("/", 1)[0].casefold()
-    if any(item.split("/", 1)[0].casefold() != director for item in items):
-        raise ValueError("Seed discussions must belong to the same Director")
+    queue = configured_queue()
+    director = (queue or items[0]).split("/", 1)[0].casefold()
     highest, sources = 0, []
     for item in items:
         result = read_discussion(item)
@@ -145,62 +149,121 @@ def counter_endpoint(repo: str) -> str:
     return f"/repos/{repo}/contents/{COUNTER_FILE}"
 
 
-def initialize_counter(repo: str, minimum: int) -> None:
-    reference = counter_request("GET", f"/repos/{repo}/git/ref/heads/{COUNTER_BRANCH}", allowed=(404,))
-    if reference.ok:
-        raise ValueError("Counter branch exists without its state file; preserve it and restore the last verified state")
-    state = {"version": 1, "director": repo.split("/", 1)[0].casefold(), "last_id": minimum, "questions": {}}
+@dataclass
+class CounterSnapshot:
+    file_sha: str
+    state: dict[str, Any]
+    commit_sha: str
+
+
+@dataclass
+class Allocation:
+    number: int
+    commit_sha: str | None = None
+
+
+def validate_counter(state: Any) -> None:
+    if (not isinstance(state, dict) or type(state.get("last_id")) is not int or state["last_id"] < 0
+            or not isinstance(state.get("questions", {}), dict)
+            or any(not isinstance(key, str) or type(number) is not int or not 0 < number <= state["last_id"]
+                   for key, number in state.get("questions", {}).items())):
+        raise ValueError("Invalid question counter; preserve it and recover its last verified state")
+
+
+def decoded_counter(repo: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("encoding") == "none":
+        payload = counter_request("GET", f"/repos/{repo}/git/blobs/{payload['sha']}").body
+    state = json.loads(base64.b64decode(payload["content"]))
+    validate_counter(state)
+    if state.get("director") != repo.split("/", 1)[0].casefold() or state.get("version") != 1:
+        raise ValueError("Counter state does not belong to this Director; preserve it before recovery")
+    return state
+
+
+def initialize_counter(repo: str, minimum: int, assignments: dict[str, int] | None = None) -> None:
+    state = {"version": 1, "director": repo.split("/", 1)[0].casefold(), "last_id": minimum, "questions": assignments or {}}
     tree = counter_request("POST", f"/repos/{repo}/git/trees", {"tree": [
         {"path": COUNTER_FILE, "mode": "100644", "type": "blob", "content": json.dumps(state, sort_keys=True)}]})
     commit = counter_request("POST", f"/repos/{repo}/git/commits",
                              {"message": "Initialize Director question counter", "tree": tree.body["sha"], "parents": []})
-    created = counter_request("POST", f"/repos/{repo}/git/refs",
-                              {"ref": f"refs/heads/{COUNTER_BRANCH}", "sha": commit.body["sha"]}, allowed=(422,))
-    if not created.ok:
-        counter_request("GET", counter_endpoint(repo) + f"?ref={COUNTER_BRANCH}")
+    counter_request("POST", f"/repos/{repo}/git/refs",
+                    {"ref": f"refs/heads/{COUNTER_BRANCH}", "sha": commit.body["sha"]}, allowed=(422,))
 
 
-def read_counter(repo: str, minimum: int) -> tuple[str, dict[str, Any]]:
-    result = counter_request("GET", counter_endpoint(repo) + f"?ref={COUNTER_BRANCH}", allowed=(404,))
-    if not result.ok:
-        initialize_counter(repo, minimum)
-        result = counter_request("GET", counter_endpoint(repo) + f"?ref={COUNTER_BRANCH}")
-    state = json.loads(base64.b64decode(result.body["content"], validate=False))
-    if (not isinstance(state, dict) or state.get("version") != 1
-            or state.get("director") != repo.split("/", 1)[0].casefold()
-            or type(state.get("last_id")) is not int or state["last_id"] < 0
-            or not isinstance(state.get("questions"), dict)
-            or any(not isinstance(key, str) or type(number) is not int or not 0 < number <= state["last_id"]
-                   for key, number in state["questions"].items())):
-        raise ValueError("Invalid shared question counter; preserve it and restore its last verified state")
-    return result.body["sha"], state
+def read_counter(repo: str, minimum: int, *, create: bool = False, restore_from: str | None = None,
+                 assignments: dict[str, int] | None = None) -> CounterSnapshot:
+    reference_path = f"/repos/{repo}/git/ref/heads/{COUNTER_BRANCH}"
+    reference = counter_request("GET", reference_path, allowed=(404,))
+    if not reference.ok:
+        if restore_from is not None:
+            candidate = counter_request("GET", counter_endpoint(repo) + f"?ref={restore_from}")
+            decoded_counter(repo, candidate.body)
+            counter_request("POST", f"/repos/{repo}/git/refs",
+                            {"ref": f"refs/heads/{COUNTER_BRANCH}", "sha": restore_from})
+        elif create:
+            initialize_counter(repo, minimum, assignments)
+        else:
+            raise ValueError(f"Shared counter missing or not visible. Preserve pending writes; restore {COUNTER_BRANCH} from its verified counter_commit. "
+                             "First setup requires seed --include-counter PATH for prior machines and --confirm-prior-counters-complete.")
+        reference = counter_request("GET", reference_path)
+    elif restore_from is not None:
+        raise ValueError("Shared counter still exists; restoration never replaces an existing branch")
+    commit = reference.body["object"]["sha"]
+    result = counter_request("GET", counter_endpoint(repo) + f"?ref={commit}")
+    state = decoded_counter(repo, result.body)
+    return CounterSnapshot(result.body["sha"], state, commit)
 
 
-def write_counter(repo: str, sha: str, state: dict[str, Any]) -> bool:
+def write_counter(repo: str, sha: str, state: dict[str, Any]) -> str | None:
     content = base64.b64encode((json.dumps(state, sort_keys=True) + "\n").encode()).decode()
     result = counter_request("PUT", counter_endpoint(repo), {"message": "Advance Director question counter",
                              "branch": COUNTER_BRANCH, "sha": sha, "content": content}, allowed=(409,))
-    return result.ok
+    if result.ok:
+        return result.body["commit"]["sha"]
+    message = str((result.body or {}).get("message", "")).casefold()
+    if not ("does not match" in message or ("sha" in message and any(word in message for word in ("mismatch", "expected")))
+            or re.search(r"is at [0-9a-f]{40} but expected [0-9a-f]{40}", message)):
+        raise ValueError("Shared counter update rejected; inspect repository rules before retrying")
+    return None
 
 
-def reserve_question(minimum: int, key: str | None, repo: str | None) -> int:
+def reserve_question(minimum: int, key: str | None, repo: str | None, *, create: bool = False,
+                     assignments: dict[str, int] | None = None, restore_from: str | None = None) -> Allocation:
     if repo is None:
-        return minimum + int(key is not None)
+        return Allocation(minimum + int(key is not None))
     request_key = hashlib.sha256(key.encode()).hexdigest() if key is not None else None
     try:
         for _ in range(8):
-            sha, state = read_counter(repo, minimum)
+            snapshot = read_counter(repo, minimum, create=create, restore_from=restore_from, assignments=assignments)
+            create, restore_from = False, None
+            state = snapshot.state
+            for prior, number in (assignments or {}).items():
+                if prior in state["questions"] and state["questions"][prior] != number:
+                    raise ValueError("Prior counters disagree on a question ID; preserve both assignments for reconciliation")
+                state["questions"][prior] = number
             if request_key in state["questions"]:
-                return state["questions"][request_key]
+                return Allocation(state["questions"][request_key], snapshot.commit_sha)
             state["last_id"] = max(state["last_id"], minimum)
             if request_key is not None:
                 state["last_id"] += 1
                 state["questions"][request_key] = state["last_id"]
-            if write_counter(repo, sha, state):
-                return state["last_id"]
+            if commit := write_counter(repo, snapshot.file_sha, state):
+                return Allocation(state["last_id"], commit)
     except (KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
         raise ValueError("Shared question allocation could not be confirmed; preserve its request and retry after reconciliation") from error
     raise ValueError("Shared counter changed concurrently; preserve the pending request and retry allocation")
+
+
+def prior_assignments(states: list[dict[str, Any]]) -> dict[str, int]:
+    assignments: dict[str, int] = {}
+    for state in states:
+        validate_counter(state)
+        for url, number in state.get("questions", {}).items():
+            key = hashlib.sha256(url.encode()).hexdigest()
+            if key in assignments and assignments[key] != number:
+                raise ValueError("Prior counters disagree on a question ID; preserve both assignments for reconciliation")
+            assignments[key] = number
+    return assignments
 
 
 def save_state(path: Path, state: dict[str, Any]) -> None:
@@ -216,7 +279,10 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
 
 
 def update(path: Path, *, seed: tuple[int, list[str]] | None = None, allocate: bool = True,
-           question_url: str | None = None) -> int:
+           question_url: str | None = None, include_counters: list[dict[str, Any]] | None = None,
+           confirm_prior_counters_complete: bool = False, restore_from: str | None = None) -> int:
+    if restore_from is not None and not re.fullmatch(r"[0-9a-fA-F]{40}", restore_from):
+        raise ValueError("Restore requires a verified full counter commit SHA")
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(path.with_name(path.name + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
     with os.fdopen(descriptor, "rb") as lock:
@@ -228,9 +294,12 @@ def update(path: Path, *, seed: tuple[int, list[str]] | None = None, allocate: b
             if seed is None:
                 raise ValueError("Counter is not seeded; use --seed-from for every current numbering discussion") from None
             state = {"last_id": 0, "seed_sources": []}
-        if (not isinstance(state, dict) or type(state.get("last_id")) is not int
-                or state["last_id"] < 0 or not isinstance(state.get("seed_sources"), list)):
-            raise ValueError("Invalid question counter; preserve it and recover its last verified value before allocating")
+        validate_counter(state)
+        if not isinstance(state.get("seed_sources"), list):
+            raise ValueError("Invalid local seed sources; preserve the counter before recovery")
+        snapshots = [state, *(include_counters or [])]
+        imported = prior_assignments(snapshots)
+        state["last_id"] = max(snapshot["last_id"] for snapshot in snapshots)
         if "pending_request" in state and (not isinstance(state["pending_request"], str) or not state["pending_request"]):
             raise ValueError("Invalid pending question allocation; preserve the counter before recovery")
         if seed is not None:
@@ -251,18 +320,26 @@ def update(path: Path, *, seed: tuple[int, list[str]] | None = None, allocate: b
         repository = queue.split("#", 1)[0] if queue else None
         if state.get("counter_repository") and state["counter_repository"] != repository:
             raise ValueError("Restore the recorded counter repository in [questions].queue before allocating")
-        if repository:
-            state["counter_repository"] = repository
+        bound = bool(state.get("counter_repository"))
+        if allocate and repository and not bound:
+            raise ValueError("Publish this machine's existing counter with seed before shared allocation; first setup must include every prior counter")
+        if restore_from is not None and (allocate or not repository or not confirm_prior_counters_complete):
+            raise ValueError("Counter restoration requires seed, a configured queue and --confirm-prior-counters-complete after reconciling pending writes")
         if allocate:
             key = question_url or state.setdefault("pending_request", uuid.uuid4().hex)
             save_state(path, state)
-            number = reserve_question(state["last_id"], key, repository)
+            allocation = reserve_question(state["last_id"], key, repository)
+            number = allocation.number
             state["last_id"] = max(state["last_id"], number)
+            if allocation.commit_sha:
+                state["counter_commit"] = allocation.commit_sha
             if question_url is None:
                 state.pop("pending_request", None)
         elif repository:
-            number = reserve_question(state["last_id"], None, repository)
-            state["last_id"] = max(state["last_id"], number)
+            allocation = reserve_question(state["last_id"], None, repository,
+                create=confirm_prior_counters_complete and not bound, assignments=imported, restore_from=restore_from)
+            number = allocation.number
+            state.update(last_id=max(state["last_id"], number), counter_repository=repository, counter_commit=allocation.commit_sha)
         if question_url is not None:
             state["questions"][question_url] = number
         save_state(path, state)
@@ -274,12 +351,21 @@ def main() -> int:
     parser.add_argument("action", choices=("next", "seed"))
     parser.add_argument("--seed-from", action="append", default=[], metavar="OWNER/REPO#NUMBER",
                         help="Current question/decision discussions; read all of them on initial setup")
+    parser.add_argument("--include-counter", action="append", type=Path, default=[], metavar="PATH",
+                        help="Existing counter snapshots from every other prior machine; reads IDs only")
+    parser.add_argument("--confirm-prior-counters-complete", action="store_true",
+                        help="All prior allocators are stopped and these snapshots cover every retained counter")
+    parser.add_argument("--restore-counter-from", metavar="COMMIT", help="Restore only a missing shared branch from verified counter history")
     args = parser.parse_args()
     try:
-        if args.action == "seed" and not args.seed_from:
-            raise ValueError("seed requires --seed-from numbering discussions")
-        seed = github_seed(args.seed_from) if args.seed_from else None
-        number = update(counter_path(), seed=seed, allocate=args.action == "next")
+        if args.action == "seed" and not (args.seed_from or args.include_counter or args.restore_counter_from or counter_path().exists()):
+            raise ValueError("seed requires current numbering discussions or retained counter snapshots")
+        if args.action != "seed" and (args.include_counter or args.confirm_prior_counters_complete or args.restore_counter_from):
+            raise ValueError("Counter migration and restoration options apply only to seed")
+        seed = github_seed(args.seed_from) if args.seed_from else (0, []) if args.action == "seed" else None
+        snapshots = [json.loads(path.read_text()) for path in args.include_counter]
+        number = update(counter_path(), seed=seed, allocate=args.action == "next", include_counters=snapshots,
+                        confirm_prior_counters_complete=args.confirm_prior_counters_complete, restore_from=args.restore_counter_from)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

@@ -6,6 +6,7 @@
 """Prove shared allocation, lock serialization, and fresh GitHub seeding."""
 
 import fcntl
+import base64
 import importlib.util
 import json
 import multiprocessing
@@ -62,33 +63,37 @@ class QuestionCounterTests(unittest.TestCase):
         revision = 0
         reads = 0
         conflicts = 0
+        synchronize = False
         lock = threading.Lock()
 
-        def read(repo: str, minimum: int) -> tuple[str, dict]:
+        def read(repo: str, minimum: int, **kwargs: object) -> counter.CounterSnapshot:
             nonlocal reads
             with lock:
-                snapshot = str(revision), json.loads(json.dumps(state))
+                snapshot = counter.CounterSnapshot(str(revision), json.loads(json.dumps(state)), f"commit-{revision}")
                 reads += 1
-                synchronize = reads <= 2
-            if synchronize:
+                wait = synchronize and reads <= 2
+            if wait:
                 barrier.wait(timeout=10)
             return snapshot
 
-        def write(repo: str, sha: str, updated: dict) -> bool:
+        def write(repo: str, sha: str, updated: dict) -> str | None:
             nonlocal revision, conflicts
             with lock:
                 if sha != str(revision):
                     conflicts += 1
-                    return False
+                    return None
                 state.update(updated)
                 revision += 1
-                return True
+                return f"commit-{revision}"
 
         with patch.object(counter, "configured_queue", return_value="owner/direction#7"), \
                 patch.object(counter, "read_counter", side_effect=read), \
                 patch.object(counter, "write_counter", side_effect=write), \
                 patch.object(counter, "read_discussion", side_effect=AssertionError("legacy seeds are not reread")), \
                 ThreadPoolExecutor(max_workers=2) as pool:
+            for path in paths:
+                counter.update(path, seed=self.seed, allocate=False)
+            reads, synchronize = 0, True
             numbers = list(pool.map(lambda path: counter.update(path, question_url=f"https://example.test/{path.name}"), paths))
             self.assertEqual(sorted(numbers), [self.seed[0] + 1, self.seed[0] + 2])
             self.assertGreater(conflicts, 0)
@@ -96,7 +101,7 @@ class QuestionCounterTests(unittest.TestCase):
             self.assertEqual(len(state["questions"]), 2)
             self.assertTrue(all("example.test" not in key for key in state["questions"]))
 
-            def write_then_lose_response(repo: str, sha: str, updated: dict) -> bool:
+            def write_then_lose_response(repo: str, sha: str, updated: dict) -> str | None:
                 self.assertTrue(write(repo, sha, updated))
                 raise OSError("response lost after commit")
 
@@ -117,8 +122,63 @@ class QuestionCounterTests(unittest.TestCase):
                                {"author": "owner", "body": "We discussed Q1000.\n```text\nOwner question: Q2000. Example only.\n```\n> Owner question: Q3000. Quote."}]}}
         with patch.object(counter, "read_discussion", return_value=record):
             self.assertEqual(counter.github_seed(["owner/direction#7"]), (101, [self.seed[1][0]]))
+        with patch.object(counter, "configured_queue", return_value="owner/direction#7"), \
+                patch.object(counter, "read_discussion", return_value=record):
+            self.assertEqual(counter.github_seed(["organization/product#1"])[0], 101)
+
+    def test_shared_allocation_requires_seed_and_never_recreates_missing_state(self) -> None:
+        counter.update(self.path, seed=self.seed, allocate=False)
+        with patch.object(counter, "configured_queue", return_value="owner/direction#7"), \
+                patch.object(counter, "counter_request", return_value=SimpleNamespace(ok=False, status=404)) as request:
+            with self.assertRaises(ValueError):
+                counter.update(self.path)
+            request.assert_not_called()
+            state = json.loads(self.path.read_text()) | {"counter_repository": "owner/direction"}
+            self.path.write_text(json.dumps(state))
+            for allocate in (True, False):
+                with self.subTest(allocate=allocate), self.assertRaises(ValueError):
+                    counter.update(self.path, seed=self.seed, allocate=allocate, confirm_prior_counters_complete=True)
+            self.assertTrue(all(call.args[0] == "GET" for call in request.call_args_list))
+
+    def test_bootstrap_imports_every_prior_counter_without_changing_old_assignments(self) -> None:
+        current = {"last_id": self.seed[0], "questions": {"https://example.test/a": self.seed[0]}}
+        other = {"last_id": self.seed[0] + 20, "questions": {"https://example.test/b": self.seed[0] + 20}}
+        assignments = counter.prior_assignments([current, other])
+        self.assertEqual(sorted(assignments.values()), [current["last_id"], other["last_id"]])
         with self.assertRaises(ValueError):
-            counter.github_seed(["owner/direction#7", "foreign/direction#1"])
+            counter.prior_assignments([current, {**other, "questions": {"https://example.test/a": other["last_id"]}}])
+        shared = {"version": 1, "director": "owner", "last_id": 0, "questions": {}}
+        snapshot = counter.CounterSnapshot("file", shared, "commit")
+        with patch.object(counter, "configured_queue", return_value="owner/direction#7"), \
+                patch.object(counter, "read_counter", return_value=snapshot) as read, \
+                patch.object(counter, "write_counter", return_value="confirmed"):
+            counter.update(self.path, seed=self.seed, allocate=False, include_counters=[other],
+                           confirm_prior_counters_complete=True)
+        self.assertTrue(read.call_args.kwargs["create"])
+        self.assertEqual(shared["last_id"], other["last_id"])
+        self.assertEqual(shared["questions"], counter.prior_assignments([other]))
+
+    def test_restore_uses_verified_history_and_never_replaces_an_existing_branch(self) -> None:
+        state = {"version": 1, "director": "owner", "last_id": self.seed[0], "questions": {}}
+        payload = {"sha": "file", "content": base64.b64encode(json.dumps(state).encode()).decode()}
+        responses = [SimpleNamespace(ok=False), SimpleNamespace(ok=True, body=payload), SimpleNamespace(ok=True),
+                     SimpleNamespace(ok=True, body={"object": {"sha": "history"}}), SimpleNamespace(ok=True, body=payload)]
+        with patch.object(counter, "counter_request", side_effect=responses) as request:
+            snapshot = counter.read_counter("owner/catalog", self.seed[0], restore_from="history")
+        self.assertEqual(snapshot.state, state)
+        writes = [call for call in request.call_args_list if call.args[0] != "GET"]
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0].args[2]["sha"], snapshot.commit_sha)
+        with patch.object(counter, "counter_request", return_value=SimpleNamespace(ok=True)) as request:
+            with self.assertRaises(ValueError):
+                counter.read_counter("owner/catalog", self.seed[0], restore_from="history")
+        self.assertEqual(request.call_count, 1)
+        with patch.object(counter, "counter_request", return_value=SimpleNamespace(ok=True, body=payload)):
+            self.assertEqual(counter.decoded_counter("owner/catalog", {"encoding": "none", "sha": "file"}), state)
+        with patch.object(counter, "counter_request", return_value=SimpleNamespace(ok=False,
+                body={"message": "Expected status checks did not pass"})):
+            with self.assertRaises(ValueError):
+                counter.write_counter("owner/catalog", "file", state)
 
     def test_two_harnesses_and_many_sessions_share_unique_sequence(self):
         with patch.dict(os.environ, {"CODE_HOME": self.temporary.name, "CODEX_HOME": "/codex-a"}):
@@ -184,11 +244,11 @@ class QuestionCounterTests(unittest.TestCase):
         counter.update(self.path, seed=self.seed, allocate=False)
         keys = []
 
-        def reserve(minimum: int, key: str, repo: str | None) -> int:
+        def reserve(minimum: int, key: str, repo: str | None) -> counter.Allocation:
             keys.append(key)
             if len(keys) == 1:
                 raise ValueError("unconfirmed write")
-            return minimum + 1
+            return counter.Allocation(minimum + 1)
 
         with patch.object(counter, "reserve_question", side_effect=reserve):
             with self.assertRaises(ValueError):
@@ -209,7 +269,7 @@ class QuestionCounterTests(unittest.TestCase):
             calls.append((method, path, body))
             if method == "GET":
                 return SimpleNamespace(ok=False, status=404)
-            return SimpleNamespace(ok=True, body={"sha": "server-object"})
+            return SimpleNamespace(ok=True, body={"sha": "server-object", "commit": {"sha": "confirmed-commit"}})
 
         with patch.object(counter, "counter_request", side_effect=request):
             counter.initialize_counter("owner/catalog", self.seed[0])
@@ -221,7 +281,7 @@ class QuestionCounterTests(unittest.TestCase):
         update = calls[-1][2]
         self.assertEqual(update["sha"], "observed-file-sha")
         self.assertEqual(update["branch"], counter.COUNTER_BRANCH)
-        with patch.object(counter, "counter_request", return_value=SimpleNamespace(ok=False, status=409)):
+        with patch.object(counter, "counter_request", return_value=SimpleNamespace(ok=False, status=409, body={"message": "sha does not match"})):
             self.assertFalse(counter.write_counter("owner/catalog", "stale", state))
 
     def test_question_heading_distinguishes_its_id_from_context(self):
@@ -253,7 +313,7 @@ class QuestionCounterTests(unittest.TestCase):
 
     def test_seed_reads_all_current_question_headings(self):
         reserved = {"body": "Director question: Q239. Earlier?", "provenance": {"author": "owner"},
-                    "comments": [{"author": "owner", "body": "Owner question: Q259. Later?"}], "url": self.seed[1][0]}
+                    "comments": [{"author": "owner", "body": "Reserved Q240–Q259. Context from someone else: Q999."}], "url": self.seed[1][0]}
         catalog = "https://github.com/owner/catalog/issues/9"
         for later_comment, expected in (("Owner question: Q263. Continue?", 263), ("Nothing numbered yet", 259)):
             with self.subTest(expected=expected):
