@@ -1105,7 +1105,8 @@ class ReleaseTests(ReleaseHarness):
                       "Claimed by trial-b Session: {}", "Claimed by trial-b, Session: {}",
                       "1. Session: {}", "Worker: trial-b. Session: {}", "Handoff: Session: {}",
                       "Claimed by: administrator Session: {}", "Worker: browser Session: {}",
-                      "Owner: human Session: {}"):
+                      "Owner: human Session: {}", "Next actor: human\nSession: {}",
+                      "Approval: browser\nSession: {}", "his browser\n\nSession: {}"):
             for value in ("other-session", "https://example.test/admin", "unknown"):
                 with self.subTest(field=field, value=value):
                     self.assertFalse(release.related_sessions_match(field.format(value), "session-b"))
@@ -1121,7 +1122,8 @@ class ReleaseTests(ReleaseHarness):
         ):
             self.assertFalse(CLAIM.has_ownership_assertion(prose))
         for field in ("Session: https://example.test/admin", "Native session: https://example.test/admin",
-                      "Claimed by worker Session: https://example.test/admin"):
+                      "Claimed by worker Session: https://example.test/admin",
+                      "Next actor: human\nSession: other-session", "his browser\n\nSession: other-session"):
             self.assertTrue(CLAIM.has_ownership_assertion(field))
 
     def test_related_source_followup_ignores_fenced_session_examples(self):

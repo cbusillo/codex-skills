@@ -291,7 +291,9 @@ def human_session_reference(text: str, position: int) -> bool:
     if not re.match(r"session[ \t]*:", text[position:], re.IGNORECASE):
         return False
     prefix = text[:position]
-    return bool(re.search(r"\b(?:administrator|browser|human)\s+$", prefix, re.IGNORECASE)) and not bool(re.search(
+    return bool(re.search(
+        r"\b\w+[ \t]+(?:administrator|browser|human)(?:[ \t]+|[ \t]*\n[ \t]*)$", prefix, re.IGNORECASE,
+    )) and not bool(re.search(
         r"\b(?:Claimed by:?|Worker:|Owner:)\s+\S+\s+$", prefix, re.IGNORECASE,
     ))
 
