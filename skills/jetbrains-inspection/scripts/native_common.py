@@ -6,9 +6,12 @@
 from __future__ import annotations
 
 import hashlib
+import errno
+import os
 import plistlib
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -51,18 +54,108 @@ def safe_text(value):
     return text[:2000]
 
 
-def delete_private(private):
-    for entry in private.iterdir():
+def record_private_rescan(receipt: dict[str, Any] | None, stage: str) -> None:
+    if receipt is not None:
+        rescans = receipt.setdefault("private_removal_rescans", {})
+        rescans[stage] = rescans.get(stage, 0) + 1
+
+
+def same_directory(path: Path, original: os.stat_result) -> bool:
+    try:
+        observed = path.stat(follow_symlinks=False)
+    except OSError:
+        return False
+    return stat.S_ISDIR(observed.st_mode) and (observed.st_dev, observed.st_ino) == (original.st_dev, original.st_ino)
+
+
+def remove_private_subtree(entry: Path, receipt: dict[str, Any] | None) -> None:
+    original = entry.stat(follow_symlinks=False)
+    try:
+        shutil.rmtree(entry)
+    except OSError as error:
+        if error.errno != errno.ENOTEMPTY or not same_directory(entry, original):
+            raise
+        record_private_rescan(receipt, "subtree")
+        shutil.rmtree(entry)
+
+
+def restore_private_owner(directory_fd: int, owner: bytes | None, receipt: dict[str, Any] | None) -> None:
+    if owner is None:
+        return
+    try:
+        descriptor = os.open("owner.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=directory_fd)
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(owner)
+            output.flush()
+            os.fsync(output.fileno())
+        os.fsync(directory_fd)
+    except FileExistsError:
+        return
+    except OSError as error:
+        if receipt is not None:
+            receipt["private_owner_restore_errno"] = error.errno
+
+
+def remove_private_contents(private: Path, receipt: dict[str, Any] | None, progress: dict[str, str]) -> None:
+    progress["stage"] = "enumeration"
+    entries = list(private.iterdir())
+    for entry in entries:
         if entry.name == "owner.json":
             continue
         if entry.is_dir() and not entry.is_symlink():
-            shutil.rmtree(entry)
+            progress["stage"] = "subtree"
+            remove_private_subtree(entry, receipt)
         else:
+            progress["stage"] = "entry"
             entry.unlink()
+
+
+def delete_private(private: Path, *, receipt: dict[str, Any] | None = None) -> None:
+    progress = {"stage": "root_open"}
+    directory_fd = None
+    original = None
     marker = private / "owner.json"
-    if marker.exists():
-        marker.unlink()
-    private.rmdir()
+    owner = None
+    owner_removed = False
+    try:
+        directory_fd = os.open(private, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        original = os.fstat(directory_fd)
+        progress["stage"] = "owner_read"
+        try:
+            descriptor = os.open("owner.json", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+        except FileNotFoundError:
+            descriptor = None
+        if descriptor is not None:
+            with os.fdopen(descriptor, "rb") as source:
+                owner = source.read()
+        remove_private_contents(private, receipt, progress)
+        progress["stage"] = "owner"
+        if marker.exists():
+            marker.unlink()
+            owner_removed = True
+        progress["stage"] = "root"
+        try:
+            private.rmdir()
+        except OSError as error:
+            if error.errno != errno.ENOTEMPTY or not same_directory(private, original) or marker.exists() or marker.is_symlink():
+                raise
+            record_private_rescan(receipt, "root")
+            remove_private_contents(private, receipt, progress)
+            progress["stage"] = "root"
+            private.rmdir()
+    except OSError as error:
+        if owner_removed and original is not None and directory_fd is not None and same_directory(private, original):
+            restore_private_owner(directory_fd, owner, receipt)
+        if receipt is not None:
+            receipt["private_removal_error"] = {
+                "stage": progress["stage"],
+                "errno": error.errno if type(error.errno) is int else None,
+            }
+        raise
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
 
 
 def storage_anchor(path):

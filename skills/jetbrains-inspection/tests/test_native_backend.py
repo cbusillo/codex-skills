@@ -894,6 +894,16 @@ print('Done.')
             result = self.assess()
         self.assertEqual(result["cleanup"]["status"], "failed")
         self.assertTrue(context.private.exists())
+        (context.private / "system").mkdir()
+        private_error = "private-path-and-credential-sentinel"
+        with patch.object(shutil, "rmtree", side_effect=OSError(errno.ENOTEMPTY, private_error)):
+            result = self.assess()
+        self.assertEqual(result["diagnostic"]["native"]["private_removal_error"],
+                         {"stage": "subtree", "errno": errno.ENOTEMPTY})
+        self.assertEqual(result["diagnostic"]["native"]["private_removal_rescans"], {"subtree": 1})
+        self.assertNotIn(private_error, json.dumps(result))
+        self.assertTrue((context.private / "owner.json").exists())
+        self.assertTrue(context.journal.exists())
 
     def test_reserved_empty_directory_and_partial_marker_are_recoverable(self):
         for partial in (False, True):
@@ -909,6 +919,56 @@ print('Done.')
                 self.assertFalse(context.private.exists())
                 self.assertFalse(context.journal.exists())
 
+    def test_recovery_removes_metadata_created_during_owned_directory_removal(self) -> None:
+        for at_root in (False, True):
+            with self.subTest(at_root=at_root):
+                context = self.reserve_run()
+                directory = context.private if at_root else context.private / "system"
+                directory.mkdir(exist_ok=True)
+                (directory / "cache").write_text("owned cache")
+                original_rmdir = os.rmdir
+                inserted = []
+
+                def insert_metadata(path: str | Path, *, dir_fd: int | None = None) -> None:
+                    if Path(path).name == directory.name and not inserted:
+                        (directory / ".DS_Store").write_bytes(b"filesystem metadata")
+                        inserted.append(True)
+                    original_rmdir(path, dir_fd=dir_fd)
+
+                self.args.native_recover_only = True
+                with patch.object(os, "rmdir", new=insert_metadata):
+                    result = self.assess()
+                self.assertEqual(result["cleanup"]["status"], "closed",
+                                 result["diagnostic"]["native"].get("private_removal_error"))
+                stage = "root" if at_root else "subtree"
+                self.assertEqual(result["diagnostic"]["native"]["private_removal_rescans"], {stage: 1})
+                self.assertFalse(context.private.exists())
+                self.assertFalse(context.journal.exists())
+
+    def test_root_removal_failure_preserves_owner_and_other_errnos_never_rescan(self) -> None:
+        for error_number in (errno.EACCES, errno.EIO, errno.ENOTEMPTY):
+            with self.subTest(errno=error_number):
+                context = self.reserve_run()
+                marker = context.private / "owner.json"
+                original_owner = marker.read_bytes()
+                original_rmdir = os.rmdir
+
+                def fail_root(path: str | Path, *, dir_fd: int | None = None) -> None:
+                    if Path(path).name == context.private.name:
+                        raise OSError(error_number, "private failure sentinel")
+                    original_rmdir(path, dir_fd=dir_fd)
+
+                self.args.native_recover_only = True
+                with patch.object(os, "rmdir", new=fail_root):
+                    result = self.assess()
+                self.assertEqual(result["cleanup"]["status"], "failed")
+                self.assertEqual(marker.read_bytes(), original_owner)
+                self.assertTrue(context.journal.exists())
+                detail = result["diagnostic"]["native"]
+                self.assertEqual(detail["private_removal_error"], {"stage": "root", "errno": error_number})
+                self.assertEqual(detail.get("private_removal_rescans", {}), {"root": 1} if error_number == errno.ENOTEMPTY else {})
+                native.recover_run(self.worker)
+
     def test_partial_owner_write_is_disposed_without_an_unjournaled_temporary(self):
         def partial_write(path, _identity):
             path.write_text('{"run_id":')
@@ -919,6 +979,66 @@ print('Done.')
         self.assertEqual(result["cleanup"]["status"], "closed")
         self.assertFalse((self.worker / "native-run.json").exists())
         self.assertFalse(list((self.root / "cache/native").glob("private-*")))
+
+    def test_root_removal_never_overwrites_a_new_ownership_marker(self) -> None:
+        context = self.reserve_run()
+        marker = context.private / "owner.json"
+        foreign = b"different immutable owner"
+        original_rmdir = os.rmdir
+
+        def change_owner(path: str | Path, *, dir_fd: int | None = None) -> None:
+            if Path(path).name == context.private.name:
+                marker.write_bytes(foreign)
+                raise OSError(errno.ENOTEMPTY, "private failure sentinel")
+            original_rmdir(path, dir_fd=dir_fd)
+
+        self.args.native_recover_only = True
+        with patch.object(os, "rmdir", new=change_owner):
+            result = self.assess()
+        self.assertEqual(result["cleanup"]["status"], "failed")
+        self.assertEqual(marker.read_bytes(), foreign)
+        self.assertNotIn("private_removal_rescans", result["diagnostic"]["native"])
+        self.assertTrue(context.journal.exists())
+
+    def test_root_rescan_preserves_a_marker_created_during_rescan(self) -> None:
+        context = self.reserve_run()
+        marker = context.private / "owner.json"
+        foreign = b"different immutable owner"
+        original_rmdir, original_listdir, original_scandir = os.rmdir, os.listdir, os.scandir
+        retrying = []
+        identity = context.private.stat()
+
+        def inject_owner(path: Any) -> None:
+            if not retrying:
+                return
+            if isinstance(path, int):
+                observed = os.fstat(path)
+                same = (observed.st_dev, observed.st_ino) == (identity.st_dev, identity.st_ino)
+            else:
+                same = Path(path).resolve() == context.private
+            if same:
+                marker.write_bytes(foreign)
+
+        def enumerate_names(path: Any = ".") -> Any:
+            inject_owner(path)
+            return original_listdir(path)
+
+        def enumerate_entries(path: Any = ".") -> Any:
+            inject_owner(path)
+            return original_scandir(path)
+
+        def metadata_race(path: str | Path, *, dir_fd: int | None = None) -> None:
+            if Path(path).name == context.private.name and not retrying:
+                (context.private / ".DS_Store").write_bytes(b"filesystem metadata")
+                retrying.append(True)
+            original_rmdir(path, dir_fd=dir_fd)
+
+        self.args.native_recover_only = True
+        with patch.object(os, "rmdir", new=metadata_race), patch.object(os, "listdir", new=enumerate_names), patch.object(os, "scandir", new=enumerate_entries):
+            result = self.assess()
+        self.assertEqual(result["cleanup"]["status"], "failed")
+        self.assertEqual(marker.read_bytes(), foreign)
+        self.assertTrue(context.journal.exists())
 
     def test_reserved_directory_does_not_adopt_an_unknown_temporary_file(self):
         context = self.reserve_run()

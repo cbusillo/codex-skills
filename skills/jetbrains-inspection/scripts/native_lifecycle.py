@@ -176,7 +176,7 @@ def recover(worker, receipt, common, write_record, remove_sdk, *, result_path=No
         interrupted_cleared = (record["phase"] == "engine_running" and record.get("license_boundary") is not True
                                and private.exists() and licensed_inspection_logged(private))
         if private.exists():
-            common.delete_private(private)
+            common.delete_private(private, receipt=receipt)
         receipt["private_deleted"] = True
         if release_run is not None:
             release_stop(worker, release_run)
@@ -293,7 +293,7 @@ class RunContext:
                 def dispose_private():
                     prove_private(self.identity, self.record.get("private_materialized", False))
                     if self.private.exists():
-                        self.common.delete_private(self.private)
+                        self.common.delete_private(self.private, receipt=self.receipt)
                 self.receipt["private_deleted"] = self.attempt("private_removal", dispose_private)
             if self.record is not None and self.receipt["private_deleted"] and self.receipt["sdk_removed"]:
                 held_outcome = self.record["phase"] == "engine_running"
