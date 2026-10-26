@@ -30,6 +30,7 @@ MAX_STRUCTURED_ITEMS_PER_SKILL = 128
 ALLOWED_PROPERTIES = {
     "name",
     "description",
+    "license",
     "disable-model-invocation",
     "metadata",
     "policy",
@@ -481,6 +482,12 @@ def run_self_tests():
         (
             "minimal",
             "---\nname: demo-skill\ndescription: Use for demo work.\n---\n\n# Demo\n",
+            True,
+            "Skill is valid!",
+        ),
+        (
+            "upstream-license-metadata",
+            "---\nname: demo-skill\ndescription: Use for demo work.\nlicense: Complete terms in LICENSE.txt\n---\n",
             True,
             "Skill is valid!",
         ),
