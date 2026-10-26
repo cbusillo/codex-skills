@@ -1375,23 +1375,20 @@ def settle_declared_gaps(coverage: dict[str, Any], gaps: list[str], covered_by: 
     return remaining
 
 
-def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]], reason: str, gaps: list[str], artifact: str | None = None) -> dict[str, Any]:
+def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verdict: str = "UNKNOWN",
+                           has_advisory: bool = False) -> str:
     product = host.IDE_PRODUCTS[receipt.get("product", PYTHON_PRODUCT_KEY)]
-    preexisting = [finding for finding in findings if finding.get("introduced") is False]
-    introduced = [finding for finding in findings if finding.get("introduced") is not False]
-    advisory = [finding for finding in introduced if finding["severity"] in ADVISORY_SEVERITIES]
-    findings = [finding for finding in introduced if finding["severity"] not in ADVISORY_SEVERITIES]
-    clean = reason == "native_completed" and not gaps
-    verdict = "GREEN" if clean and not findings else "RED" if clean else "UNKNOWN"
     action = "Fix current findings." if verdict == "RED" else "None." if verdict == "GREEN" else "Resolve the reported native prerequisite or execution-coverage gap before a fresh assessment."
-    if advisory and verdict != "UNKNOWN":
+    if has_advisory and verdict != "UNKNOWN":
         action += (" Review the advisory spelling and grammar findings: fix real mistakes, and add real tool, library"
                    " or product names to the repository's .idea/dictionaries/project.xml.")
     if reason in {"native_owner_activation_required", "native_activation_stop_recorded"}:
         action = "Owner question: the Director must restore the configured independent worker's activation through the product UI using existing entitlements. Stop licensed runs; never start a trial or copy credentials."
     elif reason == "native_populated_profile_required":
-        action = (f"Obtain a populated {product.display_name} default project inspection profile. "
-                  "Tracking a new shared profile requires the Director's existing approval; reuse approval already recorded. "
+        action = ("If a populated profile is already tracked, set `qualityGate.inspection.profile` to its repository-relative path. "
+                  f"Otherwise obtain a populated {product.display_name} default project inspection profile. "
+                  "Tracking a new shared profile needs explicit Director approval unless already recorded or covered by "
+                  "an established approved convention; reuse that approval. "
                   "Track only `.idea/inspectionProfiles/Project_Default.xml`, keep other IDE state ignored, and set "
                   "`qualityGate.inspection.profile` in `.github/github.json` to that repository-relative path. "
                   "Do not disable or tune inspections to pass. Run a fresh assessment after the prerequisite is resolved.")
@@ -1450,6 +1447,18 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
         action = "Final stdout and logs exceeded their shared read bound. Narrow the inspection scope or diagnose the noisy helper or log writer before a fresh assessment. Finalization still stops the owned group and independently scans for licensing events; preserve any resulting hold and use --native-recover-only for retained custody."
     elif reason in {"native_exit_observer_unavailable", "native_exit_observation_unproven"}:
         action = "Restore non-reaping child-exit observation in the documented native Python setup (waitid/WNOWAIT or kqueue/NOTE_EXIT). Registration is required before the launch gate opens. Preserve any held custody and use --native-recover-only first; never substitute a reaping poll before stopping the owned group."
+    return action
+
+
+def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]], reason: str, gaps: list[str], artifact: str | None = None) -> dict[str, Any]:
+    product = host.IDE_PRODUCTS[receipt.get("product", PYTHON_PRODUCT_KEY)]
+    preexisting = [finding for finding in findings if finding.get("introduced") is False]
+    introduced = [finding for finding in findings if finding.get("introduced") is not False]
+    advisory = [finding for finding in introduced if finding["severity"] in ADVISORY_SEVERITIES]
+    findings = [finding for finding in introduced if finding["severity"] not in ADVISORY_SEVERITIES]
+    clean = reason == "native_completed" and not gaps
+    verdict = "GREEN" if clean and not findings else "RED" if clean else "UNKNOWN"
+    action = next_action_for_reason(host, receipt, reason, verdict, bool(advisory))
     report = (f"{verdict}: native {product.display_name}; {reason}; {len(findings)} findings; {len(advisory)} advisory spelling or grammar findings; "
               f"{len(preexisting)} preexisting findings not counted; "
               f"{len(receipt.get('coverage', {}).get('covered_by', {}))} inspections covered by repository gates; "

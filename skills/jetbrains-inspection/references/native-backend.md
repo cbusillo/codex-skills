@@ -187,8 +187,9 @@ do not clear it merely to retry. Privacy-consent setup remains Director-held too
 ## Missing shared profile
 
 `native_populated_profile_required` means the repository has no unique populated
-profile matching its declaration. Obtain the product's default project inspection
-profile. Tracking a new shared profile follows the existing Director-approval rule;
+profile matching its declaration. If a populated profile is already tracked,
+point `qualityGate.inspection.profile` at that file. Otherwise obtain the product's
+default project inspection profile. Tracking a new shared profile follows the existing Director-approval rule;
 reuse approval already recorded. Track only
 `.idea/inspectionProfiles/Project_Default.xml`, keep other IDE state ignored, and
 set `qualityGate.inspection.profile` to that repository-relative path. Do not
@@ -197,10 +198,7 @@ reports actual findings or another explicit gap.
 
 The older `qodana_populated_profile_required` described the same prerequisite;
 Qodana is retired from the helper, so use the current native route rather than
-restoring that backend. An inventory is a fresh read of repository declarations
-and tracked profile XML, not another maintained repository list. A desktop
-serialization explanation needs its own observed evidence; an empty profile
-alone does not prove how it became empty.
+restoring that backend.
 
 ## Execution and cleanup
 

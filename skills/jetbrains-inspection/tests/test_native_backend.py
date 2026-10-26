@@ -94,6 +94,17 @@ class NativeTests(unittest.TestCase):
             receipt = native.new_receipt(host) | {"scope": "files", "selected_file_count": 1}
             result = native.envelope(host, receipt, [], str(caught.exception), [])
             self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+            with patch_attr(host, "native_backend_module", return_value=native), \
+                    patch_attr(native, "select_backend", return_value=("unavailable", f"native_ineligible={caught.exception}")), \
+                    patch_attr(native.common, "scope_selection", return_value=(repo, {}, "files", ["script.py"])), \
+                    patch_attr(host, "command_native") as worker, \
+                    patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--repo", str(repo)]), \
+                    redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(host.main(), 0)
+            automatic = json.loads(output.getvalue())
+            self.assertEqual(automatic["agent_result"]["next_action"], result["agent_result"]["next_action"])
+            self.assertEqual(automatic["agent_result"]["verdict"], result["agent_result"]["verdict"])
+            worker.assert_not_called()
             paths = re.findall(r"`([^`]+\.xml)`", result["agent_result"]["next_action"])
             self.assertEqual(len(paths), 1)
             profile = repo / paths[0]
