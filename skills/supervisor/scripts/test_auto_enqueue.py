@@ -1919,6 +1919,10 @@ class QualificationTests(unittest.TestCase):
         review.update(status="in_progress", conclusion=None)
         self.checks["summary"]["pendingCount"] = 1
         self.assertTrue(self.qualified())
+        self.checks["checkRuns"][0].update(status="in_progress", conclusion=None)
+        self.checks["summary"]["pendingCount"] = 2
+        self.assertFalse(self.qualified())
+        self.checks["checkRuns"][0].update(status="completed", conclusion="success")
         self.checks["summary"]["pendingCount"] = 0
         for status, conclusion in (("completed", "failure"), ("completed", "success")):
             with self.subTest(status=status, conclusion=conclusion):
