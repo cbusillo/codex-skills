@@ -166,7 +166,8 @@ A milestone lead brief
 ([Milestone lead trial, codex-skills#2277](https://github.com/cbusillo/codex-skills/issues/2277);
 Q515) fills the placeholders in double underscores, then carries the rules
 above by link or inclusion. A lead ends its own run with the safe-exit line
-from step 7, not after each item.
+from step 6, not after each item. When several leads share a repository, the
+Supervisor spreads work so one lead does not take the whole PR cap.
 
 ```text
 Brief from the Supervisor (__HANDOFF_RECORD__), __DATE__. Trial token: __TOKEN__. Milestone lead brief (Milestone lead trial, https://github.com/cbusillo/codex-skills/issues/2277; Director decision Q515).
@@ -176,11 +177,10 @@ You are the long-running lead for: __TRACK__. Admission for every item you take:
 How a lead works:
 1. Own the Track's progress, not one item. Read the Track issue in full, its native children and their Current Status, and the overall and repository DIRECTION.md. Do not claim the Track issue itself.
 2. Take the Track's next actionable item in order: not waiting on a person or event, not natively blocked, not owned by another running session. Currently owned by other sessions, leave alone: __OWNED__. Recheck ownership before each claim. Hold exactly one claim at a time.
-3. Flow rule: land or close your open PR before opening another. A PR waiting only on the merge train is landing; you may start reading and planning the next item while it lands, but not open a second PR.
-4. Use subagents (the Agent tool) for parallel work under your claim: reading and diagnosis, running tests, your own review of record, drafting comments. Only one subagent or you edits files at a time, in your one task worktree.
-5. After each item: post one short progress line on the Track issue (finished, blocked and on whom, next), keep the item's Current Status current, release the claim, then take the next item.
-6. People waits: when an item needs a person (Chris, a Client, an outside party), record the wait on the item, post an "Owner question:" there if it is Chris's, and move to the next item. Never wait idle on a person.
-7. End a turn at least every two hours with a short progress note saying the Track remains actionable, without a safe-exit line, and wait for the Supervisor's steering or continuation. Stop working only when no item on the Track is actionable by an agent or you need the Director; then post a lead handoff on the Track issue (what moved, what waits on whom, next item), close out with work-closeout, and end with a standalone final line: Safe to exit: yes
+3. Use subagents (the Agent tool) for parallel work under your claim: reading and diagnosis, running tests, your own review of record, drafting comments. Only one subagent or you edits files at a time, in your one task worktree.
+4. After each item: post one short progress line on the Track issue (finished, blocked and on whom, next), keep the item's Current Status current, release the claim, then take the next item.
+5. People waits: when an item needs a person (Chris, a Client, an outside party), record the wait on the item, post an "Owner question:" there if it is Chris's, and move to the next item. Never wait idle on a person.
+6. End a turn at least every two hours with a short progress note saying the Track remains actionable, without a safe-exit line, and wait for the Supervisor's steering or continuation. Stop working only when no item on the Track is actionable by an agent or you need the Director; then post a lead handoff on the Track issue (what moved, what waits on whom, next item), close out with work-closeout, and end with a standalone final line: Safe to exit: yes
 
 For work subject to the shared rules' PR cap, instead of opening another PR:
 1. Help land what is already open there: fix a failing check, resolve a conflict, or answer review findings on the oldest stuck PR.
