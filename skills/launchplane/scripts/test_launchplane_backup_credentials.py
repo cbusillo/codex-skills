@@ -245,5 +245,71 @@ def test_changed_service_and_mismatched_plan_never_verify_apply(tmp_path: Path) 
     assert code != 0 and payload["status"] == "accepted_unverified" and post.call_count == 1 and not get.called
 
 
+@pytest.mark.parametrize(
+    "status,code", [(403, "authorization_denied"), (409, "backup_credential_conflict"), (503, "database_storage_required")]
+)
+def test_readback_http_failure_keeps_apply_trace(tmp_path: Path, status: int, code: str) -> None:
+    arguments, _ = apply_args(tmp_path)
+    failure = urllib.error.HTTPError(
+        "https://example.invalid",
+        status,
+        "failure",
+        {},
+        io.BytesIO(json.dumps({"trace_id": "trace-readback", "error": {"code": code}}).encode()),
+    )
+    exit_code, payload, _, post = invoke(arguments, [failure], [plan(True)])
+    assert exit_code != 0 and payload["status"] == "accepted_unverified"
+    assert payload["summary"]["trace_id"] == "trace-plan"
+    assert payload["summary"]["read_back_trace_id"] == "trace-readback"
+    assert payload["result"]["applied"] is True and post.call_count == 1
+
+
+@pytest.mark.parametrize("code", ["mutation_in_progress", "mutation_reconciliation_required", "reconciliation_required"])
+def test_unresolved_mutation_never_claims_refusal(tmp_path: Path, code: str) -> None:
+    arguments, _ = apply_args(tmp_path)
+    failure = urllib.error.HTTPError(
+        "https://example.invalid",
+        409,
+        "failure",
+        {},
+        io.BytesIO(json.dumps({"trace_id": "trace-unresolved", "error": {"code": code}}).encode()),
+    )
+    exit_code, payload, get, post = invoke(arguments, [], [failure])
+    assert exit_code != 0 and payload["status"] == "outcome_unknown"
+    assert payload["summary"]["trace_id"] == "trace-unresolved"
+    assert payload["request"]["idempotency_key_sha256"] and not get.called and post.call_count == 1
+
+
+def test_unreadable_apply_retains_exception_diagnostics(tmp_path: Path) -> None:
+    arguments, _ = apply_args(tmp_path)
+    error = h.ServiceResponseError({"http_status": 202, "trace_id": "trace-unreadable"})
+    exit_code, payload, _, post = invoke(arguments, [], [error])
+    assert exit_code != 0 and payload["status"] == "outcome_unknown"
+    assert payload["summary"]["http_status"] == 202 and payload["summary"]["trace_id"] == "trace-unreadable"
+    assert post.call_count == 1
+
+
+@pytest.mark.parametrize("command", [PREFLIGHT, BINDINGS + "-read", BINDINGS + "-dry-run"])
+def test_transport_failure_is_unavailable(command: str) -> None:
+    code, payload, _, post = invoke(argv(command), [TimeoutError()])
+    assert code != 0 and payload["status"] == "unavailable" and not post.called
+
+
+def test_preflight_has_its_supported_timeout_and_override() -> None:
+    from launchplane_backup_credentials import PREFLIGHT_TIMEOUT_SECONDS
+
+    assert h.parse_args(argv(PREFLIGHT)).timeout == PREFLIGHT_TIMEOUT_SECONDS
+    assert h.parse_args(["--timeout", "90", *argv(PREFLIGHT)]).timeout == 90
+
+
+def test_unrelated_binding_uses_standard_public_identifier_shape() -> None:
+    observed = metadata()
+    observed["result"]["credentials"].append(
+        {"binding_id": "unrelated/id", "binding_key": "unrelated/key", "version_id": "version/other"}
+    )
+    code, _, _, _ = invoke(argv(BINDINGS + "-read"), [observed])
+    assert code == 0
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

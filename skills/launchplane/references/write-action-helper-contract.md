@@ -2616,7 +2616,9 @@ uses the train's GitHub rate budget for live evidence.
 --promotion-action ACTION [--proposal-id ID]` uses the service's
 `GET /v1/production-backup-authority/preflight`. It returns policy revision,
 record and boundary binding ids, boundary/PBS status, finish time and trace.
-It requires an explicit `capture_started: false` response. No capture is
+The boundary id is projected as `boundary_binding_id`. The default client
+timeout is 45 seconds for the service's 30-second provider check. It requires
+an explicit `capture_started: false` response. No capture is
 queued. Pending-proposal qualification remains subject to service authorization.
 
 `backup-worker-bindings-read --product P --context C --instance prod` reads

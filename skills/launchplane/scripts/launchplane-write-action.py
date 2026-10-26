@@ -11254,6 +11254,7 @@ def _add_reviewed_apply_arguments(parser: argparse.ArgumentParser, *, apply: boo
 OPERATION_PATH_CHECK_TIMEOUT_SECONDS = 300.0
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
+    from launchplane_backup_credentials import PREFLIGHT, PREFLIGHT_TIMEOUT_SECONDS
     from launchplane_testing_resources import TIMEOUT_SECONDS as testing_resources_timeout
     parser = argparse.ArgumentParser(description="Execute bounded Launchplane operator actions.")
     parser.add_argument("--config", help="Optional private operator JSON config path.")
@@ -11974,6 +11975,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args.timeout = getattr(
         args, "timeout",
         disposable_lane_timeouts[args.command] if args.command in disposable_lane_timeouts
+        else PREFLIGHT_TIMEOUT_SECONDS if args.command == PREFLIGHT
         else testing_resources_timeout if args.command.startswith("testing-replacement-resources-")
         else OPERATION_PATH_CHECK_TIMEOUT_SECONDS if args.command == "path-check" and args.intent is not None
         else 180.0 if args.command == "merge-train-controller-run-once"

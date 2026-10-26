@@ -6,13 +6,13 @@ from __future__ import annotations
 
 import argparse
 import http.client
-import json
 import re
 import urllib.error
 import urllib.parse
 from typing import Any
 
 PREFLIGHT = "production-backup-preflight-read"
+PREFLIGHT_TIMEOUT_SECONDS = 45.0
 BINDINGS = "backup-worker-bindings"
 COMMANDS = {PREFLIGHT, *(BINDINGS + "-" + mode for mode in ("read", "dry-run", "apply"))}
 CREDENTIAL_KEYS = ("PRODUCTION_BACKUP_SSH_PRIVATE_KEY", "PRODUCTION_BACKUP_SSH_KNOWN_HOSTS")
@@ -39,7 +39,7 @@ def add_parser(subparsers: Any) -> None:
 
 def identifier(h: Any, value: object) -> str:
     projected = h.public_identifier(value)
-    if projected != value or not re.fullmatch(r"[A-Za-z0-9_.:-]+", projected):
+    if projected != value:
         raise ValueError("invalid_backup_reference")
     return projected
 
@@ -175,6 +175,22 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             scope,
         )
 
+    def failure(status: str, diagnostics: dict[str, object]) -> dict[str, Any]:
+        factory = {"accepted_unverified": h._apply_response_unverified, "outcome_unknown": h._apply_outcome_unknown}.get(status)
+        failed = (
+            factory(operation=operation, request=request, label="backup worker bindings")
+            if factory
+            else h.base_payload(status=status, operation=operation, request=request)
+        )
+        failed["result"] = payload["result"]
+        failed["summary"].update(diagnostics)
+        if accepted:
+            failed["summary"].update({"read_back_" + key: value for key, value in diagnostics.items()})
+            failed["summary"].update(h.service_response_diagnostics(response))
+        if response and response.get("replayed") is True:
+            failed["summary"]["original_trace_id"] = h.public_trace_id(response.get("original_trace_id"))
+        return failed
+
     try:
         if operation == PREFLIGHT or mode == "read":
             path = h.helper_command_path(operation) if operation == PREFLIGHT else read_path
@@ -234,19 +250,31 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     except urllib.error.HTTPError as error:
         try:
             diagnostics = h.summarize_http_error(operation=operation, request=request, exc=error)["summary"]
-            payload["summary"] = diagnostics
-            payload["status"] = (
+            unresolved = diagnostics.get("error_code") in {
+                "mutation_in_progress",
+                "mutation_reconciliation_required",
+                "reconciliation_required",
+            }
+            status = (
                 "accepted_unverified"
                 if accepted
                 else "outcome_unknown"
-                if attempted and (error.code >= 500 or error.code == 408)
+                if attempted and (error.code >= 500 or error.code == 408 or unresolved)
                 else "refused"
             )
+            payload = failure(status, diagnostics)
         finally:
             error.close()
-    except (ValueError, h.LaunchplaneSafetyError, OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
-        payload["summary"] = h.service_response_diagnostics(response)
-        payload["status"] = "accepted_unverified" if accepted else "outcome_unknown" if attempted else "invalid"
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as error:
+        payload = failure(
+            "accepted_unverified" if accepted else "outcome_unknown" if attempted else "unavailable",
+            h.service_response_diagnostics(error),
+        )
+    except (ValueError, h.LaunchplaneSafetyError) as error:
+        payload = failure(
+            "accepted_unverified" if accepted else "outcome_unknown" if attempted else "invalid",
+            h.service_response_diagnostics(error),
+        )
     if payload["status"] != "ok":
         payload["summary"]["recommendation"] = (
             "Preserve the saved review, receipt, caller, exact request and original operation key. Read binding metadata before any same-key retry; never switch credentials, keys or workflows to bypass a refusal."
