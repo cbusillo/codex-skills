@@ -203,8 +203,9 @@ def read_counter(repo: str, minimum: int, *, create: bool = False, restore_from:
         elif create:
             initialize_counter(repo, minimum, assignments)
         else:
-            raise ValueError(f"Shared counter missing or not visible. Preserve pending writes; restore {COUNTER_BRANCH} from its verified counter_commit. "
-                             "First setup requires seed --include-counter PATH for prior machines and --confirm-prior-counters-complete.")
+            raise ValueError(f"Shared counter missing or not visible. If shared state ever existed, restore {COUNTER_BRANCH} "
+                             "with --restore-counter-from using a bound machine's verified counter_commit; do not bootstrap again. "
+                             "Only a Director who has never had shared state may bootstrap with all prior counters and --confirm-prior-counters-complete.")
         reference = counter_request("GET", reference_path)
     elif restore_from is not None:
         raise ValueError("Shared counter still exists; restoration never replaces an existing branch")
@@ -317,12 +318,12 @@ def update(path: Path, *, seed: tuple[int, list[str]] | None = None, allocate: b
                 return assignments[question_url]
         number = state["last_id"]
         queue = configured_queue()
-        repository = queue.split("#", 1)[0] if queue else None
-        if state.get("counter_repository") and state["counter_repository"] != repository:
+        configured_repository = queue.split("#", 1)[0] if queue else None
+        repository = state.get("counter_repository") if allocate else configured_repository
+        if state.get("counter_repository") and state["counter_repository"] != configured_repository:
             raise ValueError("Restore the recorded counter repository in [questions].queue before allocating")
-        bound = bool(state.get("counter_repository"))
-        if allocate and repository and not bound:
-            raise ValueError("Publish this machine's existing counter with seed before shared allocation; first setup must include every prior counter")
+        if allocate and repository and not state.get("counter_commit"):
+            raise ValueError("Shared activation is pending; reconcile seed before allocating a question")
         if restore_from is not None and (allocate or not repository or not confirm_prior_counters_complete):
             raise ValueError("Counter restoration requires seed, a configured queue and --confirm-prior-counters-complete after reconciling pending writes")
         if allocate:
@@ -336,8 +337,13 @@ def update(path: Path, *, seed: tuple[int, list[str]] | None = None, allocate: b
             if question_url is None:
                 state.pop("pending_request", None)
         elif repository:
+            known_history = any(snapshot.get("counter_commit") for snapshot in snapshots)
+            for snapshot in snapshots:
+                state.setdefault("questions", {}).update(snapshot.get("questions", {}))
+            state["counter_repository"] = repository
+            save_state(path, state)
             allocation = reserve_question(state["last_id"], None, repository,
-                create=confirm_prior_counters_complete and not bound, assignments=imported, restore_from=restore_from)
+                create=confirm_prior_counters_complete and not known_history, assignments=imported, restore_from=restore_from)
             number = allocation.number
             state.update(last_id=max(state["last_id"], number), counter_repository=repository, counter_commit=allocation.commit_sha)
         if question_url is not None:
@@ -358,7 +364,7 @@ def main() -> int:
     parser.add_argument("--restore-counter-from", metavar="COMMIT", help="Restore only a missing shared branch from verified counter history")
     args = parser.parse_args()
     try:
-        if args.action == "seed" and not (args.seed_from or args.include_counter or args.restore_counter_from or counter_path().exists()):
+        if args.action == "seed" and not (args.seed_from or args.include_counter or args.restore_counter_from or counter_path().exists() or configured_queue()):
             raise ValueError("seed requires current numbering discussions or retained counter snapshots")
         if args.action != "seed" and (args.include_counter or args.confirm_prior_counters_complete or args.restore_counter_from):
             raise ValueError("Counter migration and restoration options apply only to seed")

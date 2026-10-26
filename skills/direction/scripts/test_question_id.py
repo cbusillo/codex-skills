@@ -130,15 +130,29 @@ class QuestionCounterTests(unittest.TestCase):
         counter.update(self.path, seed=self.seed, allocate=False)
         with patch.object(counter, "configured_queue", return_value="owner/direction#7"), \
                 patch.object(counter, "counter_request", return_value=SimpleNamespace(ok=False, status=404)) as request:
-            with self.assertRaises(ValueError):
-                counter.update(self.path)
+            self.assertEqual(counter.update(self.path), self.seed[0] + 1)
             request.assert_not_called()
-            state = json.loads(self.path.read_text()) | {"counter_repository": "owner/direction"}
+            state = json.loads(self.path.read_text()) | {"counter_repository": "owner/direction", "counter_commit": "verified"}
             self.path.write_text(json.dumps(state))
             for allocate in (True, False):
                 with self.subTest(allocate=allocate), self.assertRaises(ValueError):
                     counter.update(self.path, seed=self.seed, allocate=allocate, confirm_prior_counters_complete=True)
             self.assertTrue(all(call.args[0] == "GET" for call in request.call_args_list))
+
+    def test_unconfirmed_seed_keeps_shared_intent_and_imported_assignments(self) -> None:
+        counter.update(self.path, seed=self.seed, allocate=False)
+        other = {"last_id": self.seed[0] + 20, "questions": {"https://example.test/prior": self.seed[0] + 20}}
+        with patch.object(counter, "configured_queue", return_value="owner/direction#7"), \
+                patch.object(counter, "reserve_question", side_effect=ValueError("outcome unknown")) as reserve:
+            with self.assertRaises(ValueError):
+                counter.update(self.path, seed=self.seed, allocate=False, include_counters=[other],
+                               confirm_prior_counters_complete=True)
+            state = json.loads(self.path.read_text())
+            self.assertEqual(state["questions"], other["questions"])
+            self.assertEqual(state["counter_repository"], "owner/direction")
+            with self.assertRaises(ValueError):
+                counter.update(self.path)
+            self.assertEqual(reserve.call_count, 1)
 
     def test_bootstrap_imports_every_prior_counter_without_changing_old_assignments(self) -> None:
         current = {"last_id": self.seed[0], "questions": {"https://example.test/a": self.seed[0]}}

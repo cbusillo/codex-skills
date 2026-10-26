@@ -87,8 +87,11 @@ changes on yes.
   [shared question counter](../direction/scripts/question_id.py):
   `uv run <direction-skill-dir>/scripts/question_id.py next`.
   Both harnesses use the counter in `CODE_HOME` or `~/.code`. For multiple
-  machines, configure the same existing `[questions].queue` in each machine's
-  private `skill-data/supervisor.toml`. The queue's repository holds an isolated
+  machines, use the same existing `[questions].queue` in each machine's
+  private `skill-data/supervisor.toml`, in the Director's personal repository
+  namespace. Queue configuration alone keeps legacy local numbering; explicit
+  `seed` after the migration below activates shared allocation. Cross-machine
+  safety begins only after that bootstrap and every machine's join, not on pull. The queue's repository holds an isolated
   `state/director-questions` branch containing only counter state, with no
   workflows or source files. GitHub's file-SHA update rejects competing writes;
   each allocation preserves its request identity for uncertain-write recovery.
@@ -115,7 +118,9 @@ changes on yes.
   restore only a missing branch with `seed --restore-counter-from COMMIT` and
   `--confirm-prior-counters-complete`, using the verified full counter commit
   and all retained counter snapshots. Restoration never overwrites an existing
-  branch. An unknown or incomplete history remains a recovery hold.
+  branch. An unknown or incomplete history remains a recovery hold. An uncertain
+  seed retains shared intent locally and blocks new IDs until seed is reconciled;
+  it cannot silently resume local allocation.
   Only that Director's and its configured automation's question headings and
   explicit historical `Reserved Qx–Qy` lines count, including in organization repos;
   incidental references, quoted IDs and other authors do not advance the seed.
