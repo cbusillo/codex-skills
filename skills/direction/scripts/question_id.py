@@ -146,7 +146,7 @@ def reservations(result: dict[str, Any], director: str) -> dict[str, int]:
             continue
         match = RESERVATION.match(comment["body"])
         if match is None:
-            if "<!-- director-question:allocation" in comment["body"]:
+            if comment["body"].startswith("<!-- director-question:allocation"):
                 raise ValueError("Malformed allocation record; preserve the queue before recovery")
             continue
         record = json.loads(match[1])
