@@ -16,6 +16,7 @@ import tempfile
 from pathlib import Path
 
 import account_choice
+import codex_auth_health
 
 HARNESSES = {"claude": "anthropic", "codex": "openai"}
 
@@ -150,6 +151,8 @@ def launch(harness, argv, named=None):
     child_env.update(chosen["env"])
     if variable in child_env:
         child_env[variable] = str(Path(child_env[variable]).expanduser())
+    if harness == "codex" and arguments[:1] not in (["login"], ["logout"]):
+        codex_auth_health.require_usable(Path(child_env.get(variable, str(Path.home() / ".codex"))))
     try:
         # Last-used state contains launch settings only, never login material.
         remember(path, {"name": chosen["name"], "env": {variable: child_env[variable]} if variable in child_env else {}})

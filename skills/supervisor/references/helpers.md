@@ -220,6 +220,21 @@ released. Other user turns or any later assistant turn invalidate it.
 
 ## Checks and morning digest
 
+The existing Codex idle watcher also checks configured Codex homes for permanent
+renewal failures, even without a worker on that account. It saves allowlisted
+auth events from `logs_2.sqlite` opened read-only, plus the observed process
+inventory, under that home's private `skill-data/supervisor-auth/`. It never
+opens credentials or saves raw log bodies, process arguments or environments.
+Evidence survives Codex's log rotation. Process inventory describes capture
+time; earlier process identities come only from retained log events.
+
+An `auth_failure` notice wakes the Supervisor once per failure episode through
+the existing delivered-state file. Tell the Director which account needs a
+normal Codex sign-in, then re-arm the watcher. Reuse that delivered-state file
+across restarts. It prevents repeat notices while launches on the failed home
+remain paused. A new failure after credentials change is a new episode.
+Missing or unreadable logs produce diagnostics, not a provider-wide launch hold.
+
 ```sh
 uv run skills/supervisor/scripts/goal_board.py --owner OWNER --format markdown
 uv run skills/supervisor/scripts/fleet_counts.py --owner OWNER
@@ -1589,6 +1604,23 @@ and the helper uses the first corresponding IDs in the provider's published
 `launchOrder`. It never re-ranks, substitutes a configured account or applies
 a private reserve. Account configuration only maps snapshot rows to launch
 environments. An unmatched or ambiguous choice refuses before creating tabs.
+
+Confirmed permanent Codex renewal failures are excluded from that published
+order. The launcher walks Context Panel's remaining order without re-ranking;
+an explicit `--account` cannot bypass a confirmed failure. Short-lived access
+expiry, an unavailable usage reading and network errors do not cause this hold.
+Interactive last-account fallback and managed fresh/resume clients check the
+same evidence before execution. Native `codex login` remains available for the
+Director to use; no helper signs in, signs out or renews credentials itself.
+
+Failure evidence applies to the unchanged sign-in file. Only its modification
+timestamp is inspected, never its contents. A replacement newer than the failure
+invalidates that old evidence and permits another normal launch; this is not a
+claim that the new sign-in works or can renew. A new permanent error pauses it
+again. Homes using a credential store without this file report
+`credential_generation_unavailable` and are not quarantined: this
+metadata-based invalidation covers file-backed homes.
+The evidence is private to these helpers, not a Context Panel status interface.
 
 Read Context Panel's
 [Use next ranking and launch receipts contract](https://github.com/cbusillo/context-panel/blob/main/docs/provider-usage-access.md#use-next-ranking-and-launch-receipts)

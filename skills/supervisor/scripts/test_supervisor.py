@@ -570,6 +570,7 @@ class TranscriptTests(unittest.TestCase):
 
 class LedgerTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch.object(account_choice, "load_config", return_value={"accounts": []}))
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

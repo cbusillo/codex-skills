@@ -23,6 +23,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+if __package__:
+    from skills.supervisor.scripts import codex_auth_health
+else:
+    import codex_auth_health
+
 PROVIDERS = ("openai", "anthropic", "google")
 # Supported variables that put a launched harness on an account. AGY uses its existing login.
 ACCOUNT_VARIABLES = {"openai": "CODEX_HOME", "anthropic": "CLAUDE_CONFIG_DIR"}
@@ -265,6 +270,8 @@ def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, na
     accounts = [a for a in config["accounts"] if a["provider"] == provider]
     if not accounts:
         raise ValueError(f"no configured {provider} accounts")
+    blocked = {a["name"] for a in accounts if provider == "openai" and a["env"].get("CODEX_HOME")
+               and codex_auth_health.observe(Path(a["env"]["CODEX_HOME"])).get("blocked")}
     if snapshot is None:
         raise ValueError(f"Context Panel snapshot unavailable ({unavailable_reason}); no account chosen")
     if provider == "google":
@@ -278,6 +285,8 @@ def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, na
         named = [a for a in accounts if a["name"] == name]
         if len(named) != 1:
             raise ValueError(f"no configured {provider} account named {name}")
+        if name in blocked:
+            raise ValueError(f"Codex {name} needs sign-in; launches on this account are paused")
         rows = [r for r in snapshot["accounts"] if isinstance(r, dict) and r.get("provider") == provider]
         matches = matching_rows(named[0], rows)
         if len(matches) != 1 or not matches[0].get("id"):
@@ -309,6 +318,18 @@ def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, na
         ids = order[:count]
         source = "context-panel-stale" if stale else "context-panel-batch"
         reason = "Context Panel recent stale launch order" if stale else "Context Panel ranked launch order"
+    if blocked and ids:
+        published = order if count > 1 or stale else [*ids, *order]
+        available = []
+        for ident in published:
+            choice = resolve_choice(provider, config, snapshot, ident, source, reason)
+            if choice["name"] not in blocked:
+                available.append(choice)
+            if len(available) == count:
+                return available
+        if len(available) < count:
+            raise ValueError("Context Panel has too few usable Codex accounts for this batch; "
+                             "an account needs sign-in. Use a smaller batch or sign in again")
     if not ids:
         raise ValueError(f"Context Panel has no {provider} choice; next capacity at "
                          f"{ranking.get('nextCapacityAt') or 'unknown'}")
