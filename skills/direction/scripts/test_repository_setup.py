@@ -169,7 +169,7 @@ class RepositorySetupTests(unittest.TestCase):
 
     def test_upstream_contribution_fork_is_not_checked(self) -> None:
         self.account.repos["o/upstream"] = {"fork": True}
-        with mock.patch.object(setup, "UPSTREAM_CONTRIBUTION_FORKS", frozenset({"o/upstream"})):
+        with mock.patch.object(audit.github_rulesets, "UPSTREAM_CONTRIBUTION_FORKS", frozenset({"o/upstream"})):
             result = self.account.collect()
         self.assertEqual((result["repositories"], result["gaps"]), (1, []))
 

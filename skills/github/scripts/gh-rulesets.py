@@ -151,7 +151,10 @@ def run(
         all_owned=args.all_owned,
         owner=args.owner,
     )
+    exempt = [repo for repo in repositories if github_rulesets.is_upstream_contribution_fork(repo)]
+    repositories = [repo for repo in repositories if repo not in exempt or lock_specs]
     specs = (*github_rulesets.standard_specs(app_id), *lock_specs)
+    repository_specs = {repo: lock_specs if repo in exempt else specs for repo in repositories}
     if args.command == "apply":
         if not args.confirm_owner_admin_write:
             raise github_rulesets.RulesetError(
@@ -170,7 +173,7 @@ def run(
         results = []
         for repo in repositories:
             try:
-                results.append(github_rulesets.apply_repository(client, repo, specs))
+                results.append(github_rulesets.apply_repository(client, repo, repository_specs[repo]))
             except github_rulesets.RulesetError as exc:
                 raise github_rulesets.RulesetError(
                     str(exc),
@@ -182,7 +185,7 @@ def run(
                     },
                 ) from exc
     else:
-        results = [github_rulesets.plan_repository(client, repo, specs) for repo in repositories]
+        results = [github_rulesets.plan_repository(client, repo, repository_specs[repo]) for repo in repositories]
     return {
         "owner": owner,
         "actor": client.actor,
@@ -197,6 +200,7 @@ def run(
             "tags": lock_tags,
             "bypass_integration_ids": sorted(set(extra_integration_ids)) if lock_specs else [],
         },
+        "exempt_repositories": exempt,
         "repository_count": len(repositories),
         "changed": any(result["changed"] for result in results),
         "repositories": results,

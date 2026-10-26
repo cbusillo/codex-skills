@@ -23,11 +23,6 @@ import iterm_tab
 # https://docs.renovatebot.com/configuration-options/
 RENOVATE_ROOT_FILES = frozenset({"renovate.json", "renovate.json5", ".renovaterc", ".renovaterc.json", ".renovaterc.json5"})
 RENOVATE_GITHUB_FILES = frozenset({"renovate.json", "renovate.json5"})
-UPSTREAM_CONTRIBUTION_FORKS = frozenset({
-    "cbusillo/companion", "cbusillo/companion-surface-api", "cbusillo/companion-surface-loupedeck",
-    "cbusillo/edge264-mvc", "cbusillo/intellij-community", "cbusillo/node-appletv-remote", "cbusillo/node-loupedeck",
-    "cbusillo/simple_zpl2", "cbusillo/teslajsonpy", "cbusillo/uplift-ble",
-})
 AGENT = "agent"
 DIRECTOR = "Director"
 
@@ -146,7 +141,7 @@ def installation_readable(fetch: Callable[[list[str]], Any]) -> bool:
 def collect(owner: str, *, fetch: Callable[[list[str]], Any], policy_reader: PolicyReader,
             developer: Path, codex_homes: list[dict[str, Any]]) -> dict[str, Any]:
     repos, cut = audit.owner_repositories(owner, fetch=fetch)
-    repos = {key: repo for key, repo in repos.items() if key not in UPSTREAM_CONTRIBUTION_FORKS}
+    repos = {key: repo for key, repo in repos.items() if not audit.github_rulesets.is_upstream_contribution_fork(key)}
     coverage = audit.repository_listing_gaps(cut, fetch=fetch)
     gaps = [gap(None, "app") for listing in coverage if listing["reason"] == "installation_selected_repositories"]
     if not installation_readable(fetch):
