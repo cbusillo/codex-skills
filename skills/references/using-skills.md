@@ -19,12 +19,13 @@ work changes.
 | Find or list issues, claim work, or update a plan | `github-plan` |
 | Hand implementation work to a separate agent process on any provider, including headless CLI handoffs (not an in-harness subagent, model review, or Computer Use call) | `supervisor` (launcher path) |
 | Follow CI, reviews, and mergeability until they settle | `babysit-pr` |
-| Run Python scripts, set up Python, or manage its dependencies and tests | `python-uv-workflow` |
-| Inspect changed code and resolve IDE findings | `jetbrains-inspection` |
+| Run Python, including `uv run python`, `uv run --extra/--python/--script`, `uv sync`, dependencies and tests | `python-uv-workflow` |
+| Validate changed code before pushing a PR, run IDE inspection, or resolve IDE findings | `jetbrains-inspection` |
 | Inspect or operate live hosts and managed services | `infra-ops` |
+| Read Launchplane context or logs, plan or run its operations, or use its merge train | `launchplane` |
 | Find unknown private access paths or source-of-truth docs | `docs-lookup` |
 | Build or install an installed or packaged app; assess readiness to review, merge, or ship | `repo-readiness` |
-| Close out, preserve work, clean up, or assess whether the Director can exit | `work-closeout` |
+| Close out, preserve work, retire a worktree (including after a merge), or assess whether the Director can exit | `work-closeout` |
 
 Use the host's skill invocation tool when available (including the catalog's
 namespace, such as `shared:github`). Otherwise open the listed `SKILL.md`.

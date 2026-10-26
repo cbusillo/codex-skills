@@ -1,5 +1,10 @@
 # Owning-skill routing evaluation
 
+`transcript-measure.py` measures real-session skill loading. Its command
+attribution treats uv's quiet, Python, extra and script options as wrappers,
+retains `work-closeout` ownership of worktree retirement after a merge, and
+does not count offline contract validators as Launchplane operations.
+
 The cases under `owning-skill/` cover a merge during a direction session,
 CI watching during GitHub work, an adjacent spelling correction, and a merge
 discussion with no authority to act. Only the initial skill is named in the

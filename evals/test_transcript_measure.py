@@ -152,6 +152,14 @@ class TranscriptMeasureTests(unittest.TestCase):
             "uv run --no-cache pytest -q": {"python-uv-workflow"},
             "uv run scripts/gh-pr.py --repo o/r list": {"github"},
             "uv run scripts/launchplane-service-logs.py --config c": {"launchplane"},
+            "uv run -q skills/github/scripts/gh-plan.py show 4": {"github-plan"},
+            "uv run --python 3.12 scripts/launchplane-context.py --repo o/r": {"launchplane"},
+            "uv run --extra dev --script scripts/gh-pr.py checks 4": {"github"},
+            "uv run --python=3.12 python -m pytest": {"python-uv-workflow"},
+            "uv sync --locked": {"python-uv-workflow"},
+            "dev-worktree retire --dry-run /work/task": {"work-closeout"},
+            "uv run skills/launchplane/scripts/check-agent-operator-contract.py": set(),
+            "uv run skills/launchplane/scripts/check-agent-operator-contract-freshness.py --help": set(),
         }
         for command, expected in owners.items():
             with self.subTest(command=command):

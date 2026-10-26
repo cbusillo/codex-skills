@@ -28,7 +28,7 @@ from pathlib import Path
 
 # Patterns match the start of a shell segment, either as written or with its helper path
 # reduced to the program name ("uv run /x/gh-pr.py merge 3" also as "gh-pr.py merge 3").
-UV_RUN = r"uv run (?:--(?:quiet|no-cache) )*+"
+UV_RUN = r"uv run (?:(?:--(?:quiet|no-cache|script)|-q) |--(?:python|extra)(?:=|\s+)\S+ )*+"
 STEPS = {
     "github": r"gh pr (create|merge|ready|edit|comment|view|update-branch)|gh pr checks(?!.*\s--watch(\s|$))|git push"
     r"|gh-pr(\.py)?( |$)"
@@ -40,7 +40,7 @@ STEPS = {
     r"|" + UV_RUN + r"(?!--with)(?!--no-project)(?!python3? -c)(?!\S*skills/)(?!\$)\S+",
     "infra-ops": r"ssh |systemctl |docker (-H|--context|compose|exec) |pct |qm |zfs |tailscale |npmplus-ops|private-context-check",
     "docs-lookup": r"op (read|item)|security find-(generic|internet)-password|bw get",
-    "launchplane": r"launchplane(?:-[\w-]+)?(?:\.py)?( |$)|check-agent-operator-contract",
+    "launchplane": r"launchplane(?:-[\w-]+)?(?:\.py)?( |$)",
     "model-review": r"codex exec|claude (-p|--print)|agy |gemini |review_with_model",
     "local-llm": r"lms |lm_studio_|local_codex_agent",
     "google-seo": r"lighthouse |bing-webmaster|google-search-console|google-cloud-inventory",
