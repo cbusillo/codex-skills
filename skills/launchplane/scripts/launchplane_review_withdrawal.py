@@ -105,6 +105,16 @@ def project(h: Any, response: object, body: dict[str, object]) -> dict[str, obje
 
 
 
+REFUSAL_ADVICE = {
+    "review_authority_changed": "The product or its Client changed; review the current request.",
+    "repository_mismatch": "The product does not own the requested repository.",
+    "pull_request_closed": "A new withdrawal requires an open pull request.",
+    "head_changed": "The pull request head changed; review the current head.",
+    "client_decision_exists": "The Client has already decided on this head.",
+    "no_pending_labeled_request": "There is no labeled Client review request to withdraw.",
+}
+
+
 RECOVERY = {
     "ok": "Pending request only. Client decisions and release acceptance remain unchanged.",
     "accepted_unverified": "Keep the applied receipt and exact original intent/key. The original caller must inspect service readback before proceeding.",
@@ -130,6 +140,8 @@ def finish(h: Any, *, operation: str, request: dict[str, object], status: str,
     if operation_key:
         summary["idempotency_key"] = operation_key
     recommendation = RECOVERY.get(status, str(summary.get("recommendation", "Inspect the service refusal before retrying.")))
+    if advice := REFUSAL_ADVICE.get(str(summary.get("refusal_reason", ""))):
+        recommendation = advice + " " + recommendation
     if status == "history_unverifiable" and result and result.get("replan_required") is True:
         recommendation += " " + RECOVERY["replan_required"]
     if result and result.get("prior_effects_unknown") is True:
@@ -190,7 +202,8 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         return finish(h, operation=operation, request=request, operation_key=operation_key, status=status, result=result, diagnostics=h.service_response_diagnostics(response))
     except urllib.error.HTTPError as error:
         try:
-            projected = h.summarize_http_error(operation=operation, request=request, exc=error, provider_payload=h._error_payload_from_http(error))
+            provider_payload = h._error_payload_from_http(error)
+            projected = h.summarize_http_error(operation=operation, request=request, exc=error, provider_payload=provider_payload)
             diagnostics = projected.get("summary", {})
             code = diagnostics.get("error_code")
             if known_receipt is not None:
@@ -209,6 +222,11 @@ def execute(h: Any, args: argparse.Namespace) -> int:
                     "product_review_withdrawal_refused": "refused",
                     "product_review_withdrawal_unsettled": "outcome_unknown",
                 }.get(code, projected["status"])
+            details = provider_payload.get("error")
+            reason = details.get("reason") if isinstance(details, dict) else None
+            if (error.code == 409 and status == "refused" and code == "product_review_withdrawal_refused"
+                    and isinstance(reason, str) and reason in REFUSAL_ADVICE):
+                diagnostics = {**diagnostics, "refusal_reason": reason}
             return finish(h, operation=operation, request=request, operation_key=operation_key, status=status, result=known_receipt, diagnostics=diagnostics)
         finally:
             error.close()
