@@ -989,13 +989,11 @@ Use PRs for all non-trivial changes.
   the complete suite runs only in CI; Ready and merge evidence follow the
   [test command contract](references/config-schema.md#workflow-metadata).
   Pushing opens that CI feedback loop and does not require it to have run locally.
-  For code changes with an available IDE project, run
+  For code changes, run
   `jetbrains-inspection` on the changed files before pushing or updating a PR.
   If `.github/github.json` defines `qualityGate.inspection`, PR creation and
   updates, ready-to-merge claims, and merges carry that evidence or an explicit
-  not-run reason. A recorded contention or preemption `UNKNOWN` under the
-  `repo-readiness` milestone exception permits an already authorized merge while
-  readiness stays not fully ready; keep the reason and follow-up. If that config
+  not-run reason. If that config
   is blank, missing, contradictory, or surprising, use a one-off
   `changed_files` check only when the helper can infer the route, and ask before
   changing durable config or trusting a suspicious value. If inspection is
@@ -1130,7 +1128,8 @@ failure and never causes a merge retry.
   and the stale-checkout report. A runtime-bound checkout only ever uses the
   reconciler. Never reset, stash, clean, or overwrite an unsafe checkout. The
   active task worktree stays the agent's source.
-- **Source worktree**: Sessions end before the train lands their PR, so the
+- **Source worktree**: Load `work-closeout` before retirement. Sessions end before
+  the train lands their PR, so the
   landing step retires the PR's task worktree on this host:
   `uv run scripts/landed_worktrees.py --repo OWNER/REPO --pr N --checkout /any/local/checkout --apply`.
   It acts only on a merged or closed PR, on worktrees whose lock names a retire

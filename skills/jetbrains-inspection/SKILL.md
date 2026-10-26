@@ -1,102 +1,53 @@
 ---
 name: jetbrains-inspection
-description: Use JetBrains inspections through isolated native PyCharm for Python/Odoo on macOS or the Inspection API; trigger for code changes, readiness checks, PR/push validation, IDE warnings, inspection triage, worktree-safe inspection routing, or when code quality should be driven toward zero actionable IDE findings.
+description: Use JetBrains inspections through isolated headless native PyCharm, IntelliJ IDEA and WebStorm workers on macOS; trigger for code changes, readiness checks, PR/push validation, IDE warnings, inspection triage, or when code quality should be driven toward zero actionable IDE findings.
 metadata:
   short-description: Run JetBrains IDE inspections safely
 resources:
   - path: scripts/jb-inspect.py
     kind: script
-    description: Route-safe JetBrains inspection helper with lifecycle, stale-result, and cleanup handling.
+    description: Native-worker inspection helper with outcome logging and retirement of IDE state the desktop route left behind.
   - path: tests/test_jb_inspect.py
     kind: reference
-    description: Regression tests for JetBrains inspection helper routing and lifecycle behavior.
+    description: Regression tests for the helper's lane routing, outcome logs and worktree retirement.
 commands:
-  - name: jetbrains-inspection-open-worktree
-    source: skill
-    resource_path: scripts/jb-inspect.py
-    example_argv: ["uv", "run", "scripts/jb-inspect.py", "open-worktree", "--repo", "$PWD"]
-    purpose: Opens and claims one exact IDE project without inspecting; does not dispatch lanes.
   - name: jetbrains-inspection-agent-inspect
     source: skill
     resource_path: scripts/jb-inspect.py
     example_argv: ["uv", "run", "scripts/jb-inspect.py", "agent-inspect", "--repo", "$PWD", "--scope", "changed_files"]
-    purpose: Runs the one-shot agent inspection flow and emits a compact terminal result envelope.
-  - name: jetbrains-inspection-list-projects
-    source: skill
-    resource_path: scripts/jb-inspect.py
-    example_argv: ["uv", "run", "scripts/jb-inspect.py", "list-projects"]
-    purpose: Lists discovered IDE projects and plugin routes without opening or inspecting.
-  - name: jetbrains-inspection-resolve-route
-    source: skill
-    resource_path: scripts/jb-inspect.py
-    example_argv: ["uv", "run", "scripts/jb-inspect.py", "resolve-route", "--repo", "$PWD"]
-    purpose: Resolves an already-open target IDE/project route without opening or inspecting.
-  - name: jetbrains-inspection-prepare-worktree
-    source: skill
-    resource_path: scripts/jb-inspect.py
-    example_argv: ["uv", "run", "scripts/jb-inspect.py", "prepare-worktree", "--repo", "$PWD"]
-    purpose: Backward-compatible alias for open-worktree.
-  - name: jetbrains-inspection-prepare
-    source: skill
-    resource_path: scripts/jb-inspect.py
-    example_argv: ["uv", "run", "scripts/jb-inspect.py", "prepare", "--repo", "$PWD"]
-    purpose: Backward-compatible alias for open-worktree.
-  - name: jetbrains-inspection-inspect
-    source: skill
-    resource_path: scripts/jb-inspect.py
-    example_argv: ["uv", "run", "scripts/jb-inspect.py", "inspect", "--repo", "$PWD", "--scope", "changed_files"]
-    purpose: Opens the exact worktree if needed, inspects it, fetches problems, and cleans up helper-opened projects.
-  - name: jetbrains-inspection-inspect-closeout
-    source: skill
-    resource_path: scripts/jb-inspect.py
-    example_argv: ["uv", "run", "scripts/jb-inspect.py", "inspect-closeout", "--repo", "$PWD", "--scope", "changed_files"]
-    purpose: Runs the readiness/hand-off inspection flow with route safety, lifecycle cleanup, and stale-result checks.
-  - name: jetbrains-inspection-get-status
-    source: skill
-    resource_path: scripts/jb-inspect.py
-    example_argv: ["uv", "run", "scripts/jb-inspect.py", "get-status", "--repo", "$PWD"]
-    purpose: Reads route-pinned inspection status through the helper.
-  - name: jetbrains-inspection-get-problems
-    source: skill
-    resource_path: scripts/jb-inspect.py
-    example_argv: ["uv", "run", "scripts/jb-inspect.py", "get-problems", "--repo", "$PWD", "--severity", "error"]
-    purpose: Fetches current inspection problems through the helper.
+    purpose: Runs one assessment on an isolated native worker and emits a compact terminal result envelope.
   - name: jetbrains-inspection-summarize-outcomes
     source: skill
     resource_path: scripts/jb-inspect.py
     example_argv: ["uv", "run", "scripts/jb-inspect.py", "summarize-outcomes"]
-    purpose: Summarizes outcome logs diagnostically or runs strict artifact-pinned sample qualification without inspecting.
+    purpose: Summarizes outcome logs diagnostically without inspecting.
   - name: jetbrains-inspection-cleanup-helper-leases
     source: skill
     resource_path: scripts/jb-inspect.py
     example_argv: ["uv", "run", "scripts/jb-inspect.py", "cleanup-helper-leases", "--no-dry-run"]
-    purpose: Reconciles stale helper-owned leases under the lifecycle lock without path-only project closes.
+    purpose: Reconciles stale leases the retired desktop route left, under the lifecycle lock.
   - name: jetbrains-inspection-remove-worktree
     source: skill
     resource_path: scripts/jb-inspect.py
     example_argv: ["uv", "run", "scripts/jb-inspect.py", "remove-worktree", "--repo", "/exact/task/path"]
-    purpose: Dry-runs live helper-owned SDK retirement; with --no-dry-run retires SDKs before non-force linked worktree removal.
+    purpose: Dry-runs helper-owned SDK retirement; with --no-dry-run retires SDKs before non-force linked worktree removal.
   - name: jetbrains-inspection-cleanup-helper-sdks
     source: skill
     resource_path: scripts/jb-inspect.py
     example_argv: ["uv", "run", "scripts/jb-inspect.py", "cleanup-helper-sdks"]
-    purpose: Dry-runs helper-owned removed-worktree SDK cleanup through discovered live IDEs.
+    purpose: Dry-runs helper-owned removed-worktree SDK cleanup through running IDEs.
 policy:
   command_policies:
     - id: prefer-jb-inspect-for-plugin-http
       match:
         shell_regex: "\\b(curl|wget|http)\\b.*\\b(127\\.0\\.0\\.1|localhost)[:/]\\S*/(api/)?inspection\\b"
       action: require_preferred
-      message: Direct HTTP calls to the JetBrains inspection plugin bypass route resolution, worktree safety, stale-result handling, lifecycle locking, and cleanup. Use the inspection helper instead.
+      message: Agents do not inspect through the desktop JetBrains plugin's HTTP API. Use the inspection helper, which runs an isolated native worker.
       preferred:
         - kind: script
           path: scripts/jb-inspect.py
           example_argv: ["uv", "run", "scripts/jb-inspect.py", "agent-inspect", "--repo", "$PWD", "--scope", "changed_files"]
-          purpose: Runs the one-shot agent inspection flow with route safety, lifecycle cleanup, and terminal result handling.
-        - kind: script
-          path: scripts/jb-inspect.py
-          example_argv: ["uv", "run", "scripts/jb-inspect.py", "get-status", "--repo", "$PWD"]
-          purpose: Reads route-pinned plugin status through the helper.
+          purpose: Runs one assessment on an isolated native worker and emits a compact terminal result envelope.
 ---
 
 # JetBrains Inspection
@@ -104,42 +55,38 @@ policy:
 Apply [task scope and authorization](../references/execution-scope.md) when
 using this workflow; it defines how existing approval and task boundaries apply.
 
-Use the script-backed helper to run and interpret JetBrains inspections through
-native PyCharm or the Inspection API. Prefer it over direct curl or MCP
-tool calls.
+Use the script-backed helper to run and interpret JetBrains inspections. Every
+agent assessment runs on an isolated headless native worker; agents never
+inspect through the desktop IDE or its Inspection API plugin, which stays a
+Marketplace product for people. Do not call the plugin's HTTP or MCP API.
 
-On macOS, `agent-inspect` defaults to isolated native PyCharm for Python/YAML
-selections and Odoo Python/XML/YAML selections in root PyCharm lanes when an eligible
-independent worker, interpreter and profile are configured. In a repository whose
-configured IDE is WebStorm, root npm projects with a `package-lock.json` route
-TypeScript, JavaScript and JSON selections to native WebStorm instead, and in
-one whose configured IDE is IntelliJ IDEA, root Gradle projects route Kotlin and
-Java selections that include a `.kt` file to native IntelliJ IDEA. Native is
-the only isolated backend. Automatic selection never enters the desktop API lifecycle:
-without an eligible native worker, and for unsupported selections, it returns
+On macOS, `agent-inspect` routes Python/YAML selections and Odoo
+Python/XML/YAML selections in root PyCharm lanes to native PyCharm when an
+eligible independent worker, interpreter and profile are configured. In a
+repository whose configured IDE is WebStorm, root npm projects with a
+`package-lock.json` route TypeScript, JavaScript and JSON selections to native
+WebStorm, and in one whose configured IDE is IntelliJ IDEA, root Gradle projects
+route Kotlin and Java selections that include a `.kt` file to native IntelliJ
+IDEA. Any other selection, and any host without an eligible worker, returns
 UNKNOWN with `isolated_backend_unavailable` and setup instructions before
-contacting an IDE. Read
-[native PyCharm](references/native-backend.md) before configuring, diagnosing
-or changing that runner. It uses the independently Director-activated worker
-in place, with its shared exclusive lock and private system/cache/log paths;
-it never opens the desktop IDE. Never copy, export or move its config,
-activation, accounts, licence or credentials, or read activation-bearing files.
-On a licence prompt, lapsed activation or trial offer, stop the licensed run
-and post an `Owner question:` on the item. The Director restores activation
-through the normal product UI using existing entitlements.
+starting a worker. Keep that coverage UNKNOWN; there is no fallback route.
+Read [native backend](references/native-backend.md) before configuring,
+diagnosing or changing that runner. It uses the independently Director-activated
+worker in place, with its shared exclusive lock and private system/cache/log
+paths. Never copy, export or move its config, activation, accounts, licence or
+credentials, or read activation-bearing files. On a licence prompt, lapsed
+activation or trial offer, stop the licensed run and post an `Owner question:`
+on the item. The Director restores activation through the normal product UI
+using existing entitlements.
 
 In repositories with inspection lanes, native selection follows the lane
 router and omits unmatched files (such as Markdown). Receipts name unmatched
 and excluded files. Explicit `--scope files` overrides lane exclusions;
-implicit scopes honor them. The API remains available only with explicit
-`--backend api` for an intended API session; a Supervisor brief that prohibits
-desktop IDE use still prohibits that route. Choose with
-`--backend native|api`. `JB_INSPECT_DEFAULT_BACKEND` can prefer native; an API
-preference still returns UNKNOWN and requires explicit `--backend api`. Run one
-capped, niced headless worker at a time and pause above load1 64. Report the
-backend and coverage with every verdict. Missing or unproven required checks
-remain UNKNOWN. Native retains current findings
-alongside UNKNOWN and separates registration from positive execution evidence.
+implicit scopes honor them. Run one capped, niced headless worker at a time and
+pause above load1 64. Report the backend and coverage with every verdict.
+Missing or unproven required checks remain UNKNOWN. Native retains current
+findings alongside UNKNOWN and separates registration from positive execution
+evidence.
 
 When IDE configuration appears in the change set, use
 `../references/ide-configuration-policy.md` before deciding whether to keep,
@@ -149,88 +96,6 @@ plus only safe hunks in mixed tracked files; never use blanket commit, revert,
 clean, or stash operations that can absorb machine-local or unrelated IDE state.
 Do not stage untracked, non-ignored IDE configuration automatically; check
 repository policy and ask when the sharing decision remains unclear.
-
-Set `HELPER=<skill-dir>/scripts/jb-inspect.py`; `<skill-dir>` holds this `SKILL.md`.
-
-For plugin installation or update requests, use the plugin's
-[full-build setup and recovery instructions](https://github.com/cbusillo/jetbrains-inspection-api#full-builds-and-automatic-ide-updates).
-In the IDE, add
-`https://github.com/cbusillo/jetbrains-inspection-api/releases/latest/download/updatePlugins.xml`
-once under **Settings → Plugins → ⚙ → Manage Plugin Repositories**. The IDE then
-offers full-build updates through its normal update checks; the user applies
-the update and restarts when requested. Check that the feed and its linked zip
-are published before recommending installation. Marketplace Stable approval and
-an `agents` channel upload are separate from a usable GitHub build. After the
-restart, use `resolve-route --repo "$PWD"` and require the installed
-`plugin_version` and `plugin_build_fingerprint` to match the chosen release's
-version and clean source commit. A release or feed alone does not prove the
-running IDE was updated.
-
-## Before The First Inspection
-
-The following desktop lifecycle procedure applies to the API backend. Native
-uses its private-snapshot preparation and cleanup from the linked reference.
-
-If `.github/github.json` sets `qualityGate.inspection.prepare`, the API assessment
-commands run that exact repository command in the exact linked worktree before
-opening it. Start the assessment directly:
-
-```bash
-uv run "$HELPER" agent-inspect --backend api --repo "$PWD" --scope changed_files
-```
-
-This explicit API session also handles repositories with `qualityGate.inspection.lanes` and no
-top-level IDE: shared preparation runs before the non-empty lanes, then each
-lane selects its configured IDE and project path. A separate `open-worktree`
-step is not required. Read [inspection configuration](references/inspection-config.md)
-for lane routing and opening one project without inspecting. Do not substitute
-a different setup command, even if it seems equivalent.
-
-Preparation may create ignored worktree-local `.venv/` or `.idea/` state.
-A nonzero exit or tracked-file mutation blocks the first inspection. Keep
-ignored IDE state untracked; starting to track it changes durable repository
-policy and requires explicit user direction.
-
-Python repositories should prefer the structured, skill-owned preparation
-shape instead of embedding an absolute helper path or copying IDE files between
-worktrees:
-
-```json
-{
-  "qualityGate": {
-    "inspection": {
-      "prepare": {
-        "python": {
-          "version": "3.13",
-          "moduleName": "example-project",
-          "testRoots": ["tests"],
-          "sync": true,
-          "extras": ["dev"],
-          "requiredGeneratedState": [".venv", ".idea"]
-        }
-      }
-    }
-  }
-}
-```
-
-For standalone PEP 723 scripts, use `pep723Scripts` with a compatible list of
-script paths instead of `sync`. Preparation reads dependencies from those
-scripts and refuses conflicting requirements before changing the SDK. Read
-[inspection configuration](references/inspection-config.md) for this mode and
-receipt invalidation.
-
-The helper resolves its bundled `prepare-python-project.py`, creates an ignored
-worktree-local SDK/project model, and optionally runs `uv sync`. String commands
-remain supported for repository-specific preparation. Structured preparation
-rejects unknown fields, path traversal, extras without sync, and outer-level
-`requiredGeneratedState` ambiguity.
-
-Preparation precedes the first assessment and does not substitute for inspection.
-
-Do not preflight SDK setup on every assessment. After `language_sdk_missing`,
-repair the documented prerequisite and run a new assessment; do not repeat the
-failed run unchanged.
 
 ## Primary Helper
 
@@ -245,140 +110,27 @@ uv run <skill-dir>/scripts/jb-inspect.py \
 
 Command model:
 
-- `agent-inspect`: primary LLM-facing assessment; emits a compact JSON envelope
-  and exits successfully whenever it produced an `agent_result`. The additive
-  `inspection_outcome` field describes the native inspection dimension, while
-  `lifecycle_outcome` describes cleanup/worktree lifecycle evidence. A lifecycle
-  mutation keeps the overall `agent_result.verdict` fail-closed as `UNKNOWN`;
-  it does not rewrite a native GREEN/RED result. Available mutation evidence
-  is bounded to paths and counts, carries `*_omitted_count` fields when
-  truncated, and
-  uses `attribution: "unattributed"` with `detection_phase:
-  "post_run_verification"` because before/after snapshots cannot identify the
-  writing process. Missing native or snapshot evidence remains `not_run` or
-  `unknown`; it is never presented as clean, fresh, or unchanged.
-- `list-projects` (no arguments): discover plugin-visible projects only.
-- `resolve-route --repo "$PWD"`: probe an already-open exact route without
-  opening or inspecting.
-- `open-worktree`: run configured repository preparation, then open and claim
-  one exact IDE project; it does not inspect or dispatch configured lanes.
-- `prepare-worktree` and `prepare`: backward-compatible aliases for
-  `open-worktree`.
-- `inspect --repo "$PWD" --scope changed_files`: open if needed, inspect, fetch
-  problems, and clean up helper-opened projects.
-- `inspect-closeout --repo "$PWD" --scope changed_files`: readiness/hand-off
-  inspection; use before saying a change is ready, safe to push, safe to merge, safe to hand off, or safe to exit.
-- Lifecycle opening uses a running IDE and never launches an app by default:
-  when no running IDE accepts the open, the result is `ide_launch_disabled`
-  without application launch. `--ide-launch` allows a hidden launch only when
-  no launcher of the selected product is running. An unidentified product, a
-  running IDE without a usable plugin identity, or a process census that
-  cannot prove absence returns
-  `ide_launch_refused`; the helper never launches a second instance or
-  activates the running one. Enable the plugin in that IDE yourself, or use
-  `--backend native`. Actual lifecycle rejections and ambiguous requests retain
-  their original evidence. `--no-ide-launch` names the default; read
-  [lifecycle diagnostics](references/lifecycle-diagnostics.md) for discovery
-  and configuration isolation.
-- Human assessment output prints retained findings beneath each lane summary,
-  including file, line, severity and description, so small sets remain readable
-  from saved output after cleanup. Lane summaries report displayed/total finding
-  counts and truncation; JSON output retains the same lane details.
-- For a RED assessment with more findings than the compact output shows, read
-  `findings_artifact.path` (under each executed lane, or at the top level for a
-  single IDE). Before cleanup, the helper collects every page with the same
-  route, session, project instance, native run and scope/filter selectors. A
-  `status: complete` artifact preserves all matching findings, the original
-  assessment/proof and request; `sha256` identifies its bytes. Read its
-  `problems` array directly after the project closes, without another IDE
-  request or assessment. Text output prints `FINDINGS_ARTIFACT` with the path.
-  Artifacts are private local evidence in the helper cache's `findings`
-  directory; preserve required receipts through acceptance, then remove those
-  disposable files during task cleanup. Record the exposed receipt paths with
-  the task's evidence; `assessment.context.worktree_root` identifies their
-  exact worktree.
-  An `incomplete` or `unavailable` artifact records the retrieval gap separately
-  from the native RED. Do not assume omitted findings are inherited or clean.
-  The artifact proves the accepted run, not freshness after later source edits
-  or a new IDE run; retain any execution-proof or lifecycle gaps in the final
-  assessment alongside it.
-- `get-status --repo "$PWD"` and `get-problems --repo "$PWD" --severity error`:
-  route-pinned diagnostics for already-routable projects; they cannot read a
-  closed project. Use the preserved artifact for post-cleanup finding triage.
-- `get-problems` reads the stored inspection run; it does not start a new one.
-  Repeat the original scope selectors so the plugin can prove the requested
-  results belong to that run. For a `files` scope, pass at least one repeatable
-  `--file` selector. For an intentionally warm project, paginate with `--limit`
-  and `--offset` while it remains routable:
+- `agent-inspect`: the assessment. It emits a compact JSON envelope and exits
+  successfully whenever it produced an `agent_result`. Native preparation runs
+  inside its private snapshot from structured `qualityGate.inspection.prepare`
+  (see [inspection configuration](references/inspection-config.md)); there is
+  no separate open or preparation step. `inspect` and `inspect-closeout` are
+  aliases. `--backend native` forces the native worker for one run.
+- `summarize-outcomes`: diagnostic verdict/bucket/retry summary of the outcome
+  log, without inspecting.
+- `remove-worktree`, `cleanup-helper-sdks` and `cleanup-helper-leases` retire
+  SDK registrations, project caches and leases that the retired desktop route
+  left behind. They contact only an IDE that is already running and never open
+  a project or launch an app. Read [IDE cleanup](references/ide-cleanup.md)
+  before using them.
 
-  ```bash
-  uv run "$HELPER" get-problems --json --repo "$PWD" \
-    --project-key "$PROJECT_KEY" --session-id "$SESSION_ID" \
-    --scope files --file src/App.kt --file src/AppTest.kt --limit 500
-  ```
-
-  A selector mismatch fails closed instead of widening retrieval.
-- `summarize-outcomes`: diagnostic verdict/bucket/retry summary without a
-  qualification file. `summarize-outcomes --qualification-file qualification.json
-  --sample-size 50` runs the strict post-boundary assessment gate described below;
-  strict incomplete or failed gates exit nonzero.
-- `cleanup-helper-leases`: reconcile stale helper-owned leases under the
-  lifecycle lock; unresolved identity or close failures return nonzero.
-- `remove-worktree --repo /exact/task/path`: after the repository cleanup
-  checks establish disposition, dry-run SDK retirement through every discovered
-  live IDE. With no live IDE on macOS, an unprepared worktree can instead prove
-  there is nothing to clean from local preparation records, every standard
-  JetBrains config's SDK and recent-project records (plus the explicit config
-  override), and sealed/finalizing project-cache ownership markers. A `.venv`
-  alone is not a registration. Matching records, unreadable/malformed records,
-  storage redirects in config `idea.properties`, or local `.idea` project-model/workspace state retain the worktree for the live
-  IDE cleanup route. Offline proof is repeated before Git removal and reported
-  as `offline_cleanup_proved`, with `offline_records_checked` naming the records
-  read. Add `--offline-only` when the session must not contact an IDE. Preview
-  and apply then skip identity discovery and use the same local proof, repeated
-  before removal. Existing leases hold this mode without reconciliation or
-  IDE contact. A running supported IDE holds this mode; keep the worktree
-  until an authorized session can use the live cleanup route. Without that flag,
-  a running supported IDE without a usable plugin identity also holds
-  offline retirement; restore its plugin route or close it. The offline scan
-  covers standard macOS storage plus the explicit config override; redirects in
-  VM options, environment variables or edited application bundles, and IDEs
-  outside these locations, are not discovered by this scan and need live cleanup
-  proof. It never edits global IDE files. Other platforms
-  retain the live-IDE requirement. With `--no-dry-run`, unregister only SDKs proved helper-owned,
-  sending the apply only to IDEs whose preview lists one (`sdk_apply_skipped`
-  names the rest), recheck every IDE, then remove the clean, unlocked linked worktree with non-force Git removal. Close
-  its IDE project and reconcile its leases first. Primary checkouts, locked apply attempts,
-  dirty worktrees, missing plugin support, session drift and unsafe SDK cleanup
-  retain the worktree. Unrecorded SDKs remain registered and are reported as
-  preserved; their `not_helper_owned` refusal does not prevent eligible Git
-  removal. Other refusal reasons retain the worktree. When Git unregisters
-  the worktree but cannot empty it because Finder wrote `.DS_Store` files
-  during the delete, the command deletes what is left only if every entry
-  is `.DS_Store` or unchanged since before removal; otherwise it keeps them all
-  and lists the others in `retained_entries`. This command preserves its branch. Prior cleanup disposition must also preserve unique detached
-  commits and valuable ignored files; this command does not classify them.
-- `cleanup-helper-sdks`: dry-run the plugin's helper-owned removed-worktree SDK
-  inventory. Review the listed entries, then use `--no-dry-run` with repeated
-  `--worktree-path /reviewed/orphan` flags. Apply is limited to those paths
-  still present in the current preview. Refused orphan records remain listed
-  and are excluded from apply without blocking unrelated eligible paths. A locked worktree can be previewed;
-  release its lock only for removal apply and restore it if removal fails. Start each IDE that
-  prepared the removed worktrees before cleanup; discovery covers running IDEs,
-  not offline SDK tables. Legacy SDK names or paths are never ownership proof.
-
-The helper owns route selection, trusted auto-open, lease-bound cleanup, and
-bounded retries. Inspect the exact worktree; never close a preexisting or
-foreign-owned project, bypass trust/preparation checks, or add an outer retry
-loop. Read verdict and retry permission from `agent_result` and
-`retry_policy.retry`, not the process exit code. Deferred cleanup and stale or
-unproven results remain `UNKNOWN`; they are not readiness evidence.
-
-Before diagnosing auto-open, ownership, retry, cleanup, trust, or IDE-selection
-problems, read [lifecycle diagnostics](references/lifecycle-diagnostics.md).
-Also read it before changing lifecycle configuration or helper behavior. Normal
-inspection uses the maintained helper and its terminal result; do not reproduce
-its lifecycle algorithm manually.
+Read verdict and retry permission from `agent_result` and `retry_policy.retry`,
+not the process exit code. A RED assessment with more findings than the compact
+output shows names `findings_artifact`; read that file instead of rerunning.
+Every assessment, including UNKNOWN, is appended to the outcome log under
+`${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/jetbrains-inspection/` (`outcomes.jsonl`,
+plus `unknown-verdicts.jsonl` for UNKNOWN). Set `JB_INSPECT_OUTCOME_LOG` or
+`JB_INSPECT_UNKNOWN_LOG` to a path to move a log, or to `0` to disable it.
 
 ## When To Run
 
@@ -401,8 +153,8 @@ tracked file. When constructing shell arguments, use an array such as
 of flags can reach the helper as one argument, especially in zsh.
 The compact result reports `selected_file_count` (null when unavailable).
 Selection counts describe the requested scope, not successful IDE execution;
-read the verdict and lane provenance too. A scope that resolves to zero files,
-or runs no lane, is UNKNOWN and supplies file-selection or lane-matching advice.
+read the verdict and coverage too. A scope that resolves to zero files is
+UNKNOWN and supplies file-selection advice.
 
 Start narrow while iterating: changed files, touched files, or touched directory.
 For final readiness, apply repository requirements and the whole-project
@@ -412,39 +164,30 @@ Broaden when required coverage, changed behavior, or findings warrant it. Reuse
 a current clean result covering the required scope for the same revision and
 environment. Complete every required repo gate; an ordered scope preference is
 not by itself a requirement to run each scope in succession.
-Before defining or diagnosing lane routing, preparation configuration, receipts,
-or preparation override flags, read [inspection configuration](references/inspection-config.md).
+Before defining or diagnosing lane routing or preparation configuration, read
+[inspection configuration](references/inspection-config.md).
 
 If config is absent, the helper infers from git and the current working tree. For
 a one-off inspection, a missing inspection config can use the safe default
-`changed_files` scope when the helper can infer the correct route. Do not
-silently turn that inference into durable repo policy. If the configured IDE,
-scope, project path, or worktree strategy is blank, contradictory, or feels
+`changed_files` scope. Do not silently turn that inference into durable repo
+policy. If the configured IDE, scope or lanes are blank, contradictory, or feel
 wrong for the active worktree, ask the user before changing policy or treating
 the value as authoritative; otherwise report the mismatch as a not-clean
-readiness blocker.
-
-The helper owns preparation and receipt reuse. A preparation failure, tracked
-or hidden index mutation, or missing required generated state is terminal; do
-not bypass it or substitute another command.
+readiness blocker. A repository without inspection metadata should record its
+IDE under `qualityGate.inspection` in `.github/github.json`, naming the IDE that
+fits its main language; recommend it and ask before writing it, because it is
+durable repository policy.
 
 ## Worktree Safety
 
-Inspect the worktree being edited. Do not silently inspect the main worktree
-when the agent is operating in a linked worktree. If routing resolves to another
-worktree, treat that as a blocker unless the user explicitly approves it.
-
-For readiness inspection, require an exact worktree route. A containing main
-checkout is not enough; `inspect-closeout` may open the linked worktree in the
-preferred IDE and must clean it up afterward when it owns the open.
-
-A linked worktree isolates Git checkout state; it does not serialize processes
-inside that worktree or stop IDE VFS refreshes, indexing, and project-model
-updates. Before inspection, await builds, installs, generators, formatters,
-Anthropic or Google model reviews (their `.model-review-*` scratch lives in the
-checkout), and other same-worktree writers, then avoid new writes until lifecycle cleanup
-finishes. The helper's readiness barrier observes IDE status only; it cannot
-identify arbitrary writers or prove that ignored files are quiet.
+Inspect the worktree being edited. Do not inspect the main worktree when the
+agent is operating in a linked worktree. The native worker snapshots the exact
+worktree's tracked and nonignored source into a private project and never opens
+the source worktree. Before an assessment, await builds, installs, generators,
+formatters, Anthropic or Google model reviews (their `.model-review-*` scratch
+lives in the checkout), and other same-worktree writers, then avoid new writes
+until the result returns; a source input that changes during the run makes it
+UNKNOWN.
 
 ## Result Policy
 
@@ -467,39 +210,14 @@ identify arbitrary writers or prove that ignored files are quiet.
   it is then listed under `covered_by` instead of making the verdict UNKNOWN.
   An unproven grammar checker (`Grazie*`) is listed under
   `advisory_coverage_gaps`.
-  `whole_project` and `directory` GREEN additionally require plugin capability
-  `inspection_execution_proof_version >= 2`, which attests the exact native IDE
-  inspection run with affirmative physical-file traversal and file-scoped tool
-  completion; global-only activity is insufficient. A missing/older capability is
-  `UNKNOWN/plugin_deployment_mismatch`; update the plugin, restart the IDE, and
-  resolve the route again instead of trusting an older broad-scope GREEN.
 - `RED`: inspection worked and returned actionable current findings. Fix real
-  findings in touched code before calling work ready. Exact-scope responses may
-  retain `execution_not_proven` in `proof_failures` when the current findings
-  are decisive but clean completeness remains unproven; preserve the RED verdict
-  and the proof gap together. Unexpected route, run, profile, or freshness proof
-  failures still make the result `UNKNOWN`.
+  findings in touched code before calling work ready.
 - `UNKNOWN`: inspection did not prove green or red. Do not summarize this as
-  "no problems found"; report the verdict reason and next action, because the
-  IDE, plugin, helper, route, or environment needs attention first.
-  Prefer the helper's `agent_result` envelope for normal reporting. It contains
-  `verdict`, `bucket`, `retry_policy`, `next_action`, and `agent_report`, plus
-  bounded `proof_failures` and `inspection_proof` when a decisive RED retains a
-  clean-completeness gap; do not
-  inspect raw route, cleanup, wait, or capture diagnostics unless debugging the
-  helper itself.
-  For `stale_results` and `inspection_inputs_changed`, `unknown_diagnosis`
-  separates proven snapshot invalidation from unproven source-edit or process
-  attribution. Do not blame an agent or source edit without changed-file or
-  process evidence. Disk/PSI validation diagnostics keep synchronization recovery
-  in `next_action`, even after the bounded retry ends: resolve the scoped file,
-  save intended editor changes, and use Reload from Disk in the exact IDE project
-  or rewrite with an updated modification time before a fresh assessment.
-  A bounded internal retry may extend to the stricter policy of a later UNKNOWN
-  result, such as `stale_results` followed by `project_analysis_not_ready`; all
-  attempts remain part of one terminal assessment and stop at the latest policy.
-  Before diagnosing attribution, configuring outcome logs, or changing proof
-  contracts, read [outcome qualification](references/outcome-qualification.md).
+  "no problems found"; report the verdict reason and `next_action`, because the
+  worker, its configuration, the selection, or the environment needs attention
+  first. Native runs are not retried automatically and `retry_policy.retry` is
+  false; resolve the reported prerequisite before one fresh assessment, and do
+  not add a retry loop.
   When inspection evidence is used to qualify changes to this helper or another
   installed runtime-bound skill, compare the recorded helper/source revision
   with the intended landed revision or a fresh runtime-reconciliation receipt.
@@ -507,104 +225,10 @@ identify arbitrary writers or prove that ignored files are quiet.
   do not count it as current evidence. A repo-local helper may still provide
   valid branch evidence when its exact path and revision are recorded and match
   the source being evaluated.
-
-### Qualification and Coverage
-
-Before `summarize-outcomes --qualification-file` or diagnosis of semantic
-coverage codes, read [outcome qualification](references/outcome-qualification.md).
-Strict qualification requires explicit artifact-pinned input; a normal outcome
-summary is not qualification evidence. Missing or truncated semantic coverage
-cannot prove GREEN; preserve actionable RED findings with their proof gaps.
-Use `--allow-text-only-coverage` only for an intentionally generic data/schema/text
-scope, never source code or a mixed scope containing source code.
-
-- Red-lane proof requires current actionable findings in the helper response,
-  such as `total_problems > 0`; a paginated current page may have an empty
-  `problems` list even when matching findings exist.
-  A non-clean response with `capture_incomplete`, `non_empty_unmapped_tree`, or
-  zero returned problems proves only that the plugin could not prove clean; it
-  is not proof that agents can see and act on the IDE's red state.
-- Readiness inspections use `agent-inspect`. `inspect`, `inspect-closeout`,
-  and `agent-inspect --backend api` are API-session commands; they and
-  `open-worktree`, `prepare-worktree`, and `prepare` lifecycle-open the exact
-  worktree when needed. They are unavailable when the task prohibits desktop
-  IDE use; do not switch to them after an isolated-backend refusal.
-  Use `resolve-route`, `get-status`, `get-problems`,
-  or `claim-worktree` for observation-only workflows that must not open an IDE;
-  do not turn an assessment command into a route-only probe.
-  If lifecycle cleanup is skipped or fails for a helper-opened project, the
-  inspection is not clean; report both the inspection result and cleanup reason.
-  Before cleanup, the helper compares bounded porcelain status snapshots and
-  emits `worktree_mutation_evidence` with counts and at most 25 relative paths.
-  New tracked or untracked IDE metadata is lifecycle evidence; preserve it in
-  the report rather than silently treating forced worktree removal as clean.
-  If cleanup is deferred because the IDE is still indexing/scanning, report the
-  `UNKNOWN` verdict and rerun after indexing settles before calling the work
-  inspection-clean.
-- `get-status` is informational and exits zero only when the helper can retrieve
-  a route-pinned status that is not stale, inconclusive, unavailable, ambiguous,
-  indexing, running, timed out, or session-drifted.
-- `ide_selection_required`, `ide_config_ambiguous`, or `ide_config_missing`: the
-  command has no usable IDE route, so repeating it unchanged cannot succeed.
-  If a lane-configured repository failed at a separate `open-worktree` step,
-  use the assessment command above to prepare and route its lanes; if only
-  opening was requested, use `open-worktree --ide <lane IDE>` as described in
-  [inspection configuration](references/inspection-config.md). Otherwise
-  check the configured lane's IDE when lanes are present; do not add a top-level
-  IDE to replace existing lane policy. For a repository without lanes,
-  recommend, in the same report, that it record its IDE under
-  `qualityGate.inspection` in `.github/github.json`, naming the IDE that fits its
-  main language, and ask before writing it because it is durable repository
-  policy. For a repository without lanes, if the user names an IDE, rerun once
-  with `--ide`. Lane assessments use the declared lane IDEs rather than that
-  flag; changing a lane's IDE requires approval of the durable policy change.
-  Do not keep reporting that inspection is unavailable without the applicable
-  recommendation.
-- `stale_results`, `capture_incomplete`, `inspection_inputs_changed`, timeout, indexing, session drift,
-  ambiguous route, or unavailable IDE: not clean. Retry at most once, and only
-  when `retry_policy.retry=true`; otherwise narrow scope, open the project in
-  the preferred IDE, or report the blocker. Before a new helper invocation,
-  await same-worktree writers and let IDE indexing/project-model updates settle.
-  Do not invent retry loops.
-  A separate `go <milestone>` landing exception in `repo-readiness` permits at
-  most one additional assessment per revision for an adopted foreign run with
-  `cancellation.reason=foreign_run_not_owned`, or for
-  `inspection_terminal_outcome=preempted` / `exact_proof_write_preempted` when
-  the installed plugin is not verified to contain the in-proof resumption from
-  `jetbrains-inspection-api` commit `b3892c03ff1beb85ea422a0580f5fb985d660ea3` or a
-  descendant. The exact `b3892c03ff1beb85ea422a0580f5fb985d660ea3-clean`
-  fingerprint qualifies as updated; a later clean fingerprint needs verified
-  Git ancestry, while dirty or unknown provenance keeps the older-build
-  exception. A generic timeout does not qualify. The later `agent-inspect` or
-  `inspect-closeout` invocation has its own bounded route-readiness wait; do
-  not add an outer polling loop. If that wait does not settle, retain the
-  original `UNKNOWN`. Preserve the `UNKNOWN` verdict and any actionable
-  findings under the normal policy.
-  Deferred cleanup must resolve in the later assessment or stale-lease helper
-  before landing continues; otherwise stop and report it. Other terminal
-  failures remain governed by the helper's `retry_policy`.
-- A freshly prepared PyCharm worktree may briefly report `language_sdk_missing`
-  after the initial readiness wait if IDE auto-configuration is still registering
-  the generated `.venv`. Preparation binds an existing SDK by interpreter home
-  when available; it does not register an SDK or guarantee auto-configuration.
-  When repository preparation
-  succeeded and proved that the active lane project contains its generated
-  `.venv`, the helper performs exactly one additional route-readiness wait,
-  bounded by the internal retry timeout and gated by route-pinned status. A
-  surfaced `language_sdk_missing` means that internal
-  retry was unavailable or exhausted and remains a terminal configuration
-  blocker; agents must not add another retry loop. Use the exact worktree's
-  documented language/SDK setup to restore its SDK, configure the resulting SDK
-  for the selected files in the current IDE project, then run one fresh
-  `agent-inspect` assessment. For Python, use the repository's documented Python
-  setup; do not guess a Python version. Do not commit IDE configuration. If
-  preparation evidence names a configured command, use that command; otherwise
-  consult the repository's setup instructions before changing the prerequisite.
-  If setup is absent, ambiguous, or requires global/system changes, report that
-  blocker instead.
-- Stale findings are withheld by default. Use `--include-stale` or
-  `--allow-stale` only for explicit diagnostics, and do not treat returned
-  cached findings as current inspection results.
+- `helper_usage_error`: the arguments were not accepted. Use only the documented
+  `agent-inspect` arguments and report the mismatch instead of trying another
+  inspection command. Options of the retired desktop route, such as `--ide` or
+  `--backend api`, return this result with the replacement named.
 - Existing broad noise is not invisible. Fix straightforward findings in the
   affected area or track a cleanup item.
 
@@ -623,9 +247,8 @@ needs no approval; keep it sorted and add only words that are not misspellings.
 
 ## Reporting
 
-Report the compact helper envelope: verdict (`GREEN`/`RED`/`UNKNOWN`), scope,
-one-line finding summary with file and line when available, and next action. Do
-not include raw diagnostic fields such as `capture_diagnostic` in normal
-reports; use them only when explicitly debugging an extractor or capture
-failure. If not run or inconclusive, state a one-line not-run or blocker reason
-and the next smallest useful action.
+Report the compact helper envelope: verdict (`GREEN`/`RED`/`UNKNOWN`), backend,
+scope, one-line finding summary with file and line when available, and next
+action. Do not include raw `diagnostic` fields in normal reports; use them only
+when debugging the helper. If not run or inconclusive, state a one-line not-run
+or blocker reason and the next smallest useful action.
