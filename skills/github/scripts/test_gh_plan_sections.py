@@ -70,6 +70,17 @@ class SectionTests(unittest.TestCase):
                 code = exc.code
         return code, json.loads(output.getvalue()), edit, errors.getvalue()
 
+    def test_new_section_references_require_explicit_repositories_before_edit(self) -> None:
+        for reference in ("#550", "other#550"):
+            code, result, edit, _errors = self.run_update("--body", f"Next action: verify {reference}.")
+            self.assertNotEqual(code, 0)
+            self.assertFalse(result["ok"])
+            edit.assert_not_called()
+        text = "Next action: verify owner/other#550 and owner/repo#42."
+        code, _result, edit, errors = self.run_update("--body", text)
+        self.assertEqual(code, 0, errors)
+        self.assertIn(text, edit.call_args.kwargs["body"])
+
     def test_literal_text_survives_body_file_and_stdin_updates(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             body_file = Path(directory) / "body.md"
@@ -87,7 +98,7 @@ class SectionTests(unittest.TestCase):
 
     def test_contributor_request_survives_literal_section_updates(self) -> None:
         self.issue["user"] = {"login": "outside-contributor"}
-        self.issue["body"] = "Original request with `\\u0027`.\n"
+        self.issue["body"] = "Original request with `\\u0027` and #12.\n"
         for content in LITERAL_TEXTS:
             with self.subTest(content=content):
                 # First append the managed section, then replace it in the envelope.
@@ -97,7 +108,7 @@ class SectionTests(unittest.TestCase):
                     self.issue["body"] = edit.call_args.kwargs["body"]
                     original = PLAN.marked_block(self.issue["body"], PLAN.PLAN_ORIGINAL_START, PLAN.PLAN_ORIGINAL_END)
                     self.assertIsNotNone(original)
-                    self.assertEqual(original[2], "Original request with `\\u0027`.\n")
+                    self.assertEqual(original[2], "Original request with `\\u0027` and #12.\n")
                     managed = PLAN.contributor_plan_body(self.issue)
                     self.assertEqual(managed, f"## Finish Line\n\n{content}")
 

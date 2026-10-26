@@ -277,6 +277,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("pr", help="PR number, URL, or branch.")
     p.add_argument("--body-file", required=True, help="Read comment Markdown from this file. Use '-' to read from stdin.")
     p.add_argument("--attach", action="append", help="Attach FILE[#alt] through GitHub CLI; repeatable (images/videos only).")
+    p.add_argument("--verbatim", action="store_true", help="Relay source text or logs unchanged; not for authored planning text.")
     p.add_argument("--reviewed-head", help="Attest that this disposition weighs the completed review for this full head SHA.")
     p.add_argument("--edit-last", action="store_true", help="Edit the authenticated actor's latest comment.")
     p.add_argument("--edit-comment", type=int, help="Edit this exact timeline comment ID.")
@@ -585,6 +586,14 @@ def cmd_comment(args: argparse.Namespace) -> dict[str, Any]:
     body = read_text_file(args.body_file, operation="comment", repo=repo, pr=number)
     if not body:
         raise PrHelperError("PR comment body is empty", operation="comment", repo=repo, pr=number)
+    try:
+        if not getattr(args, "verbatim", False):
+            github_comment_core.validate_planning_references(body, repo)
+    except ValueError as error:
+        failure = github_api_core.FailureDetail(cause="validation_error", message=str(error),
+                                                retryable=False, fallback_eligible=False, disposition="stop",
+                                                failed_step="input_validation", write_outcome="not_started")
+        raise PrHelperError(str(error), failure=failure, operation="comment", repo=repo, pr=number) from error
     reviewed_head = getattr(args, "reviewed_head", None)
     if reviewed_head is not None:
         if args.edit_last or args.edit_comment is not None or args.create_if_none or getattr(args, "attach", None):

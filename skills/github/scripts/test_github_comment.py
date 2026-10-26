@@ -967,13 +967,46 @@ def test_exact_edit_invalid_combinations_fail_before_network() -> None:
     with_call_stub(callback, run)
 
 
+def test_planning_reference_boundaries_preserve_qualified_repository_names() -> None:
+    for text in ("owner/repo#77", "owner/my-repo#42", "my-owner/my.repo#5", "owner/node.appletv-remote#7",
+                 "https://github.com/owner/my-repo/issues/42", "https://github.com/owner/repo/pull/77#issuecomment-5"):
+        github_comment.validate_planning_references(text, "owner/my-repo")
+    for text in ("#77", "other-repo#77", "other.repo#77", "PR77", "\n#77", "\t#77", "&#35;1", "-#77", ".#77"):
+        try:
+            github_comment.validate_planning_references(text, "owner/my-repo")
+        except ValueError:
+            continue
+        raise AssertionError(f"ambiguous planning reference was accepted: {text!r}")
+
+
+def test_explicit_comment_commands_refuse_ambiguous_refs_before_posting() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        body_file = pathlib.Path(directory) / "body.md"
+        scripts = pathlib.Path(__file__).parent
+        fake_gh = pathlib.Path(directory) / "fake-gh"
+        calls = pathlib.Path(directory) / "calls"
+        fake_gh.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(calls)!r}).touch()\nraise SystemExit(1)\n")
+        fake_gh.chmod(0o755)
+        for body in ("Next actor reads owner/other#550 and #550.", "Verify other#550."):
+            body_file.write_text(body)
+            for script, prefix in (("github_comment.py", ["issue", "42", "--repo", "owner/repo"]),
+                                   ("gh-pr.py", ["--repo", "owner/repo", "comment", "42"])):
+                result = subprocess.run([sys.executable, str(scripts / script), *prefix,
+                                         "--body-file", str(body_file)], capture_output=True, text=True,
+                                        env={**os.environ, "GH_COMMENT_GH": str(fake_gh), "GH_PR_GH": str(fake_gh)})
+                assert result.returncode != 0
+                payload = json.loads(result.stdout)
+                assert payload["write_outcome"] == "not_started", payload
+                assert not calls.exists(), result.stderr
+
+
 def test_exact_comment_cli_preserves_files_and_conflict_envelope() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = pathlib.Path(directory)
         prior = root / "prior.md"
         prior.write_bytes(b"prior\r\n")
         replacement = root / "replacement.md"
-        replacement.write_text("## Result\n\n`literal` ${NO_EXPANSION}\n", encoding="utf-8")
+        replacement.write_text("## Result\n\n`literal` ${NO_EXPANSION}\nQuoted reviewer: issue #550; BuildKit #5 [2/4] RUN.\n", encoding="utf-8")
         saved = root / "saved.md"
         fake_gh = root / "fake-gh"
         fake_gh.write_text(
@@ -996,7 +1029,7 @@ def test_exact_comment_cli_preserves_files_and_conflict_envelope() -> None:
         env = {**os.environ, "GH_COMMENT_GH": str(fake_gh), "GH_PR_GH": str(fake_gh), "COMMENT_TEST_SAVED": str(saved), "GITHUB_RETRY_STATE_DIR": str(root / "retry-state")}
         scripts = pathlib.Path(__file__).parent
         for script, prefix in (("github_comment.py", ["issue", "42", "--repo", "owner/repo"]), ("gh-pr.py", ["--repo", "owner/repo", "comment", "42"])):
-            argv = [sys.executable, str(scripts / script), *prefix, "--edit-comment", "11", "--body-file", str(replacement), "--expected-body-file", str(prior), "--expected-updated-at", "2026-07-16T12:00:00Z"]
+            argv = [sys.executable, str(scripts / script), *prefix, "--verbatim", "--edit-comment", "11", "--body-file", str(replacement), "--expected-body-file", str(prior), "--expected-updated-at", "2026-07-16T12:00:00Z"]
             proc = subprocess.run(argv, env=env, capture_output=True, text=True, check=False)
             assert proc.returncode == 0, (proc.stdout, proc.stderr)
             result = json.loads(proc.stdout)
@@ -1466,6 +1499,8 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
 
 
 TESTS: list[Callable[[], None]] = [
+    test_planning_reference_boundaries_preserve_qualified_repository_names,
+    test_explicit_comment_commands_refuse_ambiguous_refs_before_posting,
     test_attachment_limits_refuse_before_cli,
     test_attachment_passthrough_and_failures_never_replay,
     test_concurrent_numbering_reconciles_the_same_saved_body,

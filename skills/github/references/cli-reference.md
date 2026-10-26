@@ -1006,6 +1006,20 @@ The [daily sweep](../../direction/references/stranded-work.md) reports fired
 triggers and coverage gaps without reopening issues. This option records a
 condition, not authority to close protected work or perform the triggered action.
 
+### References In New Planning Text
+
+Use `OWNER/REPO#N` or a full GitHub issue/PR URL in authored planning text and
+explicit comments, including local references such as `owner/current-repo#42`.
+Bare numbers and ownerless repository references refuse before posting because
+a matching local number cannot establish the intended repository. Use plain
+words such as "rank 1" for prose that is not an issue reference.
+
+Use `gh-comment --verbatim` or `gh-pr.py comment --verbatim` only to relay source
+text, logs or reviewer output unchanged. The Supervisor poster does this
+automatically. For exact human requests in linked plans, follow
+[issue templates](issue-templates.md); existing section adoption preserves the
+original human request.
+
 ### Planning: Claim
 
 Before an authorized `go` creates a branch or worktree, run from a checkout of

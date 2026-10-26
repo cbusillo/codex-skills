@@ -1751,6 +1751,34 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(io.post(REPO, 7, Path("/fixture/comment.md"))["comment"], json.loads(result.stdout)["comment"])
         self.assertEqual(run.call_count, 1)
 
+    def test_poster_relays_model_references_and_build_logs_through_real_comment_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            body, saved, fake_gh = root / "review.md", root / "saved.json", root / "gh"
+            review = "Reviewer: issue #550; BuildKit #5 [2/4] RUN."
+            body.write_text(review)
+            fake_gh.write_text(
+                f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n"
+                "args = sys.argv[1:]\npath = next(arg for arg in args if arg.startswith('/'))\n"
+                "method = args[args.index('--method') + 1]\n"
+                "if path == '/user': print(json.dumps({'login': 'review-bot[bot]'}))\n"
+                "elif method == 'GET': print('[]')\n"
+                "else:\n body = json.load(sys.stdin)['body']\n"
+                f" Path({str(saved)!r}).write_text(json.dumps(body))\n"
+                " print(json.dumps({'id': 11, 'user': {'login': 'review-bot[bot]'}, 'body': body, "
+                "'html_url': 'https://github.com/example/tool/pull/7#issuecomment-11'}))\n"
+            )
+            fake_gh.chmod(0o755)
+            def run_comment(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                return subprocess.run([sys.executable, *command[2:]], capture_output=True, text=True, **kwargs)
+            with patch.dict(os.environ, {"GH_PR_GH": str(fake_gh), "CODEX_SKILLS_ENV_FILE": str(root / "missing.env"),
+                                         "CODEX_AUTOMATION_LOGIN": BOT,
+                                         "GH_WITH_ENV_TOKEN_EXPECTED_LOGIN": BOT}), \
+                    patch.object(reviews, "run", side_effect=run_comment):
+                result = reviews.IO.__new__(reviews.IO).post(REPO, 7, body)
+            self.assertTrue(result["ok"])
+            self.assertTrue(json.loads(saved.read_text()).startswith(review))
+
     def test_post_cannot_inherit_personal_identity_approval_from_supervisor_environment(self):
         io = reviews.IO.__new__(reviews.IO)
         result = subprocess.CompletedProcess([], 0, json.dumps(post_payload()), "")
