@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import errno
+import json
 import os
 import plistlib
 import re
@@ -14,6 +15,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -21,6 +23,7 @@ from xml.etree import ElementTree
 LOAD_LIMIT = 64
 FINDING_LIMIT = 25
 MAX_ANALYZED_FILE_KB = 2500
+REQUIRED_PLUGINS_FILE = ".idea/externalDependencies.xml"
 NATIVE_OPTIONS = ("native_worker", "native_recover_only", "native_framework_root", "native_reconcile_result", "native_release_run")
 
 
@@ -342,6 +345,126 @@ def scope_selection(args: Any, host: Any, receipt: dict[str, Any] | None = None)
         if receipt is not None:
             receipt.update(unmatched_files=selection["unmatched_files"], excluded_files=selection["excluded_files"])
     return repo, config, scope, selected
+
+
+PLUGIN_FILE_LIMIT = 4 * 1024 * 1024
+UNREADABLE_PLUGIN_INPUT = (OSError, ValueError, ElementTree.ParseError, zipfile.BadZipFile, MemoryError, RecursionError)
+UNKNOWN_VERSION = "of unknown version"
+
+
+def bounded_bytes(path: Path) -> bytes:
+    if path.is_symlink() or path.stat().st_size > PLUGIN_FILE_LIMIT:
+        raise ValueError(path.name)
+    return path.read_bytes()
+
+
+def plain_xml(data: bytes) -> ElementTree.Element:
+    text = data.decode()
+    if "<!entity" in text.lower() or "<!doctype" in text.lower():
+        raise ValueError("XML declarations are refused")
+    return ElementTree.fromstring(text)
+
+
+def required_plugins(repo: Path) -> list[dict[str, str]]:
+    path = repo / REQUIRED_PLUGINS_FILE
+    if not path.exists() and not path.is_symlink():
+        return []
+    try:
+        root = plain_xml(bounded_bytes(path))
+        component = root.find("component[@name='ExternalDependencies']")
+        if root.tag != "project" or component is None:
+            raise ValueError(REQUIRED_PLUGINS_FILE)
+        required = [dict(plugin.attrib) for plugin in component.findall("plugin")]
+        if any(not plugin.get("id", "").strip() or any(plugin.get(bound) is not None and version_key(plugin[bound]) is None
+                                                       for bound in ("min-version", "max-version")) for plugin in required):
+            raise ValueError(REQUIRED_PLUGINS_FILE)
+        return required
+    except UNREADABLE_PLUGIN_INPUT:
+        raise Blocked("native_required_plugins_unreadable") from None
+
+
+def version_key(version: str) -> tuple[int, ...] | None:
+    match = re.match(r"\s*(\d+(?:\.\d+)*)", version)
+    if match is None:
+        return None
+    parts = [int(part) for part in match.group(1).split(".")]
+    while parts and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
+
+
+def plugin_descriptor(jar: Path) -> tuple[str, str] | None:
+    with zipfile.ZipFile(jar) as archive:
+        try:
+            info = archive.getinfo("META-INF/plugin.xml")
+        except KeyError:
+            return None
+        with archive.open(info) as descriptor:
+            data = descriptor.read(PLUGIN_FILE_LIMIT + 1)
+        if info.file_size > PLUGIN_FILE_LIMIT or len(data) > PLUGIN_FILE_LIMIT:
+            raise ValueError(jar.name)
+        root = plain_xml(data)
+    plugin_id = (root.findtext("id") or root.findtext("name") or "").strip()
+    return (plugin_id, (root.findtext("version") or "").strip()) if plugin_id else None
+
+
+def contained(path: Path, root: Path) -> bool:
+    return path.resolve().is_relative_to(root)
+
+
+def worker_plugins(app: Path, config: Path, plugins: Path) -> tuple[dict[str, str], set[str]]:
+    try:
+        distribution = json.loads(bounded_bytes(app / "Contents/Resources/product-info.json"))
+        build = str(distribution.get("buildNumber", ""))
+        installed: dict[str, str] = {str(plugin_id): build for plugin_id in distribution.get("bundledPlugins", [])}
+        root = plugins.resolve()
+        found: dict[str, str] = {}
+        for entry in sorted(plugins.iterdir()):
+            if not contained(entry, root):
+                continue
+            lib = entry / "lib"
+            jars = [entry] if entry.suffix == ".jar" else sorted(lib.glob("*.jar")) if lib.is_dir() and contained(lib, root) else []
+            for jar in jars:
+                descriptor = plugin_descriptor(jar) if contained(jar, root) and jar.is_file() else None
+                if descriptor is not None:
+                    plugin_id, version = descriptor
+                    found[plugin_id] = version or found.get(plugin_id, "")
+        installed.update(found)
+        disabled = config / "disabled_plugins.txt"
+        lines = bounded_bytes(disabled).decode().splitlines() if disabled.exists() or disabled.is_symlink() else []
+        names = [line.strip() for line in lines if line.strip()]
+    except UNREADABLE_PLUGIN_INPUT:
+        raise Blocked("native_worker_plugins_unreadable") from None
+    return installed, set(names)
+
+
+def outside_bounds(version: str, minimum: str | None, maximum: str | None) -> str | None:
+    current = version_key(version)
+    if minimum and (current is None or current < (version_key(minimum) or ())):
+        return f"needs {minimum} or later"
+    if maximum and (current is None or current > (version_key(maximum) or ())):
+        return f"needs {maximum} or earlier"
+    return None
+
+
+def plugin_gaps(repo: Path, app: Path, config: Path, plugins: Path) -> tuple[list[str], list[str]]:
+    required = required_plugins(repo)
+    if not required:
+        return [], []
+    installed, disabled = worker_plugins(app, config, plugins)
+    verified, gaps = [], []
+    for plugin in required:
+        plugin_id = plugin["id"].strip()
+        version = installed.get(plugin_id)
+        if version is None:
+            gaps.append(f"{plugin_id} (not installed)")
+        elif plugin_id in disabled:
+            gaps.append(f"{plugin_id} (disabled)")
+        elif bound := outside_bounds(version, plugin.get("min-version"), plugin.get("max-version")):
+            gaps.append(f"{plugin_id} {version or UNKNOWN_VERSION} ({bound})")
+        else:
+            verified.append(f"{plugin_id} {version}".strip())
+    return verified, gaps
 
 
 def native_options_supplied(args):
