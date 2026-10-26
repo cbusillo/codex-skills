@@ -15,7 +15,7 @@ from pathlib import Path
 import re
 import sys
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
 SKILLS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SKILLS / "github/scripts"))
@@ -48,23 +48,24 @@ def parse_date(value):
     return None
 
 
-def resolve_wait(repo, issue, comments, trusted=None):
-    """Return the shared resolver's current wait and why it needs review, if it does.
+class WaitResolution(NamedTuple):
+    record: dict[str, Any] | None
+    review: str | None
+    source: dict[str, Any] | None = None
 
-    ``comments`` is None when the discussion was not completely read. Without a
-    trusted readable record the recorded prose stays visible, marked for review.
-    A trusted record that asks for review is its own reason, never prose.
-    """
+
+def resolve_wait(repo: str, issue: dict[str, Any], comments: list[dict[str, Any]] | None,
+                 trusted: set[str] | None = None) -> WaitResolution:
     if comments is None:
-        return None, "discussion_unread"
+        return WaitResolution(None, "discussion_unread")
     try:
-        wait, recorded = github_plan_wait.resolve(
-            issue, comments, github_plan_wait.authors(repo) if trusted is None else trusted)
+        trusted = github_plan_wait.authors(repo) if trusted is None else trusted
+        wait, recorded = github_plan_wait.resolve(issue, comments, trusted)
+        if wait["state"] == "review":
+            return WaitResolution(None, "structured_wait_review" if recorded else "no_structured_record")
+        return WaitResolution(wait, None, github_plan_wait.current_source(issue, comments, trusted))
     except (ValueError, TypeError, KeyError, AttributeError) as error:
-        return None, f"structured_wait_unreadable: {error}"
-    if wait["state"] == "review":
-        return None, "structured_wait_review" if recorded else "no_structured_record"
-    return wait, None
+        return WaitResolution(None, f"structured_wait_unreadable: {error}")
 
 
 def wait_rows(repo, issues, terms, owner, now, discussions=None, trusted=None, errors=None) -> list[dict[str, Any]]:
@@ -79,14 +80,13 @@ def wait_rows(repo, issues, terms, owner, now, discussions=None, trusted=None, e
         status = next((v for k, v in sections.items() if k.casefold() == "current status"), issue.get("body") or "")
         item = {"repo": repo, "number": issue["number"], "url": issue.get("html_url"),
                 "updated_at": issue.get("updated_at")}
-        prose = github_direction_next.waiting_records(item, status)
-        wait_record, review = resolve_wait(repo, issue, (discussions or {}).get(issue["number"]), trusted)
+        evidence = github_direction_next.milestone_wait_evidence(item, status, [])
+        resolution = resolve_wait(repo, issue, (discussions or {}).get(issue["number"]), trusted)
+        wait_record, review = resolution.record, resolution.review
         item.update({"structured_wait": wait_record} if wait_record else {"wait_review_required": True})
-        # The status line's verification still dates the issue's recorded state.
-        verified = next((record.get("last_verified") for record in prose if record.get("last_verified")), None)
+        source = resolution.source or {}
+        verified = source.get("updated_at") or source.get("created_at")
         last_verified = parse_date(verified)
-        missing_date_basis = ("verification_commit_only" if verified and re.fullmatch(r"[0-9a-fA-F]{7,40}", verified.strip())
-                              else "verification_unparseable" if verified else "verification_missing")
         if review and (review == "structured_wait_review" or review.startswith("structured_wait_unreadable")):
             # A record that cannot be read may hide or release a hold, and a trusted
             # record may ask for review. Like the goal board, keep the issue as an
@@ -117,7 +117,6 @@ def wait_rows(repo, issues, terms, owner, now, discussions=None, trusted=None, e
         if not candidates:
             continue
         wait = next((candidate for candidate in candidates if candidate[1] == "decision"), candidates[0])
-        evidence = github_direction_next.milestone_wait_evidence(item, status, [])
         since = parse_date(evidence["since"])
         inline_since = re.search(r";\s*since\s+(.+)$", wait[0], re.I)
         if inline_since:
@@ -135,7 +134,7 @@ def wait_rows(repo, issues, terms, owner, now, discussions=None, trusted=None, e
             "last_verified_raw": verified,
             "verification_age_days": max(0, (now - last_verified).total_seconds() / 86400) if last_verified else None,
             "possibly_stale": last_verified is None or bool(since and last_verified < since),
-            "staleness_basis": missing_date_basis if last_verified is None else
+            "staleness_basis": "verification_missing" if last_verified is None else
                 "verification_predates_wait" if since and last_verified < since else None,
             "verification_unknown": last_verified is None,
             "wait_source": "structured_wait" if wait_record else "legacy_wait_review",

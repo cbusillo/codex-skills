@@ -238,14 +238,15 @@ shared human-attention classifier locally with the optional people index for
 the Director's names. This reads wait records
 across repositories; it does not audit their direction files or milestones.
 Report every wait and its `wait_age_days` (unknown without an explicit start).
-`possibly_stale` flags missing/unparseable verification or verification before
-the wait began; `staleness_basis` explains which. A wait verified after it began
-is not stale merely because it is older. `verification_age_days` exposes old
+`last_verified` comes from the trusted structured wait record's source timestamp
+(comment or issue body), never `Last verified` prose. `possibly_stale` flags a
+missing record timestamp or verification before the wait began; `staleness_basis`
+explains which. A wait verified after it began is not stale merely because it is older. `verification_age_days` exposes old
 verification even when the wait start is unknown; there is no automatic age
 threshold. Read flagged records before relying on
 them; these fields do not prove whether a wait was resolved. `recorded_at`
 anchors unknown-age records without inventing their start; `last_verified_raw`
-preserves unparseable evidence. Multiple waits without attributable starts have
+preserves the source timestamp. Multiple waits without attributable starts have
 unknown age. An unqualified `Owner` names the Director; an upstream or product
 `owner` does not without a known Director identity in that wait.
 The report does not settle a question or release a hold. `--director-name` adds
