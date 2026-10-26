@@ -216,13 +216,15 @@ A plugin that is absent, disabled or outside its range is UNKNOWN with
 enable it once through that worker's Plugins screen, then quit the worker.
 
 The Required Plugins file, `plugin.xml` entries, `disabled_plugins.txt` and
-`product-info.json` are each read only up to 4 MiB, and XML with a DOCTYPE or
-ENTITY declaration is refused. A Required Plugins file that breaks these rules,
+`product-info.json` are each read only up to 4 MiB. The XML files and
+`disabled_plugins.txt` must be UTF-8, and XML with a DOCTYPE or ENTITY
+declaration is refused. A Required Plugins file that breaks these rules,
 is not valid XML, has no `ExternalDependencies` component, or lists a plugin
 without an `id` or with a bound that has no leading number is UNKNOWN with
-`native_required_plugins_unreadable`. A worker plugin input that breaks them,
-including a linked `disabled_plugins.txt`, is UNKNOWN with
-`native_worker_plugins_unreadable`. Without the Required Plugins file nothing
+`native_required_plugins_unreadable`. A plugin descriptor or
+`disabled_plugins.txt` that breaks them, including a linked one, is UNKNOWN with
+`native_worker_plugins_unreadable`; an unusable `product-info.json` keeps its
+worker configuration reason. Without the Required Plugins file nothing
 in the worker's plugins is read. Verified plugins are listed in the receipt's
 `required_plugins`.
 

@@ -618,7 +618,7 @@ def worker_settings(args: Any, host: Any, product_key: str = PYTHON_PRODUCT_KEY)
     launcher = app / "Contents/bin/inspect.sh"
     if not launcher.is_file():
         raise Blocked("native_inspector_unavailable")
-    distribution = json.loads((app / "Contents/Resources/product-info.json").read_text())
+    distribution = json.loads(common.bounded_bytes(app / "Contents/Resources/product-info.json"))
     if distribution.get("productCode") not in product.product_codes or distribution.get("envVarBaseName") != product.env_var_base_name:
         raise Blocked(f"native_{product.key}_distribution_required")
     roots = args.native_framework_root or configured.get("frameworkRoots", [])
@@ -1690,7 +1690,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         node = node_executable(host) if webstorm and not args.native_recover_only else None
         jdk = java_home(host) if intellij and not args.native_recover_only else None
         if not args.native_recover_only:
-            distribution = json.loads((app / "Contents/Resources/product-info.json").read_text())
+            distribution = json.loads(common.bounded_bytes(app / "Contents/Resources/product-info.json"))
             receipt.update(ide_version=distribution.get("version"), ide_build=distribution.get("buildNumber"))
         state_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
         def on_wait():

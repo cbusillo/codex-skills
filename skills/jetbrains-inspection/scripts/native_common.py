@@ -359,9 +359,10 @@ def bounded_bytes(path: Path) -> bytes:
 
 
 def plain_xml(data: bytes) -> ElementTree.Element:
-    if b"<!ENTITY" in data or b"<!DOCTYPE" in data:
+    text = data.decode("utf-8")
+    if "<!entity" in text.lower() or "<!doctype" in text.lower():
         raise ValueError("XML declarations are refused")
-    return ElementTree.fromstring(data)
+    return ElementTree.fromstring(text)
 
 
 def required_plugins(repo: Path) -> list[dict[str, str]]:
@@ -398,9 +399,11 @@ def plugin_descriptor(jar: Path) -> tuple[str, str] | None:
             info = archive.getinfo("META-INF/plugin.xml")
         except KeyError:
             return None
-        if info.file_size > PLUGIN_FILE_LIMIT:
+        with archive.open(info) as descriptor:
+            data = descriptor.read(PLUGIN_FILE_LIMIT + 1)
+        if info.file_size > PLUGIN_FILE_LIMIT or len(data) > PLUGIN_FILE_LIMIT:
             raise ValueError(jar.name)
-        root = plain_xml(archive.read(info))
+        root = plain_xml(data)
     plugin_id = (root.findtext("id") or root.findtext("name") or "").strip()
     return (plugin_id, (root.findtext("version") or "").strip()) if plugin_id else None
 
@@ -415,6 +418,7 @@ def worker_plugins(app: Path, config: Path, plugins: Path) -> tuple[dict[str, st
         build = str(distribution.get("buildNumber", ""))
         installed: dict[str, str] = {str(plugin_id): build for plugin_id in distribution.get("bundledPlugins", [])}
         root = plugins.resolve()
+        found: dict[str, str] = {}
         for entry in sorted(plugins.iterdir()):
             if not contained(entry, root):
                 continue
@@ -424,9 +428,11 @@ def worker_plugins(app: Path, config: Path, plugins: Path) -> tuple[dict[str, st
                 descriptor = plugin_descriptor(jar) if contained(jar, root) and jar.is_file() else None
                 if descriptor is not None:
                     plugin_id, version = descriptor
-                    installed[plugin_id] = version or installed.get(plugin_id, "")
+                    found[plugin_id] = version or found.get(plugin_id, "")
+        installed.update(found)
         disabled = config / "disabled_plugins.txt"
-        names = bounded_bytes(disabled).decode().split() if disabled.exists() or disabled.is_symlink() else []
+        lines = bounded_bytes(disabled).decode().splitlines() if disabled.exists() or disabled.is_symlink() else []
+        names = [line.strip() for line in lines if line.strip()]
     except UNREADABLE_PLUGIN_INPUT:
         raise Blocked("native_worker_plugins_unreadable") from None
     return installed, set(names)

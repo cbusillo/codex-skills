@@ -949,6 +949,34 @@ print('Done.')
         for text in (why, action, action_without_receipt):
             self.assertIn(native.PLUGIN_FALLBACK["plugins"], text)
 
+    def test_disabled_plugin_ids_are_read_one_per_line(self):
+        self.install_plugin("html", descriptor="<idea-plugin><name>HTML Tools</name><version>1</version></idea-plugin>")
+        (self.worker / "config/disabled_plugins.txt").write_text("com.example.other\n  HTML Tools  \n")
+        self.require_plugins({"id": "HTML Tools"})
+        self.assert_plugin_blocked(self.assess(direct=True), "native_required_plugin_missing", "HTML Tools (disabled)")
+
+    def test_xml_declarations_are_refused_in_any_encoding(self):
+        entity = '<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE p [<!ENTITY a "dev.ngocta.pycharm-odoo">]>' \
+                 '<project><component name="ExternalDependencies"><plugin id="&a;"/></component></project>'
+        self.install_plugin("dev.ngocta.pycharm-odoo")
+        (self.repo / native.common.REQUIRED_PLUGINS_FILE).write_bytes(entity.encode("utf-16"))
+        self.assert_plugin_blocked(self.assess(direct=True), "native_required_plugins_unreadable")
+
+    def test_an_installed_copy_without_a_version_does_not_inherit_the_bundled_build(self):
+        info = self.app / "Contents/Resources/product-info.json"
+        info.write_text(json.dumps(json.loads(info.read_text()) | {"buildNumber": "262.1", "bundledPlugins": ["Docker"]}))
+        self.install_plugin("Docker", descriptor="<idea-plugin><id>Docker</id></idea-plugin>")
+        self.require_plugins({"id": "Docker", "min-version": "262"})
+        self.assert_plugin_blocked(self.assess(direct=True), "native_required_plugin_missing", "Docker of unknown version")
+
+    def test_an_oversized_product_info_is_refused_before_launch(self):
+        info = self.app / "Contents/Resources/product-info.json"
+        info.write_text(json.dumps(json.loads(info.read_text()) | {"padding": " " * 4096}))
+        with patch_attr(native.common, "PLUGIN_FILE_LIMIT", 2048):
+            result = self.assess(direct=True)
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertNotIn("worker_pid", result["diagnostic"]["native"])
+
     def test_automatic_route_names_the_missing_plugin_and_worker(self):
         self.require_plugins({"id": "dev.blachut.svelte.lang"})
         workers = {"jetbrains": {"nativeWorkers": {"pycharm": {"path": str(self.worker), "app": str(self.app)}}}}
