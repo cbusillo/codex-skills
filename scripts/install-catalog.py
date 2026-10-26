@@ -331,7 +331,6 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         installation = json.dumps({"home": str(home), "codex": str(codex), "claude": str(claude),
                                    "scheduled_updater": scheduled, "scheduled_at": scheduled_at,
                                    "updater_plist": str(launch_path) if scheduled else None,
-                                   "shared_source_sha256": hashlib.sha256(shared_source.encode()).hexdigest(),
                                    "instruction_hashes": {entry["path"]: entry["sha256"] for entry in outputs},
                                    "generated_instruction_hashes": {entry["path"]: entry["sha256"] for entry in outputs
                                         if entry["state"] in ("written", "current")

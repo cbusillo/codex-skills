@@ -714,6 +714,17 @@ The per-repository read rule still applies to repositories absent from the bundl
 After a direction change or first direction turn, run
 `uv run scripts/catalog_runtime.py --update` from the runtime checkout. It
 refreshes the receipt's destinations and hashes through the normal installer.
+The existing startup diagnostic checks installed native instruction files with
+that installer's read-only preview, including the selected account home. This
+compares the rendered output, so renderer and merged DIRECTION changes are
+visible even when `instructions/global.md` is unchanged. Missing or stale files
+produce one line with their paths and a shell-quoted refresh command. Independent
+account homes use `sync-global-instructions.py --destination <native-file>`
+without replacing the install receipt's registered destinations; preserved
+sources get a read-only reconciliation preview. A failed or timed-out preview
+reports delivery as unconfirmed. The preview has a fixed time bound, writes no
+settings or diagnostic records, and does not prevent startup. It checks file freshness, not whether an unverified Desktop or editor
+surface loaded it; the Explore/Plan exception above still applies.
 For a manual preview, use `scripts/install-catalog.py --refresh-instructions`
 with those same destinations, then add `--write`. The standalone sync remains
 available for initial setup and explicit reconciliation; rerun the installer
