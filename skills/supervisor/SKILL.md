@@ -521,7 +521,14 @@ current default-branch checkout to read its product section.
    request a durable handoff and relaunch the same brief after verified safe
    closeout. If it cannot hand off, preserve it and bring the failure to the
    Director. Gather the
-   open Director questions. Read the latest stranded-work digest's
+   open Director questions: read the existing foreign watcher's new
+   `director_question` notices on every check, open each full comment, and
+   register it in the Director's queue under the shared question rules.
+   For session anchors outside the watcher's repository coverage, read them
+   with `oq.py OWNER/REPO#ISSUE --owner OWNER --decision-author TRUSTED_BOT`
+   at each check and register new questions
+   under the same rules; report an unreadable anchor as a coverage gap.
+   Read the latest stranded-work digest's
    `supervisor_next_action` list, oldest first: do the Supervisor-only steps,
    rewrite the rest to name the next agent and its step, or hand a batch to a
    triage session. Then its `unasked_director_wait` list, oldest first: post
