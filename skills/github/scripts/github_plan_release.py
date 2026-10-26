@@ -41,6 +41,8 @@ def related_sessions_match(text: str, session: str) -> bool:
             fence = opener.group(1)
             continue
         fields = (
+            r"(?:^[ \t]*(?:[-*+][ \t]+)?|(?<=[(;|])[ \t]*"
+            r"|\b(?=Native[ \t_-]*Session|(?:Session|Thread)[ \t_-]*ID\b))"
             r"\b(?:Native[ \t_-]*)?(?:Session(?:[ \t_-]*ID)?|Thread[ \t_-]*ID)\b"
             r"(?:[ \t]*[:=][ \t]*|[ \t]+[—-][ \t]+)([^\s,;|]+)"
             r"|\|[ \t]*(?:Session(?:[ \t_-]*ID)?|Thread[ \t_-]*ID)[ \t]*\|[ \t]*([^\s|]+)"

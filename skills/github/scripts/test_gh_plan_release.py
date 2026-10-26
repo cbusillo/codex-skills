@@ -1083,7 +1083,10 @@ class ReleaseTests(ReleaseHarness):
 
     def test_related_followup_prose_is_not_a_session_field(self):
         for prose in ("session-start hook", "session-scoped work", "thread-safe cleanup",
-                      "Review thread: https://github.com/owner/repo/pull/99"):
+                      "Review thread: https://github.com/owner/repo/pull/99",
+                      "Next actor: Chris performs Q914 in his existing Launchplane administrator session: "
+                      "https://github.com/owner/repo/issues/42#issuecomment-7",
+                      "Chris uses his browser session: https://example.test/admin"):
             with self.subTest(prose=prose):
                 self.setUp()
                 self.f.comments.append(self.comment(2, "Claimed by trial-b to fix " + prose,
@@ -1091,6 +1094,14 @@ class ReleaseTests(ReleaseHarness):
                 self.args.related_claim_comment = [2]
                 self.run_release()
                 self.successor()
+
+    def test_explicit_session_fields_keep_conflicting_and_malformed_values_refused(self) -> None:
+        for field in ("Session: {}", "- Session: {}", "Handoff; Session: {}",
+                      "Ownership record Native session ID: {}", "Thread ID: {}", "| Session | {} |"):
+            for value in ("other-session", "https://example.test/admin", "unknown"):
+                with self.subTest(field=field, value=value):
+                    self.assertFalse(release.related_sessions_match(field.format(value), "session-b"))
+            self.assertTrue(release.related_sessions_match(field.format("session-b"), "session-b"))
 
     def test_related_source_followup_ignores_fenced_session_examples(self):
         for fence in ("```", "~~~"):
