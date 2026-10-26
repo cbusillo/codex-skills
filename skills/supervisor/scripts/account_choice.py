@@ -27,6 +27,14 @@ from typing import Any
 PROVIDERS = ("openai", "anthropic", "google")
 
 
+def codex_health():
+    if __package__:
+        from skills.supervisor.scripts import codex_auth_health
+    else:
+        import codex_auth_health
+    return codex_auth_health
+
+
 class UnconfiguredChoice(ValueError):
     pass
 # Supported variables that put a launched harness on an account. AGY uses its existing login.
@@ -266,11 +274,6 @@ def choose_batch(provider, config, snapshot, unavailable_reason, count=1, now=No
 
 def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, name):
     """Consume the published order without ranking or reserving capacity ourselves."""
-    if provider == "openai":
-        if __package__:
-            from skills.supervisor.scripts import codex_auth_health
-        else:
-            import codex_auth_health
     now = now or datetime.now(timezone.utc)
     if isinstance(count, bool) or not isinstance(count, int) or count < 1:
         raise ValueError("launch count must be a positive integer")
@@ -295,7 +298,7 @@ def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, na
         if len(matches) != 1 or not matches[0].get("id"):
             raise ValueError("named account needs one Context Panel row for its launch receipt")
         if provider == "openai" and named[0]["env"].get("CODEX_HOME"):
-            codex_auth_health.require_usable(Path(named[0]["env"]["CODEX_HOME"]))
+            codex_health().require_usable(Path(named[0]["env"]["CODEX_HOME"]))
         return [resolve_choice(provider, config, snapshot, matches[0]["id"], "named",
                                "explicit --account; capacity not checked") for _ in range(count)]
     ranking = provider_ranking(snapshot, provider)
@@ -339,7 +342,7 @@ def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, na
                 raise
             if choice["name"] not in checked:
                 home = choice["env"].get("CODEX_HOME")
-                checked[choice["name"]] = isinstance(home, str) and bool(codex_auth_health.observe(Path(home)).get("blocked"))
+                checked[choice["name"]] = isinstance(home, str) and bool(codex_health().observe(Path(home)).get("blocked"))
             if not checked[choice["name"]]:
                 if skipped_failure:
                     choice["source"] = "context-panel-auth-fallback"
