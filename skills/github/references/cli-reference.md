@@ -1007,20 +1007,17 @@ condition, not authority to close protected work or perform the triggered action
 
 ### References In New Planning Text
 
-Release handoffs, new wait/claim/close text, section updates and explicit `gh-comment` or
-`gh-pr.py comment` bodies require `OWNER/REPO#N` or full GitHub issue/PR URLs.
-Use the same qualified form for local references, for example
-`owner/current-repo#42`. Bare `#N` and ownerless `repo#N` refuse before posting:
-a matching local number cannot establish which repository the author meant.
-Use plain words such as "rank 1" for authored prose that is not an issue
-reference. For relayed source text, logs or quoted reviewer output,
-`gh-comment` and `gh-pr.py comment --verbatim` preserve the exact body. The
-Supervisor review poster uses that route automatically. Do not use it for
-newly authored planning text. New plans and section text are authored planning
-content; preserve exact source requests through the comment route described in
-[issue templates](issue-templates.md). Existing section adoption preserves the
-original human request. Titles retain their existing behavior. Historical
-readers remain for existing records.
+Use `OWNER/REPO#N` or a full GitHub issue/PR URL in authored planning text and
+explicit comments, including local references such as `owner/current-repo#42`.
+Bare numbers and ownerless repository references refuse before posting because
+a matching local number cannot establish the intended repository. Use plain
+words such as "rank 1" for prose that is not an issue reference.
+
+Use `gh-comment --verbatim` or `gh-pr.py comment --verbatim` only to relay source
+text, logs or reviewer output unchanged. The Supervisor poster does this
+automatically. For exact human requests in linked plans, follow
+[issue templates](issue-templates.md); existing section adoption preserves the
+original human request.
 
 ### Planning: Claim
 

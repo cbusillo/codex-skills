@@ -95,7 +95,7 @@ def validate_planning_references(body: object, repo: str) -> None:
         return
     if not isinstance(body, str):
         return
-    ambiguous = list(dict.fromkeys(re.findall(r"(?<![\w/#])(?:[\w.-]+)?#\d+(?!\d)|(?<![\w/#.-])PR[1-9]\d*(?![\w-])", body, re.IGNORECASE)))
+    ambiguous = list(dict.fromkeys(re.findall(r"(?<![\w/#.-])[\w.-]+#\d+(?!\d)|(?<![\w/#])#\d+(?!\d)|(?<![\w/#.-])PR[1-9]\d*(?![\w-])", body, re.IGNORECASE)))
     if ambiguous:
         raise ValueError(
             f"Ambiguous issue references: {', '.join(ambiguous)}. "

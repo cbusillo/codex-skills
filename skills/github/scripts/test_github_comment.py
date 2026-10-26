@@ -967,6 +967,18 @@ def test_exact_edit_invalid_combinations_fail_before_network() -> None:
     with_call_stub(callback, run)
 
 
+def test_planning_reference_boundaries_preserve_qualified_repository_names() -> None:
+    for text in ("owner/repo#77", "owner/my-repo#42", "my-owner/my.repo#5", "owner/node.appletv-remote#7",
+                 "https://github.com/owner/my-repo/issues/42", "https://github.com/owner/repo/pull/77#issuecomment-5"):
+        github_comment.validate_planning_references(text, "owner/my-repo")
+    for text in ("#77", "other-repo#77", "other.repo#77", "PR77", "\n#77", "\t#77", "&#35;1", "-#77", ".#77"):
+        try:
+            github_comment.validate_planning_references(text, "owner/my-repo")
+        except ValueError:
+            continue
+        raise AssertionError(f"ambiguous planning reference was accepted: {text!r}")
+
+
 def test_explicit_comment_commands_refuse_ambiguous_refs_before_posting() -> None:
     with tempfile.TemporaryDirectory() as directory:
         body_file = pathlib.Path(directory) / "body.md"
@@ -1484,6 +1496,7 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
 
 
 TESTS: list[Callable[[], None]] = [
+    test_planning_reference_boundaries_preserve_qualified_repository_names,
     test_explicit_comment_commands_refuse_ambiguous_refs_before_posting,
     test_attachment_limits_refuse_before_cli,
     test_attachment_passthrough_and_failures_never_replay,
