@@ -431,7 +431,6 @@ async def operate(args):
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="supervisor-launch-",
                                              suffix=".sh", delete=False) as handle:
                 launch_script = Path(handle.name)
-                progress["launch_script"] = str(launch_script)
                 handle.write('rm -f -- "$0" || exit\n' + staged + "\n")
             environment = [argument for key in LAUNCH_ENVIRONMENT_KEYS if key in os.environ
                            for argument in ("-e", key + "=" + os.environ[key])]
@@ -471,7 +470,7 @@ async def operate(args):
             iterm_tab.source_launch_metadata(result, choice)
             results.append(result)
         except Exception as error:
-            if launch_script is not None and progress["submission"] == "not_attempted":
+            if launch_script is not None and progress["tab_id"] is None:
                 launch_script.unlink(missing_ok=True)
             iterm_tab.cancel_unsubmitted_gui(choice, progress)
             raise iterm_tab.LaunchFailure(results, progress, error) from error

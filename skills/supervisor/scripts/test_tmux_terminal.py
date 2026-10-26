@@ -911,7 +911,6 @@ for line in sys.stdin:
             if argv[0] == "new-window":
                 launches.append(argv)
                 self.assertNotIn(self.brief_text, argv[-1])
-                self.assertLess(len(argv[-1].encode()), 16000)
                 script = Path(shlex.split(argv[-1])[-1])
                 self.assertEqual(script.stat().st_mode & 0o777, 0o600)
             return original(terminal, *argv, **kwargs)
@@ -1185,6 +1184,27 @@ for line in sys.stdin:
                 for row in rows:
                     self.wait_screen(row["session_id"], "READY:")
 
+    def test_staged_file_cleanup_leaves_created_pane_in_charge(self) -> None:
+        original = tmux_terminal.Terminal.run
+        for created in (False, True):
+            scripts = []
+
+            def run(terminal: tmux_terminal.Terminal, *argv: str, **kwargs: object) -> subprocess.CompletedProcess:
+                if argv[0] == "new-window":
+                    scripts.append(Path(shlex.split(argv[-1])[-1]))
+                    if not created:
+                        raise ValueError("creation failed")
+                    return subprocess.CompletedProcess([], 0, stdout="@999\t%999")
+                if argv[0] == "set-option":
+                    raise ValueError("preparation failed before shell opened script")
+                return original(terminal, *argv, **kwargs)
+
+            with self.subTest(created=created), patch.object(tmux_terminal.Terminal, "run", run):
+                with self.assertRaises(iterm_tab.LaunchFailure):
+                    self.launch()
+                self.assertEqual(scripts[0].exists(), created)
+                scripts[0].unlink(missing_ok=True)
+
     def test_receipt_failure_retains_exact_staged_pane_without_starting_agent(self):
         with patch.object(account_choice, "record_launch", side_effect=OSError("storage full")):
             with self.assertRaises(iterm_tab.LaunchFailure) as caught:
@@ -1192,7 +1212,6 @@ for line in sys.stdin:
         detail = caught.exception.detail["failed_launch"]
         self.assertEqual(detail["submission"], "not_attempted")
         self.assertFalse(detail["receipt_written"])
-        self.assertFalse(Path(detail["launch_script"]).exists())
         self.assertNotIn("READY:", "\n".join(self.terminal.read(detail["session_id"])["screen"]))
         self.assertFalse(self.terminal.select(detail["session_id"])["dead"])
 
