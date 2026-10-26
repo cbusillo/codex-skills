@@ -279,6 +279,28 @@ def test_active_operation_conflict_exposes_only_the_pollable_blocker():
     read.assert_not_called()
 
 
+@pytest.mark.parametrize("command", [rebuild.PLAN_COMMAND, rebuild.COMMAND])
+@pytest.mark.parametrize(("error_code", "expected"), [
+    ("testing_unavailable_ingress_unverified", "refused"),
+    ("mutation_reconciliation_required", "reconciliation_required"),
+    ("idempotency_key_reused", "conflict"),
+])
+def test_native_rebuild_refusals_preserve_state_without_another_dispatch(command: str, error_code: str, expected: str) -> None:
+    message = next(iter(helper.SAFE_REFUSAL_MESSAGES["testing_unavailable_ingress_unverified"]))
+    error = urllib.error.HTTPError(SERVICE_URL, 409, "Conflict", {}, io.BytesIO(json.dumps({
+        "trace_id": "launchplane_req_refusal", "error": {"code": error_code, "message": message},
+    }).encode()))
+    code, output, post, read, _ = invoke(error=error, args=arguments(command=command))
+    assert code != 0
+    assert output["status"] == expected
+    assert output["summary"]["error_code"] == error_code
+    assert output["summary"]["trace_id"] == "launchplane_req_refusal"
+    if error_code == "testing_unavailable_ingress_unverified":
+        assert output["warnings"][0]["message"] == message
+    post.assert_called_once()
+    read.assert_not_called()
+
+
 def test_uppercase_source_is_rejected_before_configuration():
     args = arguments()
     args[args.index("--source-git-ref") + 1] = "A" * 40

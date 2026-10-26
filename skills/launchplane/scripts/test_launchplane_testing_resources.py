@@ -312,7 +312,7 @@ def test_failure_classification_and_recovery_cover_every_mode(mode: str, status:
         assert output["summary"]["recommendation"] == expected[mode]
 
 
-@pytest.mark.parametrize("mode,expected", [("dry-run", "stale"), ("apply", "stale"), ("readback", "outcome_unknown")])
+@pytest.mark.parametrize("mode,expected", [("dry-run", "refused"), ("apply", "refused"), ("readback", "outcome_unknown")])
 def test_clean_refusal_is_distinct_from_uncertain_allocation(mode: str, expected: str) -> None:
     payload = {"error": {"code": "testing_resources_refused"}, "trace_id": "launchplane_req_clean"}
     error = urllib.error.HTTPError(SERVICE, 409, "refused", None, io.BytesIO(json.dumps(payload).encode()))
