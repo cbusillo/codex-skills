@@ -349,9 +349,9 @@ def run_agent_inspect(args: argparse.Namespace) -> int:
             if backend != "native":
                 native_backend.common.scope_selection(args, sys.modules[__name__])
                 raise InspectError(
-                    "Automatic inspection has no isolated native worker for this selection.", 2,
-                    {"error_reason": "isolated_backend_unavailable", "backend_selection": selection,
-                     "hint": ISOLATED_BACKEND_UNAVAILABLE_HINT},
+                    "Automatic inspection has no isolated native worker for this selection.",
+                    payload={"error_reason": "isolated_backend_unavailable", "backend_selection": selection,
+                             "hint": ISOLATED_BACKEND_UNAVAILABLE_HINT},
                 )
         result = command_native(args)
         result["backend_selection"] = selection
@@ -1701,7 +1701,7 @@ def registry_identities() -> list[dict[str, Any]]:
     instances = registry_dir()
     if not instances.exists():
         return []
-    now_ms = int(time.time() * 1000)
+    current_ms = int(time.time() * 1000)
     identities = []
     for path in sorted(instances.glob("*.json")):
         try:
@@ -1709,7 +1709,7 @@ def registry_identities() -> list[dict[str, Any]]:
         except (OSError, json.JSONDecodeError):
             continue
         heartbeat = int(data.get("heartbeat_ms") or 0)
-        if heartbeat and now_ms - heartbeat > 60_000:
+        if heartbeat and current_ms - heartbeat > 60_000:
             continue
         pid = data.get("pid")
         if pid and not pid_alive(int(pid)):
@@ -1824,7 +1824,7 @@ def stable_value_hash(value: Any) -> str | None:
 
 
 def text_sha256(text: str) -> str:
-    return f"sha256:{hashlib.sha256(text.encode('utf-8')).hexdigest()}"
+    return f"sha256:{hashlib.sha256(text.encode()).hexdigest()}"
 
 
 def unknown_log_path() -> Path | None:
@@ -1854,7 +1854,7 @@ def append_jsonl_record(
     record: dict[str, Any],
     lock_timeout_ms: int = DEFAULT_OUTCOME_APPEND_LOCK_TIMEOUT_MS,
 ) -> None:
-    payload = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    payload = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode()
     log_path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     original_size: int | None = None

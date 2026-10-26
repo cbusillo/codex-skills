@@ -804,7 +804,7 @@ class RetiredDesktopCommandTests(unittest.TestCase):
     def test_open_worktree_names_agent_inspect_without_contacting_an_ide(self):
         result = subprocess.run(
             [sys.executable, str(SCRIPT_PATH), "open-worktree", "--repo", "."],
-            capture_output=True, text=True, check=False,
+            capture_output=True, text=True,
             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         )
         self.assertEqual(result.returncode, 2)
@@ -944,7 +944,8 @@ class InspectionLaneConfigTest(unittest.TestCase):
             self.assertEqual(raised.exception.payload["error_reason"], "inspection_lane_config_invalid")
 
 class InspectionLaneSelectionTest(unittest.TestCase):
-    def make_context(self, root: Path, lanes: tuple[Any, ...], scope: str = "files") -> dict[str, Any]:
+    @staticmethod
+    def make_context(root: Path, lanes: tuple[Any, ...], scope: str = "files") -> dict[str, Any]:
         return {
             "repo_path": str(root),
             "worktree_root": str(root),
@@ -1112,13 +1113,13 @@ class UnknownVerdictLogTest(unittest.TestCase):
             def __init__(self):
                 self.calls = []
 
-            def locking(self, descriptor, mode, size):
+            def locking(self, _descriptor, mode, size):
                 self.calls.append((mode, size))
 
         fake_msvcrt = FakeMsvcrt()
         with tempfile.TemporaryDirectory() as tmp:
             with (
-                patch.dict(os.environ, {"JETBRAINS_INSPECTION_CACHE_DIR": tmp}, clear=False),
+                patch.dict(os.environ, {"JETBRAINS_INSPECTION_CACHE_DIR": tmp}),
                 patch_attr(jb_inspect, jb_inspect.fcntl.__name__, None),
                 patch_attr(jb_inspect, "msvcrt", fake_msvcrt),
             ):
@@ -1143,7 +1144,7 @@ class UnknownVerdictLogTest(unittest.TestCase):
             def __init__(self):
                 self.calls = []
 
-            def locking(self, descriptor, mode, size):
+            def locking(self, _descriptor, mode, size):
                 self.calls.append((mode, size))
 
         fake_msvcrt = FakeMsvcrt()
@@ -1164,7 +1165,7 @@ class UnknownVerdictLogTest(unittest.TestCase):
             LK_NBLCK = 1
             LK_UNLCK = 2
 
-            def locking(self, descriptor, mode, size):
+            def locking(self, _descriptor, mode, size):
                 raise OSError("busy")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1235,7 +1236,7 @@ class UnknownVerdictLogTest(unittest.TestCase):
             self.assertEqual(summary["summary"], jb_inspect.empty_outcome_summary())
 
     def test_command_summarize_outcomes_respects_disabled_env(self):
-        with patch.dict(os.environ, {jb_inspect.OUTCOME_LOG_ENV: "0"}, clear=False):
+        with patch.dict(os.environ, {jb_inspect.OUTCOME_LOG_ENV: "0"}):
             summary = jb_inspect.command_summarize_outcomes(Namespace(log_path=None, limit=10))
 
         self.assertEqual(summary["status"], "disabled")
