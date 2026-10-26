@@ -273,6 +273,16 @@ class InstallTests(unittest.TestCase):
                 self.assertIn(str(self.catalog / "scripts/catalog_runtime.py"), warning)
             self.assertEqual(before, {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()})
             self.assertEqual(json.loads((self.catalog / ".local/catalog-install.json").read_text()), installation)
+            other = self.codex / "AGENTS.md" if harness == "claude" else self.claude / "CLAUDE.md"
+            other_original = other.read_bytes()
+            other.unlink()
+            foreign = self.home / "other-harness-dotfile"
+            foreign.write_text("Private instructions for the other harness.")
+            other.symlink_to(foreign)
+            with mock.patch.object(self.sync, "direction_content", return_value=self.sync.DIRECTION_START + "\nNext merged direction."):
+                self.assertIn(str(self.catalog / "scripts/catalog_runtime.py"), startup())
+            other.unlink()
+            other.write_bytes(other_original)
             direction.stop()
             self.install()
             installation = json.loads((self.catalog / ".local/catalog-install.json").read_text())

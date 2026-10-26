@@ -171,7 +171,9 @@ def instruction_warning(root: Path, installation: dict) -> str:
         if not stale:
             return ""
         detail = "missing or stale: " + ", ".join(stale)
-        if preview.get("unmanaged_instruction_sources") or any(state in {"preserved", "skipped", "refused"} for state in outputs.values()):
+        checked = {path.resolve() for path in destinations}
+        unmanaged = {Path(path).resolve() for path in preview.get("unmanaged_instruction_sources", [])}
+        if checked & unmanaged or any(outputs.get(path) in {"preserved", "skipped", "refused"} for path in checked):
             recovery = [*arguments, "--show-diff"]
             detail = "instruction source needs reconciliation: " + ", ".join(stale)
     except (OSError, ValueError, TypeError, KeyError, RuntimeError, subprocess.SubprocessError):
