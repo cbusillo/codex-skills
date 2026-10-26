@@ -2591,6 +2591,24 @@ class ClaudeTrustTests(unittest.TestCase):
 
 
 class TerminalTests(unittest.TestCase):
+    def test_fresh_codex_and_claude_launches_export_the_spawned_label(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for harness in ("codex", "claude"):
+                command = root / harness
+                command.write_text(harness)
+                args = account_launch_args(command)
+                args.account_provider = None
+                commands, _ = iterm_tab.prepare_launches(args)
+                probe = commands[0].replace(harness + " ", "capture ", 1)
+                result = subprocess.run(["/bin/sh", "-c", 'capture() { printf "%s" "$DISCORD_BLUE_SESSION_KIND"; }; ' + probe],
+                                        capture_output=True, text=True, check=True)
+                self.assertEqual(result.stdout, "spawned")
+                after = subprocess.run(["/bin/sh", "-c", 'unset DISCORD_BLUE_SESSION_KIND; capture() { :; }; ' + probe
+                                        + '; printf "%s" "${DISCORD_BLUE_SESSION_KIND-unlabelled}"'],
+                                       capture_output=True, text=True, check=True)
+                self.assertEqual(after.stdout, "unlabelled")
+
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)

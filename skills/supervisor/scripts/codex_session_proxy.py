@@ -110,7 +110,10 @@ def without_memory_generation(message: dict) -> dict:
     config = (params.get("config") or {}) if isinstance(params, dict) else None
     if not isinstance(config, dict):
         raise ValueError("new thread params and config must be objects")
-    return {**message, "params": {**params, "config": {**config, MEMORY_SETTING: False}}}
+    params = {**params, "config": {**config, MEMORY_SETTING: False}}
+    if os.environ.get("DISCORD_BLUE_SESSION_KIND") == "spawned":
+        params["threadSource"] = "spawned"
+    return {**message, "params": params}
 
 
 def managed_argv(home: Path, native: list[str]) -> list[str]:

@@ -34,6 +34,31 @@ class ReceiptFixture(HistoricalReceiptFixture):
 
 
 class IngressTests(unittest.IsolatedAsyncioTestCase):
+    async def test_spawned_label_reaches_new_native_threads_before_their_first_turn(self) -> None:
+        with ReceiptFixture() as f, patch.dict(os.environ, {"DISCORD_BLUE_SESSION_KIND": "spawned"}):
+            forwarded = []
+
+            def record(native_request: dict) -> dict:
+                forwarded.append(native_request["params"])
+                return {"thread": {"id": str(uuid.uuid4())}}
+
+            f.rpc_results.update({"thread/start": record, "thread/fork": record})
+            task, request, response, _ = await self.start_client(f)
+            try:
+                for method, target in (("thread/start", None), ("thread/fork", f.session)):
+                    result = await self.send(task, request, response, method, target, threadSource="user")
+                    self.assertIn("result", result)
+                self.assertEqual([params["threadSource"] for params in forwarded], ["spawned", "spawned"])
+            finally:
+                (f.root / "stop").touch()
+                await asyncio.wait_for(task, 8)
+
+    def test_unlabelled_ingress_keeps_native_source_classification(self) -> None:
+        with patch.dict(os.environ, {"DISCORD_BLUE_SESSION_KIND": ""}):
+            for params in ({}, {"threadSource": "user"}):
+                forwarded = proxy.without_memory_generation({"params": params})["params"]
+                self.assertEqual(forwarded.get("threadSource"), params.get("threadSource"))
+
     async def test_alias_actions_refuse_before_forwarding_or_creating_another_lease(self):
         with ReceiptFixture("01a1514c-fa7f-7be3-95ba-4d25df73d07e") as f:
             forwarded = []

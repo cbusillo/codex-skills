@@ -1274,6 +1274,7 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
             if choice.get("tools", {}).get("route") != "local":
                 check_codex_daemon(choice)
         account_choice.prepare_launch(choices[0])
+    command_texts = ["( export DISCORD_BLUE_SESSION_KIND=spawned; " + text + "\n)" for text in command_texts]
     if apps[0]:
         reservation = gui_launch.reserve(apps[0])
         try:
