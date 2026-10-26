@@ -24,11 +24,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-if __package__:
-    from skills.supervisor.scripts import codex_auth_health
-else:
-    import codex_auth_health
-
 PROVIDERS = ("openai", "anthropic", "google")
 
 
@@ -271,6 +266,11 @@ def choose_batch(provider, config, snapshot, unavailable_reason, count=1, now=No
 
 def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, name):
     """Consume the published order without ranking or reserving capacity ourselves."""
+    if provider == "openai":
+        if __package__:
+            from skills.supervisor.scripts import codex_auth_health
+        else:
+            import codex_auth_health
     now = now or datetime.now(timezone.utc)
     if isinstance(count, bool) or not isinstance(count, int) or count < 1:
         raise ValueError("launch count must be a positive integer")
