@@ -292,7 +292,7 @@ After process closure is proved, an `ENOTEMPTY` removal failure may rescan the
 same inode at most once per top-level entry in each contents pass, plus one root
 rescan. Other errors and a second failure remain custody holds. Receipts
 record counts, errno and fixed deletion stages, never raw paths or error text.
-If final root removal fails, the exact owner marker is restored through the
+If final root removal fails, the exact ownership marker is restored through the
 held directory descriptor without overwriting a new marker. Every root rescan
 skips ownership markers. A replaced inode
 or ownership marker is preserved for recovery.
