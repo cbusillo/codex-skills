@@ -15,6 +15,7 @@ import shlex
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -29,7 +30,7 @@ MAX_LINES = 1000
 MAX_CONTAINERS = 8
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 SELECTOR = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
-IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}\Z")
+IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}")
 TIMESTAMP = re.compile(
     r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)\Z"
 )
@@ -38,7 +39,7 @@ TALLY = re.compile(
     r"(?P<scheduled>scheduled )?merge-train controller "
     r"(?P<repository>[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100})@"
     r"(?P<base_branch>[A-Za-z0-9_./-]{1,200}) trace "
-    r"(?P<trace_id>[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}); "
+    rf"(?P<trace_id>{IDENTIFIER.pattern}); "
     r"requests=(?P<requests>[0-9]{1,12}) "
     r"not_modified=(?P<not_modified>[0-9]{1,12}) "
     r"non_304_requests=(?P<non_304_requests>[0-9]{1,12}) "
@@ -193,6 +194,15 @@ def project_tally(message: str) -> dict | None:
     }
 
 
+@dataclass
+class StreamEntries:
+    entries: list[dict]
+    matched: int
+    changed: int
+    withheld: int
+    quarantine: dict | None
+
+
 def entries_from_stream(
     raw: bytes,
     container: int,
@@ -202,11 +212,11 @@ def entries_from_stream(
     limit: int,
     timeout: float,
     tallies_only: bool = False,
-) -> tuple[list[dict], int, int, int]:
+) -> StreamEntries:
     redactor = Redactor(identifiers)
     kept: list[tuple[int, int, dict]] = []
     matched = changed = withheld = 0
-    quarantined = False
+    quarantine = None
     deadline = time.monotonic() + timeout
     for sequence, line in enumerate(raw.decode("utf-8", errors="replace").split("\n")):
         if time.monotonic() >= deadline:
@@ -221,15 +231,15 @@ def entries_from_stream(
         except ValueError:
             raise LogReadError("invalid_log_framing") from None
         in_window = since <= observed < until
-        if tallies_only and quarantined:
+        if tallies_only and quarantine is not None:
             withheld += in_window
             continue
         try:
             safe = redactor.feed(message)
-        except RedactionError:
+        except RedactionError as error:
             if not tallies_only:
                 raise
-            quarantined = True
+            quarantine = {"container": container, "timestamp": stamp, "reason": str(error)}
             withheld += in_window
             continue
         tally = project_tally(message) if tallies_only and not safe.redacted else None
@@ -250,7 +260,7 @@ def entries_from_stream(
             heapq.heappush(kept, (observed, sequence, entry))
             if len(kept) > limit:
                 heapq.heappop(kept)
-    return [item[2] for item in sorted(kept)], matched, changed, withheld
+    return StreamEntries([item[2] for item in sorted(kept)], matched, changed, withheld, quarantine)
 
 
 def inspect_containers(
@@ -363,6 +373,7 @@ def read_logs(args: argparse.Namespace) -> dict:
     coverage, inspect_diagnostics = inspect_containers(target, containers, args.timeout)
     transport_diagnostics |= inspect_diagnostics
     entries = []
+    quarantines = []
     matched = changed = withheld = 0
     identifiers = (args.operation_id, args.trace_id)
     for index, container in enumerate(containers):
@@ -381,17 +392,22 @@ def read_logs(args: argparse.Namespace) -> dict:
             args.timeout,
         )
         transport_diagnostics |= log_diagnostics
-        kept, count, altered, hidden = entries_from_stream(
+        projected = entries_from_stream(
             stdout, index, since, until, identifiers, args.lines, args.timeout, args.tallies_only
         )
-        entries.extend(kept)
-        matched += count
-        changed += altered
-        withheld += hidden
+        entries.extend(projected.entries)
+        matched += projected.matched
+        changed += projected.changed
+        withheld += projected.withheld
+        if projected.quarantine is not None:
+            quarantines.append(projected.quarantine)
     entries.sort(key=lambda entry: timestamp(entry["timestamp"]))
     return {
         "ok": True,
-        **({"projection": "controller_tallies", "withheld_record_count": withheld} if args.tallies_only else {}),
+        **(
+            {"projection": "controller_tallies", "withheld_record_count": withheld, "quarantines": quarantines}
+            if args.tallies_only else {}
+        ),
         "since": args.since,
         "until": args.until,
         "entries": entries[-args.lines :],

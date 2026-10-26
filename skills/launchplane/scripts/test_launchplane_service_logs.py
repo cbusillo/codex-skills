@@ -123,10 +123,10 @@ class ServiceLogTests(unittest.TestCase):
                     **kwargs,
                 )
             self.assertIn(docker[-1], ids)
-            emitted = stdout
+            emitted = stdout[docker[-1]] if isinstance(stdout, dict) else stdout
             if driver_tail and "--tail" in docker:
                 emitted = b"\n".join(
-                    stdout.split(b"\n")[-int(docker[docker.index("--tail") + 1]) - 1 :]
+                    emitted.split(b"\n")[-int(docker[docker.index("--tail") + 1]) - 1 :]
                 )
             data = emitted + stderr if combined else emitted
             diagnostics = transport_stderr if combined else stderr + transport_stderr
@@ -332,11 +332,18 @@ class ServiceLogTests(unittest.TestCase):
             f"2026-01-02T12:01:00Z {message}\n"
             for message in (tally, "password=S3NTINEL " * 1000, tally)
         ).encode()
-        status, result, _ = self.run_reader(raw, extra=("--tallies-only",))
+        other = "b" * 64
+        status, result, _ = self.run_reader(
+            {CONTAINER: raw, other: f"2026-01-02T12:02:00Z {tally}\n".encode()},
+            extra=("--tallies-only",), containers=[CONTAINER, other],
+        )
         self.assertEqual(status, 0)
         self.assertFalse(result["complete"])
         self.assertEqual(result["withheld_record_count"], 2)
-        self.assertEqual(len(result["entries"]), 1)
+        self.assertEqual(len(result["entries"]), 2)
+        self.assertEqual([entry["container"] for entry in result["entries"]], [0, 1])
+        self.assertEqual([item["container"] for item in result["quarantines"]], [0])
+        self.assertEqual(result["quarantines"][0]["timestamp"], "2026-01-02T12:01:00Z")
         entry = result["entries"][0]
         self.assertEqual((entry["requests"], entry["not_modified"], entry["non_304_requests"]), (12, 9, 3))
         self.assertEqual(entry["trace_id"], "launchplane_scheduler_123")
@@ -352,6 +359,8 @@ class ServiceLogTests(unittest.TestCase):
         )
         for messages in (
             ["unknown-private-body"],
+            ["-----END PRIVATE KEY-----", tally],
+            ["%252525252541", tally],
             ["password=" + tally],
             [json.dumps({"password": tally})],
             ["password:", "  " + tally],

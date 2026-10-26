@@ -137,7 +137,9 @@ withheld records proves no traffic or complete history.
 
 An oversized message or another redaction error withholds that record and the
 rest of that container's stream: its multiline state can no longer be trusted.
-Earlier safe tallies and other containers remain available. Narrow the window
+The `quarantines` array identifies each first unreadable record by container
+ordinal, timestamp and fixed redaction error code, without its body. Earlier
+safe tallies and other containers remain available. Narrow the window
 to a separately readable interval for later evidence; do not raise the 4 KiB
 bound or infer counts from withheld bodies. Framing, transport, byte-budget and
 timeout failures still return no partial result. The ordinary message mode
