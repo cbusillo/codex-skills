@@ -326,6 +326,24 @@ class NativeTests(unittest.TestCase):
             self.assertEqual(result["diagnostic"]["error_reason"], error.payload["error_reason"])
             self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
 
+    def test_alias_rewrites_only_the_command_token(self):
+        with patch_attr(host, "command_native", return_value={"backend": "native"}) as run, \
+                patch.object(sys, "argv", ["jb-inspect", "--json", "inspect", "--backend", "native", "--scope", "directory", "--dir", "inspect"]), \
+                redirect_stdout(io.StringIO()):
+            self.assertEqual(host.main(), 0)
+        self.assertEqual(run.call_args.args[0].directory, "inspect")
+
+    def test_configuration_error_keeps_its_own_next_action(self):
+        error = host.inspection_lane_config_error("Lane patterns are invalid.")
+        with patch_attr(host, "native_backend_module", return_value=native), \
+                patch_attr(native, "select_backend", return_value=("unavailable", "native_selection_unavailable")), \
+                patch_attr(native.common, "scope_selection", side_effect=error), \
+                patch_attr(host, "log_assessment_records"), \
+                patch.object(sys, "argv", ["jb-inspect", "agent-inspect"]), \
+                redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(host.main(), 0)
+        self.assertEqual(json.loads(output.getvalue())["agent_result"]["next_action"], error.payload["next_action"])
+
     def test_retired_desktop_options_return_unknown_without_starting_the_worker(self):
         for argv in (["--backend", "api"], *([option, "value"] for option in host.RETIRED_OPTIONS)):
             with self.subTest(argv=argv), \

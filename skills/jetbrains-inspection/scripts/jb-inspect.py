@@ -3,14 +3,6 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""JetBrains inspection helper for Codex skills.
-
-agent-inspect runs every assessment on an isolated headless native worker
-(native_backend.py) and never contacts a desktop IDE. The worktree retirement
-commands still reach an already-running IDE's Inspection API plugin, only to
-remove SDKs, project caches and leases the retired desktop route left behind.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -298,16 +290,17 @@ def main() -> int:
     global _ACTIVE_CLIENT_RUN_ID
     previous_client_run_id = _ACTIVE_CLIENT_RUN_ID
     raw_argv = list(sys.argv[1:])
-    command = next((token for token in raw_argv if not token.startswith("-")), None)
+    command_index = command_token_index(raw_argv)
+    command = raw_argv[command_index] if command_index is not None else None
     parser = build_parser()
     if command in RETIRED_COMMANDS:
         print(RETIRED_COMMAND_MESSAGE.format(command=command), file=sys.stderr)
         return 2
-    if command in INSPECT_COMMAND_ALIASES:
+    if command_index is not None and command in INSPECT_COMMAND_ALIASES:
         parser_error = io.StringIO()
         try:
             with redirect_stderr(parser_error):
-                args = parser.parse_args(["agent-inspect" if token == command else token for token in raw_argv])
+                args = parser.parse_args([*raw_argv[:command_index], "agent-inspect", *raw_argv[command_index + 1:]])
         except SystemExit as error:
             if error.code == 0:
                 raise
@@ -334,6 +327,15 @@ def main() -> int:
     return 2
 
 
+def command_token_index(argv: list[str]) -> int | None:
+    for index, token in enumerate(argv):
+        if token == "--":
+            return None
+        if not token.startswith("-"):
+            return index
+    return None
+
+
 def classify_cleanup_leases_exit(result: dict[str, Any]) -> int:
     return 1 if result.get("failed") or result.get("unresolved") else 0
 
@@ -358,8 +360,10 @@ def run_agent_inspect(args: argparse.Namespace) -> int:
     except InspectError as error:
         payload = error_payload(error, args)
         reason = str(payload["error_reason"])
-        result = unknown_agent_result(reason, str(error), str(payload.get("hint") or "Resolve the reported prerequisite before a fresh assessment."),
-                                      {key: value for key, value in payload.items() if key not in {"status", "hint", "error", "command", "exit_code"}})
+        next_action = payload.get("hint") or payload.get("next_action") or "Resolve the reported prerequisite before a fresh assessment."
+        result = unknown_agent_result(reason, str(error), str(next_action),
+                                      {key: value for key, value in payload.items()
+                                       if key not in {"status", "hint", "next_action", "error", "command", "exit_code"}})
         log_assessment(result)
     except Exception as error:
         result = unknown_agent_result(normalize_reason(error.__class__.__name__), str(error) or error.__class__.__name__,
