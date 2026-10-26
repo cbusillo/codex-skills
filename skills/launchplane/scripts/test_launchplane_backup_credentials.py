@@ -42,20 +42,23 @@ def metadata(applied: bool = False) -> dict[str, Any]:
 
 
 def plan(applied: bool = False) -> dict[str, Any]:
-    return {
-        "status": "accepted",
-        "trace_id": "trace-plan",
-        "result": {
-            "plan_sha256": DIGEST,
-            "changed": True,
-            "applied": applied,
-            "private": "PRIVATE_SENTINEL",
-            "changes": [
-                {"binding_id": value, "from_key": f"old-{index}", "to_key": key}
-                for index, (key, value) in enumerate(zip(CREDENTIAL_KEYS, BINDING_IDS, strict=True))
-            ],
+    return h._ServiceResponse(
+        {
+            "status": "accepted",
+            "trace_id": "trace-plan",
+            "result": {
+                "plan_sha256": DIGEST,
+                "changed": True,
+                "applied": applied,
+                "private": "PRIVATE_SENTINEL",
+                "changes": [
+                    {"binding_id": value, "from_key": f"old-{index}", "to_key": key}
+                    for index, (key, value) in enumerate(zip(CREDENTIAL_KEYS, BINDING_IDS, strict=True))
+                ],
+            },
         },
-    }
+        202,
+    )
 
 
 def argv(command: str) -> list[str]:
@@ -217,7 +220,7 @@ def test_denial_and_unverified_readback_preserve_receipt(tmp_path: Path) -> None
         io.BytesIO(b'{"trace_id":"trace-denied","error":{"code":"authorization_denied","message":"PRIVATE_SENTINEL"}}'),
     )
     code, payload, _, post = invoke(arguments, [], [denial])
-    assert code != 0 and payload["status"] == "refused" and post.call_count == 1
+    assert code != 0 and payload["status"] == "denied" and post.call_count == 1
     code, payload, _, post = invoke(arguments, [TimeoutError()], [plan(True)])
     assert code != 0 and payload["status"] == "accepted_unverified" and payload["result"]["applied"] is True
     assert payload["summary"]["trace_id"] == "trace-plan" and post.call_count == 1
@@ -261,10 +264,15 @@ def test_readback_http_failure_keeps_apply_trace(tmp_path: Path, status: int, co
     assert exit_code != 0 and payload["status"] == "accepted_unverified"
     assert payload["summary"]["trace_id"] == "trace-plan"
     assert payload["summary"]["read_back_trace_id"] == "trace-readback"
+    assert payload["summary"]["http_status"] == 202
+    assert "error_code" not in payload["summary"]
+    assert payload["summary"]["read_back_error_code"] == code
     assert payload["result"]["applied"] is True and post.call_count == 1
 
 
-@pytest.mark.parametrize("code", ["mutation_in_progress", "mutation_reconciliation_required", "reconciliation_required"])
+@pytest.mark.parametrize(
+    "code", ["mutation_in_progress", "idempotency_key_reused", "mutation_reconciliation_required", "reconciliation_required"]
+)
 def test_unresolved_mutation_never_claims_refusal(tmp_path: Path, code: str) -> None:
     arguments, _ = apply_args(tmp_path)
     failure = urllib.error.HTTPError(
@@ -309,6 +317,42 @@ def test_unrelated_binding_uses_standard_public_identifier_shape() -> None:
     )
     code, _, _, _ = invoke(argv(BINDINGS + "-read"), [observed])
     assert code == 0
+
+
+@pytest.mark.parametrize(
+    "command,status",
+    [(PREFLIGHT, 503), (BINDINGS + "-read", 401), (BINDINGS + "-read", 404)],
+)
+def test_read_http_status_uses_shared_mapping(command: str, status: int) -> None:
+    error = urllib.error.HTTPError("https://example.invalid", status, "failure", {}, io.BytesIO(b"unparseable"))
+    expected = h.summarize_http_error(operation=command, request={}, exc=error, provider_payload={})["status"]
+    code, payload, _, post = invoke(argv(command), [error])
+    assert code != 0 and payload["status"] == expected and not post.called
+
+
+def test_local_review_error_is_actionable(tmp_path: Path) -> None:
+    arguments, evidence = apply_args(tmp_path)
+    evidence["request"] = {}
+    Path(arguments[arguments.index("--dry-run-evidence-file") + 1]).write_text(json.dumps(evidence))
+    code, payload, _, post = invoke(arguments, [])
+    assert code != 0 and not post.called
+    assert payload["summary"]["error_code"] == "backup_review_evidence_mismatch"
+
+
+@pytest.mark.parametrize("original_trace", ["trace-original", {"invalid": True}])
+def test_replay_retains_request_and_completion_with_unsafe_original_trace(tmp_path: Path, original_trace: Any) -> None:
+    arguments, _ = apply_args(tmp_path)
+    response = plan(True)
+    response.update(replayed=True, original_trace_id=original_trace)
+    code, payload, _, post = invoke(arguments, [metadata(True)], [response])
+    assert code == 0 and payload["summary"]["replayed"] is True
+    if isinstance(original_trace, str):
+        assert payload["summary"]["original_trace_id"] == original_trace
+    assert payload["request"]["idempotency_key_sha256"] and post.call_count == 1
+    code, payload, _, post = invoke(arguments, [TimeoutError()], [response])
+    assert code != 0 and payload["status"] == "accepted_unverified"
+    assert payload["summary"]["replayed"] is True
+    assert payload["request"]["idempotency_key_sha256"] and post.call_count == 1
 
 
 if __name__ == "__main__":

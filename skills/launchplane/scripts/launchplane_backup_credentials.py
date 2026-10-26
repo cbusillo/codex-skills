@@ -163,7 +163,8 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     request["service_url_sha256"] = h.metadata_review_digest({"service_url": settings["service_url"]})
     payload = h.base_payload(status="ok", operation=operation, request=request)
     response = None
-    attempted = accepted = False
+    attempted = accepted = readback_started = False
+    receipt: dict[str, object] = {}
     read_path = h.helper_command_path(BINDINGS + "-read").format(product=urllib.parse.quote(scope["product"], safe=""))
 
     def read_metadata() -> dict[str, Any]:
@@ -183,12 +184,9 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             else h.base_payload(status=status, operation=operation, request=request)
         )
         failed["result"] = payload["result"]
-        failed["summary"].update(diagnostics)
-        if accepted:
-            failed["summary"].update({"read_back_" + key: value for key, value in diagnostics.items()})
-            failed["summary"].update(h.service_response_diagnostics(response))
-        if response and response.get("replayed") is True:
-            failed["summary"]["original_trace_id"] = h.public_trace_id(response.get("original_trace_id"))
+        prefix = "read_back_" if readback_started else ""
+        failed["summary"].update({prefix + key: value for key, value in diagnostics.items()})
+        failed["summary"].update(receipt)
         return failed
 
     try:
@@ -236,8 +234,15 @@ def execute(h: Any, args: argparse.Namespace) -> int:
                 idempotency_key=args.idempotency_key,
             )
             accepted = mode == "apply" and response.get("status") == "accepted"
+            if mode == "apply":
+                receipt = h.service_response_diagnostics(response)
+                if response.get("replayed") is True:
+                    receipt["replayed"] = True
+                    original = h.service_response_diagnostics({"trace_id": response.get("original_trace_id")})
+                    receipt.update({"original_" + key: value for key, value in original.items()})
             payload["result"] = project_plan(h, response, body, selected)
             if mode == "apply":
+                readback_started = True
                 observed = selected_metadata(read_metadata(), body["bindings"])
                 expected = [
                     {**item, "binding_key": next(key for key, value in body["bindings"].items() if value == item["binding_id"])}
@@ -246,11 +251,13 @@ def execute(h: Any, args: argparse.Namespace) -> int:
                 payload["result"]["readback_matches"] = observed == expected
                 if observed != expected:
                     raise ValueError("backup_readback_mismatch")
-        payload["summary"] = h.service_response_diagnostics(response)
+        payload["summary"] = receipt or h.service_response_diagnostics(response)
     except urllib.error.HTTPError as error:
         try:
-            diagnostics = h.summarize_http_error(operation=operation, request=request, exc=error)["summary"]
+            rejected = h.summarize_http_error(operation=operation, request=request, exc=error)
+            diagnostics = rejected["summary"]
             unresolved = diagnostics.get("error_code") in {
+                "idempotency_key_reused",
                 "mutation_in_progress",
                 "mutation_reconciliation_required",
                 "reconciliation_required",
@@ -260,7 +267,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
                 if accepted
                 else "outcome_unknown"
                 if attempted and (error.code >= 500 or error.code == 408 or unresolved)
-                else "refused"
+                else rejected["status"]
             )
             payload = failure(status, diagnostics)
         finally:
@@ -268,12 +275,17 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as error:
         payload = failure(
             "accepted_unverified" if accepted else "outcome_unknown" if attempted else "unavailable",
-            h.service_response_diagnostics(error),
+            {"error_code": "transport_unavailable", **h.service_response_diagnostics(error)},
         )
     except (ValueError, h.LaunchplaneSafetyError) as error:
+        diagnostics = h.service_response_diagnostics(error)
+        try:
+            diagnostics.setdefault("error_code", h.public_code(str(error)))
+        except h.LaunchplaneSafetyError:
+            diagnostics.setdefault("error_code", "invalid_response")
         payload = failure(
             "accepted_unverified" if accepted else "outcome_unknown" if attempted else "invalid",
-            h.service_response_diagnostics(error),
+            diagnostics,
         )
     if payload["status"] != "ok":
         payload["summary"]["recommendation"] = (
