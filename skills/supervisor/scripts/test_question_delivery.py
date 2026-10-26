@@ -20,6 +20,18 @@ from github_fixture_support import api_success, with_call_stub
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_numbered_recorded_decision_removes_exact_source_from_queue(self) -> None:
+        target = self.questions[0]
+        self.sources[delivery.source_item(target["url"])][0] = {
+            **target, "body": "Owner question: Q906. Continue?",
+        }
+        self.comments.append({"author": self.authors[0], "body": "Director decision: Q906. Chris: Q906 I agree",
+                              "url": "https://github.com/example/direction/issues/1#issuecomment-102"})
+        report = self.run_queue()
+        self.assertTrue(report["complete"])
+        self.assertNotIn(target["url"], {q["url"] for q in report["questions"]})
+        self.assertEqual(report["queue_length"], len(self.questions) - 1)
+
     def setUp(self):
         self.fixture = json.loads((Path(__file__).parent / "fixtures/question-delivery-week-2026-10-15.json").read_text())
         # Keep the historical evidence unchanged; queue exercises use repaired
