@@ -4100,6 +4100,22 @@ TESTS.extend([test_local_next_comment_limit_keeps_unread_discussion_under_review
               test_local_next_comment_read_failure_is_wait_review_not_unknown_dependencies])
 
 
+def test_global_next_surfaces_closure_review_without_hiding_later_work() -> None:
+    root = track("someone/direction", 3, "First")
+    proof = "The site serves real visitors after backup and tested rollback."
+    root["body"] = f"## Objective\n{proof}\n\n## Current Status\nState: The accepted release is complete.\n"
+    later = global_issue("someone/product", 560)
+    with global_fixture([root], [later], {("someone/direction", 3): relationships(blocked_by=[later])},
+                        clear_waits=[root]) as (module, result, _reads):
+        module.cmd_next(next_args())
+        review = result["milestone_closure_reviews"][0]
+        assert review["closing_candidate"] and review["proof"] == proof, review
+        assert any(row["number"] == later["number"] for row in result["candidates"]), result
+
+
+TESTS.append(test_global_next_surfaces_closure_review_without_hiding_later_work)
+
+
 def main() -> None:
     for test in TESTS:
         test()

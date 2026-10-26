@@ -653,6 +653,13 @@ unchecked when the window opened and checked now) are read only for issues
 updated in the window, at most 200 of them. `unavailable` names any limit hit
 or unread issue, and `complete` is false when it is not empty. Report each
 milestone's line; a milestone with no movement says so.
+Its `closure_reviews` carries each Track's recorded proof and status regardless
+of graph movement or open blockers. In the same audit, assess that evidence
+against the merged milestone line under the
+[milestone contract](../github-plan/references/milestones.md). Close met gates
+within authority or report closing candidates with the next actor and missing
+evidence. A `closing_candidate` flag is a prose hint, never a proof verdict;
+review every line even without that hint. Later work keeps its own finish line.
 
 It also returns `active_unadopted`: the stale-wait report and `gate_phrase`
 matches for every repository of that account with a push in the window that

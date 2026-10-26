@@ -94,6 +94,18 @@ def section_map(body: str) -> dict[str, str]:
     return sections
 
 
+def milestone_closure_review(body: str, status_text: str | None = None) -> dict[str, Any]:
+    sections = section_map(body)
+    status = sections.get("Current Status", "") if status_text is None else status_text
+    state = re.search(r"(?im)^\s*State:\s*(.+)$", status)
+    return {
+        "proof": sections.get("Finish Line") or sections.get("Objective") or None,
+        "recorded_status": status or None,
+        "closing_candidate": bool(state and re.search(r"\b(?:complete[ds]?|met|shipped)\b", state[1], re.I)),
+        "verdict": "proof_review_required",
+    }
+
+
 def undated_wait_reason(reason: str) -> str:
     """Keep explicit wait-start metadata separate from the pending condition."""
     return re.sub(r";\s*since\s+\d{4}-\d{2}-\d{2}(?:T\S+)?$", "", reason.strip().rstrip(" ."), flags=re.I)
@@ -1364,6 +1376,7 @@ def rank_direction_work(
     ordinary_evaluated = 0
     other_family_evaluated = 0
     track_next_actions: dict[str, dict[str, Any]] = {}
+    closure_reviews: list[dict[str, Any]] = []
     # A stack keeps even a deep dependency chain within the explicit scan bound.
     pending: list[tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], bool, list[dict[str, Any]]]] = [
         (root, root["milestone"], [], True, []) for root in reversed(tracks)
@@ -1424,6 +1437,9 @@ def rank_direction_work(
             status_text = section_map((item.get("discussion") or {}).get("body", "")).get("Current Status", "")
         if not tracking:
             item = check_milestone_wait(item, status_text, wait_milestone_titles or milestone_titles)
+        else:
+            closure_reviews.append({**step, "milestone": milestone["title"],
+                **milestone_closure_review((item.get("discussion") or {}).get("body", ""), status_text)})
         reason = item.get("exclusion")
         blockers = node.get("blockers") or []
         children = node.get("children") or []
@@ -1505,6 +1521,7 @@ def rank_direction_work(
     return {
         "candidates": candidates,
         "candidate_count": len(candidates),
+        "milestone_closure_reviews": closure_reviews,
         "excluded": excluded,
         "waiting": waiting,
         "findings": [item[field] for item in [*candidates, *excluded]

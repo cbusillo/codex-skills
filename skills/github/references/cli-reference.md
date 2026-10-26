@@ -2116,6 +2116,12 @@ retrying until planning stalls.
 
 ### Planning: Next Work
 
+Global `next` includes `milestone_closure_reviews` independently of selectable
+work. These carry each read Track's recorded proof and status; a completion
+claim flags a `closing_candidate` for evidence review, even with open native
+blockers. They never certify proof or bypass ranking, ownership, claim, wait
+or train gates. Apply the milestone contract before admitting further work.
+
 Global `next` consumes `github_work_graph.py` for batched native issue,
 discussion, relationship and wait observations. It reuses those observations
 within the invocation. The `work_graph_context` reports observed and unread

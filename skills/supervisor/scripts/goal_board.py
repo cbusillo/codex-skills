@@ -98,12 +98,7 @@ def latest_decision(comments, trusted, unread):
     return None
 
 
-def next_action(node, trusted, unread):
-    """The live Next action from the issue's Current Status, on one line.
-
-    A status comment as new as the body wins, so a long thread without one
-    in the window settles only when the body is strictly newer than that window.
-    """
+def current_status(node, trusted, unread):
     comments = node["comments"]
     body_at = node.get("lastEditedAt") or node["createdAt"]
     discussion: dict[str, Any] = {"body": node.get("body") or "", "comments": [
@@ -119,8 +114,16 @@ def next_action(node, trusted, unread):
         unread.append("next action")
         return UNKNOWN
     if not in_window and not in_body:
+        return None
+    return github_next_queue.current_status(discussion, trusted, body_recorded_at=body_at)
+
+
+def next_action(node, trusted, unread):
+    status = current_status(node, trusted, unread)
+    if status == UNKNOWN:
+        return UNKNOWN
+    if status is None:
         return "no Current Status"
-    status = github_next_queue.current_status(discussion, trusted, body_recorded_at=body_at)
     action = " ".join(github_next_queue.status_field(status, "Next action").split())
     if not action:
         return "no Next action in Current Status"
@@ -222,6 +225,8 @@ def child_rows(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] |
 def track_row(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | None = None) -> dict[str, Any]:
     unread: list[str] = []
     return {**issue_row(node, trusted, wait_trusted, unread),
+        "closure_review": github_direction_next.milestone_closure_review(node.get("body") or "",
+            current_status(node, trusted, [])),
         "milestone": read_part("milestone", unread, lambda: (node.get("milestone") or {}).get("title"), None),
         "children": read_part("children", unread, lambda: child_rows(node, trusted, wait_trusted, unread), []),
         "unread": unread}
@@ -285,8 +290,15 @@ def markdown(board, *, links_only=False):
             lines.append(f"\n- {track['url']}{name}: {UNKNOWN}")
             continue
         decision = f"; decision {track['latest_decision']}" if track["latest_decision"] else ""
+        review = track["closure_review"]
+        candidate = "; closing candidate (proof unverified)" if review["closing_candidate"] else ""
+        if not links_only:
+            lines.append(f"\n- {track['url']}: "
+                         f"{'closing candidate' if review['closing_candidate'] else 'milestone proof review'}"
+                         f" (proof unverified); proof: {review['proof'] or UNKNOWN}; "
+                         f"recorded status: {review['recorded_status'] or UNKNOWN}")
         lines.append(f"\n- {track['url']}{name}: {track['status'] or 'no status label'}"
-                     f"{blocking_text(track, links_only)}{action_text(track, links_only)}{decision}{unread_text(track)}")
+                     f"{candidate}{blocking_text(track, links_only)}{action_text(track, links_only)}{decision}{unread_text(track)}")
         for child in track["children"]:
             title = "" if links_only else f" {child['title']}"
             decision = f"; decision {child['latest_decision']}" if child["latest_decision"] else ""

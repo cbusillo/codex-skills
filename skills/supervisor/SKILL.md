@@ -644,6 +644,16 @@ them ([Q415](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6
 and a hand-kept board line called two parked ideas a Director hold
 ([#2053](https://github.com/cbusillo/codex-skills/issues/2053)).
 
+At this same check, assess each Track's proof against its linked evidence,
+before reporting its blockers. The board's `closure_review` puts its recorded
+proof and status together; `closing_candidate` flags a completion claim, not a
+verified outcome. Read the merged milestone line and decisions, including when
+the flag is false or coverage is incomplete. Follow the
+[milestone contract](../github-plan/references/milestones.md): close a met Track
+and milestone within authority, or surface a closing candidate with the exact
+missing evidence or named owner. Later work does not extend its proof. A
+separate closeout-agent step must not hide the candidate behind open blockers.
+
 ## Local State
 
 Keep locally only what GitHub cannot rebuild:

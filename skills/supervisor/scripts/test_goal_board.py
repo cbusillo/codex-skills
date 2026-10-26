@@ -74,6 +74,36 @@ def details(**tracks) -> dict[str, Any]:
 
 
 class GoalBoardTests(unittest.TestCase):
+    def test_met_proof_remains_a_closing_candidate_when_later_work_is_added(self):
+        for number, proof, state, later in (
+            (3, "The site serves real visitors after backup and tested rollback.",
+             "The site is live and the accepted indexing/analytics release is complete.", 25),
+            (102, "The original issues close and the accepted release reaches production.",
+             "The accepted release, rollback-drill recovery and legacy package retirement are complete.", 3),
+        ):
+            with self.subTest(occurrence=number):
+                node = track(number)
+                node["body"] = f"## Objective\n{proof}\n\n{status('Reconcile survivors.', state)}"
+                before = goal_board.track_row(node, TRUSTED, TRUSTED)["closure_review"]
+                node["blockedBy"] = {"totalCount": later, "nodes": [
+                    {"number": 1000 + index, "state": "OPEN", "url": f"https://github.com/owner/app/issues/{1000 + index}",
+                     "repository": {"nameWithOwner": "owner/app"}} for index in range(later)]}
+                board = self.replay(listing([{"number": number, "title": node["title"]}]), details(**{f"t{number}": node}))
+                row = board["tracks"][0]
+                self.assertEqual(row["closure_review"], before)
+                self.assertTrue(before["closing_candidate"])
+                self.assertEqual(before["proof"], proof)
+                self.assertEqual(len(row["blocked_by"]), later)
+                self.assertIn("closing candidate", goal_board.markdown({**board, "checked_at": "now"}))
+                self.assertNotIn(proof, goal_board.markdown({**board, "checked_at": "now"}, links_only=True))
+
+    def test_closure_hint_uses_latest_trusted_status_without_certifying_proof(self):
+        node = track(3, comments=[comment(status("Read release evidence.", "Release complete."), ident=20)])
+        review = goal_board.track_row(node, TRUSTED, TRUSTED)["closure_review"]
+        self.assertTrue(review["closing_candidate"])
+        node["comments"]["nodes"][-1]["author"] = {"__typename": "User", "login": "outsider"}
+        self.assertFalse(goal_board.track_row(node, TRUSTED, TRUSTED)["closure_review"]["closing_candidate"])
+
     def test_mixed_case_trusted_people_and_bots_keep_decisions_and_handoffs(self):
         for typename, name in (("User", "MixedCaseOwner"), ("Bot", "MixedCaseApp")):
             with self.subTest(typename=typename):

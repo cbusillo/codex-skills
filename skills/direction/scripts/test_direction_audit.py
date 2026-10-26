@@ -2096,13 +2096,16 @@ def test_milestone_outcomes_report_closures_links_and_checked_finish_line_items(
             return [{"number": 1, "title": "Thin fork decision", "state": "open"},
                     {"number": 2, "title": "Dogfood week", "state": "open"}]
         if args[1].startswith("repos/o/direction/issues?state=all&milestone=1"):
-            return [{"number": 1, "title": "Track: thin fork", "state": "open", "updated_at": inside},
+            return [{"number": 1, "title": "Track: thin fork", "state": "open", "updated_at": inside,
+                     "body": "## Objective\nShip the spike.\n\n## Current Status\nState: Spike complete.\n"},
                     {"number": 4, "title": "Ordinary work", "state": "open", "updated_at": inside}]
         return edges.get(path, [])
 
     thin, dogfood = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=fetch)
     assert thin["milestone"] == "Thin fork decision" and thin["complete"], thin
     assert thin["tracks"] == ["https://github.com/o/direction/issues/1"]
+    assert thin["closure_reviews"][0]["closing_candidate"], thin
+    assert thin["closure_reviews"][0]["proof"] == "Ship the spike."
     assert [item["url"] for item in thin["issues_closed"]] == ["https://github.com/x/product/issues/9"]
     assert thin["links_added"] == [{"to": "https://github.com/o/direction/issues/1", "kind": "sub_issue",
                                     "issue": "https://github.com/x/product/issues/9", "added_at": inside}]

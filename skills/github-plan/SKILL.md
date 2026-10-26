@@ -236,6 +236,8 @@ active issue labels and continuing background jobs do not lift a hold.
 2. Read the candidate with `show <issue> --full`: original request, finish
    line, Current Status, blockers, and all comments. Reconcile comment-only
    requirements before recommending or implementing it.
+   For milestone admission, apply the [milestone contract](references/milestones.md)
+   before citing a Track: later work cannot extend a met proof.
 3. Check current ownership using available issue/PR/branch/worktree evidence
    and supported read-only task/session tools. Recommend the highest-ranked
    available independent item; report work owned by another active worker as
