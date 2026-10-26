@@ -10,6 +10,7 @@ import json
 import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
@@ -29,6 +30,7 @@ DECISION_PREFIXES = (
 def questions(comments, owner, decision_authors, related_comments=(), *, recorded_decisions_only=False):
     owner = owner.casefold()
     decision_authors = {author.casefold() for author in decision_authors}
+    numbers = Counter(heading_id(comment.get("body", "")) for comment in comments)
     results = []
     for i, question in enumerate(comments):
         body = question.get("body", "").strip()
@@ -55,7 +57,7 @@ def questions(comments, owner, decision_authors, related_comments=(), *, recorde
             if recorded_decisions_only and re.fullmatch(r"(?i)(?:later|not now)[\s.;!—-]*", content):
                 continue
             numbered = (
-                recorded and number is not None and decision_number is not None
+                recorded and number is not None and numbers[number] == 1 and decision_number is not None
                 and decision_number[0] == number and bool(content.strip(".,:;= -"))
                 and {match[0] for match in QUESTION.finditer(text)} == {number}
             )

@@ -1000,6 +1000,16 @@ class QuestionTests(unittest.TestCase):
                 result = oq.questions([question, answer], "director", {"bot"}, recorded_decisions_only=True)[0]
                 self.assertEqual(result["answers"], [answer["url"]] if answered else [])
 
+    def test_duplicate_question_numbers_require_exact_comment_identity(self) -> None:
+        questions = [{"id": number, "url": f"https://example.test/questions/{number}",
+                      "body": "Owner question: Q906. Continue?", "author": "bot"} for number in (101, 102)]
+        answer = {"author": "bot", "body": "Director decision: Q906, yes.", "url": "decision"}
+        result = oq.questions([*questions, answer], "director", {"bot"})
+        self.assertTrue(all(q["status"] == "needs_review" for q in result))
+        answer["body"] += " " + questions[0]["url"]
+        result = oq.questions([*questions, answer], "director", {"bot"})
+        self.assertEqual([q["status"] for q in result], ["answered", "needs_review"])
+
     def test_both_spellings_preserve_answer_authority_and_question_link(self):
         for question_role in ("Director", "Owner"):
             for decision_role in ("Director", "Owner"):
