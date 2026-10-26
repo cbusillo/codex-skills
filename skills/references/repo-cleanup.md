@@ -82,9 +82,11 @@ does not trigger a global repository scan, cache sweep, or retirement workflow.
    Prefer non-force Git removal. Force syntax never substitutes for resolving a
    hold; use it only when necessary for the exact already-authorized disposition
    after preservation and ownership evidence is complete.
-   For prepared Python worktrees, start each IDE that prepared the worktree,
-   close its project and reconcile its helper leases. After the disposition
-   above is established, keep the worktree lock during the preview. Use
+   For worktrees the retired desktop inspection route prepared, start each IDE
+   that prepared the worktree, close its project and reconcile its helper
+   leases ([IDE cleanup](../jetbrains-inspection/references/ide-cleanup.md)).
+   After the disposition above is established, keep the worktree lock during the
+   preview. Use
    `uv run <catalog>/skills/jetbrains-inspection/scripts/jb-inspect.py remove-worktree --repo /exact/task/path`
    for a dry-run, then release only the completed task's lock and add `--no-dry-run` to retire helper-owned
    SDKs through the live plugin before non-force Git removal. Missing plugin

@@ -86,37 +86,35 @@ license_boundary = observations.license_boundary
 is_odoo = common.is_odoo
 
 
-def select_backend(args, host, host_default=None):
+def select_backend(args, host):
     if common.native_options_supplied(args):
         return "native", "native_options_supplied"
-    if host_default:
-        return host_default, "host_default"
     if sys.platform != "darwin":
-        return "api", "native_ineligible=native_macos_not_available"
+        return "unavailable", "native_ineligible=native_macos_not_available"
     try:
         repo, config, _scope, selected = common.scope_selection(args, host)
         product_key = native_product_key(host, config, selected)
         if not eligible(args, host, repo, config, product_key):
-            return "api", "native_ineligible=" + str(eligibility_reason(args, host, repo, config, product_key))
+            return "unavailable", "native_ineligible=" + str(eligibility_reason(args, host, repo, config, product_key))
         if not selected:
-            return "api", "selection_empty"
+            return "unavailable", "selection_empty"
         if product_key == WEBSTORM_PRODUCT_KEY:
             return "native", "webstorm_native_route"
         if product_key == INTELLIJ_PRODUCT_KEY:
             return "native", "intellij_native_route"
         if any(Path(f).suffix not in NATIVE_SUFFIXES for f in selected):
-            return "api", "selection_file_type_unsupported"
+            return "unavailable", "selection_file_type_unsupported"
         if common.lane_gaps(host, config, selected):
-            return "api", "selection_outside_root_pycharm_lane"
+            return "unavailable", "selection_outside_root_pycharm_lane"
         if is_odoo(repo):
             return "native", "odoo_native_route"
         if all(f.endswith(".py") for f in selected):
             return "native", "python_native_route"
         if all(Path(f).suffix in {".py", ".yaml", ".yml"} for f in selected):
             return "native", "configuration_native_route"
-        return "api", "xml_selection_requires_odoo"
+        return "unavailable", "xml_selection_requires_odoo"
     except (Blocked, host.InspectError, OSError, subprocess.SubprocessError, ValueError):
-        return "api", "native_selection_unavailable"
+        return "unavailable", "native_selection_unavailable"
 
 
 def native_product_key(host, config, selected):

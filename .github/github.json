@@ -21,7 +21,6 @@
     "launchplaneWriteActionContract": "skills/launchplane/references/write-action-helper-contract.md",
     "repoReadiness": "skills/repo-readiness/SKILL.md",
     "inspectionConfiguration": "skills/jetbrains-inspection/references/inspection-config.md",
-    "inspectionOutcomeQualification": "skills/jetbrains-inspection/references/outcome-qualification.md",
     "workCloseout": "skills/work-closeout/SKILL.md",
     "repoCleanup": "skills/references/repo-cleanup.md",
     "cleanupQualification": "skills/work-closeout/evaluations/README.md",

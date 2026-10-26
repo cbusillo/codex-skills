@@ -195,8 +195,9 @@ PyCharm selections support `.py`, `.yaml`, `.yml` and Odoo `.xml` in a root PyCh
 WebStorm and IntelliJ IDEA selections are listed above. Unsupported
 languages, filters or nested models remain UNKNOWN with a supported next step.
 Use explicit source files when a broader scope also contains documentation or
-other file types. Native assessment requires the same declared trusted roots
-as host-side API preparation.
+other file types. Native assessment runs only for a repository under one of the
+config's `trustedAutoOpenRoots`; `JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS`
+overrides that list.
 
 The runner snapshots tracked and nonignored source into a private Git project.
 The shared credential-location guard refuses credential-named inputs before
@@ -210,7 +211,7 @@ snapshot, with an isolated preparation home. Otherwise the exact source
 worktree must already have its documented `.venv`. Native does not guess a
 Python version. YAML selections keep this prerequisite because each run includes
 Python defect controls. Command-string and nested-project preparation remain ineligible
-for automatic native selection; they return UNKNOWN before desktop contact. Explicit native uses the prepared root `.venv` instead
+for automatic native selection; they return UNKNOWN before a worker starts. Explicit native uses the prepared root `.venv` instead
 of treating those commands as a structured root generator. Native does not read a
 desktop SDK table. A unique non-secret SDK entry is
 added to the independent profile's table in place and removed after execution;
@@ -221,7 +222,7 @@ break exact named scopes. No source project metadata is changed.
 
 A per-user lock and the independent profile's lock allow one worker.
 An ordinary request takes a ticket in its own queue under the per-user state
-directory, using the kernel-locked FIFO mechanism of lifecycle callers, then
+directory, using the helper's kernel-locked FIFO queue, then
 waits for the control, per-user and profile locks without taking them from a
 live holder.
 Queue time is unbounded but interruptible: parent exit or cancellation stops a

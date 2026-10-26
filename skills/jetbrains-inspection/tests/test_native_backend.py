@@ -205,13 +205,11 @@ class NativeTests(unittest.TestCase):
                     patch_attr(native, "eligible", return_value=True), \
                     patch_attr(native, "is_odoo", return_value=True), \
                     patch_attr(native.common, "lane_gaps", return_value=lane_gaps):
-                self.assertEqual(native.select_backend(args, host)[0], "api")
+                self.assertEqual(native.select_backend(args, host)[0], "unavailable")
 
     def test_explicit_native_options_and_host_choice_still_work(self):
         args = host.build_parser().parse_args(["agent-inspect", "--native-recover-only"])
         self.assertEqual(native.select_backend(args, host)[0], "native")
-        args.native_recover_only = False
-        self.assertEqual(native.select_backend(args, host, "api"), ("api", "host_default"))
 
     def test_unconfigured_native_falls_back_to_api_with_its_reason(self):
         args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
@@ -220,7 +218,7 @@ class NativeTests(unittest.TestCase):
                 patch_attr(host, "read_global_config", return_value={}), \
                 patch_attr(native, "is_odoo", return_value=False):
             backend, reason = native.select_backend(args, host)
-            self.assertEqual(backend, "api")
+            self.assertEqual(backend, "unavailable")
             self.assertIn("native_worker_not_configured", reason)
 
     def test_hosts_without_macos_fall_back_to_api_without_reading_the_selection(self):
@@ -228,15 +226,17 @@ class NativeTests(unittest.TestCase):
         with patch.object(sys, "platform", "linux"), \
                 patch_attr(native.common, "scope_selection", side_effect=AssertionError("selection read")):
             backend, reason = native.select_backend(args, host)
-        self.assertEqual(backend, "api")
+        self.assertEqual(backend, "unavailable")
         self.assertIn("native_macos_not_available", reason)
 
-    def test_cli_dispatch_does_not_enter_desktop_lifecycle(self):
-        with patch_attr(host, "command_native", return_value={"backend": "native"}) as run, \
-                patch_attr(host, "build_context", side_effect=AssertionError("desktop opened")), \
-                patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--backend", "native"]):
-            self.assertEqual(host.main(), 0)
-        run.assert_called_once()
+    def test_cli_dispatch_runs_the_native_worker(self):
+        for command in ("agent-inspect", "inspect", "inspect-closeout"):
+            with self.subTest(command=command), \
+                    patch_attr(host, "command_native", return_value={"backend": "native"}) as run, \
+                    patch.object(sys, "argv", ["jb-inspect", command, "--backend", "native"]), \
+                    redirect_stdout(io.StringIO()):
+                self.assertEqual(host.main(), 0)
+                run.assert_called_once()
 
     def test_native_assessments_are_recorded_in_the_outcome_logs(self) -> None:
         def native_result(result_verdict, result_reason, receipt):
@@ -274,11 +274,8 @@ class NativeTests(unittest.TestCase):
             self.assertEqual([(u["verdict_reason"], u["verdict_next_action"]) for u in map(json.loads, unknowns.read_text().splitlines())],
                              [("native_host_load_paused", "Resolve native_host_load_paused.")])
             self.assertEqual(host.summarize_outcome_log(outcomes)["events"], 2)
-            candidate, exclusion = host.qualification_event_candidate(records[0], 1, {})
-            self.assertIsNone(candidate)
-            self.assertEqual((exclusion["reason"], exclusion["hard_failure"]), ("backend_not_qualified", False))
 
-    def test_mixed_changed_files_dispatches_native_without_desktop_contact(self) -> None:
+    def test_mixed_changed_files_dispatches_native(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary).resolve()
             for name in ("source.py", "README.md"):
@@ -286,7 +283,6 @@ class NativeTests(unittest.TestCase):
             settings = {"qualityGate": {"inspection": {"lanes": [
                 {"id": "python", "ide": "PyCharm", "required": True, "include": ["**/*.py"]}]}}}
             with patch.object(sys, "platform", "darwin"), \
-                    patch.dict(os.environ, {"JB_INSPECT_DEFAULT_BACKEND": ""}), \
                     patch_attr(host, "native_backend_module", return_value=native), \
                     patch_attr(host, "git_root", return_value=str(repo)), \
                     patch_attr(host, "read_repo_config", return_value=settings), \
@@ -294,64 +290,71 @@ class NativeTests(unittest.TestCase):
                     patch_attr(native, "eligible", return_value=True), \
                     patch_attr(native, "is_odoo", return_value=False), \
                     patch_attr(host, "command_native", return_value={"backend": "native"}) as run, \
-                    patch_attr(host, "build_context") as context, \
                     patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--repo", str(repo), "--scope", "changed_files"]), \
                     redirect_stdout(io.StringIO()):
                 self.assertEqual(host.main(), 0)
                 run.assert_called_once()
-                context.assert_not_called()
 
-    def test_automatic_api_fallback_never_enters_desktop_lifecycle(self) -> None:
+    def test_selection_without_a_native_worker_returns_unknown(self) -> None:
         with patch_attr(host, "native_backend_module", return_value=native), \
-                patch_attr(native, "select_backend", return_value=("api", "selection_file_type_unsupported")), \
+                patch_attr(native, "select_backend", return_value=("unavailable", "selection_file_type_unsupported")), \
                 patch_attr(native.common, "scope_selection"), \
-                patch_attr(host, "build_context") as context, \
-                patch_attr(host, "command_run") as api, \
+                patch_attr(host, "command_native") as worker, \
                 patch_attr(host, "log_assessment_records"), \
                 patch.object(sys, "argv", ["jb-inspect", "agent-inspect"]), \
                 redirect_stdout(io.StringIO()) as output:
             self.assertEqual(host.main(), 0)
-            context.assert_not_called()
-            api.assert_not_called()
-            result = json.loads(output.getvalue())["agent_result"]
+            worker.assert_not_called()
+            payload = json.loads(output.getvalue())
+            result = payload["agent_result"]
             self.assertEqual(result["verdict"], "UNKNOWN")
             self.assertEqual(result["bucket"], "environment_blocked")
+            self.assertEqual(payload["diagnostic"]["error_reason"], "isolated_backend_unavailable")
             self.assertTrue(result["next_action"])
             self.assertFalse(result["retry_policy"]["retry"])
 
-    def test_automatic_fallback_preserves_scope_errors_without_desktop_contact(self) -> None:
+    def test_unavailable_selection_preserves_scope_errors(self) -> None:
         error = host.InspectError("Scope exceeds file limit", payload={"error_reason": "inspection_lane_scope_too_large"})
         with patch_attr(host, "native_backend_module", return_value=native), \
-                patch_attr(native, "select_backend", return_value=("api", "native_selection_unavailable")), \
+                patch_attr(native, "select_backend", return_value=("unavailable", "native_selection_unavailable")), \
                 patch_attr(native.common, "scope_selection", side_effect=error), \
-                patch_attr(host, "build_context") as context, \
                 patch_attr(host, "log_assessment_records"), \
                 patch.object(sys, "argv", ["jb-inspect", "agent-inspect"]), \
                 redirect_stdout(io.StringIO()) as output:
             self.assertEqual(host.main(), 0)
-            context.assert_not_called()
             result = json.loads(output.getvalue())
             self.assertEqual(result["diagnostic"]["error_reason"], error.payload["error_reason"])
             self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
 
-    def test_explicit_api_backend_does_not_import_native_components(self):
-        with patch_attr(host, "native_backend_module", side_effect=AssertionError("native import")) as native_import, \
-                patch_attr(host, "build_context", return_value={}), \
-                patch_attr(host, "command_run", return_value={}) as api, \
-                patch_attr(host, "emit_agent_result", return_value=0), \
-                patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--backend", "api"]), \
+    def test_alias_rewrites_only_the_command_token(self):
+        with patch_attr(host, "command_native", return_value={"backend": "native"}) as run, \
+                patch.object(sys, "argv", ["jb-inspect", "--json", "inspect", "--backend", "native", "--scope", "directory", "--dir", "inspect"]), \
                 redirect_stdout(io.StringIO()):
             self.assertEqual(host.main(), 0)
-        native_import.assert_not_called()
-        api.assert_called_once()
+        self.assertEqual(run.call_args.args[0].directory, "inspect")
 
-    def test_native_options_with_api_backend_never_open_a_desktop_or_start_the_worker(self):
-        with patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--backend", "api", "--native-recover-only"]), \
-                patch_attr(host, "build_context", side_effect=AssertionError("desktop opened")), \
-                patch_attr(host, "command_native", side_effect=AssertionError("worker started")), \
+    def test_configuration_error_keeps_its_own_next_action(self):
+        error = host.inspection_lane_config_error("Lane patterns are invalid.")
+        with patch_attr(host, "native_backend_module", return_value=native), \
+                patch_attr(native, "select_backend", return_value=("unavailable", "native_selection_unavailable")), \
+                patch_attr(native.common, "scope_selection", side_effect=error), \
+                patch_attr(host, "log_assessment_records"), \
+                patch.object(sys, "argv", ["jb-inspect", "agent-inspect"]), \
                 redirect_stdout(io.StringIO()) as output:
-            host.main()
-        self.assertEqual(json.loads(output.getvalue())["agent_result"]["verdict"], "UNKNOWN")
+            self.assertEqual(host.main(), 0)
+        self.assertEqual(json.loads(output.getvalue())["agent_result"]["next_action"], error.payload["next_action"])
+
+    def test_retired_desktop_options_return_unknown_without_starting_the_worker(self):
+        for argv in (["--backend", "api"], *([option, "value"] for option in host.RETIRED_OPTIONS)):
+            with self.subTest(argv=argv), \
+                    patch.object(sys, "argv", ["jb-inspect", "agent-inspect", *argv]), \
+                    patch_attr(host, "native_backend_module", side_effect=AssertionError("worker started")), \
+                    patch_attr(host, "log_assessment_records"), \
+                    redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(host.main(), 0)
+                payload = json.loads(output.getvalue())
+                self.assertEqual(payload["agent_result"]["verdict"], "UNKNOWN")
+                self.assertEqual(payload["diagnostic"]["error_reason"], host.AGENT_USAGE_ERROR_REASON)
 
     def test_profile_lock_excludes_a_second_process(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -674,7 +677,7 @@ print('Done.')
                 config = {"jetbrains": {"nativeWorker": {"path": str(self.worker), "app": str(self.app)}}}
                 with patch.object(sys, "platform", "darwin"), patch_attr(host, "read_global_config", return_value=config):
                     backend, reason = native.select_backend(auto, host)
-                self.assertEqual(backend, "api")
+                self.assertEqual(backend, "unavailable")
                 self.assertIn("native_preparation_shape_unsupported", reason)
 
     def test_cleanup_only_does_not_need_an_installed_ide(self):
@@ -1767,18 +1770,18 @@ print('Done.')
         for inspection in ({}, {"ide": "PyCharm"}, {"lanes": [{"id": "python", "ide": "PyCharm", "include": ["src/**"]}]}):
             with self.subTest(inspection=inspection):
                 self.declare(inspection)
-                self.assertEqual(self.select("src/app.ts"), ("api", "native_ineligible=native_worker_not_configured"))
+                self.assertEqual(self.select("src/app.ts"), ("unavailable", "native_ineligible=native_worker_not_configured"))
 
     def test_json_only_webstorm_selection_has_no_canary_and_stays_unknown(self):
         (self.repo / "tsconfig.json").write_text("{}\n")
-        self.assertEqual(self.select("tsconfig.json", "package.json")[0], "api")
+        self.assertEqual(self.select("tsconfig.json", "package.json")[0], "unavailable")
 
     def test_python_selection_in_a_webstorm_repository_keeps_the_pycharm_route(self):
         (self.repo / "tool.py").write_text("print(1)\n")
         with patch_attr(native, "eligible", return_value=True) as eligible, patch_attr(native, "is_odoo", return_value=False):
             self.assertEqual(self.select("tool.py"), ("native", "python_native_route"))
             self.assertEqual(eligible.call_args.args[-1], native.PYTHON_PRODUCT_KEY)
-            self.assertEqual(self.select("tool.py", "src/app.ts")[0], "api")
+            self.assertEqual(self.select("tool.py", "src/app.ts")[0], "unavailable")
             self.assertEqual(eligible.call_args.args[-1], native.PYTHON_PRODUCT_KEY)
 
     def test_webstorm_needs_an_executable_node_with_npm_beside_it(self):
@@ -1789,7 +1792,7 @@ print('Done.')
             with self.subTest(reason=reason):
                 self.setUp()
                 change()
-                self.assertEqual(self.select(), ("api", "native_ineligible=" + reason))
+                self.assertEqual(self.select(), ("unavailable", "native_ineligible=" + reason))
                 result = self.assess()
                 self.assertEqual(result["inspection_outcome"]["reason"], reason)
                 self.assertNotIn("preparation_pid", result["diagnostic"]["native"])
@@ -1825,7 +1828,7 @@ print('Done.')
             with self.subTest(reason=reason):
                 self.setUp()
                 change()
-                self.assertEqual(self.select(), ("api", "native_ineligible=" + reason))
+                self.assertEqual(self.select(), ("unavailable", "native_ineligible=" + reason))
                 result = self.assess()
                 self.assertEqual(result["inspection_outcome"]["reason"], reason)
                 self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
@@ -2042,11 +2045,11 @@ print('Done.')
         self.assertEqual(self.select(self.SOURCE, "src/main/java/Util.java"), ("native", "intellij_native_route"))
         self.declare({"lanes": [{"id": "jvm", "ide": "IntelliJ IDEA", "include": ["*", "**/*"]}]})
         self.assertEqual(self.select(self.SOURCE, "build.gradle.kts")[0], "native")
-        self.assertEqual(self.select("src/main/java/Util.java")[0], "api")
+        self.assertEqual(self.select("src/main/java/Util.java")[0], "unavailable")
         for inspection in ({}, {"ide": "PyCharm"}, {"lanes": [{"id": "jvm", "ide": "IntelliJ IDEA", "include": ["**/*"], "projectPath": "src"}]}):
             with self.subTest(inspection=inspection):
                 self.declare(inspection)
-                self.assertEqual(self.select(self.SOURCE)[0], "api")
+                self.assertEqual(self.select(self.SOURCE)[0], "unavailable")
 
     def test_intellij_needs_an_absolute_jdk_home_before_custody(self):
         for change, reason in ((lambda: self.entry.pop("jdk"), "native_jdk_not_configured"),
@@ -2055,7 +2058,7 @@ print('Done.')
             with self.subTest(reason=reason):
                 self.setUp()
                 change()
-                self.assertEqual(self.select(), ("api", "native_ineligible=" + reason))
+                self.assertEqual(self.select(), ("unavailable", "native_ineligible=" + reason))
                 result = self.assess()
                 self.assertEqual(result["inspection_outcome"]["reason"], reason)
                 self.assertFalse((self.worker / "native-run.json").exists())
@@ -2063,7 +2066,7 @@ print('Done.')
 
     def test_missing_root_gradle_build_is_refused_before_launch(self):
         (self.repo / "build.gradle.kts").unlink()
-        self.assertEqual(self.select(), ("api", "native_ineligible=native_gradle_build_required"))
+        self.assertEqual(self.select(), ("unavailable", "native_ineligible=native_gradle_build_required"))
         result = self.assess()
         self.assertEqual(result["inspection_outcome"]["reason"], "native_gradle_build_required")
         self.assertFalse(self.engine_record.exists())
