@@ -2598,10 +2598,6 @@ def milestone_direction_repo(issue_repo: str) -> str:
 def milestone_claim_ancestry(
     issue: dict[str, Any], target: tuple[str, int] | None = None,
 ) -> github_plan_graph.NativeIssueGraph:
-    if "pull_request" in issue:
-        raise ClassifiedPlanError("claim_admission_unlinked",
-            "Milestone work needs a canonical issue for the native Track link; claim that issue instead of its PR.")
-
     def read_edges(repo: str, number: int) -> list[tuple[str, int]]:
         related: list[tuple[str, int]] = []
         try:
@@ -2621,18 +2617,10 @@ def milestone_claim_ancestry(
                                                 read_edges=read_edges, target=target)
 
 
-def milestone_claim_linked(issue: dict[str, Any], track: dict[str, Any]) -> bool:
-    track_key = track["repo"].casefold(), track["number"]
-    graph = milestone_claim_ancestry(issue, track_key)
-    if track_key in graph.nodes:
-        return True
-    if not graph.complete:
-        raise ClassifiedPlanError("claim_milestone_graph_incomplete",
-            "Milestone graph exceeded its read bound; no absence or claim was certified.")
-    return False
-
-
 def milestone_claim_track(issue: dict[str, Any], links: list[str]) -> dict[str, Any]:
+    if "pull_request" in issue:
+        raise ClassifiedPlanError("claim_admission_unlinked",
+            "Milestone work needs a canonical issue; claim that issue instead of its PR.")
     direction_repo = milestone_direction_repo(issue["repo"])
     titles = direction_milestone_titles(load_direction(direction_repo) or "")
     targets = [target[1] for link in links if (target := github_plan_claim.admission_link_target(link))
@@ -2662,17 +2650,15 @@ def milestone_claim_track(issue: dict[str, Any], links: list[str]) -> dict[str, 
         f"Milestone admission needs an open Track in {direction_repo} under a listed milestone, "
         f"or an open repository milestone listed in {issue['repo']}'s merged DIRECTION.md and absent from overall direction. "
         "A citation to the direction repository must name a valid Track; use --admission-link URL for that Track. "
-        "The helper proves or creates its native link; context cannot bypass it.")
+        "Admission records the citation without changing the Track graph.")
 
 
 def link_native_dependency(
-    source: dict[str, Any], target: dict[str, Any], *, completed: list[str] | None = None,
+    source: dict[str, Any], target: dict[str, Any], *,
     failed_step: str = "link_blocked_by",
 ) -> tuple[str, dict[str, Any]]:
     actor, _ = api_json("POST", f"/repos/{source['repo']}/issues/{source['number']}/dependencies/blocked_by",
                         {"issue_id": target["id"]}, failed_step=failed_step)
-    if completed is not None:
-        completed.append("link_claim_milestone")
     return actor, refresh_planning_targets([(source["repo"], int(source["number"]))])
 
 
@@ -2729,7 +2715,6 @@ def claim_once(args: argparse.Namespace) -> None:
     previous_wait = ""
     planned_wait = ""
     ended_owners: list[dict[str, Any]] = []
-    milestone_projection = None
     resume_source_number: int | None = None
     retained_ended_sources: set[str] = set()
     planning_checkout = getattr(args, "planning_checkout", None)
@@ -3494,7 +3479,6 @@ def claim_once(args: argparse.Namespace) -> None:
             raise ClassifiedPlanError("claim_admission_changed",
                 "This claim already records another admission kind; release it before choosing a different kind.")
         milestone_track = milestone_claim_track(issue, milestone_links) if milestone_links is not None else None
-        milestone_needs_link = milestone_track is not None and not milestone_claim_linked(issue, milestone_track)
         completed.append("ownership_preflight")
         wait_receipt = ("\n\nRetained PR waits verified for this step:\n" + "\n".join(
             f"PR #{pr}:\n" + "\n".join("> " + line for line in wait.splitlines())
@@ -3519,24 +3503,6 @@ def claim_once(args: argparse.Namespace) -> None:
         # fails, the closed source stays frozen for supported claim recovery.
         github_plan_claim_log.record(claim["session"], issue_repo, number)
         admit_observed_sources()
-        if milestone_needs_link:
-            try:
-                _, projection = link_native_dependency(milestone_track, issue, completed=completed,
-                                                       failed_step="link_claim_milestone")
-            except PlanError as error:
-                error.payload["milestone_link_recovery"] = (
-                    "Inspect the native edge before retrying. If the Track reached its dependency limit, add "
-                    "a deliberate native relationship with gh-plan.py link under a chosen issue already in that "
-                    "Track graph, then rerun claim; existing native paths are accepted.")
-                raise
-            if not projection["ok"] or projection["coverage"] != "complete":
-                milestone_projection = {"projection": projection,
-                    "recovery": status_recovery(milestone_track["repo"], milestone_track["number"])}
-            _, edges = collect_paged_rest_items(
-                f"/repos/{milestone_track['repo']}/issues/{milestone_track['number']}/dependencies/blocked_by",
-                query={}, bucket="rest_core", step_prefix="claim_milestone_link_readback")
-            if (issue["repo"].casefold(), issue["number"]) not in {github_plan_graph.native_issue_key(edge) for edge in edges}:
-                raise ClassifiedPlanError("claim_admission_unlinked", "Native milestone link was not visible after writing it")
         if not comment_recorded:
             claim_comment = github_comment_core.comment(
                 record_kind, number, text, repo=issue_repo, gh_cmd=gh_cmd,
@@ -3635,9 +3601,7 @@ def claim_once(args: argparse.Namespace) -> None:
             raise PlanError("Current Status claim changed during readback")
         admit_observed_sources()
         if milestone_track is not None:
-            current_track = milestone_claim_track(final, milestone_links)
-            if not milestone_claim_linked(final, current_track):
-                raise ClassifiedPlanError("claim_admission_unlinked", "Native milestone path was not visible on final readback")
+            milestone_claim_track(final, milestone_links)
         completed.append("metadata_readback")
     except github_comment_core.CommentError as exc:
         error = plan_error_from_comment(exc, completed_steps=completed)
@@ -3702,7 +3666,6 @@ def claim_once(args: argparse.Namespace) -> None:
             "lease_minutes": github_plan_lease.lease_minutes(),
             "exclusive_lock": False,
             "completed_steps": completed,
-            **({"milestone_projection": milestone_projection} if milestone_projection is not None else {}),
         }
     )
 
@@ -7182,11 +7145,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--planning-checkout", help="Canonical planning repository checkout for cross-repository ownership inventory")
     p.add_argument("--wait-resolved", help="Existing resolution evidence for a recorded wait/hold; grants no new authority")
     p.add_argument("--admission", choices=github_plan_claim.ADMISSIONS,
-                   help="Which overall Order rule admits this work; milestone automatically links the issue to its cited Track")
+                   help="Which overall Order rule admits this work; milestone records its Track citation without changing dependencies")
     p.add_argument("--admission-link", action="append", default=[], metavar="URL",
                    help="Issue or PR URL, optionally with #issuecomment-ID; preserves the cited comment; repeat-stop needs both occurrences")
     p.add_argument("--admission-unlinked", metavar="REASON",
-                   help="Deprecated compatibility context; never bypasses the native Track link")
+                   help="Deprecated compatibility context; never replaces Track evidence")
     p.set_defaults(func=cmd_claim)
 
     p = sub.add_parser("wait", help="Report legacy evidence or record a reviewed structured wait; never parses prose")

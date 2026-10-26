@@ -2084,6 +2084,8 @@ def test_milestone_outcomes_report_closures_links_and_checked_finish_line_items(
             {"html_url": "https://github.com/o/tools/issues/3", "state": "open", "updated_at": before}],
     }
     graphql_reads: list[tuple[str, int]] = []
+    completion = {"id": 1, "user": {"login": "o"}, "created_at": inside,
+                  "body": "## Current Status\nState: The accepted release is complete.\n"}
 
     def fetch(args: list[str]) -> Any:
         path = args[1].split("?")[0]
@@ -2099,13 +2101,16 @@ def test_milestone_outcomes_report_closures_links_and_checked_finish_line_items(
             return [{"number": 1, "title": "Track: thin fork", "state": "open", "updated_at": inside,
                      "body": "## Objective\nShip the spike.\n\n## Current Status\nState: Spike complete.\n"},
                     {"number": 4, "title": "Ordinary work", "state": "open", "updated_at": inside}]
+        if path == "repos/o/direction/issues/1/comments":
+            return [completion]
         return edges.get(path, [])
 
     thin, dogfood = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=fetch)
     assert thin["milestone"] == "Thin fork decision" and thin["complete"], thin
     assert thin["tracks"] == ["https://github.com/o/direction/issues/1"]
-    assert thin["closure_reviews"][0]["closing_candidate"], thin
     assert thin["closure_reviews"][0]["proof"] == "Ship the spike."
+    assert thin["closure_reviews"][0]["recorded_status"] == module.github_direction_next.section_map(
+        completion["body"])["Current Status"]
     assert [item["url"] for item in thin["issues_closed"]] == ["https://github.com/x/product/issues/9"]
     assert thin["links_added"] == [{"to": "https://github.com/o/direction/issues/1", "kind": "sub_issue",
                                     "issue": "https://github.com/x/product/issues/9", "added_at": inside}]
@@ -2134,6 +2139,16 @@ def test_milestone_outcomes_report_closures_links_and_checked_finish_line_items(
         fetch=module.github_work_graph.cached_reads(minimal_edges))[0]
     assert projected["complete"] and projected["issues_closed"] == thin["issues_closed"]
     assert set(hydrated) == set(full_nodes)
+
+    def unread_proof_comments(args: list[str]) -> Any:
+        if args[1].split("?")[0].endswith("/comments"):
+            raise module.AuditError("Proof discussion unavailable")
+        return fetch(args)
+
+    unread_proof = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=unread_proof_comments)[0]
+    assert not unread_proof["complete"]
+    assert not unread_proof["closure_reviews"][0]["discussion_complete"]
+    assert unread_proof["closure_reviews"][0]["recorded_status"] is None
 
     for response in (None, {}):
         def unread_node(args: list[str], response: dict[str, Any] | None = response) -> Any:

@@ -12,6 +12,10 @@ alternate backlogs.
   surface it as a closing candidate; admit later work under the milestone it
   actually serves or another supported Order kind. A claim's native link is
   membership evidence, never an addition to the milestone's proof.
+- Claim admission records why work was selected; it never adds a blocker.
+  Use `gh-plan.py link` deliberately for a real prerequisite or child. Global
+  `next` ranks those native paths and listed repository milestones, not claim
+  citations. Citing a Track alone cannot buy its priority or extend its gate.
 - Keep an issue outside the milestone if that milestone can honestly close
   while the issue remains open.
 - Prefer one active milestone per release train. Use parallel milestones only
@@ -25,6 +29,14 @@ alternate backlogs.
   Do this in the existing planning/closeout pass; a separate closeout issue or
   an agent's return is not another finish line. Propose a direction change only
   when the proof itself must change.
+
+The existing Supervisor goal-board check and weekly direction audit assess
+each Track's proof against the merged milestone line, trusted Current Status
+and linked evidence, independently of open blockers or newly admitted work.
+Their proof-review projections carry recorded text, never a completion verdict.
+Close met Tracks and milestones within authority, or surface closing candidates
+with the exact missing evidence and named owner. Review every Track even when
+there was no graph movement; incomplete evidence stays unknown.
 
 With a root `DIRECTION.md`, use only milestone titles listed in the merged file.
 Propose a new waypoint through the `direction` skill before creating it. The

@@ -1186,24 +1186,20 @@ comment records it as an `Admission:` line. For milestone work, cite its open
 Track in the Director's direction with `--admission-link`. The Director account
 comes from the same read-only configuration lookup as instruction sync,
 falling back to the repository owner when none is recorded. The helper follows
-native parents and blocking issues using the graph reader's shared traversal.
-When no path reaches that Track, it adds and reads back a native
-`Track blocked-by issue` edge before publishing the claim. If a Track cannot
-accept another direct dependency, use the existing `link <chosen-member>
-subissue <issue>` command deliberately, then rerun claim; existing paths are accepted.
-It verifies the path
-again before success, including recovery of an existing claim.
+native parents and blocking issues using the graph reader's shared traversal
+when no valid Track citation is supplied. Admission records its citation; it
+does not change dependencies or project the Track's status. Deliberate native
+links use `link` under the [milestone contract](../../github-plan/references/milestones.md).
+It revalidates the cited Track before success, including recovery of an existing claim.
 The Track's milestone must be open and listed in the merged overall direction.
-Missing Track evidence or an unreadable/unconfirmed link refuses the claim.
+Missing or unreadable Track evidence refuses the claim.
 Claim a canonical issue for milestone work rather than its PR.
-`--admission-unlinked REASON` is deprecated compatibility context and cannot bypass the link.
+`--admission-unlinked REASON` is deprecated compatibility context and cannot replace Track evidence.
 Existing paths are preserved. Capacity classification uses that same shared
 native traversal; claim admissions do not replace graph evidence.
 An older partial claim lacking a Track citation can supply it on recovery;
 later flagless recovery finds the Track from its native ancestry. An explicit
 kind conflicting with the authored claim refuses until that claim is released.
-Failed label projection is advisory evidence with a reconciliation command;
-it never substitutes for the required native path proof.
 Ownership, actor authentication, waits and native blockers keep their independent
 checks. A plain `Admission:` line explains why the work was selected and grants
 no authority.
@@ -2117,10 +2113,11 @@ retrying until planning stalls.
 ### Planning: Next Work
 
 Global `next` includes `milestone_closure_reviews` independently of selectable
-work. These carry each read Track's recorded proof and status; a completion
-claim flags a `closing_candidate` for evidence review, even with open native
-blockers. They never certify proof or bypass ranking, ownership, claim, wait
-or train gates. Apply the milestone contract before admitting further work.
+work. All roots are read before descendant traversal spends its scan allowance.
+These carry recorded proof from the body and the latest trusted Current Status;
+incomplete discussion is explicit. They certify no outcome and change no ranking
+or claim, wait or train gate. Use the
+[milestone contract](../../github-plan/references/milestones.md) to assess them.
 
 Global `next` consumes `github_work_graph.py` for batched native issue,
 discussion, relationship and wait observations. It reuses those observations

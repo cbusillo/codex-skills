@@ -225,8 +225,9 @@ def child_rows(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] |
 def track_row(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | None = None) -> dict[str, Any]:
     unread: list[str] = []
     return {**issue_row(node, trusted, wait_trusted, unread),
-        "closure_review": github_direction_next.milestone_closure_review(node.get("body") or "",
-            current_status(node, trusted, [])),
+        "closure_review": read_part("milestone proof", unread,
+            lambda: github_direction_next.milestone_closure_review(node.get("body") or "",
+                current_status(node, trusted, unread)), {"proof": None, "recorded_status": None}),
         "milestone": read_part("milestone", unread, lambda: (node.get("milestone") or {}).get("title"), None),
         "children": read_part("children", unread, lambda: child_rows(node, trusted, wait_trusted, unread), []),
         "unread": unread}
@@ -291,14 +292,14 @@ def markdown(board, *, links_only=False):
             continue
         decision = f"; decision {track['latest_decision']}" if track["latest_decision"] else ""
         review = track["closure_review"]
-        candidate = "; closing candidate (proof unverified)" if review["closing_candidate"] else ""
-        if not links_only:
-            lines.append(f"\n- {track['url']}: "
-                         f"{'closing candidate' if review['closing_candidate'] else 'milestone proof review'}"
-                         f" (proof unverified); proof: {review['proof'] or UNKNOWN}; "
-                         f"recorded status: {review['recorded_status'] or UNKNOWN}")
         lines.append(f"\n- {track['url']}{name}: {track['status'] or 'no status label'}"
-                     f"{candidate}{blocking_text(track, links_only)}{action_text(track, links_only)}{decision}{unread_text(track)}")
+                     f"{blocking_text(track, links_only)}{action_text(track, links_only)}{decision}{unread_text(track)}")
+        if not links_only:
+            proof = " ".join((review["proof"] or UNKNOWN).split())
+            state = " ".join(github_next_queue.status_field(review["recorded_status"] or "", "State").split()) or UNKNOWN
+            proof = proof[:NEXT_ACTION_CHARS] + "…" if len(proof) > NEXT_ACTION_CHARS else proof
+            state = state[:NEXT_ACTION_CHARS] + "…" if len(state) > NEXT_ACTION_CHARS else state
+            lines.append(f"  - Proof to assess: {proof}; recorded state: {state}")
         for child in track["children"]:
             title = "" if links_only else f" {child['title']}"
             decision = f"; decision {child['latest_decision']}" if child["latest_decision"] else ""

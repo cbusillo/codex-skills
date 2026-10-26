@@ -91,18 +91,19 @@ class GoalBoardTests(unittest.TestCase):
                 board = self.replay(listing([{"number": number, "title": node["title"]}]), details(**{f"t{number}": node}))
                 row = board["tracks"][0]
                 self.assertEqual(row["closure_review"], before)
-                self.assertTrue(before["closing_candidate"])
                 self.assertEqual(before["proof"], proof)
+                self.assertIn(state, before["recorded_status"])
                 self.assertEqual(len(row["blocked_by"]), later)
-                self.assertIn("closing candidate", goal_board.markdown({**board, "checked_at": "now"}))
+                self.assertIn(proof, goal_board.markdown({**board, "checked_at": "now"}))
                 self.assertNotIn(proof, goal_board.markdown({**board, "checked_at": "now"}, links_only=True))
 
-    def test_closure_hint_uses_latest_trusted_status_without_certifying_proof(self):
+    def test_proof_review_uses_latest_trusted_status(self):
         node = track(3, comments=[comment(status("Read release evidence.", "Release complete."), ident=20)])
         review = goal_board.track_row(node, TRUSTED, TRUSTED)["closure_review"]
-        self.assertTrue(review["closing_candidate"])
+        self.assertEqual(review["recorded_status"], goal_board.github_direction_next.section_map(
+            node["comments"]["nodes"][-1]["body"])["Current Status"])
         node["comments"]["nodes"][-1]["author"] = {"__typename": "User", "login": "outsider"}
-        self.assertFalse(goal_board.track_row(node, TRUSTED, TRUSTED)["closure_review"]["closing_candidate"])
+        self.assertNotEqual(goal_board.track_row(node, TRUSTED, TRUSTED)["closure_review"]["recorded_status"], review["recorded_status"])
 
     def test_mixed_case_trusted_people_and_bots_keep_decisions_and_handoffs(self):
         for typename, name in (("User", "MixedCaseOwner"), ("Bot", "MixedCaseApp")):

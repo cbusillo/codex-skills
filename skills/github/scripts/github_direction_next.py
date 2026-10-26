@@ -97,12 +97,9 @@ def section_map(body: str) -> dict[str, str]:
 def milestone_closure_review(body: str, status_text: str | None = None) -> dict[str, Any]:
     sections = section_map(body)
     status = sections.get("Current Status", "") if status_text is None else status_text
-    state = re.search(r"(?im)^\s*State:\s*(.+)$", status)
     return {
         "proof": sections.get("Finish Line") or sections.get("Objective") or None,
         "recorded_status": status or None,
-        "closing_candidate": bool(state and re.search(r"\b(?:complete[ds]?|met|shipped)\b", state[1], re.I)),
-        "verdict": "proof_review_required",
     }
 
 
@@ -1376,7 +1373,16 @@ def rank_direction_work(
     ordinary_evaluated = 0
     other_family_evaluated = 0
     track_next_actions: dict[str, dict[str, Any]] = {}
+    from github_next_queue import current_status
     closure_reviews: list[dict[str, Any]] = []
+    for root in tracks:
+        key = root["repo"].casefold(), root["number"]
+        node_cache[key] = read_node(root["repo"], root["number"])
+        discussion = node_cache[key]["item"].get("discussion") or {}
+        status = current_status(discussion, github_plan_wait.authors(root["repo"])) if discussion.get("complete") else ""
+        closure_reviews.append({"url": root["url"], "milestone": root["milestone"]["title"],
+            **milestone_closure_review(discussion.get("body", ""), status),
+            "discussion_complete": bool(discussion.get("complete"))})
     # A stack keeps even a deep dependency chain within the explicit scan bound.
     pending: list[tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], bool, list[dict[str, Any]]]] = [
         (root, root["milestone"], [], True, []) for root in reversed(tracks)
@@ -1413,7 +1419,8 @@ def rank_direction_work(
         routes.add(route_key)
         if key not in seen:
             seen.add(key)
-            node_cache[key] = read_node(ref["repo"], ref["number"])
+            if key not in node_cache:
+                node_cache[key] = read_node(ref["repo"], ref["number"])
             mismatch = github_agent.exclusion(node_cache[key]["item"], agent)
             if mismatch and mismatch["exclusion"] == "assigned_elsewhere" and other_family_evaluated < scan_limit:
                 other_family_evaluated += 1
@@ -1437,9 +1444,6 @@ def rank_direction_work(
             status_text = section_map((item.get("discussion") or {}).get("body", "")).get("Current Status", "")
         if not tracking:
             item = check_milestone_wait(item, status_text, wait_milestone_titles or milestone_titles)
-        else:
-            closure_reviews.append({**step, "milestone": milestone["title"],
-                **milestone_closure_review((item.get("discussion") or {}).get("body", ""), status_text)})
         reason = item.get("exclusion")
         blockers = node.get("blockers") or []
         children = node.get("children") or []

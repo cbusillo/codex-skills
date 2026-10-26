@@ -30,6 +30,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_read, github_work_graph
+from skills.github.scripts import github_next_queue, github_plan_wait
 from skills.github.scripts import github_repository_scope as repository_scope
 from skills.direction.scripts import direction_mark, direction_reporting
 
@@ -1403,8 +1404,18 @@ def milestone_outcomes(
                     key = (direction_repo, int(root["number"]))
                     nodes[key] = root
                     row["tracks"].append(f"https://github.com/{direction_repo}/issues/{root['number']}")
+                    try:
+                        comments, comments_cut = fetch_paginated(
+                            f"repos/{direction_repo}/issues/{root['number']}/comments", fetch=fetch)
+                    except AuditError:
+                        comments, comments_cut = [], True
+                    discussion = github_direction_next.discussion_snapshot(root, comments, complete=not comments_cut)
+                    status = github_next_queue.current_status(discussion, github_plan_wait.authors(direction_repo)) if not comments_cut else ""
                     row.setdefault("closure_reviews", []).append({"url": row["tracks"][-1],
-                        **github_direction_next.milestone_closure_review(root.get("body") or "")})
+                        **github_direction_next.milestone_closure_review(root.get("body") or "", status),
+                        "discussion_complete": not comments_cut})
+                    if comments_cut:
+                        row["unavailable"].append(f"proof_comments:{root['number']}")
         except AuditError:
             row["unavailable"].append("tracks")
         graph = read_audit_graph([{**node, "repo": key[0], "number": key[1]} for key, node in nodes.items()],
