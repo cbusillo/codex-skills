@@ -287,10 +287,6 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             "accepted_unverified" if accepted else "outcome_unknown" if attempted else "invalid",
             diagnostics,
         )
-    if payload["status"] != "ok":
-        payload["summary"]["recommendation"] = (
-            "Preserve the saved review, receipt, caller, exact request and original operation key. Read binding metadata before any same-key retry; never switch credentials, keys or workflows to bypass a refusal."
-        )
     for part in ("request", "result", "summary"):
         h.assert_public_safe_shape(payload[part])
     h.emit(payload)

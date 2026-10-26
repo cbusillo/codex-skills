@@ -2617,7 +2617,7 @@ uses the train's GitHub rate budget for live evidence.
 `GET /v1/production-backup-authority/preflight`. It returns policy revision,
 record and boundary binding ids, boundary/PBS status, finish time and trace.
 The boundary id is projected as `boundary_binding_id`. The default client
-timeout is 45 seconds, above the service's provider bound. It requires
+timeout exceeds the service's provider bound; `--timeout` overrides it. It requires
 an explicit `capture_started: false` response. No capture is
 queued. Pending-proposal qualification remains subject to service authorization.
 

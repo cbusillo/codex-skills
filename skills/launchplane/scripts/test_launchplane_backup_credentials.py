@@ -328,6 +328,7 @@ def test_read_http_status_uses_shared_mapping(command: str, status: int) -> None
     expected = h.summarize_http_error(operation=command, request={}, exc=error, provider_payload={})["status"]
     code, payload, _, post = invoke(argv(command), [error])
     assert code != 0 and payload["status"] == expected and not post.called
+    assert payload["summary"]["recommendation"] == h.http_error_recommendation(expected)
 
 
 def test_local_review_error_is_actionable(tmp_path: Path) -> None:
