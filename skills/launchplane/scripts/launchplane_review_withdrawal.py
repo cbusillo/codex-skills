@@ -127,6 +127,7 @@ def finish(h: Any, *, operation: str, request: dict[str, object], status: str,
     """Keep the outcome, preserved receipt and recovery instructions in agreement."""
     output = h.base_payload(status=status, operation=operation, request=request)
     summary = dict(diagnostics or {})
+    summary.pop("error_reason", None)
     if operation_key:
         summary["idempotency_key"] = operation_key
     recommendation = RECOVERY.get(status, str(summary.get("recommendation", "Inspect the service refusal before retrying.")))
