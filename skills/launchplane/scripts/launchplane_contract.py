@@ -51,6 +51,18 @@ HELPER_OPERATIONS = {
 }
 
 LOCAL_EXTENSION_ROUTES = {
+    "production-backup-preflight-read": {
+        "method": "GET", "path": "/v1/production-backup-authority/preflight", "mode": "read",
+    },
+    "backup-worker-bindings-read": {
+        "method": "GET", "path": "/v1/products/{product}/environments/prod/backup-worker-bindings", "mode": "read",
+    },
+    **{
+        "backup-worker-bindings-" + mode: {
+            "method": "POST", "path": "/v1/products/{product}/environments/prod/backup-worker-bindings/apply", "mode": mode,
+        }
+        for mode in ("dry-run", "apply")
+    },
     **{
         "product-review-withdrawal-" + mode: {
             "method": "POST", "path": "/v1/product-review/withdrawal", "mode": mode,
