@@ -7,6 +7,7 @@
 import io
 import json
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -103,6 +104,41 @@ def test_unsettled_apply_is_unknown_and_terminal_replan_needs_a_new_review(tmp_p
     code, result, calls = invoke(argv("apply", str(evidence)), [replan])
     assert code != 0 and result["status"] == "replan_required"
     assert len(calls) == 1
+
+
+def test_refusal_reasons_are_allowlisted_and_do_not_override_recovery(tmp_path: Path) -> None:
+    import urllib.error
+    from launchplane_review_withdrawal import REFUSAL_ADVICE, RECOVERY
+
+    _, dry, _ = invoke(argv(), [response()])
+    evidence = tmp_path / "dry.json"
+    evidence.write_text(json.dumps(dry))
+    def failure(reason: object, code: str = "product_review_withdrawal_refused", status: int = 409) -> urllib.error.HTTPError:
+        body = {"error": {"code": code, "reason": reason, "message": "PRIVATE_REASON_SENTINEL"}}
+        return urllib.error.HTTPError("https://plane.example.invalid", status, "Failure", {}, io.BytesIO(json.dumps(body).encode()))
+    for reason, advice in REFUSAL_ADVICE.items():
+        code, result, calls = invoke(argv("apply", str(evidence)), [failure(reason)])
+        assert code != 0 and result["status"] == "refused" and len(calls) == 1
+        assert result["summary"]["refusal_reason"] == reason
+        assert result["summary"]["recommendation"] == advice + " " + RECOVERY["refused"]
+        assert result["summary"]["idempotency_key"] == OPERATION_KEY
+        assert "PRIVATE_REASON_SENTINEL" not in json.dumps(result)
+    for reason in (None, "PRIVATE_REASON_SENTINEL", {"no_pending_labeled_request": True}, ["no_pending_labeled_request"]):
+        _, result, calls = invoke(argv(), [failure(reason)])
+        assert result["status"] == "refused" and len(calls) == 1
+        assert "refusal_reason" not in result["summary"]
+        assert "PRIVATE_REASON_SENTINEL" not in json.dumps(result)
+    reason = next(iter(REFUSAL_ADVICE))
+    for replies, expected in (([failure(reason, status=503)], "outcome_unknown"),
+                              ([failure(reason, code="product_review_withdrawal_stale_plan")], "stale_plan"),
+                              ([failure(reason, code="product_review_withdrawal_unsettled")], "outcome_unknown"),
+                              ([response(True), failure(reason)], "accepted_unverified")):
+        _, result, _ = invoke(argv("apply", str(evidence)), replies)
+        assert result["status"] == expected and "refusal_reason" not in result["summary"]
+        assert result["summary"]["idempotency_key"] == OPERATION_KEY
+        if expected == "accepted_unverified":
+            assert result["result"]["applied"] is True
+        assert "PRIVATE_REASON_SENTINEL" not in json.dumps(result)
 
 
 def test_canonical_repository_casing_is_accepted_on_readback():
