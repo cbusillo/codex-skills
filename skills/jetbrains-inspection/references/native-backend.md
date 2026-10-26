@@ -196,10 +196,6 @@ set `qualityGate.inspection.profile` to that repository-relative path. Do not
 disable or tune inspections to make a prerequisite pass. A fresh assessment then
 reports actual findings or another explicit gap.
 
-The older `qodana_populated_profile_required` described the same prerequisite;
-Qodana is retired from the helper, so use the current native route rather than
-restoring that backend.
-
 ## Execution and cleanup
 
 ```sh
@@ -209,7 +205,9 @@ uv run <skill-dir>/scripts/jb-inspect.py agent-inspect \
 
 PyCharm selections support `.py`, `.yaml`, `.yml` and Odoo `.xml` in a root PyCharm model;
 WebStorm and IntelliJ IDEA selections are listed above. Unsupported
-languages, filters or nested models remain UNKNOWN with a supported next step.
+languages, filters or nested models remain UNKNOWN; the result names the files,
+lanes or prerequisite behind it and a next step that fits, or says the coverage
+is unavailable.
 Use explicit source files when a broader scope also contains documentation or
 other file types. Native assessment runs only for a repository under one of the
 config's `trustedAutoOpenRoots`; `JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS`

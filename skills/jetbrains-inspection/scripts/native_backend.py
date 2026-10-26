@@ -93,28 +93,151 @@ def select_backend(args, host):
         return "unavailable", "native_ineligible=native_macos_not_available"
     try:
         repo, config, _scope, selected = common.scope_selection(args, host)
-        product_key = native_product_key(host, config, selected)
-        if not eligible(args, host, repo, config, product_key):
-            return "unavailable", "native_ineligible=" + str(eligibility_reason(args, host, repo, config, product_key))
         if not selected:
             return "unavailable", "selection_empty"
+        product_key = native_product_key(host, config, selected)
+        odoo = False
+        if product_key == PYTHON_PRODUCT_KEY:
+            if any(Path(f).suffix not in NATIVE_SUFFIXES for f in selected):
+                return "unavailable", "selection_file_type_unsupported"
+            if common.lane_gaps(host, config, selected):
+                return "unavailable", "selection_outside_root_pycharm_lane"
+            odoo = is_odoo(repo)
+            if not odoo and any(Path(f).suffix == ".xml" for f in selected):
+                return "unavailable", "xml_selection_requires_odoo"
+        if not eligible(args, host, repo, config, product_key):
+            return "unavailable", "native_ineligible=" + str(eligibility_reason(args, host, repo, config, product_key))
         if product_key == WEBSTORM_PRODUCT_KEY:
             return "native", "webstorm_native_route"
         if product_key == INTELLIJ_PRODUCT_KEY:
             return "native", "intellij_native_route"
-        if any(Path(f).suffix not in NATIVE_SUFFIXES for f in selected):
-            return "unavailable", "selection_file_type_unsupported"
-        if common.lane_gaps(host, config, selected):
-            return "unavailable", "selection_outside_root_pycharm_lane"
-        if is_odoo(repo):
+        if odoo:
             return "native", "odoo_native_route"
         if all(f.endswith(".py") for f in selected):
             return "native", "python_native_route"
-        if all(Path(f).suffix in {".py", ".yaml", ".yml"} for f in selected):
-            return "native", "configuration_native_route"
-        return "unavailable", "xml_selection_requires_odoo"
+        return "native", "configuration_native_route"
     except (Blocked, host.InspectError, OSError, subprocess.SubprocessError, ValueError):
         return "unavailable", "native_selection_unavailable"
+
+
+ALTERNATE_WORKERS = ((WEBSTORM_PRODUCT_KEY, proof.WEBSTORM_PROVEN_SUFFIXES, proof.SCRIPT_SUFFIXES, "TypeScript or JavaScript"),
+                     (INTELLIJ_PRODUCT_KEY, proof.INTELLIJ_PROVEN_SUFFIXES, frozenset({".kt"}), "Kotlin .kt"))
+UNAVAILABLE_COVERAGE = "{coverage} is unavailable; report it as UNKNOWN"
+UNAVAILABLE_REASONS = {
+    "selection_empty": ("the {scope} scope selected no files to inspect{dropped}",
+                        "Nothing to inspect. Files outside every lane, such as Markdown, need no inspection;"
+                        " committed work needs --scope files with each changed --file, because changed_files"
+                        " covers only uncommitted changes."),
+    "native_selection_unavailable": ("the selection could not be read from git and qualityGate.inspection",
+                                     "Check that --repo is a git worktree and that qualityGate.inspection in"
+                                     " .github/github.json is valid, then run one fresh assessment."),
+    "native_macos_not_available": ("native JetBrains workers run only on macOS",
+                                   "Inspection coverage is unavailable on this host; report it as UNKNOWN or run the"
+                                   " assessment on a macOS host with a configured worker."),
+    "native_python_environment_required": ("the worktree has no .venv and qualityGate.inspection declares no root"
+                                           " prepare.python for native PyCharm", ""),
+    "native_populated_profile_required": ("the repository has no single populated inspection profile for native {product}", ""),
+    "native_worker_not_configured": ("no native {product} worker is configured in the shared helper config", ""),
+    "native_app_not_configured": ("the native {product} worker has no app configured in the shared helper config", ""),
+    "native_preparation_shape_unsupported": ("native {product} cannot run the declared qualityGate.inspection.prepare", ""),
+    "no_worker": ("no native worker inspects {suffixes}", UNAVAILABLE_COVERAGE.format(coverage="coverage for {suffixes}")),
+    "nested_lane": ("lane {lane} sets projectPath, and native workers inspect only root projects, see cbusillo/codex-skills#2557",
+                    UNAVAILABLE_COVERAGE.format(coverage="coverage for lane {lane}")),
+    "lane_ide": ("lane {lane} is assigned to {ide}, which has no native worker for {suffixes}",
+                 UNAVAILABLE_COVERAGE.format(coverage="coverage for {suffixes} in lane {lane}")),
+    "xml_outside_odoo": ("native PyCharm inspects .xml only in Odoo repositories",
+                         UNAVAILABLE_COVERAGE.format(coverage="coverage for .xml here")),
+    "ide_not_configured": ("native {product} inspects {suffixes} only where the repository's IDE or the file's lane is {product}",
+                           "if {product} is this code's IDE, ask before recording it under qualityGate.inspection;"
+                           " otherwise " + UNAVAILABLE_COVERAGE.format(coverage="coverage for {suffixes}")),
+    "anchor_missing": ("native {product} inspects {suffixes} only with a {anchor} file in the same selection",
+                       "add a changed {anchor} file to the selection; otherwise "
+                       + UNAVAILABLE_COVERAGE.format(coverage="coverage for {suffixes} alone")),
+    "mixed": ("native {product} does not inspect {suffixes} in one run with other languages",
+              "inspect {suffixes} in a separate --scope files run"),
+    "supported": ("native PyCharm can inspect {suffixes} on their own", "inspect {suffixes} in a separate --scope files run"),
+    "pycharm_outside_ide": ("native PyCharm can inspect {suffixes} on their own, though the repository's IDE is {ide}",
+                            "inspect {suffixes} in a separate --scope files run, which needs the worktree's .venv or a root"
+                            " prepare.python; otherwise " + UNAVAILABLE_COVERAGE.format(coverage="coverage for {suffixes}")),
+}
+GAP_CODES = frozenset({"selection_file_type_unsupported", "selection_outside_root_pycharm_lane", "xml_selection_requires_odoo"})
+SELECTION_ERRORS = (Blocked, OSError, subprocess.SubprocessError, ValueError)
+
+
+def listing(labels: set[str]) -> str:
+    ordered = sorted(labels)
+    return ", ".join(ordered) if len(ordered) <= 3 else ", ".join(ordered[:3]) + f" and {len(ordered) - 3} more"
+
+
+def coverage_gaps(host: Any, repo: Path, config: dict[str, Any], selected: set[str]):
+    lanes = host.parse_inspection_lanes(config) if config.get("lanes") else ()
+    odoo = any(Path(f).suffix == ".xml" for f in selected) and is_odoo(repo)
+    groups: dict[tuple[str, tuple[tuple[str, str], ...]], set[str]] = {}
+    for path in sorted(selected):
+        suffix = Path(path).suffix
+        label = suffix or f"{path} (no extension)"
+        configured = common.configured_product_key(host, config, {path})
+        owner = common.lane_owner(host, lanes, path)
+        fields: dict[str, str] = {}
+        if owner is not None and owner.project_path:
+            key, fields = "nested_lane", {"lane": owner.lane_id}
+        elif suffix in NATIVE_SUFFIXES:
+            if owner is not None and host.product_for_selector(owner.ide) is not host.IDE_PRODUCTS[PYTHON_PRODUCT_KEY]:
+                key, fields = "lane_ide", {"lane": owner.lane_id, "ide": owner.ide}
+            elif suffix == ".xml" and not odoo:
+                key = "xml_outside_odoo"
+            elif configured != PYTHON_PRODUCT_KEY:
+                key, label, fields = "pycharm_outside_ide", path, {"ide": host.IDE_PRODUCTS[configured].display_name}
+            else:
+                key, label = "supported", path
+        else:
+            worker = next((entry for entry in ALTERNATE_WORKERS if suffix in entry[1]), None)
+            if worker is None:
+                key = "no_worker"
+            else:
+                product_key, _suffixes, anchors, anchor = worker
+                fields = {"product": host.IDE_PRODUCTS[product_key].display_name, "anchor": anchor}
+                if configured != product_key:
+                    key = "ide_not_configured"
+                elif not any(Path(f).suffix in anchors for f in selected):
+                    key = "anchor_missing"
+                else:
+                    key = "mixed"
+        groups.setdefault((key, tuple(sorted(fields.items()))), set()).add(label)
+    return groups
+
+
+def unavailable_explanation(host, args, selection):
+    code = selection.removeprefix("native_ineligible=")
+
+    def without_selection(entry):
+        return f"No isolated native worker can inspect this selection: {UNAVAILABLE_REASONS[entry][0]} ({code}).", UNAVAILABLE_REASONS[entry][1]
+
+    if code == "native_macos_not_available":
+        return without_selection(code)
+    receipt: dict[str, Any] = {}
+    try:
+        repo, config, scope, selected = common.scope_selection(args, host, receipt)
+        product = host.IDE_PRODUCTS[native_product_key(host, config, selected)]
+        gaps = coverage_gaps(host, repo, config, selected) if code in GAP_CODES else {}
+    except SELECTION_ERRORS:
+        return without_selection("native_selection_unavailable")
+    if code in GAP_CODES:
+        parts = []
+        for (key, fields), labels in gaps.items():
+            values = dict(fields, suffixes=listing(labels))
+            parts.append([text.format(**values) for text in UNAVAILABLE_REASONS[key]])
+        why = "; ".join(part[0] for part in parts) or code
+        action = " ".join(part[1][:1].upper() + part[1][1:] + "." for part in parts) or "This coverage is unavailable; report it as UNKNOWN."
+        return f"No isolated native worker covers this selection: {why} ({code}).", action
+    dropped = len(receipt.get("unmatched_files", [])) + len(receipt.get("excluded_files", []))
+    why, action = UNAVAILABLE_REASONS.get(code, ("native {product} is not ready for this repository", ""))
+    why = why.format(product=product.display_name, scope=scope,
+                     dropped=f"; {dropped} files are outside every inspection lane or excluded from one" if dropped else "")
+    if not action:
+        action = next_action_for_reason(host, {"product": product.key}, code, default_action=(
+            f"Resolve {code} for native {product.display_name} as references/native-backend.md describes, then run one fresh assessment."))
+    return f"No isolated native worker can inspect this selection: {why} ({code}).", action
 
 
 def native_product_key(host, config, selected):
@@ -1395,6 +1518,14 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
                   "Do not disable or tune inspections to pass. Run a fresh assessment after the prerequisite is resolved.")
     elif reason in {"native_worker_not_configured", "native_app_not_configured"}:
         action = f"Configure jetbrains.nativeWorkers.{product.key}.path/app in the shared helper config for the independently Director-activated worker, or supply --native-worker and --ide-app. See references/native-backend.md."
+    elif reason in {"native_configuration_unavailable", "native_configuration_invalid", "native_worker_path_unsafe",
+                    "native_worker_properties_unsafe", "native_worker_missing", "native_independent_profile_required",
+                    "native_independent_home_required",
+                    "native_app_selection_ambiguous_or_missing", "native_inspector_unavailable",
+                    f"native_{product.key}_distribution_required"}:
+        action = (f"Fix jetbrains.nativeWorkers.{product.key} in the shared helper config: path is the independently "
+                  f"Director-activated worker directory with its idea.properties, and app is one installed {product.display_name}. "
+                  "See references/native-backend.md; never copy or move activation files.")
     elif reason in {"native_node_not_configured", "native_node_unavailable"}:
         action = "Set jetbrains.nativeWorkers.webstorm.node in the shared helper config to the absolute path of an executable node with npm in the same directory. See references/native-backend.md."
     elif reason in {"native_jdk_not_configured", "native_jdk_unavailable"}:
@@ -1411,14 +1542,17 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
         action = "Use the intended repository under jetbrains.trustedAutoOpenRoots in the standard helper config; native preparation executes only for a trusted source root."
     elif reason == "native_python_environment_required":
         action = "Run the repository's documented Python setup in the exact worktree; native needs its .venv or declared structured prepare.python."
-    elif reason == "native_preparation_shape_unsupported":
-        action = "Keep the declared command or nested preparation on its existing backend, or prepare the exact root .venv and select --backend native explicitly. Native runs only structured root prepare.python inside its snapshot."
+    elif reason in {"native_preparation_shape_unsupported", "native_preparation_unsupported"}:
+        action = ("Native runs only a structured root prepare.python, and only for PyCharm. Nested projectPath preparation has no "
+                  "worker yet (cbusillo/codex-skills#2557) and other preparation shapes are unsupported, so this coverage is "
+                  "unavailable; report it as UNKNOWN. When the exact root .venv is already prepared, --backend native uses it.")
     elif reason.startswith("native_odoo_"):
         action = "Run the workspace's documented dependency sync so its declared addon refs resolve locally. Match the selected addon's version and workspace build.odoo_version to one Odoo core checkout plus the declared addon dependency roots. Supply those clean roots with --native-framework-root; preserve source version declarations."
     elif reason == "native_scope_too_large":
         action = "Reduce the selected scope or set --max-files to the intended file limit before reassessing."
     elif reason == "native_scope_unsupported":
-        action = "Select .py, .yaml, .yml and Odoo .xml files assigned to the root PyCharm lane; other language or nested-project models require their existing qualified backend."
+        action = ("The selection has files or lanes this native worker does not inspect. Run agent-inspect without --backend "
+                  "native to name them; coverage no native worker offers is unavailable and stays UNKNOWN.")
     elif reason in {"native_recovery_process_group_unproven", "native_recovery_process_identity_changed", "native_recovery_process_identity_unproven"}:
         identity = receipt.get("recovery_process", {})
         pid = identity.get("pid") or "<journaled-pid>"
@@ -1438,6 +1572,9 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
         action = "Preserve the independent profile's malformed non-secret SDK table and repair that metadata under the worker lock before reassessing. No SDK was registered; never reset the profile or inspect activation files."
     elif reason.startswith("native_cache_"):
         action = "Restore the configured existing host cache directory and recorded storage identity, or configure its supported replacement outside the activated worker. Never create a replacement mount directory."
+    elif reason == "native_host_load_paused":
+        action = (f"The host's one-minute load average stayed above {LOAD_LIMIT}, so no engine launched. Let other builds, tests "
+                  "or inspections finish, then request one fresh assessment; do not add a retry loop.")
     elif reason == "native_worker_busy":
         action = "Another owner held the isolated worker past --lifecycle-lock-timeout-ms; no engine launched. Let the live holder or independent GUI finish, then request one fresh assessment. If its guardian died, use --backend native --native-recover-only with the same independent worker to reconcile the journaled process; never kill another session's worker."
     elif reason == "native_process_group_unproven":
