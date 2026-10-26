@@ -79,6 +79,12 @@ activation or trial offer, stop the licensed run and post an `Owner question:`
 on the item. The Director restores activation through the normal product UI
 using existing entitlements.
 
+A repository declares the IDE plugins its inspections need in the
+JetBrains-standard Required Plugins file, `.idea/externalDependencies.xml`. A
+required plugin the selected worker lacks or disables makes the run UNKNOWN
+before launch, naming the plugin and the worker to install it in; see
+[required plugins](references/native-backend.md#required-plugins).
+
 In repositories with inspection lanes, native selection follows the lane
 router and omits unmatched files (such as Markdown). Receipts name unmatched
 and excluded files. Explicit `--scope files` overrides lane exclusions;

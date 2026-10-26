@@ -156,10 +156,23 @@ UNAVAILABLE_REASONS = {
     "mixed": ("native {product} does not inspect {suffixes} in one run with other languages",
               "inspect {suffixes} in a separate --scope files run"),
     "supported": ("native PyCharm can inspect {suffixes} on their own", "inspect {suffixes} in a separate --scope files run"),
+    "native_required_plugin_missing": ("the repository's .idea/externalDependencies.xml requires {plugins} in the {product} worker at {worker}",
+                                       "Open the {product} worker at {worker} with its launcher, open that worker's Plugins screen and"
+                                       " install or enable {plugins}, then quit it and run one fresh assessment."),
+    "native_required_plugins_unreadable": ("the repository's .idea/externalDependencies.xml is not a readable Required Plugins file",
+                                           "Fix .idea/externalDependencies.xml: a project whose ExternalDependencies component lists"
+                                           " each required plugin id, with optional numeric min-version and max-version. Then run"
+                                           " one fresh assessment."),
+    "native_worker_plugins_unreadable": ("the {product} worker's plugins could not be read safely",
+                                         "Check the {product} worker's plugins folder and config/disabled_plugins.txt for a link"
+                                         " outside the worker, an oversized or non-UTF-8 file, or a plugin.xml with DTD"
+                                         " declarations; reinstall the affected plugin from that worker's Plugins screen, then quit"
+                                         " it and run one fresh assessment."),
     "pycharm_outside_ide": ("native PyCharm can inspect {suffixes} on their own, though the repository's IDE is {ide}",
                             "inspect {suffixes} in a separate --scope files run, which needs the worktree's .venv or a root"
                             " prepare.python; otherwise " + UNAVAILABLE_COVERAGE.format(coverage="coverage for {suffixes}")),
 }
+PLUGIN_FALLBACK = {"plugins": "a required plugin", "worker": "the configured path"}
 GAP_CODES = frozenset({"selection_file_type_unsupported", "selection_outside_root_pycharm_lane", "xml_selection_requires_odoo"})
 SELECTION_ERRORS = (Blocked, OSError, subprocess.SubprocessError, ValueError)
 
@@ -222,6 +235,11 @@ def unavailable_explanation(host, args, selection):
         gaps = coverage_gaps(host, repo, config, selected) if code in GAP_CODES else {}
     except SELECTION_ERRORS:
         return without_selection("native_selection_unavailable")
+    missing = {}
+    if code == "native_required_plugin_missing":
+        with contextlib.suppress(*SELECTION_ERRORS):
+            configured = worker_settings(args, host, product.key)
+            missing = missing_plugins(repo, configured.worker, configured.app)[1]
     if code in GAP_CODES:
         parts = []
         for (key, fields), labels in gaps.items():
@@ -232,8 +250,10 @@ def unavailable_explanation(host, args, selection):
         return f"No isolated native worker covers this selection: {why} ({code}).", action
     dropped = len(receipt.get("unmatched_files", [])) + len(receipt.get("excluded_files", []))
     why, action = UNAVAILABLE_REASONS.get(code, ("native {product} is not ready for this repository", ""))
-    why = why.format(product=product.display_name, scope=scope,
+    values = dict(PLUGIN_FALLBACK, **missing, product=product.display_name)
+    why = why.format(**values, scope=scope,
                      dropped=f"; {dropped} files are outside every inspection lane or excluded from one" if dropped else "")
+    action = action.format(**values)
     if not action:
         action = next_action_for_reason(host, {"product": product.key}, code, default_action=(
             f"Resolve {code} for native {product.display_name} as references/native-backend.md describes, then run one fresh assessment."))
@@ -275,7 +295,8 @@ def eligibility_reason(args, host, repo, settings, product_key=PYTHON_PRODUCT_KE
     try:
         configured_worker = worker_settings(args, host, product_key)
         roots = configured_worker.framework_roots
-        launcher_paths(configured_worker.worker)
+        if missing_plugins(repo, configured_worker.worker, configured_worker.app)[1]:
+            return "native_required_plugin_missing"
         if product_key == WEBSTORM_PRODUCT_KEY:
             node_executable(host)
             if settings.get("prepare"):
@@ -597,7 +618,7 @@ def worker_settings(args: Any, host: Any, product_key: str = PYTHON_PRODUCT_KEY)
     launcher = app / "Contents/bin/inspect.sh"
     if not launcher.is_file():
         raise Blocked("native_inspector_unavailable")
-    distribution = json.loads((app / "Contents/Resources/product-info.json").read_text())
+    distribution = json.loads(common.bounded_bytes(app / "Contents/Resources/product-info.json"))
     if distribution.get("productCode") not in product.product_codes or distribution.get("envVarBaseName") != product.env_var_base_name:
         raise Blocked(f"native_{product.key}_distribution_required")
     roots = args.native_framework_root or configured.get("frameworkRoots", [])
@@ -624,6 +645,12 @@ def launcher_paths(worker):
     if not home.is_dir() or home.is_symlink():
         raise Blocked("native_independent_home_required")
     return expected["idea.config.path"], expected["idea.plugins.path"], home
+
+
+def missing_plugins(repo: Path, worker: Path, app: Path) -> tuple[list[str], dict[str, str]]:
+    config, plugins, _home = launcher_paths(worker)
+    verified, gaps = common.plugin_gaps(repo, app, config, plugins)
+    return verified, {"plugins": "; ".join(gaps), "worker": str(worker)} if gaps else {}
 
 
 def check_lifetime(parent_fd, deadline):
@@ -1526,6 +1553,8 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
         action = (f"Fix jetbrains.nativeWorkers.{product.key} in the shared helper config: path is the independently "
                   f"Director-activated worker directory with its idea.properties, and app is one installed {product.display_name}. "
                   "See references/native-backend.md; never copy or move activation files.")
+    elif reason in {"native_required_plugin_missing", "native_required_plugins_unreadable", "native_worker_plugins_unreadable"}:
+        action = UNAVAILABLE_REASONS[reason][1].format(**(PLUGIN_FALLBACK | receipt.get("missing_plugins", {})), product=product.display_name)
     elif reason in {"native_node_not_configured", "native_node_unavailable"}:
         action = "Set jetbrains.nativeWorkers.webstorm.node in the shared helper config to the absolute path of an executable node with npm in the same directory. See references/native-backend.md."
     elif reason in {"native_jdk_not_configured", "native_jdk_unavailable"}:
@@ -1661,7 +1690,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         node = node_executable(host) if webstorm and not args.native_recover_only else None
         jdk = java_home(host) if intellij and not args.native_recover_only else None
         if not args.native_recover_only:
-            distribution = json.loads((app / "Contents/Resources/product-info.json").read_text())
+            distribution = json.loads(common.bounded_bytes(app / "Contents/Resources/product-info.json"))
             receipt.update(ide_version=distribution.get("version"), ide_build=distribution.get("buildNumber"))
         state_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
         def on_wait():
@@ -1689,6 +1718,12 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         repo, settings, scope, selected = common.scope_selection(args, host, receipt)
         if not any(repo.is_relative_to(Path(root)) for root in host.trusted_auto_open_roots()):
             raise Blocked("native_trusted_root_required")
+        verified_plugins, missing = missing_plugins(repo, worker, app)
+        if verified_plugins:
+            receipt["required_plugins"] = verified_plugins
+        if missing:
+            receipt["missing_plugins"] = missing
+            raise Blocked("native_required_plugin_missing")
         if selected and native_product_key(host, settings, selected) != product.key:
             raise Blocked("native_source_selection_changed")
         odoo = product.key == PYTHON_PRODUCT_KEY and is_odoo(repo)

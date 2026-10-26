@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -794,6 +795,202 @@ print('Done.')
         self.assertFalse(marker.exists())
         self.assertEqual(result["inspection_outcome"]["reason"], "native_exit_observer_unavailable")
         self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def require_plugins(self, *plugins):
+        entries = "".join(f'<plugin {" ".join(f"{key}={value!r}" for key, value in plugin.items())}/>' for plugin in plugins)
+        (self.repo / native.common.REQUIRED_PLUGINS_FILE).write_text(
+            f'<project version="4"><component name="ExternalDependencies">{entries}</component></project>')
+
+    def install_plugin(self, plugin_id, version="2026.6.3-262", *, jar_name=None, descriptor=None, plugins=None):
+        jar = (plugins or self.worker / "plugins") / f"{plugin_id}/lib/{jar_name or plugin_id}.jar"
+        jar.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(jar, "w") as archive:
+            archive.writestr("META-INF/plugin.xml", descriptor or f"<idea-plugin><id>{plugin_id}</id><version>{version}</version></idea-plugin>")
+        return jar
+
+    def assert_plugin_blocked(self, result, reason, *named):
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(result["inspection_outcome"]["reason"], reason)
+        self.assertNotIn("worker_pid", result["diagnostic"]["native"])
+        for text in named:
+            self.assertIn(text, result["agent_result"]["next_action"])
+
+    def test_a_repository_without_required_plugins_never_reads_worker_plugins(self):
+        with patch_attr(native.common, "worker_plugins", side_effect=AssertionError("plugins read")):
+            result = self.assess(direct=True)
+        self.assertEqual(result["agent_result"]["verdict"], "RED")
+        self.assertNotIn("required_plugins", result["diagnostic"]["native"])
+
+    def test_an_installed_required_plugin_lets_the_inspection_run(self):
+        self.install_plugin("dev.ngocta.pycharm-odoo")
+        self.require_plugins({"id": "dev.ngocta.pycharm-odoo"})
+        result = self.assess()
+        self.assertEqual(result["agent_result"]["verdict"], "RED")
+        self.assertEqual(result["diagnostic"]["native"]["required_plugins"], ["dev.ngocta.pycharm-odoo 2026.6.3-262"])
+
+    def test_a_bundled_required_plugin_counts_as_installed(self):
+        info = self.app / "Contents/Resources/product-info.json"
+        info.write_text(json.dumps(json.loads(info.read_text()) | {"buildNumber": "262.1", "bundledPlugins": ["Docker"]}))
+        self.require_plugins({"id": "Docker"})
+        result = self.assess()
+        self.assertEqual(result["agent_result"]["verdict"], "RED")
+        self.assertEqual(result["diagnostic"]["native"]["required_plugins"], ["Docker 262.1"])
+
+    def test_a_missing_required_plugin_is_unknown_before_launch(self):
+        self.install_plugin("ru.adelf.idea.dotenv")
+        self.require_plugins({"id": "dev.blachut.svelte.lang"})
+        self.assert_plugin_blocked(self.assess(), "native_required_plugin_missing",
+                                   "dev.blachut.svelte.lang (not installed)", str(self.worker), "Plugins screen", "quit")
+
+    def test_a_disabled_required_plugin_is_unknown_before_launch(self):
+        self.install_plugin("dev.ngocta.pycharm-odoo")
+        (self.worker / "config/disabled_plugins.txt").write_text("com.example.other\ndev.ngocta.pycharm-odoo\n")
+        self.require_plugins({"id": "dev.ngocta.pycharm-odoo"})
+        self.assert_plugin_blocked(self.assess(), "native_required_plugin_missing", "dev.ngocta.pycharm-odoo (disabled)", str(self.worker))
+
+    def test_required_plugin_versions_are_honoured(self):
+        self.install_plugin("dev.ngocta.pycharm-odoo")
+        for bound, needs in (({"min-version": "2026.10"}, "2026.10 or later"), ({"max-version": "2026.6.2"}, "2026.6.2 or earlier")):
+            with self.subTest(bound=bound):
+                self.require_plugins({"id": "dev.ngocta.pycharm-odoo", **bound})
+                self.assert_plugin_blocked(self.assess(), "native_required_plugin_missing", "dev.ngocta.pycharm-odoo 2026.6.3-262", needs)
+        self.require_plugins({"id": "dev.ngocta.pycharm-odoo", "min-version": "2026.6", "max-version": "2026.6.3-262"})
+        self.assertEqual(self.assess()["agent_result"]["verdict"], "RED")
+
+    def test_a_malformed_required_plugins_file_is_unknown_with_its_reason(self):
+        for content in ("<project", "<project><component name='ExternalDependencies'><plugin/></component></project>",
+                        "<project><component name='Other'/></project>"):
+            with self.subTest(content=content):
+                (self.repo / native.common.REQUIRED_PLUGINS_FILE).write_text(content)
+                self.assert_plugin_blocked(self.assess(), "native_required_plugins_unreadable", "externalDependencies.xml")
+
+    def test_plugins_linked_from_outside_the_worker_are_not_installed(self):
+        outside = self.root / "elsewhere"
+        self.install_plugin("dev.blachut.svelte.lang", plugins=outside)
+        (self.worker / "plugins/dev.blachut.svelte.lang").symlink_to(outside / "dev.blachut.svelte.lang")
+        self.require_plugins({"id": "dev.blachut.svelte.lang"})
+        self.assert_plugin_blocked(self.assess(), "native_required_plugin_missing", "dev.blachut.svelte.lang (not installed)")
+
+    @staticmethod
+    def failing_descriptor(failure):
+        parse = native.common.plain_xml
+
+        def plain_xml(data):
+            if b"idea-plugin" in data:
+                raise failure
+            return parse(data)
+        return plain_xml
+
+    def test_unsafe_worker_plugin_inputs_are_unknown_with_their_own_reason(self):
+        oversized = "<idea-plugin><id>dev.ngocta.pycharm-odoo</id><version>1</version>" + " " * 4096 + "</idea-plugin>"
+        entity = '<!DOCTYPE p [<!ENTITY a "aaaa">]><idea-plugin><id>dev.ngocta.pycharm-odoo</id><version>&a;</version></idea-plugin>'
+        cases = {"oversized plugin.xml": (oversized, None, None), "entity in plugin.xml": (entity, None, None),
+                 "deep nesting": (None, None, RecursionError), "non-UTF-8 disabled list": (None, b"\xff\xfe", None),
+                 "linked disabled list": (None, "link", None)}
+        for case, (descriptor, disabled, failure) in cases.items():
+            with self.subTest(case=case), patch_attr(native.common, "PLUGIN_FILE_LIMIT", 2048), \
+                    patch_attr(native.common, "plain_xml", side_effect=self.failing_descriptor(failure)) if failure else contextlib.nullcontext():
+                shutil.rmtree(self.worker / "plugins")
+                (self.worker / "plugins").mkdir()
+                listing = self.worker / "config/disabled_plugins.txt"
+                listing.unlink(missing_ok=True)
+                if disabled == "link":
+                    listing.symlink_to(self.root / "outside-disabled.txt")
+                    (self.root / "outside-disabled.txt").write_text("")
+                elif disabled:
+                    listing.write_bytes(disabled)
+                self.install_plugin("dev.ngocta.pycharm-odoo", descriptor=descriptor)
+                self.require_plugins({"id": "dev.ngocta.pycharm-odoo"})
+                self.assert_plugin_blocked(self.assess(direct=True), "native_worker_plugins_unreadable", "Plugins screen")
+
+    def test_unsafe_required_plugins_files_are_unreadable(self):
+        entity = '<!DOCTYPE p [<!ENTITY a "dev.ngocta.pycharm-odoo">]><project><component name="ExternalDependencies"><plugin id="&a;"/></component></project>'
+        self.install_plugin("dev.ngocta.pycharm-odoo")
+        for case, content, limit in (("entity", entity, native.common.PLUGIN_FILE_LIMIT), ("oversized", None, 64)):
+            with self.subTest(case=case), patch_attr(native.common, "PLUGIN_FILE_LIMIT", limit):
+                if content:
+                    (self.repo / native.common.REQUIRED_PLUGINS_FILE).write_text(content)
+                else:
+                    self.require_plugins({"id": "dev.ngocta.pycharm-odoo"})
+                self.assert_plugin_blocked(self.assess(direct=True), "native_required_plugins_unreadable")
+
+    def test_every_jar_of_a_plugin_records_its_descriptor(self):
+        self.install_plugin("odoo", jar_name="a-helper", descriptor="<idea-plugin><id>dev.ngocta.helper</id></idea-plugin>")
+        self.install_plugin("odoo", jar_name="z-main", descriptor="<idea-plugin><id>dev.ngocta.pycharm-odoo</id><version>2026.6.3</version></idea-plugin>")
+        self.require_plugins({"id": "dev.ngocta.pycharm-odoo"}, {"id": "dev.ngocta.helper"})
+        result = self.assess(direct=True)
+        self.assertEqual(result["agent_result"]["verdict"], "RED")
+        self.assertEqual(result["diagnostic"]["native"]["required_plugins"], ["dev.ngocta.pycharm-odoo 2026.6.3", "dev.ngocta.helper"])
+
+    def test_an_unknown_plugin_version_never_satisfies_a_bound(self):
+        self.install_plugin("dev.ngocta.pycharm-odoo", descriptor="<idea-plugin><id>dev.ngocta.pycharm-odoo</id></idea-plugin>")
+        for bound, needs in (({"max-version": "2026.6"}, "2026.6 or earlier"), ({"min-version": "1"}, "1 or later")):
+            with self.subTest(bound=bound):
+                self.require_plugins({"id": "dev.ngocta.pycharm-odoo", **bound})
+                self.assert_plugin_blocked(self.assess(direct=True), "native_required_plugin_missing", "of unknown version", needs)
+
+    def test_versions_compare_their_numeric_prefix_without_trailing_zeros(self):
+        for installed, bound, satisfied in (("1.0", {"min-version": "1.0.0"}, True), ("1.0.0", {"max-version": "1"}, True),
+                                            ("1.0-rc1", {"max-version": "1.0"}, True), ("1.0-beta2", {"min-version": "1.0.2"}, False)):
+            with self.subTest(installed=installed, bound=bound):
+                shutil.rmtree(self.worker / "plugins")
+                (self.worker / "plugins").mkdir()
+                self.install_plugin("dev.ngocta.pycharm-odoo", installed)
+                self.require_plugins({"id": "dev.ngocta.pycharm-odoo", **bound})
+                result = self.assess(direct=True)
+                self.assertEqual(result["agent_result"]["verdict"], "RED" if satisfied else "UNKNOWN")
+
+    def test_missing_plugin_details_fall_back_to_a_generic_step(self):
+        self.require_plugins({"id": "dev.blachut.svelte.lang"})
+        args = host.build_parser().parse_args(["agent-inspect", "--repo", str(self.repo), "--scope", "files", "--file", "source.py"])
+        with self.native_host(), patch_attr(native, "missing_plugins", return_value=([], {})):
+            why, action = native.unavailable_explanation(host, args, "native_ineligible=native_required_plugin_missing")
+        action_without_receipt = native.next_action_for_reason(host, {}, "native_required_plugin_missing")
+        for text in (why, action, action_without_receipt):
+            self.assertIn(native.PLUGIN_FALLBACK["plugins"], text)
+
+    def test_disabled_plugin_ids_are_read_one_per_line(self):
+        self.install_plugin("html", descriptor="<idea-plugin><name>HTML Tools</name><version>1</version></idea-plugin>")
+        (self.worker / "config/disabled_plugins.txt").write_text("com.example.other\n  HTML Tools  \n")
+        self.require_plugins({"id": "HTML Tools"})
+        self.assert_plugin_blocked(self.assess(direct=True), "native_required_plugin_missing", "HTML Tools (disabled)")
+
+    def test_xml_declarations_are_refused_in_any_encoding(self):
+        entity = '<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE p [<!ENTITY a "dev.ngocta.pycharm-odoo">]>' \
+                 '<project><component name="ExternalDependencies"><plugin id="&a;"/></component></project>'
+        self.install_plugin("dev.ngocta.pycharm-odoo")
+        (self.repo / native.common.REQUIRED_PLUGINS_FILE).write_bytes(entity.encode("utf-16"))
+        self.assert_plugin_blocked(self.assess(direct=True), "native_required_plugins_unreadable")
+
+    def test_an_installed_copy_without_a_version_does_not_inherit_the_bundled_build(self):
+        info = self.app / "Contents/Resources/product-info.json"
+        info.write_text(json.dumps(json.loads(info.read_text()) | {"buildNumber": "262.1", "bundledPlugins": ["Docker"]}))
+        self.install_plugin("Docker", descriptor="<idea-plugin><id>Docker</id></idea-plugin>")
+        self.require_plugins({"id": "Docker", "min-version": "262"})
+        self.assert_plugin_blocked(self.assess(direct=True), "native_required_plugin_missing", "Docker of unknown version")
+
+    def test_an_oversized_product_info_is_refused_before_launch(self):
+        info = self.app / "Contents/Resources/product-info.json"
+        info.write_text(json.dumps(json.loads(info.read_text()) | {"padding": " " * 4096}))
+        with patch_attr(native.common, "PLUGIN_FILE_LIMIT", 2048):
+            result = self.assess(direct=True)
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertNotIn("worker_pid", result["diagnostic"]["native"])
+
+    def test_automatic_route_names_the_missing_plugin_and_worker(self):
+        self.require_plugins({"id": "dev.blachut.svelte.lang"})
+        workers = {"jetbrains": {"nativeWorkers": {"pycharm": {"path": str(self.worker), "app": str(self.app)}}}}
+        with self.native_host(), patch_attr(host, "read_global_config", return_value=workers), \
+                patch_attr(host, "native_backend_module", return_value=native), \
+                patch_attr(host, "command_native", side_effect=AssertionError("worker started")), \
+                patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--repo", str(self.repo), "--scope", "files", "--file", "source.py"]), \
+                redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(host.main(), 0)
+        result = json.loads(output.getvalue())["agent_result"]
+        self.assertEqual(result["verdict"], "UNKNOWN")
+        for text in ("dev.blachut.svelte.lang (not installed)", str(self.worker)):
+            self.assertIn(text, result["agent_report"])
+            self.assertIn(text, result["next_action"])
 
     def test_another_ide_distribution_is_refused_before_launch(self):
         (self.app / "Contents/Resources/product-info.json").write_text(json.dumps({"productCode": "WS", "envVarBaseName": "WEBSTORM"}))

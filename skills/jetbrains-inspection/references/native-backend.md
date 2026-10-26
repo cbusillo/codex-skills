@@ -12,8 +12,10 @@ existing entitlements. On Chris-Studio this is **JBTEST-D1**, confirmed in
 [#1833](https://github.com/cbusillo/codex-skills/issues/1833#issuecomment-6251613312).
 Use it in place. Never copy, export or move its config, activation, account
 store, licence or credential files, and never open activation-bearing files.
-The agent reads only the public `idea.properties` launcher file and the
-non-secret `options/jdk.table.xml` needed for its temporary SDK registration.
+The agent reads only the public `idea.properties` launcher file, the
+non-secret `options/jdk.table.xml` needed for its temporary SDK registration,
+and, for [required plugins](#required-plugins), plugin descriptors and
+`config/disabled_plugins.txt`.
 The product itself uses its existing activation normally.
 
 Configure the **helper's** shared JSON config at
@@ -183,6 +185,48 @@ profile through the normal product UI with existing entitlements. Do not start
 a trial, purchase or grant access. After the Director's recorded confirmation,
 the authorized continuation removes only that stop receipt before reassessing;
 do not clear it merely to retry. Privacy-consent setup remains Director-held too.
+
+## Required plugins
+
+A repository declares the IDE plugins its inspections need in the
+JetBrains-standard Required Plugins file, `.idea/externalDependencies.xml`,
+tracked with its shared IDE configuration:
+
+```xml
+<project version="4">
+  <component name="ExternalDependencies">
+    <plugin id="dev.ngocta.pycharm-odoo" min-version="2026.6" />
+  </component>
+</project>
+```
+
+Before any launch, each native run checks every listed plugin ID against the
+selected worker. Bundled plugins come from the app's
+`Contents/Resources/product-info.json` `bundledPlugins`, at the app's build
+number. Installed plugins come from `META-INF/plugin.xml` in every jar of each
+entry in the worker's `plugins/` directory; each ID found counts, and an
+installed copy overrides a bundled version. Entries, `lib` folders and jars
+that resolve outside `plugins/` are skipped. IDs in `config/disabled_plugins.txt`
+are disabled. Optional `min-version` and `max-version` are inclusive and compare
+only the leading dotted number of each version, ignoring trailing zeros and
+anything after it, so `1.0`, `1.0.0`, `1.0-rc1` and `1.0-beta2` are equal. A
+plugin whose version is empty or has no leading number never satisfies a bound.
+A plugin that is absent, disabled or outside its range is UNKNOWN with
+`native_required_plugin_missing`, naming the plugin and the worker; install or
+enable it once through that worker's Plugins screen, then quit the worker.
+
+The Required Plugins file, `plugin.xml` entries, `disabled_plugins.txt` and
+`product-info.json` are each read only up to 4 MiB. The XML files and
+`disabled_plugins.txt` must be UTF-8, and XML with a DOCTYPE or ENTITY
+declaration is refused. A Required Plugins file that breaks these rules,
+is not valid XML, has no `ExternalDependencies` component, or lists a plugin
+without an `id` or with a bound that has no leading number is UNKNOWN with
+`native_required_plugins_unreadable`. A plugin descriptor or
+`disabled_plugins.txt` that breaks them, including a linked one, is UNKNOWN with
+`native_worker_plugins_unreadable`; an unusable `product-info.json` keeps its
+worker configuration reason. Without the Required Plugins file nothing
+in the worker's plugins is read. Verified plugins are listed in the receipt's
+`required_plugins`.
 
 ## Missing shared profile
 
