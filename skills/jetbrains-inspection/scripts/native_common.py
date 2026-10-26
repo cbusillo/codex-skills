@@ -359,7 +359,7 @@ def bounded_bytes(path: Path) -> bytes:
 
 
 def plain_xml(data: bytes) -> ElementTree.Element:
-    text = data.decode("utf-8")
+    text = data.decode()
     if "<!entity" in text.lower() or "<!doctype" in text.lower():
         raise ValueError("XML declarations are refused")
     return ElementTree.fromstring(text)
