@@ -4719,6 +4719,9 @@ def _error_payload_from_http(exc: urllib.error.HTTPError) -> dict[str, object]:
 
 
 def _status_for_http_error(code: int, provider_payload: dict[str, object]) -> str:
+    from launchplane_runtime_setting_removal import STALE_CODES as runtime_setting_stale_codes
+    from launchplane_workflow_rule_retirement import STALE_CODES as workflow_rule_stale_codes
+
     error = provider_payload.get("error")
     error_code = ""
     if isinstance(error, dict):
@@ -4729,12 +4732,26 @@ def _status_for_http_error(code: int, provider_payload: dict[str, object]) -> st
         return "denied"
     if code in {400, 422}:
         return "invalid_request"
-    if code == 409 or error_code in {
+    if error_code in {"mutation_reconciliation_required", "reconciliation_required"}:
+        return "reconciliation_required"
+    if error_code == "provider_mutation_failed":
+        return "failed"
+    if code == 404 and error_code:
+        return "not_found"
+    if error_code in {
         "stale",
         "mismatched_intent",
         "matching_dry_run_required",
-    }:
+        "stale_plan",
+        "stale_review",
+        "stale_recovery_digest",
+    } | runtime_setting_stale_codes | workflow_rule_stale_codes:
         return "stale"
+    if code == 409:
+        return "conflict" if error_code in {
+            "idempotency_key_reused", "idempotency_conflict", "restart_target_busy",
+            "target_busy", "odoo_stable_target_replacement_operation_active",
+        } else "refused"
     return "unavailable"
 
 
@@ -4759,7 +4776,12 @@ def http_error_recommendation(status: str) -> str:
         ),
         "stale": "Refresh the dry-run or intent evidence before retrying this write action.",
         "invalid_request": "Fix the private request payload before retrying this write action.",
-        "unavailable": "Launchplane service was unavailable or returned an invalid error envelope; retry later with trace evidence.",
+        "refused": "Stop this action and inspect the refusal and trace. Correct the prerequisite under existing authority; a refusal does not authorize another dispatch or route.",
+        "conflict": "Inspect the existing request or blocking operation. Preserve its original arguments and idempotency key; do not change keys to bypass a conflict.",
+        "reconciliation_required": "Preserve the original request, reviewed evidence and idempotency key. Read its original operation and use supported reconciliation; do not dispatch another operation.",
+        "failed": "Read the original operation's terminal result and rollback evidence. This failure does not authorize another dispatch or a new key.",
+        "not_found": "The requested resource or route was not found. Confirm the exact reference and deployed capability; this is not recovery clearance or authority to dispatch.",
+        "unavailable": "Launchplane service was unavailable or returned an invalid error envelope. Retain the original request, evidence and key; inspect its outcome before any supported recovery.",
     }
     return recommendations.get(status, "Stop and surface the compact Launchplane error.")
 
@@ -5030,6 +5052,49 @@ def _controller_error_diagnostics(provider_payload: dict[str, Any]) -> dict[str,
     return diagnostics
 
 
+def _safe_refusal_diagnostics(error: dict[str, object]) -> dict[str, str]:
+    message = error.get("message")
+    if not isinstance(message, str):
+        return {}
+    code = error.get("code")
+    if code == "restart_refused":
+        match = re.fullmatch(r"A newer deployment may have changed the provider: ([A-Za-z0-9_-]{1,128})\.", message)
+        if match:
+            try:
+                blocker = public_identifier(match[1])
+                assert_public_safe_shape(blocker)
+            except LaunchplaneSafetyError:
+                return {}
+            return {"message": message, "blocking_deployment_id": blocker}
+        allowed = {
+            "Deployment history has an unavailable timestamp.",
+            "Deployment history has an ambiguous timestamp.",
+            "Deployment history has no timestamp to establish its order.",
+            "The requested active product lane is not recorded.",
+            "The lane's HTTP runtime identity endpoint is unavailable.",
+            "This driver does not support service restart with release exclusion.",
+            "Database dependency recovery is limited to Odoo testing.",
+            "The recorded provider target is ambiguous or unsupported.",
+            "The lane has no settled current deployment.",
+            "Current deployment identity is ambiguous.",
+            "Current artifact image identity is ambiguous.",
+            "Current artifact source identity is ambiguous.",
+            "The database deployment completion time is unavailable.",
+            "A Client release run holds this lane.",
+            "A release operation holds this lane.",
+            "The current production artifact has no recorded acceptance.",
+            "The live provider target identity is ambiguous.",
+            "The service has no supported container health check.",
+            "Database dependency recovery requires a stopped container.",
+            "Restart identity is ambiguous, unsupported, or the lane is held by a release.",
+        }
+    elif code == "testing_unavailable_ingress_unverified":
+        allowed = {"The stopped or absent testing copy needs its provider-owned router declaration and current managed listener configuration."}
+    else:
+        return {}
+    return {"message": message} if message in allowed else {}
+
+
 def summarize_http_error(
     *, operation: str, request: dict[str, object], exc: urllib.error.HTTPError,
     provider_payload: dict[str, object] | None = None,
@@ -5090,7 +5155,10 @@ def summarize_http_error(
         if operation in READ_ONLY_OPERATIONS
         else "Launchplane write action was rejected; inspect the trace in an approved operator surface."
     )
-    payload["warnings"] = [warning(str(summary["error_code"]), message)]
+    refusal = _safe_refusal_diagnostics(error)
+    if "blocking_deployment_id" in refusal:
+        summary["blocking_deployment_id"] = refusal["blocking_deployment_id"]
+    payload["warnings"] = [warning(str(summary["error_code"]), refusal.get("message", message))]
     return payload
 
 
