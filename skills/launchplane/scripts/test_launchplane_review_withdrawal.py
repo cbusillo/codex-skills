@@ -160,7 +160,7 @@ def test_recovery_classifier_preserves_receipts_and_distinguishes_other_callers(
     evidence = tmp_path / "dry.json"
     evidence.write_text(json.dumps(dry))
     def failure(status, code):
-        body = {"trace_id": "trace-test", "error": {"code": code, "message": "PRIVATE_REASON_SENTINEL"}}
+        body = {"trace_id": "trace-test", "error": {"code": code, "reason": "PRIVATE_REASON_SENTINEL", "message": "PRIVATE_REASON_SENTINEL"}}
         return urllib.error.HTTPError("https://plane.example.invalid", status, "Failure", {}, io.BytesIO(json.dumps(body).encode()))
     for http_status, error_code, expected in (
         (503, "product_review_withdrawal_unavailable", "outcome_unknown"),
