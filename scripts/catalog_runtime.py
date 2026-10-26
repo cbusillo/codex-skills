@@ -9,8 +9,10 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import fcntl
-import hashlib
 import json
+import os
+import shlex
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +20,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BLOCKED_NOTICE_AFTER = dt.timedelta(hours=1)
 MAX_BLOCKING_PATHS = 20
+INSTRUCTION_PREVIEW_TIMEOUT = 15
+DELIVERY_NOTICE = "DIRECTION delivery"
 
 
 def git(root: Path, *args: str) -> str:
@@ -120,8 +124,65 @@ def observe_checkout(root: Path, state: dict, now: dt.datetime) -> dict:
         return record
 
 
+def preview_instructions(arguments: list[str]) -> dict:
+    process = subprocess.Popen(
+        [sys.executable, *arguments],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL, start_new_session=True,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "CATALOG_PREVIEW_GROUP": "1"},
+    )
+    try:
+        stdout, _ = process.communicate(timeout=INSTRUCTION_PREVIEW_TIMEOUT)
+        if process.returncode:
+            raise ValueError("instruction preview unavailable")
+        return json.loads(stdout)
+    finally:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        process.wait()
+        process.stdout.close()
+        process.stderr.close()
+
+
+def instruction_warning(root: Path, installation: dict) -> str:
+    if not all(installation.get(key) for key in ("home", "codex", "claude")):
+        return ""
+    destinations = [Path(installation["claude"]) / "CLAUDE.md", Path(installation["codex"]) / "AGENTS.md"]
+    arguments = [str(root / "scripts/install-catalog.py"), "--refresh-instructions", "--skip-codex-hooks",
+                 "--home-dir", installation["home"], "--codex-dir", installation["codex"], "--claude-dir", installation["claude"]]
+    recovery = [str(root / "scripts/catalog_runtime.py"), "--update"]
+    try:
+        selected = None
+        if os.environ.get("CLAUDECODE") == "1":
+            selected = Path(os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")).expanduser() / "CLAUDE.md"
+            registered = destinations[0]
+        elif os.environ.get("CODEX_HOME"):
+            selected = Path(os.environ["CODEX_HOME"]).expanduser() / "AGENTS.md"
+            registered = destinations[1]
+        if selected is not None:
+            destinations = [selected]
+            if selected.resolve() != registered.resolve():
+                arguments = [str(root / "scripts/sync-global-instructions.py"), "--destination", str(selected)]
+                recovery = [*arguments, "--write"]
+        preview = preview_instructions(arguments)
+        outputs = {Path(entry["path"]).resolve(): entry["state"] for entry in preview["outputs"]}
+        stale = [str(path) for path in destinations if outputs.get(path.resolve()) != "current"]
+        if not stale:
+            return ""
+        detail = "missing or stale: " + ", ".join(stale)
+        checked = {path.resolve() for path in destinations}
+        unmanaged = {Path(path).resolve() for path in preview.get("unmanaged_instruction_sources", [])}
+        if checked & unmanaged or any(outputs.get(path) in {"preserved", "skipped", "refused"} for path in checked):
+            recovery = [*arguments, "--show-diff"]
+            detail = "instruction source needs reconciliation: " + ", ".join(stale)
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError, subprocess.SubprocessError):
+        detail = "unconfirmed: " + ", ".join(str(path) for path in destinations)
+        recovery = [*arguments, "--show-diff"]
+    return f"{DELIVERY_NOTICE} {detail}; run {shlex.join(['uv', 'run', *recovery])}; restart the session after refresh."
+
+
 def status_line(root: Path, *, observe: bool = False) -> str:
-    """No network; registered startup hooks opt into local age observations."""
     try:
         installation_path = root / ".local" / "catalog-install.json"
         if git(root, "rev-parse", "--git-dir") != git(root, "rev-parse", "--git-common-dir") and not installation_path.is_file():
@@ -166,14 +227,16 @@ def status_line(root: Path, *, observe: bool = False) -> str:
                 raise ValueError("update timestamp has no timezone")
             if scheduled and checked_at and dt.datetime.now(dt.timezone.utc) - checked_at > dt.timedelta(hours=12) and state["state"] == "current":
                 state = {"state": "stale", "reason": "scheduled update has not checked origin in over 12 hours"}
-            if state["state"] == "current" and installation.get("shared_source_sha256") and hashlib.sha256((root / "instructions" / "global.md").read_text().encode()).hexdigest() != installation["shared_source_sha256"]:
-                state = {"state": "stale", "reason": "shared instructions changed; run scripts/catalog_runtime.py --update to refresh installed instructions"}
             if state["state"] == "current" and receipt.exists() and recorded.get("alert_refresh"):
                 state = {"state": "notice", "reason": "catalog checkout is current but alert retirement was skipped; preview scripts/install-catalog.py --refresh-instructions --show-diff, reconcile the reported hook source, then run scripts/catalog_runtime.py --update"}
             if state["state"] in ("current", "notice") and receipt.exists() and recorded.get("instruction_refresh"):
                 state = {"state": "notice", "reason": "catalog checkout is current but instruction refresh was skipped; preview scripts/install-catalog.py --refresh-instructions --show-diff, reconcile the reported instruction source, then run scripts/catalog_runtime.py --update"}
                 if recorded.get("alert_refresh"):
                     state["reason"] += "; alert retirement was also skipped; reconcile the reported hook source as well"
+            if state["state"] == "current":
+                warning = instruction_warning(root, installation)
+                if warning:
+                    state = {"state": "stale", "reason": warning}
         if state["state"] == "current":
             return ""
         return f"Catalog {state['state']}: {state['reason']} ({root})."

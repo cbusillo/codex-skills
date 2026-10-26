@@ -265,13 +265,16 @@ def run_reader(*args: str, timeout: float | None = None) -> subprocess.Completed
     """
     process = subprocess.Popen(
         [str(GH_READER), *args], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        stdin=subprocess.DEVNULL, start_new_session=True,
+        stdin=subprocess.DEVNULL, start_new_session=not os.environ.get("CATALOG_PREVIEW_GROUP"),
     )
     try:
         stdout, stderr = process.communicate(timeout=OVERALL_READ_TIMEOUT if timeout is None else timeout)
     except subprocess.TimeoutExpired:
         try:
-            os.killpg(process.pid, signal.SIGKILL)
+            if os.environ.get("CATALOG_PREVIEW_GROUP"):
+                process.kill()
+            else:
+                os.killpg(process.pid, signal.SIGKILL)
         except OSError:
             pass
         process.stdout.close()  # type: ignore[union-attr]
