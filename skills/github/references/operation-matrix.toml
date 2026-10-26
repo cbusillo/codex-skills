@@ -2840,3 +2840,45 @@ read_supported = true
 probe = "separate_actor"
 degraded_behavior = "An explicitly selected verified-owner read returns names only; no values, public keys or environment grant are added to the App."
 documentation = "https://docs.github.com/en/rest/actions/secrets#list-environment-secrets"
+
+[[operations]]
+id = "github.direction.counter_read"
+request_priority = "essential"
+capabilities = ["contents_read"]
+permission_mode = "fixed"
+permission_note = "Read only the shared counter state in the configured question queue repository with existing Contents access."
+entrypoint = "direction/scripts/question_id.py next|seed"
+intent = "Read the file SHA and state used for competing Director question allocations."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /repos/{repo}/git/ref/heads/state/director-questions; GET /repos/{repo}/contents/counter.json?ref={commit}; GET /repos/{repo}/git/blobs/{sha}"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No GraphQL transport; REST exposes the file SHA used by conditional updates."
+source_refs = ["direction/scripts/question_id.py:counter_request", "direction/scripts/question_id.py:read_counter"]
+test_refs = ["direction/scripts/test_question_id.py:test_two_machines_reserve_unique_numbers_and_reuse_question_identity"]
+
+[[operations]]
+id = "github.direction.counter_write"
+request_priority = "essential"
+capabilities = ["contents_write"]
+permission_mode = "fixed"
+permission_note = "Use existing Contents write access only for an orphan counter-state branch in the question queue repository. No default branch, source files, workflows, grants or credentials change."
+entrypoint = "direction/scripts/question_id.py next|seed"
+intent = "Initialize isolated counter state and advance it only with its current file SHA; preserve request identity after unknown writes."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "POST /repos/{repo}/git/trees, /git/commits and /git/refs; PUT /repos/{repo}/contents/counter.json with branch and expected sha"
+quota_bucket = "rest_core"
+actor_policy = "automation_required"
+mutation_class = "update"
+idempotency = "conditional"
+retry_eligibility = "manual"
+reconciliation_strategy = "read_after_write"
+retained_graphql_rationale = "No GraphQL transport; Contents updates reject a stale file SHA."
+source_refs = ["direction/scripts/question_id.py:counter_request", "direction/scripts/question_id.py:initialize_counter", "direction/scripts/question_id.py:write_counter"]
+test_refs = ["direction/scripts/test_question_id.py:test_two_machines_reserve_unique_numbers_and_reuse_question_identity", "direction/scripts/test_question_id.py:test_unknown_remote_allocation_reuses_pending_chat_request"]
