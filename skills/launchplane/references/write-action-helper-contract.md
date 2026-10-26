@@ -2605,3 +2605,7 @@ metadata and provider messages are omitted. Unexpected envelope, projection or
 facet fields fail closed; nested evidence records are projected by named scalar
 fields only. Denials and transport failures use the shared read error path.
 This standalone read does not add a train, deployment or recovery gate.
+
+Readiness describes the head observed at `generated_at`; it is not reusable
+readiness after a push. Read once for the decision being made: the producer
+uses the train's GitHub rate budget for live evidence.

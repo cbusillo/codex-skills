@@ -12507,3 +12507,15 @@ def test_governance_read_rejects_unknown_or_misleading_evidence(bad_shape: str) 
         write_action.summarize_governance_projection_read(
             request={"repository": "example/repo", "base_branch": "main", "pull_request_number": 42}, provider_payload=response,
         )
+
+
+@pytest.mark.parametrize("arguments", [
+    ["governance-projection-read", "--repository", "example/repo", "--base-branch", "feature branch!", "--pr", "42"],
+    ["context-runtime-settings-read", "--context", "invalid context"],
+])
+def test_read_input_errors_are_not_service_response_errors(arguments: list[str]) -> None:
+    output = io.StringIO()
+    with patch.object(write_action, "prepare_operator_settings", side_effect=AssertionError("config read attempted")), redirect_stdout(output):
+        status = write_action.main(arguments)
+    assert status == 2
+    assert json.loads(output.getvalue())["warnings"][0]["code"] == "invalid_request"

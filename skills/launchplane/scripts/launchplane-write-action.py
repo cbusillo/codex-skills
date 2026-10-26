@@ -690,6 +690,13 @@ def request_launchplane_read(
         return _read_service_response(response)
 
 
+def _request_identifier(value: object) -> str:
+    try:
+        return public_identifier(value)
+    except LaunchplaneSafetyError as exc:
+        raise ValueError("invalid_request") from exc
+
+
 def _require_dict(value: object) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -7515,9 +7522,9 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
     operation = args.command
     applying = operation.endswith("-apply")
     request: dict[str, object] = {
-        "product": public_identifier(args.product),
-        "context": public_identifier(args.context),
-        "instance": public_identifier(args.instance),
+        "product": _request_identifier(args.product),
+        "context": _request_identifier(args.context),
+        "instance": _request_identifier(args.instance),
         "payload_source": "operator_argument",
     }
     try:
@@ -7751,7 +7758,7 @@ def enrollment_proposal_request(args: argparse.Namespace) -> dict[str, object]:
         **_merge_train_proposal_request(args),
         "enrollments": enrollments,
         "like_repository": _proposal_repository(args.like),
-        "like_base_branch": public_identifier(args.like_base_branch),
+        "like_base_branch": _request_identifier(args.like_base_branch),
     }
 
 
@@ -12230,8 +12237,8 @@ def main(argv: list[str]) -> int:
         if args.command in review_withdrawal_commands:
             return execute_review_withdrawal(sys.modules[__name__], args)
         if args.command in NAMES_ONLY_READS:
-            context = public_identifier(args.context)
-            instance = public_identifier(args.instance) if args.command.startswith("instance-") else ""
+            context = _request_identifier(args.context)
+            instance = _request_identifier(args.instance) if args.command.startswith("instance-") else ""
             request = {"operation": args.command, "context": context, "instance": instance}
             path = helper_command_path(args.command).format(
                 context=urllib.parse.quote(context, safe=""),
@@ -12244,7 +12251,7 @@ def main(argv: list[str]) -> int:
         if args.command == "governance-projection-read":
             if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repository) or args.pr < 1:
                 raise ValueError("invalid_request")
-            request = {"repository": public_identifier(args.repository), "base_branch": public_identifier(args.base_branch), "pull_request_number": args.pr}
+            request = {"repository": _request_identifier(args.repository), "base_branch": _request_identifier(args.base_branch), "pull_request_number": args.pr}
             return execute_product_read(
                 args=args, operation=args.command, request=request, path=helper_command_path(args.command),
                 query={key: str(value) for key, value in request.items()},
@@ -12445,17 +12452,17 @@ def main(argv: list[str]) -> int:
             )
         if args.command == "integration-allowances-read":
             request = {
-                "product": public_identifier(args.product),
-                "context": public_identifier(args.context),
-                "instance": public_identifier(args.instance),
+                "product": _request_identifier(args.product),
+                "context": _request_identifier(args.context),
+                "instance": _request_identifier(args.instance),
                 "payload_source": "operator_argument",
             }
             return execute_lane_config_read(args=args, operation=args.command, request=request)
         if args.command == "testing-hold-read":
             request = {
-                "product": public_identifier(args.product),
-                "context": public_identifier(args.context),
-                "instance": public_identifier(args.instance),
+                "product": _request_identifier(args.product),
+                "context": _request_identifier(args.context),
+                "instance": _request_identifier(args.instance),
                 "payload_source": "operator_argument",
             }
             return execute_lane_config_read(args=args, operation=args.command, request=request)
@@ -12464,8 +12471,8 @@ def main(argv: list[str]) -> int:
                 args.command, product=args.product, environment=args.environment
             )
             request = {
-                "product": public_identifier(args.product),
-                "environment": public_identifier(args.environment),
+                "product": _request_identifier(args.product),
+                "environment": _request_identifier(args.environment),
                 "payload_source": "operator_argument",
             }
             return execute_product_read(
@@ -12474,7 +12481,7 @@ def main(argv: list[str]) -> int:
         if args.command == "path-check":
             path = _product_read_path(args.command, product=args.product)
             request = {
-                "product": public_identifier(args.product),
+                "product": _request_identifier(args.product),
                 "path": args.path,
                 "payload_source": "operator_argument",
             }
@@ -12487,7 +12494,7 @@ def main(argv: list[str]) -> int:
                 if args.source_mode is not None:
                     query["source_mode"] = args.source_mode
                 if args.operation_id is not None:
-                    query["operation_id"] = public_identifier(args.operation_id)
+                    query["operation_id"] = _request_identifier(args.operation_id)
                 if args.task_id is not None:
                     if re.fullmatch(r"[a-f0-9]{32}", args.task_id) is None:
                         raise LaunchplaneSafetyError("invalid_request")
@@ -12499,16 +12506,16 @@ def main(argv: list[str]) -> int:
         if args.command == "product-profile-read":
             path = _product_read_path(args.command, product=args.product)
             request = {
-                "product": public_identifier(args.product),
+                "product": _request_identifier(args.product),
                 "payload_source": "operator_argument",
             }
             return execute_product_read(
                 args=args, operation=args.command, request=request, path=path
             )
         if args.command == "protected-artifacts-read":
-            query = {"product": public_identifier(args.product)}
+            query = {"product": _request_identifier(args.product)}
             if args.context is not None:
-                query["context"] = public_identifier(args.context)
+                query["context"] = _request_identifier(args.context)
             request = {**query, "payload_source": "operator_argument"}
             return execute_product_read(
                 args=args, operation=args.command, request=request,
@@ -12517,7 +12524,7 @@ def main(argv: list[str]) -> int:
         if args.command == "product-activity-read":
             path = _product_read_path(args.command, product=args.product)
             request = {
-                "product": public_identifier(args.product),
+                "product": _request_identifier(args.product),
                 "payload_source": "operator_argument",
             }
             return execute_product_read(
@@ -12526,11 +12533,11 @@ def main(argv: list[str]) -> int:
         if args.command in {"reconcile-requests-read", "product-secret-bindings-read", "generic-web-deploy-recovery-reference-read"}:
             path = _product_read_path(args.command, product=args.product)
             request = {
-                "product": public_identifier(args.product),
+                "product": _request_identifier(args.product),
                 "payload_source": "operator_argument",
             }
             if args.command == "reconcile-requests-read" and args.target_key is not None:
-                request["target_key"] = public_identifier(args.target_key)
+                request["target_key"] = _request_identifier(args.target_key)
             return execute_product_read(
                 args=args, operation=args.command, request=request, path=path
             )
@@ -12539,7 +12546,7 @@ def main(argv: list[str]) -> int:
         if args.command == "target-replacement-operation-read":
             path = _product_read_path(args.command, operation_id=args.operation_id)
             request = {
-                "operation_id": public_identifier(args.operation_id),
+                "operation_id": _request_identifier(args.operation_id),
                 "payload_source": "operator_argument",
             }
             return execute_product_read(
@@ -12623,7 +12630,7 @@ def main(argv: list[str]) -> int:
             body = product_owner_body(args, mode=mode)
             request = {
                 "mode": mode,
-                "product": public_identifier(args.product),
+                "product": _request_identifier(args.product),
                 "owner_change": "clear" if body["clear"] else "set",
                 "github_login": body["github_login"],
                 "payload_source": "operator_argument",
@@ -12643,7 +12650,7 @@ def main(argv: list[str]) -> int:
             body = product_image_repository_body(args, mode=mode)
             request = {
                 "mode": mode,
-                "product": public_identifier(args.product),
+                "product": _request_identifier(args.product),
                 "image_repository": body["image_repository"],
                 "payload_source": "operator_argument",
             }
@@ -12660,10 +12667,10 @@ def main(argv: list[str]) -> int:
             )
         if args.command == "production-backup-authority-read":
             request = {
-                "product": public_identifier(args.product),
-                "context": public_identifier(args.context),
-                "instance": public_identifier(args.instance),
-                "promotion_action": public_identifier(args.promotion_action),
+                "product": _request_identifier(args.product),
+                "context": _request_identifier(args.context),
+                "instance": _request_identifier(args.instance),
+                "promotion_action": _request_identifier(args.promotion_action),
                 "payload_source": "operator_argument",
             }
             return execute_production_backup_authority_read(args=args, request=request)
@@ -12736,12 +12743,12 @@ def main(argv: list[str]) -> int:
             )
         if args.command == "private-health-endpoint-read":
             request = {
-                "product": public_identifier(args.product),
-                "context": public_identifier(args.context),
+                "product": _request_identifier(args.product),
+                "context": _request_identifier(args.context),
                 "payload_source": "operator_argument",
             }
             if args.instance:
-                request["instance"] = public_identifier(args.instance)
+                request["instance"] = _request_identifier(args.instance)
             return execute_private_health_endpoint_read(args=args, request=request)
         if args.command in {
             "private-health-endpoint-dry-run",
@@ -12765,7 +12772,7 @@ def main(argv: list[str]) -> int:
                 args.command, product=args.product, environment=PRODUCT_PROMOTION_DESTINATION
             )
             request = {
-                "product": public_identifier(args.product),
+                "product": _request_identifier(args.product),
                 "environment": PRODUCT_PROMOTION_DESTINATION,
                 "payload_source": "operator_argument",
             }
@@ -12777,7 +12784,7 @@ def main(argv: list[str]) -> int:
             body = product_promotion_dry_run_body(args)
             request = {
                 "mode": "dry-run",
-                "product": public_identifier(args.product),
+                "product": _request_identifier(args.product),
                 "environment": PRODUCT_PROMOTION_DESTINATION,
                 "bump": body["bump"],
                 "evidence_fingerprint": body["evidence_fingerprint"],
