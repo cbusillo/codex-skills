@@ -1686,11 +1686,12 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         def on_wait():
             check_lifetime(parent_fd, float("inf"))
 
+        load_pause_timeout_ms = max(0, getattr(args, "lifecycle_lock_timeout_ms", host.DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS))
         admission_started, wait_until = time.monotonic(), None
         if not args.native_recover_only:
             # Ordinary requests queue for the same locks; recovery never waits.
             held_lock.enter_context(host.fifo_turn(state_dir() / "native-queue", "Native inspection", on_wait))
-            wait_until = time.monotonic() + max(0, getattr(args, "lifecycle_lock_timeout_ms", host.DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)) / 1000
+            wait_until = time.monotonic() + load_pause_timeout_ms / 1000
             wait_for_host_capacity(wait_until, on_wait, receipt)
         held_lock.enter_context(profile_lock(worker, "native-control.lock", wait_until, on_wait))
         process_proof = stop_orphan(worker, receipt)
@@ -1785,7 +1786,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             deadline = execute(preparation_argv, preparation_env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(),
                     global_lock_fd=global_lock.fileno(), require_completion=False,
                     on_spawn=lambda pid: record_process("preparation", pid), on_exit=record_exit,
-                    load_pause_timeout_ms=args.lifecycle_lock_timeout_ms)
+                    load_pause_timeout_ms=load_pause_timeout_ms)
 
         check_lifetime(parent_fd, deadline)
         sdk = None
@@ -1844,7 +1845,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             nonlocal deadline
             deadline = execute(launch_argv, env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(), global_lock_fd=global_lock.fileno(),
                     on_spawn=lambda pid: record_process("engine", pid), on_exit=record_exit, completion=completion, logs=engine_logs_seen,
-                    load_pause_timeout_ms=args.lifecycle_lock_timeout_ms)
+                    load_pause_timeout_ms=load_pause_timeout_ms)
 
         try:
             if intellij:
