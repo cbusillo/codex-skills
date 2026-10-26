@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["aiohttp==3.14.5"]
+# dependencies = ["aiohttp==3.14.5", "websockets==17.2"]
 # ///
 
 import asyncio
@@ -11,10 +11,10 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import account_choice
 import codex_auth_health as health
@@ -22,6 +22,15 @@ import codex_idle_watch
 import codex_session_proxy
 import github_plan_closure
 import interactive_accounts
+
+MESSAGES = {
+    "attempt": "Refreshing token",
+    "expired": "Failed to refresh token: Your access token could not be refreshed because your refresh token has expired. Please log out and sign in again.",
+    "reused": "Failed to refresh token: Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.",
+    "reset": "Reloaded auth, changed: true",
+    "reload": "Skipping token refresh because auth changed after guarded reload.",
+}
+PROCESS = "pid:42:01234567-89ab-cdef-0123-456789abcdef"
 
 
 class AuthHealthTests(unittest.TestCase):
@@ -36,10 +45,12 @@ class AuthHealthTests(unittest.TestCase):
                 "CREATE TABLE logs (id INTEGER PRIMARY KEY, ts INTEGER, ts_nanos INTEGER, "
                 "level TEXT, target TEXT, process_uuid TEXT, feedback_log_body TEXT)"
             )
+        self.identity = health.DaemonIdentity(42, 0, "fixture-start")
+        self.enterContext(patch.object(health, "daemon_identity", return_value=self.identity))
         self.enterContext(patch.object(health, "process_inventory", return_value=[{"pid": 42, "executable": "codex"}]))
-        self.auth = self.home / "auth.json"
-        self.auth.write_text("opaque synthetic credential")
-        os.utime(self.auth, ns=(1, 1))
+        self.probe = self.enterContext(patch.object(health, "native_status", side_effect=self.failed_probe))
+        self.clock = 0
+        self.row = 0
         self.account = {
             "name": "failed",
             "provider": "openai",
@@ -59,131 +70,206 @@ class AuthHealthTests(unittest.TestCase):
             "answers": {"useNext": [{"provider": "openai", "accountID": "openai-a"}]},
         }
 
-    def append(
-        self, ident: int = 1, body: str | None = None, target: str = "codex_login::auth::manager", attempt_ns: int | None = None
-    ) -> None:
-        attempt_ns = ident * 1_000_000_000 if attempt_ns is None else attempt_ns
-        if target == "codex_login::auth::manager" and not (body or "").startswith("Refreshing token"):
-            with sqlite3.connect(self.database) as connection:
-                connection.execute(
-                    "INSERT INTO logs VALUES (?, ?, ?, 'INFO', ?, ?, 'Refreshing token')",
-                    (
-                        ident * 2,
-                        attempt_ns // 1_000_000_000,
-                        attempt_ns % 1_000_000_000,
-                        target,
-                        "pid:42:01234567-89ab-cdef-0123-456789abcdef",
-                    ),
-                )
-        body = body or (
-            "Failed to refresh token: Your access token could not be refreshed because "
-            "your refresh token has expired. Please log out and sign in again."
-        )
+    def append(self, kind: str, *, body: str | None = None) -> int:
+        self.clock += 1_000_000_000
+        self.row += 1
         with sqlite3.connect(self.database) as connection:
             connection.execute(
-                "INSERT INTO logs VALUES (?, ?, 0, 'ERROR', ?, ?, ?)",
-                (ident * 2 + 1, ident, target, "pid:42:01234567-89ab-cdef-0123-456789abcdef", body),
+                "INSERT INTO logs VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    self.row,
+                    self.clock // 1_000_000_000,
+                    self.clock % 1_000_000_000,
+                    "ERROR" if kind in {"expired", "reused"} else "INFO",
+                    "codex_login::auth::manager",
+                    PROCESS,
+                    body or MESSAGES[kind],
+                ),
             )
+        return self.clock
 
-    def test_permanent_failure_excludes_only_its_account_before_launch(self) -> None:
-        self.append()
-        choice = account_choice.choose("openai", self.config, self.snapshot, None)
-        self.assertEqual(choice["name"], "healthy")
+    def failure(self, kind: str = "expired") -> None:
+        self.append("attempt")
+        self.append(kind)
+
+    def failed_probe(self, _home: Path) -> health.AuthStatus:
+        requested = self.clock + 1
+        self.failure()
+        return health.AuthStatus(self.identity, requested, "chatgpt", True)
+
+    def reset_probe(self, _home: Path) -> health.AuthStatus:
+        requested = self.clock + 1
+        self.append("reset")
+        return health.AuthStatus(self.identity, requested, "chatgpt", True)
+
+    def args(self, *, once: bool = True) -> SimpleNamespace:
+        ledger = self.root / "ledger.json"
+        ledger.write_text("[]")
+        return SimpleNamespace(
+            ledger=ledger,
+            idle_seconds=90,
+            harness="codex",
+            deadline_seconds=60,
+            delivered_state=self.root / "delivered.json",
+            capacity_state=None,
+            resume_capacity=False,
+            once=once,
+            interval=1,
+        )
+
+    def test_confirmed_failure_excludes_only_its_account_and_preserves_published_order(self) -> None:
+        self.failure()
+        self.assertEqual(account_choice.choose("openai", self.config, self.snapshot, None)["name"], "healthy")
         with self.assertRaises(ValueError):
             account_choice.choose("openai", self.config, self.snapshot, None, name="failed")
         self.assertEqual(account_choice.choose("openai", self.config, self.snapshot, None, name="healthy")["name"], "healthy")
         with self.assertRaises(ValueError):
             account_choice.choose_batch("openai", self.config, self.snapshot, None, count=2)
         self.snapshot["ranking"][0]["launchOrder"].append("openai-b")
-        batch = account_choice.choose_batch("openai", self.config, self.snapshot, None, count=2)
-        self.assertEqual([choice["name"] for choice in batch], ["healthy", "healthy"])
+        choices = account_choice.choose_batch("openai", self.config, self.snapshot, None, count=2)
+        self.assertEqual([choice["name"] for choice in choices], ["healthy", "healthy"])
         self.snapshot["ranking"][0].update(basedOnStaleReadings=True, readingsObservedAt="2026-10-26T17:00:00Z")
         stale = account_choice.choose("openai", self.config, self.snapshot, None, now=datetime(2026, 10, 26, 17, tzinfo=UTC))
         self.assertEqual(stale["name"], "healthy")
 
-    def test_preserves_only_allowlisted_evidence_across_rotation_and_recovery(self) -> None:
-        self.append(body="Refreshing token secret=DO-NOT-COPY")
-        self.append(2)
-        self.append(3, body="random secret=DO-NOT-COPY")
-        self.append(4, target="unrelated::auth")
-        state = health.observe(self.home)
-        evidence = Path(state["evidence"])
-        saved = evidence.read_text()
-        self.assertNotIn("DO-NOT-COPY", saved)
-        self.assertNotIn("opaque synthetic credential", saved)
-        self.assertIn("expired", [event["event"] for event in json.loads(saved)["events"]])
-        self.assertTrue(state["blocked"])
-        self.assertEqual(evidence.stat().st_mode & 0o777, 0o600)
-        self.database.unlink()
+    def test_first_error_is_preserved_before_native_read_and_no_credentials_are_opened(self) -> None:
+        self.failure()
+        self.append("attempt", body="Refreshing token secret=DO-NOT-COPY")
+        auth = self.home / "auth.json"
+        auth.write_text("opaque synthetic credential")
+        original_open = Path.open
+
+        def guarded_open(path: Path, *args: object, **kwargs: object) -> object:
+            self.assertNotEqual(path, auth)
+            return original_open(path, *args, **kwargs)
+
+        def check_capture(home: Path) -> health.AuthStatus:
+            journal = home / "skill-data/supervisor-auth/evidence.jsonl"
+            self.assertIn("expired", journal.read_text())
+            return self.failed_probe(home)
+
+        self.probe.side_effect = check_capture
+        with patch.object(Path, "open", guarded_open):
+            result = health.observe(self.home)
+        self.assertTrue(result["blocked"])
+        journal = self.home / "skill-data/supervisor-auth/evidence.jsonl"
+        self.assertNotIn("DO-NOT-COPY", journal.read_text())
+        self.assertNotIn("opaque synthetic credential", journal.read_text())
+        self.assertEqual(journal.stat().st_mode & 0o777, 0o600)
+
+    def test_reused_then_blocking_failure_remains_in_journal_after_rotation(self) -> None:
+        self.failure("reused")
+        self.assertFalse(health.observe(self.home)["blocked"])
+        self.probe.assert_not_called()
+        self.failure()
         self.assertTrue(health.observe(self.home)["blocked"])
-        os.utime(self.auth, ns=(10_000_000_000, 10_000_000_000))
-        self.assertFalse(health.observe(self.home)["blocked"])
-        self.assertEqual(evidence.read_text(), saved)
-
-    def test_old_errors_after_sign_in_do_not_block_and_network_errors_never_quarantine(self) -> None:
-        self.append()
-        os.utime(self.auth, ns=(10_000_000_000, 10_000_000_000))
-        self.assertFalse(health.observe(self.home)["blocked"])
-        self.append(20, body="Failed to refresh token: connection timeout")
-        self.assertFalse(health.observe(self.home)["blocked"])
-        self.assertEqual(account_choice.choose("openai", self.config, self.snapshot, None)["name"], "failed")
-
-    def test_bad_database_is_diagnostic_and_does_not_block_healthy_launches(self) -> None:
-        self.database.write_bytes(b"not sqlite")
-        self.assertFalse(health.observe(self.home)["blocked"])
-        self.assertIn("diagnostic", health.observe(self.home))
-        self.database.unlink()
         with sqlite3.connect(self.database) as connection:
-            connection.execute(
-                "CREATE TABLE logs (id INTEGER PRIMARY KEY, ts INTEGER, ts_nanos INTEGER, "
-                "level TEXT, target TEXT, process_uuid TEXT, feedback_log_body TEXT)"
-            )
-        self.append()
-        self.assertTrue(health.observe(self.home)["blocked"])
-        self.database.write_bytes(b"not sqlite")
+            connection.execute("DELETE FROM logs")
+        preserved = health.read_journal(self.home / "skill-data/supervisor-auth/evidence.jsonl")
+        self.assertTrue({"reused", "expired"} <= {event["event"] for event in preserved})
         self.assertTrue(health.observe(self.home)["blocked"])
 
-    def test_watcher_observes_without_a_worker_and_wakes_once_across_restarts(self) -> None:
-        self.append()
-        ledger = self.root / "ledger.json"
-        ledger.write_text("[]")
-        seen = {}
-        notices = codex_idle_watch.poll(ledger, seen, 90, 1000, account_homes={"failed": self.home})
-        self.assertEqual(len(notices), 1)
-        self.assertIn("auth_failure", notices[0])
-        self.append(2)
-        self.assertEqual(codex_idle_watch.poll(ledger, seen, 90, 1001, account_homes={"failed": self.home}), [])
-        self.enterContext(patch.object(account_choice, "load_config", return_value=self.config))
-        args = SimpleNamespace(
-            ledger=ledger,
-            idle_seconds=90,
-            harness="codex",
-            deadline_seconds=1,
-            delivered_state=self.root / "delivered.json",
-            capacity_state=None,
-            resume_capacity=False,
-            once=True,
-            interval=1,
-        )
-        first, restarted = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(first):
-            codex_idle_watch.watch(args, None)
-        with contextlib.redirect_stdout(restarted):
-            codex_idle_watch.watch(args, None)
-        self.assertIn("auth_failure", first.getvalue())
-        self.assertEqual(restarted.getvalue(), "")
+    def test_sign_in_in_load_to_log_race_clears_through_native_reload(self) -> None:
+        self.failure()
+        self.assertTrue(health.observe(self.home)["blocked"])
+        self.probe.side_effect = self.reset_probe
+        self.assertFalse(health.observe(self.home)["blocked"])
+        calls = self.probe.call_count
+        self.assertFalse(health.observe(self.home)["blocked"])
+        self.assertEqual(self.probe.call_count, calls)
+
+    def test_keyring_recovery_ignores_leftover_auth_file(self) -> None:
+        (self.home / "auth.json").write_text("stale file backing a former store")
+        self.failure()
+        self.assertTrue(health.observe(self.home)["blocked"])
+        self.probe.side_effect = self.reset_probe
+        self.assertFalse(health.observe(self.home)["blocked"])
+
+    def test_delayed_logs_are_awaited_but_absent_current_evidence_is_unknown(self) -> None:
+        self.failure()
+        requested = self.clock + 1
+        self.probe.side_effect = None
+        self.probe.return_value = health.AuthStatus(self.identity, requested, "chatgpt", True)
+        with patch.object(health, "LOG_DELIVERY_SECONDS", 0):
+            result = health.observe(self.home)
+        self.assertFalse(result["blocked"])
+        self.assertIn("diagnostic", result)
+        original_read = health.read_log
+        reads = 0
+
+        def delayed(home: Path) -> list[dict]:
+            nonlocal reads
+            reads += 1
+            if reads == 2:
+                return [event for event in original_read(home) if event["ts_ns"] < requested]
+            return original_read(home)
+
+        self.probe.side_effect = self.failed_probe
+        with patch.object(health, "read_log", side_effect=delayed), patch.object(health.time, "sleep") as wait:
+            self.assertTrue(health.observe(self.home)["blocked"])
+        wait.assert_called()
+
+    def test_malformed_cache_and_partial_journal_reconstruct_from_logs(self) -> None:
+        directory = self.home / "skill-data/supervisor-auth"
+        directory.mkdir(parents=True)
+        (directory / "state.json").write_text('{"reason":"expired"}')
+        journal = directory / "evidence.jsonl"
+        journal.write_text('{"partial":')
+        self.failure()
+        self.assertTrue(health.observe(self.home)["blocked"])
+        self.assertTrue(health.read_journal(journal))
+
+    def test_capture_overlap_is_not_a_diagnostic_or_a_launch_bypass(self) -> None:
+        self.failure()
+        with patch.object(health.fcntl, "flock", side_effect=BlockingIOError):
+            result = health.observe(self.home)
+        self.assertTrue(result["blocked"])
+        self.assertNotIn("diagnostic", result)
+
+    def test_unavailable_or_changed_daemon_cannot_inherit_a_hold(self) -> None:
+        self.failure()
+        self.probe.side_effect = ValueError("unavailable")
+        self.assertFalse(health.observe(self.home)["blocked"])
+        self.probe.side_effect = None
+        self.probe.return_value = health.AuthStatus(health.DaemonIdentity(43, 0, "new"), 0, "chatgpt", True)
+        self.assertFalse(health.observe(self.home)["blocked"])
+
+    def test_healthy_home_needs_no_native_auth_read_and_corrupt_database_is_unknown(self) -> None:
+        self.assertFalse(health.observe(self.home)["blocked"])
+        self.probe.assert_not_called()
         self.database.write_bytes(b"not sqlite")
-        os.utime(self.auth, ns=(10_000_000_000, 10_000_000_000))
-        diagnostic, rearmed = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(diagnostic):
+        result = health.observe(self.home)
+        self.assertFalse(result["blocked"])
+        self.assertIn("diagnostic", result)
+
+    def test_watcher_wakes_once_per_hold_across_rearms(self) -> None:
+        self.failure()
+        self.enterContext(patch.object(account_choice, "load_config", return_value=self.config))
+        args = self.args()
+        first, rearmed = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(first):
             codex_idle_watch.watch(args, None)
         with contextlib.redirect_stdout(rearmed):
             codex_idle_watch.watch(args, None)
-        self.assertIn("auth_diagnostic", diagnostic.getvalue())
+        self.assertIn("auth_failure", first.getvalue())
         self.assertEqual(rearmed.getvalue(), "")
 
-    def test_interactive_fallback_refuses_failed_account_but_login_is_available(self) -> None:
-        self.append()
+    def test_diagnostics_do_not_request_an_immediate_monitor_rearm(self) -> None:
+        args = self.args(once=False)
+        clock = iter((0, 0, 61))
+        diagnostic = {"auth_diagnostic": {"home_id": "fixture", "reason": "unavailable"}}
+        self.enterContext(patch.object(account_choice, "load_config", return_value=self.config))
+        with (
+            patch.object(health, "notices", return_value=[diagnostic]),
+            patch.object(codex_idle_watch.time, "monotonic", side_effect=lambda: next(clock, 61)),
+            patch.object(codex_idle_watch.time, "sleep") as wait,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            codex_idle_watch.watch(args, None)
+        wait.assert_called_once()
+
+    def test_interactive_and_managed_clients_refuse_before_execution_but_login_remains_available(self) -> None:
+        self.failure()
         self.enterContext(patch.dict(os.environ, {"CODEX_HOME": str(self.home)}))
         self.enterContext(patch.object(account_choice, "load_config", return_value=self.config))
         self.enterContext(patch.object(interactive_accounts.shutil, "which", return_value="/fixture/codex"))
@@ -194,50 +280,59 @@ class AuthHealthTests(unittest.TestCase):
         execute.assert_not_called()
         interactive_accounts.launch("codex", ["login"])
         execute.assert_called_once()
-
-    def test_direct_managed_client_refuses_before_creating_ingress_or_process(self) -> None:
-        self.append()
-        with (
-            patch.object(github_plan_closure, "register_proxy") as register,
-            patch.object(codex_session_proxy.subprocess, "Popen") as spawn,
-        ):
+        with patch.object(github_plan_closure, "register_proxy") as register:
             with self.assertRaises(ValueError):
                 asyncio.run(codex_session_proxy.run_client(self.home, ["codex"]))
         register.assert_not_called()
-        spawn.assert_not_called()
 
-    def test_missing_credential_generation_is_unknown_instead_of_a_permanent_trap(self) -> None:
-        self.append()
-        self.assertTrue(health.observe(self.home)["blocked"])
-        self.auth.unlink()
-        result = health.observe(self.home)
-        self.assertFalse(result["blocked"])
-        self.assertIn("diagnostic", result)
 
-    def test_old_inflight_refresh_error_cannot_pause_new_credentials(self) -> None:
-        self.append()
-        self.assertTrue(health.observe(self.home)["blocked"])
-        os.utime(self.auth, ns=(10_000_000_000, 10_000_000_000))
-        self.append(20, attempt_ns=5_000_000_000)
-        self.assertFalse(health.observe(self.home)["blocked"])
+class NativeStatusTests(unittest.TestCase):
+    def test_only_token_free_status_is_requested_and_changed_peer_is_rejected(self) -> None:
+        from websockets.sync import client
 
-    def test_reused_key_is_evidence_without_claiming_the_current_sign_in_is_bad(self) -> None:
-        self.append(
-            body="Failed to refresh token: Your access token could not be refreshed because "
-            "your refresh token was already used. Please log out and sign in again."
-        )
-        self.assertFalse(health.observe(self.home)["blocked"])
+        identity = health.DaemonIdentity(42, 0, "fixture")
+        connection = Mock()
+        connection.__enter__ = Mock(return_value=connection)
+        connection.__exit__ = Mock(return_value=False)
+        responses = [
+            {"id": 1, "result": {}},
+            {"id": 2, "result": {"authMethod": "chatgpt", "authToken": None, "requiresOpenaiAuth": True}},
+        ]
+        connection.recv.side_effect = [json.dumps(response) for response in responses]
+        with (
+            patch.object(client, "unix_connect", return_value=connection),
+            patch.object(health, "peer_pid", return_value=42),
+            patch.object(health, "daemon_identity", return_value=identity),
+        ):
+            result = health.native_status(Path("/fixture"))
+        self.assertEqual(result.identity, identity)
+        requests = [json.loads(call.args[0]) for call in connection.send.call_args_list]
+        self.assertEqual(requests[-1]["method"], "getAuthStatus")
+        self.assertEqual(requests[-1]["params"], {"includeToken": False, "refreshToken": False})
+        connection.recv.side_effect = [json.dumps(response) for response in responses]
+        with (
+            patch.object(client, "unix_connect", return_value=connection),
+            patch.object(health, "peer_pid", return_value=42),
+            patch.object(health, "daemon_identity", side_effect=[identity, health.DaemonIdentity(43, 0, "changed")]),
+        ):
+            with self.assertRaises(ValueError):
+                health.native_status(Path("/fixture"))
 
-    def test_busy_capture_cannot_let_a_known_failed_launch_through(self) -> None:
-        self.append()
-        with patch.object(health.fcntl, "flock", side_effect=BlockingIOError):
-            self.assertTrue(health.observe(self.home)["blocked"])
-
-    def test_incomplete_state_is_diagnostic_and_does_not_stop_other_accounts(self) -> None:
-        directory = self.home / "skill-data/supervisor-auth"
-        directory.mkdir(parents=True)
-        (directory / "state.json").write_text('{"reason":"expired"}')
-        self.assertFalse(health.observe(self.home)["blocked"])
+    def test_pid_metadata_must_match_the_live_process_start(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            directory = home / "app-server-daemon"
+            directory.mkdir()
+            timestamp = datetime(2026, 10, 26, 12, tzinfo=UTC)
+            (directory / "daemon.pid").write_text(
+                json.dumps({"pid": 42, "processIdentity": {"startSeconds": int(timestamp.timestamp()), "startMicroseconds": 123}})
+            )
+            completed = SimpleNamespace(stdout=timestamp.strftime("%a %b %d %H:%M:%S %Y"))
+            with patch.object(health.subprocess, "run", return_value=completed) as query:
+                self.assertEqual(health.daemon_identity(home, 42).pid, 42)
+            self.assertEqual(query.call_args.args[0][-1], "lstart=")
+            with self.assertRaises(ValueError):
+                health.daemon_identity(home, 43)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["websockets==17.2"]
 # ///
 """Follow Context Panel's ranked choices and record count-only launch receipts.
 

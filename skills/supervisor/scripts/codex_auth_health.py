@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["websockets==17.2"]
 # ///
 
 from __future__ import annotations
@@ -10,10 +10,15 @@ import hashlib
 import json
 import os
 import re
+import socket
 import sqlite3
+import stat
+import struct
 import subprocess
-import tempfile
+import sys
 import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 FAILURES = {
@@ -25,14 +30,33 @@ EVENTS = {
     **FAILURES,
     "refresh_attempt": "Refreshing token",
     "reload_changed": "Skipping token refresh because auth changed after guarded reload.",
+    "auth_changed": "Reloaded auth, changed: true",
 }
+RESETS = {"reload_changed", "auth_changed"}
 BLOCKING_FAILURES = {"expired", "revoked"}
+PROCESS = re.compile(r"pid:([0-9]+):[0-9a-f-]{36}")
+LOG_DELIVERY_SECONDS = 0.5
 
 
-def read_log(home: Path) -> dict:
+@dataclass(frozen=True)
+class DaemonIdentity:
+    pid: int
+    started_ns: int
+    stamp: str
+
+
+@dataclass(frozen=True)
+class AuthStatus:
+    identity: DaemonIdentity
+    requested_ns: int
+    auth_method: str | None
+    requires_auth: bool
+
+
+def read_log(home: Path) -> list[dict]:
     database = home / "logs_2.sqlite"
     if not database.is_file():
-        return {"events": [], "processes": []}
+        return []
     deadline = time.monotonic() + 1
     with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=0.1) as connection:
         connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
@@ -40,39 +64,46 @@ def read_log(home: Path) -> dict:
             "SELECT id, ts, ts_nanos, level, process_uuid, feedback_log_body FROM logs "
             "WHERE target = 'codex_login::auth::manager' ORDER BY id"
         )
-        events = []
-        attempts = {}
-        for ident, seconds, nanos, level, process, body in rows:
-            for kind, message in EVENTS.items():
-                if message in (body or "") and (kind not in FAILURES or level == "ERROR"):
-                    timestamp = seconds * 1_000_000_000 + nanos
-                    if kind == "refresh_attempt":
-                        attempts[process] = timestamp
-                    events.append(
-                        {
-                            "id": ident,
-                            "ts_ns": timestamp,
-                            "attempt_ns": attempts.get(process),
-                            "event": kind,
-                            "message": message,
-                            "process": process
-                            if isinstance(process, str) and re.fullmatch(r"pid:[0-9]+:[0-9a-f-]{36}", process)
-                            else None,
-                        }
-                    )
-        processes = [
-            row[0]
-            for row in connection.execute("SELECT DISTINCT process_uuid FROM logs")
-            if isinstance(row[0], str) and re.fullmatch(r"pid:[0-9]+:[0-9a-f-]{36}", row[0])
+        return [
+            {"id": ident, "ts_ns": seconds * 1_000_000_000 + nanos, "event": kind, "message": message, "process": process}
+            for ident, seconds, nanos, level, process, body in rows
+            if isinstance(process, str) and PROCESS.fullmatch(process)
+            for kind, message in EVENTS.items()
+            if message in (body or "") and (kind not in FAILURES or level == "ERROR")
         ]
-        return {"events": events, "processes": processes}
 
 
-def credential_modified_at(home: Path) -> int:
-    try:
-        return (home / "auth.json").stat().st_mtime_ns
-    except FileNotFoundError:
-        return 0
+def event_key(event: dict) -> tuple:
+    return event["process"], event["ts_ns"], event["id"], event["event"]
+
+
+def merge_events(*groups: list[dict]) -> list[dict]:
+    events = {event_key(event): event for group in groups for event in group}
+    return sorted(events.values(), key=lambda event: (event["ts_ns"], event["id"]))
+
+
+def read_journal(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    events = []
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW)) as journal:
+        lines = journal.read().splitlines()
+    for line in lines:
+        try:
+            batch = json.loads(line)
+            for event in batch["events"]:
+                if (
+                    isinstance(event, dict)
+                    and event.get("event") in EVENTS
+                    and isinstance(event.get("process"), str)
+                    and PROCESS.fullmatch(event["process"])
+                    and all(type(event.get(key)) is int for key in ("id", "ts_ns"))
+                ):
+                    events.append({key: event[key] for key in ("id", "ts_ns", "event", "process")})
+                    events[-1]["message"] = EVENTS[event["event"]]
+        except (ValueError, TypeError, KeyError):
+            continue
+    return events
 
 
 def process_inventory() -> list[dict]:
@@ -87,100 +118,166 @@ def process_inventory() -> list[dict]:
     return processes
 
 
-def save(path: Path, data: dict) -> None:
-    temporary = None
+def capture(home: Path, current: list[dict]) -> list[dict]:
+    directory = home / "skill-data/supervisor-auth"
+    journal = directory / "evidence.jsonl"
+    previous = read_journal(journal)
+    merged = merge_events(previous, current)
+    if not any(event["event"] in FAILURES for event in merged):
+        return merged
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
-        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as output:
-            temporary = Path(output.name)
-            json.dump(data, output)
-            output.flush()
-            os.fsync(output.fileno())
-        temporary.replace(path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+        with (directory / "capture.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            previous = read_journal(journal)
+            known = {event_key(event) for event in previous}
+            added = [event for event in current if event_key(event) not in known]
+            if added:
+                try:
+                    processes = process_inventory() if any(event["event"] in FAILURES for event in added) else []
+                    process_error = None
+                except (OSError, subprocess.SubprocessError):
+                    processes, process_error = [], "process_inventory_unavailable"
+                batch = {"captured_ns": time.time_ns(), "events": added, "processes": processes, "process_error": process_error}
+                with os.fdopen(os.open(journal, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600), "a") as output:
+                    output.write("\n" + json.dumps(batch) + "\n")
+                    output.flush()
+                    os.fsync(output.fileno())
+            return merge_events(previous, current)
+    except BlockingIOError:
+        return merged
 
 
-def read_state(path: Path) -> dict:
-    state = json.loads(path.read_text()) if path.exists() else {}
-    if (
-        not isinstance(state, dict)
-        or state
-        and (
-            not all(type(state.get(key)) is int for key in ("failure_ns", "episode_ns", "credential_modified_ns"))
-            or state.get("reason") not in FAILURES
+def daemon_identity(home: Path, expected_pid: int | None = None) -> DaemonIdentity:
+    for name in ("daemon.pid", "app-server.pid"):
+        path = home / "app-server-daemon" / name
+        if not path.exists() or not stat.S_ISREG(path.lstat().st_mode):
+            continue
+        record = json.loads(path.read_text())
+        pid = record.get("pid")
+        identity = record.get("processIdentity", {})
+        started = identity.get("startSeconds") if isinstance(identity, dict) else None
+        if type(pid) is not int or pid <= 0 or type(started) is not int or expected_pid not in (None, pid):
+            continue
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=True,
+            env={"PATH": os.defpath, "LC_ALL": "C", "TZ": "UTC"},
         )
-    ):
-        raise ValueError("invalid auth evidence state")
-    return state
+        observed = datetime.strptime(result.stdout.strip(), "%a %b %d %H:%M:%S %Y").replace(tzinfo=UTC)
+        if int(observed.timestamp()) != started:
+            continue
+        stamp = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        return DaemonIdentity(pid, started * 1_000_000_000, stamp)
+    raise ValueError("daemon identity unavailable")
 
 
-def is_current_failure(state: dict, modified: int) -> bool:
-    return (
-        modified > 0
-        and state.get("reason") in BLOCKING_FAILURES
-        and isinstance(state.get("attempt_ns"), int)
-        and state["attempt_ns"] >= modified
-    )
+def peer_pid(stream: socket.socket) -> int:
+    if sys.platform == "darwin":
+        return stream.getsockopt(0, 0x002)
+    if sys.platform == "linux":
+        return struct.unpack("3i", stream.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[0]
+    raise ValueError("daemon peer identity unavailable")
+
+
+def native_status(home: Path) -> AuthStatus:
+    from websockets.exceptions import WebSocketException
+
+    try:
+        return read_native_status(home)
+    except WebSocketException:
+        raise ValueError("native auth read unavailable") from None
+
+
+def read_native_status(home: Path) -> AuthStatus:
+    from websockets.sync.client import unix_connect
+
+    deadline = time.monotonic() + 2
+    endpoint = home / "app-server-control/app-server-control.sock"
+    with unix_connect(str(endpoint), open_timeout=0.5, close_timeout=0.1, max_size=64 * 1024) as connection:
+        pid = peer_pid(connection.socket)
+        identity = daemon_identity(home, pid)
+
+        def request(ident: int, method: str, params: dict) -> dict:
+            connection.send(json.dumps({"id": ident, "method": method, "params": params}))
+            while True:
+                message = json.loads(connection.recv(timeout=max(0.001, deadline - time.monotonic())))
+                if message.get("id") == ident:
+                    if "error" in message or not isinstance(message.get("result"), dict):
+                        raise ValueError("native auth read unavailable")
+                    return message["result"]
+
+        request(1, "initialize", {"clientInfo": {"name": "supervisor_auth_observer", "version": "1"}})
+        connection.send(json.dumps({"method": "initialized", "params": {}}))
+        requested = time.time_ns()
+        result = request(2, "getAuthStatus", {"includeToken": False, "refreshToken": False})
+        if "authToken" not in result or result["authToken"] is not None or type(result.get("requiresOpenaiAuth")) is not bool:
+            raise ValueError("native token-free auth status unavailable")
+        method = result.get("authMethod")
+        if method is not None and not isinstance(method, str):
+            raise ValueError("native auth mode unavailable")
+        if daemon_identity(home, peer_pid(connection.socket)) != identity:
+            raise ValueError("daemon identity changed")
+        return AuthStatus(identity, requested, method, result["requiresOpenaiAuth"])
+
+
+def current_events(events: list[dict], identity: DaemonIdentity) -> list[dict]:
+    return [
+        event for event in events if event["process"].startswith(f"pid:{identity.pid}:") and event["ts_ns"] >= identity.started_ns
+    ]
+
+
+def failure_state(events: list[dict]) -> dict:
+    attempt = None
+    first = None
+    confirmed = False
+    for event in events:
+        if event["event"] in RESETS:
+            attempt, first, confirmed = None, None, False
+        elif event["event"] == "refresh_attempt":
+            attempt = event["ts_ns"]
+        elif event["event"] in BLOCKING_FAILURES and attempt is not None:
+            if first is not None and attempt > first["ts_ns"]:
+                confirmed = True
+            first = first or event
+        elif event["event"] == "reused":
+            attempt, first, confirmed = None, None, False
+    return {"pending": first is not None, "blocked": confirmed, "episode_ns": first["ts_ns"] if first is not None else None}
 
 
 def observe(home: Path) -> dict:
     home = home.expanduser().resolve()
-    directory = home / "skill-data/supervisor-auth"
-    state_path = directory / "state.json"
-    if not state_path.exists() and not (home / "logs_2.sqlite").is_file():
-        return {"blocked": False}
-    state = {}
-    modified = 0
     try:
-        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        state = read_state(state_path)
-        modified = credential_modified_at(home)
-        log = read_log(home)
-        events = log["events"]
-        failures = [event for event in events if event["event"] in FAILURES]
-        latest = max(failures, key=lambda event: event["ts_ns"], default=None)
-        previous = state
-        if latest and latest["ts_ns"] >= state.get("failure_ns", 0):
-            state = {**state, "failure_ns": latest["ts_ns"], "reason": latest["event"], "attempt_ns": latest["attempt_ns"]}
-            if not previous or modified != previous.get("credential_modified_ns"):
-                state.update(episode_ns=latest["ts_ns"], credential_modified_ns=modified)
-        with (directory / "state.lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            persisted = read_state(state_path)
-            if persisted.get("failure_ns", 0) >= state.get("failure_ns", 0):
-                state = {**state, **persisted}
-            if latest and state != persisted:
-                if not persisted or modified != persisted.get("credential_modified_ns"):
-                    evidence = directory / f"failure-{latest['ts_ns']}.json"
-                    try:
-                        processes = process_inventory()
-                        process_error = None
-                    except (OSError, subprocess.SubprocessError):
-                        processes, process_error = [], "process_inventory_unavailable"
-                    save(
-                        evidence,
-                        {
-                            "captured_ns": time.time_ns(),
-                            "events": events,
-                            "home_log_processes": log["processes"],
-                            "processes": processes,
-                            "process_error": process_error,
-                            "credential_modified_ns": modified,
-                        },
-                    )
-                    state["evidence"] = str(evidence)
-                save(state_path, state)
-            if not state:
-                return {"blocked": False}
-            modified = credential_modified_at(home)
-            if not modified:
-                return {"blocked": False, "diagnostic": "credential_generation_unavailable"}
-            if state.get("attempt_ns") is None and modified <= state["failure_ns"]:
-                return {"blocked": False, "diagnostic": "renewal_attempt_unavailable"}
-            return {**state, "blocked": is_current_failure(state, modified)}
-    except (OSError, ValueError, TypeError, sqlite3.Error):
-        return {**state, "blocked": is_current_failure(state, modified), "diagnostic": "auth_evidence_unavailable"}
+        events = capture(home, read_log(home))
+        if not any(event["event"] in FAILURES for event in events):
+            return {"blocked": False}
+        identity = daemon_identity(home)
+        if not failure_state(current_events(events, identity))["pending"]:
+            return {"blocked": False}
+        status = native_status(home)
+        if status.identity != identity:
+            return {"blocked": False, "diagnostic": "auth_daemon_changed"}
+        if status.requires_auth and status.auth_method is None:
+            return {"blocked": False, "diagnostic": "auth_mode_unknown"}
+        if not status.requires_auth or status.auth_method != "chatgpt":
+            return {"blocked": False}
+        deadline = time.monotonic() + LOG_DELIVERY_SECONDS
+        while True:
+            events = capture(home, read_log(home))
+            selected = current_events(events, identity)
+            observed = any(
+                event["ts_ns"] >= status.requested_ns and event["event"] in (RESETS | set(FAILURES)) for event in selected
+            )
+            if observed:
+                return failure_state(selected)
+            if time.monotonic() >= deadline:
+                return {"blocked": False, "diagnostic": "auth_log_delivery_unknown"}
+            time.sleep(0.02)
+    except (OSError, ValueError, TypeError, KeyError, sqlite3.Error, subprocess.SubprocessError, ImportError, TimeoutError):
+        return {"blocked": False, "diagnostic": "auth_evidence_unavailable"}
 
 
 def require_usable(home: Path) -> None:

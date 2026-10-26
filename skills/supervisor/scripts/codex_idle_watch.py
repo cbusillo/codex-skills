@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["aiohttp==3.14.5"]
+# dependencies = ["aiohttp==3.14.5", "websockets==17.2"]
 # ///
 
 import argparse
@@ -120,7 +120,7 @@ def watch(args, state: dict | None) -> int:
             notices = poll(args.ledger, seen, args.idle_seconds, time.time(),
                            state, args.capacity_state, args.resume_capacity, args.harness, homes)
             for notice in notices:
-                auth = notice.get("auth_failure") or notice.get("auth_diagnostic")
+                auth = notice.get("auth_failure")
                 if not auth or json.dumps(auth, sort_keys=True) not in delivered:
                     print(json.dumps(notice), flush=True)
         except (OSError, ValueError, TypeError) as error:
@@ -130,8 +130,6 @@ def watch(args, state: dict | None) -> int:
                     for notice in notices if notice.get("closeout_request")}
         requests.update(json.dumps(notice["auth_failure"], sort_keys=True)
                         for notice in notices if notice.get("auth_failure"))
-        requests.update(json.dumps(notice["auth_diagnostic"], sort_keys=True)
-                        for notice in notices if notice.get("auth_diagnostic"))
         if args.delivered_state and requests - delivered:
             save_delivered(args.delivered_state, delivered | requests)
             return 0

@@ -223,11 +223,11 @@ released. Other user turns or any later assistant turn invalidate it.
 The existing Codex idle watcher also checks configured Codex homes for permanent
 renewal failures, even without a worker on that account. It saves allowlisted
 auth events from `logs_2.sqlite` opened read-only, plus the observed process
-inventory, under that home's private `skill-data/supervisor-auth/`. It never
+inventory, in that home's private `skill-data/supervisor-auth/evidence.jsonl`. It never
 opens credentials or saves raw log bodies, process arguments or environments.
 Captured evidence survives Codex's log rotation. Keep this watcher running;
-events rotated away before any observation cannot be recovered. Process inventory describes capture
-time; earlier process identities come only from retained log events.
+events rotated away before any observation cannot be recovered. Process inventory
+describes capture time; earlier process identities come from retained log events.
 
 An `auth_failure` notice wakes the Supervisor once per failure episode through
 the existing delivered-state file. Tell the Director which account needs a
@@ -235,6 +235,7 @@ normal Codex sign-in, then re-arm the watcher. Reuse that delivered-state file
 across restarts. It prevents repeat notices while launches on the failed home
 remain paused. A new failure after credentials change is a new episode.
 Missing or unreadable logs produce diagnostics, not a provider-wide launch hold.
+Diagnostics stay in ordinary watcher output and do not end or re-arm the watch.
 
 ```sh
 uv run skills/supervisor/scripts/goal_board.py --owner OWNER --format markdown
@@ -1611,20 +1612,23 @@ order. The launcher walks Context Panel's remaining order without re-ranking;
 an explicit `--account` cannot bypass a confirmed failure. Short-lived access
 expiry, an unavailable usage reading and network errors do not cause this hold.
 An already-used key is recorded without a hold: another process may have saved
-its replacement. A hold requires the preceding renewal attempt to have begun
-after the current sign-in file was saved. An old in-flight failure therefore
-cannot pause a replacement sign-in. Missing attempt evidence stays diagnostic.
+its replacement. Capture begins at the first failure. A hold requires two
+guarded failures from the verified current daemon, with a new renewal attempt
+after the first error and no intervening native auth-change event.
 Interactive last-account fallback and managed fresh/resume clients check the
 same evidence before execution. Native `codex login` remains available for the
-Director to use; no helper signs in, signs out or renews credentials itself.
+Director to use; no helper signs in or out or reads a credential file.
 
-Failure evidence applies to the unchanged sign-in file. Only its modification
-timestamp is inspected, never its contents. A replacement newer than the failure
-invalidates that old evidence and permits another normal launch; this is not a
-claim that the new sign-in works or can renew. A new permanent error pauses it
-again. Homes using a credential store without this file report
-`credential_generation_unavailable` and are not quarantined: this
-metadata-based invalidation covers file-backed homes.
+Before applying a hold, revalidate through the existing daemon's
+`getAuthStatus` with `includeToken:false` and `refreshToken:false`. That native
+read may perform Codex's normal proactive renewal; it never forces renewal or
+exports a token. The socket peer PID and native PID/start metadata must agree.
+A fresh native auth-change event clears old failure evidence, including for
+keyring storage. A ChatGPT auth-method response alone is not a health verdict.
+Missing identity, unavailable RPC or unproven log delivery stays UNKNOWN and
+does not hold the home. The detector depends on supported native event strings;
+unrecognized messages cannot establish a hold. It never calls `config/read`,
+whose complete response can contain secrets.
 The evidence is private to these helpers, not a Context Panel status interface.
 
 Read Context Panel's
