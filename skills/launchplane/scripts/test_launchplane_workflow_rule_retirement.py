@@ -257,12 +257,20 @@ def test_client_timeout_is_a_read_budget_diagnostic():
 
 
 def test_scope_keeps_ordinary_repository_and_context_identifiers() -> None:
+    request = private_request()
+    request["policy_record_id"] = "authz-desk-policy"
+    managed = request["selection"][0]
+    managed.update(managed_set_id="helpdesk-rules", managed_rule_id="task-rule")
     reply = response()
+    reply["result"]["policy_record_id"] = request["policy_record_id"]
     scope = reply["result"]["selected_rules"][0]["scope"]
     scope.update(repository="owner/helpdesk-app", contexts=["kiosk-site", "helpdesk-*"],
-        workflow_refs=["owner/kiosk-app/.github/workflows/*.yml@refs/heads/*"])
-    code, payload, _, _ = invoke(reply=reply)
+        workflow_refs=["owner/kiosk-app/.github/workflows/*.yml@refs/heads/*"],
+        **{key: managed[key] for key in retirement.SCOPE_MANAGED_FIELDS})
+    code, payload, _, _ = invoke(body=request, reply=reply)
     assert code == 0
+    assert payload["result"]["policy_record_id"] == request["policy_record_id"]
+    assert all(payload["result"]["selected_rules"][0][key] == managed[key] for key in retirement.SCOPE_MANAGED_FIELDS)
     projected = payload["result"]["selected_rules"][0]["scope"]
     assert projected["repository"] == scope["repository"]
     assert projected["contexts"] == scope["contexts"]

@@ -164,7 +164,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     operation = args.command
     request, body = intent(h, args)
     mode = str(body["mode"])
-    operation_key = getattr(args, "idempotency_key", "")
+    operation_key = h.public_identifier(args.idempotency_key) if mode != "dry-run" else ""
     settings = h.prepare_operator_settings(args=args, operation=operation, request=request)
     if settings is None:
         return 2

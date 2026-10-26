@@ -20,10 +20,10 @@ REASON = "PRIVATE_REASON_SENTINEL Director rerouted the PR."
 DECISION = "https://github.com/example/direction/issues/1#issuecomment-20"
 
 
-def argv(mode="dry-run", evidence="", repo="example/site"):
+def argv(mode="dry-run", evidence="", repo="example/site", operation_key=OPERATION_KEY):
     args = ["product-review-withdrawal-" + mode, "--product", "site", "--repo", repo, "--pr", "42", "--head", HEAD, "--reason", REASON, "--director-decision", DECISION]
     if mode != "dry-run":
-        args += ["--expected-plan-digest", PLAN, "--idempotency-key", OPERATION_KEY]
+        args += ["--expected-plan-digest", PLAN, "--idempotency-key", operation_key]
     if mode == "apply":
         args += ["--reviewed-dry-run", "--dry-run-evidence-file", evidence]
     return args
@@ -45,22 +45,23 @@ def invoke(args, replies):
     return code, json.loads(output.getvalue()), post.call_args_list
 
 
-@pytest.mark.parametrize("repo", ["example/site", "example/kiosk-app"])
-def test_dry_run_and_apply_readback_bind_exact_request(tmp_path, repo):
+@pytest.mark.parametrize("repo,operation_key", [("example/site", OPERATION_KEY), ("example/kiosk-app", "withdraw-kiosk-app-42")])
+def test_dry_run_and_apply_readback_bind_exact_request(tmp_path, repo, operation_key):
     code, dry, calls = invoke(argv(repo=repo), [response(repo=repo)])
     assert code == 0 and calls[0].kwargs["body"]["mode"] == "dry-run"
     assert not calls[0].kwargs.get("idempotency_key")
     assert REASON not in json.dumps(dry)
     evidence = tmp_path / "dry.json"
     evidence.write_text(json.dumps(dry))
-    code, applied, calls = invoke(argv("apply", str(evidence), repo=repo), [response(True, repo=repo), response(True, True, repo=repo)])
+    code, applied, calls = invoke(argv("apply", str(evidence), repo=repo, operation_key=operation_key), [response(True, repo=repo), response(True, True, repo=repo)])
     assert code == 0 and applied["result"]["readback_matches"] is True
     assert [call.kwargs["body"]["mode"] for call in calls] == ["apply", "readback"]
-    assert all(call.kwargs["idempotency_key"] == OPERATION_KEY for call in calls)
+    assert all(call.kwargs["idempotency_key"] == operation_key for call in calls)
     assert calls[0].kwargs["body"]["director_decision_url"] == DECISION
     assert REASON not in json.dumps(applied)
     assert applied["result"]["history_url"] == response(True, repo=repo)["result"]["history_url"]
-    code, readback, calls = invoke(argv("readback", repo=repo), [response(True, True, repo=repo)])
+    assert applied["summary"]["idempotency_key"] == operation_key
+    code, readback, calls = invoke(argv("readback", repo=repo, operation_key=operation_key), [response(True, True, repo=repo)])
     assert code == 0 and readback["result"]["readback_matches"] is True and len(calls) == 1
 
 

@@ -78,7 +78,7 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
     payload = h.read_payload_file(args.payload_file)
     if payload.keys() != REQUEST_FIELDS:
         raise ValueError("invalid_workflow_rule_retirement_fields")
-    _bounded_identifier(h, payload["policy_record_id"], "invalid_workflow_rule_retirement_policy_record_id")
+    payload["policy_record_id"] = _bounded_identifier(h, payload["policy_record_id"], "invalid_workflow_rule_retirement_policy_record_id")
     revision = payload["policy_revision"]
     if type(revision) is not int or revision < 1:
         raise ValueError("invalid_workflow_rule_retirement_policy_revision")
@@ -98,8 +98,8 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
         seen.add(item["rule_sha256"])
         managed = (item["managed_set_id"], item["managed_rule_id"])
         if managed != (None, None):
-            for value in managed:
-                _bounded_identifier(h, value, "invalid_workflow_rule_retirement_managed_identity")
+            for field in SCOPE_MANAGED_FIELDS:
+                item[field] = _bounded_identifier(h, item[field], "invalid_workflow_rule_retirement_managed_identity")
     request: dict[str, object] = {
         "mode": mode,
         "payload_source": "private_file",
