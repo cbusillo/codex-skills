@@ -2508,6 +2508,10 @@ def cmd_release(args: argparse.Namespace) -> None:
             f"--session {args.session} is not this session's native ID ({found}); release only your own claim.",
             payload={"native_sessions": native, "running_agent": agent})
     handoff = read_body(argparse.Namespace(body_file=args.handoff_file)).strip() if args.handoff_file else ""
+    try:
+        github_comment_core.validate_planning_references(handoff, repo)
+    except ValueError as error:
+        raise PlanError(str(error)) from error
     body = f"Released claim {args.claim_comment}" + (f"\n\n{handoff}" if handoff else "")
     # The handoff is narrative only: it can neither restate nor forge release authority.
     if (github_plan_claim.released_claim_id(body) != args.claim_comment
@@ -3792,6 +3796,9 @@ def wait_summary(wait: dict[str, Any]) -> str:
 
 def reviewed_wait(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     try:
+        reference_repo = issue_ref(args.issue, default_repo(args.repo))[0]
+        github_comment_core.validate_planning_references(
+            json.dumps([args.evidence, args.waiting_for, args.ends_when, getattr(args, "release_next_action", None)]), reference_repo)
         wait = github_plan_wait.reviewed(evidence=args.evidence or "", waiting_for=args.waiting_for,
                                         ends_when=args.ends_when,
                                         release_product=getattr(args, "release_product", None),
@@ -4085,6 +4092,7 @@ def cmd_update_section(args: argparse.Namespace) -> None:
                 "To intentionally clear the section, pass --body ''."
             )
         new_text = read_body(args)
+        github_comment_core.validate_planning_references(new_text, issue_repo)
         preparation_step = "section_replacement"
         updated = replace_issue_plan_section(issue, args.section, new_text)
         before, after = (

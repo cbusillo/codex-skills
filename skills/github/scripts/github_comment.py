@@ -86,6 +86,16 @@ def validate_question_mentions(body: str, repo: str) -> None:
         )
 
 
+def validate_planning_references(body: str, repo: str) -> None:
+    ambiguous = list(dict.fromkeys(re.findall(r"(?<![\w/#&.-])(?:[\w.-]+)?#[1-9]\d*\b", body)))
+    if ambiguous:
+        raise ValueError(
+            f"Ambiguous issue references: {', '.join(ambiguous)}. "
+            f"Write OWNER/REPO#N or a full GitHub issue/PR URL; local references use {repo}#N. "
+            "An existing local issue with the same number does not prove the intended repository."
+        )
+
+
 def effective_expected_actor(expected_actor: Optional[str]) -> Optional[str]:
     if github_identity.active_auth_fallback_allowed():
         return None
@@ -1512,6 +1522,11 @@ def main() -> int:
     expected_actor = effective_expected_actor(EXPECTED_ACTOR)
     try:
         body = read_body(args.body_file)
+        try:
+            validate_planning_references(body, args.repo or "OWNER/REPO")
+        except ValueError as error:
+            raise _local_error(str(error), operation=operation, cause="validation_error",
+                               expected_actor=expected_actor, failed_step="input_validation") from error
         payload = comment(
             args.kind,
             args.number,

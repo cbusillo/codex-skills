@@ -584,6 +584,13 @@ def cmd_comment(args: argparse.Namespace) -> dict[str, Any]:
     body = read_text_file(args.body_file, operation="comment", repo=repo, pr=number)
     if not body:
         raise PrHelperError("PR comment body is empty", operation="comment", repo=repo, pr=number)
+    try:
+        github_comment_core.validate_planning_references(body, repo)
+    except ValueError as error:
+        failure = github_api_core.FailureDetail(cause="validation_error", message=str(error),
+                                                retryable=False, fallback_eligible=False, disposition="stop",
+                                                failed_step="input_validation", write_outcome="not_started")
+        raise PrHelperError(str(error), failure=failure, operation="comment", repo=repo, pr=number) from error
     reviewed_head = getattr(args, "reviewed_head", None)
     if reviewed_head is not None:
         if args.edit_last or args.edit_comment is not None or args.create_if_none or getattr(args, "attach", None):

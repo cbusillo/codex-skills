@@ -1809,6 +1809,15 @@ class OwnReleaseTests(ReleaseHarness):
         self.assertEqual(self.f.events.count("post"), posts)
         self.assertEqual(self.f.emitted.call_args.args[0]["release_state"], "already_released")
 
+    def test_handoff_requires_qualified_references_before_release(self) -> None:
+        self.handoff.write_text("Read owner/other#550 after landing, then confirm #550.")
+        with self.assertRaises(PLAN.PlanError):
+            self.run_own_release()
+        self.assertNotIn("post", self.f.events)
+        self.handoff.write_text("Read owner/other#550 after landing, then confirm owner/other#550 and owner/repo#42.")
+        self.run_own_release()
+        self.assertIn(self.handoff.read_text(), self.f.comments[-1]["body"])
+
     def test_claim_names_the_release_command_for_its_own_comment(self):
         self.f.comments = []
         self.f.run_claim()
@@ -1898,7 +1907,7 @@ class OwnReleaseTests(ReleaseHarness):
                 self.f.pulls = [{"number": 99, "state": "open", "user": {"login": BOT}, "created_at": created,
                     "body": "Refs #42\nCloses #43", "head": {"ref": "work/other-session", "repo": {"full_name": "owner/repo"}},
                     "base": {"repo": {"full_name": "owner/repo"}}}]
-                self.handoff.write_text("Left #99 alone. It belongs to another session.")
+                self.handoff.write_text("Left owner/repo#99 alone. It belongs to another session.")
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_own_release()
                 self.assertEqual(caught.exception.code, "release_pr_attribution_required")
@@ -1941,7 +1950,7 @@ class OwnReleaseTests(ReleaseHarness):
         self.assertIn(77, CLAIM.handoff_pr_numbers(self.f.comments[-1]["body"], issue_repo="owner/repo", target_repo="owner/other"))
 
     def test_release_checks_merged_pr_mentions_against_successor_qualification(self) -> None:
-        self.handoff.write_text("Rebased on #77 from another session.")
+        self.handoff.write_text("Rebased on owner/repo#77 from another session.")
         self.f.closed_pulls[77] = {"number": 77, "state": "closed", "merged_at": "2026-10-01T01:00:00Z",
             "created_at": "2026-09-29T00:00:00Z", "user": {"login": BOT}, "body": "Refs #42\nCloses #43",
             "head": {"ref": "work/other-session", "repo": {"full_name": "owner/repo"}},

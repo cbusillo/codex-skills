@@ -967,6 +967,23 @@ def test_exact_edit_invalid_combinations_fail_before_network() -> None:
     with_call_stub(callback, run)
 
 
+def test_explicit_comment_commands_refuse_ambiguous_refs_before_posting() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        body_file = pathlib.Path(directory) / "body.md"
+        scripts = pathlib.Path(__file__).parent
+        for body in ("Next actor reads owner/other#550 and #550.", "Verify other#550."):
+            body_file.write_text(body)
+            for script, prefix in (("github_comment.py", ["issue", "42", "--repo", "owner/repo"]),
+                                   ("gh-pr.py", ["--repo", "owner/repo", "comment", "42"])):
+                result = subprocess.run([sys.executable, str(scripts / script), *prefix,
+                                         "--body-file", str(body_file)], capture_output=True, text=True,
+                                        env={**os.environ, "GH_COMMENT_GH": "/missing-gh", "GH_PR_GH": "/missing-gh"})
+                assert result.returncode != 0
+                payload = json.loads(result.stdout)
+                assert payload["write_outcome"] == "not_started", payload
+                assert payload["failed_step"] == "input_validation", payload
+
+
 def test_exact_comment_cli_preserves_files_and_conflict_envelope() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = pathlib.Path(directory)
@@ -1463,6 +1480,7 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
 
 
 TESTS: list[Callable[[], None]] = [
+    test_explicit_comment_commands_refuse_ambiguous_refs_before_posting,
     test_attachment_limits_refuse_before_cli,
     test_attachment_passthrough_and_failures_never_replay,
     test_concurrent_numbering_reconciles_the_same_saved_body,
