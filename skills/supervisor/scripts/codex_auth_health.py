@@ -31,11 +31,12 @@ EVENTS = {
     "refresh_attempt": "Refreshing token",
     "reload_changed": "Skipping token refresh because auth changed after guarded reload.",
     "auth_changed": "Reloaded auth, changed: true",
+    "issuer_rejection": "Failed to refresh token",
 }
 RESETS = {"reload_changed", "auth_changed"}
 BLOCKING_FAILURES = {"expired", "revoked"}
 PROCESS = re.compile(r"pid:([0-9]+):[0-9a-f-]{36}")
-LOG_DELIVERY_SECONDS = 0.5
+LOG_DELIVERY_SECONDS = 11
 
 
 @dataclass(frozen=True)
@@ -64,13 +65,27 @@ def read_log(home: Path) -> list[dict]:
             "SELECT id, ts, ts_nanos, level, process_uuid, feedback_log_body FROM logs "
             "WHERE target = 'codex_login::auth::manager' ORDER BY id"
         )
-        return [
-            {"id": ident, "ts_ns": seconds * 1_000_000_000 + nanos, "event": kind, "message": message, "process": process}
-            for ident, seconds, nanos, level, process, body in rows
-            if isinstance(process, str) and PROCESS.fullmatch(process)
-            for kind, message in EVENTS.items()
-            if message in (body or "") and (kind not in FAILURES or level == "ERROR")
-        ]
+        events = []
+        for ident, seconds, nanos, level, process, body in rows:
+            if not isinstance(process, str) or not PROCESS.fullmatch(process):
+                continue
+            for kind, message in EVENTS.items():
+                if message not in (body or "") or kind in FAILURES and level != "ERROR":
+                    continue
+                event = {
+                    "id": ident,
+                    "ts_ns": seconds * 1_000_000_000 + nanos,
+                    "event": kind,
+                    "message": message,
+                    "process": process,
+                }
+                if kind == "issuer_rejection":
+                    status = re.search(r"\bstatus=(\d{3})(?:\D|$)", body or "")
+                    if level != "ERROR" or not status or not re.search(r"Failed to refresh token(?:\s|$)", body or ""):
+                        continue
+                    event["status"] = int(status[1])
+                events.append(event)
+        return events
 
 
 def event_key(event: dict) -> tuple:
@@ -101,6 +116,8 @@ def read_journal(path: Path) -> list[dict]:
                 ):
                     events.append({key: event[key] for key in ("id", "ts_ns", "event", "process")})
                     events[-1]["message"] = EVENTS[event["event"]]
+                    if event["event"] == "issuer_rejection" and type(event.get("status")) is int:
+                        events[-1]["status"] = event["status"]
         except (ValueError, TypeError, KeyError):
             continue
     return events
@@ -134,7 +151,7 @@ def capture(home: Path, current: list[dict]) -> list[dict]:
     journal = directory / "evidence.jsonl"
     previous = read_journal(journal)
     merged = merge_events(previous, current)
-    if not any(event["event"] in FAILURES for event in merged):
+    if not any(event["event"] in FAILURES or event["event"] == "issuer_rejection" for event in merged):
         return merged
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
@@ -145,7 +162,11 @@ def capture(home: Path, current: list[dict]) -> list[dict]:
             added = [event for event in current if event_key(event) not in known]
             if added:
                 try:
-                    processes = process_inventory() if any(event["event"] in FAILURES for event in added) else []
+                    processes = (
+                        process_inventory()
+                        if any(event["event"] in FAILURES or event["event"] == "issuer_rejection" for event in added)
+                        else []
+                    )
                     process_error = None
                 except (OSError, subprocess.SubprocessError):
                     processes, process_error = [], "process_inventory_unavailable"
@@ -177,6 +198,8 @@ def daemon_identity(home: Path, expected_pid: int | None = None) -> DaemonIdenti
         if not path.exists() or not stat.S_ISREG(path.lstat().st_mode):
             continue
         record = json.loads(path.read_text())
+        if not isinstance(record, dict):
+            continue
         pid = record.get("pid")
         identity = record.get("processIdentity", {})
         started = identity.get("startSeconds") if isinstance(identity, dict) else None
@@ -228,6 +251,8 @@ def read_native_status(home: Path) -> AuthStatus:
             connection.send(json.dumps({"id": ident, "method": rpc_method, "params": params}))
             while True:
                 message = json.loads(connection.recv(timeout=max(0.001, deadline - time.monotonic())))
+                if not isinstance(message, dict):
+                    raise ValueError("native auth read unavailable")
                 if message.get("id") == ident:
                     if "error" in message or not isinstance(message.get("result"), dict):
                         raise ValueError("native auth read unavailable")

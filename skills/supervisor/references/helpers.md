@@ -1629,6 +1629,9 @@ Missing identity, unavailable RPC or unproven log delivery stays UNKNOWN and
 does not hold the home. The detector depends on supported native event strings;
 unrecognized messages cannot establish a hold. It never calls `config/read`,
 whose complete response can contain secrets.
+Only accounts actually considered for launch are checked. A pending failure
+can require up to eleven seconds to cover Codex's ten-second log flush interval;
+an unrelated failed home is not probed for an explicit healthy-account choice.
 The evidence is private to these helpers, not a Context Panel status interface.
 
 Read Context Panel's

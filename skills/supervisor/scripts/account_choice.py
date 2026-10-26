@@ -29,6 +29,10 @@ else:
     import codex_auth_health
 
 PROVIDERS = ("openai", "anthropic", "google")
+
+
+class UnconfiguredChoice(ValueError):
+    pass
 # Supported variables that put a launched harness on an account. AGY uses its existing login.
 ACCOUNT_VARIABLES = {"openai": "CODEX_HOME", "anthropic": "CLAUDE_CONFIG_DIR"}
 GOOGLE_ACCOUNT_BINDING = "existing-agy-login"
@@ -207,6 +211,8 @@ def resolve_choice(provider, config, snapshot, account_id, source, reason):
         raise ValueError(f"Context Panel {provider} choice matches no single account row")
     configured = [a for a in config["accounts"] if a["provider"] == provider
                   and matching_rows(a, rows) == matched]
+    if not configured:
+        raise UnconfiguredChoice(f"Context Panel {provider} choice matches no single configured account")
     if len(configured) != 1:
         raise ValueError(f"Context Panel {provider} choice matches no single configured account")
     row = matched[0]
@@ -270,8 +276,6 @@ def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, na
     accounts = [a for a in config["accounts"] if a["provider"] == provider]
     if not accounts:
         raise ValueError(f"no configured {provider} accounts")
-    blocked = {a["name"] for a in accounts if provider == "openai" and a["env"].get("CODEX_HOME")
-               and codex_auth_health.observe(Path(a["env"]["CODEX_HOME"])).get("blocked")}
     if snapshot is None:
         raise ValueError(f"Context Panel snapshot unavailable ({unavailable_reason}); no account chosen")
     if provider == "google":
@@ -285,12 +289,12 @@ def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, na
         named = [a for a in accounts if a["name"] == name]
         if len(named) != 1:
             raise ValueError(f"no configured {provider} account named {name}")
-        if name in blocked:
-            raise ValueError(f"Codex {name} needs sign-in; launches on this account are paused")
         rows = [r for r in snapshot["accounts"] if isinstance(r, dict) and r.get("provider") == provider]
         matches = matching_rows(named[0], rows)
         if len(matches) != 1 or not matches[0].get("id"):
             raise ValueError("named account needs one Context Panel row for its launch receipt")
+        if provider == "openai" and named[0]["env"].get("CODEX_HOME"):
+            codex_auth_health.require_usable(Path(named[0]["env"]["CODEX_HOME"]))
         return [resolve_choice(provider, config, snapshot, matches[0]["id"], "named",
                                "explicit --account; capacity not checked") for _ in range(count)]
     ranking = provider_ranking(snapshot, provider)
@@ -318,13 +322,30 @@ def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, na
         ids = order[:count]
         source = "context-panel-stale" if stale else "context-panel-batch"
         reason = "Context Panel recent stale launch order" if stale else "Context Panel ranked launch order"
-    if blocked and ids:
+    if ids and len(ids) != count:
+        raise ValueError(f"Context Panel {provider} launch order covers only {len(ids)} of {count} launches; use a smaller batch")
+    if provider == "openai" and ids:
         published = order if count > 1 or stale else [*ids, *order]
         available = []
+        checked = {}
+        skipped_failure = False
         for ident in published:
-            choice = resolve_choice(provider, config, snapshot, ident, source, reason)
-            if choice["name"] not in blocked:
+            try:
+                choice = resolve_choice(provider, config, snapshot, ident, source, reason)
+            except UnconfiguredChoice:
+                if skipped_failure:
+                    continue
+                raise
+            if choice["name"] not in checked:
+                home = choice["env"].get("CODEX_HOME")
+                checked[choice["name"]] = bool(home and codex_auth_health.observe(Path(home)).get("blocked"))
+            if not checked[choice["name"]]:
+                if skipped_failure:
+                    choice["source"] = "context-panel-auth-fallback"
+                    choice["reason"] = "Context Panel published order after skipping a failed sign-in"
                 available.append(choice)
+            else:
+                skipped_failure = True
             if len(available) == count:
                 return available
         if len(available) < count:
@@ -333,8 +354,6 @@ def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, na
     if not ids:
         raise ValueError(f"Context Panel has no {provider} choice; next capacity at "
                          f"{ranking.get('nextCapacityAt') or 'unknown'}")
-    if len(ids) != count:
-        raise ValueError(f"Context Panel {provider} launch order covers only {len(ids)} of {count} launches; use a smaller batch")
     return [resolve_choice(provider, config, snapshot, i, source, reason) for i in ids]
 
 

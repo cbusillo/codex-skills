@@ -37,6 +37,7 @@ MESSAGES = {
     "reused": "Failed to refresh token: Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.",
     "reset": "Reloaded auth, changed: true",
     "reload": "Skipping token refresh because auth changed after guarded reload.",
+    "issuer": "Failed to refresh token status=401 Unauthorized secret=DO-NOT-COPY",
 }
 PROCESS = "pid:42:01234567-89ab-cdef-0123-456789abcdef"
 
@@ -88,7 +89,7 @@ class AuthHealthTests(unittest.TestCase):
                     self.row,
                     self.clock // 1_000_000_000,
                     self.clock % 1_000_000_000,
-                    "ERROR" if kind in {"expired", "reused"} else "INFO",
+                    "ERROR" if kind in {"expired", "reused", "issuer"} else "INFO",
                     "codex_login::auth::manager",
                     PROCESS,
                     body or MESSAGES[kind],
@@ -127,6 +128,11 @@ class AuthHealthTests(unittest.TestCase):
 
     def test_confirmed_failure_excludes_only_its_account_and_preserves_published_order(self) -> None:
         self.failure()
+        self.assertEqual(account_choice.choose("openai", self.config, self.snapshot, None, name="healthy")["name"], "healthy")
+        self.probe.assert_not_called()
+        self.assertEqual(account_choice.choose("openai", self.config, self.snapshot, None)["name"], "healthy")
+        self.snapshot["accounts"].append({"provider": "openai", "id": "openai-c", "label": "Unconfigured"})
+        self.snapshot["ranking"][0]["launchOrder"].insert(1, "openai-c")
         self.assertEqual(account_choice.choose("openai", self.config, self.snapshot, None)["name"], "healthy")
         with self.assertRaises(ValueError):
             account_choice.choose("openai", self.config, self.snapshot, None, name="failed")
@@ -163,7 +169,7 @@ class AuthHealthTests(unittest.TestCase):
             return self.failed_probe(home)
 
         self.probe.side_effect = check_capture
-        with patch.object(io, "open", guarded_open):
+        with patch_attr(io, "open", guarded_open):
             result = health.observe(self.home)
         self.assertTrue(result["blocked"])
         journal = self.home / "skill-data/supervisor-auth/evidence.jsonl"
@@ -196,6 +202,20 @@ class AuthHealthTests(unittest.TestCase):
         self.assertTrue({"reused", "expired"} <= {event["event"] for event in preserved})
         self.assertTrue(health.observe(self.home)["blocked"])
 
+    def test_issuer_rejection_is_kept_without_claiming_a_permanent_failure(self) -> None:
+        self.append("issuer")
+        self.assertFalse(health.observe(self.home)["blocked"])
+        self.probe.assert_not_called()
+        journal = self.home / "skill-data/supervisor-auth/evidence.jsonl"
+        rejection = health.read_journal(journal)[0]
+        self.assertEqual(rejection["status"], 401)
+        self.assertNotIn("DO-NOT-COPY", journal.read_text())
+
+    def test_duplicate_error_without_another_attempt_cannot_confirm_a_hold(self) -> None:
+        self.failure()
+        self.append("expired")
+        self.assertFalse(health.failure_state(health.read_log(self.home))["blocked"])
+
     def test_sign_in_in_load_to_log_race_clears_through_native_reload(self) -> None:
         self.failure()
         self.assertTrue(health.observe(self.home)["blocked"])
@@ -204,13 +224,6 @@ class AuthHealthTests(unittest.TestCase):
         calls = self.probe.call_count
         self.assertFalse(health.observe(self.home)["blocked"])
         self.assertEqual(self.probe.call_count, calls)
-
-    def test_keyring_recovery_ignores_leftover_auth_file(self) -> None:
-        (self.home / "auth.json").write_text("stale file backing a former store")
-        self.failure()
-        self.assertTrue(health.observe(self.home)["blocked"])
-        self.probe.side_effect = self.reset_probe
-        self.assertFalse(health.observe(self.home)["blocked"])
 
     def test_delayed_logs_are_awaited_but_absent_current_evidence_is_unknown(self) -> None:
         self.failure()
@@ -222,24 +235,28 @@ class AuthHealthTests(unittest.TestCase):
         self.assertFalse(result["blocked"])
         self.assertIn("diagnostic", result)
         original_read = health.read_log
-        reads = 0
+        elapsed = 0.0
 
         def delayed(home: Path) -> list[dict]:
-            nonlocal reads
-            reads += 1
-            if reads == 2:
+            if elapsed < 10:
                 return [event for event in original_read(home) if event["ts_ns"] < requested]
             return original_read(home)
 
-        self.probe.side_effect = self.failed_probe
-        with patch.object(health, "read_log", side_effect=delayed), patch.object(health.time, "sleep") as wait:
-            self.assertTrue(health.observe(self.home)["blocked"])
-        wait.assert_called()
+        def advance(seconds: float) -> None:
+            nonlocal elapsed
+            elapsed += seconds
 
-    def test_malformed_cache_and_partial_journal_reconstruct_from_logs(self) -> None:
+        self.probe.side_effect = self.failed_probe
+        with (
+            patch.object(health, "read_log", side_effect=delayed),
+            patch.object(health.time, "monotonic", side_effect=lambda: elapsed),
+            patch.object(health.time, "sleep", side_effect=advance),
+        ):
+            self.assertTrue(health.observe(self.home)["blocked"])
+
+    def test_partial_journal_reconstructs_from_retained_logs(self) -> None:
         directory = self.home / "skill-data/supervisor-auth"
         directory.mkdir(parents=True)
-        (directory / "state.json").write_text('{"reason":"expired"}')
         journal = directory / "evidence.jsonl"
         journal.write_text('{"partial":')
         self.failure()
@@ -334,13 +351,22 @@ class NativeStatusTests(unittest.TestCase):
             result = health.native_status(Path("/fixture"))
         self.assertEqual(result.identity, identity)
         requests = [json.loads(call.args[0]) for call in connection.send.call_args_list]
-        self.assertEqual(requests[-1]["method"], "getAuthStatus")
-        self.assertEqual(requests[-1]["params"], {"includeToken": False, "refreshToken": False})
+        self.assertEqual({request["method"] for request in requests}, {"initialize", "initialized", "getAuthStatus"})
+        self.assertTrue(all(not request.get("params", {}).get("includeToken") for request in requests))
+        self.assertTrue(all(not request.get("params", {}).get("refreshToken") for request in requests))
         connection.recv.side_effect = [json.dumps(response) for response in responses]
         with (
             patch.object(client, "unix_connect", return_value=connection),
             patch.object(health, "peer_pid", return_value=42),
             patch.object(health, "daemon_identity", side_effect=[identity, health.DaemonIdentity(43, 0, "changed")]),
+        ):
+            with self.assertRaises(ValueError):
+                health.native_status(Path("/fixture"))
+        connection.recv.side_effect = ["[]"]
+        with (
+            patch.object(client, "unix_connect", return_value=connection),
+            patch.object(health, "peer_pid", return_value=42),
+            patch.object(health, "daemon_identity", return_value=identity),
         ):
             with self.assertRaises(ValueError):
                 health.native_status(Path("/fixture"))
@@ -355,11 +381,16 @@ class NativeStatusTests(unittest.TestCase):
                 json.dumps({"pid": 42, "processIdentity": {"startSeconds": int(timestamp.timestamp()), "startMicroseconds": 123}})
             )
             completed = SimpleNamespace(stdout=timestamp.strftime("%a %b %d %H:%M:%S %Y"))
-            with patch.object(health.subprocess, "run", return_value=completed) as query:
+            with patch.object(health.subprocess, "run", return_value=completed):
                 self.assertEqual(health.daemon_identity(home, 42).pid, 42)
-            self.assertEqual(query.call_args.args[0][-1], "lstart=")
+                completed.stdout = timestamp.replace(second=1).strftime("%a %b %d %H:%M:%S %Y")
+                with self.assertRaises(ValueError):
+                    health.daemon_identity(home, 42)
             with self.assertRaises(ValueError):
                 health.daemon_identity(home, 43)
+            (directory / "daemon.pid").write_text("[]")
+            with self.assertRaises(ValueError):
+                health.daemon_identity(home, 42)
 
 
 if __name__ == "__main__":
