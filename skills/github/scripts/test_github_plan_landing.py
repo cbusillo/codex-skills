@@ -953,6 +953,24 @@ class MutationProjectionTests(unittest.TestCase):
                 self.assertEqual(self.records[7]["body"], original)
                 self.assertEqual(self.records[7]["state"], "open")
 
+    def test_create_wait_and_close_comment_refuse_ambiguous_refs_before_writing(self) -> None:
+        for argv in (("create", "Await delivery", "--body", "## Current Status\nNext action: read #550."),
+                     ("create", "Await delivery", "--waiting-for", "Release", "--ends-when", "#550 lands",
+                      "--wait-evidence", "Existing request"),
+                     ("close", "7", "--comment", "Done except #550.")):
+            with self.subTest(command=argv[0]):
+                before = copy.deepcopy(self.records)
+                with self.assertRaises(PLAN.PlanError):
+                    self.command(*argv)
+                self.assertEqual(self.records, before)
+                self.assertFalse(self.fact_writes)
+
+    def test_create_preserves_human_titles_with_or_without_explicit_body(self) -> None:
+        for body_args in ((), ("--body", "## Current Status\nNext action: verify owner/other#550.")):
+            with self.subTest(explicit_body=bool(body_args)):
+                self.command("create", "Fix #550 regression", "--wait-clear", "--wait-evidence", "Reviewed request", *body_args)
+                self.assertEqual(self.records[9]["title"], "Fix #550 regression")
+
     def test_create_with_actual_wait_persists_waiting_instead_of_default_active(self):
         self.command("create", "Await acceptance", "--waiting-for", "Client acceptance", "--ends-when",
                      "Client accepts", "--wait-evidence", "Client requested a test")

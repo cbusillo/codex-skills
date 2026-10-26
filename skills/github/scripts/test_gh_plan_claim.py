@@ -5258,6 +5258,27 @@ class ClaimTests(unittest.TestCase):
                         self.assertEqual(caught.exception.code, "claim_conflict" if mode == "competitor" else "claim_wait_unresolved")
                         self.assert_no_writes()
 
+    def test_claim_refuses_ambiguous_next_action_or_wait_resolution_before_writing(self) -> None:
+        for field in ("next_action", "wait_resolved"):
+            with self.subTest(field=field):
+                self.setUp()
+                setattr(self.args, field, "Next agent verifies #550.")
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+
+    def test_wait_refuses_ambiguous_references_before_recording_evidence(self) -> None:
+        self.args.all = False
+        self.args.clear = True
+        self.args.waiting_for = self.args.ends_when = None
+        self.args.evidence = "Verified owner/other#550.\n#550 decided scope."
+        with self.assertRaises(PLAN.PlanError):
+            self.run_claim(command=PLAN.cmd_wait)
+        self.assert_no_writes()
+        self.args.evidence = "Verified owner/other#550 and owner/repo#42."
+        self.run_claim(command=PLAN.cmd_wait)
+        self.assertEqual(self.emitted.call_args.args[0]["structured_wait"]["evidence"], self.args.evidence)
+
     def test_wait_review_reports_full_legacy_evidence_without_changing_it(self):
         self.wait = None
         self.issue["body"] += "\nWaiting for: Chris decides scope"

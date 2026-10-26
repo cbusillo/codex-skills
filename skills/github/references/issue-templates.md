@@ -4,6 +4,13 @@ Read before creating or editing a planning issue, including adoption of a
 contributor request. Use the structure below for a concrete finish line and
 enough recovery context for the next session.
 
+For a linked automation-authored plan, write the plan with a qualified source
+link, then preserve any exact human title/request or quoted source material in
+a `gh-comment --verbatim` comment. New plan bodies and section text are authored
+planning content and require qualified issue references. To adopt the human's
+existing issue, `update-section` preserves its original request automatically;
+do not rewrite that request to satisfy reference validation.
+
 For every human-authored issue, preserve the original title and request
 verbatim, regardless of the author's repository association. Repository owner,
 member, and collaborator roles grant permissions but never grant automation
