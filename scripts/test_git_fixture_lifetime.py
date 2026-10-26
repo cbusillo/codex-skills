@@ -32,9 +32,9 @@ class FixtureLifetimeTests(unittest.TestCase):
                         fixture.commit()
                         fixture.git("checkout", "-")
                         fixture.git("merge", "--no-ff", "-m", "merge", "other")
-                        children = [event["argv"] for event in map(json.loads, trace.read_text().splitlines())
-                                    if event.get("event") == "child_start"]
-                        self.assertTrue(children)
+                        events = list(map(json.loads, trace.read_text().splitlines()))
+                        self.assertTrue(any(event.get("event") == "start" for event in events))
+                        children = [event["argv"] for event in events if event.get("event") == "child_start"]
                         self.assertFalse([argv for argv in children if "maintenance" in argv or "gc" in argv])
                     finally:
                         fixture.doCleanups()
