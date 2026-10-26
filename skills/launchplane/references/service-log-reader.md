@@ -116,6 +116,35 @@ Arbitrary unlabelled prose cannot be classified as a secret reliably. Treat even
 redacted output as private operational evidence, not publication-ready content;
 publish only the necessary reviewed, sanitized conclusion.
 
+For controller quota evidence, add `--tallies-only` to the same command. This
+projection returns typed `requests`, `not_modified`, `non_304_requests` and
+`seconds` fields, with repository, base branch, pass trace ID, scheduled/API
+origin, timestamp and container ordinal. It accepts only complete, unaltered
+INFO records from `control_plane.github_request_timing` in the current
+`GitHub request tally: [scheduled ]merge-train controller ...` format, with
+nonnegative counts whose two subsets sum to requests. Other formats are withheld;
+there is no substring extraction or raw message field. These are observed
+controller counts, not proof of charged quota, exclusive driver attribution or
+an accepted overnight measurement.
+
+The projection reuses the same framing, redaction, host/image selection, time,
+byte and display limits. It keeps `complete: false` and
+`coverage: retained_containers_only`, adds `projection: controller_tallies`, and
+reports `withheld_record_count` for in-window records it could not project,
+independently of ID selection. `matched_record_count` counts recognized,
+ID-selected tallies before the display cap. Neither an empty result nor zero
+withheld records proves no traffic or complete history.
+
+An oversized message or another redaction error withholds that record and the
+rest of that container's stream: its multiline state can no longer be trusted.
+The `quarantines` array identifies each first unreadable record by container
+ordinal, timestamp and fixed redaction error code, without its body. Earlier
+safe tallies and other containers remain available. Narrow the window
+to a separately readable interval for later evidence; do not raise the 4 KiB
+bound or infer counts from withheld bodies. Framing, transport, byte-budget and
+timeout failures still return no partial result. The ordinary message mode
+retains its original whole-read failure behavior.
+
 Exit 0 emits `ok: true` JSON, including a possible empty `entries` list.
 Exit 1 emits a fixed diagnostic code and no raw or partial log data. Codes
 distinguish invalid bounds/config/identifiers, unavailable containers, an image
