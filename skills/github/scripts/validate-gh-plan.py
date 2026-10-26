@@ -4774,7 +4774,8 @@ def test_pr_helper_write_commands_route_through_configured_gh() -> None:
         tmp_path = Path(tmp)
         log_path = tmp_path / "calls.log"
         body_path = tmp_path / "body.md"
-        body_path.write_text("## Body\n\nCloses #146\n")
+        comment_body = "## Body\n\nCloses owner/repo#146\n"
+        body_path.write_text(comment_body)
         gh_path = tmp_path / "gh"
         gh_path.write_text(
             "#!/usr/bin/env bash\n"
@@ -4862,7 +4863,8 @@ def test_pr_helper_write_commands_route_through_configured_gh() -> None:
         for call in calls
     ), calls
     assert any(f"pr edit 9 --repo owner/repo --body-file {body_path}" in call for call in calls), calls
-    assert any("/repos/owner/repo/issues/9/comments" in call and "Closes #146" in call for call in calls), calls
+    assert any("/repos/owner/repo/issues/9/comments" in call and "--method POST" in call
+               and json.loads(call.split(" | ", 1)[1])["body"].startswith(comment_body) for call in calls), calls
     assert not any("pr create --repo owner/repo --title Missing body" in call for call in calls), calls
     assert not any(call.startswith("pr edit 9 --repo owner/repo |") for call in calls), calls
 
