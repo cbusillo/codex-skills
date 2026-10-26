@@ -347,11 +347,18 @@ def run_agent_inspect(args: argparse.Namespace) -> int:
             native_backend = native_backend_module()
             backend, selection = native_backend.select_backend(args, sys.modules[__name__])
             if backend != "native":
-                native_backend.common.scope_selection(args, sys.modules[__name__])
+                context = native_backend.common.scope_selection(args, sys.modules[__name__])
+                hint = ISOLATED_BACKEND_UNAVAILABLE_HINT
+                if selection.startswith("native_ineligible="):
+                    _repo, config, _scope, selected = context
+                    product = native_backend.native_product_key(sys.modules[__name__], config, selected)
+                    hint = native_backend.next_action_for_reason(sys.modules[__name__], {"product": product},
+                                                                 selection.removeprefix("native_ineligible="),
+                                                                 default_action=ISOLATED_BACKEND_UNAVAILABLE_HINT)
                 raise InspectError(
                     "Automatic inspection has no isolated native worker for this selection.",
                     payload={"error_reason": "isolated_backend_unavailable", "backend_selection": selection,
-                             "hint": ISOLATED_BACKEND_UNAVAILABLE_HINT},
+                             "hint": hint},
                 )
         result = command_native(args)
         result["backend_selection"] = selection

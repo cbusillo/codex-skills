@@ -11,6 +11,7 @@ import io
 import json
 import multiprocessing
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -85,6 +86,36 @@ def hold_lock(path, seconds, held, release_when=None):
 
 
 class NativeTests(unittest.TestCase):
+    def test_missing_profile_verdict_names_a_path_that_resolves_the_prerequisite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            with self.assertRaises(native.Blocked) as caught:
+                native.common.profile_for(repo, None)
+            receipt = native.new_receipt(host) | {"scope": "files", "selected_file_count": 1}
+            result = native.envelope(host, receipt, [], str(caught.exception), [])
+            self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+            with patch_attr(host, "native_backend_module", return_value=native), \
+                    patch_attr(native, "select_backend", return_value=("unavailable", f"native_ineligible={caught.exception}")), \
+                    patch_attr(native.common, "scope_selection", return_value=(repo, {}, "files", ["script.py"])), \
+                    patch_attr(host, "command_native") as worker, \
+                    patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--repo", str(repo)]), \
+                    redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(host.main(), 0)
+            automatic = json.loads(output.getvalue())
+            self.assertEqual(automatic["agent_result"]["next_action"], result["agent_result"]["next_action"])
+            self.assertEqual(automatic["agent_result"]["verdict"], result["agent_result"]["verdict"])
+            worker.assert_not_called()
+            paths = re.findall(r"`([^`]+\.xml)`", result["agent_result"]["next_action"])
+            self.assertEqual(len(paths), 1)
+            profile = repo / paths[0]
+            self.assertTrue(profile.resolve().is_relative_to(repo.resolve()))
+            profile.parent.mkdir(parents=True)
+            fixture = SCRIPTS.parent / "tests/fixtures/native-odoo/.idea/inspectionProfiles/Controls.xml"
+            profile.write_bytes(fixture.read_bytes())
+            resolved, enabled = native.common.profile_for(repo, paths[0])
+            self.assertEqual(resolved, profile)
+            self.assertTrue(enabled)
+
     def test_process_group_exit_waits_through_permission_transition(self):
         with patch.object(os, os.killpg.__name__, side_effect=[PermissionError(errno.EPERM, "exiting"), PermissionError(errno.EPERM, "exiting"), ProcessLookupError(errno.ESRCH, "gone")]), \
                 patch.object(time, "sleep"):
@@ -312,6 +343,18 @@ class NativeTests(unittest.TestCase):
             self.assertEqual(payload["diagnostic"]["error_reason"], "isolated_backend_unavailable")
             self.assertTrue(result["next_action"])
             self.assertFalse(result["retry_policy"]["retry"])
+
+    def test_unmapped_native_prerequisite_keeps_automatic_worker_guidance(self) -> None:
+        with patch_attr(host, "native_backend_module", return_value=native), \
+                patch_attr(native, "select_backend", return_value=("unavailable", "native_ineligible=fixture_unmapped")), \
+                patch_attr(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", ["source.py"])), \
+                patch_attr(host, "command_native") as worker, \
+                patch.object(sys, "argv", ["jb-inspect", "agent-inspect"]), \
+                redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(host.main(), 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["agent_result"]["next_action"], host.ISOLATED_BACKEND_UNAVAILABLE_HINT)
+        worker.assert_not_called()
 
     def test_unavailable_selection_preserves_scope_errors(self) -> None:
         error = host.InspectError("Scope exceeds file limit", payload={"error_reason": "inspection_lane_scope_too_large"})
