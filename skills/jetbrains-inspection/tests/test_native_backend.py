@@ -295,7 +295,8 @@ class NativeTests(unittest.TestCase):
             printed = run(native_result("RED", "native_completed", {"engine_exit_code": 0}))
             self.assertEqual(printed["agent_result"]["verdict"], "RED")
             self.assertEqual(printed["diagnostic"]["outcome_log_path"], str(outcomes))
-            run(native_result("UNKNOWN", "native_host_load_paused", {}))
+            paused = {"load_pause_count": 2, "load_paused_ms": 1500, "wall_seconds": 4.5}
+            run(native_result("UNKNOWN", "native_host_load_paused", paused))
             run(native_result("UNKNOWN", "native_recovery_only_no_inspection", {}), "--native-recover-only")
             records = [json.loads(line) for line in outcomes.read_text().splitlines()]
             self.assertEqual([(r["backend"], r["verdict"], r["verdict_reason"], r["inspection_started"], r.get("total_problems"))
@@ -306,6 +307,8 @@ class NativeTests(unittest.TestCase):
             self.assertEqual([(u["verdict_reason"], u["verdict_next_action"]) for u in map(json.loads, unknowns.read_text().splitlines())],
                              [("native_host_load_paused", "Resolve native_host_load_paused.")])
             self.assertEqual(host.summarize_outcome_log(outcomes)["events"], 2)
+            self.assertEqual({key: records[-1][key] for key in paused}, paused)
+            self.assertEqual({key: host.summarize_outcome_log(outcomes)["recent"][-1][key] for key in paused}, paused)
 
     def test_mixed_changed_files_dispatches_native(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1161,22 +1164,54 @@ print('Done.')
         self.assertEqual(result["cleanup"]["status"], "closed")
         self.assertTrue(result["diagnostic"]["native"]["worker_exited"])
 
-    def test_load_pause_resumes_and_exits_under_the_same_deadline(self):
+    def test_load_pause_does_not_consume_the_execution_budget(self) -> None:
         resumed = self.root / "resumed"
         original = self.script.read_text()
         self.script.write_text(original.replace("out=pathlib.Path", f"import time\nfor _ in range(500):\n if pathlib.Path({str(resumed)!r}).exists(): break\n time.sleep(0.02)\nout=pathlib.Path"))
         loads = iter([(1, 1, 1), (native.LOAD_LIMIT + 1, 1, 1)])
+        self.args.timeout_ms = 5000
+        monotonic = time.monotonic
+        suspended_seconds = 0
 
-        def load_then_mark_resume():
+        def load_then_mark_resume() -> tuple[float, float, float]:
+            nonlocal suspended_seconds
             sample = next(loads, None)
             if sample is None:
+                if not resumed.exists():
+                    suspended_seconds = self.args.timeout_ms / 1000 * 2
                 resumed.touch()
                 return 1, 1, 1
             return sample
 
-        result = self.assess(load_then_mark_resume)
+        with patch.object(time, "monotonic", side_effect=lambda: monotonic() + suspended_seconds):
+            result = self.assess(load_then_mark_resume, direct=True)
         self.assertEqual(result["diagnostic"]["native"]["load_pause_count"], 1)
         self.assertEqual(result["agent_result"]["verdict"], "RED")
+        self.assertGreaterEqual(result["diagnostic"]["native"]["load_paused_ms"], suspended_seconds * 1000)
+
+    def test_load_pause_allowance_is_bounded_across_processes(self) -> None:
+        private = self.root / "private"
+        (private / "logs").mkdir(parents=True)
+        receipt = {"load_pause_count": 0, "load_paused_ms": 1000}
+        monotonic = time.monotonic
+        elapsed = 0
+
+        def advance_while_paused() -> tuple[float, float, float]:
+            nonlocal elapsed
+            if receipt["load_pause_count"]:
+                elapsed = 1
+            return native.LOAD_LIMIT + 1, 1, 1
+
+        with native.profile_lock(self.worker) as lock, \
+                patch.object(time, "monotonic", side_effect=lambda: monotonic() + elapsed), \
+                patch.object(os, "getloadavg", side_effect=advance_while_paused):
+            with self.assertRaises(native.Blocked) as caught:
+                native.execute([sys.executable, "-c", "import time;time.sleep(30)"], {}, private,
+                               time.monotonic() + 20, None, receipt, lock_fd=lock.fileno(),
+                               require_completion=False, load_pause_timeout_ms=1500)
+        self.assertEqual(str(caught.exception), "native_host_load_paused")
+        self.assertTrue(receipt["process_custody_closed"])
+        self.assertGreaterEqual(receipt["load_paused_ms"], 1500)
 
     def test_parent_eof_stops_its_owned_worker(self):
         read_fd, write_fd = os.pipe()
@@ -2500,9 +2535,10 @@ print('Done.')
         real_execute = native.execute
 
         def observe_incompletely(argv, *args, **kwargs):
-            real_execute(argv, *args, **kwargs)
+            deadline = real_execute(argv, *args, **kwargs)
             if "warmup" in argv:
                 args[4]["license_observation_complete"] = False
+            return deadline
 
         with patch_attr(native, "execute", side_effect=observe_incompletely):
             result = self.assess()
