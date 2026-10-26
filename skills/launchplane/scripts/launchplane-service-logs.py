@@ -33,6 +33,17 @@ IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}\Z")
 TIMESTAMP = re.compile(
     r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)\Z"
 )
+TALLY = re.compile(
+    r"INFO:control_plane[.]github_request_timing:GitHub request tally: "
+    r"(?P<scheduled>scheduled )?merge-train controller "
+    r"(?P<repository>[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100})@"
+    r"(?P<base_branch>[A-Za-z0-9_./-]{1,200}) trace "
+    r"(?P<trace_id>[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}); "
+    r"requests=(?P<requests>[0-9]{1,12}) "
+    r"not_modified=(?P<not_modified>[0-9]{1,12}) "
+    r"non_304_requests=(?P<non_304_requests>[0-9]{1,12}) "
+    r"seconds=(?P<seconds>[0-9]{1,12}[.][0-9])"
+)
 INSPECT_FORMAT = '{"id":{{json .Id}},"image":{{json .Config.Image}},"image_id":{{json .Image}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"created_at":{{json .Created}},"started_at":{{json .State.StartedAt}},"finished_at":{{json .State.FinishedAt}},"state":{{json .State.Status}},"exit_code":{{json .State.ExitCode}},"oom_killed":{{json .State.OOMKilled}}}'
 
 
@@ -165,6 +176,23 @@ def read_remote(target: dict, docker: list[str], timeout: float) -> tuple[bytes,
         return b"".join(buffers[0]), bool(buffers[1])
 
 
+def project_tally(message: str) -> dict | None:
+    match = TALLY.fullmatch(message)
+    if match is None:
+        return None
+    counts = {name: int(match[name]) for name in ("requests", "not_modified", "non_304_requests")}
+    if counts["requests"] != counts["not_modified"] + counts["non_304_requests"]:
+        return None
+    return {
+        **counts,
+        "seconds": float(match["seconds"]),
+        "repository": match["repository"],
+        "base_branch": match["base_branch"],
+        "trace_id": match["trace_id"],
+        "scheduled": match["scheduled"] is not None,
+    }
+
+
 def entries_from_stream(
     raw: bytes,
     container: int,
@@ -173,10 +201,12 @@ def entries_from_stream(
     identifiers: tuple[str, ...],
     limit: int,
     timeout: float,
-) -> tuple[list[dict], int, int]:
+    tallies_only: bool = False,
+) -> tuple[list[dict], int, int, int]:
     redactor = Redactor(identifiers)
     kept: list[tuple[int, int, dict]] = []
-    matched = changed = 0
+    matched = changed = withheld = 0
+    quarantined = False
     deadline = time.monotonic() + timeout
     for sequence, line in enumerate(raw.decode("utf-8", errors="replace").split("\n")):
         if time.monotonic() >= deadline:
@@ -190,22 +220,37 @@ def entries_from_stream(
             observed = timestamp(stamp)
         except ValueError:
             raise LogReadError("invalid_log_framing") from None
-        safe = redactor.feed(message)
+        in_window = since <= observed < until
+        if tallies_only and quarantined:
+            withheld += in_window
+            continue
+        try:
+            safe = redactor.feed(message)
+        except RedactionError:
+            if not tallies_only:
+                raise
+            quarantined = True
+            withheld += in_window
+            continue
+        tally = project_tally(message) if tallies_only and not safe.redacted else None
         if time.monotonic() >= deadline:
             raise LogReadError("local_parse_timeout")
-        if since <= observed < until and safe.matched:
+        if tallies_only and tally is None:
+            withheld += in_window
+            continue
+        if in_window and safe.matched:
             matched += 1
             changed += safe.redacted
             entry = {
                 "timestamp": stamp,
                 "stream": "combined",
                 "container": container,
-                "message": safe.message,
+                **(tally if tallies_only else {"message": safe.message}),
             }
             heapq.heappush(kept, (observed, sequence, entry))
             if len(kept) > limit:
                 heapq.heappop(kept)
-    return [item[2] for item in sorted(kept)], matched, changed
+    return [item[2] for item in sorted(kept)], matched, changed, withheld
 
 
 def inspect_containers(
@@ -318,7 +363,7 @@ def read_logs(args: argparse.Namespace) -> dict:
     coverage, inspect_diagnostics = inspect_containers(target, containers, args.timeout)
     transport_diagnostics |= inspect_diagnostics
     entries = []
-    matched = changed = 0
+    matched = changed = withheld = 0
     identifiers = (args.operation_id, args.trace_id)
     for index, container in enumerate(containers):
         stdout, log_diagnostics = read_remote(
@@ -336,15 +381,17 @@ def read_logs(args: argparse.Namespace) -> dict:
             args.timeout,
         )
         transport_diagnostics |= log_diagnostics
-        kept, count, altered = entries_from_stream(
-            stdout, index, since, until, identifiers, args.lines, args.timeout
+        kept, count, altered, hidden = entries_from_stream(
+            stdout, index, since, until, identifiers, args.lines, args.timeout, args.tallies_only
         )
         entries.extend(kept)
         matched += count
         changed += altered
+        withheld += hidden
     entries.sort(key=lambda entry: timestamp(entry["timestamp"]))
     return {
         "ok": True,
+        **({"projection": "controller_tallies", "withheld_record_count": withheld} if args.tallies_only else {}),
         "since": args.since,
         "until": args.until,
         "entries": entries[-args.lines :],
@@ -377,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--operation-id", default="")
     parser.add_argument("--trace-id", default="")
+    parser.add_argument("--tallies-only", action="store_true", help="Project recognized controller counts; withhold all log bodies")
     parser.add_argument("--lines", type=int, default=200)
     parser.add_argument("--timeout", type=float, default=30)
     try:

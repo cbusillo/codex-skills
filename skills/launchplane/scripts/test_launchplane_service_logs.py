@@ -322,6 +322,88 @@ class ServiceLogTests(unittest.TestCase):
         self.assertNotIn("entries", result)
         self.assertNotIn("S3NTINEL", json.dumps(result))
 
+    def test_tally_projection_withholds_opaque_records_without_losing_prior_tallies(self) -> None:
+        tally = (
+            "INFO:control_plane.github_request_timing:GitHub request tally: "
+            "scheduled merge-train controller example/control@main trace launchplane_scheduler_123; "
+            "requests=12 not_modified=9 non_304_requests=3 seconds=1.2"
+        )
+        raw = "".join(
+            f"2026-01-02T12:01:00Z {message}\n"
+            for message in (tally, "password=S3NTINEL " * 1000, tally)
+        ).encode()
+        status, result, _ = self.run_reader(raw, extra=("--tallies-only",))
+        self.assertEqual(status, 0)
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["withheld_record_count"], 2)
+        self.assertEqual(len(result["entries"]), 1)
+        entry = result["entries"][0]
+        self.assertEqual((entry["requests"], entry["not_modified"], entry["non_304_requests"]), (12, 9, 3))
+        self.assertEqual(entry["trace_id"], "launchplane_scheduler_123")
+        self.assertEqual(entry["repository"], "example/control")
+        self.assertNotIn("message", entry)
+        self.assertNotIn("S3NTINEL", json.dumps(result))
+
+    def test_tally_projection_never_extracts_embedded_or_sensitive_tallies(self) -> None:
+        tally = (
+            "INFO:control_plane.github_request_timing:GitHub request tally: "
+            "merge-train controller example/control@main trace launchplane_req_123; "
+            "requests=4 not_modified=3 non_304_requests=1 seconds=0.2"
+        )
+        for messages in (
+            ["unknown-private-body"],
+            ["password=" + tally],
+            [json.dumps({"password": tally})],
+            ["password:", "  " + tally],
+            ["-----BEGIN " + "PRIVATE KEY-----", tally, "-----END PRIVATE KEY-----"],
+            [tally + " password=S3NTINEL"],
+            [tally.replace("not_modified=3", "not_modified=5")],
+            [tally.replace("requests=4", "requests=-4")],
+            [tally.replace("seconds=0.2", "seconds=nan")],
+            [tally.replace("INFO:", "\x1b[31mINFO:")],
+        ):
+            with self.subTest(messages=messages):
+                raw = "".join(f"2026-01-02T12:01:00Z {message}\n" for message in messages).encode()
+                status, result, _ = self.run_reader(raw, extra=("--tallies-only",))
+                self.assertEqual(status, 0)
+                self.assertEqual(result["entries"], [])
+                self.assertEqual(result["withheld_record_count"], len(messages))
+                self.assertFalse(result["complete"])
+                self.assertNotIn("S3NTINEL", json.dumps(result))
+
+    def test_tally_projection_keeps_framing_transport_and_size_guards(self) -> None:
+        for raw in (b"unframed S3NTINEL\n", b"invalid-time S3NTINEL\n"):
+            status, result, _ = self.run_reader(raw, extra=("--tallies-only",))
+            self.assertEqual(status, 1)
+            self.assertNotIn("entries", result)
+            self.assertNotIn("S3NTINEL", json.dumps(result))
+        with patch.object(reader, "MAX_RESPONSE_BYTES", 512):
+            status, result, _ = self.run_reader(b"x" * 1024, extra=("--tallies-only",))
+        self.assertEqual(status, 1)
+        self.assertNotIn("entries", result)
+
+    def test_tally_projection_applies_window_ids_and_display_tail(self) -> None:
+        def line(stamp: str, trace: str, count: int) -> str:
+            return (
+                f"{stamp} INFO:control_plane.github_request_timing:GitHub request tally: "
+                f"merge-train controller example/control@main trace {trace}; "
+                f"requests={count} not_modified=0 non_304_requests={count} seconds=0.0\n"
+            )
+
+        raw = (
+            line("2026-01-02T11:59:59Z", "trace.1", 99)
+            + line(START, "trace.1", 1)
+            + line(START, "trace.10", 88)
+            + line("2026-01-02T12:01:00Z", "trace.1", 2)
+            + line(END, "trace.1", 77)
+        ).encode()
+        status, result, _ = self.run_reader(raw, extra=("--tallies-only", "--trace-id", "trace.1", "--lines", "1"))
+        self.assertEqual(status, 0)
+        self.assertEqual([entry["requests"] for entry in result["entries"]], [2])
+        self.assertEqual(result["matched_record_count"], 2)
+        self.assertTrue(result["tail_limit_reached"])
+        self.assertFalse(result["complete"])
+
     def test_nanosecond_window_boundaries(self):
         self.assertGreater(
             reader.timestamp("2026-01-02T12:00:00.000000002Z"),
