@@ -383,7 +383,8 @@ def stop_recorded_gradle_daemons(record: dict[str, Any], receipt: dict[str, Any]
     if recorded is None:
         return
     gradle_home = Path(recorded)
-    if not gradle_home.is_absolute() or gradle_home.name != GRADLE_HOME_NAME:
+    if (not gradle_home.is_absolute() or gradle_home.name != GRADLE_HOME_NAME or gradle_home.resolve() != gradle_home
+            or not gradle_home.is_relative_to(Path(record["storage_anchor"]))):
         raise Blocked("native_recovery_journal_malformed")
     stop_gradle_daemons(gradle_home, Path(record["interpreter"]), receipt)
 
@@ -748,8 +749,14 @@ class ChildExitObserver:
             self.queue.close()
 
 
+class LogObservation:
+    def __init__(self):
+        self.offsets, self.framers, self.license_scanners = {}, {}, {}
+        self.identities, self.failures = set(), set()
+
+
 def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, receipt: dict[str, Any], *, lock_fd: int, global_lock_fd: int | None = None, require_completion=True, on_spawn=None, on_exit=None,
-            completion=observations.INSPECTION_COMPLETION):
+            completion=observations.INSPECTION_COMPLETION, logs: LogObservation | None = None):
     """One guarded process group; preparation never uses IDE event parsing."""
     process = None
     exit_watch = None
@@ -758,10 +765,9 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
     gate_read, gate_write = os.pipe()
     stdout = None
     paused = False
-    log_offsets, log_framers = {}, {}
-    log_license_scanners = {}
-    log_identities = set()
-    observation_failures = set()
+    logs = logs or LogObservation()
+    log_offsets, log_framers, log_license_scanners = logs.offsets, logs.framers, logs.license_scanners
+    log_identities, observation_failures = logs.identities, logs.failures
     output_framer = observations.LineFramer()
     output_license_scanner = observations.LicenseScanner()
     observer = observations.EngineObserver(private / "project", receipt, completion)
@@ -1660,9 +1666,11 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
                          on_attempt=lambda: context.sdk_attempt(config, interpreter, sdk_name))
         context.phase("engine_running")
 
+        engine_logs_seen = LogObservation()
+
         def launch(launch_argv, completion=observations.INSPECTION_COMPLETION):
             execute(launch_argv, env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(), global_lock_fd=global_lock.fileno(),
-                    on_spawn=lambda pid: record_process("engine", pid), on_exit=record_exit, completion=completion)
+                    on_spawn=lambda pid: record_process("engine", pid), on_exit=record_exit, completion=completion, logs=engine_logs_seen)
 
         try:
             if intellij:
@@ -1672,6 +1680,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
                 receipt["gradle_warmup_seconds"] = round(time.monotonic() - warmup_started, 3)
                 if not receipt["license_observation_complete"]:
                     raise Blocked("native_license_observation_unproven")
+                require_gradle_import(receipt)
             launch(argv)
         except Blocked as error:
             if intellij and str(error) in GRADLE_FAILURE_SYMPTOMS and receipt.get("gradle_import", {}).get("data_imported") is not True:

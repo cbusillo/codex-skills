@@ -96,8 +96,10 @@ launches the product's headless `warmup --project-dir=<snapshot>` on the same
 private system, config and log paths. Warmup links and imports the root Gradle
 build, executing the repository's build scripts, and the imported model carries
 into `inspect.sh`. Warmup is a licensed launch under the same journal, licence
-scan and `--timeout-ms` deadline; it must log `IDE Warm-up finished.` and
-complete its licence observation, or the inspection never starts. On a linked
+scan and `--timeout-ms` deadline; it must log `IDE Warm-up finished.`, both
+Gradle stages below and a closed process group, and complete its licence
+observation, or the inspection never starts. Both launches share one log
+observation, so `inspect.sh` scans only bytes warmup has not. On a linked
 project, stock `inspect.sh`'s Gradle configurator ends the analysis task without
 inspecting anything, so `inspect.sh` runs with
 `ide.inspect.activity.based.inspections.enabled=true`: it skips the configurators,
@@ -116,8 +118,8 @@ recorded `gradle_home`, Gradle daemons whose command line runs
 stopped: first with each wrapper distribution's `gradle --stop`, then SIGTERM and
 SIGKILL, each bounded. The receipt records `gradle_daemons_stopped`; a daemon that
 survives keeps the private directory and custody. Recovery reclaims a private
-directory that holds only `project/.gradle`, which a daemon recreated after
-deletion.
+directory without its ownership marker whose only content is a bounded
+`project/.gradle` tree, which a daemon recreated after deletion.
 
 The run counts only when its launches log both `[Gradle]: Gradle resolve stage
 finished with success` and `[Gradle]: Gradle data import stage finished with

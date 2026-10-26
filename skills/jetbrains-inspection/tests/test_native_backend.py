@@ -2092,11 +2092,9 @@ print('Done.')
         self.assertEqual(result["diagnostic"]["native"]["gradle_daemons_stopped"], [])
         self.assertIsNone(foreign.poll())
 
-    def test_recovery_stops_the_recorded_daemon_and_reclaims_its_recreated_project_cache(self):
+    def record_finished_run(self, gradle_home):
         run_id = "0f0e0d0c-0b0a-4908-8706-050403020100"
         private = self.cache / f"private-{run_id}"
-        gradle_home = self.cache / "gradle-home"
-        gradle_home.mkdir()
         anchor = native.common.storage_anchor(self.cache)
         record = {"run_id": run_id, "private": str(private), "sdk_name": f"jb-native-{run_id}", "interpreter": str(self.jdk),
                   "table_existed": False, "storage_anchor": str(anchor), "storage_identity": {"fixture": str(anchor)},
@@ -2104,6 +2102,12 @@ print('Done.')
                   "license_boundary": False, "worker_exited": True, "sdk_attempted": False, "private_materialized": True,
                   "active_process": None, "gradle_home": str(gradle_home)}
         (self.worker / "native-run.json").write_text(json.dumps(record))
+        return private
+
+    def test_recovery_stops_the_recorded_daemon_and_reclaims_its_recreated_project_cache(self):
+        gradle_home = self.cache / "gradle-home"
+        gradle_home.mkdir()
+        private = self.record_finished_run(gradle_home)
         daemon = self.start_daemon(gradle_home, private / "project")
         while not (private / "project/.gradle/last-build.bin").exists():
             time.sleep(0.01)
@@ -2114,6 +2118,57 @@ print('Done.')
         time.sleep(0.3)
         self.assertFalse(private.exists())
         self.assertFalse((self.worker / "native-run.json").exists())
+
+    def test_recovery_keeps_a_private_directory_that_is_not_only_daemon_residue(self):
+        for extra, limit in (("project/src/App.kt", native.lifecycle.GRADLE_RESIDUE_ENTRY_LIMIT), ("logs/idea.log", native.lifecycle.GRADLE_RESIDUE_ENTRY_LIMIT),
+                             ("project/.gradle/9.8.1/gc.properties", 1)):
+            with self.subTest(extra=extra, limit=limit):
+                self.setUp()
+                private = self.record_finished_run(self.cache / "gradle-home")
+                for path in ("project/.gradle/9.8.1/fileChanges/last-build.bin", extra):
+                    (private / path).parent.mkdir(parents=True, exist_ok=True)
+                    (private / path).write_text("fixture")
+                with patch_attr(native.lifecycle, "GRADLE_RESIDUE_ENTRY_LIMIT", limit), self.assertRaises(native.Blocked) as refused:
+                    native.recover_run(self.worker, {})
+                self.assertEqual(str(refused.exception), "native_recovery_ownership_unproven")
+                self.assertTrue((private / extra).exists())
+
+    def test_recovery_refuses_a_recorded_gradle_home_reached_through_a_link(self):
+        real_home = self.cache / "real/gradle-home"
+        real_home.mkdir(parents=True)
+        (self.cache / "linked").symlink_to(self.cache / "real")
+        self.record_finished_run(self.cache / "linked/gradle-home")
+        daemon = self.start_daemon(real_home, self.root / "elsewhere/project")
+        receipt = {}
+        with self.assertRaises(native.Blocked):
+            native.recover_run(self.worker, receipt)
+        self.assertEqual(receipt.get("recovery_failure"), "native_recovery_journal_malformed")
+        self.assertIsNone(daemon.poll())
+
+    def test_warmup_without_both_gradle_stages_never_launches_inspection(self):
+        self.engine("gradle_lines=['[Gradle]: Gradle resolve stage finished with success: fixture',", "gradle_lines=[")
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_gradle_import_unproven")
+        self.assertFalse(self.engine_record.exists())
+
+    def test_an_unclosed_warmup_group_keeps_custody_and_never_launches_inspection(self):
+        real_group_gone = native.group_gone
+
+        def warmup_group_survives(pid, *args, **kwargs):
+            return not self.warmup_record.exists() and real_group_gone(pid, *args, **kwargs)
+
+        with patch_attr(native, "group_gone", side_effect=warmup_group_survives):
+            result = self.assess()
+        self.assertTrue(self.warmup_record.exists())
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_process_group_unproven")
+        self.assertFalse(self.engine_record.exists())
+        self.assertTrue((self.worker / "native-run.json").exists())
+
+    def test_inspection_does_not_rescan_warmups_logs_against_its_own_drain_budget(self):
+        self.engine("print('IDE Warm-up finished.')", "(logs/'idea.log').write_text(''.join(f'2026-01-01 00:00:00,000 [ {index}]   INFO - #fixture - warmup line {index:07}\\n' for index in range(110000)))\n"
+                    " import time\n time.sleep(2)\n print('IDE Warm-up finished.')")
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_completed", result["proof_failures"])
 
     def test_user_findings_on_a_proven_import_are_red(self):
         self.engine("report_user=False", "report_user=True")

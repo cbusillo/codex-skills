@@ -70,11 +70,25 @@ def write_owner(path, identity):
         os.close(directory)
 
 
-def is_gradle_daemon_residue(private):
-    residue = private / "project/.gradle"
-    entries = list(private.rglob("*"))
-    return (bool(entries) and all(not entry.is_symlink() and (entry.is_dir() or entry.is_file()) for entry in entries)
-            and all(entry == residue.parent or entry.is_relative_to(residue) for entry in entries))
+GRADLE_RESIDUE_ENTRY_LIMIT = 4096
+
+
+def is_gradle_daemon_residue(private, children):
+    project = private / "project"
+    if children != [project] or [entry.name for entry in os.scandir(project)] != [".gradle"]:
+        return False
+    pending, seen = [project / ".gradle"], 0
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                seen += 1
+                if seen > GRADLE_RESIDUE_ENTRY_LIMIT or entry.is_symlink():
+                    return False
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(Path(entry.path))
+                elif not entry.is_file(follow_symlinks=False):
+                    return False
+    return True
 
 
 def prove_private(identity, materialized):
@@ -85,8 +99,14 @@ def prove_private(identity, materialized):
         raise LifecycleError("native_recovery_ownership_unproven")
     children = list(private.iterdir())
     marker = private / "owner.json"
-    if not children or is_gradle_daemon_residue(private):
+    if not children:
         return
+    if not marker.exists() and not marker.is_symlink():
+        try:
+            if is_gradle_daemon_residue(private, children):
+                return
+        except OSError:
+            raise LifecycleError("native_recovery_ownership_unproven") from None
     if marker.is_symlink():
         raise LifecycleError("native_recovery_ownership_unproven")
     if not materialized and children == [marker] and marker.is_file():
