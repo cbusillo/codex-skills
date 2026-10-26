@@ -524,7 +524,9 @@ current default-branch checkout to read its product section.
    open Director questions: read the existing foreign watcher's new
    `director_question` notices on every check, open each full comment, and
    register it in the Director's queue under the shared question rules.
-   Keep its repository coverage inclusive of every session's anchor.
+   For session anchors outside the watcher's repository coverage, read them
+   with `oq.py OWNER/REPO#ISSUE` at each check and register new questions
+   under the same rules; report an unreadable anchor as a coverage gap.
    Read the latest stranded-work digest's
    `supervisor_next_action` list, oldest first: do the Supervisor-only steps,
    rewrite the rest to name the next agent and its step, or hand a batch to a
