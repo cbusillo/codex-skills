@@ -21,7 +21,7 @@ resources:
     description: Read when enrolling or moving a rate-limited Supervisor Claude session.
   - path: scripts/goal_board.py
     kind: script
-    description: Rebuild the goal board from every open Track issue on OWNER/direction in one bounded read.
+    description: Rebuild the goal board from every open Track issue on OWNER/direction.
   - path: scripts/status.py
     kind: script
     description: Read context and activity for explicit ledger sessions.
@@ -614,7 +614,7 @@ and at takeover. Never keep, edit or carry a board forward. Rebuild it with:
 uv run skills/supervisor/scripts/goal_board.py --owner OWNER --format markdown
 ```
 
-It covers every open `Track:` issue on OWNER/direction in one bounded read:
+It covers every open `Track:` issue on OWNER/direction:
 each Track's status label, its native children, the live `Next action:` from
 each one's Current Status, the latest `Director decision` comment on each, and
 the open PRs that close each child, with their handoff state under the merge
@@ -622,8 +622,7 @@ train's ready-handoff rule. A closed child shows as closed, whatever its label
 says. It prints a checked-at time
 and the Tracks discovered versus read. Anything it could not read says
 "unknown, not refreshed"; report that, never an earlier status. Quota is no
-reason to skip it: one rebuild costs about 30 GraphQL points
-([Q446](https://github.com/cbusillo/codex-skills/issues/2053#issuecomment-6229016162)).
+reason to skip it.
 [Goal board](references/helpers.md#goal-board) has the output and its limits.
 
 The board points to records; it does not hold them. Before you repeat a

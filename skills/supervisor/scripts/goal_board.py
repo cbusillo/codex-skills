@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from datetime import datetime, timezone
 import json
 import math
@@ -70,8 +71,8 @@ def derived_status(node: dict[str, Any], trusted: set[str], unread: list[str]) -
         wait = github_plan_wait.current(source, comments, trusted)
         relationships = {"blocked_by": [github_work_graph.graphql_relationship(item) for item in blockers["nodes"]]}
         derived = github_plan_status.derive(source, relationships, wait)
-    except (ValueError, KeyError, TypeError, AttributeError):
-        unread.append("structured wait or native blockers")
+    except (ValueError, KeyError, TypeError, AttributeError) as error:
+        unread.append(f"structured wait or native blockers ({type(error).__name__}: {error})")
         return unknown
     if truncated(node["labels"]):
         # Labels carry deliberate stale/done scope holds. An omitted label can
@@ -156,34 +157,73 @@ def handoff(pr, trusted, unread):
     return "ready" if heads == [pr["headRefOid"]] else "ready for an older head"
 
 
-def child_row(node, trusted, wait_trusted=None):
-    unread = []
+def read_part(part: str, unread: list[str], read: Callable[[], Any], fallback: Any = UNKNOWN) -> Any:
+    try:
+        return read()
+    except (KeyError, TypeError, ValueError, AttributeError) as error:
+        unread.append(f"{part} ({type(error).__name__}: {error})")
+        return fallback
+
+
+def open_prs(node: dict[str, Any], trusted: set[str], unread: list[str]) -> list[dict[str, Any]]:
     prs = node["closedByPullRequestsReferences"]
     if truncated(prs):
         unread.append(f"closing PRs beyond {PR_LIMIT}")
-    return {"repository": node["repository"]["nameWithOwner"], "number": node["number"],
-        "title": node["title"], "url": node["url"], "state": node["state"].lower(),
-        **derived_status(node, wait_trusted if wait_trusted is not None else trusted, unread), "recorded_status": status_label(node["labels"], []),
-        "sub_issues": node["subIssuesSummary"],
-        "next_action": next_action(node, trusted, unread),
-        "latest_decision": latest_decision(node["comments"], trusted, unread),
-        "open_prs": [{"url": pr["url"], "head": pr["headRefOid"], "draft": pr["isDraft"],
-            "mergeable": pr["mergeable"].lower(), "handoff": handoff(pr, trusted, unread)}
-            for pr in prs["nodes"] if pr["state"] == "OPEN"],
+    rows = []
+    for index, pr in enumerate(prs["nodes"]):
+        row = read_part(f"closing PR at index {index}", unread,
+            lambda pr=pr: pr_row(pr, trusted, unread) if pr["state"] == "OPEN" else None, None)
+        if row is not None:
+            rows.append(row)
+    return rows
+
+
+def pr_row(pr: dict[str, Any], trusted: set[str], unread: list[str]) -> dict[str, Any]:
+    return {"url": pr["url"],
+        "head": read_part(f"head on {pr['url']}", unread, lambda: pr["headRefOid"]),
+        "draft": read_part(f"draft status on {pr['url']}", unread, lambda: pr["isDraft"], None),
+        "mergeable": read_part(f"mergeability on {pr['url']}", unread, lambda: pr["mergeable"].lower()),
+        "handoff": read_part(f"handoff on {pr['url']}", unread, lambda: handoff(pr, trusted, unread))}
+
+
+def issue_row(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | None, unread: list[str]) -> dict[str, Any]:
+    return {"number": node["number"], "title": node["title"], "url": node["url"],
+        **read_part("status", unread,
+            lambda: derived_status(node, wait_trusted if wait_trusted is not None else trusted, unread),
+            {"status": UNKNOWN, "blocked_by": [], "waits": [], "structured_wait": None}),
+        "next_action": read_part("next action", unread, lambda: next_action(node, trusted, unread)),
+        "latest_decision": read_part("latest decision", unread,
+            lambda: latest_decision(node["comments"], trusted, unread), None)}
+
+
+def child_row(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | None = None) -> dict[str, Any]:
+    unread: list[str] = []
+    return {**issue_row(node, trusted, wait_trusted, unread),
+        "repository": read_part("repository", unread, lambda: node["repository"]["nameWithOwner"]),
+        "state": read_part("state", unread, lambda: node["state"].lower()),
+        "recorded_status": read_part("status label", unread, lambda: status_label(node["labels"], unread)),
+        "sub_issues": read_part("sub-issue summary", unread, lambda: node["subIssuesSummary"], None),
+        "open_prs": read_part("closing PRs", unread, lambda: open_prs(node, trusted, unread), []),
         "unread": unread}
 
 
-def track_row(node, trusted, wait_trusted=None):
-    unread = []
+def child_rows(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | None, unread: list[str]) -> list[dict[str, Any]]:
     children = node["subIssues"]
     if truncated(children):
         unread.append(f"children beyond {CHILD_LIMIT}")
-    return {"number": node["number"], "title": node["title"], "url": node["url"],
-        "milestone": (node.get("milestone") or {}).get("title"),
-        **derived_status(node, wait_trusted if wait_trusted is not None else trusted, unread),
-        "next_action": next_action(node, trusted, unread),
-        "latest_decision": latest_decision(node["comments"], trusted, unread),
-        "children": [child_row(child, trusted, wait_trusted) for child in children["nodes"]],
+    rows = []
+    for index, child in enumerate(children["nodes"]):
+        row = read_part(f"child at index {index}", unread, lambda child=child: child_row(child, trusted, wait_trusted), None)
+        if row is not None:
+            rows.append(row)
+    return rows
+
+
+def track_row(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | None = None) -> dict[str, Any]:
+    unread: list[str] = []
+    return {**issue_row(node, trusted, wait_trusted, unread),
+        "milestone": read_part("milestone", unread, lambda: (node.get("milestone") or {}).get("title"), None),
+        "children": read_part("children", unread, lambda: child_rows(node, trusted, wait_trusted, unread), []),
         "unread": unread}
 
 
@@ -198,7 +238,9 @@ def goal_board(reader, owner, *, repo="direction", trusted, wait_trusted=None, m
         try:
             node = graph["nodes"][track["number"]]
             rows.append({**track_row(node, trusted, wait_trusted), "read": True})
-        except (KeyError, TypeError, ValueError, AttributeError):
+        except (KeyError, TypeError) as error:
+            if track["number"] in graph["nodes"]:
+                errors.append(f"Track #{track['number']} unread: {type(error).__name__}: {error}")
             rows.append({**track, "url": f"https://github.com/{owner}/{repo}/issues/{track['number']}",
                 "read": False, "status": UNKNOWN})
     read = sum(1 for row in rows if row["read"])
@@ -212,14 +254,16 @@ def goal_board(reader, owner, *, repo="direction", trusted, wait_trusted=None, m
 def unread_text(row):
     # The status, next action and handoff fields already print their own unknown.
     return "".join(f"; {part} {UNKNOWN}" for part in row["unread"]
-                   if part not in ("status label", "next action") and not part.startswith("handoff on "))
+                   if part not in ("status label", "next action") and not part.startswith("next action (")
+                   and (not part.startswith("handoff on ") or " (" in part))
 
 
 def action_text(row, links_only):
     # The links format is for public places, so it leaves out the action's prose.
     if links_only and row["next_action"] != UNKNOWN:
         return ""
-    return f"; next action: {row['next_action']}"
+    label = next((part for part in row["unread"] if part.startswith("next action (")), "next action")
+    return f"; {label}: {row['next_action']}"
 
 
 def blocking_text(row, links_only):
