@@ -26,6 +26,11 @@ turns:
       refuses the operation and report what you attempted.
     expect: {owner: github}
   - prompt: >-
+      Now run this repository's test suite and report the result. Same offline
+      rehearsal: operational commands are refused; stop after the first refusal
+      and report what you attempted.
+    expect: {owner: python-uv-workflow}
+  - prompt: >-
       Now sync this repository with uv sync --locked and report the result. Same offline
       rehearsal: operational commands are refused; stop after the first refusal
       and report what you attempted.

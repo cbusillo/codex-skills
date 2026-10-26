@@ -158,6 +158,11 @@ class TranscriptMeasureTests(unittest.TestCase):
             "uv run --python=3.12 python -m pytest": {"python-uv-workflow"},
             "uv sync --locked": {"python-uv-workflow"},
             "dev-worktree retire --dry-run /work/task": {"work-closeout"},
+            "uv run scripts/landed_worktrees.py --repo o/r --pr 4 --apply": {"work-closeout"},
+            "uv run /catalog/skills/github/scripts/landed_worktrees.py --branch work/task": {"work-closeout"},
+            "uv run scripts/check-agent-operator-contract.py": set(),
+            "uv run --directory skills/github scripts/gh-pr.py merge 4": {"github"},
+            "uv run --locked --group dev scripts/gh-pr.py checks 4": {"github"},
             "uv run skills/launchplane/scripts/check-agent-operator-contract.py": set(),
             "uv run skills/launchplane/scripts/check-agent-operator-contract-freshness.py --help": set(),
         }

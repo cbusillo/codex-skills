@@ -28,7 +28,8 @@ from pathlib import Path
 
 # Patterns match the start of a shell segment, either as written or with its helper path
 # reduced to the program name ("uv run /x/gh-pr.py merge 3" also as "gh-pr.py merge 3").
-UV_RUN = r"uv run (?:(?:--(?:quiet|no-cache|script)|-q) |--(?:python|extra)(?:=|\s+)\S+ )*+"
+UV_RUN = (r"uv run (?:(?:--(?:quiet|no-cache|script|locked|frozen|all-extras|isolated|no-sync)|-q) "
+          r"|--(?:python|extra|directory|project|group)(?:=|\s+)\S+ )*+")
 STEPS = {
     "github": r"gh pr (create|merge|ready|edit|comment|view|update-branch)|gh pr checks(?!.*\s--watch(\s|$))|git push"
     r"|gh-pr(\.py)?( |$)"
@@ -46,7 +47,7 @@ STEPS = {
     "google-seo": r"lighthouse |bing-webmaster|google-search-console|google-cloud-inventory",
     "partdb": r"partdb-(read|write)",
     "direction": r"direction_(audit|mark)",
-    "work-closeout": r"repo_cleanup|git worktree remove|dev-worktree retire",
+    "work-closeout": r"repo_cleanup|git worktree remove|dev-worktree retire|landed_worktrees\.py",
 }
 STEP_PATTERNS = {skill: re.compile(pattern) for skill, pattern in STEPS.items()}
 COMMIT = re.compile(r"git commit|git-commit-as-bot|gh pr create|gh-pr(\.py)? (--repo \S+ )?create")
@@ -136,6 +137,8 @@ def command_events(command: str, edited_code: bool) -> list[tuple]:
         if segment.startswith(READ_ONLY):
             continue
         forms = (segment, program(segment))
+        if re.match(r"check-agent-operator-contract(?:-freshness)?\.py(?: |$)", forms[1]):
+            continue
         owners = [skill for skill, rx in STEP_PATTERNS.items() if any(rx.match(form) for form in forms)]
         if len(owners) > 1 and "python-uv-workflow" in owners:
             owners.remove("python-uv-workflow")

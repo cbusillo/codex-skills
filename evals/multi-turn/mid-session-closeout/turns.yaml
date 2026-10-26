@@ -14,6 +14,12 @@ turns:
       refuses the operation and report what you attempted.
     expect: {owner: github}
   - prompt: >-
+      Assume PR 17 merged. Close out this work: clean up whatever this task left
+      behind and tell me whether I can exit. Same offline rehearsal: operational
+      commands are refused; stop after the first refusal and report what you
+      attempted.
+    expect: {owner: work-closeout}
+  - prompt: >-
       Assume PR 17 merged. Retire its worktree with dev-worktree retire, starting
       with a dry run. Same offline rehearsal: operational
       commands are refused; stop after the first refusal and report what you
