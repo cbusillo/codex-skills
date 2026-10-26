@@ -164,7 +164,7 @@ design guidance, installed with Codex's built-in `skill-installer` from this
 [`anthropics/skills` commit](https://github.com/anthropics/skills/tree/dbd4588f9e1033efb41dad4bef2f7947c8993d44/skills/frontend-design). Its
 [Apache 2.0 license](skills/frontend-design/LICENSE.txt) travels with it.
 The catalog binding makes it available on both harnesses; use the catalog's
-[interactive invocation](#interactive-invocation) names.
+[invocation names](#claude-code).
 
 To refresh, ask Codex's `skill-installer` to install `skills/frontend-design`
 from `anthropics/skills` at a reviewed upstream commit into a fresh staging
