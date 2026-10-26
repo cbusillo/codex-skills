@@ -1387,18 +1387,18 @@ plugin warnings. With `--require-browser`, they inspect the selected daemon's
 `plugin/list` and refuse missing plugins. Explicit
 other endpoints stay unverified. Use local `codex -C /absolute/repository` for
 a browser brief. See [launcher tools and remote research](skills/supervisor/references/helpers.md#browser-and-computer-use-preflight).
-Fresh terminal launches export `DISCORD_BLUE_SESSION_KIND=spawned` for the
-session's bridges. The Codex daemon ingress records that label in new and forked
-threads' native `threadSource`; Claude's DUI channel inherits the environment
-label. A guarded Codex `launch` sets it too. Resuming an existing session does
-not relabel it. Discord Blue uses the label to choose the separate spawned
-channel without adding the Director. Ordinary TUI launches have no label and
-use the main channel. Local embedded Codex sessions still have the bridge
-visibility limits described by Discord Blue's daemon attachment documentation.
 Discovery is separate from a working browser connection, OS permission and app
 approval. Chris handles profiles, sign-ins, settings and permission prompts;
 Codex is the default screen worker. Claude Computer Use runs only in a visible
 iTerm tab with Chris's approval for that session.
+
+
+Launcher-created sessions receive `DISCORD_BLUE_SESSION_KIND=spawned` in their
+process environment. The Codex ingress records it in new and forked threads'
+native `threadSource`, including new threads inside a resumed worker. An
+existing thread is never relabelled by a resume. Claude's channel inherits the
+same environment marker. See the [Discord Blue routing contract](https://github.com/cbusillo/discord-blue/blob/main/docs/agent-session-protocol.md)
+for channel and membership behavior.
 
 ## TLS verification lint
 

@@ -45,6 +45,7 @@ class ResumeTests(unittest.TestCase):
         with patch.object(SESSION, "run_client", new_callable=AsyncMock, return_value=0) as execute:
             self.assertEqual(SESSION.run(self.args), 0)
         execute.assert_awaited_once_with(self.home, native)
+        self.assertEqual(os.environ["DISCORD_BLUE_SESSION_KIND"], "spawned")
         self.spawn.assert_not_called()
 
     def test_fresh_launch_cannot_hide_resume_or_use_unobserved_home(self):
@@ -124,6 +125,7 @@ class ResumeTests(unittest.TestCase):
         command = guarded.call_args.args[1]
         self.assertEqual(command[-1], self.native)
         self.assertEqual(guarded.call_args.kwargs["session"], self.native)
+        self.assertEqual(os.environ["DISCORD_BLUE_SESSION_KIND"], "spawned")
         with SESSION.closure.resume_guard(self.native):
             SESSION.closure.resumed_launch(self.native, SESSION.closure.launch_metadata(456, "generation", str(self.home)),
                                           str(next((self.home / "sessions").glob("*.jsonl"))), "tty")

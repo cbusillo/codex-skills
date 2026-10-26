@@ -67,6 +67,7 @@ def run(args) -> int:
         return 0
     endpoint = source_endpoint(args.session_id, home)
     command = ["codex", "--remote", "unix://" + str(endpoint), "resume", args.session_id]
+    os.environ["DISCORD_BLUE_SESSION_KIND"] = "spawned"
     return asyncio.run(run_client(home, command, session=args.session_id))
 
 
