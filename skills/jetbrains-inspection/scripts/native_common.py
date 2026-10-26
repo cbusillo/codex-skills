@@ -386,9 +386,11 @@ def worker_plugins(app: Path, config: Path, plugins: Path) -> tuple[dict[str, st
     installed = dict.fromkeys(distribution.get("bundledPlugins", []), distribution.get("buildNumber", ""))
     for entry in sorted(plugins.iterdir()):
         jars = [entry] if entry.suffix == ".jar" else sorted((entry / "lib").glob("*.jar"))
-        descriptor = next(filter(None, map(plugin_descriptor, jars)), None)
-        if descriptor:
-            installed[descriptor[0]] = descriptor[1]
+        for jar in jars:
+            if descriptor := plugin_descriptor(jar):
+                plugin_id, version = descriptor
+                installed[plugin_id] = version
+                break
     disabled = config / "disabled_plugins.txt"
     names = disabled.read_text().split() if disabled.is_file() and not disabled.is_symlink() else []
     return installed, set(names)
