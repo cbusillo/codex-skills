@@ -30,8 +30,11 @@ def related_sessions_match(text: str, session: str) -> bool:
     """Compare explicit session fields outside fenced examples."""
     prose = claim.ownership_text(text, strip_quotes=False)
     fence = None
+    previous = ""
     for line in prose.splitlines():
         line = re.sub(r"^\s*(?:>\s*)+", "", line)
+        context = previous + "\n" + line
+        previous = line
         opener = re.match(r" {0,3}(`{3,}|~{3,})", line)
         if fence:
             if re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*", line):
@@ -46,7 +49,7 @@ def related_sessions_match(text: str, session: str) -> bool:
             r"|\|[ \t]*(?:Session(?:[ \t_-]*ID)?|Thread[ \t_-]*ID)[ \t]*\|[ \t]*([^\s|]+)"
         )
         for field in re.finditer(fields, line, re.IGNORECASE):
-            if claim.human_session_reference(line, field.start()):
+            if claim.human_session_reference(context, len(context) - len(line) + field.start()):
                 continue
             value = (field.group(1) or field.group(2)).strip("()<>")
             if not re.fullmatch(rf"{re.escape(session)}\.?", value):
