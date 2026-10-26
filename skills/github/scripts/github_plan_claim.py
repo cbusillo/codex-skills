@@ -292,7 +292,7 @@ def human_session_reference(text: str, position: int) -> bool:
         return False
     prefix = text[:position]
     return bool(re.search(
-        r"\b\w+[ \t]+(?:administrator|browser|human)(?:[ \t]+|[ \t]*\n[ \t]*)$", prefix, re.IGNORECASE,
+        r"\b\w+[ \t]+(?:administrator|browser|human)(?:[ \t]+|[ \t]*\n[ \t]*)\Z", prefix, re.IGNORECASE,
     )) and not bool(re.search(
         r"\b(?:Claimed by:?|Worker:|Owner:)\s+\S+\s+$", prefix, re.IGNORECASE,
     ))
