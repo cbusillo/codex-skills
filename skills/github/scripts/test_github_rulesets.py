@@ -528,6 +528,19 @@ def test_client_lock_drift_in_rules_or_targets_is_detected() -> None:
         assert not github_rulesets.ruleset_matches(drifted, spec)
 
 
+def test_upstream_only_forks_are_excluded_from_standard_plan_and_apply() -> None:
+    cli = load_cli()
+    for command in ("plan", "apply"):
+        for all_owned in (False, True):
+            client = FakeClient({"owner/repo": [], "owner/upstream": []})
+            with patch.object(github_rulesets, "UPSTREAM_CONTRIBUTION_FORKS", frozenset({"owner/upstream"})):
+                result = cli.run(args(command, repo=["owner/repo", "OWNER/UPSTREAM"], all_owned=all_owned,
+                                      owner="owner", confirm_owner_admin_write=True), client=client, app_id=77)
+            assert [row["repo"] for row in result["repositories"]] == ["owner/repo"]
+            assert result["repository_count"] == 1
+            assert all(key == "owner/repo" or not rules for key, rules in client.repos.items())
+
+
 def main() -> int:
     tests = [value for name, value in globals().items() if name.startswith("test_") and callable(value)]
     for test in tests:

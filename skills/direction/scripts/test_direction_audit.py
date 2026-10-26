@@ -983,6 +983,22 @@ def test_standard_rulesets_are_required_for_adopted_repositories() -> None:
     assert kinds(result) == ["ruleset_missing", "ruleset_missing"]
 
 
+def test_upstream_only_forks_do_not_propose_rulesets() -> None:
+    module = load()
+    with patch.object(module.github_rulesets, "UPSTREAM_CONTRIBUTION_FORKS", frozenset({"owner/upstream"})):
+        for unavailable in (False, True):
+            result = run(module, repo="OWNER/UPSTREAM", rulesets=[], rulesets_unavailable=unavailable)
+            assert result["ok"] is True
+            assert kinds(result) == []
+        with (patch.object(module, "merged_direction", return_value=DIRECTION),
+              patch.object(module, "previous_audit_stamp", return_value=None),
+              patch.object(module, "record_audit"),
+              patch.object(module, "fetch_rulesets", side_effect=AssertionError("exempt rulesets read"))):
+            code, result = module.audit_one("owner/upstream", gh="fixture-gh", automation="bot", fetch=lambda args: ([milestone(1, "Thin fork decision"), milestone(2, "Dogfood week")]
+                                                                     if "/milestones?" in args[1] else []))
+        assert code == 0 and result["ok"], result
+
+
 def test_rulesets_are_not_required_before_direction_is_adopted() -> None:
     module = load()
     result = run(module, direction_text=None, rulesets=[])

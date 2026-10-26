@@ -151,6 +151,8 @@ def run(
         all_owned=args.all_owned,
         owner=args.owner,
     )
+    exempt = [repo for repo in repositories if repo.casefold() in github_rulesets.UPSTREAM_CONTRIBUTION_FORKS]
+    repositories = [repo for repo in repositories if repo not in exempt]
     specs = (*github_rulesets.standard_specs(app_id), *lock_specs)
     if args.command == "apply":
         if not args.confirm_owner_admin_write:
@@ -197,6 +199,7 @@ def run(
             "tags": lock_tags,
             "bypass_integration_ids": sorted(set(extra_integration_ids)) if lock_specs else [],
         },
+        "exempt_repositories": exempt,
         "repository_count": len(repositories),
         "changed": any(result["changed"] for result in results),
         "repositories": results,

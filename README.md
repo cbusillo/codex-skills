@@ -1143,6 +1143,11 @@ rulesets or environment secret-name reads, use the shared
 It reuses the existing repository-owner transport, with saved plans and readback; no App
 grant or automatic permission-refusal fallback is introduced.
 
+Forks used only to stage upstream PRs are exempt from the standard rulesets and
+merge train; their default branch tracks upstream, while maintained downstream
+forks stay in scope. The shared `UPSTREAM_CONTRIBUTION_FORKS` classification in
+`skills/github/scripts/github_rulesets.py` drives repository selection.
+
 `skills/github/scripts/gh-rulesets.py` maintains two repository rulesets on the
 default branch: one reserves updates for the repository owner and the configured
 automation App when configured, and the other requires code-owner review for `DIRECTION.md` and

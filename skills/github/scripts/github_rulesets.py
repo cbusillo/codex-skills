@@ -21,6 +21,13 @@ import github_api as github_api_core
 import github_identity
 
 
+UPSTREAM_CONTRIBUTION_FORKS = frozenset({
+    "cbusillo/companion", "cbusillo/companion-surface-api", "cbusillo/companion-surface-loupedeck",
+    "cbusillo/edge264-mvc", "cbusillo/intellij-community", "cbusillo/node-appletv-remote", "cbusillo/node-loupedeck",
+    "cbusillo/lenslink", "cbusillo/obs-matanyone2", "cbusillo/matanyone2kit",
+    "cbusillo/simple_zpl2", "cbusillo/teslajsonpy", "cbusillo/uplift-ble",
+})
+
 RULESET_API_VERSION = "2026-03-10"
 LANDING_RULESET_NAME = "Only the owner and automation update the default branch"
 LANDING_RULESET_ALIASES = frozenset({"Only the administrator updates the default branch"})
