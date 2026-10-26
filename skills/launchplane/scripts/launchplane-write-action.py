@@ -89,6 +89,8 @@ READ_ONLY_OPERATIONS = {
     "target-replacement-operation-read",
     "target-replacement-plan-read",
     "production-backup-authority-read",
+    "production-backup-preflight-read",
+    "backup-worker-bindings-read",
     "private-health-endpoint-read",
     "product-promotion-status-read",
     "workflow-rule-retirement-inspect",
@@ -11252,6 +11254,7 @@ def _add_reviewed_apply_arguments(parser: argparse.ArgumentParser, *, apply: boo
 OPERATION_PATH_CHECK_TIMEOUT_SECONDS = 300.0
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
+    from launchplane_backup_credentials import PREFLIGHT, PREFLIGHT_TIMEOUT_SECONDS
     from launchplane_testing_resources import TIMEOUT_SECONDS as testing_resources_timeout
     parser = argparse.ArgumentParser(description="Execute bounded Launchplane operator actions.")
     parser.add_argument("--config", help="Optional private operator JSON config path.")
@@ -11277,6 +11280,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     from launchplane_runtime_setting_removal import add_parser as add_runtime_setting_removal_parser
     add_runtime_setting_removal_parser(subparsers)
 
+    from launchplane_backup_credentials import add_parser as add_backup_credentials_parser
+    add_backup_credentials_parser(subparsers)
     from launchplane_review_withdrawal import add_parser as add_review_withdrawal_parser
     add_review_withdrawal_parser(subparsers)
 
@@ -11970,6 +11975,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args.timeout = getattr(
         args, "timeout",
         disposable_lane_timeouts[args.command] if args.command in disposable_lane_timeouts
+        else PREFLIGHT_TIMEOUT_SECONDS if args.command == PREFLIGHT
         else testing_resources_timeout if args.command.startswith("testing-replacement-resources-")
         else OPERATION_PATH_CHECK_TIMEOUT_SECONDS if args.command == "path-check" and args.intent is not None
         else 180.0 if args.command == "merge-train-controller-run-once"
@@ -12233,6 +12239,9 @@ def main(argv: list[str]) -> int:
         )
         if args.command in runtime_setting_removal_commands:
             return execute_runtime_setting_removal(sys.modules[__name__], args)
+        from launchplane_backup_credentials import COMMANDS as backup_credentials_commands, execute as execute_backup_credentials
+        if args.command in backup_credentials_commands:
+            return execute_backup_credentials(sys.modules[__name__], args)
         from launchplane_review_withdrawal import COMMANDS as review_withdrawal_commands, execute as execute_review_withdrawal
         if args.command in review_withdrawal_commands:
             return execute_review_withdrawal(sys.modules[__name__], args)
