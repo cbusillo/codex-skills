@@ -203,17 +203,28 @@ tracked with its shared IDE configuration:
 Before any launch, each native run checks every listed plugin ID against the
 selected worker. Bundled plugins come from the app's
 `Contents/Resources/product-info.json` `bundledPlugins`, at the app's build
-number. Installed plugins come from `META-INF/plugin.xml` in the jars of each
-entry in the worker's `plugins/` directory, which overrides a bundled version.
-IDs in `config/disabled_plugins.txt` are disabled. Optional `min-version` and
-`max-version` are inclusive and compare the numeric parts of each version, so
-`1.0-beta` equals `1.0`. A plugin that is absent, disabled or outside its range
-is UNKNOWN with `native_required_plugin_missing`, naming the plugin and the
-worker; install or enable it once through that worker's Plugins screen, then
-quit the worker. A file that is not valid XML, has no `ExternalDependencies`
-component, or lists a plugin without an `id` is UNKNOWN with
-`native_required_plugins_unreadable`. Without the file nothing is read.
-Verified plugins are listed in the receipt's `required_plugins`.
+number. Installed plugins come from `META-INF/plugin.xml` in every jar of each
+entry in the worker's `plugins/` directory; each ID found counts, and an
+installed copy overrides a bundled version. Entries, `lib` folders and jars
+that resolve outside `plugins/` are skipped. IDs in `config/disabled_plugins.txt`
+are disabled. Optional `min-version` and `max-version` are inclusive and compare
+only the leading dotted number of each version, ignoring trailing zeros and
+anything after it, so `1.0`, `1.0.0`, `1.0-rc1` and `1.0-beta2` are equal. A
+plugin whose version is empty or has no leading number never satisfies a bound.
+A plugin that is absent, disabled or outside its range is UNKNOWN with
+`native_required_plugin_missing`, naming the plugin and the worker; install or
+enable it once through that worker's Plugins screen, then quit the worker.
+
+The Required Plugins file, `plugin.xml` entries, `disabled_plugins.txt` and
+`product-info.json` are each read only up to 4 MiB, and XML with a DOCTYPE or
+ENTITY declaration is refused. A Required Plugins file that breaks these rules,
+is not valid XML, has no `ExternalDependencies` component, or lists a plugin
+without an `id` or with a bound that has no leading number is UNKNOWN with
+`native_required_plugins_unreadable`. A worker plugin input that breaks them,
+including a linked `disabled_plugins.txt`, is UNKNOWN with
+`native_worker_plugins_unreadable`. Without the Required Plugins file nothing
+in the worker's plugins is read. Verified plugins are listed in the receipt's
+`required_plugins`.
 
 ## Missing shared profile
 

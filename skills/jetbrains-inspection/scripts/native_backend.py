@@ -163,10 +163,16 @@ UNAVAILABLE_REASONS = {
                                            "Fix .idea/externalDependencies.xml: a project whose ExternalDependencies component lists"
                                            " each required plugin id, with optional numeric min-version and max-version. Then run"
                                            " one fresh assessment."),
+    "native_worker_plugins_unreadable": ("the {product} worker's plugins could not be read safely",
+                                         "Check the {product} worker's plugins folder and config/disabled_plugins.txt for a link"
+                                         " outside the worker, an oversized or non-UTF-8 file, or a plugin.xml with DTD"
+                                         " declarations; reinstall the affected plugin from that worker's Plugins screen, then quit"
+                                         " it and run one fresh assessment."),
     "pycharm_outside_ide": ("native PyCharm can inspect {suffixes} on their own, though the repository's IDE is {ide}",
                             "inspect {suffixes} in a separate --scope files run, which needs the worktree's .venv or a root"
                             " prepare.python; otherwise " + UNAVAILABLE_COVERAGE.format(coverage="coverage for {suffixes}")),
 }
+PLUGIN_FALLBACK = {"plugins": "a required plugin", "worker": "the configured path"}
 GAP_CODES = frozenset({"selection_file_type_unsupported", "selection_outside_root_pycharm_lane", "xml_selection_requires_odoo"})
 SELECTION_ERRORS = (Blocked, OSError, subprocess.SubprocessError, ValueError)
 
@@ -227,12 +233,13 @@ def unavailable_explanation(host, args, selection):
         repo, config, scope, selected = common.scope_selection(args, host, receipt)
         product = host.IDE_PRODUCTS[native_product_key(host, config, selected)]
         gaps = coverage_gaps(host, repo, config, selected) if code in GAP_CODES else {}
-        missing = {}
-        if code == "native_required_plugin_missing":
-            configured = worker_settings(args, host, product.key)
-            missing = missing_plugins(repo, configured.worker, configured.app)[1]
     except SELECTION_ERRORS:
         return without_selection("native_selection_unavailable")
+    missing = {}
+    if code == "native_required_plugin_missing":
+        with contextlib.suppress(*SELECTION_ERRORS):
+            configured = worker_settings(args, host, product.key)
+            missing = missing_plugins(repo, configured.worker, configured.app)[1]
     if code in GAP_CODES:
         parts = []
         for (key, fields), labels in gaps.items():
@@ -243,7 +250,7 @@ def unavailable_explanation(host, args, selection):
         return f"No isolated native worker covers this selection: {why} ({code}).", action
     dropped = len(receipt.get("unmatched_files", [])) + len(receipt.get("excluded_files", []))
     why, action = UNAVAILABLE_REASONS.get(code, ("native {product} is not ready for this repository", ""))
-    values = dict(missing, product=product.display_name)
+    values = dict(PLUGIN_FALLBACK, **missing, product=product.display_name)
     why = why.format(**values, scope=scope,
                      dropped=f"; {dropped} files are outside every inspection lane or excluded from one" if dropped else "")
     action = action.format(**values)
@@ -1546,8 +1553,8 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
         action = (f"Fix jetbrains.nativeWorkers.{product.key} in the shared helper config: path is the independently "
                   f"Director-activated worker directory with its idea.properties, and app is one installed {product.display_name}. "
                   "See references/native-backend.md; never copy or move activation files.")
-    elif reason in {"native_required_plugin_missing", "native_required_plugins_unreadable"}:
-        action = UNAVAILABLE_REASONS[reason][1].format(product=product.display_name, **receipt.get("missing_plugins", {}))
+    elif reason in {"native_required_plugin_missing", "native_required_plugins_unreadable", "native_worker_plugins_unreadable"}:
+        action = UNAVAILABLE_REASONS[reason][1].format(**(PLUGIN_FALLBACK | receipt.get("missing_plugins", {})), product=product.display_name)
     elif reason in {"native_node_not_configured", "native_node_unavailable"}:
         action = "Set jetbrains.nativeWorkers.webstorm.node in the shared helper config to the absolute path of an executable node with npm in the same directory. See references/native-backend.md."
     elif reason in {"native_jdk_not_configured", "native_jdk_unavailable"}:
