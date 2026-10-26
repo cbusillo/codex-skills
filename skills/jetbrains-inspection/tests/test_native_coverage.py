@@ -214,6 +214,18 @@ class CoverageTests(unittest.TestCase):
                 self.assertEqual(result["canary_results"][tool]["detected"], detected)
                 self.assertEqual(result["complete"], detected, gaps)
 
+    def test_jvm_tools_apply_to_the_selected_files_of_their_language(self):
+        selected = {"src/App.kt", "build.gradle.kts", "src/Util.java"}
+        languages = {"VendorKotlinRule": "kotlin", "VendorJavaRule": "JAVA", "VendorUastRule": "UAST", "VendorOtherRule": "Groovy"}
+        expected = {"VendorKotlinRule": {"src/App.kt", "build.gradle.kts"}, "VendorJavaRule": {"src/Util.java"},
+                    "VendorUastRule": selected, coverage.INTELLIJ_RESOLUTION_RULE: {"src/App.kt", "build.gradle.kts"}}
+        for tool, files in expected.items():
+            with self.subTest(tool=tool):
+                self.assertEqual(coverage.applicable_files(tool, selected, languages.get(tool),
+                                                           proven_suffixes=coverage.INTELLIJ_PROVEN_SUFFIXES), files)
+        self.assertIsNone(coverage.applicable_files("VendorOtherRule", selected, "Groovy", proven_suffixes=coverage.INTELLIJ_PROVEN_SUFFIXES))
+        self.assertEqual(coverage.applicable_files("VendorKotlinRule", {"models.py"}, "kotlin"), set())
+
     def test_vendor_migration_requires_every_successor_on_selected_files(self):
         old = "PyUnusedLocalInspection"
         children = coverage.UNUSED_SPLIT
