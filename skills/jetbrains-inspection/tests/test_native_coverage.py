@@ -179,6 +179,41 @@ class CoverageTests(unittest.TestCase):
                 self.assertNotIn(tool, result["not_applicable"])
                 self.assertFalse(result["complete"])
 
+    @staticmethod
+    def assess_webstorm(requested, traces, *, selected, findings=(), languages=None):
+        return coverage.assess(
+            set(requested), set(requested), traces, set(), set(selected), list(findings), control_root=CONTROL_ROOT,
+            tool_languages=languages, proven_suffixes=coverage.WEBSTORM_PROVEN_SUFFIXES,
+            canary_files=coverage.WEBSTORM_CANARY_FILES, clean_twins=coverage.WEBSTORM_CLEAN_TWINS,
+        )
+
+    def test_webstorm_script_tools_apply_to_the_selected_files_of_their_language(self):
+        selected = {"web/app.ts", "web/view.jsx", "package.json"}
+        expected = {"TypeScriptUnresolvedReference": {"web/app.ts"}, "VendorScriptRule": {"web/app.ts", "web/view.jsx"},
+                    "JsonStandardCompliance": {"package.json"}, "VendorTypeScriptRule": {"web/app.ts"}}
+        languages = {"VendorScriptRule": "JavaScript", "VendorTypeScriptRule": "TypeScript"}
+        tools = {*expected, "CssUnknownProperty", "PyCompatibilityInspection", "Eslint"}
+        result, _ = self.assess_webstorm(tools, expected, selected=selected, languages=languages)
+        self.assertEqual({tool: set(files) for tool, files in result["selected_execution"].items()}, expected)
+        self.assertEqual(set(result["not_applicable"]), {"CssUnknownProperty", "PyCompatibilityInspection"})
+        self.assertEqual(result["applicability_unproven"], ["Eslint"])
+        result, gaps = self.assess_webstorm(expected, {**expected, "VendorScriptRule": {"web/app.ts"}}, selected=selected, languages=languages)
+        self.assertEqual(result["missing_execution"], {"VendorScriptRule": ["web/view.jsx"]})
+        self.assertTrue(gaps)
+
+    def test_webstorm_canary_needs_its_defect_found_and_its_clean_twin_executed_without_one(self):
+        tool, = coverage.WEBSTORM_CANARY_FILES
+        defect = CONTROL_ROOT + "/" + coverage.WEBSTORM_CANARY_FILES[tool]
+        clean = CONTROL_ROOT + "/" + coverage.WEBSTORM_CLEAN_TWINS[tool]
+        found = {"rule_id": tool, "file": defect}
+        cases = ((True, [found], {defect, clean}), (False, [], {defect, clean}),
+                 (False, [found], {defect}), (False, [found, {"rule_id": tool, "file": clean}], {defect, clean}))
+        for detected, findings, control_spans in cases:
+            with self.subTest(detected=detected, findings=findings, control_spans=control_spans):
+                result, gaps = self.assess_webstorm({tool}, {tool: {"web/app.ts", *control_spans}}, selected={"web/app.ts"}, findings=findings)
+                self.assertEqual(result["canary_results"][tool]["detected"], detected)
+                self.assertEqual(result["complete"], detected, gaps)
+
     def test_vendor_migration_requires_every_successor_on_selected_files(self):
         old = "PyUnusedLocalInspection"
         children = coverage.UNUSED_SPLIT
