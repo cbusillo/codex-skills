@@ -777,6 +777,18 @@ no release authority.
 `github/scripts/github_plan_status/client_test_notes.py` owns the marker and body-level parser, exported
 by the existing `codex-skills-plan-status` package alongside planning status.
 `ready_handoff.py` keeps compatibility exports for its existing notes API.
+Unanswered Client facts go under `### Open questions for the Client` inside
+the PR's Client test notes. List each question there, through the review flow's
+notification rather than a loose comment. Any content in that subsection blocks
+Accept and Ready, including on engineering or batch notes; remove answered items.
+An empty subsection permits acceptance only when the test notes are otherwise valid.
+Use `[[NEEDS CLIENT: <fact to supply>]]` for unresolved facts in shipping content.
+The shared `.github/actions/client-placeholders` action checks committed product
+content in each Client repository's ordinary CI. Pin it to a reviewed catalog
+commit and pass newline-separated shipping file or directory `paths` (and `repository-root` for
+nested checkouts). Include every shipped source and asset root; docs and test
+examples need not be scanned. It fails on a remaining marker or an unreadable
+revision; resolving review questions never bypasses this check.
 Launchplane's `control_plane/client_test_notes.py` must call
 `body_client_test_notes(body, review_override=override)` from its pinned package
 dependency so its `owner-review` check classifies every section with the same rule.
