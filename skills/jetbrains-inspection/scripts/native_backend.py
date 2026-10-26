@@ -1376,9 +1376,10 @@ def settle_declared_gaps(coverage: dict[str, Any], gaps: list[str], covered_by: 
 
 
 def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verdict: str = "UNKNOWN",
-                           has_advisory: bool = False) -> str:
+                           has_advisory: bool = False,
+                           default_action: str = "Resolve the reported native prerequisite or execution-coverage gap before a fresh assessment.") -> str:
     product = host.IDE_PRODUCTS[receipt.get("product", PYTHON_PRODUCT_KEY)]
-    action = "Fix current findings." if verdict == "RED" else "None." if verdict == "GREEN" else "Resolve the reported native prerequisite or execution-coverage gap before a fresh assessment."
+    action = "Fix current findings." if verdict == "RED" else "None." if verdict == "GREEN" else default_action
     if has_advisory and verdict != "UNKNOWN":
         action += (" Review the advisory spelling and grammar findings: fix real mistakes, and add real tool, library"
                    " or product names to the repository's .idea/dictionaries/project.xml.")

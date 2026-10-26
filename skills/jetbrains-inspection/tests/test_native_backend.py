@@ -344,6 +344,18 @@ class NativeTests(unittest.TestCase):
             self.assertTrue(result["next_action"])
             self.assertFalse(result["retry_policy"]["retry"])
 
+    def test_unmapped_native_prerequisite_keeps_automatic_worker_guidance(self) -> None:
+        with patch_attr(host, "native_backend_module", return_value=native), \
+                patch_attr(native, "select_backend", return_value=("unavailable", "native_ineligible=fixture_unmapped")), \
+                patch_attr(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", ["source.py"])), \
+                patch_attr(host, "command_native") as worker, \
+                patch.object(sys, "argv", ["jb-inspect", "agent-inspect"]), \
+                redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(host.main(), 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["agent_result"]["next_action"], host.ISOLATED_BACKEND_UNAVAILABLE_HINT)
+        worker.assert_not_called()
+
     def test_unavailable_selection_preserves_scope_errors(self) -> None:
         error = host.InspectError("Scope exceeds file limit", payload={"error_reason": "inspection_lane_scope_too_large"})
         with patch_attr(host, "native_backend_module", return_value=native), \

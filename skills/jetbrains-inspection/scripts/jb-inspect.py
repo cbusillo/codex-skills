@@ -353,7 +353,8 @@ def run_agent_inspect(args: argparse.Namespace) -> int:
                     _repo, config, _scope, selected = context
                     product = native_backend.native_product_key(sys.modules[__name__], config, selected)
                     hint = native_backend.next_action_for_reason(sys.modules[__name__], {"product": product},
-                                                                 selection.removeprefix("native_ineligible="))
+                                                                 selection.removeprefix("native_ineligible="),
+                                                                 default_action=ISOLATED_BACKEND_UNAVAILABLE_HINT)
                 raise InspectError(
                     "Automatic inspection has no isolated native worker for this selection.",
                     payload={"error_reason": "isolated_backend_unavailable", "backend_selection": selection,
