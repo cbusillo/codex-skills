@@ -5052,6 +5052,7 @@ def _controller_error_diagnostics(provider_payload: dict[str, Any]) -> dict[str,
     return diagnostics
 
 
+# https://github.com/cbusillo/codex-skills/issues/2874
 SAFE_REFUSAL_MESSAGES = {
     "restart_refused": {
         "Deployment history has an unavailable timestamp.",
