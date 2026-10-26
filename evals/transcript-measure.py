@@ -50,7 +50,7 @@ STEPS = {
     "work-closeout": r"repo_cleanup|git worktree remove|dev-worktree retire|landed_worktrees\.py",
 }
 STEP_PATTERNS = {skill: re.compile(pattern) for skill, pattern in STEPS.items()}
-COMMIT = re.compile(r"git commit|git-commit-as-bot|gh pr create|gh-pr(\.py)? (--repo \S+ )?create")
+PUBLICATION = re.compile(r"(?:git push|git-push-as-bot|gh pr create|gh-pr(?:\.py)? (?:--repo \S+ )?create)(?: |$)")
 CODE_FILE = re.compile(r"\.(py|ts|tsx|js|jsx|mjs|rs|go|kt|java|swift|vue|css|scss)$")
 SKILL_FILE = re.compile(r"(?:^|/)([a-z0-9-]+)/SKILL\.md$")
 BLOCK = re.compile(r"Blocked by the `([a-z0-9-]+)` skill")
@@ -143,8 +143,8 @@ def command_events(command: str, edited_code: bool) -> list[tuple]:
         if len(owners) > 1 and "python-uv-workflow" in owners:
             owners.remove("python-uv-workflow")
         events.extend(("step", skill, forms[1]) for skill in owners)
-        if edited_code and COMMIT.match(forms[1]):
-            events.append(("step", "jetbrains-inspection", "commit after code edits: " + forms[1]))
+        if edited_code and PUBLICATION.match(forms[1]):
+            events.append(("step", "jetbrains-inspection", "publication after code edits: " + forms[1]))
     return events
 
 

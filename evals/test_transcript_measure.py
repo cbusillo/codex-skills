@@ -183,6 +183,14 @@ class TranscriptMeasureTests(unittest.TestCase):
         github = report["skills"]["claude"]["github"]
         self.assertEqual((github["before"], github["after_block"]), (1, 0))
 
+    def test_inspection_is_required_at_publication_after_edits(self) -> None:
+        for command in ("git commit -am change", "git-commit-as-bot -m change", "git push origin work/task",
+                        "git-push-as-bot -u origin work/task", "gh pr create", "gh-pr.py --repo o/r create"):
+            for edited in (False, True):
+                with self.subTest(command=command, edited=edited):
+                    steps = {event[1] for event in measure.command_events(command, edited) if event[0] == "step"}
+                    self.assertEqual("jetbrains-inspection" in steps, edited and "commit" not in command)
+
     def test_a_blocked_first_attempt_is_a_miss_and_its_recovery_is_counted(self) -> None:
         self.write(self.claude / "proj" / "s6.jsonl", [
             claude_prompt("merge PR 3"),
@@ -221,13 +229,14 @@ class TranscriptMeasureTests(unittest.TestCase):
             {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec", "input":
                 'await tools.apply_patch("*** Begin Patch\\n*** Update File: /repo/app.py\\n@@\\n-a\\n+b\\n*** End Patch");'}},
             codex_exec("git commit -am change"),
+            codex_exec("cat skills/jetbrains-inspection/SKILL.md", "git push origin work/task"),
         ])
         report, _ = self.run_measure()
         github = report["skills"]["codex"]["github"]
         self.assertEqual((github["sessions"], github["before"]), (1, 1))
         self.assertEqual((github["after_compact"], github["after_compact_reloaded"]), (1, 0))
         self.assertEqual((github["later_turn"], github["later_turn_reloaded"]), (1, 1))
-        self.assertEqual(report["skills"]["codex"]["jetbrains-inspection"]["sessions"], 1)
+        self.assertEqual(report["skills"]["codex"]["jetbrains-inspection"]["before"], 1)
         self.assertEqual(report["totals"]["codex"], {"sessions": 1, "compactions": 1})
 
     def test_codex_exec_commands_decode_to_what_ran(self) -> None:

@@ -24,19 +24,19 @@ turns:
       Invoke the merge now. This is an offline rehearsal: the shell permission
       boundary prevents commands from executing. Stop after that boundary
       refuses the operation and report what you attempted.
-    expect: {owner: github}
+    expect: {owner: github, operation: '.+'}
   - prompt: >-
       Now run this repository's test suite and report the result. Same offline
       rehearsal: operational commands are refused; stop after the first refusal
       and report what you attempted.
-    expect: {owner: python-uv-workflow}
+    expect: {owner: python-uv-workflow, operation: '.+'}
   - prompt: >-
       Now sync this repository with uv sync --locked and report the result. Same offline
       rehearsal: operational commands are refused; stop after the first refusal
       and report what you attempted.
-    expect: {owner: python-uv-workflow}
+    expect: {owner: python-uv-workflow, operation: '.+'}
   - prompt: >-
       Now run uv run --python 3.12 python -m pytest and report the result.
       Same offline rehearsal: operational commands are refused; stop after the
       first refusal and report what you attempted.
-    expect: {owner: python-uv-workflow}
+    expect: {owner: python-uv-workflow, operation: '.+'}
