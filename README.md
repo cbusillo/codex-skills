@@ -772,12 +772,8 @@ on both harnesses load the owning skill.
 
 ### Session alerts
 
-For count-only run lifecycle events written to a private inbox for Context
-Panel, see the [agent activity producer](docs/agent-activity.md). It shares this hook but keeps
-its activity contract separate from the advisory alerts below.
-
 Claude's plugin retains the advisory Stop hook and the other lifecycle events
-used by the activity producer. Codex run outcomes come from the daemon, and
+used for claim lease renewal. Codex run outcomes come from the daemon, and
 Supervisor stop notification uses `codex_idle_watch.py`; Codex no longer installs
 advisory Stop/Interrupt hooks. Those obsolete hooks could interrupt every launch
 with a native trust prompt after a catalog update (Q422, #2018).
@@ -789,7 +785,7 @@ The hook appends local metadata to `$CODE_HOME/session-events.jsonl` (default
 time, event, `advisory: true` and `clean: null`. It never copies messages,
 transcripts, credentials or working directories. Storage errors leave the
 session running. Set `SESSION_ALERTS_DISABLED=1` in Claude's environment to
-suppress advisory output; the independent lifecycle call remains available.
+suppress advisory output; claim lease renewal remains available.
 
 Instruction refresh removes obsolete catalog alert handlers from regular Codex
 `hooks.json` files, preserving unrelated handlers and policy/startup commands.
