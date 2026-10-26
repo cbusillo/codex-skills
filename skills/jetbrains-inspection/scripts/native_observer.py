@@ -89,10 +89,15 @@ GRADLE_IMPORT_STAGES = {"[Gradle]: Gradle resolve stage finished with success": 
 GRADLE_IMPORT_CANCELLED = "[Gradle]: Gradle resolve stage canceled"
 
 
+INSPECTION_COMPLETION = re.compile(r"Done\.?\s*")
+WARMUP_COMPLETION = re.compile(r"IDE Warm-up finished\.\s*")
+
+
 class EngineObserver:
-    def __init__(self, project, receipt):
+    def __init__(self, project, receipt, completion_line=INSPECTION_COMPLETION):
         self.project = project
         self.receipt = receipt
+        self.completion_line = completion_line
         self.completion = False
 
     def observe(self, line, *, partial=False):
@@ -115,7 +120,7 @@ class EngineObserver:
         plugin = re.search(r"Odoo IDE \(([0-9][\w.+-]*)\)", line)
         if plugin:
             self.receipt["odoo_plugin_version"] = plugin.group(1)
-        if not partial and re.fullmatch(r"Done\.?\s*", line):
+        if not partial and self.completion_line.fullmatch(line):
             self.completion = True
         if re.search(r"Using default project profile|Cannot load project|No files to inspect|No modules", line, re.I):
             raise ObservationError("native_project_or_profile_unprepared")

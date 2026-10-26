@@ -1815,8 +1815,13 @@ class IntelliJLifecycleTests(unittest.TestCase):
         self.cache = self.root / "host-caches"
         self.cache.mkdir()
         self.engine_record = self.root / "engine-record.json"
-        self.script = self.app / "Contents/bin/inspect.sh"
-        self.script.write_text(f"#!{sys.executable}\nrecord={str(self.engine_record)!r}\nconfig={str(self.worker / 'config')!r}\n"
+        self.warmup_record = self.root / "warmup-record.json"
+        (self.app / "Contents/bin/inspect.sh").write_text('#!/bin/sh\nexec "${0%/*}/../MacOS/idea" inspect "$@"\n')
+        (self.app / "Contents/bin/inspect.sh").chmod(0o700)
+        (self.app / "Contents/MacOS").mkdir()
+        self.script = self.app / native.WARMUP_LAUNCHER
+        self.script.write_text(f"#!{sys.executable}\nrecord={str(self.engine_record)!r}\nwarmup_record={str(self.warmup_record)!r}\n"
+                               f"config={str(self.worker / 'config')!r}\n"
                                f"source={self.SOURCE!r}\ncanary_files={native.proof.INTELLIJ_CANARY_FILES!r}\n"
                                f"clean_twins={native.proof.INTELLIJ_CLEAN_TWINS!r}\n" + """import json,os,pathlib,sys
 gradle_lines=['[Gradle]: Gradle resolve stage finished with success: fixture','[Gradle]: Gradle data import stage finished with success: fixture']
@@ -1824,18 +1829,27 @@ report_canary=True
 report_clean=False
 report_user=False
 tools={'UnusedVariable':'kotlin','Annotator':'','RedundantSemicolon':'kotlin'}
-project=pathlib.Path(sys.argv[1])
-out=pathlib.Path(sys.argv[3])
-control=next(project.rglob('jb_native_controls_*'))
-idea=project/'.idea'
+system=next(pathlib.Path(line.split('=',1)[1]) for line in pathlib.Path(os.environ['IDEA_PROPERTIES']).read_text().splitlines() if line.startswith('idea.system.path='))
+logs=next(pathlib.Path(line.split('=',1)[1]) for line in pathlib.Path(os.environ['IDEA_PROPERTIES']).read_text().splitlines() if line.startswith('idea.log.path='))
 table=pathlib.Path(config)/'options/jdk.table.xml'
 gradle_home=pathlib.Path(os.environ['GRADLE_USER_HOME'])
-pathlib.Path(record).write_text(json.dumps({'env':{key:os.environ.get(key) for key in ('JAVA_HOME','GRADLE_USER_HOME')},
+if sys.argv[1]=='warmup':
+ project=pathlib.Path(sys.argv[2].removeprefix('--project-dir='))
+ idea=project/'.idea'
+ pathlib.Path(warmup_record).write_text(json.dumps({'env':{key:os.environ.get(key) for key in ('JAVA_HOME','GRADLE_USER_HOME')},
     'stale':{name:(idea/name).exists() for name in ('modules.xml','gradle.xml','modules','repo.iml')},
     'misc':(idea/'misc.xml').read_text(),'sdk_table':table.read_text() if table.exists() else None,
     'gradle_properties':(gradle_home/'gradle.properties').read_text()}))
-for line in gradle_lines:
- print(line)
+ (logs/'gradle-import.log').write_text(''.join(f'Downloading https://example.invalid/ide.zip ({size} MB / 2000 MB)' for size in range(2000)))
+ for line in gradle_lines:
+  print(line)
+ (system/'imported-gradle-model').write_text('fixture')
+ print('IDE Warm-up finished.')
+ sys.exit(0)
+project=pathlib.Path(sys.argv[2])
+out=pathlib.Path(sys.argv[4])
+control=next(project.rglob('jb_native_controls_*'))
+pathlib.Path(record).write_text(json.dumps({'imported_model':(system/'imported-gradle-model').is_file()}))
 files=[project/source,*control.iterdir()]
 spans=[{'operationName':'inspectionRun','duration':1,'tags':[{'key':'inspectionId','value':tool},{'key':'file','value':str(path)}]} for tool in tools for path in files]
 (out.parent/'inspection-trace.json').write_text(json.dumps({'data':[{'spans':spans}]}))
@@ -1917,7 +1931,7 @@ print('Done.')
     def test_stale_module_model_is_replaced_by_the_runs_jdk_and_removed_after(self):
         result = self.assess()
         self.assertEqual(result["inspection_outcome"]["reason"], "native_completed", result["proof_failures"])
-        engine = json.loads(self.engine_record.read_text())
+        engine = json.loads(self.warmup_record.read_text())
         self.assertFalse(any(engine["stale"].values()), engine["stale"])
         project_sdk = ElementTree.fromstring(engine["misc"]).find("component[@name='ProjectRootManager']")
         entry = next(jdk for jdk in ElementTree.fromstring(engine["sdk_table"]).iter("jdk")
@@ -1931,7 +1945,7 @@ print('Done.')
     def test_engine_gets_the_jdk_and_a_bounded_daemon_in_the_shared_gradle_home(self):
         result = self.assess()
         self.assertEqual(result["inspection_outcome"]["reason"], "native_completed", result["proof_failures"])
-        engine = json.loads(self.engine_record.read_text())
+        engine = json.loads(self.warmup_record.read_text())
         self.assertEqual(engine["env"], {"JAVA_HOME": str(self.jdk), "GRADLE_USER_HOME": str(self.cache / "gradle-home")})
         self.assertIn(f"org.gradle.daemon.idletimeout={native.GRADLE_DAEMON_IDLE_TIMEOUT_MS}", engine["gradle_properties"].splitlines())
 
@@ -1939,7 +1953,8 @@ print('Done.')
         failures = (("gradle_lines=['[Gradle]: Gradle resolve stage finished with success: fixture',", "gradle_lines=[", "native_gradle_import_unproven"),
                     (",'[Gradle]: Gradle data import stage finished with success: fixture']", "]", "native_gradle_import_unproven"),
                     ("gradle_lines=[", "gradle_lines=['[Gradle]: Gradle resolve stage canceled fixture',", "native_gradle_import_failed"),
-                    ("gradle_lines=[", "gradle_lines=['2026-01-01 00:00:00,000 [   1]  ERROR - #o.j.p.g.GradleImport - import failed',", "native_gradle_import_failed"))
+                    ("gradle_lines=[", "gradle_lines=['2026-01-01 00:00:00,000 [   1]  ERROR - #o.j.p.g.GradleImport - import failed',", "native_gradle_import_failed"),
+                    (" for line in gradle_lines:", " sys.exit(3)\n for line in gradle_lines:", "native_gradle_import_failed"))
         for old, new, reason in failures:
             with self.subTest(reason=reason, new=new):
                 self.setUp()
@@ -1947,6 +1962,31 @@ print('Done.')
                 result = self.assess()
                 self.assertEqual((result["agent_result"]["verdict"], result["inspection_outcome"]["reason"]), ("UNKNOWN", reason))
                 self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def test_warmup_imports_gradle_into_the_runs_system_before_inspection(self):
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_completed", result["proof_failures"])
+        self.assertTrue(json.loads(self.engine_record.read_text())["imported_model"])
+        self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def test_licensing_during_warmup_stops_before_inspection(self):
+        self.engine("print('IDE Warm-up finished.')", "print('No valid license found')\n print('IDE Warm-up finished.')")
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_owner_activation_required")
+        self.assertFalse(self.engine_record.exists())
+
+    def test_incomplete_warmup_licence_observation_stops_before_inspection(self):
+        real_execute = native.execute
+
+        def observe_incompletely(argv, *args, **kwargs):
+            real_execute(argv, *args, **kwargs)
+            if "warmup" in argv:
+                args[4]["license_observation_complete"] = False
+
+        with patch_attr(native, "execute", side_effect=observe_incompletely):
+            result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_license_observation_unproven")
+        self.assertFalse(self.engine_record.exists())
 
     def test_kotlin_tools_must_execute_on_each_selected_kotlin_file(self):
         self.engine("files=[project/source,*control.iterdir()]", "files=[*control.iterdir()]")

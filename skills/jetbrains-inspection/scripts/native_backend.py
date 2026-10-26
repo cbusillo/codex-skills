@@ -56,6 +56,8 @@ GRADLE_BUILD_FILES = ("build.gradle.kts", "build.gradle")
 GRADLE_DAEMON_IDLE_TIMEOUT_MS = 60000
 STALE_JVM_MODEL = ("modules.xml", "gradle.xml", "misc.xml", "modules")
 GRADLE_FAILURE_SYMPTOMS = frozenset({"native_engine_error", "native_execution_incomplete", "native_project_or_profile_unprepared"})
+WARMUP_LAUNCHER = "Contents/MacOS/idea"
+BUILD_OUTPUT_LOGS = frozenset({"gradle-import.log"})
 CONTROL_ASSETS = Path(__file__).parents[1] / "assets/native-controls"
 
 
@@ -489,13 +491,17 @@ LOCAL_INSPECTION_PREFIX = "Running local inspections on "
 RECOVERY_LOG_LIMIT = 64 * 1024 * 1024
 
 
+def engine_logs(logs: Path) -> list[Path]:
+    return sorted(path for path in logs.glob("*.log") if path.name not in BUILD_OUTPUT_LOGS)
+
+
 def logged_licensed_inspection(private: Path) -> bool:
     logs, project = private / "logs", private / "project"
     if logs.is_symlink() or not logs.is_dir():
         return False
     inspected = False
     try:
-        for path in sorted(logs.glob("*.log")):
+        for path in engine_logs(logs):
             descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
             with os.fdopen(descriptor, "rb") as log:
                 status = os.fstat(log.fileno())
@@ -673,7 +679,8 @@ class ChildExitObserver:
             self.queue.close()
 
 
-def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, receipt: dict[str, Any], *, lock_fd: int, global_lock_fd: int | None = None, require_completion=True, on_spawn=None, on_exit=None):
+def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, receipt: dict[str, Any], *, lock_fd: int, global_lock_fd: int | None = None, require_completion=True, on_spawn=None, on_exit=None,
+            completion=observations.INSPECTION_COMPLETION):
     """One guarded process group; preparation never uses IDE event parsing."""
     process = None
     exit_watch = None
@@ -688,7 +695,7 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
     observation_failures = set()
     output_framer = observations.LineFramer()
     output_license_scanner = observations.LicenseScanner()
-    observer = observations.EngineObserver(private / "project", receipt)
+    observer = observations.EngineObserver(private / "project", receipt, completion)
     selector = selectors.DefaultSelector()
     receipt["license_observation_complete"] = not require_completion
 
@@ -730,7 +737,7 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
     def read_logs(final=False, budget=None):
         if not require_completion:
             return
-        for path in (private / "logs").glob("*.log"):
+        for path in engine_logs(private / "logs"):
             ordinary_read_size(budget, 1)
             if path.is_symlink():
                 raise Blocked("native_log_path_unsafe")
@@ -807,7 +814,7 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
 
         try:
             paths = []
-            for path in (private / "logs").glob("*.log"):
+            for path in engine_logs(private / "logs"):
                 if len(paths) == 64:
                     incomplete("log_count_bound")
                     break
@@ -1573,9 +1580,20 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             register_sdk(config, interpreter, sdk_name, sdk,
                          on_attempt=lambda: context.sdk_attempt(config, interpreter, sdk_name))
         context.phase("engine_running")
+
+        def launch(launch_argv, completion=observations.INSPECTION_COMPLETION):
+            execute(launch_argv, env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(), global_lock_fd=global_lock.fileno(),
+                    on_spawn=lambda pid: record_process("engine", pid), on_exit=record_exit, completion=completion)
+
         try:
-            execute(argv, env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(), global_lock_fd=global_lock.fileno(),
-                    on_spawn=lambda pid: record_process("engine", pid), on_exit=record_exit)
+            if intellij:
+                warmup_started = time.monotonic()
+                launch(["/usr/bin/nice", "-n", str(NICE), str(app / WARMUP_LAUNCHER), "warmup", f"--project-dir={project}"],
+                       observations.WARMUP_COMPLETION)
+                receipt["gradle_warmup_seconds"] = round(time.monotonic() - warmup_started, 3)
+                if not receipt["license_observation_complete"]:
+                    raise Blocked("native_license_observation_unproven")
+            launch(argv)
         except Blocked as error:
             if intellij and str(error) in GRADLE_FAILURE_SYMPTOMS and receipt.get("gradle_import", {}).get("data_imported") is not True:
                 raise Blocked("native_gradle_import_failed") from None

@@ -90,12 +90,19 @@ inspected. The `jdk` is registered as a `JavaSDK` in the worker's SDK table unde
 the same journalled lease as the Python SDK, set as the project SDK so the Gradle
 JVM resolves to it without a download, and removed afterwards. The engine gets
 `JAVA_HOME` set to it and a shared `GRADLE_USER_HOME` at `cacheRoot/gradle-home`,
-whose `gradle.properties` limits the detached Gradle daemon's idle life. Stock
-`inspect.sh` then links and imports the root Gradle build, executing the
-repository's build scripts. A cold Gradle cache needs network access on the
-first run, within `--timeout-ms`.
+whose `gradle.properties` limits the detached Gradle daemon's idle life.
+`inspect.sh` only schedules a Gradle sync it does not wait for, so the run first
+launches the product's headless `warmup --project-dir=<snapshot>` on the same
+private system, config and log paths. Warmup links and imports the root Gradle
+build, executing the repository's build scripts, and the imported model carries
+into `inspect.sh`. Warmup is a licensed launch under the same journal, licence
+scan and `--timeout-ms` deadline; it must log `IDE Warm-up finished.` and
+complete its licence observation, or the inspection never starts. A cold Gradle
+cache needs network access and can take minutes on the first run.
+`gradle-import.log` holds the build's raw output, joins progress messages into
+unbounded lines, and is not an IDE log, so it is not observed.
 
-The run counts only when the logs show both `[Gradle]: Gradle resolve stage
+The run counts only when its launches log both `[Gradle]: Gradle resolve stage
 finished with success` and `[Gradle]: Gradle data import stage finished with
 success`; otherwise it is UNKNOWN with `native_gradle_import_unproven`, or
 `native_gradle_import_failed` after a cancelled import or an engine error before
