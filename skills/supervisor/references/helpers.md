@@ -1349,8 +1349,8 @@ in a visible iTerm tab with Chris's approval for that session, never under the
 launchd tmux server. Tool discovery alone does not authorize screen use.
 Do not change his logins, Chrome profiles, app settings or privacy grants.
 
-For Codex Computer Use, use `iterm_tab.py new --require-computer-use` with the
-[app declaration](#opt-in-codex-gui-work); launch validation enforces that route.
+For Codex Computer Use, use `iterm_tab.py new --computer-use required` with the
+[app declaration](#opt-in-codex-gui-work), or `--computer-use unused` for source-only mentions.
 Local Codex plugin setup uses the account-relative marketplace;
 `--require-browser` requires `chrome` and `browser`.
 Remote launches keep

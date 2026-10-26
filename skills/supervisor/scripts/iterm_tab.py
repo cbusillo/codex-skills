@@ -1094,7 +1094,7 @@ def prepare_resume(args):
     session = args.resume_session_id
     if (args.account_provider != "openai" or not getattr(args, "ledger", None)
             or getattr(args, "command_file", None) or getattr(args, "brief_file", None)
-            or getattr(args, "require_computer_use", False)
+            or getattr(args, "computer_use", None)
             or getattr(args, "require_browser", False) or getattr(args, "without_browser", False)):
         raise ValueError("resume needs --account-provider openai and --ledger, without launch/brief files or browser/Computer Use flags")
     with preparation_read():
@@ -1184,28 +1184,20 @@ def prepare_launches(args: argparse.Namespace) -> tuple[list[str], list[dict | N
 
 
 def validate_computer_use_launch(args: argparse.Namespace, commands: list[str], briefs: list[str]) -> None:
-    required = getattr(args, "require_computer_use", False)
-    if required and getattr(args, "account_provider", None) != "openai":
-        raise ValueError("--require-computer-use needs --account-provider openai")
-    if getattr(args, "account_provider", None) != "openai":
-        return
+    mode = getattr(args, "computer_use", None)
     for command, brief in zip(commands, briefs):
-        if not required:
-            task = " ".join(brief.split()).replace(" ".join(brief_rules_block().split()), "")
-            if re.search(r"\bcomputer[\s-]+use\b", task, re.IGNORECASE):
-                raise ValueError("Computer Use brief needs iterm_tab.py new --require-computer-use "
-                                 "--account-provider openai and a first-line GUI task: <app-bundle-id> declaration; "
-                                 "the launcher checks computer-use in the selected CODEX_HOME")
+        app = gui_launch.declared_app(brief)
+        if mode == "required" and not app:
+            raise ValueError("--computer-use required needs GUI task: <app-bundle-id> as the brief's first nonblank line")
+        if mode == "unused" and app:
+            raise ValueError("--computer-use unused conflicts with GUI task; use --computer-use required for screen work")
+        if mode or launch_agent(command) != "codex":
             continue
-        if not gui_launch.declared_app(brief):
-            raise ValueError("--require-computer-use needs GUI task: <app-bundle-id> as the brief's first nonblank line; "
-                             "use the named app's bundle ID to keep the existing GUI safety checks")
-        words = launch_words(command)
-        if Path(words[0]).name != "codex" or "--" in words:
-            raise ValueError("--require-computer-use needs a direct local Codex invocation without a prompt")
-        if any(word == "--remote" or word.startswith("--remote=") for word in words):
-            raise ValueError("Computer Use needs local Codex; remove --remote from the run file "
-                             "and use iterm_tab.py new --require-computer-use --account-provider openai")
+        task = " ".join(brief.split()).replace(" ".join(brief_rules_block().split()), "")
+        if re.search(r"\bcomputer[\s-]+use\b", task, re.IGNORECASE):
+            raise ValueError("Computer Use brief needs --computer-use required and a first-line GUI task: <app-bundle-id> "
+                             "for local Codex with the selected home's plugin; "
+                             "use --computer-use unused for source-only mentions")
 
 
 def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict | None]]:
@@ -1245,7 +1237,7 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         words = launch_words(command_texts[0])
         if (Path(words[0]).name != "codex" or "--" in words
                 or any(word == "--remote" or word.startswith("--remote=") for word in words)):
-            raise ValueError("GUI tasks need a local Codex invocation without --remote or a prompt")
+            raise ValueError("GUI tasks need local Codex; remove --remote and any prompt from the run file; put the prompt in --brief-file")
         gui_launch.require_unlocked()
         briefs[0] += ("\n\nGUI safety: Use only the named app " + apps[0] +
                       ". Never target Chris's terminals or other windows. Check screen lock "
@@ -1272,8 +1264,7 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         for text, choice in zip(command_texts, choices):
             check_claude_tools(text, choice, getattr(args, "without_browser", False), probes,
                                getattr(args, "require_browser", False))
-        command_texts = [prepare_codex_tools(text, choice, getattr(args, "require_browser", False),
-                                            gui=bool(apps[index]))
+        command_texts = [prepare_codex_tools(text, choice, getattr(args, "require_browser", False), gui=bool(apps[index]))
                          for index, (text, choice) in enumerate(zip(command_texts, choices))]
         claude_trust.apply(trust_writes)
         if apps[0]:
@@ -1700,8 +1691,9 @@ def main():
                      help="launch Claude without the connected-browser check, for briefs that need no browser")
     new.add_argument("--require-browser", action="store_true",
                      help="require a working browser route before launching a browser brief")
-    new.add_argument("--require-computer-use", action="store_true",
-                     help="require local Codex and its enabled computer-use plugin in the selected account home")
+    new.add_argument("--computer-use", choices=("required", "unused"),
+                     help="required: use the app-scoped local Codex route and check its plugin; "
+                          "unused: source-only brief mentions Computer Use but uses no screen tools")
     new.add_argument("--account", help="use this configured account by name")
     new.add_argument("--account-config", type=Path)
     for name in ("send", "read", "clear"):
