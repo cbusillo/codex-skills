@@ -413,6 +413,9 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "launchplane service audit-config-authority --control-plane-root .",
                 "launchplane service plan-config-authority-transition --base-branch main --required-checks-file checks.json",
                 "launchplane local-consumer --help",
+                "launchplane local-consumer prepare --directory recipient",
+                "launchplane local-consumer deliver --directory recipient --service-url https://launchplane.example",
+                "launchplane local-consumer receive --directory recipient --package-file package.json",
                 "launchplane odoo-ownership check --workspace-root ..",
                 "launchplane action-pins check --repo-root . --revision HEAD --repository cbusillo/launchplane",
                 "launchplane action-pins update --release-sha 0123abc",
@@ -424,6 +427,8 @@ class CommandPolicyHookTests(unittest.TestCase):
                     self.assertEqual(bash("uv run " + command, frontend).returncode, 0)
                     self.assertEqual(bash("uv run --extra dev " + command, checkout).returncode, 0)
                     self.assertEqual(bash("uv run " + command, root).returncode, 2)
+                    self.assertEqual(bash("uv run --directory /other " + command, checkout).returncode, 2)
+                    self.assertEqual(bash("uv run --directory=/other " + command, checkout).returncode, 2)
                     self.assertEqual(SIMULATOR.simulate(shlex.split(command), cwd=checkout), [])
                     self.assertTrue(SIMULATOR.simulate(shlex.split(command)))
             self.assertEqual(bash("pnpm --dir frontend generate:openapi", checkout).returncode, 0)
@@ -548,8 +553,9 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "launchplane ci other-command",
                 "launchplane service audit-config-authority-other",
                 "launchplane service plan-config-authority-transition-other",
-                "launchplane local-consumer prepare --directory recipient",
-                "launchplane local-consumer receive --directory recipient --package-file package.json",
+                "launchplane local-consumer prepare-other --directory recipient",
+                "launchplane local-consumer deliver-other --directory recipient",
+                "launchplane local-consumer receive-other --directory recipient",
                 "launchplane local-consumer --help-other",
                 "launchplane odoo-ownership other-command",
                 "launchplane odoo-targets replacement-plan",

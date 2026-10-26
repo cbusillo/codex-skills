@@ -775,6 +775,12 @@ policy:
         - repository: cbusillo/launchplane
           argv_prefix: ["launchplane", "local-consumer", "--help"]
         - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "local-consumer", "prepare"]
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "local-consumer", "deliver"]
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "local-consumer", "receive"]
+        - repository: cbusillo/launchplane
           argv_prefix: ["launchplane", "odoo-ownership", "check"]
         - repository: cbusillo/launchplane
           argv_prefix: ["launchplane", "ci", "postgres-integration"]
@@ -827,7 +833,16 @@ directory/project overrides retain the block. All live/admin CLI commands
 retain their helper route below. Consumers without
 repository-exception support keep the original block; do not bypass it through
 an alternate entry point. The local gates support chained checks and output
-redirection. `local-consumer prepare|receive` remain Director-run transfers.
+redirection.
+
+For the Director-approved testing local-consumer path (Q921), read the
+[custody contract](https://github.com/cbusillo/launchplane/blob/main/docs/testing-local-consumer.md)
+before running `uv run launchplane local-consumer prepare`, `deliver` or
+`receive` from a verified Launchplane checkout. These commands use existing
+exact-testing-lane authority; the service enforces the credential and caller
+boundary. Keep recipient files outside task evidence and never inspect or emit
+their key or token values. Every other live/admin CLI command retains its helper
+route below. This routing exception creates no access or grant.
 
 Use this skill to inspect product/runtime state and perform safe,
 authenticated mutations via the Launchplane service API.

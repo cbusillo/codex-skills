@@ -600,7 +600,19 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
         normalized = unwrap(raw_argv)
         if not normalized or normalized[0][:1] != ["launchplane"]:
             continue
+        consumer_command = (
+            normalized[0][:2] == ["launchplane", "local-consumer"]
+            and normalized[0][2:3] in (["prepare"], ["deliver"], ["receive"])
+        )
+        executable_position = raw_argv.index("launchplane") if "launchplane" in raw_argv else None
         for position, token in enumerate(raw_argv):
+            if (
+                consumer_command
+                and executable_position is not None
+                and position > executable_position + 2
+                and token.split("=", 1)[0] == "--directory"
+            ):
+                continue
             if (
                 token in {"--active", "--no-project"}
                 or token.startswith("-C")
