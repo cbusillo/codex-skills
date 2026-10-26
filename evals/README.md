@@ -1,5 +1,9 @@
 # Owning-skill routing evaluation
 
+`transcript-measure.py` measures real-session skill loading. When its
+attribution changes, rerun the same historical window for comparison;
+corrected history does not establish post-change behavior.
+
 The cases under `owning-skill/` cover a merge during a direction session,
 CI watching during GitHub work, an adjacent spelling correction, and a merge
 discussion with no authority to act. Only the initial skill is named in the

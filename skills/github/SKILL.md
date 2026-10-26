@@ -1130,7 +1130,8 @@ failure and never causes a merge retry.
   and the stale-checkout report. A runtime-bound checkout only ever uses the
   reconciler. Never reset, stash, clean, or overwrite an unsafe checkout. The
   active task worktree stays the agent's source.
-- **Source worktree**: Sessions end before the train lands their PR, so the
+- **Source worktree**: Load `work-closeout` before retirement. Sessions end before
+  the train lands their PR, so the
   landing step retires the PR's task worktree on this host:
   `uv run scripts/landed_worktrees.py --repo OWNER/REPO --pr N --checkout /any/local/checkout --apply`.
   It acts only on a merged or closed PR, on worktrees whose lock names a retire

@@ -12,7 +12,7 @@ turns:
       Invoke the merge now. This is an offline rehearsal: the shell permission
       boundary prevents commands from executing. Stop after that boundary
       refuses the operation and report what you attempted.
-    expect: {owner: github, helper: gh-pr.py}
+    expect: {owner: github, operation: '.+'}
   - prompt: >-
       Next, example/skill-routing-fixture PR 19: I just pushed a review fix and
       CI is still running. Keep watching its checks and review feedback until it

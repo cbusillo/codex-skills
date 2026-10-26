@@ -28,7 +28,8 @@ from pathlib import Path
 
 # Patterns match the start of a shell segment, either as written or with its helper path
 # reduced to the program name ("uv run /x/gh-pr.py merge 3" also as "gh-pr.py merge 3").
-UV_RUN = r"uv run (?:--(?:quiet|no-cache) )*+"
+UV_RUN = (r"uv run (?:(?:--(?:quiet|no-cache|script|locked|frozen|all-extras|isolated|no-sync)|-q) "
+          r"|--(?:python|extra|directory|project|group)(?:=|\s+)\S+ )*+")
 STEPS = {
     "github": r"gh pr (create|merge|ready|edit|comment|view|update-branch)|gh pr checks(?!.*\s--watch(\s|$))|git push"
     r"|gh-pr(\.py)?( |$)"
@@ -40,16 +41,16 @@ STEPS = {
     r"|" + UV_RUN + r"(?!--with)(?!--no-project)(?!python3? -c)(?!\S*skills/)(?!\$)\S+",
     "infra-ops": r"ssh |systemctl |docker (-H|--context|compose|exec) |pct |qm |zfs |tailscale |npmplus-ops|private-context-check",
     "docs-lookup": r"op (read|item)|security find-(generic|internet)-password|bw get",
-    "launchplane": r"launchplane(?:-[\w-]+)?(?:\.py)?( |$)|check-agent-operator-contract",
+    "launchplane": r"launchplane(?:-[\w-]+)?(?:\.py)?( |$)",
     "model-review": r"codex exec|claude (-p|--print)|agy |gemini |review_with_model",
     "local-llm": r"lms |lm_studio_|local_codex_agent",
     "google-seo": r"lighthouse |bing-webmaster|google-search-console|google-cloud-inventory",
     "partdb": r"partdb-(read|write)",
     "direction": r"direction_(audit|mark)",
-    "work-closeout": r"repo_cleanup|git worktree remove|dev-worktree retire",
+    "work-closeout": r"repo_cleanup|git worktree remove|dev-worktree retire|landed_worktrees\.py",
 }
 STEP_PATTERNS = {skill: re.compile(pattern) for skill, pattern in STEPS.items()}
-COMMIT = re.compile(r"git commit|git-commit-as-bot|gh pr create|gh-pr(\.py)? (--repo \S+ )?create")
+PUBLICATION = re.compile(r"(?:git push|git-push-as-bot|gh pr create|gh-pr(?:\.py)? (?:--repo \S+ )?create)(?: |$)")
 CODE_FILE = re.compile(r"\.(py|ts|tsx|js|jsx|mjs|rs|go|kt|java|swift|vue|css|scss)$")
 SKILL_FILE = re.compile(r"(?:^|/)([a-z0-9-]+)/SKILL\.md$")
 BLOCK = re.compile(r"Blocked by the `([a-z0-9-]+)` skill")
@@ -136,12 +137,14 @@ def command_events(command: str, edited_code: bool) -> list[tuple]:
         if segment.startswith(READ_ONLY):
             continue
         forms = (segment, program(segment))
+        if re.match(r"check-agent-operator-contract(?:-freshness)?\.py(?: |$)", forms[1]):
+            continue
         owners = [skill for skill, rx in STEP_PATTERNS.items() if any(rx.match(form) for form in forms)]
         if len(owners) > 1 and "python-uv-workflow" in owners:
             owners.remove("python-uv-workflow")
         events.extend(("step", skill, forms[1]) for skill in owners)
-        if edited_code and COMMIT.match(forms[1]):
-            events.append(("step", "jetbrains-inspection", "commit after code edits: " + forms[1]))
+        if edited_code and PUBLICATION.match(forms[1]):
+            events.append(("step", "jetbrains-inspection", "publication after code edits: " + forms[1]))
     return events
 
 
