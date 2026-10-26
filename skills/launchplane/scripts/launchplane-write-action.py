@@ -3084,7 +3084,7 @@ class _FieldDrops:
             assert_public_safe_shape(value)
             self.drop(path)
             return ""
-        assert_public_safe_shape(projected)
+        assert_public_safe_shape(projected if projected == value else value)
         return projected
 
     def drop(self, path: str) -> None:
