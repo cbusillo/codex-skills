@@ -6,10 +6,8 @@ from __future__ import annotations
 
 import functools
 import json
-import os
 import re
 import sys
-import tomllib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -43,23 +41,9 @@ def waits_on_director(owner: str, wait: dict[str, Any]) -> list[str]:
 
 
 def configured_queue() -> str | None:
-    import account_choice
+    from skills.direction.scripts import question_id
 
-    for path in account_choice.config_paths(os.environ, Path.home()):
-        if not path.exists():
-            continue
-        try:
-            section = tomllib.loads(path.read_text(encoding="utf-8")).get("questions")
-        except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
-            raise ValueError(f"cannot read private supervisor config {path}") from error
-        if section is None:
-            continue
-        queue = section.get("queue") if isinstance(section, dict) else None
-        if not isinstance(queue, str) or not QUEUE.fullmatch(queue):
-            raise ValueError(f'[questions] in {path} needs queue = "OWNER/REPO#NUMBER"')
-        return queue
-    return None
-
+    return question_id.configured_queue()
 
 def comment_links(wait: dict[str, Any]) -> list[tuple[str, str, str]]:
     found = {match[0]: (match[0], match[1], match[2]) for match in COMMENT_LINK.finditer(json.dumps(wait))}

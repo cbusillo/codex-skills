@@ -9,6 +9,8 @@ import fcntl
 import importlib.util
 import json
 import multiprocessing
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import os
 import queue
 import sys
@@ -30,12 +32,14 @@ SPEC.loader.exec_module(PLAN)
 
 def allocate_many(path, barrier, results):
     barrier.wait(timeout=15)
-    results.put([counter.update(Path(path)) for _ in range(12)])
+    with patch.object(counter, "reserve_question", side_effect=lambda minimum, *_: minimum + 1):
+        results.put([counter.update(Path(path)) for _ in range(12)])
 
 
 def allocate_one(path, ready, results):
     ready.set()
-    results.put(counter.update(Path(path)))
+    with patch.object(counter, "reserve_question", side_effect=lambda minimum, *_: minimum + 1):
+        results.put(counter.update(Path(path)))
 
 
 class QuestionCounterTests(unittest.TestCase):
@@ -44,6 +48,48 @@ class QuestionCounterTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.path = Path(self.temporary.name) / "counter.json"
         self.seed = (317, ["https://github.com/owner/direction/issues/7"])
+        self.local_reservation = patch.object(counter, "reserve_question", side_effect=lambda minimum, *_: minimum + 1)
+        self.local_reservation.start()
+        self.addCleanup(self.local_reservation.stop)
+
+    def test_two_machines_reserve_unique_numbers_and_reuse_question_identity(self) -> None:
+        self.local_reservation.stop()
+        paths = [self.path, self.path.with_name("other-machine.json")]
+        for path in paths:
+            counter.update(path, seed=self.seed, allocate=False)
+        barrier = threading.Barrier(2)
+        records = []
+        lock = threading.Lock()
+
+        def read(item: str) -> dict:
+            with lock:
+                return {"expected_actor": "bot", "issue": {"body": "", "provenance": {"author": "owner"},
+                        "comments": list(records), "url": self.seed[1][0]}}
+
+        def post(item: str, body: str) -> None:
+            with lock:
+                records.append({"id": len(records) + 1, "body": body, "author": "bot"})
+            barrier.wait(timeout=10)
+
+        with patch.object(counter, "configured_queue", return_value="owner/direction#7"), \
+                patch.object(counter, "read_discussion", side_effect=read), \
+                patch.object(counter, "post_reservation", side_effect=post), \
+                ThreadPoolExecutor(max_workers=2) as pool:
+            numbers = list(pool.map(lambda path: counter.update(path, question_url=f"https://example.test/{path.name}"), paths))
+            self.assertEqual(sorted(numbers), [self.seed[0] + 1, self.seed[0] + 2])
+            self.assertEqual(counter.update(paths[1], question_url="https://example.test/counter.json"), numbers[0])
+            self.assertEqual(len(records), 2)
+
+    def test_seed_ignores_foreign_authors_and_incidental_question_references(self) -> None:
+        record = {"expected_actor": "bot", "issue": {"body": "Director question: Q95. See another Director's Q455.",
+                  "provenance": {"author": "owner"}, "url": self.seed[1][0],
+                  "comments": [{"author": "bot", "body": "Owner question: Q101. Continue? Context: Q900."},
+                               {"author": "foreign", "body": "Owner question: Q999. My question."},
+                               {"author": "owner", "body": "We discussed Q1000.\n```text\nOwner question: Q2000. Example only.\n```\n> Owner question: Q3000. Quote."}]}}
+        with patch.object(counter, "read_discussion", return_value=record):
+            self.assertEqual(counter.github_seed(["owner/direction#7"]), (101, [self.seed[1][0]]))
+        with self.assertRaises(ValueError):
+            counter.github_seed(["owner/direction#7", "foreign/direction#1"])
 
     def test_two_harnesses_and_many_sessions_share_unique_sequence(self):
         with patch.dict(os.environ, {"CODE_HOME": self.temporary.name, "CODEX_HOME": "/codex-a"}):
@@ -105,6 +151,24 @@ class QuestionCounterTests(unittest.TestCase):
         self.assertEqual(chat, first + 1)
         self.assertEqual(json.loads(self.path.read_text())["last_id"], chat)
 
+    def test_unknown_remote_allocation_reuses_pending_chat_request(self) -> None:
+        counter.update(self.path, seed=self.seed, allocate=False)
+        keys = []
+
+        def reserve(minimum: int, key: str, sources: list[str]) -> int:
+            keys.append(key)
+            if len(keys) == 1:
+                raise ValueError("unconfirmed write")
+            return minimum + 1
+
+        with patch.object(counter, "reserve_question", side_effect=reserve):
+            with self.assertRaises(ValueError):
+                counter.update(self.path)
+            self.assertEqual(json.loads(self.path.read_text())["last_id"], self.seed[0])
+            self.assertEqual(counter.update(self.path), self.seed[0] + 1)
+        self.assertEqual(keys[0], keys[1])
+        self.assertNotIn("pending_request", json.loads(self.path.read_text()))
+
     def test_question_heading_distinguishes_its_id_from_context(self):
         for heading in ("Owner question:", "**Director question:**", "\n **Owner question: ", "***Director question:***"):
             body = heading + " Continue? See Q72."
@@ -132,12 +196,13 @@ class QuestionCounterTests(unittest.TestCase):
                 counter.update(self.path, seed=self.seed)
             self.assertEqual(self.path.read_text(), data)
 
-    def test_seed_reads_all_current_comments_and_reserved_ranges(self):
-        reserved = {"body": "Q239", "comments": [{"body": "Reserved Q240–Q259"}], "url": self.seed[1][0]}
+    def test_seed_reads_all_current_question_headings(self):
+        reserved = {"body": "Director question: Q239. Earlier?", "provenance": {"author": "owner"},
+                    "comments": [{"author": "owner", "body": "Owner question: Q259. Later?"}], "url": self.seed[1][0]}
         catalog = "https://github.com/owner/catalog/issues/9"
-        for later_comment, expected in (("Q263 decided", 263), ("Nothing numbered yet", 259)):
+        for later_comment, expected in (("Owner question: Q263. Continue?", 263), ("Nothing numbered yet", 259)):
             with self.subTest(expected=expected):
-                records = [reserved, {"body": "No questions here", "comments": [{"body": later_comment}], "url": catalog}]
+                records = [reserved, {"body": "No questions here", "comments": [{"author": "owner", "body": later_comment}], "url": catalog}]
                 envelopes = [SimpleNamespace(stdout=json.dumps({"ok": True, "disposition": "complete",
                               "outcome_certainty": "confirmed", "issue": record})) for record in records]
                 with patch.object(counter.subprocess, "run", side_effect=envelopes):
@@ -146,7 +211,7 @@ class QuestionCounterTests(unittest.TestCase):
                 self.assertEqual(sources, [record["url"] for record in records])
 
     def test_seed_read_resolves_its_repository_outside_any_checkout(self):
-        record = {"body": "Q601", "comments": [], "url": "https://github.com/owner/launchplane/issues/3601"}
+        record = {"body": "Owner question: Q601. Continue?", "provenance": {"author": "owner"}, "comments": [], "url": "https://github.com/owner/launchplane/issues/3601"}
         outside = Path(self.temporary.name) / "outside"
         outside.mkdir()
 

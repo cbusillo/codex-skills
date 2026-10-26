@@ -86,12 +86,18 @@ changes on yes.
   In chat, get each new question's short ID from the
   [shared question counter](../direction/scripts/question_id.py):
   `uv run <direction-skill-dir>/scripts/question_id.py next`.
-  Both harnesses use one counter in the shared Code home (`CODE_HOME`, or
-  `~/.code`); never count within a session or use a provider's home for it.
+  Both harnesses and every machine use the existing `[questions].queue` in
+  the shared private `skill-data/supervisor.toml`. Configure the same Director
+  queue on each machine. GitHub orders allocation records in that queue; the
+  local counter in `CODE_HOME` or `~/.code` preserves its high-water mark and
+  retry identity. Allocation requires a confirmed queue write and full readback;
+  there is no offline allocation. Preserve allocation records with the queue's
+  other evidence. No new file or branch is published.
   On first setup, run `seed --seed-from OWNER/REPO#NUMBER`, repeating
-  `--seed-from` for all current question and decision discussions, including
-  reserved ranges. The helper reads their full GitHub records and seeds from
-  the highest number it finds; never seed from a number remembered in chat.
+  `--seed-from` for current question discussions belonging to this Director.
+  Only that Director's and its configured automation's question headings count;
+  incidental references, quoted IDs and other authors do not advance the seed.
+  Existing local allocations and saved question identities are preserved.
   An ID never changes and is never reused: when you ask the same
   question again, even reworded, keep its ID. Restate the question each time
   you list it, so the Director can answer "Q2 yes" without scrolling back.
