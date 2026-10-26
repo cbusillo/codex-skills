@@ -17,7 +17,6 @@ import github_plan_wait
 
 SKILLS = Path(__file__).resolve().parents[2]
 COMMENT_LINK = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/[1-9][0-9]*#issuecomment-([1-9][0-9]*)")
-QUEUE = re.compile(r"[\w.-]+/[\w.-]+#[1-9][0-9]*")
 
 
 for scripts in ("github-work-rollup/scripts", "supervisor/scripts"):
@@ -44,6 +43,7 @@ def configured_queue() -> str | None:
     from skills.direction.scripts import question_id
 
     return question_id.configured_queue()
+
 
 def comment_links(wait: dict[str, Any]) -> list[tuple[str, str, str]]:
     found = {match[0]: (match[0], match[1], match[2]) for match in COMMENT_LINK.finditer(json.dumps(wait))}

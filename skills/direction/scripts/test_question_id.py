@@ -12,6 +12,7 @@ import multiprocessing
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import os
+import subprocess
 import queue
 import sys
 import tempfile
@@ -32,13 +33,13 @@ SPEC.loader.exec_module(PLAN)
 
 def allocate_many(path, barrier, results):
     barrier.wait(timeout=15)
-    with patch.object(counter, "reserve_question", side_effect=lambda minimum, *_: minimum + 1):
+    with patch.object(counter, "configured_queue", return_value=None):
         results.put([counter.update(Path(path)) for _ in range(12)])
 
 
 def allocate_one(path, ready, results):
     ready.set()
-    with patch.object(counter, "reserve_question", side_effect=lambda minimum, *_: minimum + 1):
+    with patch.object(counter, "configured_queue", return_value=None):
         results.put(counter.update(Path(path)))
 
 
@@ -48,37 +49,65 @@ class QuestionCounterTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.path = Path(self.temporary.name) / "counter.json"
         self.seed = (317, ["https://github.com/owner/direction/issues/7"])
-        self.local_reservation = patch.object(counter, "reserve_question", side_effect=lambda minimum, *_: minimum + 1)
+        self.local_reservation = patch.object(counter, "configured_queue", return_value=None)
         self.local_reservation.start()
         self.addCleanup(self.local_reservation.stop)
 
     def test_two_machines_reserve_unique_numbers_and_reuse_question_identity(self) -> None:
-        self.local_reservation.stop()
         paths = [self.path, self.path.with_name("other-machine.json")]
         for path in paths:
             counter.update(path, seed=self.seed, allocate=False)
         barrier = threading.Barrier(2)
-        records = []
+        state = {"version": 1, "director": "owner", "last_id": self.seed[0], "questions": {}}
+        revision = 0
+        reads = 0
+        conflicts = 0
         lock = threading.Lock()
 
-        def read(item: str) -> dict:
+        def read(repo: str, minimum: int) -> tuple[str, dict]:
+            nonlocal reads
             with lock:
-                return {"expected_actor": "bot", "issue": {"body": "", "provenance": {"author": "owner"},
-                        "comments": list(records), "url": self.seed[1][0]}}
+                snapshot = str(revision), json.loads(json.dumps(state))
+                reads += 1
+                synchronize = reads <= 2
+            if synchronize:
+                barrier.wait(timeout=10)
+            return snapshot
 
-        def post(item: str, body: str) -> None:
+        def write(repo: str, sha: str, updated: dict) -> bool:
+            nonlocal revision, conflicts
             with lock:
-                records.append({"id": len(records) + 1, "body": body, "author": "bot"})
-            barrier.wait(timeout=10)
+                if sha != str(revision):
+                    conflicts += 1
+                    return False
+                state.update(updated)
+                revision += 1
+                return True
 
         with patch.object(counter, "configured_queue", return_value="owner/direction#7"), \
-                patch.object(counter, "read_discussion", side_effect=read), \
-                patch.object(counter, "post_reservation", side_effect=post), \
+                patch.object(counter, "read_counter", side_effect=read), \
+                patch.object(counter, "write_counter", side_effect=write), \
+                patch.object(counter, "read_discussion", side_effect=AssertionError("legacy seeds are not reread")), \
                 ThreadPoolExecutor(max_workers=2) as pool:
             numbers = list(pool.map(lambda path: counter.update(path, question_url=f"https://example.test/{path.name}"), paths))
             self.assertEqual(sorted(numbers), [self.seed[0] + 1, self.seed[0] + 2])
+            self.assertGreater(conflicts, 0)
             self.assertEqual(counter.update(paths[1], question_url="https://example.test/counter.json"), numbers[0])
-            self.assertEqual(len(records), 2)
+            self.assertEqual(len(state["questions"]), 2)
+            self.assertTrue(all("example.test" not in key for key in state["questions"]))
+
+            def write_then_lose_response(repo: str, sha: str, updated: dict) -> bool:
+                self.assertTrue(write(repo, sha, updated))
+                raise OSError("response lost after commit")
+
+            with patch.object(counter, "write_counter", side_effect=write_then_lose_response):
+                with self.assertRaises(ValueError):
+                    counter.update(paths[0])
+            self.assertEqual(counter.update(paths[0]), max(numbers) + 1)
+            self.assertEqual(len(state["questions"]), 3)
+            high = state["last_id"] + 10
+            counter.update(paths[0], seed=(high, ["legacy source no longer readable"]), allocate=False)
+            self.assertEqual(counter.update(paths[1]), high + 1)
 
     def test_seed_ignores_foreign_authors_and_incidental_question_references(self) -> None:
         record = {"expected_actor": "bot", "issue": {"body": "Director question: Q95. See another Director's Q455.",
@@ -155,7 +184,7 @@ class QuestionCounterTests(unittest.TestCase):
         counter.update(self.path, seed=self.seed, allocate=False)
         keys = []
 
-        def reserve(minimum: int, key: str, sources: list[str]) -> int:
+        def reserve(minimum: int, key: str, repo: str | None) -> int:
             keys.append(key)
             if len(keys) == 1:
                 raise ValueError("unconfirmed write")
@@ -168,6 +197,32 @@ class QuestionCounterTests(unittest.TestCase):
             self.assertEqual(counter.update(self.path), self.seed[0] + 1)
         self.assertEqual(keys[0], keys[1])
         self.assertNotIn("pending_request", json.loads(self.path.read_text()))
+        with patch.object(counter, "configured_queue", return_value="owner/direction#7"), \
+                patch.object(counter, "read_counter", side_effect=subprocess.CalledProcessError(1, "read")):
+            with self.assertRaises(ValueError):
+                counter.reserve_question(self.seed[0], "request", "owner/direction")
+
+    def test_shared_counter_writes_use_file_sha_and_initialize_without_source(self) -> None:
+        calls = []
+
+        def request(method: str, path: str, body: dict | None = None, allowed: tuple[int, ...] = ()) -> SimpleNamespace:
+            calls.append((method, path, body))
+            if method == "GET":
+                return SimpleNamespace(ok=False, status=404)
+            return SimpleNamespace(ok=True, body={"sha": "server-object"})
+
+        with patch.object(counter, "counter_request", side_effect=request):
+            counter.initialize_counter("owner/catalog", self.seed[0])
+            tree = next(body["tree"] for method, path, body in calls if path.endswith("/git/trees"))
+            self.assertEqual([entry["path"] for entry in tree], [counter.COUNTER_FILE])
+            state = json.loads(tree[0]["content"])
+            self.assertEqual(state["last_id"], self.seed[0])
+            counter.write_counter("owner/catalog", "observed-file-sha", state)
+        update = calls[-1][2]
+        self.assertEqual(update["sha"], "observed-file-sha")
+        self.assertEqual(update["branch"], counter.COUNTER_BRANCH)
+        with patch.object(counter, "counter_request", return_value=SimpleNamespace(ok=False, status=409)):
+            self.assertFalse(counter.write_counter("owner/catalog", "stale", state))
 
     def test_question_heading_distinguishes_its_id_from_context(self):
         for heading in ("Owner question:", "**Director question:**", "\n **Owner question: ", "***Director question:***"):

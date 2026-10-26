@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import fcntl
 import json
 import os
@@ -21,7 +23,8 @@ from typing import Any
 
 QUESTION = re.compile(r"\bQ([1-9][0-9]*)\b")
 ITEM = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*")
-RESERVATION = re.compile(r"<!-- director-question:allocation (.+) -->")
+COUNTER_BRANCH = "state/director-questions"
+COUNTER_FILE = "counter.json"
 QUESTION_HEADING = re.compile(r"^\s*\**(?:Owner|Director) question:[ \t*]*")
 
 
@@ -123,63 +126,81 @@ def github_seed(items: list[str]) -> tuple[int, list[str]]:
     return highest, sources
 
 
-def post_reservation(queue: str, body: str) -> None:
+def counter_request(method: str, path: str, body: dict[str, Any] | None = None,
+                    allowed: tuple[int, ...] = ()) -> Any:
     sys.path.append(str(Path(__file__).resolve().parents[2] / "github/scripts"))
-    import github_comment
+    import github_api
+    import github_identity
 
-    repo, number = queue.split("#")
+    result = github_api.call_gh_with_retry(method, path, body,
+        operation="github.direction.counter_read" if method == "GET" else "github.direction.counter_write",
+        expected_actor=github_identity.automation_login(), is_write=method != "GET", conditional_cache=False)
+    if not result.ok and result.status not in allowed:
+        reason = result.failure.cause if result.failure else "unknown"
+        raise ValueError(f"GitHub question counter {reason} (HTTP {result.status}); preserve the pending request and reconcile before retrying")
+    return result
+
+
+def counter_endpoint(repo: str) -> str:
+    return f"/repos/{repo}/contents/{COUNTER_FILE}"
+
+
+def initialize_counter(repo: str, minimum: int) -> None:
+    reference = counter_request("GET", f"/repos/{repo}/git/ref/heads/{COUNTER_BRANCH}", allowed=(404,))
+    if reference.ok:
+        raise ValueError("Counter branch exists without its state file; preserve it and restore the last verified state")
+    state = {"version": 1, "director": repo.split("/", 1)[0].casefold(), "last_id": minimum, "questions": {}}
+    tree = counter_request("POST", f"/repos/{repo}/git/trees", {"tree": [
+        {"path": COUNTER_FILE, "mode": "100644", "type": "blob", "content": json.dumps(state, sort_keys=True)}]})
+    commit = counter_request("POST", f"/repos/{repo}/git/commits",
+                             {"message": "Initialize Director question counter", "tree": tree.body["sha"], "parents": []})
+    created = counter_request("POST", f"/repos/{repo}/git/refs",
+                              {"ref": f"refs/heads/{COUNTER_BRANCH}", "sha": commit.body["sha"]}, allowed=(422,))
+    if not created.ok:
+        counter_request("GET", counter_endpoint(repo) + f"?ref={COUNTER_BRANCH}")
+
+
+def read_counter(repo: str, minimum: int) -> tuple[str, dict[str, Any]]:
+    result = counter_request("GET", counter_endpoint(repo) + f"?ref={COUNTER_BRANCH}", allowed=(404,))
+    if not result.ok:
+        initialize_counter(repo, minimum)
+        result = counter_request("GET", counter_endpoint(repo) + f"?ref={COUNTER_BRANCH}")
+    state = json.loads(base64.b64decode(result.body["content"], validate=False))
+    if (not isinstance(state, dict) or state.get("version") != 1
+            or state.get("director") != repo.split("/", 1)[0].casefold()
+            or type(state.get("last_id")) is not int or state["last_id"] < 0
+            or not isinstance(state.get("questions"), dict)
+            or any(not isinstance(key, str) or type(number) is not int or not 0 < number <= state["last_id"]
+                   for key, number in state["questions"].items())):
+        raise ValueError("Invalid shared question counter; preserve it and restore its last verified state")
+    return result.body["sha"], state
+
+
+def write_counter(repo: str, sha: str, state: dict[str, Any]) -> bool:
+    content = base64.b64encode((json.dumps(state, sort_keys=True) + "\n").encode()).decode()
+    result = counter_request("PUT", counter_endpoint(repo), {"message": "Advance Director question counter",
+                             "branch": COUNTER_BRANCH, "sha": sha, "content": content}, allowed=(409,))
+    return result.ok
+
+
+def reserve_question(minimum: int, key: str | None, repo: str | None) -> int:
+    if repo is None:
+        return minimum + int(key is not None)
+    request_key = hashlib.sha256(key.encode()).hexdigest() if key is not None else None
     try:
-        result = github_comment.comment("issue", int(number), body, repo=repo, dedupe_body=True)
-    except github_comment.CommentError as error:
-        raise ValueError(str(error)) from error
-    if (result.get("comment_action") not in {"created", "existing"}
-            or result.get("outcome_certainty") not in {None, "confirmed", "reconciled_applied", "not_applicable"}):
-        raise ValueError("Question allocation write is unconfirmed; reconcile its queue record before retrying")
-
-
-def reservations(result: dict[str, Any], director: str) -> dict[str, int]:
-    trusted = {director.casefold(), str(result.get("expected_actor") or "").casefold()} - {""}
-    assignments: dict[str, int] = {}
-    highest = 0
-    for comment in sorted(result["issue"]["comments"], key=lambda entry: entry["id"]):
-        if str(comment.get("author") or "").casefold() not in trusted:
-            continue
-        match = RESERVATION.match(comment["body"])
-        if match is None:
-            if comment["body"].startswith("<!-- director-question:allocation"):
-                raise ValueError("Malformed allocation record; preserve the queue before recovery")
-            continue
-        record = json.loads(match[1])
-        if (not isinstance(record, dict) or record.get("version") != 1 or not isinstance(record.get("key"), str) or not record["key"]
-                or type(record.get("minimum")) is not int or record["minimum"] < 0):
-            raise ValueError("Invalid allocation record; preserve the queue before recovery")
-        if record["key"] not in assignments:
-            highest = max(highest, record["minimum"]) + 1
-            assignments[record["key"]] = highest
-    return assignments
-
-
-def reserve_question(minimum: int, key: str, sources: list[str]) -> int:
-    queue = configured_queue()
-    if queue is None:
-        raise ValueError('Configure the existing [questions] queue = "OWNER/REPO#NUMBER" in skill-data/supervisor.toml on each machine')
-    director = queue.split("/", 1)[0]
-    result = read_discussion(queue)
-    assigned = reservations(result, director)
-    if key in assigned:
-        return assigned[key]
-    for source in sources:
-        match = re.fullmatch(r"https://github\.com/([^/]+/[^/]+)/issues/([1-9][0-9]*)", source)
-        if match is None or match[1].split("/", 1)[0].casefold() != director.casefold():
-            raise ValueError("Counter seed sources must belong to the configured queue's Director")
-        minimum = max(minimum, question_maximum(read_discussion(f"{match[1]}#{match[2]}"), director))
-    minimum = max(minimum, question_maximum(result, director))
-    body = "<!-- director-question:allocation " + json.dumps({"version": 1, "key": key, "minimum": minimum}, sort_keys=True) + " -->"
-    post_reservation(queue, body)
-    assigned = reservations(read_discussion(queue), director)
-    if key not in assigned:
-        raise ValueError("Question allocation absent from queue readback; preserve the pending request before recovery")
-    return assigned[key]
+        for _ in range(8):
+            sha, state = read_counter(repo, minimum)
+            if request_key in state["questions"]:
+                return state["questions"][request_key]
+            state["last_id"] = max(state["last_id"], minimum)
+            if request_key is not None:
+                state["last_id"] += 1
+                state["questions"][request_key] = state["last_id"]
+            if write_counter(repo, sha, state):
+                return state["last_id"]
+    except (KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
+        raise ValueError("Shared question allocation could not be confirmed; preserve its request and retry after reconciliation") from error
+    raise ValueError("Shared counter changed concurrently; preserve the pending request and retry allocation")
 
 
 def save_state(path: Path, state: dict[str, Any]) -> None:
@@ -226,13 +247,22 @@ def update(path: Path, *, seed: tuple[int, list[str]] | None = None, allocate: b
             if question_url in assignments:
                 return assignments[question_url]
         number = state["last_id"]
+        queue = configured_queue()
+        repository = queue.split("#", 1)[0] if queue else None
+        if state.get("counter_repository") and state["counter_repository"] != repository:
+            raise ValueError("Restore the recorded counter repository in [questions].queue before allocating")
+        if repository:
+            state["counter_repository"] = repository
         if allocate:
             key = question_url or state.setdefault("pending_request", uuid.uuid4().hex)
             save_state(path, state)
-            number = reserve_question(state["last_id"], key, state["seed_sources"])
+            number = reserve_question(state["last_id"], key, repository)
             state["last_id"] = max(state["last_id"], number)
             if question_url is None:
                 state.pop("pending_request", None)
+        elif repository:
+            number = reserve_question(state["last_id"], None, repository)
+            state["last_id"] = max(state["last_id"], number)
         if question_url is not None:
             state["questions"][question_url] = number
         save_state(path, state)
@@ -240,7 +270,7 @@ def update(path: Path, *, seed: tuple[int, list[str]] | None = None, allocate: b
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Allocate Director question IDs through the shared GitHub question queue")
+    parser = argparse.ArgumentParser(description="Allocate Director question IDs from a shared counter or a local single-machine counter")
     parser.add_argument("action", choices=("next", "seed"))
     parser.add_argument("--seed-from", action="append", default=[], metavar="OWNER/REPO#NUMBER",
                         help="Current question/decision discussions; read all of them on initial setup")

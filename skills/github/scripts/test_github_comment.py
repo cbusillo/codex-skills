@@ -1105,7 +1105,7 @@ def test_recent_reconciliation_includes_clock_skew_boundary_and_paginates() -> N
 def test_question_numbering_follows_confirmed_write_and_repairs_same_assignment() -> None:
     counter = question_counter
     with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"CODE_HOME": directory}), \
-            patch.object(question_counter, "reserve_question", side_effect=lambda minimum, *_: minimum + 1):
+            patch.object(question_counter, "configured_queue", return_value=None):
         path = counter.counter_path()
         seed = counter.update(path, seed=(50, ["fixture"]), allocate=False)
         saved = {}
@@ -1187,7 +1187,7 @@ def test_question_numbering_follows_confirmed_write_and_repairs_same_assignment(
 
 def test_concurrent_numbering_reconciles_the_same_saved_body() -> None:
     with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"CODE_HOME": directory}), \
-            patch.object(question_counter, "reserve_question", side_effect=lambda minimum, *_: minimum + 1):
+            patch.object(question_counter, "configured_queue", return_value=None):
         path = question_counter.counter_path()
         seed = question_counter.update(path, seed=(50, ["fixture"]), allocate=False)
         saved = {}
@@ -1305,7 +1305,7 @@ def test_ordinary_comment_keeps_its_mentions() -> None:
 
 def test_personal_question_uses_chat_id_before_exact_text_approval() -> None:
     with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"CODE_HOME": directory}), \
-            patch.object(question_counter, "reserve_question", side_effect=lambda minimum, *_: minimum + 1):
+            patch.object(question_counter, "configured_queue", return_value=None):
         path = question_counter.counter_path()
         question_counter.update(path, seed=(100, ["fixture"]), allocate=False)
         chat_id = f"Q{question_counter.update(path)}"

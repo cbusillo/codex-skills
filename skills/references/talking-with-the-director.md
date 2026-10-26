@@ -86,18 +86,24 @@ changes on yes.
   In chat, get each new question's short ID from the
   [shared question counter](../direction/scripts/question_id.py):
   `uv run <direction-skill-dir>/scripts/question_id.py next`.
-  Both harnesses and every machine use the existing `[questions].queue` in
-  the shared private `skill-data/supervisor.toml`. Configure the same Director
-  queue on each machine. GitHub orders allocation records in that queue; the
-  local counter in `CODE_HOME` or `~/.code` preserves its high-water mark and
-  retry identity. Allocation requires a confirmed queue write and full readback;
-  there is no offline allocation. Preserve allocation records with the queue's
-  other evidence. No new file or branch is published.
+  Both harnesses use the counter in `CODE_HOME` or `~/.code`. For multiple
+  machines, configure the same existing `[questions].queue` in each machine's
+  private `skill-data/supervisor.toml`. The queue's repository holds an isolated
+  `state/director-questions` branch containing only counter state, with no
+  workflows or source files. GitHub's file-SHA update rejects competing writes;
+  each allocation preserves its request identity for uncertain-write recovery.
+  Only numeric IDs and opaque request hashes are published, never the local
+  counter file, seed discussions or question text. Keep that runtime state branch
+  when cleaning source branches. A recorded shared counter never falls back
+  to local numbering after a configuration loss.
+  Without a queue, the existing local counter remains available for one machine.
   On first setup, run `seed --seed-from OWNER/REPO#NUMBER`, repeating
   `--seed-from` for current question discussions belonging to this Director.
+  Before migrating existing machines to shared allocation, run `seed` on each
+  with the shared queue configured, so each publishes its existing high-water mark.
   Only that Director's and its configured automation's question headings count;
   incidental references, quoted IDs and other authors do not advance the seed.
-  Existing local allocations and saved question identities are preserved.
+  Existing local IDs stay unchanged. Allocation does not reread old seed sources.
   An ID never changes and is never reused: when you ask the same
   question again, even reworded, keep its ID. Restate the question each time
   you list it, so the Director can answer "Q2 yes" without scrolling back.
