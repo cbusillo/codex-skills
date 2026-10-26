@@ -1144,8 +1144,7 @@ For an authorized native-app task, put a single standalone declaration in its
 brief's first nonblank line, using the exact app bundle ID, for example
 `GUI task: com.apple.TestFlight`. Examples quoted later in a source-work brief
 do not opt that task into GUI work.
-Launch that brief alone with `--account-provider openai` and a local `codex -C`
-command, without `--remote`. The launcher rejects terminal app targets and adds
+Launch that brief alone with `--account-provider openai --computer-use required`. The launcher rejects terminal app targets and adds
 the GUI safety instructions to the worker's prompt. GUI commands retain their
 local invocation and client-side overrides; they do not use the managed RPC
 ingress or acquire a managed-client exemption. A live local GUI client therefore

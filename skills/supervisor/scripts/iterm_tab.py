@@ -1191,10 +1191,12 @@ def validate_computer_use_launch(args: argparse.Namespace, commands: list[str], 
             raise ValueError("--computer-use required needs GUI task: <app-bundle-id> as the brief's first nonblank line")
         if mode == "unused" and app:
             raise ValueError("--computer-use unused conflicts with GUI task; use --computer-use required for screen work")
-        if mode or launch_agent(command) != "codex":
+        if app and mode != "required":
+            raise ValueError("GUI task needs --computer-use required")
+        if mode:
             continue
         task = " ".join(brief.split()).replace(" ".join(brief_rules_block().split()), "")
-        if re.search(r"\bcomputer[\s-]+use\b", task, re.IGNORECASE):
+        if re.search(r"\bcomputer[\s-]+use\b", task, re.IGNORECASE) and launch_agent(command) == "codex":
             raise ValueError("Computer Use brief needs --computer-use required and a first-line GUI task: <app-bundle-id> "
                              "for local Codex with the selected home's plugin; "
                              "use --computer-use unused for source-only mentions")
