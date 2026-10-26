@@ -100,6 +100,15 @@ class ResumeLaunchTests(unittest.TestCase):
         self.start.assert_not_called()
         self.assertEqual(choices[0]["resume_session_id"], self.session)
 
+    def test_supervisor_owned_resume_supplies_the_label_to_its_child(self) -> None:
+        commands, _ = iterm_tab.prepare_launches(self.args)
+        child = self.root / "uv"
+        child.write_text('#!/bin/sh\nprintf "%s" "$DISCORD_BLUE_SESSION_KIND"\n')
+        child.chmod(0o700)
+        result = subprocess.run(["/bin/sh", "-c", commands[0]], env={"PATH": str(self.root) + ":/usr/bin:/bin"},
+                                capture_output=True, text=True, check=True)
+        self.assertEqual(result.stdout, "spawned")
+
     def test_frozen_or_duplicate_source_refuses_before_receipts_and_daemon_reads(self):
         for rows in ([{"session_id": self.session, "successor_admitted": True}],
                      [{"session_id": self.session}, {"session_id": self.session}]):

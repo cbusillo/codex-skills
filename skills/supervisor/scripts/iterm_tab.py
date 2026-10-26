@@ -735,7 +735,7 @@ def preflight_codex_daemon(choice, *, exact_source=False):
                          f"no terminal was launched; {remedy}") from error
 
 
-def scoped_exec(command_text):
+def scoped_exec(command_text: str, settings: str = "CLAUDE_ACCOUNT_MOVE_ENABLED=1") -> str | None:
     """Scope the marker to a final simple exec without exporting into the shell."""
     lexer = shlex.shlex(command_text, posix=True, punctuation_chars=";&|()")
     lexer.whitespace_split = True
@@ -756,11 +756,15 @@ def scoped_exec(command_text):
     for match in reversed(list(re.finditer(r"\bexec\s+", command_text))):
         try:
             if shlex.split(command_text[match.start():]) == words:
-                return (command_text[:match.end()] + "env CLAUDE_ACCOUNT_MOVE_ENABLED=1 "
+                return (command_text[:match.end()] + f"env {settings} "
                         + command_text[match.end():])
         except ValueError:
             continue
     return None
+
+
+def scoped_environment(command_text: str, settings: str) -> str:
+    return scoped_exec(command_text, settings) or f"( export {settings}; {command_text}\n)"
 
 
 def with_account(command_text, choice, brief=None, *, coordinate=False):
@@ -820,13 +824,13 @@ def with_account(command_text, choice, brief=None, *, coordinate=False):
     prefixes = ["unset CLAUDE_CONFIG_DIR"] if default_claude else []
     if settings:
         prefixes.append(f"export {settings}")
+    session_settings = "DISCORD_BLUE_SESSION_KIND=spawned"
     if choice["provider"] == "anthropic":
         prefixes.append(f"export {CLAUDE_SUGGESTION_ENV}=false")
         if CHROME_OPT_IN.is_file():
             prefixes.append(f"export {agent_tools.CHROME_ENV}=0")
-        command_text = scoped_exec(command_text) or (
-            "( export CLAUDE_ACCOUNT_MOVE_ENABLED=1; " + command_text + "\n)"
-        )
+        session_settings = "CLAUDE_ACCOUNT_MOVE_ENABLED=1 " + session_settings
+    command_text = scoped_environment(command_text, session_settings)
     return " && ".join([*prefixes, command_text])
 
 
@@ -1129,6 +1133,7 @@ def prepare_resume(args):
     invocation = ["uv", "run", str(Path(__file__).with_name("codex-session.py").resolve()),
                   "resume", "--session-id", session, "--codex-home", str(home)]
     settings = [f"{key}={os.path.expanduser(value)}" for key, value in choice["env"].items()]
+    settings.append("DISCORD_BLUE_SESSION_KIND=spawned")
     return [shlex.join(["exec", "env", *settings, *invocation])], [choice]
 
 
@@ -1290,7 +1295,8 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         raise ValueError("Codex --remote launches need --account-provider openai, so the launcher's "
                          "ingress can start the thread with memory generation off")
     else:
-        command_texts = [append_brief(text, brief) for text, brief in zip(command_texts, briefs)]
+        command_texts = [scoped_environment(append_brief(text, brief), "DISCORD_BLUE_SESSION_KIND=spawned")
+                         for text, brief in zip(command_texts, briefs)]
     if choices[0]:
         for choice in choices:
             if choice.get("tools", {}).get("route") != "local":

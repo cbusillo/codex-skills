@@ -1392,6 +1392,13 @@ approval. Chris handles profiles, sign-ins, settings and permission prompts;
 Codex is the default screen worker. Claude Computer Use runs only in a visible
 iTerm tab with Chris's approval for that session.
 
+Launcher-created sessions receive `DISCORD_BLUE_SESSION_KIND=spawned` in their
+process environment. The Codex ingress records it in new and forked threads'
+native `threadSource`, including new threads inside a resumed worker. An
+existing thread is never relabelled by a resume. Claude's channel inherits the
+same environment marker. See the [Discord Blue routing contract](https://github.com/cbusillo/discord-blue/blob/main/docs/agent-session-protocol.md)
+for channel and membership behavior.
+
 ## TLS verification lint
 
 Run `scripts/lint-tls.sh` for the complete catalog TLS gate. Its

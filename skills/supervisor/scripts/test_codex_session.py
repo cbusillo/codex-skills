@@ -26,6 +26,25 @@ import github_plan_native
 
 
 class ResumeTests(unittest.TestCase):
+    def test_generic_launch_and_resume_preserve_the_callers_label(self) -> None:
+        observed = []
+
+        async def native_client(*args: object, **kwargs: object) -> int:
+            observed.append(os.environ.get("DISCORD_BLUE_SESSION_KIND"))
+            return 0
+
+        for command in ("launch", "resume"):
+            for label in (None, "spawned"):
+                with self.subTest(command=command, label=label), patch.dict(os.environ):
+                    os.environ.pop("DISCORD_BLUE_SESSION_KIND", None)
+                    if label is not None:
+                        os.environ["DISCORD_BLUE_SESSION_KIND"] = label
+                    self.args.command = command
+                    self.args.native_args = ["codex", "--", "fixture"]
+                    with patch.object(SESSION, "run_client", side_effect=native_client):
+                        self.assertEqual(SESSION.run(self.args), 0)
+                    self.assertEqual(observed[-1], label)
+
     def test_bare_unix_launch_uses_the_selected_account_endpoint(self):
         self.args.command = "launch"
         endpoint = "unix://" + str(codex_daemon_endpoint(self.home))

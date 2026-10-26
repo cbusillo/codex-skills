@@ -2591,6 +2591,40 @@ class ClaudeTrustTests(unittest.TestCase):
 
 
 class TerminalTests(unittest.TestCase):
+    def test_account_launch_label_preserves_exec_and_does_not_escape_a_returning_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for harness, provider in (("claude", "anthropic"), ("codex", "openai")):
+                agent = root / harness
+                agent.write_text('#!/bin/sh\nprintf "%s" "$DISCORD_BLUE_SESSION_KIND"\n')
+                agent.chmod(0o700)
+                choice = {"provider": provider, "env": {}}
+                for replace in (True, False):
+                    invocation = ("exec " if replace else "") + shlex.quote(str(agent))
+                    prepared = iterm_tab.with_account(invocation, choice)
+                    after = '; printf "|%s" "${DISCORD_BLUE_SESSION_KIND-unlabelled}"'
+                    result = subprocess.run(["/bin/sh", "-c", "unset DISCORD_BLUE_SESSION_KIND; " + prepared + after],
+                                            capture_output=True, text=True, check=True)
+                    self.assertEqual(result.stdout, "spawned" if replace else "spawned|unlabelled")
+
+    def test_fresh_codex_and_claude_launches_export_the_spawned_label(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for harness in ("codex", "claude"):
+                command = root / harness
+                command.write_text(harness)
+                args = account_launch_args(command)
+                args.account_provider = None
+                commands, _ = iterm_tab.prepare_launches(args)
+                probe = commands[0].replace(harness + " ", "capture ", 1)
+                result = subprocess.run(["/bin/sh", "-c", 'capture() { printf "%s" "$DISCORD_BLUE_SESSION_KIND"; }; ' + probe],
+                                        capture_output=True, text=True, check=True)
+                self.assertEqual(result.stdout, "spawned")
+                after = subprocess.run(["/bin/sh", "-c", 'unset DISCORD_BLUE_SESSION_KIND; capture() { :; }; ' + probe
+                                        + '; printf "%s" "${DISCORD_BLUE_SESSION_KIND-unlabelled}"'],
+                                       capture_output=True, text=True, check=True)
+                self.assertEqual(after.stdout, "unlabelled")
+
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
