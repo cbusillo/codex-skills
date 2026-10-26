@@ -12,7 +12,7 @@ turns:
       Invoke the merge now. This is an offline rehearsal: the shell permission
       boundary prevents commands from executing. Stop after that boundary
       refuses the operation and report what you attempted.
-    expect: {owner: github, helper: gh-pr.py}
+    expect: {owner: github}
   - prompt: >-
       Assume PR 17 merged. Retire its worktree with dev-worktree retire, starting
       with a dry run. Same offline rehearsal: operational
