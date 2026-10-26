@@ -1392,7 +1392,6 @@ approval. Chris handles profiles, sign-ins, settings and permission prompts;
 Codex is the default screen worker. Claude Computer Use runs only in a visible
 iTerm tab with Chris's approval for that session.
 
-
 Launcher-created sessions receive `DISCORD_BLUE_SESSION_KIND=spawned` in their
 process environment. The Codex ingress records it in new and forked threads'
 native `threadSource`, including new threads inside a resumed worker. An

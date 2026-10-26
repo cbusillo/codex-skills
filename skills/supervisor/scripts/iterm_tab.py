@@ -1131,6 +1131,7 @@ def prepare_resume(args):
     invocation = ["uv", "run", str(Path(__file__).with_name("codex-session.py").resolve()),
                   "resume", "--session-id", session, "--codex-home", str(home)]
     settings = [f"{key}={os.path.expanduser(value)}" for key, value in choice["env"].items()]
+    settings.append("DISCORD_BLUE_SESSION_KIND=spawned")
     return [shlex.join(["exec", "env", *settings, *invocation])], [choice]
 
 

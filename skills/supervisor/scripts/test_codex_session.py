@@ -26,6 +26,25 @@ import github_plan_native
 
 
 class ResumeTests(unittest.TestCase):
+    def test_generic_launch_and_resume_preserve_the_callers_label(self) -> None:
+        observed = []
+
+        async def native_client(*args: object, **kwargs: object) -> int:
+            observed.append(os.environ.get("DISCORD_BLUE_SESSION_KIND"))
+            return 0
+
+        for command in ("launch", "resume"):
+            for label in (None, "spawned"):
+                with self.subTest(command=command, label=label), patch.dict(os.environ):
+                    os.environ.pop("DISCORD_BLUE_SESSION_KIND", None)
+                    if label is not None:
+                        os.environ["DISCORD_BLUE_SESSION_KIND"] = label
+                    self.args.command = command
+                    self.args.native_args = ["codex", "--", "fixture"]
+                    with patch.object(SESSION, "run_client", side_effect=native_client):
+                        self.assertEqual(SESSION.run(self.args), 0)
+                    self.assertEqual(observed[-1], label)
+
     def test_bare_unix_launch_uses_the_selected_account_endpoint(self):
         self.args.command = "launch"
         endpoint = "unix://" + str(codex_daemon_endpoint(self.home))
@@ -45,7 +64,6 @@ class ResumeTests(unittest.TestCase):
         with patch.object(SESSION, "run_client", new_callable=AsyncMock, return_value=0) as execute:
             self.assertEqual(SESSION.run(self.args), 0)
         execute.assert_awaited_once_with(self.home, native)
-        self.assertEqual(os.environ["DISCORD_BLUE_SESSION_KIND"], "spawned")
         self.spawn.assert_not_called()
 
     def test_fresh_launch_cannot_hide_resume_or_use_unobserved_home(self):
@@ -125,7 +143,6 @@ class ResumeTests(unittest.TestCase):
         command = guarded.call_args.args[1]
         self.assertEqual(command[-1], self.native)
         self.assertEqual(guarded.call_args.kwargs["session"], self.native)
-        self.assertEqual(os.environ["DISCORD_BLUE_SESSION_KIND"], "spawned")
         with SESSION.closure.resume_guard(self.native):
             SESSION.closure.resumed_launch(self.native, SESSION.closure.launch_metadata(456, "generation", str(self.home)),
                                           str(next((self.home / "sessions").glob("*.jsonl"))), "tty")
