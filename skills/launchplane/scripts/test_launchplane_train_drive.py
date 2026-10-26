@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -32,18 +33,28 @@ def _response(action: str, **result: Any) -> dict[str, Any]:
     return {"status": "accepted", "result": {"controller_action": action, **result}, "summary": {"trace_id": "t"}}
 
 
-def _project_controller(raw: dict[str, Any]) -> dict[str, Any]:
+def _write_action_helper() -> Any:
     spec = importlib.util.spec_from_file_location("evidence_write_action", SCRIPT_DIR / "launchplane-write-action.py")
     assert spec is not None and spec.loader is not None
     helper = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(helper)
+    return helper
+
+
+def _project_controller(raw: dict[str, Any]) -> dict[str, Any]:
+    helper = _write_action_helper()
     return helper.summarize_success(operation="merge-train-controller-run-once",
                                     request={"repository": REPO}, provider_payload=raw)
 
 
-def _refusal(error_code: str, *, status: str = "stale", http_status: int = 409) -> dict[str, Any]:
-    """The write-action helper's envelope for a controller call Launchplane rejected."""
-    return {"status": status, "result": {}, "summary": {"http_status": http_status, "trace_id": "refused", "error_code": error_code}}
+def _refusal(error_code: str, *, status: str | None = None, http_status: int = 409) -> dict[str, Any]:
+    helper = _write_action_helper()
+    output = helper.summarize_http_error(operation="merge-train-controller-run-once", request={},
+        exc=urllib.error.HTTPError("https://plane.example.invalid", http_status, "error", {}, None),
+        provider_payload={"trace_id": "refused", "error": {"code": error_code}})
+    if status is not None:
+        output["status"] = status
+    return output
 
 
 def _queue(*entries: tuple[int, list[str]]) -> dict[str, Any]:
@@ -1160,6 +1171,8 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
                          {"status": "stale", "summary": {"http_status": 409, "error_code": ["bad"]}},
                          {"status": "invalid", "summary": {"projection_error_code": "invalid_response"}},
                          _refusal("client_timeout", status="unavailable", http_status=504),
+                         _refusal("mutation_reconciliation_required"),
+                         _refusal("provider_mutation_failed", http_status=502),
                          _refusal("unknown_write", status="unavailable", http_status=502)):
             with self.subTest(response=response):
                 train = FakeTrain([response, _response("idle")])
@@ -1392,12 +1405,16 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         self.assertEqual(events[-1][1]["trace_id"], "refused")
 
     def test_a_refusal_reports_its_code_instead_of_an_unavailable_helper(self) -> None:
-        outcome, events = _drive(FakeTrain([_refusal("merge_train_new_refusal")]))
-        snapshot = events[0][1]
-        self.assertEqual((snapshot["controller_action"], snapshot["status"], snapshot["error_code"]),
-                         ("controller_refused", "stale", "merge_train_new_refusal"))
-        self.assertEqual(outcome, "error")
-        self.assertEqual((events[-1][1]["reason"], events[-1][1]["error_code"]), ("merge-train controller kept refusing", "merge_train_new_refusal"))
+        for code, http_status in (("merge_train_new_refusal", 409), ("idempotency_key_reused", 409), ("reservation_not_found", 404)):
+            with self.subTest(code=code):
+                response = _refusal(code, http_status=http_status)
+                outcome, events = _drive(FakeTrain([response]))
+                snapshot = events[0][1]
+                self.assertEqual((snapshot["controller_action"], snapshot["status"], snapshot["error_code"]),
+                                 ("controller_refused", response["status"], code))
+                self.assertEqual(outcome, "error")
+                self.assertEqual((events[-1][1]["reason"], events[-1][1]["error_code"]),
+                                 ("merge-train controller kept refusing", code))
 
     def test_branches_the_controller_already_updated_are_progress(self) -> None:
         # A busy train refreshes several queued PRs ahead of this one before it lands.

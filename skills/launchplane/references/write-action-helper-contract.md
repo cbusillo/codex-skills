@@ -674,8 +674,14 @@ installed local helper bindings.
   projection below, retaining the operation ID and service trace while dropping
   raw authorization, poll URLs and request/provider evidence. Acceptance is not
   completion. Poll `target-replacement-operation-read --operation-id ID` using
-  that original ID until the service reports its outcome; a failure or pending
-  reconciliation does not authorize a different rebuild.
+  that original ID until the service reports its outcome. Failure alone does
+  not authorize a different rebuild. A verified normal terminal engine result
+  (`fail`/`failed`, `finished_at`, and `candidate_private_readiness_failed`) may
+  permit a separately reviewed request under existing authority after the
+  prerequisite is corrected and deployed and fresh preflight is eligible.
+  Preserve the prior candidate and immutable receipts. Pending, running, held,
+  reconciliation-required, uncertain submissions and denials retain their
+  original request, evidence and key and their supported recovery path.
 
   The helper sends once. A timeout, unsafe redirect, malformed/misaligned receipt,
   interrupted exchange or server error reports `outcome_unknown`. Keep the
@@ -2186,6 +2192,23 @@ opaque values, raw requests, provider env, or headers are not copied into output
 Unauthorized, unavailable, denied, stale, and mismatched-intent responses keep
 the same envelope and include compact `summary.error_code`, `summary.trace_id`,
 and `warnings` entries. They do not include raw request bodies.
+
+HTTP conflicts are not automatically stale evidence. Planner and lane/identity
+refusals report `refused`; busy targets and idempotency conflicts report
+`conflict`; unsettled mutations report `reconciliation_required`. Only explicit
+stale-evidence codes recommend refreshing the dry-run. A structured 404 reports
+`not_found`, without proving global absence or recovery clearance. A terminal
+`provider_mutation_failed` reports `failed` in this shared projection, preserving
+the original operation rather than recommending another dispatch. Write callers
+that cannot verify the effect of a server error still override it with
+`outcome_unknown`, including native rebuild submission and mutating train passes.
+Service outages remain `unavailable`;
+inspect the original outcome before supported recovery of a write.
+
+Recognized fixed restart and native ingress refusal causes are retained in
+warnings. A recognized newer-deployment refusal also retains its bounded
+`summary.blocking_deployment_id`. Unknown prose, extra fields, and unsafe
+references are omitted independently of safe code and trace diagnostics.
 
 Preview-feedback projection failures retain independently validated
 `summary.error_code`, `summary.trace_id` and transport `summary.http_status`
