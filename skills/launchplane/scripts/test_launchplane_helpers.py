@@ -9286,6 +9286,9 @@ def test_product_promotion_dry_run_never_accepts_a_live_result() -> None:
         "source_health_status": "pending",
         "destination_health_status": "pending",
         "release_status": "skipped",
+        "rollback_status": "skipped",
+        "rollback_target_deployment_record_id": "private-rollback-target-record",
+        "rollback_deployment_record_id": "private-rollback-deployment-record",
         "target_id": "compose-private-9",
         "dry_run": True,
         "error_message": "",
@@ -9322,6 +9325,13 @@ def test_product_promotion_dry_run_never_accepts_a_live_result() -> None:
     printed = json.dumps(payload)
     assert "compose-private-9" not in printed and "release" not in json.dumps(payload["records"])
     assert payload["summary"]["backup_status"] == "pending"
+    assert payload["result"]["rollback_status"] == result["rollback_status"]
+    assert "private-rollback" not in printed
+    status, payload, _posts, _reads = _run_main(
+        argv, post={**response, "result": {**result, "unknown_provider_field": "private-extra"}}
+    )
+    assert status == 1 and payload["status"] == "invalid"
+    assert "private-extra" not in json.dumps(payload)
     status, payload, _posts, _reads = _run_main(
         argv, post={**response, "result": {**result, "dry_run": False}}
     )

@@ -10876,6 +10876,7 @@ PRODUCT_PROMOTION_STATUS_FIELDS = (
     "source_health_status",
     "destination_health_status",
     "release_status",
+    "rollback_status",
 )
 PRODUCT_PROMOTION_DRY_RUN_RESULT_FIELDS = {
     "product",
@@ -10889,6 +10890,8 @@ PRODUCT_PROMOTION_DRY_RUN_RESULT_FIELDS = {
     "promotion_record_id",
     "deployment_record_id",
     "inventory_record_id",
+    "rollback_target_deployment_record_id",
+    "rollback_deployment_record_id",
     *PRODUCT_PROMOTION_STATUS_FIELDS,
     "release_tag",
     "release_url",
