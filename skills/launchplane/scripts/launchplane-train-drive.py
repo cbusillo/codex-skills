@@ -417,7 +417,7 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
         if io.now() >= settings.deadline:
             io.finish_reads()
         outcome = _record_landings(settings, io, state, emit,
-                                   numbers={settings.number} if state.candidate_active else None)
+                                   numbers={settings.number} if state.candidate_active and io.now() < settings.deadline else None)
         if outcome == "landed":
             _finish_landing(settings, io, state, emit, started)
             return _stop(settings, state, emit, "landed")

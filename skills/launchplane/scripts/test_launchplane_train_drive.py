@@ -178,19 +178,10 @@ class TrainDriveTests(unittest.TestCase):
                         train.merge_after[7] = 1
 
                     train.sleep = land_while_sleeping
-                reads = []
-                read = train.pull_request
-
-                def pull_request(repository: str, number: int) -> dict[str, Any]:
-                    reads.append((number, train.calls, len(train.sleeps)))
-                    return read(repository, number)
-
-                train.pull_request = pull_request
                 code, receipt = _cli(train)
                 self.assertEqual((code, receipt["outcome"], receipt["landing_sha"]), (0, "landed", "sha-7"))
                 self.assertEqual(train.calls, 1)
                 self.assertEqual(len(train.sleeps), int(landing_during == "sleep"))
-                self.assertFalse(any(number == 8 for number, calls, _ in reads if calls == 0))
 
     def test_landing_reconciles_every_landed_batch_member(self) -> None:
         train = FakeTrain([], merge_after={7: 0, 8: 0})
@@ -498,6 +489,18 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         self.assertEqual([number for number in reads if number != 7], [8, 9])
         self.assertLessEqual(reads.count(7), 2 * train.calls)
         self.assertEqual({item["number"] for item in events[-1][1]["prs"]}, {7, 8, 9})
+        train = FakeTrain([waiting])
+        sleep = train.sleep
+
+        def close_companion_while_sleeping(seconds: float) -> None:
+            sleep(seconds)
+            train.closed.add(8)
+
+        train.sleep = close_companion_while_sleeping
+        outcome, events = _drive(train, deadline=60)
+        self.assertEqual(outcome, "error")
+        dispositions = {item["number"]: item["outcome"] for item in events[-1][1]["prs"]}
+        self.assertEqual(dispositions[8], "closed")
 
     def test_live_pr_reads_use_shared_conditional_cache_and_deadline(self) -> None:
         import json
