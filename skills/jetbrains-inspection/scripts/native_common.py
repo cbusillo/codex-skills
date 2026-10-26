@@ -283,7 +283,7 @@ def lane_gaps(host, config, selected, product_key="pycharm"):
     return []
 
 
-def lane_owner(host, lanes, path):
+def lane_owner(host, lanes, path) -> Any:
     return next((lane for lane in lanes if any(host.inspection_lane_pattern_matches(path, pattern) for pattern in lane.include)), None)
 
 

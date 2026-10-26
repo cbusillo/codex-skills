@@ -135,11 +135,11 @@ UNAVAILABLE_REASONS = {
                                    "Inspection coverage is unavailable on this host; report it as UNKNOWN or run the"
                                    " assessment on a macOS host with a configured worker."),
     "native_python_environment_required": ("the worktree has no .venv and qualityGate.inspection declares no root"
-                                           " prepare.python for native PyCharm", None),
-    "native_populated_profile_required": ("the repository has no single populated inspection profile for native {product}", None),
-    "native_worker_not_configured": ("no native {product} worker is configured in the shared helper config", None),
-    "native_app_not_configured": ("the native {product} worker has no app configured in the shared helper config", None),
-    "native_preparation_shape_unsupported": ("native {product} cannot run the declared qualityGate.inspection.prepare", None),
+                                           " prepare.python for native PyCharm", ""),
+    "native_populated_profile_required": ("the repository has no single populated inspection profile for native {product}", ""),
+    "native_worker_not_configured": ("no native {product} worker is configured in the shared helper config", ""),
+    "native_app_not_configured": ("the native {product} worker has no app configured in the shared helper config", ""),
+    "native_preparation_shape_unsupported": ("native {product} cannot run the declared qualityGate.inspection.prepare", ""),
     "no_worker": ("no native worker inspects {suffixes}", UNAVAILABLE_COVERAGE.format(coverage="coverage for {suffixes}")),
     "nested_lane": ("lane {lane} sets projectPath, and native workers inspect only root projects, see cbusillo/codex-skills#2557",
                     UNAVAILABLE_COVERAGE.format(coverage="coverage for lane {lane}")),
@@ -158,7 +158,7 @@ UNAVAILABLE_REASONS = {
 }
 
 
-def coverage_gaps(host, repo, config, selected):
+def coverage_gaps(host: Any, repo: Path, config: dict[str, Any], selected: set[str]):
     lanes = host.parse_inspection_lanes(config) if config.get("lanes") else ()
     odoo = any(Path(f).suffix == ".xml" for f in selected) and is_odoo(repo)
     groups: dict[tuple[str, tuple[tuple[str, str], ...]], set[str]] = {}
@@ -209,10 +209,10 @@ def unavailable_explanation(host, args, selection):
         action = " ".join(part[1][:1].upper() + part[1][1:] + "." for part in parts) or "This coverage is unavailable; report it as UNKNOWN."
         return f"No isolated native worker covers this selection: {why} ({code}).", action
     dropped = len(receipt.get("unmatched_files", [])) + len(receipt.get("excluded_files", []))
-    why, action = UNAVAILABLE_REASONS.get(code, ("native {product} is not ready for this repository", None))
+    why, action = UNAVAILABLE_REASONS.get(code, ("native {product} is not ready for this repository", ""))
     why = why.format(product=product.display_name, scope=scope,
                      dropped=f"; {dropped} files are outside every inspection lane or excluded from one" if dropped else "")
-    if action is None:
+    if not action:
         action = next_action_for_reason(host, {"product": product.key}, code, default_action=(
             f"Resolve {code} for native {product.display_name} as references/native-backend.md describes, then run one fresh assessment."))
     return f"No isolated native worker can inspect this selection: {why} ({code}).", action
