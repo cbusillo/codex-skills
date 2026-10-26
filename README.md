@@ -718,8 +718,10 @@ The existing startup diagnostic checks installed native instruction files with
 that installer's read-only preview, including the selected account home. This
 compares the rendered output, so renderer and merged DIRECTION changes are
 visible even when `instructions/global.md` is unchanged. Missing or stale files
-produce one line with their paths and a shell-quoted refresh command; a failed
-or timed-out preview reports delivery as unconfirmed. The preview is bounded
+produce one line with their paths and a shell-quoted refresh command. Independent
+account homes use the standalone sync without replacing the install receipt's
+registered destinations; preserved sources get a read-only reconciliation
+preview. A failed or timed-out preview reports delivery as unconfirmed. The preview is bounded
 to 15 seconds, writes no settings or diagnostic records, and does not prevent
 startup. It checks file freshness, not whether an unverified Desktop or editor
 surface loaded it; the Explore/Plan exception above still applies.

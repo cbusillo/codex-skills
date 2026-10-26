@@ -12,6 +12,7 @@ import fcntl
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BLOCKED_NOTICE_AFTER = dt.timedelta(hours=1)
 MAX_BLOCKING_PATHS = 20
+INSTRUCTION_PREVIEW_TIMEOUT = 15
+DELIVERY_NOTICE = "DIRECTION delivery"
 
 
 def git(root: Path, *args: str) -> str:
@@ -122,42 +125,60 @@ def observe_checkout(root: Path, state: dict, now: dt.datetime) -> dict:
 
 
 def preview_instructions(root: Path, arguments: list[str]) -> dict:
-    result = subprocess.run(
+    process = subprocess.Popen(
         [sys.executable, str(root / "scripts/install-catalog.py"), "--refresh-instructions", "--skip-codex-hooks", *arguments],
-        capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL, check=False,
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL, start_new_session=True,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "CATALOG_PREVIEW_GROUP": "1"},
     )
-    if result.returncode:
-        raise ValueError("instruction preview unavailable")
-    return json.loads(result.stdout)
+    try:
+        stdout, _ = process.communicate(timeout=INSTRUCTION_PREVIEW_TIMEOUT)
+        if process.returncode:
+            raise ValueError("instruction preview unavailable")
+        return json.loads(stdout)
+    finally:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+        process.stdout.close()
+        process.stderr.close()
 
 
 def instruction_warning(root: Path, installation: dict) -> str:
     if not all(installation.get(key) for key in ("home", "codex", "claude")):
         return ""
-    home = Path(installation["home"])
-    codex = Path(installation["codex"])
-    claude = Path(installation["claude"])
-    if os.environ.get("CLAUDECODE") == "1":
-        claude = Path(os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")).expanduser()
-    elif os.environ.get("CODEX_HOME"):
-        codex = Path(os.environ["CODEX_HOME"]).expanduser()
-    arguments = ["--home-dir", str(home), "--codex-dir", str(codex), "--claude-dir", str(claude)]
-    changed_home = codex.resolve() != Path(installation["codex"]).resolve() or claude.resolve() != Path(installation["claude"]).resolve()
+    arguments = ["--home-dir", installation["home"], "--codex-dir", installation["codex"], "--claude-dir", installation["claude"]]
+    destinations = [str(Path(installation["claude"]) / "CLAUDE.md"), str(Path(installation["codex"]) / "AGENTS.md")]
     recovery = shlex.join(["uv", "run", str(root / "scripts/catalog_runtime.py"), "--update"])
-    if changed_home:
-        recovery = shlex.join(["uv", "run", str(root / "scripts/install-catalog.py"), "--refresh-instructions", "--write", *arguments])
-    destinations = [str(claude / "CLAUDE.md"), str(codex / "AGENTS.md")]
     try:
+        codex = Path(installation["codex"])
+        claude = Path(installation["claude"])
+        if os.environ.get("CLAUDECODE") == "1":
+            claude = Path(os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")).expanduser()
+        elif os.environ.get("CODEX_HOME"):
+            codex = Path(os.environ["CODEX_HOME"]).expanduser()
+        destinations = [str(claude / "CLAUDE.md"), str(codex / "AGENTS.md")]
+        arguments = ["--home-dir", installation["home"], "--codex-dir", str(codex), "--claude-dir", str(claude)]
+        if any(Path(path).resolve() != (Path(installation[key]) / name).resolve()
+               for path, key, name in zip(destinations, ("claude", "codex"), ("CLAUDE.md", "AGENTS.md"))):
+            recovery = shlex.join(["uv", "run", str(root / "scripts/sync-global-instructions.py"),
+                                  "--codex-dir", str(codex), "--claude-dir", str(claude), "--write"])
         preview = preview_instructions(root, arguments)
         outputs = {Path(entry["path"]).resolve(): entry["state"] for entry in preview["outputs"]}
         stale = [path for path in destinations if outputs.get(Path(path).resolve()) != "current"]
         if not stale:
             return ""
         detail = "missing or stale: " + ", ".join(stale)
-    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
+        if preview.get("unmanaged_instruction_sources") or any(state in {"preserved", "skipped", "refused"} for state in outputs.values()):
+            recovery = shlex.join(["uv", "run", str(root / "scripts/install-catalog.py"),
+                                  "--refresh-instructions", "--show-diff", *arguments])
+            detail = "instruction source needs reconciliation: " + ", ".join(stale)
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError, subprocess.SubprocessError):
         detail = "unconfirmed: " + ", ".join(destinations)
-    return f"DIRECTION delivery {detail}; run {recovery}; restart the session after refresh."
+        recovery = shlex.join(["uv", "run", str(root / "scripts/install-catalog.py"),
+                              "--refresh-instructions", "--show-diff", *arguments])
+    return f"{DELIVERY_NOTICE} {detail}; run {recovery}; restart the session after refresh."
 
 
 def status_line(root: Path, *, observe: bool = False) -> str:

@@ -16,11 +16,13 @@ import io
 import json
 import os
 import plistlib
+import re
 import shutil
 import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import unittest
 from pathlib import Path
@@ -249,25 +251,87 @@ class InstallTests(unittest.TestCase):
                     self.assertEqual(hook.main(catalog_root=self.catalog), 0)
                 return output.getvalue()
 
-            self.assertNotIn("DIRECTION delivery", startup())
+            self.assertNotIn(runtime.DELIVERY_NOTICE, startup())
             with mock.patch.object(runtime, "preview_instructions", side_effect=subprocess.TimeoutExpired("fixture", 15)):
-                self.assertIn("DIRECTION delivery unconfirmed", startup())
+                self.assertIn(runtime.DELIVERY_NOTICE, startup())
+            loop = self.home / "loop"
+            loop.symlink_to(loop)
+            with mock.patch.dict(os.environ, {variable: str(loop)}):
+                self.assertIn(str(loop / filename), startup())
+            loop.unlink()
             before = {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
             with mock.patch.object(self.sync, "direction_content", return_value="Merged overall and repository direction changed."):
                 warning = startup()
                 self.assertIn(str(destination), warning)
-                self.assertEqual(sum("DIRECTION delivery" in line for line in warning.splitlines()), 1)
-                self.assertIn(str(self.catalog / "scripts/install-catalog.py"), warning)
-                self.assertIn("--write", warning)
+                self.assertEqual(sum(runtime.DELIVERY_NOTICE in line for line in warning.splitlines()), 1)
+                self.assertIn(str(self.catalog / "scripts/catalog_runtime.py"), warning)
             self.assertEqual(before, {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()})
             self.assertEqual(json.loads((self.catalog / ".local/catalog-install.json").read_text()), installation)
             destination.unlink()
-            self.assertIn(str(destination), startup())
-            destination.write_bytes(original.read_bytes())
-            self.assertNotIn("DIRECTION delivery", startup())
+            warning = startup()
+            self.assertIn(str(destination), warning)
+            scripts = self.catalog / "scripts"
+            scripts.mkdir()
+            for name in ("sync-global-instructions.py", "install-catalog.py", "chrome_mcp.py"):
+                shutil.copyfile(Path(__file__).with_name(name), scripts / name)
+            shutil.copyfile(Path(hook.__file__), self.catalog / "hooks/direction_check_hook.py")
+            repair = shlex.split(re.search(r"uv run [^\n]+?;", warning).group()[:-1])
+            command(sys.executable, *repair[2:])
+            self.assertEqual(json.loads((self.catalog / ".local/catalog-install.json").read_text()), installation)
+            self.assertEqual(destination.read_bytes(), original.read_bytes())
+            self.assertNotIn(runtime.DELIVERY_NOTICE, startup())
+            destination.unlink()
+            dotfile = self.home / "dotfile-source"
+            dotfile.write_text("Keep my dotfiles.")
+            destination.symlink_to(dotfile)
+            warning = startup()
+            self.assertIn(str(destination), warning)
+            repair = shlex.split(re.search(r"uv run [^\n]+?;", warning).group()[:-1])
+            command(sys.executable, *repair[2:])
+            self.assertEqual(dotfile.read_text(), "Keep my dotfiles.")
+            self.assertEqual(json.loads((self.catalog / ".local/catalog-install.json").read_text()), installation)
+            destination.unlink()
             destination.write_text("Private host edits must survive.")
-            self.assertIn(str(destination), startup())
+            warning = startup()
+            self.assertIn(str(destination), warning)
+            repair = shlex.split(re.search(r"uv run [^\n]+?;", warning).group()[:-1])
+            command(sys.executable, *repair[2:])
             self.assertEqual(destination.read_text(), "Private host edits must survive.")
+
+    def test_instruction_preview_timeout_stops_network_reader_descendants(self) -> None:
+        from hooks import direction_check_hook as hook
+
+        scripts = self.catalog / "scripts"
+        scripts.mkdir()
+        reader = self.root / "reader"
+        child_pid = self.root / "child-pid"
+        reader.write_text(
+            f"#!{sys.executable}\nimport subprocess, sys, time\n"
+            "from pathlib import Path\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            "Path(sys.argv[1]).write_text(str(child.pid))\ntime.sleep(60)\n"
+        )
+        reader.chmod(0o700)
+        (scripts / "install-catalog.py").write_text(
+            "import runpy\nfrom pathlib import Path\n"
+            f"hook = runpy.run_path({str(Path(hook.__file__))!r})\n"
+            f"hook['run_reader'].__globals__['GH_READER'] = Path({str(reader)!r})\n"
+            f"hook['run_reader']({str(child_pid)!r})\n"
+        )
+        with (mock.patch.object(runtime, "INSTRUCTION_PREVIEW_TIMEOUT", 1),
+              self.assertRaises(subprocess.TimeoutExpired)):
+            runtime.preview_instructions(self.catalog, [])
+        pid = int(child_pid.read_text())
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.01)
+        else:
+            os.kill(pid, 9)
+            self.fail("instruction preview left its network reader child alive")
 
     def test_claude_startup_checks_selected_native_direction_without_writes(self) -> None:
         self.check_native_delivery("claude")
