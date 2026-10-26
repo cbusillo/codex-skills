@@ -12519,3 +12519,12 @@ def test_read_input_errors_are_not_service_response_errors(arguments: list[str])
         status = write_action.main(arguments)
     assert status == 2
     assert json.loads(output.getvalue())["warnings"][0]["code"] == "invalid_request"
+
+
+def test_tolerant_projection_scans_validated_identifier_without_dropping_it() -> None:
+    drops = write_action._FieldDrops()
+    name = "  owner/helpdesk-app  "
+    assert drops.keep("repository", write_action.public_identifier, name) == name.strip()
+    assert drops.count == 0
+    with pytest.raises(safety.LaunchplaneSafetyError):
+        drops.keep("repository", write_action.public_identifier, "sk-synthetic")

@@ -34,6 +34,7 @@ from launchplane_reply_schema import check_controller_reply  # noqa: E402
 from launchplane_safety import (  # noqa: E402
     CREDENTIAL_LIKE_WORD_RE,
     LaunchplaneSafetyError,
+    PublicIdentifier,
     assert_public_safe_shape,
     build_launchplane_url,
     is_denied_key,
@@ -3078,12 +3079,14 @@ class _FieldDrops:
         """The validated value, or "" when it fails; a secret-looking value still fails the read."""
         if value is None or value == "":
             return ""
-        assert_public_safe_shape(value)
         try:
-            return validate(value)
+            projected = validate(value)
         except LaunchplaneSafetyError:
+            assert_public_safe_shape(value)
             self.drop(path)
             return ""
+        assert_public_safe_shape(projected if isinstance(projected, PublicIdentifier) else value)
+        return projected
 
     def drop(self, path: str) -> None:
         self.paths.add(path)
@@ -3255,7 +3258,7 @@ def _public_origin_url(value: object) -> str:
         parts = urllib.parse.urlsplit(public_url(value))
     except ValueError as error:
         raise LaunchplaneSafetyError("invalid_response") from error
-    return f"{parts.scheme}://{parts.netloc}"
+    return public_identifier(f"{parts.scheme}://{parts.netloc}", pattern=re.compile(r"https://[^\s/?#]+"))
 
 
 def _public_commit_sha(value: object) -> str:
