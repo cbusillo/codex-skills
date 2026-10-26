@@ -624,7 +624,7 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
             if (
                 Path(token).name == "launchplane"
                 and token != "launchplane"
-                and (not consumer_command or position == executable_position)
+                and (not consumer_command or position <= executable_position)
                 and not (repository_slug and REPOSITORY_SLUG.fullmatch(repository))
             ):
                 return None
