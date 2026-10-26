@@ -414,6 +414,7 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "launchplane service plan-config-authority-transition --base-branch main --required-checks-file checks.json",
                 "launchplane local-consumer --help",
                 "launchplane local-consumer prepare --directory recipient",
+                "launchplane local-consumer prepare --directory /private/launchplane",
                 "launchplane local-consumer deliver --directory recipient --service-url https://launchplane.example",
                 "launchplane local-consumer receive --directory recipient --package-file package.json",
                 "launchplane odoo-ownership check --workspace-root ..",

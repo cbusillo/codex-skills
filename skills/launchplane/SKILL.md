@@ -841,8 +841,8 @@ before running `uv run launchplane local-consumer prepare`, `deliver` or
 primary/runtime installation at a merged default-branch commit; task worktrees
 use fake isolated fixtures. These commands use existing
 exact-testing-lane authority; the service enforces the credential and caller
-boundary. Keep recipient files outside task evidence and never inspect or emit
-their key or token values. Every other live/admin CLI command retains its helper
+boundary. Keep recipient files outside repositories and task evidence; never
+inspect or emit their key or token values. Every other live/admin CLI command retains its helper
 route below. This routing exception creates no access or grant.
 
 Use this skill to inspect product/runtime state and perform safe,
