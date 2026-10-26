@@ -275,12 +275,6 @@ RETIRED_OPTION_MESSAGE = (
     "(see references/native-backend.md)."
 )
 RETIRED_OPTIONS = ("--ide", "--ide-channel", "--ide-version", "--prepare-timeout-ms")
-ISOLATED_BACKEND_UNAVAILABLE_HINT = (
-    "Configure the isolated native worker on macOS (jetbrains.nativeWorkers.pycharm, .webstorm or .intellij in the "
-    "shared helper config; see references/native-backend.md) and select files it supports. Keep unsupported coverage UNKNOWN."
-)
-
-
 class RetiredOption(argparse.Action):
     def __call__(self, parser: argparse.ArgumentParser, namespace: argparse.Namespace, values: Any, option_string: str | None = None) -> None:
         parser.error(RETIRED_OPTION_MESSAGE.format(option=option_string))
@@ -347,19 +341,9 @@ def run_agent_inspect(args: argparse.Namespace) -> int:
             native_backend = native_backend_module()
             backend, selection = native_backend.select_backend(args, sys.modules[__name__])
             if backend != "native":
-                context = native_backend.common.scope_selection(args, sys.modules[__name__])
-                hint = ISOLATED_BACKEND_UNAVAILABLE_HINT
-                if selection.startswith("native_ineligible="):
-                    _repo, config, _scope, selected = context
-                    product = native_backend.native_product_key(sys.modules[__name__], config, selected)
-                    hint = native_backend.next_action_for_reason(sys.modules[__name__], {"product": product},
-                                                                 selection.removeprefix("native_ineligible="),
-                                                                 default_action=ISOLATED_BACKEND_UNAVAILABLE_HINT)
-                raise InspectError(
-                    "Automatic inspection has no isolated native worker for this selection.",
-                    payload={"error_reason": "isolated_backend_unavailable", "backend_selection": selection,
-                             "hint": hint},
-                )
+                message, hint = native_backend.unavailable_explanation(sys.modules[__name__], args, selection)
+                raise InspectError(message, payload={"error_reason": "isolated_backend_unavailable",
+                                                     "backend_selection": selection, "hint": hint})
         result = command_native(args)
         result["backend_selection"] = selection
         if not args.native_recover_only:

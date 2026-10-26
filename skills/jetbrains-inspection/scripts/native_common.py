@@ -277,11 +277,14 @@ def lane_gaps(host, config, selected, product_key="pycharm"):
         return []
     lanes = host.parse_inspection_lanes(config)
     for path in selected:
-        owners = [candidate for candidate in lanes
-                  if any(host.inspection_lane_pattern_matches(path, pattern) for pattern in candidate.include)]
-        if not owners or host.product_for_selector(owners[0].ide) is not host.IDE_PRODUCTS[product_key] or owners[0].project_path:
+        owner = lane_owner(host, lanes, path)
+        if owner is None or host.product_for_selector(owner.ide) is not host.IDE_PRODUCTS[product_key] or owner.project_path:
             return ["native_lane_models_unqualified"]
     return []
+
+
+def lane_owner(host, lanes, path):
+    return next((lane for lane in lanes if any(host.inspection_lane_pattern_matches(path, pattern) for pattern in lane.include)), None)
 
 
 ALTERNATE_PRODUCT_KEYS = ("webstorm", "intellij")

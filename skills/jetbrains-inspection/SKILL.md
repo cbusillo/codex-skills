@@ -68,8 +68,8 @@ repository whose configured IDE is WebStorm, root npm projects with a
 WebStorm, and in one whose configured IDE is IntelliJ IDEA, root Gradle projects
 route Kotlin and Java selections that include a `.kt` file to native IntelliJ
 IDEA. Any other selection, and any host without an eligible worker, returns
-UNKNOWN with `isolated_backend_unavailable` and setup instructions before
-starting a worker. Keep that coverage UNKNOWN; there is no fallback route.
+UNKNOWN with `isolated_backend_unavailable` before starting a worker, naming
+the files, lanes or prerequisite behind it and a next step that fits. Keep that coverage UNKNOWN; there is no fallback route.
 Read [native backend](references/native-backend.md) before configuring,
 diagnosing or changing that runner. It uses the independently Director-activated
 worker in place, with its shared exclusive lock and private system/cache/log
