@@ -22,6 +22,7 @@ import tomllib
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 if __package__:
     from skills.supervisor.scripts import codex_auth_health
@@ -202,7 +203,7 @@ def provider_ranking(snapshot, provider):
     return matches[0] if matches else {}
 
 
-def resolve_choice(provider, config, snapshot, account_id, source, reason):
+def resolve_choice(provider: str, config: dict, snapshot: dict, account_id: object, source: str, reason: str) -> dict[str, Any]:
     if not isinstance(account_id, str) or not re.fullmatch(rf"{provider}-[0-9a-f]{{1,64}}", account_id):
         raise ValueError("Context Panel choice needs the snapshot's opaque account ID")
     rows = [r for r in snapshot["accounts"] if isinstance(r, dict) and r.get("provider") == provider]
@@ -338,7 +339,7 @@ def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, na
                 raise
             if choice["name"] not in checked:
                 home = choice["env"].get("CODEX_HOME")
-                checked[choice["name"]] = bool(home and codex_auth_health.observe(Path(home)).get("blocked"))
+                checked[choice["name"]] = isinstance(home, str) and bool(codex_auth_health.observe(Path(home)).get("blocked"))
             if not checked[choice["name"]]:
                 if skipped_failure:
                     choice["source"] = "context-panel-auth-fallback"
