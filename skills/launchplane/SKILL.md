@@ -829,8 +829,7 @@ loopback database through `--database-url` or a leading
 `LAUNCHPLANE_TEST_POSTGRES_URL=`. Use the session's working directory or a
 single literal absolute `cd <checkout> &&` prefix; on Codex, an exec `workdir`
 is not visible to the hook, so use the `cd` prefix. Other shell
-directory/project overrides retain the block. All live/admin CLI commands
-retain their helper route below. Consumers without
+directory/project overrides retain the block. Consumers without
 repository-exception support keep the original block; do not bypass it through
 an alternate entry point. The local gates support chained checks and output
 redirection.
@@ -838,7 +837,9 @@ redirection.
 For the Director-approved testing local-consumer path (Q921), read the
 [custody contract](https://github.com/cbusillo/launchplane/blob/main/docs/testing-local-consumer.md)
 before running `uv run launchplane local-consumer prepare`, `deliver` or
-`receive` from a verified Launchplane checkout. These commands use existing
+`receive` from a verified Launchplane checkout. For real transfers, use a clean
+primary/runtime installation at a merged default-branch commit; task worktrees
+use fake isolated fixtures. These commands use existing
 exact-testing-lane authority; the service enforces the credential and caller
 boundary. Keep recipient files outside task evidence and never inspect or emit
 their key or token values. Every other live/admin CLI command retains its helper

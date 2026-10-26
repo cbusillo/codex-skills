@@ -429,6 +429,8 @@ class CommandPolicyHookTests(unittest.TestCase):
                     self.assertEqual(bash("uv run " + command, root).returncode, 2)
                     self.assertEqual(bash("uv run --directory /other " + command, checkout).returncode, 2)
                     self.assertEqual(bash("uv run --directory=/other " + command, checkout).returncode, 2)
+                    self.assertEqual(bash("uv run --group launchplane --extra dev --directory /other " + command, checkout).returncode, 2)
+                    self.assertEqual(bash("uv run --group launchplane --extra dev --directory=/other " + command, checkout).returncode, 2)
                     self.assertEqual(SIMULATOR.simulate(shlex.split(command), cwd=checkout), [])
                     self.assertTrue(SIMULATOR.simulate(shlex.split(command)))
             self.assertEqual(bash("pnpm --dir frontend generate:openapi", checkout).returncode, 0)
