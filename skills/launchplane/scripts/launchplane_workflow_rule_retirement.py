@@ -112,7 +112,11 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
 def _selector(h: Any, value: object) -> str:
     if not isinstance(value, str) or SELECTOR_RE.fullmatch(value) is None:
         raise h.LaunchplaneSafetyError("invalid_response")
-    return value
+    try:
+        return h.public_identifier(value)
+    except h.LaunchplaneSafetyError:
+        h.assert_public_safe_shape(value)
+        return value
 
 
 def _decimal(h: Any, value: object) -> str:
@@ -123,14 +127,13 @@ def _decimal(h: Any, value: object) -> str:
 
 def _project_scope(h: Any, value: object, selection: dict[str, Any], drops: Any) -> tuple[dict[str, object], bool]:
     scope = h._require_dict(value)
-    h.assert_public_safe_shape(scope)
     before = drops.count
     projected: dict[str, object] = {}
     for key in SCOPE_MANAGED_FIELDS:
         if scope.get(key) != selection[key]:
             raise h.LaunchplaneSafetyError("invalid_response")
         if selection[key] is not None:
-            projected[key] = selection[key]
+            projected[key] = h.public_identifier(selection[key])
     # Launchplane dumps every rule field except null managed ids: text fields
     # default to "" and selector lists to [], so a missing one is drift, not
     # an unconstrained rule.
@@ -154,11 +157,13 @@ def _project_scope(h: Any, value: object, selection: dict[str, Any], drops: Any)
         for item in items:
             kept = drops.keep(path, lambda entry: _selector(h, entry), item)
             if kept:
-                kept_items.append(str(kept))
+                kept_items.append(kept)
             elif item in (None, ""):
                 drops.drop(path)
         projected[key] = kept_items
     for key, value in scope.items():
+        if key not in SCOPE_FIELDS:
+            h.assert_public_safe_shape({key: value})
         if key not in SCOPE_FIELDS and value not in (None, "", [], {}):
             drops.drop("selected_rules[].scope.<unlisted field>")
     return projected, drops.count == before

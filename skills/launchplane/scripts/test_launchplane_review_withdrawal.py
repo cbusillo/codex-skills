@@ -159,3 +159,11 @@ def test_recovery_classifier_preserves_receipts_and_distinguishes_other_callers(
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__]))
+
+
+def test_withdrawal_accepts_ordinary_repository_identifier() -> None:
+    args = argv()
+    args[args.index("--repo") + 1] = "example/kiosk-app"
+    code, payload, calls = invoke(args, [response()])
+    assert code == 0 and len(calls) == 1
+    assert payload["request"]["repository"] == "example/kiosk-app"

@@ -47,7 +47,7 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
     reason = args.reason.strip()
     if not reason or len(reason) > 1000 or not re.fullmatch(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/(?:issues|pull)/[1-9][0-9]*#issuecomment-[1-9][0-9]*", args.director_decision):
         raise ValueError("invalid_withdrawal_decision")
-    body: dict[str, object] = {"product": product, "repository": args.repo, "pull_request": args.pr, "expected_head_sha": args.head, "reason": reason, "director_decision_url": args.director_decision, "mode": mode}
+    body: dict[str, object] = {"product": product, "repository": h.public_identifier(args.repo), "pull_request": args.pr, "expected_head_sha": args.head, "reason": reason, "director_decision_url": args.director_decision, "mode": mode}
     request = {key: value for key, value in body.items() if key not in {"reason", "director_decision_url", "mode"}}
     request.update(reason_sha256=_digest(reason), director_decision_sha256=_digest(args.director_decision))
     if mode != "dry-run":

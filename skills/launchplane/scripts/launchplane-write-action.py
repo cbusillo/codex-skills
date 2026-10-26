@@ -3078,12 +3078,14 @@ class _FieldDrops:
         """The validated value, or "" when it fails; a secret-looking value still fails the read."""
         if value is None or value == "":
             return ""
-        assert_public_safe_shape(value)
         try:
-            return validate(value)
+            projected = validate(value)
         except LaunchplaneSafetyError:
+            assert_public_safe_shape(value)
             self.drop(path)
             return ""
+        assert_public_safe_shape(projected)
+        return projected
 
     def drop(self, path: str) -> None:
         self.paths.add(path)

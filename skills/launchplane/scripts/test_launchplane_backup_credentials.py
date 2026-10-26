@@ -356,8 +356,6 @@ def test_replay_retains_request_and_completion_with_unsafe_original_trace(tmp_pa
     assert payload["request"]["idempotency_key_sha256"] and post.call_count == 1
 
 
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))
 
 
 @pytest.mark.parametrize("name", ["desk-marker", "helpdesk-ssh"])
@@ -367,3 +365,6 @@ def test_ordinary_binding_reference_survives_final_projection(name: str) -> None
     code, payload, _, post = invoke(argv(BINDINGS + "-read"), [response])
     assert code == 0 and not post.called
     assert name in {item["binding_id"] for item in payload["result"]["bindings"]}
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))
