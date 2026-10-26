@@ -662,7 +662,7 @@ class IO:
     @staticmethod
     def post(repo, number, body):
         result = run(["uv", "run", str(ROOT / "skills/github/scripts/gh-pr.py"), "--repo", repo,
-                      "comment", str(number), "--body-file", str(body)], timeout=180,
+                      "comment", str(number), "--verbatim", "--body-file", str(body)], timeout=180,
                      env={key: value for key, value in os.environ.items() if key != OWN_USER_OPT_IN})
         try:
             payload = json.loads(result.stdout)

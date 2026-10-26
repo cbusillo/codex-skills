@@ -1810,10 +1810,11 @@ class OwnReleaseTests(ReleaseHarness):
         self.assertEqual(self.f.emitted.call_args.args[0]["release_state"], "already_released")
 
     def test_handoff_requires_qualified_references_before_release(self) -> None:
-        self.handoff.write_text("Read owner/other#550 after landing, then confirm #550.")
-        with self.assertRaises(PLAN.PlanError):
-            self.run_own_release()
-        self.assertNotIn("post", self.f.events)
+        for text in ("Read owner/other#550 after landing, then confirm #550.", "Read PR550 after landing."):
+            self.handoff.write_text(text)
+            with self.assertRaises(PLAN.PlanError):
+                self.run_own_release()
+            self.assertNotIn("post", self.f.events)
         self.handoff.write_text("Read owner/other#550 after landing, then confirm owner/other#550 and owner/repo#42.")
         self.run_own_release()
         self.assertIn(self.handoff.read_text(), self.f.comments[-1]["body"])

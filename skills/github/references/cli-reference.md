@@ -1007,12 +1007,16 @@ condition, not authority to close protected work or perform the triggered action
 
 ### References In New Planning Text
 
-Release handoffs, wait evidence, section updates and explicit `gh-comment` or
+Release handoffs, new wait/claim/close text, section updates and explicit `gh-comment` or
 `gh-pr.py comment` bodies require `OWNER/REPO#N` or full GitHub issue/PR URLs.
 Use the same qualified form for local references, for example
 `owner/current-repo#42`. Bare `#N` and ownerless `repo#N` refuse before posting:
 a matching local number cannot establish which repository the author meant.
-Existing historical records and generated ownership receipts keep their readers.
+Write literal hash-number prose such as a rank as `&#35;1` when it is not an
+issue reference. For relayed source text, logs or quoted reviewer output,
+`gh-comment` and `gh-pr.py comment --verbatim` preserve the exact body. The
+Supervisor review poster uses that route automatically. Do not use it for
+newly authored planning text. Historical readers remain for existing records.
 
 ### Planning: Claim
 

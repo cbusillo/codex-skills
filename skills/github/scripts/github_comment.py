@@ -86,8 +86,16 @@ def validate_question_mentions(body: str, repo: str) -> None:
         )
 
 
-def validate_planning_references(body: str, repo: str) -> None:
-    ambiguous = list(dict.fromkeys(re.findall(r"(?<![\w/#&.-])(?:[\w.-]+)?#[1-9]\d*\b", body)))
+def validate_planning_references(body: object, repo: str) -> None:
+    if isinstance(body, dict):
+        body = list(body.values())
+    if isinstance(body, list):
+        for value in body:
+            validate_planning_references(value, repo)
+        return
+    if not isinstance(body, str):
+        return
+    ambiguous = list(dict.fromkeys(re.findall(r"(?<![\w/#&.-])(?:(?:[\w.-]+)?#[1-9]\d*\b|PR[1-9]\d*\b)", body, re.IGNORECASE)))
     if ambiguous:
         raise ValueError(
             f"Ambiguous issue references: {', '.join(ambiguous)}. "
@@ -1138,6 +1146,7 @@ def validate_own_attachment_command(arguments: list[str], body: str) -> str:
     parser.add_argument("number", type=int)
     parser.add_argument("--repo", required=True)
     parser.add_argument("--body-file", required=True, choices=("-",))
+    parser.add_argument("--verbatim", action="store_true", help="Relay source text or logs unchanged; not for authored planning text.")
     parser.add_argument("--attach", action="append", required=True)
     args = parser.parse_args(arguments)
     if args.number <= 0:
@@ -1449,6 +1458,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("number", type=int)
     parser.add_argument("-R", "--repo")
     parser.add_argument("--body-file", default="-", help="Read Markdown from a file, or '-' for stdin.")
+    parser.add_argument("--verbatim", action="store_true", help="Relay source text or logs unchanged; not for authored planning text.")
     parser.add_argument("--attach", action="append", help="Attach FILE[#alt] through GitHub CLI; repeatable (images/videos only).")
     parser.add_argument("--edit-last", action="store_true")
     parser.add_argument("--edit-comment", type=int, help="Edit this exact timeline comment ID, after checking its thread and author.")
@@ -1523,7 +1533,8 @@ def main() -> int:
     try:
         body = read_body(args.body_file)
         try:
-            validate_planning_references(body, args.repo or "OWNER/REPO")
+            if not args.verbatim:
+                validate_planning_references(body, args.repo or "OWNER/REPO")
         except ValueError as error:
             raise _local_error(str(error), operation=operation, cause="validation_error",
                                expected_actor=expected_actor, failed_step="input_validation") from error
