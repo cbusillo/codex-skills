@@ -2581,8 +2581,8 @@ its recommendation comes from local bounded text. An unlabeled request reports
 withdraw. Missing, unknown or malformed reasons keep the generic refusal;
 service/provider prose is never copied. Recovery or uncertain-effect reasons
 are not eligibility reasons. Applied receipts, stale plans and
-uncertain outcomes take precedence over a supplied reason. This consumer ships
-before the service adds reasons; older consumers keep the same refusal code.
+uncertain outcomes take precedence over a supplied reason. Older consumers and services without reasons keep the same generic refusal
+code.
 
 Recovery output echoes the non-secret `idempotency_key` in its summary. Choose a
 public-safe opaque key, and save the exact private request with the dry-run

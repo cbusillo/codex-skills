@@ -124,9 +124,9 @@ def test_refusal_reasons_are_allowlisted_and_do_not_override_recovery(tmp_path: 
     assert RECOVERY["refused"] in result["summary"]["recommendation"]
     assert result["summary"]["idempotency_key"] == OPERATION_KEY
     assert "PRIVATE_REASON_SENTINEL" not in json.dumps(result)
-    for reason in (None, "PRIVATE_REASON_SENTINEL", "removal_unconfirmed", "history_unconfirmed", "later_review_request",
+    for bad_reason in (None, "PRIVATE_REASON_SENTINEL", "removal_unconfirmed", "history_unconfirmed", "later_review_request",
                    {"no_pending_labeled_request": True}, ["no_pending_labeled_request"]):
-        _, result, calls = invoke(argv(), [failure(reason)])
+        _, result, calls = invoke(argv(), [failure(bad_reason)])
         assert result["status"] == "refused" and len(calls) == 1
         assert "refusal_reason" not in result["summary"]
         assert "PRIVATE_REASON_SENTINEL" not in json.dumps(result)
