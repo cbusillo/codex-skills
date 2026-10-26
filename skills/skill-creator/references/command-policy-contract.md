@@ -32,14 +32,16 @@ They may describe stable command ownership, risk, and safe routes:
 - `message`: short risk explanation suitable for surfacing to the agent.
 - `preferred`: replacement routes, usually helper scripts or delegated skills.
 - `exceptions`: optional list of `{repository: owner/repo, argv_prefix: [...]}`
-  pairs for source-only commands in their owning GitHub repository. Repository
+  pairs for supported commands in their owning GitHub repository. Repository
   names are lowercase. A consumer skips only that matching policy when both the
   argv prefix and verified command working directory match. Without repository
-  evidence or exception support, the original policy still applies.
+  evidence or exception support, the original policy still applies. An exception
+  changes routing only; authenticated commands retain their helper's destination,
+  custody and authorization checks.
 
 Frontmatter must not encode installation-specific runtime state such as concrete
 bot logins, token names beyond helper documentation, enterprise host allowlists,
-fallback permissions, enforcement modes, or per-install overrides. A source-only
+fallback permissions, enforcement modes, or per-install overrides. A repository
 exception may identify the command's owning repository; this is distinct from
 an installation's runtime override. Its prefix must strictly extend the policy's
 `argv_prefix`; exact and regex policies do not accept exceptions.
@@ -108,6 +110,11 @@ source-only exports and offline gates. A simple
 shell wrapper uses the same checks on its enclosed command. The simulator
 receives already normalized argv and the consumer's verified command directory;
 `--cwd` describes that directory, not a shell `cd` instruction.
+
+The reviewed Launchplane testing local-consumer commands also accept their own
+`--directory` destination argument after the subcommand. A `uv --directory`
+switch before the executable still retains the block; a destination never changes
+the checkout used to qualify an exception.
 
 ## Runtime Configuration
 
