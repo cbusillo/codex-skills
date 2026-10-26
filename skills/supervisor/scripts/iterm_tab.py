@@ -981,7 +981,8 @@ def prepare_codex_tools(command_text, choice, required=False, *, gui=False):
     else:
         warnings = ["Codex bundled plugins missing or disabled: " + ", ".join(missing)] if missing else []
     if must_work and warnings:
-        raise ValueError(warnings[0] + "; install/enable them through Codex before this tool launch")
+        raise ValueError(warnings[0] + f"; install/enable them through Codex in CODEX_HOME={shlex.quote(str(home))} "
+                         "before retrying this tool launch")
     choice["tools"] = {"warnings": warnings, "marketplace": market, "route": "local"}
     choice["env"][agent_tools.CODEX_SOURCE_ENV] = market["path"]
     override = "marketplaces.openai-bundled.source=" + json.dumps(market["path"])
@@ -1093,8 +1094,9 @@ def prepare_resume(args):
     session = args.resume_session_id
     if (args.account_provider != "openai" or not getattr(args, "ledger", None)
             or getattr(args, "command_file", None) or getattr(args, "brief_file", None)
+            or getattr(args, "computer_use", None)
             or getattr(args, "require_browser", False) or getattr(args, "without_browser", False)):
-        raise ValueError("resume needs --account-provider openai and --ledger, without launch/brief files or browser flags")
+        raise ValueError("resume needs --account-provider openai and --ledger, without launch/brief files or browser/Computer Use flags")
     with preparation_read():
         entries = [entry for entry in session_record.load_ledger(args.ledger) if entry["session_id"] == session]
     if len(entries) != 1 or entries[0].get("supervisor_owned") is not True or entries[0]["harness"] != "codex":
@@ -1181,6 +1183,25 @@ def prepare_launches(args: argparse.Namespace) -> tuple[list[str], list[dict | N
         raise error from None
 
 
+def validate_computer_use_launch(args: argparse.Namespace, commands: list[str], briefs: list[str]) -> None:
+    mode = getattr(args, "computer_use", None)
+    for command, brief in zip(commands, briefs):
+        app = gui_launch.declared_app(brief)
+        if mode == "required" and not app:
+            raise ValueError("--computer-use required needs GUI task: <app-bundle-id> as the brief's first nonblank line")
+        if mode == "unused" and app:
+            raise ValueError("--computer-use unused conflicts with GUI task; use --computer-use required for screen work")
+        if app and mode != "required":
+            raise ValueError("GUI task needs --computer-use required")
+        if mode:
+            continue
+        task = " ".join(brief.split()).replace(" ".join(brief_rules_block().split()), "")
+        if re.search(r"\bcomputer[\s-]+use\b", task, re.IGNORECASE) and launch_agent(command) == "codex":
+            raise ValueError("Computer Use brief needs --computer-use required and a first-line GUI task: <app-bundle-id> "
+                             "for local Codex with the selected home's plugin; "
+                             "use --computer-use unused for source-only mentions")
+
+
 def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict | None]]:
     """Validate the full batch and prepare accounts before creating terminals."""
     if getattr(args, "resume_session_id", None):
@@ -1210,6 +1231,7 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
             raise ValueError("brief must be nonempty")
         validate_text(brief, allow_tabs=True)
         validate_brief_rules(brief)
+    validate_computer_use_launch(args, command_texts, briefs)
     apps = [gui_launch.declared_app(brief) for brief in briefs]
     if any(apps):
         if len(files) != 1 or getattr(args, "account_provider", None) != "openai":
@@ -1217,7 +1239,7 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         words = launch_words(command_texts[0])
         if (Path(words[0]).name != "codex" or "--" in words
                 or any(word == "--remote" or word.startswith("--remote=") for word in words)):
-            raise ValueError("GUI tasks need a local Codex invocation without --remote or a prompt")
+            raise ValueError("GUI tasks need local Codex; remove --remote and any prompt from the run file; put the prompt in --brief-file")
         gui_launch.require_unlocked()
         briefs[0] += ("\n\nGUI safety: Use only the named app " + apps[0] +
                       ". Never target Chris's terminals or other windows. Check screen lock "
@@ -1671,6 +1693,9 @@ def main():
                      help="launch Claude without the connected-browser check, for briefs that need no browser")
     new.add_argument("--require-browser", action="store_true",
                      help="require a working browser route before launching a browser brief")
+    new.add_argument("--computer-use", choices=("required", "unused"),
+                     help="required: use the app-scoped local Codex route and check its plugin; "
+                          "unused: source-only brief mentions Computer Use but uses no screen tools")
     new.add_argument("--account", help="use this configured account by name")
     new.add_argument("--account-config", type=Path)
     for name in ("send", "read", "clear"):
