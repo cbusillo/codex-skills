@@ -10865,7 +10865,11 @@ def test_merge_policy_invalid_record_cannot_prove_absence(record: dict[str, obje
         )
 
 
-def test_merge_policy_read_uses_only_get_and_preserves_denial(tmp_path: Path) -> None:
+@pytest.mark.parametrize("operation, arguments", [
+    ("merge-train-policy-read", ["--repo", "example/repo"]),
+    ("governance-projection-read", ["--repository", "example/repo", "--base-branch", "main", "--pr", "42"]),
+])
+def test_policy_evidence_read_uses_only_get_and_preserves_denial(tmp_path: Path, operation: str, arguments: list[str]) -> None:
     config = tmp_path / "operator.json"
     config.write_text(json.dumps({"service_url": "https://service.example.invalid", "operator_token_env": "FIXTURE_TOKEN"}))
     calls = []
@@ -10877,9 +10881,9 @@ def test_merge_policy_read_uses_only_get_and_preserves_denial(tmp_path: Path) ->
         write_action, "request_launchplane_read", denied,
     ), patch.object(write_action, "request_launchplane", side_effect=AssertionError("write attempted")), redirect_stdout(output):
         status = write_action.main(["--config", str(config), "--env-config", str(tmp_path / "missing.env"),
-                                    "merge-train-policy-read", "--repo", "example/repo"])
+                                    operation, *arguments])
     assert status != 0
-    assert calls[0]["path"] == contract.helper_command_path("merge-train-policy-read")
+    assert calls[0]["path"] == contract.helper_command_path(operation)
     assert json.loads(output.getvalue())["status"] == "denied"
 
 
@@ -12426,3 +12430,80 @@ def test_enrollment_proposal_refuses_enrolled_repository_and_unusable_template_w
     ):
         exit_code, output, posted = _run_merge_train_proposal(_enrollment_argv(repository, like, *more), read_payload)
         assert (exit_code, output["warnings"][0]["code"], posted) == (2, code, [])
+
+
+def governance_response() -> dict[str, Any]:
+    return {
+        "status": "ok", "trace_id": "launchplane_req_fixture",
+        "projection": {
+            "schema_version": 1, "mode": "read_only_projection", "authoritative": False, "authorizes": [],
+            "target": {"repository": "example/repo", "pull_request_number": 42},
+            "owner_judgment": None, "generated_at": "2026-10-26T09:00:00Z", "advisory_observations": [],
+            "merge_readiness": {"level": 2, "mode": "ephemeral", "authoritative": False, "authorizes": [],
+                                "availability": "available", "reason_code": "current_evaluation_available",
+                                "result": {"state": "blocked_checks", "reason_codes": ["checks_failed"],
+                                           "technical_checks": {"private_evidence": "do-not-print"}}},
+            "merge_admission": {"level": 3, "mode": "immutable_attempt_authorization", "authoritative": False,
+                                "current_effect_authority": False, "authorizes": ["one_exact_merge_attempt"],
+                                "status": "admitted_historical_target",
+                                "record": {"admission_id": "admission-fixture", "decision": "admitted",
+                                           "lease_owner": "do-not-print"}},
+            "landing_outcome": {"mode": "immutable_provider_observation", "authoritative": False, "authorizes": [],
+                                "target_status": "historical", "status": "landed", "landed": True,
+                                "record": {"outcome_id": "outcome-fixture", "status": "landed",
+                                           "merge_commit_sha": "a" * 40, "provider_message": "do-not-print"}},
+        },
+    }
+
+
+@pytest.mark.parametrize("availability", ["available", "unavailable", "not_active"])
+def test_governance_read_uses_get_and_bounds_evidence(tmp_path: Path, availability: str) -> None:
+    response = governance_response()
+    facet = response["projection"]["merge_readiness"]
+    facet["availability"] = availability
+    if availability != "available":
+        facet["reason_code"] = "current_evidence_unavailable" if availability == "unavailable" else "no_active_merge_lineage"
+        facet["result"] = None
+    if availability == "unavailable":
+        response["projection"]["target"] = None
+        response["projection"]["requested_target"] = {"repository": "example/repo", "pull_request_number": 42}
+        response["projection"]["merge_admission"]["status"] = "admitted_unknown_target"
+        response["projection"]["landing_outcome"]["target_status"] = "unknown"
+    output = io.StringIO()
+    with patch.object(write_action, "prepare_operator_settings", return_value={"service_url": "https://service.example.invalid"}), patch.object(
+        write_action, "request_launchplane_read", return_value=response,
+    ) as read, patch.object(write_action, "request_launchplane", side_effect=AssertionError("write attempted")), redirect_stdout(output):
+        status = write_action.main(["governance-projection-read", "--repository", "example/repo", "--base-branch", "main", "--pr", "42"])
+    assert status == 0
+    assert read.call_args.kwargs["path"] == contract.helper_command_path("governance-projection-read")
+    assert read.call_args.kwargs["query"] == {"repository": "example/repo", "base_branch": "main", "pull_request_number": "42"}
+    result = json.loads(output.getvalue())["result"]
+    assert result["merge_readiness"]["availability"] == availability
+    assert result["merge_readiness"]["state"] == ("blocked_checks" if availability == "available" else None)
+    assert result["merge_admission"]["record"]["admission_id"] == "admission-fixture"
+    assert result["landing_outcome"]["record"]["outcome_id"] == "outcome-fixture"
+    assert result["landing_outcome"]["record"]["merge_commit_sha"] == "a" * 40
+    assert "do-not-print" not in output.getvalue()
+    assert result["authorizes"] == [] and result["authoritative"] is False
+
+
+@pytest.mark.parametrize("bad_shape", ["top", "projection", "facet", "target", "availability", "missing_record"])
+def test_governance_read_rejects_unknown_or_misleading_evidence(bad_shape: str) -> None:
+    response = governance_response()
+    projection = response["projection"]
+    if bad_shape == "top":
+        response["new_field"] = "do-not-print"
+    elif bad_shape == "projection":
+        projection["new_field"] = "do-not-print"
+    elif bad_shape == "facet":
+        projection["merge_readiness"]["new_field"] = "do-not-print"
+    elif bad_shape == "target":
+        projection["target"]["repository"] = "other/repo"
+    elif bad_shape == "availability":
+        projection["merge_readiness"]["availability"] = "unavailable"
+    else:
+        projection["landing_outcome"]["record"] = None
+    with pytest.raises(safety.LaunchplaneSafetyError):
+        write_action.summarize_governance_projection_read(
+            request={"repository": "example/repo", "base_branch": "main", "pull_request_number": 42}, provider_payload=response,
+        )

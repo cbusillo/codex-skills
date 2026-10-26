@@ -73,6 +73,7 @@ READ_ONLY_OPERATIONS = {
     *NAMES_ONLY_READS,
     "dokploy-inventory-read",
     "merge-train-policy-read",
+    "governance-projection-read",
     "repository-inventory-read",
     "integration-allowances-read",
     "testing-hold-read",
@@ -6163,7 +6164,79 @@ def summarize_merge_train_policy_read(
     return payload
 
 
+def summarize_governance_projection_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    operation = "governance-projection-read"
+    _require_read_fields(operation, provider_payload, required=BOUNDED_READ_RESPONSE_FIELDS[operation])
+    if provider_payload["status"] != "ok":
+        raise LaunchplaneSafetyError("invalid_response")
+    source = _require_dict(provider_payload["projection"])
+    fields = {"schema_version", "mode", "authoritative", "authorizes", "target", "owner_judgment",
+              "merge_readiness", "merge_admission", "landing_outcome", "advisory_observations", "generated_at"}
+    _require_exact_fields(source, fields | ({"requested_target"} if "requested_target" in source else set()))
+    if source["schema_version"] != 1 or source["mode"] != "read_only_projection" or source["authoritative"] is not False or source["authorizes"] != []:
+        raise LaunchplaneSafetyError("invalid_response")
+    target = _require_dict(source["target"] if source["target"] is not None else source.get("requested_target"))
+    if str(target.get("repository", "")).casefold() != str(request["repository"]).casefold() or target.get("pull_request_number") != request["pull_request_number"]:
+        raise LaunchplaneSafetyError("invalid_response")
+    readiness = _require_dict(source["merge_readiness"])
+    readiness_fields = {"level", "mode", "authoritative", "authorizes", "availability", "reason_code", "result"}
+    _require_exact_fields(readiness, readiness_fields | ({"detail"} if "detail" in readiness else set()))
+    availability = readiness["availability"]
+    result = readiness["result"]
+    if availability not in {"available", "unavailable", "not_active"} or (availability == "available") != isinstance(result, dict):
+        raise LaunchplaneSafetyError("invalid_response")
+    if readiness["authoritative"] is not False or readiness["authorizes"] != []:
+        raise LaunchplaneSafetyError("invalid_response")
+    if source["target"] is None and availability != "unavailable":
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, Any] = {
+        "authoritative": False, "authorizes": [], "current_target_available": source["target"] is not None,
+        "generated_at": public_timestamp(source["generated_at"]),
+        "merge_readiness": {
+            "availability": public_code(availability), "reason_code": public_code(readiness["reason_code"]),
+            "state": public_code(result.get("state")) if isinstance(result, dict) else None,
+        },
+    }
+    for name, allowed_fields, id_field, empty_status in (
+        ("merge_admission", {"level", "mode", "authoritative", "current_effect_authority", "authorizes", "status", "record"}, "admission_id", "not_recorded"),
+        ("landing_outcome", {"mode", "authoritative", "authorizes", "target_status", "status", "landed", "record"}, "outcome_id", "not_observed"),
+    ):
+        facet = _require_exact_fields(source[name], allowed_fields)
+        if facet["authoritative"] is not False:
+            raise LaunchplaneSafetyError("invalid_response")
+        if name == "merge_admission" and facet["current_effect_authority"] is not False:
+            raise LaunchplaneSafetyError("invalid_response")
+        record = facet["record"]
+        if (record is None) != (facet["status"] == empty_status):
+            raise LaunchplaneSafetyError("invalid_response")
+        summary: dict[str, Any] = {"status": public_code(facet["status"]), "record": None}
+        if name == "landing_outcome":
+            summary["target_status"] = public_code(facet["target_status"])
+            if facet["landed"] is not (facet["status"] == "landed"):
+                raise LaunchplaneSafetyError("invalid_response")
+        if record is not None:
+            record = _require_dict(record)
+            summary["record"] = {id_field: public_identifier(record.get(id_field))}
+            if name == "landing_outcome":
+                summary["record"]["status"] = public_code(record.get("status"))
+                if record.get("status") != facet["status"]:
+                    raise LaunchplaneSafetyError("invalid_response")
+                merge_commit = record.get("merge_commit_sha")
+                summary["record"]["merge_commit_sha"] = _public_commit_sha(merge_commit) if merge_commit else None
+            else:
+                summary["record"]["decision"] = public_code(record.get("decision"))
+        projected[name] = summary
+    assert_public_safe_shape(projected)
+    payload = base_payload(status="ok", operation=operation, request=request)
+    payload["result"] = projected
+    payload["summary"] = {"trace_id": public_trace_id(provider_payload["trace_id"])}
+    return payload
+
+
 PRODUCT_READ_SUMMARIZERS = {
+    "governance-projection-read": summarize_governance_projection_read,
     "generic-web-deploy-recovery-reference-read": summarize_recovery_reference_read,
     "merge-train-policy-read": summarize_merge_train_policy_read,
     "path-check": summarize_path_check,
@@ -11205,6 +11278,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Report private operator credential source presence without printing values.",
     )
 
+    governance_read = subparsers.add_parser("governance-projection-read", help="Read bounded governance evidence for one pull request.")
+    governance_read.add_argument("--repository", required=True)
+    governance_read.add_argument("--base-branch", required=True)
+    governance_read.add_argument("--pr", type=int, required=True)
+
     policy_read = subparsers.add_parser(
         "merge-train-policy-read",
         help="Read enrollment and enqueue routing for one repository from the active policy.",
@@ -12163,6 +12241,14 @@ def main(argv: list[str]) -> int:
         from launchplane_route_authority import COMMANDS as route_authority_commands, execute as execute_route_authority
         if args.command in route_authority_commands:
             return execute_route_authority(sys.modules[__name__], args)
+        if args.command == "governance-projection-read":
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repository) or args.pr < 1:
+                raise ValueError("invalid_request")
+            request = {"repository": public_identifier(args.repository), "base_branch": public_identifier(args.base_branch), "pull_request_number": args.pr}
+            return execute_product_read(
+                args=args, operation=args.command, request=request, path=helper_command_path(args.command),
+                query={key: str(value) for key, value in request.items()},
+            )
         if args.command == "merge-train-policy-read":
             try:
                 if args.repo:

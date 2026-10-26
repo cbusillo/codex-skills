@@ -155,6 +155,7 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/merge-train/policies/import",
         "mode": "apply",
     },
+    "governance-projection-read": {"method": "GET", "path": "/v1/governance/projection", "mode": "read"},
     "repository-inventory-read": {
         "method": "GET",
         "path": "/v1/repository-inventory",
@@ -483,6 +484,7 @@ BOUNDED_READ_RESPONSE_FIELDS: dict[str, frozenset[str]] = {
             "status", "trace_id", "records", "result", "replayed", "original_trace_id",
         },
         "merge-train-policy-read": {"status", "trace_id", "record"},
+        "governance-projection-read": {"status", "trace_id", "projection"},
         "merge-train-policy-targets-read": {"status", "trace_id", "policy", "targets"},
         "path-check": {"status", "trace_id", "check"},
         "preview-history-read": {"status", "trace_id", "preview", "generations"},
