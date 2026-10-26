@@ -1397,6 +1397,13 @@ there. The native local flag avoids needing a custom remote thread client.
 
 ### tmux launches
 
+The launcher stages each command and brief in a mode-0600 temporary shell file,
+so tmux receives only its path. The shell removes that file as it starts and
+still waits for the launch receipt before running the agent. A failure before
+submission removes any remaining file; uncertain submission reports its path
+as `launch_script` for readback. Only tmux's fixed `command too long` diagnostic
+is included in errors; other stderr remains private.
+
 Use the same helper and launch/brief files, adding global `--backend tmux`
 before its command. The default dedicated server is `tmux -L supervisor`;
 `--tmux-socket <name>` selects a separate test server. List, read, send and

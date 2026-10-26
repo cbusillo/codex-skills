@@ -269,6 +269,19 @@ class ViewTests(unittest.TestCase):
         self.assertNotIn("retry_command", result)
 
 
+class DiagnosticTests(unittest.TestCase):
+    def test_only_fixed_size_diagnostic_is_safe_to_report(self) -> None:
+        terminal = tmux_terminal.Terminal("supervisor-test")
+        for stderr, visible in (("command too long\n", True), ("command too long: private brief", False),
+                                ("private brief", False)):
+            with self.subTest(stderr=stderr), patch.object(subprocess, "run", return_value=subprocess.CompletedProcess(
+                    [], 1, stdout="", stderr=stderr)):
+                with self.assertRaises(ValueError) as caught:
+                    terminal.run("new-window")
+                self.assertEqual("command too long" in str(caught.exception), visible)
+                self.assertNotIn("private brief", str(caught.exception))
+
+
 class ProcessAncestryTests(unittest.TestCase):
     def test_reads_process_tree_and_rejects_unproven_membership(self):
         with patch.object(tmux_terminal.subprocess, "run", return_value=SimpleNamespace(
@@ -884,6 +897,32 @@ for line in sys.stdin:
         self.assertFalse(any(r["session_id"] == row["session_id"] for r in self.terminal.list()))
         self.assertTrue(any(r["window_id"] == self.window for r in self.terminal.list()))
 
+    def test_large_quoted_brief_reaches_worker_outside_tmux_argument(self) -> None:
+        self.brief_text = self.brief_text * 600
+        self.brief.write_text(self.brief_text)
+        output = self.root / "received.json"
+        self.agent.write_text(f"#!{sys.executable}\nimport json, sys\n"
+                              f"open({str(output)!r}, 'w').write(json.dumps(sys.argv[-1]))\n"
+                              "print('READY:', flush=True)\ninput()\n")
+        original = tmux_terminal.Terminal.run
+        launches = []
+
+        def run(terminal: tmux_terminal.Terminal, *argv: str, **kwargs: object) -> subprocess.CompletedProcess:
+            if argv[0] == "new-window":
+                launches.append(argv)
+                self.assertNotIn(self.brief_text, argv[-1])
+                self.assertLess(len(argv[-1].encode()), 16000)
+                script = Path(shlex.split(argv[-1])[-1])
+                self.assertEqual(script.stat().st_mode & 0o777, 0o600)
+            return original(terminal, *argv, **kwargs)
+
+        with patch.object(tmux_terminal.Terminal, "run", run):
+            row = self.launch()
+        self.wait_screen(row["session_id"], "READY:")
+        self.assertEqual(json.loads(output.read_text()), self.brief_text)
+        self.assertFalse(Path(shlex.split(launches[0][-1])[-1]).exists())
+        self.assertFalse((self.root / "NEVER").exists())
+
     def test_new_window_preserves_launcher_context_and_cache_roots(self):
         environment = {"CODE_HOME": str(self.root / "code-context"), "UV_CACHE_DIR": str(self.root / "cache")}
         with patch.dict(os.environ, environment):
@@ -1153,6 +1192,7 @@ for line in sys.stdin:
         detail = caught.exception.detail["failed_launch"]
         self.assertEqual(detail["submission"], "not_attempted")
         self.assertFalse(detail["receipt_written"])
+        self.assertFalse(Path(detail["launch_script"]).exists())
         self.assertNotIn("READY:", "\n".join(self.terminal.read(detail["session_id"])["screen"]))
         self.assertFalse(self.terminal.select(detail["session_id"])["dead"])
 
