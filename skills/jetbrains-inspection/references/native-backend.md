@@ -289,10 +289,11 @@ as group proof, and attempts licence draining even if signalling or reaping
 fails. Both successful reaping and group absence are required to close custody.
 A failed load-control signal aborts a still-live worker into this finalization.
 After process closure is proved, an `ENOTEMPTY` removal failure may rescan the
-same inode once; other errors and a second failure remain custody holds. Receipts
+same inode once per directory; other errors and a second failure remain custody holds. Receipts
 record counts, errno and fixed deletion stages, never raw paths or error text.
 If final root removal fails, the exact owner marker is restored through the
-held directory descriptor without overwriting a new marker. A replaced inode
+held directory descriptor without overwriting a new marker. Every root rescan
+skips ownership markers. A replaced inode
 or ownership marker is preserved for recovery.
 Leader exit is observed without reaping, so the original PID still reserves the
 owned group while cleanup stops any sleeping or paused descendants. The exit
