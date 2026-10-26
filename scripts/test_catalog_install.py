@@ -212,6 +212,69 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(target.stat().st_mtime_ns, before.st_mtime_ns)
         self.assertFalse(list(self.root.rglob("*.backup-*")))
 
+    def check_native_delivery(self, harness: str) -> None:
+        from hooks import direction_check_hook as hook
+
+        self.install()
+        installation = json.loads((self.catalog / ".local/catalog-install.json").read_text())
+        selected = self.home / "selected-account"
+        selected.mkdir()
+        filename, variable = ("CLAUDE.md", "CLAUDE_CONFIG_DIR") if harness == "claude" else ("AGENTS.md", "CODEX_HOME")
+        destination = selected / filename
+        original = self.claude / filename if harness == "claude" else self.codex / filename
+        destination.symlink_to(original)
+        env = {"HOME": str(self.home), variable: str(selected)}
+        if harness == "claude":
+            env["CLAUDECODE"] = "1"
+
+        def preview(root: Path, arguments: list[str]) -> dict:
+            self.assertEqual(root, self.catalog)
+            codex = Path(arguments[arguments.index("--codex-dir") + 1])
+            claude = Path(arguments[arguments.index("--claude-dir") + 1])
+            return installer.install(self.home, codex, claude, write=False, updater=False,
+                                     refresh_instructions=True, skip_codex_hooks=True)
+
+        with (mock.patch.dict(os.environ, env, clear=True),
+              mock.patch.object(runtime, "preview_instructions", side_effect=preview),
+              mock.patch.object(runtime, "git", return_value=".git"),
+              mock.patch.object(runtime, "checkout_state", return_value={"state": "current"}),
+              mock.patch.object(runtime, "observe_checkout", return_value={}),
+              mock.patch.object(hook, "direction_root", return_value=None),
+              mock.patch.object(hook, "session_reminder", return_value=""),
+              mock.patch.object(hook, "memory_reminder", return_value=""),
+              mock.patch.object(hook, "agent_tools_warning", return_value="")):
+            def startup() -> str:
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    self.assertEqual(hook.main(catalog_root=self.catalog), 0)
+                return output.getvalue()
+
+            self.assertNotIn("DIRECTION delivery", startup())
+            with mock.patch.object(runtime, "preview_instructions", side_effect=subprocess.TimeoutExpired("fixture", 15)):
+                self.assertIn("DIRECTION delivery unconfirmed", startup())
+            before = {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
+            with mock.patch.object(self.sync, "direction_content", return_value="Merged overall and repository direction changed."):
+                warning = startup()
+                self.assertIn(str(destination), warning)
+                self.assertEqual(sum("DIRECTION delivery" in line for line in warning.splitlines()), 1)
+                self.assertIn(str(self.catalog / "scripts/install-catalog.py"), warning)
+                self.assertIn("--write", warning)
+            self.assertEqual(before, {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()})
+            self.assertEqual(json.loads((self.catalog / ".local/catalog-install.json").read_text()), installation)
+            destination.unlink()
+            self.assertIn(str(destination), startup())
+            destination.write_bytes(original.read_bytes())
+            self.assertNotIn("DIRECTION delivery", startup())
+            destination.write_text("Private host edits must survive.")
+            self.assertIn(str(destination), startup())
+            self.assertEqual(destination.read_text(), "Private host edits must survive.")
+
+    def test_claude_startup_checks_selected_native_direction_without_writes(self) -> None:
+        self.check_native_delivery("claude")
+
+    def test_codex_startup_checks_selected_native_direction_without_writes(self) -> None:
+        self.check_native_delivery("codex")
+
     def test_linked_catalog_instructions_refresh_target_and_receipt_when_source_updates(self):
         self.install()
         path = self.claude / "CLAUDE.md"
