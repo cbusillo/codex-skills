@@ -179,6 +179,16 @@ class AuthHealthTests(unittest.TestCase):
         self.probe.side_effect = timed_out
         self.assertTrue(health.observe(self.home)["blocked"])
 
+    def test_older_failed_reply_cannot_reopen_a_recovered_account(self) -> None:
+        health.observe(self.home)
+
+        def stale_failure(_home: Path) -> health.AuthStatus:
+            health.record_status(self.home, {"blocked": False, "episode_ns": None, "observed_ns": self.clock + 2})
+            return health.AuthStatus(self.identity, 1, "chatgpt", True, False)
+
+        self.probe.side_effect = stale_failure
+        self.assertFalse(health.observe(self.home)["blocked"])
+
     def test_a_new_daemon_or_missing_proof_does_not_release_a_confirmed_hold(self) -> None:
         health.observe(self.home)
         self.probe.side_effect = None

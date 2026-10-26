@@ -359,11 +359,9 @@ def observe(home: Path) -> dict:
         status = native_status(home)
         if status.identity != identity:
             return unknown_status(home, previous, "auth_daemon_changed")
-        events = capture(home, read_log(home))
+        capture(home, read_log(home))
         if status.account_present or not status.requires_auth:
-            if previous["blocked"] or any(event["ts_ns"] >= previous["observed_ns"] and event["event"] in FAILURES for event in events):
-                return record_status(home, {"blocked": False, "episode_ns": None, "observed_ns": status.requested_ns})
-            return {"blocked": False}
+            return record_status(home, {"blocked": False, "episode_ns": None, "observed_ns": status.requested_ns})
         if status.auth_method != "chatgpt":
             return unknown_status(home, previous, "auth_mode_unknown")
         deadline = time.monotonic() + LOG_DELIVERY_SECONDS
@@ -373,9 +371,7 @@ def observe(home: Path) -> dict:
             episode = failure_episode(selected)
             if episode is not None:
                 result = {"blocked": True, "episode_ns": previous["episode_ns"] if previous["blocked"] else episode}
-                if not previous["blocked"]:
-                    return record_status(home, {**result, "observed_ns": status.requested_ns})
-                return result
+                return record_status(home, {**result, "observed_ns": status.requested_ns})
             if time.monotonic() >= deadline:
                 return unknown_status(home, previous, "auth_log_delivery_unknown")
             time.sleep(0.02)
