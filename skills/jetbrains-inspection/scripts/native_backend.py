@@ -164,7 +164,7 @@ GAP_CODES = frozenset({"selection_file_type_unsupported", "selection_outside_roo
 SELECTION_ERRORS = (Blocked, OSError, subprocess.SubprocessError, ValueError)
 
 
-def listing(labels):
+def listing(labels: set[str]) -> str:
     ordered = sorted(labels)
     return ", ".join(ordered) if len(ordered) <= 3 else ", ".join(ordered[:3]) + f" and {len(ordered) - 3} more"
 
