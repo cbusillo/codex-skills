@@ -120,19 +120,23 @@ def read_tracks(
     tracks = discover_tracks(reader, owner, name, max_pages)
     nodes: dict[int, dict[str, Any]] = {}
     errors: list[str] = []
-    for start in range(0, len(tracks), TRACKS_PER_QUERY):
-        numbers = [track["number"] for track in tracks[start : start + TRACKS_PER_QUERY]]
+    for track in tracks:
+        number = track["number"]
         result = reader.graphql_json(
-            detail_query(numbers), {"owner": owner, "name": name}, step=f"work_graph_tracks_{start // TRACKS_PER_QUERY + 1}"
+            detail_query([number]), {"owner": owner, "name": name}, step=f"work_graph_track_{number}"
         )
         data = result.body.get("data") if result.ok and isinstance(result.body, dict) else None
         repository = (data or {}).get("repository") or {}
-        if not result.ok or not isinstance(result.body, dict) or result.body.get("errors"):
-            errors.append(f"Track read failed for #{', #'.join(map(str, numbers))}")
-        for number in numbers:
-            node = repository.get(f"t{number}")
-            if isinstance(node, dict) and node.get("state") == "OPEN":
-                nodes[number] = node
+        if not result.ok or not isinstance(result.body, dict):
+            reason = result.failure.message if result.failure else f"HTTP {result.status}: invalid or unavailable response"
+            errors.append(f"Track read failed for #{number}: {reason}")
+        elif result.body.get("errors"):
+            for error in result.body["errors"]:
+                path = ".".join(map(str, error.get("path") or [])) or "query"
+                errors.append(f"Track read failed at {path}: {error.get('message', 'GraphQL error')}")
+        node = repository.get(f"t{number}")
+        if isinstance(node, dict) and node.get("state") == "OPEN":
+            nodes[number] = node
     return {"tracks": tracks, "nodes": nodes, "errors": errors}
 
 

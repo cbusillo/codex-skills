@@ -91,8 +91,20 @@ class GoalBoardTests(unittest.TestCase):
         self.reader.diagnostics.return_value = {}
 
     def replay(self, *bodies):
-        self.reader.graphql_json.side_effect = [
-            body if isinstance(body, ApiResult) else ApiResult(ok=True, status=200, body=body) for body in bodies]
+        responses = iter(bodies)
+        detail = None
+
+        def query(text: str, *_args: Any, **_kwargs: Any) -> ApiResult:
+            nonlocal detail
+            if "WorkGraphTrackList" in text:
+                body = next(responses)
+            else:
+                if detail is None:
+                    detail = next(responses)
+                body = detail
+            return body if isinstance(body, ApiResult) else ApiResult(ok=True, status=200, body=body)
+
+        self.reader.graphql_json.side_effect = query
         return goal_board.goal_board(self.reader, "owner", trusted=TRUSTED, wait_trusted=TRUSTED)
 
     def test_closed_legacy_child_does_not_require_an_unused_wait_projection(self):
@@ -330,6 +342,53 @@ class GoalBoardTests(unittest.TestCase):
         self.assertFalse(board["coverage"]["complete"])
         self.assertEqual(board["tracks"][0]["children"][0]["open_prs"][0]["handoff"], "ready")
         self.assertIsNotNone(board["tracks"][0]["latest_decision"])
+
+    def test_unread_field_keeps_sibling_fields_children_and_tracks_readable(self) -> None:
+        row = child(10, prs=[pr(100), pr(101)])
+        row["closedByPullRequestsReferences"]["nodes"][0]["mergeable"] = None
+        broken_comments = child(11)
+        broken_comments["comments"] = None
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}, {"number": 2, "title": "Track: Two"}]),
+                            details(t1=track(1, children=[row, broken_comments, child(12)]), t2=track(2)))
+        self.assertEqual(board["coverage"], {"discovered": 2, "read": 2, "complete": False})
+        children = board["tracks"][0]["children"]
+        self.assertEqual(children[0]["open_prs"][0]["mergeable"], goal_board.UNKNOWN)
+        self.assertEqual(children[0]["open_prs"][0]["handoff"], "no handoff")
+        self.assertEqual(children[0]["open_prs"][1]["mergeable"], "mergeable")
+        self.assertEqual(children[0]["next_action"], "Child 10 step.")
+        self.assertEqual(children[1]["next_action"], goal_board.UNKNOWN)
+        self.assertEqual(children[2]["next_action"], "Child 12 step.")
+        text = goal_board.markdown({**board, "checked_at": "now"})
+        self.assertIn("mergeability on " + pr(100)["url"], text)
+        self.assertIn("next action (TypeError:", text)
+        self.assertFalse(board["tracks"][1]["unread"])
+
+    def test_graphql_errors_name_the_field_and_preserve_readable_tracks(self) -> None:
+        broken = track(1)
+        broken["subIssues"] = None
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}, {"number": 2, "title": "Track: Two"}]),
+            {**details(t1=broken, t2=track(2)), "errors": [
+                {"path": ["repository", "t1", "subIssues"], "message": "Field unavailable"}]})
+        self.assertEqual(board["coverage"], {"discovered": 2, "read": 2, "complete": False})
+        self.assertEqual(board["tracks"][0]["next_action"], "Track 1 step.")
+        self.assertFalse(board["tracks"][1]["unread"])
+        text = goal_board.markdown({**board, "checked_at": "now"})
+        self.assertIn("repository.t1.subIssues", text)
+        self.assertIn("Field unavailable", text)
+        self.assertIn("children (TypeError:", text)
+
+    def test_http_200_detail_failure_cannot_hide_every_track(self) -> None:
+        failure = {"message": "Detail query unavailable"}
+        self.reader.graphql_json.side_effect = [ApiResult(ok=True, status=200, body=body) for body in (
+            listing([{"number": 1, "title": "Track: One"}, {"number": 2, "title": "Track: Two"}]),
+            {"data": {"repository": None}, "errors": [failure]},
+            details(t2=track(2)))]
+        board = goal_board.goal_board(self.reader, "owner", trusted=TRUSTED, wait_trusted=TRUSTED)
+        self.assertEqual(board["coverage"], {"discovered": 2, "read": 1, "complete": False})
+        self.assertFalse(board["tracks"][0]["read"])
+        self.assertTrue(board["tracks"][1]["read"])
+        self.assertEqual(board["tracks"][1]["next_action"], "Track 2 step.")
+        self.assertIn(failure["message"], goal_board.markdown({**board, "checked_at": "now"}))
 
     def test_discovery_failures_refuse_rather_than_return_a_short_board(self):
         for pages in ([ApiResult(ok=False, status=403, body=None)],

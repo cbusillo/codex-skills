@@ -290,12 +290,11 @@ and closure readers retain their strict ledger validation.
 
 `goal_board.py` consumes the shared `github_work_graph.py` read. The shared
 reader lists the open issues on OWNER/direction (100 per page) and
-keeps those titled `Track:`, whatever their milestone. It then reads up to
-ten Tracks per aliased GraphQL query: each Track's body, labels and last 100
+keeps those titled `Track:`, whatever their milestone. It then reads one Track per GraphQL query: each Track's body, labels and last 100
 comments, its first 50 native children with their state, body, labels,
 sub-issue counts and last 100 comments, and up to five PRs closing each child with their last
-30 comments. Seven Tracks took two requests, 28 points and about five seconds
-on October 16, 2026.
+30 comments. Detail reads are isolated by Track so one failed request cannot
+hide the other Tracks. All requests share the command's deadline.
 
 The latest `Director decision` comment counts only from the `--owner` login, the
 configured automation login, or `--decision-author` logins. PR handoff state
@@ -326,7 +325,10 @@ the comments read with no decision or handoff among them, or with no
 status comment among them while the body is older than the oldest comment
 read (or has no Current Status). The newest decision
 or handoff inside the window is the latest, so a long thread with one stays
-complete. Any unread Track or part makes `complete` false and exits 1.
+complete. Field conversion failures name the affected part and its exception, preserving
+the other parts of the row. GraphQL errors retain their field path and reason;
+a wholly unread Track also names its reason. Any unread Track or part makes
+`complete` false and exits 1.
 
 ### Codex provider capacity stops
 
