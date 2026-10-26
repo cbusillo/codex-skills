@@ -904,7 +904,7 @@ class LogObservation:
 
 
 def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, receipt: dict[str, Any], *, lock_fd: int, global_lock_fd: int | None = None, require_completion=True, on_spawn=None, on_exit=None,
-            completion=observations.INSPECTION_COMPLETION, logs: LogObservation | None = None):
+            completion=observations.INSPECTION_COMPLETION, logs: LogObservation | None = None, load_pause_timeout_ms: int = 0) -> float:
     """One guarded process group; preparation never uses IDE event parsing."""
     process = None
     exit_watch = None
@@ -913,6 +913,20 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
     gate_read, gate_write = os.pipe()
     stdout = None
     paused = False
+    pause_sample = None
+    paused_seconds = receipt.get("load_paused_ms", 0) / 1000
+
+    def account_pause() -> None:
+        nonlocal deadline, pause_sample, paused_seconds
+        now = time.monotonic()
+        if pause_sample is not None:
+            elapsed = now - pause_sample
+            deadline += elapsed
+            paused_seconds += elapsed
+            receipt["load_paused_ms"] = round(paused_seconds * 1000)
+        pause_sample = now
+        if paused_seconds >= max(0, load_pause_timeout_ms) / 1000:
+            raise Blocked("native_host_load_paused")
     logs = logs or LogObservation()
     log_offsets, log_framers, log_license_scanners = logs.offsets, logs.framers, logs.license_scanners
     log_identities, observation_failures = logs.identities, logs.failures
@@ -1120,6 +1134,8 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
         os.set_blocking(stdout.fileno(), False)
         selector.register(stdout, selectors.EVENT_READ)
         while True:
+            if paused:
+                account_pause()
             check_lifetime(parent_fd, deadline)
             for _key, _event in selector.select(0.1):
                 chunk = os.read(stdout.fileno(), 65536)
@@ -1150,8 +1166,10 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
                         continue
                     raise Blocked("native_process_signal_failed")
                 paused = True
+                pause_sample = time.monotonic()
                 receipt["load_pause_count"] += 1
             elif load <= LOAD_LIMIT and paused:
+                account_pause()
                 if not send_group_signal(process.pid, signal.SIGCONT, receipt):
                     if leader_exited():
                         continue
@@ -1203,6 +1221,7 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
             receipt["license_observation_complete"] = True
     if process.returncode != 0 or require_completion and not observer.completion:
         raise Blocked("native_execution_incomplete" if require_completion else "native_preparation_failed")
+    return deadline
 
 
 def content_root_suffixes(selected: set[str]) -> set[str]:
@@ -1602,8 +1621,8 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
     elif reason.startswith("native_cache_"):
         action = "Restore the configured existing host cache directory and recorded storage identity, or configure its supported replacement outside the activated worker. Never create a replacement mount directory."
     elif reason == "native_host_load_paused":
-        action = (f"The host's one-minute load average stayed above {LOAD_LIMIT}, so no engine launched. Let other builds, tests "
-                  "or inspections finish, then request one fresh assessment; do not add a retry loop.")
+        action = (f"The host's one-minute load average stayed above {LOAD_LIMIT} through the bounded admission wait or active-run "
+                  "pause allowance. Let other builds, tests or inspections finish, then request one fresh assessment; do not add a retry loop.")
     elif reason == "native_worker_busy":
         action = "Another owner held the isolated worker past --lifecycle-lock-timeout-ms; no engine launched. Let the live holder or independent GUI finish, then request one fresh assessment. If its guardian died, use --backend native --native-recover-only with the same independent worker to reconcile the journaled process; never kill another session's worker."
     elif reason == "native_process_group_unproven":
@@ -1696,11 +1715,12 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         def on_wait():
             check_lifetime(parent_fd, float("inf"))
 
+        load_pause_timeout_ms = max(0, getattr(args, "lifecycle_lock_timeout_ms", host.DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS))
         admission_started, wait_until = time.monotonic(), None
         if not args.native_recover_only:
             # Ordinary requests queue for the same locks; recovery never waits.
             held_lock.enter_context(host.fifo_turn(state_dir() / "native-queue", "Native inspection", on_wait))
-            wait_until = time.monotonic() + max(0, getattr(args, "lifecycle_lock_timeout_ms", host.DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)) / 1000
+            wait_until = time.monotonic() + load_pause_timeout_ms / 1000
             wait_for_host_capacity(wait_until, on_wait, receipt)
         held_lock.enter_context(profile_lock(worker, "native-control.lock", wait_until, on_wait))
         process_proof = stop_orphan(worker, receipt)
@@ -1796,10 +1816,12 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             context.attempt("process_exit_record", context.process_finished)
 
         def prepare(preparation_argv, preparation_env):
+            nonlocal deadline
             (private / "prepare-home").mkdir()
-            execute(preparation_argv, preparation_env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(),
+            deadline = execute(preparation_argv, preparation_env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(),
                     global_lock_fd=global_lock.fileno(), require_completion=False,
-                    on_spawn=lambda pid: record_process("preparation", pid), on_exit=record_exit)
+                    on_spawn=lambda pid: record_process("preparation", pid), on_exit=record_exit,
+                    load_pause_timeout_ms=load_pause_timeout_ms)
 
         check_lifetime(parent_fd, deadline)
         sdk = None
@@ -1855,8 +1877,10 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         engine_logs_seen = LogObservation()
 
         def launch(launch_argv, completion=observations.INSPECTION_COMPLETION):
-            execute(launch_argv, env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(), global_lock_fd=global_lock.fileno(),
-                    on_spawn=lambda pid: record_process("engine", pid), on_exit=record_exit, completion=completion, logs=engine_logs_seen)
+            nonlocal deadline
+            deadline = execute(launch_argv, env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(), global_lock_fd=global_lock.fileno(),
+                    on_spawn=lambda pid: record_process("engine", pid), on_exit=record_exit, completion=completion, logs=engine_logs_seen,
+                    load_pause_timeout_ms=load_pause_timeout_ms)
 
         try:
             if intellij:

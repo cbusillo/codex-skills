@@ -434,7 +434,7 @@ os._exit(0)
                 (self.private / "worker.lock").open("w") as lock:
             try:
                 self.backend.execute(["fixture"], {}, self.private, time.monotonic() + 3, None,
-                                     receipt, lock_fd=lock.fileno(), require_completion=False)
+                                     receipt, lock_fd=lock.fileno(), require_completion=False, load_pause_timeout_ms=3000)
             except self.backend.Blocked as error:
                 outcome = str(error)
         return outcome, receipt

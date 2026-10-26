@@ -298,8 +298,16 @@ under the selected helper cache. Above load1 64, a request at the head of the
 queue waits for load to fall before taking any worker lock, within
 `--lifecycle-lock-timeout-ms`, reporting `load_wait_ms`; it returns
 `native_host_load_paused` only when that bound passes. Recovery-only requests
-and the worker's GUI are not held up by that wait. An active run pauses above 64 and resumes below that threshold; its
-wall deadline continues while paused.
+and the worker's GUI are not held up by that wait. An active run pauses above 64 and resumes below that threshold.
+Time suspended by the helper does not consume `--timeout-ms`. The cumulative
+pause allowance across preparation, warmup and inspection is bounded by
+`--lifecycle-lock-timeout-ms`; exhausting it returns UNKNOWN with
+`native_host_load_paused` and the usual owned-process cleanup. Cancellation and
+parent-exit checks continue while paused. Outcome logs retain pause count and
+duration alongside admission wait and total wall time.
+An admitted run can hold the shared worker for `--timeout-ms` plus this pause
+allowance and bounded cleanup. Admission has its own earlier load/lock wait;
+FIFO queue time remains unbounded and interruptible.
 
 A guardian in a separate session keeps the locks and watches the invoking
 process's lifetime pipe, including when a harness kills the caller's whole group.
