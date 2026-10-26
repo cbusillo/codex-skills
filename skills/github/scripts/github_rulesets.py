@@ -28,6 +28,11 @@ UPSTREAM_CONTRIBUTION_FORKS = frozenset({
     "cbusillo/simple_zpl2", "cbusillo/teslajsonpy", "cbusillo/uplift-ble",
 })
 
+
+def is_upstream_contribution_fork(repo: str) -> bool:
+    return repo.casefold() in UPSTREAM_CONTRIBUTION_FORKS
+
+
 RULESET_API_VERSION = "2026-03-10"
 LANDING_RULESET_NAME = "Only the owner and automation update the default branch"
 LANDING_RULESET_ALIASES = frozenset({"Only the administrator updates the default branch"})

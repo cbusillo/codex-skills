@@ -149,7 +149,7 @@ def audit(
         milestone_lines = parsed["milestone_lines"]
         if parsed["missing_headings"]:
             findings.append({"kind": "direction_shape", "detail": "missing headings", "headings": parsed["missing_headings"]})
-        requires_rulesets = (repo or "").casefold() not in github_rulesets.UPSTREAM_CONTRIBUTION_FORKS
+        requires_rulesets = not github_rulesets.is_upstream_contribution_fork(repo or "")
         if requires_rulesets and rulesets_unavailable:
             findings.append({
                 "kind": "ruleset_unavailable",
@@ -2011,7 +2011,7 @@ def audit_one(
         truncated.extend(issue_truncation)
         pulls, cut = fetch_paginated(f"repos/{repo}/pulls?state=open", fetch=fetch)
         truncated += ["pulls"] if cut else []
-        rulesets, cut = (([], False) if repo.casefold() in github_rulesets.UPSTREAM_CONTRIBUTION_FORKS
+        rulesets, cut = (([], False) if github_rulesets.is_upstream_contribution_fork(repo)
                          else fetch_rulesets(repo, fetch=fetch))
         truncated += ["rulesets"] if cut else []
         direction_pulls = direction_pull_requests(repo, pulls, fetch=fetch)

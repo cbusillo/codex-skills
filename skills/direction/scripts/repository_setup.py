@@ -141,7 +141,7 @@ def installation_readable(fetch: Callable[[list[str]], Any]) -> bool:
 def collect(owner: str, *, fetch: Callable[[list[str]], Any], policy_reader: PolicyReader,
             developer: Path, codex_homes: list[dict[str, Any]]) -> dict[str, Any]:
     repos, cut = audit.owner_repositories(owner, fetch=fetch)
-    repos = {key: repo for key, repo in repos.items() if key.casefold() not in audit.github_rulesets.UPSTREAM_CONTRIBUTION_FORKS}
+    repos = {key: repo for key, repo in repos.items() if not audit.github_rulesets.is_upstream_contribution_fork(key)}
     coverage = audit.repository_listing_gaps(cut, fetch=fetch)
     gaps = [gap(None, "app") for listing in coverage if listing["reason"] == "installation_selected_repositories"]
     if not installation_readable(fetch):
