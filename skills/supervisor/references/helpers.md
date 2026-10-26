@@ -220,22 +220,47 @@ released. Other user turns or any later assistant turn invalidate it.
 
 ## Checks and morning digest
 
-The existing Codex idle watcher also checks configured Codex homes for permanent
-renewal failures, even without a worker on that account. It saves allowlisted
-auth events from `logs_2.sqlite` opened read-only, plus the observed process
-inventory, in that home's private `skill-data/supervisor-auth/evidence.jsonl`. It never
-opens credentials or saves raw log bodies, process arguments or environments.
-Captured evidence survives Codex's log rotation. Keep this watcher running;
-events rotated away before any observation cannot be recovered. Process inventory
-describes capture time; earlier process identities come from retained log events.
+The existing Codex idle watcher and launcher guard share the same per-home
+auth helper. Every check connects to that account's existing daemon, verifies
+its PID/start identity and Unix peer, and requests token-free `getAuthStatus`
+with `includeToken:false` and `refreshToken:false`. Codex evaluates its own
+access-token expiry and renews only when its managed-auth policy says it is due.
+The watcher polls; it never forces renewal on a fixed timer, starts a second
+renewer or reads credentials. The launcher uses the same check before selection
+and execution. Native login remains available for recovery.
 
-An `auth_failure` notice wakes the Supervisor once per failure episode through
-the existing delivered-state file. Tell the Director which account needs a
-normal Codex sign-in, then re-arm the watcher. Reuse that delivered-state file
-across restarts. It prevents repeat notices while launches on the failed home
-remain paused. A new failure after credentials change is a new episode.
-Missing or unreadable logs produce diagnostics, not a provider-wide launch hold.
-Diagnostics stay in ordinary watcher output and do not end or re-arm the watch.
+`getAuthStatus` is deprecated. It remains a known compatibility dependency under
+[Q933](https://github.com/cbusillo/codex-skills/issues/2919#issuecomment-6429925021).
+The current `account/rateLimits/read` was tested with the installed native
+binary and a loopback issuer: a fresh token stayed untouched and a near-expiry
+token renewed, but a dead refresh token could still yield usage data. It cannot
+supply the required renewal verdict. The auth helper follows the expiry-aware
+read with `account/read` using `refreshToken:false`; a null ChatGPT account plus
+a preserved permanent renewal error establishes a hold. A result envelope or
+ChatGPT auth-method label alone is never proof of successful renewal.
+
+Before native reads, the helper saves allowlisted auth events from
+`logs_2.sqlite` opened read-only, plus process associations, to the home's
+private `skill-data/supervisor-auth/evidence.jsonl`. The same journal records
+confirmed holds and recovery. It never saves raw log bodies, token values,
+process arguments or environments. Captured evidence survives log rotation.
+Keep the watcher running; events rotated away before observation cannot be
+recovered. Process inventory describes capture time; earlier identities come
+from retained log events.
+
+An `auth_failure` notice wakes the Supervisor once per episode through the
+existing delivered-state file. Tell the Director which account needs a normal
+Codex sign-in, then re-arm the watcher with that same file. The launcher skips
+the held home while following Context Panel's remaining published order. The
+train driver is unchanged, and no renewal-status feed goes to Context Panel.
+
+A verified current account clears the hold after native recovery; a later
+failure is a new episode. UNKNOWN evidence never creates a hold, and a timeout
+or unavailable daemon cannot release a previously confirmed one. Unavailable
+logs or native state remain diagnostics; they do not impose a provider-wide
+hold or repeatedly end/re-arm the monitor. A dead-key check may wait up to eleven
+seconds for native log delivery before reporting UNKNOWN. Healthy accounts do
+not wait for log publication.
 
 ```sh
 uv run skills/supervisor/scripts/goal_board.py --owner OWNER --format markdown

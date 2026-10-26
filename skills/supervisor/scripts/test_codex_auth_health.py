@@ -101,15 +101,17 @@ class AuthHealthTests(unittest.TestCase):
         self.append("attempt")
         self.append(kind)
 
-    def failed_probe(self, _home: Path) -> health.AuthStatus:
+    def failed_probe(self, home: Path) -> health.AuthStatus:
         requested = self.clock + 1
+        if home != self.home:
+            return health.AuthStatus(self.identity, requested, "chatgpt", True, True)
         self.failure()
-        return health.AuthStatus(self.identity, requested, "chatgpt", True)
+        return health.AuthStatus(self.identity, requested, "chatgpt", True, False)
 
     def reset_probe(self, _home: Path) -> health.AuthStatus:
         requested = self.clock + 1
         self.append("reset")
-        return health.AuthStatus(self.identity, requested, "chatgpt", True)
+        return health.AuthStatus(self.identity, requested, "chatgpt", True, True)
 
     def args(self, *, once: bool = True) -> SimpleNamespace:
         ledger = self.root / "ledger.json"
@@ -126,10 +128,55 @@ class AuthHealthTests(unittest.TestCase):
             interval=1,
         )
 
+    def test_proactive_read_runs_before_any_failure_exists(self) -> None:
+        self.probe.side_effect = None
+        self.probe.return_value = SimpleNamespace(
+            identity=self.identity, requested_ns=1, auth_method="chatgpt", requires_auth=True, account_present=True
+        )
+        self.assertFalse(health.observe(self.home)["blocked"])
+        self.probe.assert_called_once_with(self.home)
+
+    def test_single_cached_permanent_failure_holds_until_verified_recovery(self) -> None:
+        self.failure()
+        self.probe.side_effect = None
+        self.probe.return_value = SimpleNamespace(
+            identity=self.identity, requested_ns=self.clock + 1, auth_method="chatgpt", requires_auth=True, account_present=False
+        )
+        with patch.object(health, "LOG_DELIVERY_SECONDS", 0):
+            self.assertTrue(health.observe(self.home)["blocked"])
+        self.probe.side_effect = TimeoutError
+        self.assertTrue(health.observe(self.home)["blocked"])
+        self.probe.side_effect = None
+        self.probe.return_value.account_present = True
+        self.assertFalse(health.observe(self.home)["blocked"])
+
+    def test_recovery_separates_later_failures_from_the_delivered_episode(self) -> None:
+        first = health.observe(self.home)["episode_ns"]
+        self.probe.side_effect = self.reset_probe
+        self.assertFalse(health.observe(self.home)["blocked"])
+        self.probe.side_effect = self.failed_probe
+        self.assertGreater(health.observe(self.home)["episode_ns"], first)
+
+    def test_old_responses_cannot_overwrite_a_newer_saved_hold(self) -> None:
+        health.record_status(self.home, {"blocked": True, "episode_ns": 4, "observed_ns": 5})
+        self.assertFalse(health.record_status(self.home, {"blocked": False, "episode_ns": None, "observed_ns": 3}))
+        self.assertTrue(health.journal_status(self.home)["blocked"])
+
+    def test_a_new_daemon_or_missing_proof_does_not_release_a_confirmed_hold(self) -> None:
+        health.observe(self.home)
+        self.probe.side_effect = None
+        self.probe.return_value = health.AuthStatus(health.DaemonIdentity(43, 0, "replacement"), 0, "chatgpt", True, False)
+        self.assertTrue(health.observe(self.home)["blocked"])
+
+    def test_unknown_without_a_confirmed_failure_does_not_block_a_healthy_account(self) -> None:
+        self.probe.side_effect = TimeoutError
+        self.assertFalse(health.observe(self.home)["blocked"])
+
     def test_confirmed_failure_excludes_only_its_account_and_preserves_published_order(self) -> None:
         self.failure()
         self.assertEqual(account_choice.choose("openai", self.config, self.snapshot, None, name="healthy")["name"], "healthy")
-        self.probe.assert_not_called()
+        self.probe.assert_called_once()
+        self.probe.reset_mock()
         self.assertEqual(account_choice.choose("openai", self.config, self.snapshot, None)["name"], "healthy")
         self.snapshot["accounts"].append({"provider": "openai", "id": "openai-c", "label": "Unconfigured"})
         self.snapshot["ranking"][0]["launchOrder"].insert(1, "openai-c")
@@ -192,8 +239,7 @@ class AuthHealthTests(unittest.TestCase):
 
     def test_reused_then_blocking_failure_remains_in_journal_after_rotation(self) -> None:
         self.failure("reused")
-        self.assertFalse(health.observe(self.home)["blocked"])
-        self.probe.assert_not_called()
+        self.assertTrue(health.observe(self.home)["blocked"])
         self.failure()
         self.assertTrue(health.observe(self.home)["blocked"])
         with sqlite3.connect(self.database) as connection:
@@ -204,17 +250,20 @@ class AuthHealthTests(unittest.TestCase):
 
     def test_issuer_rejection_is_kept_without_claiming_a_permanent_failure(self) -> None:
         self.append("issuer")
-        self.assertFalse(health.observe(self.home)["blocked"])
-        self.probe.assert_not_called()
+        self.probe.side_effect = None
+        self.probe.return_value = health.AuthStatus(self.identity, self.clock + 1, "chatgpt", True, False)
+        with patch.object(health, "LOG_DELIVERY_SECONDS", 0):
+            self.assertFalse(health.observe(self.home)["blocked"])
         journal = self.home / "skill-data/supervisor-auth/evidence.jsonl"
         rejection = health.read_journal(journal)[0]
         self.assertEqual(rejection["status"], 401)
         self.assertNotIn("DO-NOT-COPY", journal.read_text())
 
-    def test_duplicate_error_without_another_attempt_cannot_confirm_a_hold(self) -> None:
+    def test_one_permanent_error_has_a_stable_episode_without_another_attempt(self) -> None:
         self.failure()
+        episode = health.failure_episode(health.read_log(self.home))
         self.append("expired")
-        self.assertFalse(health.failure_state(health.read_log(self.home))["blocked"])
+        self.assertEqual(health.failure_episode(health.read_log(self.home)), episode)
 
     def test_sign_in_in_load_to_log_race_clears_through_native_reload(self) -> None:
         self.failure()
@@ -223,13 +272,12 @@ class AuthHealthTests(unittest.TestCase):
         self.assertFalse(health.observe(self.home)["blocked"])
         calls = self.probe.call_count
         self.assertFalse(health.observe(self.home)["blocked"])
-        self.assertEqual(self.probe.call_count, calls)
+        self.assertEqual(self.probe.call_count, calls + 1)
 
     def test_delayed_logs_are_awaited_but_absent_current_evidence_is_unknown(self) -> None:
-        self.failure()
         requested = self.clock + 1
         self.probe.side_effect = None
-        self.probe.return_value = health.AuthStatus(self.identity, requested, "chatgpt", True)
+        self.probe.return_value = health.AuthStatus(self.identity, requested, "chatgpt", True, False)
         with patch.object(health, "LOG_DELIVERY_SECONDS", 0):
             result = health.observe(self.home)
         self.assertFalse(result["blocked"])
@@ -268,19 +316,17 @@ class AuthHealthTests(unittest.TestCase):
         with patch.object(health.fcntl, "flock", side_effect=BlockingIOError):
             result = health.observe(self.home)
         self.assertTrue(result["blocked"])
-        self.assertNotIn("diagnostic", result)
+        self.assertEqual(result["diagnostic"], "auth_observation_not_saved")
 
     def test_unavailable_or_changed_daemon_cannot_inherit_a_hold(self) -> None:
         self.failure()
         self.probe.side_effect = ValueError("unavailable")
         self.assertFalse(health.observe(self.home)["blocked"])
         self.probe.side_effect = None
-        self.probe.return_value = health.AuthStatus(health.DaemonIdentity(43, 0, "new"), 0, "chatgpt", True)
+        self.probe.return_value = health.AuthStatus(health.DaemonIdentity(43, 0, "new"), 0, "chatgpt", True, False)
         self.assertFalse(health.observe(self.home)["blocked"])
 
-    def test_healthy_home_needs_no_native_auth_read_and_corrupt_database_is_unknown(self) -> None:
-        self.assertFalse(health.observe(self.home)["blocked"])
-        self.probe.assert_not_called()
+    def test_corrupt_database_is_unknown_and_does_not_create_a_hold(self) -> None:
         self.database.write_bytes(b"not sqlite")
         result = health.observe(self.home)
         self.assertFalse(result["blocked"])
@@ -341,6 +387,7 @@ class NativeStatusTests(unittest.TestCase):
         responses = [
             {"id": 1, "result": {}},
             {"id": 2, "result": {"authMethod": "chatgpt", "authToken": None, "requiresOpenaiAuth": True}},
+            {"id": 3, "result": {"account": {"type": "chatgpt"}, "requiresOpenaiAuth": True}},
         ]
         connection.recv.side_effect = [json.dumps(response) for response in responses]
         with (
@@ -350,10 +397,19 @@ class NativeStatusTests(unittest.TestCase):
         ):
             result = health.native_status(Path("/fixture"))
         self.assertEqual(result.identity, identity)
+        self.assertTrue(result.account_present)
         requests = [json.loads(call.args[0]) for call in connection.send.call_args_list]
-        self.assertEqual({request["method"] for request in requests}, {"initialize", "initialized", "getAuthStatus"})
+        self.assertEqual({request["method"] for request in requests}, {"initialize", "initialized", "getAuthStatus", "account/read"})
         self.assertTrue(all(not request.get("params", {}).get("includeToken") for request in requests))
         self.assertTrue(all(not request.get("params", {}).get("refreshToken") for request in requests))
+        responses[-1]["result"]["account"] = None
+        connection.recv.side_effect = [json.dumps(response) for response in responses]
+        with (
+            patch.object(client, "unix_connect", return_value=connection),
+            patch.object(health, "peer_pid", return_value=42),
+            patch.object(health, "daemon_identity", return_value=identity),
+        ):
+            self.assertFalse(health.native_status(Path("/fixture")).account_present)
         connection.recv.side_effect = [json.dumps(response) for response in responses]
         with (
             patch.object(client, "unix_connect", return_value=connection),

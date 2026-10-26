@@ -25,6 +25,7 @@ FAILURES = {
     "expired": "Your access token could not be refreshed because your refresh token has expired. Please log out and sign in again.",
     "reused": "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.",
     "revoked": "Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.",
+    "invalid": "Your access token could not be refreshed. Please log out and sign in again.",
 }
 EVENTS = {
     **FAILURES,
@@ -34,7 +35,6 @@ EVENTS = {
     "issuer_rejection": "Failed to refresh token",
 }
 RESETS = {"reload_changed", "auth_changed"}
-BLOCKING_FAILURES = {"expired", "revoked"}
 PROCESS = re.compile(r"pid:([0-9]+):[0-9a-f-]{36}")
 LOG_DELIVERY_SECONDS = 11
 
@@ -52,6 +52,7 @@ class AuthStatus:
     requested_ns: int
     auth_method: str | None
     requires_auth: bool
+    account_present: bool
 
 
 def read_log(home: Path) -> list[dict]:
@@ -97,16 +98,27 @@ def merge_events(*groups: list[dict]) -> list[dict]:
     return sorted(events.values(), key=lambda event: (event["ts_ns"], event["id"]))
 
 
-def read_journal(path: Path) -> list[dict]:
+def read_records(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    events = []
     with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW)) as journal:
         lines = journal.read().splitlines()
+    records = []
     for line in lines:
         try:
             batch = json.loads(line)
-            for event in batch["events"]:
+            if isinstance(batch, dict):
+                records.append(batch)
+        except ValueError:
+            continue
+    return records
+
+
+def read_journal(path: Path) -> list[dict]:
+    events = []
+    for batch in read_records(path):
+        try:
+            for event in batch.get("events", []):
                 if (
                     isinstance(event, dict)
                     and event.get("event") in EVENTS
@@ -121,6 +133,38 @@ def read_journal(path: Path) -> list[dict]:
         except (ValueError, TypeError, KeyError):
             continue
     return events
+
+
+def journal_status(home: Path) -> dict:
+    result = {"blocked": False, "episode_ns": None, "observed_ns": 0}
+    for record in read_records(home / "skill-data/supervisor-auth/evidence.jsonl"):
+        status = record.get("auth_observation")
+        if (
+            isinstance(status, dict)
+            and type(status.get("blocked")) is bool
+            and type(status.get("observed_ns")) is int
+            and "episode_ns" in status
+            and (type(status["episode_ns"]) is int if status["blocked"] else status["episode_ns"] is None)
+        ):
+            result = {key: status[key] for key in result}
+    return result
+
+
+def record_status(home: Path, status: dict) -> bool:
+    directory = home / "skill-data/supervisor-auth"
+    try:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with (directory / "capture.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if journal_status(home)["observed_ns"] > status["observed_ns"]:
+                return False
+            with os.fdopen(os.open(directory / "evidence.jsonl", os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600), "a") as output:
+                output.write("\n" + json.dumps({"auth_observation": status}) + "\n")
+                output.flush()
+                os.fsync(output.fileno())
+        return True
+    except OSError:
+        return False
 
 
 def process_inventory() -> list[dict]:
@@ -267,9 +311,17 @@ def read_native_status(home: Path) -> AuthStatus:
         method = result.get("authMethod")
         if method is not None and not isinstance(method, str):
             raise ValueError("native auth mode unavailable")
+        account = request(3, "account/read", {"refreshToken": False})
+        if type(account.get("requiresOpenaiAuth")) is not bool or "account" not in account:
+            raise ValueError("native account state unavailable")
+        if account["requiresOpenaiAuth"] != result["requiresOpenaiAuth"]:
+            raise ValueError("native provider changed")
+        value = account["account"]
+        if value is not None and (not isinstance(value, dict) or not isinstance(value.get("type"), str)):
+            raise ValueError("native account state unavailable")
         if daemon_identity(home, peer_pid(connection.socket)) != identity:
             raise ValueError("daemon identity changed")
-        return AuthStatus(identity, requested, method, result["requiresOpenaiAuth"])
+        return AuthStatus(identity, requested, method, result["requiresOpenaiAuth"], value is not None)
 
 
 def current_events(events: list[dict], identity: DaemonIdentity) -> list[dict]:
@@ -278,54 +330,50 @@ def current_events(events: list[dict], identity: DaemonIdentity) -> list[dict]:
     ]
 
 
-def failure_state(events: list[dict]) -> dict:
-    attempt = None
+def failure_episode(events: list[dict]) -> int | None:
     first = None
-    confirmed = False
     for event in events:
         if event["event"] in RESETS:
-            attempt, first, confirmed = None, None, False
-        elif event["event"] == "refresh_attempt":
-            attempt = event["ts_ns"]
-        elif event["event"] in BLOCKING_FAILURES and attempt is not None:
-            if first is not None and attempt > first["ts_ns"]:
-                confirmed = True
-            first = first or event
-        elif event["event"] == "reused":
-            attempt, first, confirmed = None, None, False
-    return {"pending": first is not None, "blocked": confirmed, "episode_ns": first["ts_ns"] if first is not None else None}
+            first = None
+        elif event["event"] in FAILURES:
+            first = first if first is not None else event["ts_ns"]
+    return first
 
 
 def observe(home: Path) -> dict:
     home = home.expanduser().resolve()
+    previous = {"blocked": False, "episode_ns": None, "observed_ns": 0}
     try:
+        previous = journal_status(home)
         events = capture(home, read_log(home))
-        if not any(event["event"] in FAILURES for event in events):
-            return {"blocked": False}
         identity = daemon_identity(home)
-        if not failure_state(current_events(events, identity))["pending"]:
-            return {"blocked": False}
         status = native_status(home)
         if status.identity != identity:
-            return {"blocked": False, "diagnostic": "auth_daemon_changed"}
-        if status.requires_auth and status.auth_method is None:
-            return {"blocked": False, "diagnostic": "auth_mode_unknown"}
-        if not status.requires_auth or status.auth_method != "chatgpt":
+            return {**previous, "diagnostic": "auth_daemon_changed"}
+        events = capture(home, read_log(home))
+        if status.account_present or not status.requires_auth:
+            if previous["blocked"] or any(event["ts_ns"] >= previous["observed_ns"] and event["event"] in FAILURES for event in events):
+                if not record_status(home, {"blocked": False, "episode_ns": None, "observed_ns": status.requested_ns}):
+                    return {"blocked": False, "diagnostic": "auth_observation_not_saved"}
             return {"blocked": False}
+        if status.auth_method != "chatgpt":
+            return {**previous, "diagnostic": "auth_mode_unknown"}
         deadline = time.monotonic() + LOG_DELIVERY_SECONDS
         while True:
             events = capture(home, read_log(home))
-            selected = current_events(events, identity)
-            observed = any(
-                event["ts_ns"] >= status.requested_ns and event["event"] in (RESETS | set(FAILURES)) for event in selected
-            )
-            if observed:
-                return failure_state(selected)
+            selected = [event for event in current_events(events, identity) if previous["blocked"] or event["ts_ns"] >= previous["observed_ns"]]
+            episode = failure_episode(selected)
+            if episode is not None:
+                result = {"blocked": True, "episode_ns": previous["episode_ns"] if previous["blocked"] else episode}
+                if not previous["blocked"]:
+                    if not record_status(home, {**result, "observed_ns": status.requested_ns}):
+                        result["diagnostic"] = "auth_observation_not_saved"
+                return result
             if time.monotonic() >= deadline:
-                return {"blocked": False, "diagnostic": "auth_log_delivery_unknown"}
+                return {**previous, "diagnostic": "auth_log_delivery_unknown"}
             time.sleep(0.02)
     except (OSError, ValueError, TypeError, KeyError, sqlite3.Error, subprocess.SubprocessError, ImportError, TimeoutError):
-        return {"blocked": False, "diagnostic": "auth_evidence_unavailable"}
+        return {**previous, "diagnostic": "auth_evidence_unavailable"}
 
 
 def require_usable(home: Path) -> None:
