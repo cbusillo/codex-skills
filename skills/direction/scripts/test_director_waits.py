@@ -48,7 +48,7 @@ class WaitTests(unittest.TestCase):
             "Waiting since: 2026-10-01\nLast verified: October 5, 2026, source read"), issue(2)],
             ["owner", "Director"], "owner", NOW)
         self.assertEqual(rows[0]["wait_age_days"], 8)
-        self.assertFalse(rows[0]["possibly_stale"])
+        self.assertTrue(rows[0]["verification_unknown"])
         self.assertTrue(rows[1]["possibly_stale"])
         self.assertTrue(rows[1]["wait_age_unknown"])
         self.assertIsNone(rows[1]["wait_age_days"])
@@ -99,33 +99,17 @@ class WaitTests(unittest.TestCase):
             self.assertEqual(result["complete"], complete)
             self.assertEqual(reader.request.call_count, 2)
 
-    def test_wait_begins_after_verification_or_verification_is_unusable(self):
-        for verified, stale in (("2026-09-30", True), ("2026-10-05", False),
-                                ("Not yet verified", True)):
-            row = director_waits.wait_rows("owner/repo", [issue(extra=
-                f"Waiting since: 2026-10-01\nLast verified: {verified}")], ["Director"], "owner", NOW)[0]
-            self.assertEqual(row["possibly_stale"], stale)
-
     def test_headingless_age_and_product_owner_disambiguation(self):
         headingless = {**issue(extra="Waiting since: 2026-10-01\nLast verified: 2026-10-05"),
                        "body": "Waiting for: Director to choose\nWaiting since: 2026-10-01\nLast verified: 2026-10-05"}
         rows = director_waits.wait_rows("admin/repo", [headingless,
-            issue(2, "product owner Client to accept"), issue(3, "owner to choose")],
+            issue(2, "product owner Client to accept"), issue(3, "owner to choose"),
+            issue(4, "upstream owner to merge"), issue(5, "code owner review")],
             ["admin", "Director", "owner"], "admin", NOW)
         self.assertEqual([row["number"] for row in rows], [1, 3])
         self.assertEqual(rows[0]["wait_age_days"], 8)
-        self.assertFalse(rows[0]["possibly_stale"])
+        self.assertTrue(rows[0]["verification_unknown"])
         self.assertTrue(rows[1]["verification_unknown"])
-
-    def test_verified_field_uses_shared_bold_and_comment_normalization(self):
-        sample = issue(extra="Waiting since: 2026-10-01\n<!-- Last verified: 2026-10-09 -->\n"
-                       "**Last verified:** Oct 5, 2026")
-        sample["updated_at"] = "2026-10-08T12:00:00Z"
-        row = director_waits.wait_rows("admin/repo", [sample], ["Director"], "admin", NOW)[0]
-        self.assertTrue(row["last_verified"].startswith("2026-10-05"))
-        self.assertEqual(row["recorded_at"], sample["updated_at"])
-        self.assertEqual(director_waits.wait_rows("admin/repo", [issue(reason="upstream owner to merge"),
-            issue(reason="code owner review")], ["admin", "Director", "owner"], "admin", NOW), [])
 
     def test_search_failure_or_malformed_item_keeps_explicit_scope(self):
         reader = Mock()
@@ -186,20 +170,6 @@ class WaitTests(unittest.TestCase):
             row = director_waits.wait_rows("admin/repo", [mixed], ["owner", "Director", "Chris"], "admin", NOW)[0]
             self.assertEqual(row["waiting_for"], reason)
 
-    def test_old_verification_exposes_age_without_inventing_a_policy_threshold(self):
-        row = director_waits.wait_rows("owner/repo", [issue(extra="Last verified: 2026-03-01")],
-                                      ["Director"], "owner", NOW)[0]
-        self.assertEqual(row["verification_age_days"], (NOW - datetime(2026, 3, 1, tzinfo=timezone.utc)).days)
-
-    def test_common_verification_dates_and_unparseable_basis(self):
-        for date in ("Oct. 5, 2026", "October 5 2026", "10:54 AM ET, Oct 5, 2026"):
-            row = director_waits.wait_rows("owner/repo", [issue(extra="Waiting since: 2026-10-01\nLast verified: " + date)],
-                                          ["Director"], "owner", NOW)[0]
-            self.assertFalse(row["possibly_stale"])
-        row = director_waits.wait_rows("owner/repo", [issue(extra="Last verified: abc1234")], ["Director"], "owner", NOW)[0]
-        self.assertEqual(row["staleness_basis"], "verification_commit_only")
-        self.assertEqual(row["last_verified_raw"], "abc1234")
-
     def test_qualified_owner_phrase_preserves_current_director_and_inline_start(self):
         sample = issue(reason="owner to approve once product owner Client accepts; since 2026-10-01",
                        extra="Waiting for: Client testing; since 2026-09-01")
@@ -244,6 +214,34 @@ class StructuredWaitTests(unittest.TestCase):
         else:
             reader.paged_json.return_value = comments
         return director_waits.collect_query(reader, "owner", ["owner", "Director"], NOW)
+
+    def test_verification_uses_only_the_trusted_record_source(self) -> None:
+        for prose in ("", "Last verified: October21,2026, SWEEP-ALL-C1", "Last verified: 2026-09-01"):
+            for stamp, stale in (("2026-10-05T12:00:00Z", False), ("2026-09-30T12:00:00Z", True), (None, True)):
+                with self.subTest(prose=prose, stamp=stamp):
+                    sample = issue(reason="Director to approve; since 2026-10-01", extra=prose)
+                    sample["updated_at"] = "2026-10-08T12:00:00Z"
+                    hold = wait_comment("owner", waiting_for="Director to approve; since 2026-10-01", ends_when="Approved")
+                    hold["created_at"] = stamp
+                    hold["updated_at"] = "2026-10-08T12:00:00Z"
+                    unrelated = {"user": {"login": "owner"}, "body": "Progress", "created_at": "2026-10-08T12:00:00Z"}
+                    untrusted = {**hold, "user": {"login": "mallory"}, "created_at": "2026-10-08T12:00:00Z"}
+                    row = self.collect_one(sample, [hold, unrelated, untrusted])["waits"][0]
+                    self.assertEqual(row["possibly_stale"], stale)
+                    self.assertEqual(row["verification_unknown"], stamp is None)
+                    self.assertEqual(director_waits.parse_date(row["last_verified"]), director_waits.parse_date(stamp))
+                    if stamp:
+                        self.assertEqual(row["verification_age_days"], (NOW - director_waits.parse_date(stamp)).total_seconds() / 86400)
+
+    def test_body_record_uses_its_source_timestamp_and_explicit_start(self) -> None:
+        sample = issue(extra="Waiting since: 2026-10-01\nLast verified: 2026-10-08")
+        sample.update(user={"login": "owner"}, created_at="2026-09-30T12:00:00Z", updated_at="2026-10-08T12:00:00Z")
+        sample["body"] += "\n" + wait_comment("owner", waiting_for="Director to approve", ends_when="Approved")["body"]
+        unrelated = {"user": {"login": "mallory"}, "body": "Progress", "created_at": sample["updated_at"]}
+        row = self.collect_one(sample, [unrelated])["waits"][0]
+        self.assertTrue(row["possibly_stale"])
+        self.assertEqual(row["wait_age_days"], 8)
+        self.assertEqual(row["staleness_basis"], "verification_predates_wait")
 
     def test_comment_only_structured_hold_is_reported(self):
         quiet = {**issue(7), "body": "## Current Status\nState: Active.\nNext action: Ship it."}
