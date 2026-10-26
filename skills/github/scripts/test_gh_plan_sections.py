@@ -98,7 +98,7 @@ class SectionTests(unittest.TestCase):
 
     def test_contributor_request_survives_literal_section_updates(self) -> None:
         self.issue["user"] = {"login": "outside-contributor"}
-        self.issue["body"] = "Original request with `\\u0027`.\n"
+        self.issue["body"] = "Original request with `\\u0027` and #12.\n"
         for content in LITERAL_TEXTS:
             with self.subTest(content=content):
                 # First append the managed section, then replace it in the envelope.
@@ -108,7 +108,7 @@ class SectionTests(unittest.TestCase):
                     self.issue["body"] = edit.call_args.kwargs["body"]
                     original = PLAN.marked_block(self.issue["body"], PLAN.PLAN_ORIGINAL_START, PLAN.PLAN_ORIGINAL_END)
                     self.assertIsNotNone(original)
-                    self.assertEqual(original[2], "Original request with `\\u0027`.\n")
+                    self.assertEqual(original[2], "Original request with `\\u0027` and #12.\n")
                     managed = PLAN.contributor_plan_body(self.issue)
                     self.assertEqual(managed, f"## Finish Line\n\n{content}")
 

@@ -1012,11 +1012,15 @@ Release handoffs, new wait/claim/close text, section updates and explicit `gh-co
 Use the same qualified form for local references, for example
 `owner/current-repo#42`. Bare `#N` and ownerless `repo#N` refuse before posting:
 a matching local number cannot establish which repository the author meant.
-Write literal hash-number prose such as a rank as `&#35;1` when it is not an
-issue reference. For relayed source text, logs or quoted reviewer output,
+Use plain words such as "rank 1" for authored prose that is not an issue
+reference. For relayed source text, logs or quoted reviewer output,
 `gh-comment` and `gh-pr.py comment --verbatim` preserve the exact body. The
 Supervisor review poster uses that route automatically. Do not use it for
-newly authored planning text. Historical readers remain for existing records.
+newly authored planning text. New plans and section text are authored planning
+content; preserve exact source requests through the comment route described in
+[issue templates](issue-templates.md). Existing section adoption preserves the
+original human request. Titles retain their existing behavior. Historical
+readers remain for existing records.
 
 ### Planning: Claim
 

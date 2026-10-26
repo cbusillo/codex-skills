@@ -95,7 +95,7 @@ def validate_planning_references(body: object, repo: str) -> None:
         return
     if not isinstance(body, str):
         return
-    ambiguous = list(dict.fromkeys(re.findall(r"(?<![\w/#&.-])(?:(?:[\w.-]+)?#[1-9]\d*\b|PR[1-9]\d*\b)", body, re.IGNORECASE)))
+    ambiguous = list(dict.fromkeys(re.findall(r"(?<![\w/#])(?:[\w.-]+)?#\d+(?!\d)|(?<![\w/#.-])PR[1-9]\d*(?![\w-])", body, re.IGNORECASE)))
     if ambiguous:
         raise ValueError(
             f"Ambiguous issue references: {', '.join(ambiguous)}. "
@@ -1146,7 +1146,6 @@ def validate_own_attachment_command(arguments: list[str], body: str) -> str:
     parser.add_argument("number", type=int)
     parser.add_argument("--repo", required=True)
     parser.add_argument("--body-file", required=True, choices=("-",))
-    parser.add_argument("--verbatim", action="store_true", help="Relay source text or logs unchanged; not for authored planning text.")
     parser.add_argument("--attach", action="append", required=True)
     args = parser.parse_args(arguments)
     if args.number <= 0:

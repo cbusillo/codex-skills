@@ -1793,6 +1793,13 @@ def read_body(args: argparse.Namespace, fallback: str = "") -> str:
     return fallback
 
 
+def validate_plan_references(body: object, repo: str) -> None:
+    try:
+        github_comment_core.validate_planning_references(body, repo)
+    except ValueError as error:
+        raise PlanError(str(error)) from error
+
+
 def relationship_line(rel: str, target: dict[str, Any]) -> str:
     target_repo = target["repo"]
     target_number = int(target["number"])
@@ -2508,10 +2515,7 @@ def cmd_release(args: argparse.Namespace) -> None:
             f"--session {args.session} is not this session's native ID ({found}); release only your own claim.",
             payload={"native_sessions": native, "running_agent": agent})
     handoff = read_body(argparse.Namespace(body_file=args.handoff_file)).strip() if args.handoff_file else ""
-    try:
-        github_comment_core.validate_planning_references(handoff, repo)
-    except ValueError as error:
-        raise PlanError(str(error)) from error
+    validate_plan_references(handoff, repo)
     body = f"Released claim {args.claim_comment}" + (f"\n\n{handoff}" if handoff else "")
     # The handoff is narrative only: it can neither restate nor forge release authority.
     if (github_plan_claim.released_claim_id(body) != args.claim_comment
@@ -2675,10 +2679,7 @@ def link_native_dependency(
 def claim_once(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     issue_repo, number = issue_ref(args.issue, repo)
-    try:
-        github_comment_core.validate_planning_references([args.next_action, getattr(args, "wait_resolved", None)], issue_repo)
-    except ValueError as error:
-        raise PlanError(str(error)) from error
+    validate_plan_references([args.next_action, getattr(args, "wait_resolved", None)], issue_repo)
     claim = {key: getattr(args, key) for key in ("worker", "session", "branch")}
     for key, value in claim.items():
         if not value or re.search(r"\s|[<>]", value):
@@ -3920,13 +3921,11 @@ def cmd_create(args: argparse.Namespace) -> None:
     title = (args.title_flag or args.title or "").strip()
     if not title:
         raise PlanError("Issue title is required (pass as positional argument or --title)")
-    body = read_body(args, template_body(title))
+    authored_body = read_body(args)
+    validate_plan_references([authored_body, args.finish_line], repo)
+    body = authored_body if args.body is not None or args.body_file else template_body(title)
     if args.finish_line:
         body = replace_section(body, "Finish Line", args.finish_line)
-    try:
-        github_comment_core.validate_planning_references(body, repo)
-    except ValueError as error:
-        raise PlanError(str(error)) from error
     wait = None
     if getattr(args, "wait_clear", False) or getattr(args, "waiting_for", None):
         try:
@@ -4099,6 +4098,7 @@ def cmd_update_section(args: argparse.Namespace) -> None:
                 "To intentionally clear the section, pass --body ''."
             )
         new_text = read_body(args)
+        preparation_step = "input_validation"
         github_comment_core.validate_planning_references(new_text, issue_repo)
         preparation_step = "section_replacement"
         updated = replace_issue_plan_section(issue, args.section, new_text)
@@ -6311,10 +6311,7 @@ def cmd_close(args: argparse.Namespace) -> None:
     if close_reason == "not_planned" and not issue_matches_close_reason(issue, close_reason):
         owner_decision = check_owner_decides_not_planned(issue_repo, number, issue)
     close_comment = read_body(args) if args.body is not None or args.body_file else ""
-    try:
-        github_comment_core.validate_planning_references(close_comment, issue_repo)
-    except ValueError as error:
-        raise PlanError(str(error)) from error
+    validate_plan_references(close_comment, issue_repo)
     plan_labels = config.get("labels") or {}
     route_actor, gh_cmd, expected_actor = comment_route()
     close_attention = close_attention_preflight(issue_repo, number, issue, getattr(args, "unanswered_decision", None),

@@ -1810,7 +1810,8 @@ class OwnReleaseTests(ReleaseHarness):
         self.assertEqual(self.f.emitted.call_args.args[0]["release_state"], "already_released")
 
     def test_handoff_requires_qualified_references_before_release(self) -> None:
-        for text in ("Read owner/other#550 after landing, then confirm #550.", "Read PR550 after landing."):
+        for text in ("Read owner/other#550 after landing, then confirm #550.", "Read PR550 after landing.",
+                     "Do the rank &#35;1 item first.", "Verify -#77.", "Verify .#77."):
             self.handoff.write_text(text)
             with self.assertRaises(PLAN.PlanError):
                 self.run_own_release()
