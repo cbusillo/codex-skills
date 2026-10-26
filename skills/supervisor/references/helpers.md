@@ -560,6 +560,11 @@ catch-up cannot finish. Partial pages never advance past a failed read.
 Successful repositories
 advance to the pass start, with a one-second overlap on their next read.
 
+Own-login comments starting with `Owner question:` or `Director question:`
+(including bold headings) produce `director_question` notices for the
+Supervisor to read and register in the Director's queue on its next check.
+This uses the same comment feed and watermark; ordinary own-login posts stay
+filtered. These notices do not prove a decision or count as presentation.
 Foreign authors (including deleted/unknown authors) and configured Launchplane
 authors or first-line product-review markers
 produce notices marked `untrusted` with a one-line `excerpt` of up to 240
