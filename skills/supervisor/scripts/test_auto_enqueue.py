@@ -1916,7 +1916,11 @@ class QualificationTests(unittest.TestCase):
                 self.pull.update(change)
                 self.assertFalse(self.qualified())
                 self.pull = original
-        for status, conclusion in (("in_progress", None), ("completed", "failure"), ("completed", "success")):
+        review.update(status="in_progress", conclusion=None)
+        self.checks["summary"]["pendingCount"] = 1
+        self.assertTrue(self.qualified())
+        self.checks["summary"]["pendingCount"] = 0
+        for status, conclusion in (("completed", "failure"), ("completed", "success")):
             with self.subTest(status=status, conclusion=conclusion):
                 review.update(status=status, conclusion=conclusion)
                 self.assertFalse(self.qualified())

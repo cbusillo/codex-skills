@@ -533,6 +533,21 @@ class ReadyTests(unittest.TestCase):
         self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: automated tooling."
         self.post()
 
+    def test_current_engineering_notes_ignore_unfinished_advisory_review_only(self) -> None:
+        self.client_release.return_value = self.client_repository
+        self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: internal tooling."
+        self.reader.checks.append({"id": 2, "name": "launchplane/owner-review", "status": "in_progress", "conclusion": None})
+        self.post()
+        self.writer.reset_mock()
+        self.reader.pr["labels"] = [{"name": "owner-review"}]
+        self.refuse()
+        self.reader.pr["labels"] = []
+        self.reader.pr["body"] = "## Client test notes\nClient change: a new screen.\nOpen it."
+        self.refuse()
+        self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: internal tooling."
+        self.reader.checks[0]["status"] = "in_progress"
+        self.refuse()
+
     def test_engineering_handoff_refuses_notes_asking_the_client_to_check_at_release(self):
         release_steps = f"{ready_handoff.ENGINEERING_RELEASE_TESTS}\n\nAfter the real-data import, check the imported parts."
         self.client_release.return_value = self.client_repository
@@ -624,11 +639,11 @@ class ReadyTests(unittest.TestCase):
                 self.refuse()
                 self.reader.pr = original
 
-    def test_pending_or_rejected_review_still_blocks_no_test_notes(self):
+    def test_rejected_review_still_blocks_no_test_notes(self):
         self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: documentation only."
         review = {"id": 2, "name": "launchplane/owner-review"}
         self.reader.checks.append(review)
-        for status, conclusion in (("in_progress", None), ("completed", "failure"), ("completed", "skipped")):
+        for status, conclusion in (("completed", "failure"), ("completed", "skipped")):
             with self.subTest(status=status, conclusion=conclusion):
                 review.update(status=status, conclusion=conclusion)
                 self.refuse()
