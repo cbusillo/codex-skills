@@ -539,8 +539,6 @@ class NativeTests(unittest.TestCase):
 
 
 class UnavailableExplanationTests(unittest.TestCase):
-    """Each automatic UNKNOWN names the selection's own reason and a next step that fits it."""
-
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -628,7 +626,8 @@ class UnavailableExplanationTests(unittest.TestCase):
                  "native_populated_profile_required": "qualityGate.inspection.profile",
                  "native_worker_not_configured": "jetbrains.nativeWorkers.pycharm",
                  "native_configuration_unavailable": "jetbrains.nativeWorkers.pycharm",
-                 "native_preparation_shape_unsupported": "UNKNOWN"}
+                 "native_preparation_shape_unsupported": "UNKNOWN",
+                 "native_host_load_paused": str(native.LOAD_LIMIT)}
         for reason, remedy in cases.items():
             with self.subTest(reason=reason):
                 report, action, _ = self.explain(["tool.py"], ineligible=reason)

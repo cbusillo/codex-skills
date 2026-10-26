@@ -159,7 +159,6 @@ UNAVAILABLE_REASONS = {
 
 
 def coverage_gaps(host, repo, config, selected):
-    """Group the selected suffixes no single native run covers by their UNAVAILABLE_REASONS key and fields."""
     lanes = host.parse_inspection_lanes(config) if config.get("lanes") else ()
     odoo = any(Path(f).suffix == ".xml" for f in selected) and is_odoo(repo)
     groups: dict[tuple[str, tuple[tuple[str, str], ...]], set[str]] = {}
@@ -194,7 +193,6 @@ def coverage_gaps(host, repo, config, selected):
 
 
 def unavailable_explanation(host, args, selection):
-    """Return the message and next step for an automatic selection that no native worker can serve."""
     code = selection.removeprefix("native_ineligible=")
     if code == "native_macos_not_available":
         why, action = UNAVAILABLE_REASONS[code]
@@ -1552,6 +1550,9 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
         action = "Preserve the independent profile's malformed non-secret SDK table and repair that metadata under the worker lock before reassessing. No SDK was registered; never reset the profile or inspect activation files."
     elif reason.startswith("native_cache_"):
         action = "Restore the configured existing host cache directory and recorded storage identity, or configure its supported replacement outside the activated worker. Never create a replacement mount directory."
+    elif reason == "native_host_load_paused":
+        action = (f"The host's one-minute load average stayed above {LOAD_LIMIT}, so no engine launched. Let other builds, tests "
+                  "or inspections finish, then request one fresh assessment; do not add a retry loop.")
     elif reason == "native_worker_busy":
         action = "Another owner held the isolated worker past --lifecycle-lock-timeout-ms; no engine launched. Let the live holder or independent GUI finish, then request one fresh assessment. If its guardian died, use --backend native --native-recover-only with the same independent worker to reconcile the journaled process; never kill another session's worker."
     elif reason == "native_process_group_unproven":
