@@ -97,10 +97,27 @@ private system, config and log paths. Warmup links and imports the root Gradle
 build, executing the repository's build scripts, and the imported model carries
 into `inspect.sh`. Warmup is a licensed launch under the same journal, licence
 scan and `--timeout-ms` deadline; it must log `IDE Warm-up finished.` and
-complete its licence observation, or the inspection never starts. A cold Gradle
-cache needs network access and can take minutes on the first run.
-`gradle-import.log` holds the build's raw output, joins progress messages into
-unbounded lines, and is not an IDE log, so it is not observed.
+complete its licence observation, or the inspection never starts. On a linked
+project, stock `inspect.sh`'s Gradle configurator ends the analysis task without
+inspecting anything, so `inspect.sh` runs with
+`ide.inspect.activity.based.inspections.enabled=true`: it skips the configurators,
+awaits project configuration and schedules no second sync. Gradle gives each
+source set its own content root, such as `src/main`, so the selection scope also
+matches each file's path below any parent directory. A file elsewhere that shares
+that tail is traversed and makes the run UNKNOWN with
+`native_unselected_file_traversal`. A cold Gradle cache needs network access and
+can take minutes on the first run. `gradle-import.log` holds the build's raw
+output, joins progress messages into unbounded lines, and is not an IDE log, so
+it is not observed.
+
+Before the private directory is deleted, and during recovery from the journal's
+recorded `gradle_home`, Gradle daemons whose command line runs
+`org.gradle.launcher.daemon.bootstrap.GradleDaemon` from that `gradle-home` are
+stopped: first with each wrapper distribution's `gradle --stop`, then SIGTERM and
+SIGKILL, each bounded. The receipt records `gradle_daemons_stopped`; a daemon that
+survives keeps the private directory and custody. Recovery reclaims a private
+directory that holds only `project/.gradle`, which a daemon recreated after
+deletion.
 
 The run counts only when its launches log both `[Gradle]: Gradle resolve stage
 finished with success` and `[Gradle]: Gradle data import stage finished with
@@ -110,9 +127,13 @@ the data import finished. Kotlin and Java tools must execute on each selected
 file of their language. Two Kotlin control pairs (`INTELLIJ_CANARY_FILES` and
 `INTELLIJ_CLEAN_TWINS` in `native_coverage.py`) are planted beside the first
 selected `.kt` file, inside its source root: an unused variable with a used
-twin, and an unresolved symbol with a stdlib-resolving twin, which proves the
-imported model resolves that source root. Rule ids, the Gradle log lines and
-timing still need a licensed run to qualify.
+twin, and a `map { }.joinToString()` chain that `SimplifiableCallChain` reports
+only when the Kotlin standard library resolves, with a single-call twin, which
+proves the imported model resolves that source root and its libraries. Batch
+inspection does not report Kotlin compiler diagnostics such as unresolved
+references unless the profile's `Annotator` runs highlight visitors. A profile
+inspection this edition lacks, such as `DuplicatedCode` in IntelliJ IDEA's free
+mode, stays UNKNOWN unless the repository's `coveredBy` names a gate for it.
 
 The standard `JETBRAINS_INSPECTION_GLOBAL_CONFIG` override selects a helper
 config. `--native-worker` (or `JETBRAINS_INSPECTION_NATIVE_WORKER`), `--ide-app`

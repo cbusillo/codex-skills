@@ -57,7 +57,12 @@ GRADLE_DAEMON_IDLE_TIMEOUT_MS = 60000
 STALE_JVM_MODEL = ("modules.xml", "gradle.xml", "misc.xml", "modules")
 GRADLE_FAILURE_SYMPTOMS = frozenset({"native_engine_error", "native_execution_incomplete", "native_project_or_profile_unprepared"})
 WARMUP_LAUNCHER = "Contents/MacOS/idea"
+AWAIT_ACTIVITIES_INSTEAD_OF_CONFIGURATORS = "-Dide.inspect.activity.based.inspections.enabled=true"
 BUILD_OUTPUT_LOGS = frozenset({"gradle-import.log"})
+GRADLE_HOME_NAME = PREPARATION_CACHES[INTELLIJ_PRODUCT_KEY]["GRADLE_USER_HOME"]
+GRADLE_DAEMON_MAIN = "org.gradle.launcher.daemon.bootstrap.GradleDaemon"
+GRADLE_STOP_SECONDS = 30
+GRADLE_DAEMON_EXIT_SECONDS = 5
 CONTROL_ASSETS = Path(__file__).parents[1] / "assets/native-controls"
 
 
@@ -320,6 +325,69 @@ def bound_gradle_daemon(gradle_home):
     atomic_write(properties, f"org.gradle.daemon.idletimeout={GRADLE_DAEMON_IDLE_TIMEOUT_MS}\n".encode())
 
 
+def gradle_daemons(gradle_home: Path) -> set[int]:
+    result = common.command(["ps", "-axo", "pid=,command="], timeout=5, env={"PATH": os.defpath, "LC_ALL": "C"})
+    if result.returncode:
+        raise Blocked("native_gradle_daemon_census_failed")
+    owned = re.compile(re.escape(str(gradle_home)) + "/")
+    daemons = set()
+    for line in result.stdout.decode(errors="replace").splitlines():
+        pid, _, command_line = line.strip().partition(" ")
+        if GRADLE_DAEMON_MAIN in command_line.split() and owned.search(command_line):
+            daemons.add(int(pid))
+    return daemons
+
+
+def surviving_daemons(gradle_home: Path, daemons: set[int], seconds: float) -> set[int]:
+    deadline = time.monotonic() + seconds
+    while True:
+        remaining = daemons & gradle_daemons(gradle_home)
+        if not remaining or time.monotonic() >= deadline:
+            return remaining
+        time.sleep(0.1)
+
+
+def request_gradle_stop(gradle_home: Path, jdk: Path | None):
+    env = {"PATH": os.defpath, "HOME": str(gradle_home), "GRADLE_USER_HOME": str(gradle_home)}
+    if jdk is not None and os.access(jdk / "bin/java", os.X_OK):
+        env["JAVA_HOME"] = str(jdk)
+    for launcher in sorted(gradle_home.glob("wrapper/dists/*/*/gradle-*/bin/gradle")):
+        if launcher.is_symlink() or not launcher.resolve().is_relative_to(gradle_home.resolve()):
+            continue
+        try:
+            common.command([str(launcher), "--stop"], cwd=gradle_home, env=env, timeout=GRADLE_STOP_SECONDS)
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def stop_gradle_daemons(gradle_home: Path, jdk: Path | None, receipt: dict[str, Any]):
+    daemons = gradle_daemons(gradle_home)
+    remaining = daemons
+    if daemons:
+        request_gradle_stop(gradle_home, jdk)
+        remaining = surviving_daemons(gradle_home, daemons, GRADLE_DAEMON_EXIT_SECONDS)
+    for operation in (signal.SIGTERM, signal.SIGKILL):
+        if not remaining:
+            break
+        for pid in remaining:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, operation)
+        remaining = surviving_daemons(gradle_home, remaining, GRADLE_DAEMON_EXIT_SECONDS)
+    receipt["gradle_daemons_stopped"] = sorted(daemons - remaining)
+    if remaining:
+        raise Blocked("native_gradle_daemon_stop_unproven")
+
+
+def stop_recorded_gradle_daemons(record: dict[str, Any], receipt: dict[str, Any]):
+    recorded = record.get("gradle_home")
+    if recorded is None:
+        return
+    gradle_home = Path(recorded)
+    if not gradle_home.is_absolute() or gradle_home.name != GRADLE_HOME_NAME:
+        raise Blocked("native_recovery_journal_malformed")
+    stop_gradle_daemons(gradle_home, Path(record["interpreter"]), receipt)
+
+
 def require_gradle_import(receipt):
     stages = receipt.get("gradle_import", {})
     if not (stages.get("resolved") and stages.get("data_imported")):
@@ -531,7 +599,8 @@ def recover_run(worker, receipt=None, result_path=None, release_run=None, proces
     try:
         lifecycle.recover(worker, current, common, write_record, remove_sdk, result_path=result_path,
                           release_run=release_run, process_proof=process_proof,
-                          licensed_inspection_logged=logged_licensed_inspection)
+                          licensed_inspection_logged=logged_licensed_inspection,
+                          stop_build_daemons=lambda record: stop_recorded_gradle_daemons(record, current))
     except lifecycle.LifecycleError as error:
         raise Blocked(str(error)) from None
 
@@ -982,11 +1051,15 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
         raise Blocked("native_execution_incomplete" if require_completion else "native_preparation_failed")
 
 
-def write_selection_scope(idea: Path, selected: set[str]):
+def content_root_suffixes(selected: set[str]) -> set[str]:
+    return {"/".join(Path(path).parts[start:]) for path in selected for start in range(len(Path(path).parts))}
+
+
+def write_selection_scope(idea: Path, selected: set[str], patterns: set[str] | None = None):
     scope = ElementTree.Element("component", name="DependencyValidationManager")
     if any(re.search(r'[\s"!&|()*?:\[\]\\]', path) for path in selected):
         raise Blocked("native_scope_path_unsupported")
-    ElementTree.SubElement(scope, "scope", name="JBNativeSelection", pattern="||".join("file:" + path for path in sorted(selected)))
+    ElementTree.SubElement(scope, "scope", name="JBNativeSelection", pattern="||".join("file:" + path for path in sorted(patterns or selected)))
     (idea / "scopes").mkdir(exist_ok=True)
     ElementTree.ElementTree(scope).write(idea / "scopes/JBNativeSelection.xml", encoding="unicode")
 
@@ -1028,7 +1101,7 @@ def prepare_jvm_model(project: Path, sdk_name: str, selected: set[str]):
         else:
             stale.unlink(missing_ok=True)
     write_project_sdk(idea, sdk_name, JAVA_SDK_TYPE)
-    write_selection_scope(idea, selected)
+    write_selection_scope(idea, selected, content_root_suffixes(selected))
 
 
 def prepare_model(project: Path, sdk_name: str, framework_roots: list[Path], selected: set[str]):
@@ -1504,6 +1577,10 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         requested = None if webstorm or intellij else common.requested_python_version(settings)
         interpreter = node if webstorm else jdk if intellij else planned_private / "project/.venv/bin/python" if requested is not None else source_interpreter
         context.reserve(state, worker, config, interpreter)
+        if intellij:
+            gradle_home = Path(preparation_caches["GRADLE_USER_HOME"])
+            context.phase(context.record["phase"], gradle_home=str(gradle_home))
+            context.before_private_removal = lambda: stop_gradle_daemons(gradle_home, jdk, receipt)
         private = context.private
         sdk_name = context.identity["sdk_name"]
         for name in ("project", "system", "logs", "tmp", "results", "registry"):
@@ -1567,6 +1644,8 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         vm += [f"-Didea.diagnostic.opentelemetry.file={private}/inspection-trace.json",
                "-Didea.diagnostic.opentelemetry.detailed.scopes=inspection"]
         vm += [f"-XX:ErrorFile={private}/logs/java-error-%p.log", f"-XX:HeapDumpPath={private}/logs"]
+        if intellij:
+            vm.append(AWAIT_ACTIVITIES_INSTEAD_OF_CONFIGURATORS)
         (private / "native.vmoptions").write_text("\n".join(vm) + "\n")
         engine_path = os.environ.get("PATH", "/usr/bin:/bin")
         env = {"PATH": str(node.parent) + os.pathsep + engine_path if node else engine_path, "HOME": str(home), "TMPDIR": str(private / "tmp"),

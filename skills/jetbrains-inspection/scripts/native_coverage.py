@@ -36,9 +36,9 @@ UNIVERSAL_TOOLS = frozenset({
 WEBSTORM_CANARY_FILES = {"JSUnusedLocalSymbols": "unused_local.ts"}
 WEBSTORM_CLEAN_TWINS = {"JSUnusedLocalSymbols": "used_local.ts"}
 INTELLIJ_UNUSED_RULE = "UnusedVariable"
-INTELLIJ_RESOLUTION_RULE = "Annotator"
-INTELLIJ_CANARY_FILES = {INTELLIJ_UNUSED_RULE: "unused_variable.kt", INTELLIJ_RESOLUTION_RULE: "unresolved_symbol.kt"}
-INTELLIJ_CLEAN_TWINS = {INTELLIJ_UNUSED_RULE: "used_variable.kt", INTELLIJ_RESOLUTION_RULE: "resolved_symbol.kt"}
+INTELLIJ_RESOLUTION_RULE = "SimplifiableCallChain"
+INTELLIJ_CANARY_FILES = {INTELLIJ_UNUSED_RULE: "unused_variable.kt", INTELLIJ_RESOLUTION_RULE: "stdlib_call_chain.kt"}
+INTELLIJ_CLEAN_TWINS = {INTELLIJ_UNUSED_RULE: "used_variable.kt", INTELLIJ_RESOLUTION_RULE: "stdlib_single_call.kt"}
 
 NATIVE_PROVEN_SUFFIXES = frozenset({".py", ".xml", ".yaml", ".yml"})
 TYPESCRIPT_SUFFIXES = frozenset({".ts", ".tsx", ".mts", ".cts"})

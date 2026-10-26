@@ -70,6 +70,13 @@ def write_owner(path, identity):
         os.close(directory)
 
 
+def is_gradle_daemon_residue(private):
+    residue = private / "project/.gradle"
+    entries = list(private.rglob("*"))
+    return (bool(entries) and all(not entry.is_symlink() and (entry.is_dir() or entry.is_file()) for entry in entries)
+            and all(entry == residue.parent or entry.is_relative_to(residue) for entry in entries))
+
+
 def prove_private(identity, materialized):
     private = Path(identity["private"])
     if not private.exists():
@@ -78,7 +85,7 @@ def prove_private(identity, materialized):
         raise LifecycleError("native_recovery_ownership_unproven")
     children = list(private.iterdir())
     marker = private / "owner.json"
-    if not children:
+    if not children or is_gradle_daemon_residue(private):
         return
     if marker.is_symlink():
         raise LifecycleError("native_recovery_ownership_unproven")
@@ -137,7 +144,7 @@ def release_stop(worker, run_id):
 
 
 def recover(worker, receipt, common, write_record, remove_sdk, *, result_path=None, release_run=None, process_proof=None,
-            licensed_inspection_logged=lambda _private: False):
+            licensed_inspection_logged=lambda _private: False, stop_build_daemons=lambda _record: None):
     journal = worker / "native-run.json"
     if not journal.exists():
         if release_run:
@@ -161,10 +168,11 @@ def recover(worker, receipt, common, write_record, remove_sdk, *, result_path=No
         phase = record.get("phase")
         if phase not in {"reserved", "materialized", "sdk_attempted", "engine_running", "terminal"}:
             raise LifecycleError("native_recovery_phase_unproven")
-        prove_private(identity, record.get("private_materialized", False))
         process = active_process(record)
         if process is not None and process_proof != {"run_id": identity["run_id"], "active_process": process}:
             raise LifecycleError("native_recovery_process_group_unproven")
+        stop_build_daemons(record)
+        prove_private(identity, record.get("private_materialized", False))
         if result_path:
             record = reconcile_result(result_path, worker, record, common)
             write_record(journal, record)
@@ -218,6 +226,7 @@ class RunContext:
         self.sdk_lease = None
         self.finalized = False
         self.failures = []
+        self.before_private_removal = None
 
     def phase(self, phase, **fields):
         updated = {**self.record, "phase": phase, **fields}
@@ -291,6 +300,8 @@ class RunContext:
                 self.receipt["sdk_removed"] = self.attempt("sdk_removal", lambda: self.remove_sdk(*self.sdk_lease, missing_ok=True))
             if self.private is not None and self.record is not None and process_closed:
                 def dispose_private():
+                    if self.before_private_removal is not None:
+                        self.before_private_removal()
                     prove_private(self.identity, self.record.get("private_materialized", False))
                     if self.private.exists():
                         self.common.delete_private(self.private)
