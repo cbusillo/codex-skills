@@ -399,5 +399,15 @@ def test_plan_redirect_retains_its_safety_classification():
     read.assert_not_called()
 
 
+def test_rebuild_keeps_validated_identifier_names_through_plan() -> None:
+    args = helper.parse_args(arguments(command=rebuild.PLAN_COMMAND))
+    args.product, args.artifact_id = "kiosk-shop", "desk-build"
+    request, body = rebuild.intent(helper, args)
+    reply = plan_receipt()
+    reply["result"].update(product=args.product, artifact_id=args.artifact_id, base_url="https://kiosk-shop-testing.example.invalid")
+    projected = rebuild.project_plan(helper, reply, body, service_url=SERVICE_URL)
+    assert (request["product"], projected["artifact_id"]) == (args.product, args.artifact_id)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

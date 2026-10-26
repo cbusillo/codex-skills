@@ -977,6 +977,39 @@ class LedgerTests(unittest.TestCase):
 
 
 class QuestionTests(unittest.TestCase):
+    def test_recorded_numbered_decisions_require_exact_unambiguous_number_and_trusted_author(self) -> None:
+        question = {"id": 101, "url": "https://example.test/questions/101",
+                    "body": "Owner question: Q906. Continue?", "author": "bot"}
+        cases = (
+            ("bot", "Director decision: Q906. Chris: Q906 I agree", True),
+            ("director", "**Director decision:** Q906, yes.", True),
+            ("outsider", "Director decision: Q906, yes.", False),
+            ("bot", "Q906 I agree", False),
+            ("director", "Q906 I agree", False),
+            ("bot", "Director decision: Q9060, yes.", False),
+            ("bot", "Director decision: Q906x, yes.", False),
+            ("bot", "Director decision: xQ906, yes.", False),
+            ("bot", "Director decision: Q907, see Q906.", False),
+            ("bot", "Director decision: Q906 and Q907, yes.", False),
+            ("bot", "Director decision: Q906", False),
+            ("bot", "Director decision: Q906 = later", False),
+        )
+        for author, body, answered in cases:
+            with self.subTest(author=author, body=body):
+                answer = {"author": author, "body": body, "url": "decision"}
+                result = oq.questions([question, answer], "director", {"bot"}, recorded_decisions_only=True)[0]
+                self.assertEqual(result["answers"], [answer["url"]] if answered else [])
+
+    def test_duplicate_question_numbers_require_exact_comment_identity(self) -> None:
+        questions = [{"id": number, "url": f"https://example.test/questions/{number}",
+                      "body": "Owner question: Q906. Continue?", "author": "bot"} for number in (101, 102)]
+        answer = {"author": "bot", "body": "Director decision: Q906, yes.", "url": "decision"}
+        result = oq.questions([*questions, answer], "director", {"bot"})
+        self.assertTrue(all(q["status"] == "needs_review" for q in result))
+        answer["body"] += " " + questions[0]["url"]
+        result = oq.questions([*questions, answer], "director", {"bot"})
+        self.assertEqual([q["status"] for q in result], ["answered", "needs_review"])
+
     def test_both_spellings_preserve_answer_authority_and_question_link(self):
         for question_role in ("Director", "Owner"):
             for decision_role in ("Director", "Owner"):

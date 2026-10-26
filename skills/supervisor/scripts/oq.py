@@ -9,7 +9,12 @@ import argparse
 import json
 import re
 import subprocess
+import sys
+from collections import Counter
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from skills.direction.scripts.question_id import QUESTION, heading_id
 
 ITEM = re.compile(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)")
 QUESTION_PREFIXES = ("Director question:", "Owner question:")
@@ -25,11 +30,13 @@ DECISION_PREFIXES = (
 def questions(comments, owner, decision_authors, related_comments=(), *, recorded_decisions_only=False):
     owner = owner.casefold()
     decision_authors = {author.casefold() for author in decision_authors}
+    numbers = Counter(heading_id(comment.get("body", "")) for comment in comments)
     results = []
     for i, question in enumerate(comments):
         body = question.get("body", "").strip()
         if not body.lstrip("*").startswith(QUESTION_PREFIXES):
             continue
+        number = heading_id(body)
         answers = []
         for answer in [*comments[i + 1 :], *related_comments]:
             author = (answer.get("author") or "").casefold()
@@ -44,15 +51,20 @@ def questions(comments, owner, decision_authors, related_comments=(), *, recorde
                 continue
             content = re.sub(r"^(?:Director|Owner) decision(?:\s*\([^)]*\))?[, :*]*", "", text)
             content = content.replace("*", "").strip()
+            decision_number = QUESTION.match(content)
             content = re.sub(r"^Q[1-9][0-9]*\s*[:=,.—-]?\s*", "", content)
             content = re.sub(r"https://\S+", "", content).strip()
             if recorded_decisions_only and re.fullmatch(r"(?i)(?:later|not now)[\s.;!—-]*", content):
                 continue
-            # Later unrelated replies never resolve a question. Require its id or URL.
+            numbered = (
+                recorded and number is not None and numbers[number] == 1 and decision_number is not None
+                and decision_number[0] == number and bool(content.strip(".,:;= -"))
+                and {match[0] for match in QUESTION.finditer(text)} == {number}
+            )
             linked = question["url"] in text or re.search(
                 rf"(?<!\d){question['id']}(?!\d)", text
             )
-            if authorized and linked and not text.startswith(QUESTION_PREFIXES):
+            if authorized and (linked or numbered) and not text.startswith(QUESTION_PREFIXES):
                 answers.append(answer["url"])
         results.append(
             {

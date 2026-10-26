@@ -49,7 +49,8 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
     for field, value in (("product", product), ("artifact_id", artifact)):
         if not h.PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(value):
             raise ValueError("invalid_" + field)
-        h.public_identifier(value)
+    product = h.public_identifier(product)
+    artifact = h.public_identifier(artifact)
     if re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", source) is None:
         raise ValueError("immutable_source_commit_required")
     replacement: dict[str, object] = {
@@ -92,6 +93,8 @@ def project_plan(h: Any, response: dict[str, Any], body: dict[str, object], *, s
         raise h.LaunchplaneSafetyError("invalid_response")
     projected = {key: result[key] for key in (
         "status", "product", "instance", "artifact_id", "source_git_ref", "data_source_mode", "candidate_verification")}
+    for key in ("product", "artifact_id"):
+        projected[key] = h.public_identifier(projected[key])
     projected.update(context=h.public_identifier(result.get("context")),
         address_origin=h._public_origin_url(result.get("base_url")),
         observed_at=h.public_timestamp(result.get("observed_at")),

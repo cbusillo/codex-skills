@@ -78,7 +78,7 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
     payload = h.read_payload_file(args.payload_file)
     if payload.keys() != REQUEST_FIELDS:
         raise ValueError("invalid_workflow_rule_retirement_fields")
-    _bounded_identifier(h, payload["policy_record_id"], "invalid_workflow_rule_retirement_policy_record_id")
+    payload["policy_record_id"] = _bounded_identifier(h, payload["policy_record_id"], "invalid_workflow_rule_retirement_policy_record_id")
     revision = payload["policy_revision"]
     if type(revision) is not int or revision < 1:
         raise ValueError("invalid_workflow_rule_retirement_policy_revision")
@@ -98,8 +98,8 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
         seen.add(item["rule_sha256"])
         managed = (item["managed_set_id"], item["managed_rule_id"])
         if managed != (None, None):
-            for value in managed:
-                _bounded_identifier(h, value, "invalid_workflow_rule_retirement_managed_identity")
+            for field in SCOPE_MANAGED_FIELDS:
+                item[field] = _bounded_identifier(h, item[field], "invalid_workflow_rule_retirement_managed_identity")
     request: dict[str, object] = {
         "mode": mode,
         "payload_source": "private_file",
@@ -112,7 +112,7 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
 def _selector(h: Any, value: object) -> str:
     if not isinstance(value, str) or SELECTOR_RE.fullmatch(value) is None:
         raise h.LaunchplaneSafetyError("invalid_response")
-    return value
+    return h.public_identifier(value, pattern=SELECTOR_RE)
 
 
 def _decimal(h: Any, value: object) -> str:
@@ -123,14 +123,13 @@ def _decimal(h: Any, value: object) -> str:
 
 def _project_scope(h: Any, value: object, selection: dict[str, Any], drops: Any) -> tuple[dict[str, object], bool]:
     scope = h._require_dict(value)
-    h.assert_public_safe_shape(scope)
     before = drops.count
     projected: dict[str, object] = {}
     for key in SCOPE_MANAGED_FIELDS:
         if scope.get(key) != selection[key]:
             raise h.LaunchplaneSafetyError("invalid_response")
         if selection[key] is not None:
-            projected[key] = selection[key]
+            projected[key] = h.public_identifier(selection[key])
     # Launchplane dumps every rule field except null managed ids: text fields
     # default to "" and selector lists to [], so a missing one is drift, not
     # an unconstrained rule.
@@ -154,11 +153,13 @@ def _project_scope(h: Any, value: object, selection: dict[str, Any], drops: Any)
         for item in items:
             kept = drops.keep(path, lambda entry: _selector(h, entry), item)
             if kept:
-                kept_items.append(str(kept))
+                kept_items.append(kept)
             elif item in (None, ""):
                 drops.drop(path)
         projected[key] = kept_items
     for key, value in scope.items():
+        if key not in SCOPE_FIELDS:
+            h.assert_public_safe_shape({key: value})
         if key not in SCOPE_FIELDS and value not in (None, "", [], {}):
             drops.drop("selected_rules[].scope.<unlisted field>")
     return projected, drops.count == before
