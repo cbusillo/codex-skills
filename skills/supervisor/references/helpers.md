@@ -1144,8 +1144,7 @@ For an authorized native-app task, put a single standalone declaration in its
 brief's first nonblank line, using the exact app bundle ID, for example
 `GUI task: com.apple.TestFlight`. Examples quoted later in a source-work brief
 do not opt that task into GUI work.
-Launch that brief alone with `--account-provider openai` and a local `codex -C`
-command, without `--remote`. The launcher rejects terminal app targets and adds
+Launch that brief alone with `--account-provider openai --computer-use required`. The launcher rejects terminal app targets and adds
 the GUI safety instructions to the worker's prompt. GUI commands retain their
 local invocation and client-side overrides; they do not use the managed RPC
 ingress or acquire a managed-client exemption. A live local GUI client therefore
@@ -1349,13 +1348,11 @@ in a visible iTerm tab with Chris's approval for that session, never under the
 launchd tmux server. Tool discovery alone does not authorize screen use.
 Do not change his logins, Chrome profiles, app settings or privacy grants.
 
-Local Codex launches with this opt-in, or an explicit browser/GUI brief, validate
-the account-relative link and pass its source override plus `--no-daemon`.
-The [native flag](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
-ensures the process loads that config even if a daemon already runs. Preflight
-lists enabled, installed bundled plugins from that home. A desktop GUI brief
-requires `computer-use`; `--require-browser` requires `chrome` and `browser`.
-A brief asking for both must have both sets. Remote launches keep
+For Codex Computer Use, use `iterm_tab.py new --computer-use required` with the
+[app declaration](#opt-in-codex-gui-work), or `--computer-use unused` for source-only mentions.
+Local Codex plugin setup uses the account-relative marketplace;
+`--require-browser` requires `chrome` and `browser`.
+Remote launches keep
 their endpoint; `--require-browser` makes `--remote unix://` check the selected
 daemon's `plugin/list` for the launch's `-C` directory, refusing inventory
 failure or missing plugins. Source launches skip this unrequested inventory;

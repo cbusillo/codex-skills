@@ -159,7 +159,7 @@ class ResumeLaunchTests(unittest.TestCase):
         self.ledger.write_text(json.dumps([self.entry]))
         for field, value in (("account_provider", "anthropic"), ("account", "other"),
                              ("command_file", [self.root / "command"]), ("brief_file", [self.root / "brief"]),
-                             ("require_browser", True), ("ledger", None)):
+                             ("require_browser", True), ("computer_use", "required"), ("computer_use", "unused"), ("ledger", None)):
             with self.subTest(field=field), patch.object(self.args, field, value, create=True):
                 with self.assertRaises(ValueError):
                     iterm_tab.prepare_launches(self.args)
