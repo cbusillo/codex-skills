@@ -6456,8 +6456,16 @@ def test_http_error_advice_follows_operation_state(http_status: int, code: str, 
     assert output["summary"]["recommendation"] == write_action.http_error_recommendation(expected)
 
 
-@pytest.mark.parametrize("reason", ["newer_deployment", "Bearer private-secret", "https://private.invalid", "a" * 600, None, {}])
-@pytest.mark.parametrize("blocker", ["deployment-123", "Bearer private-secret", "https://private.invalid", "a" * 600, None, {}])
+@pytest.mark.parametrize(("reason", "blocker"), [
+    ("newer_deployment", "deployment-123"),
+    ("backup_credential_missing", None),
+    ("newer_deployment", "Bearer private-secret"),
+    ("Bearer private-secret", "deployment-123"),
+    ("https://private.invalid", "https://private.invalid"),
+    ("a" * 600, "a" * 600),
+    (None, None),
+    ({}, {}),
+])
 def test_http_refusal_projects_structured_diagnostics_independently(reason: object, blocker: object) -> None:
     message = "An otherwise ordinary private customer sentence."
     output = write_action.summarize_http_error(
@@ -6466,7 +6474,7 @@ def test_http_refusal_projects_structured_diagnostics_independently(reason: obje
         provider_payload={"trace_id": "launchplane_req_example", "error": {"code": "restart_refused", "reason": reason, "message": message},
                           "details": {"blocking_deployment_id": blocker, "token": "private-secret"}},
     )
-    assert output["summary"].get("error_reason") == (reason if reason == "newer_deployment" else None)
+    assert output["summary"].get("error_reason") == (reason if reason in ("newer_deployment", "backup_credential_missing") else None)
     assert output["summary"].get("blocking_deployment_id") == (blocker if blocker == "deployment-123" else None)
     assert output["summary"]["trace_id"] == "launchplane_req_example"
     assert output["summary"]["error_code"] == "restart_refused"

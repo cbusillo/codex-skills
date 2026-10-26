@@ -629,9 +629,17 @@ def service_response_diagnostics(source: object) -> dict[str, object]:
     candidates = {"trace_id": source.get("trace_id")}
     if isinstance(error, dict):
         candidates["error_code"] = error.get("code")
+        candidates["error_reason"] = error.get("reason")
+    details = source.get("details")
+    if isinstance(details, dict):
+        candidates["blocking_deployment_id"] = details.get("blocking_deployment_id")
     for key, value in candidates.items():
         try:
-            projected = public_trace_id(value) if key == "trace_id" else public_code(value)
+            if key == "blocking_deployment_id":
+                projected = public_identifier(value)
+                public_summary_string(projected, max_length=128)
+            else:
+                projected = public_trace_id(value) if key == "trace_id" else public_code(value)
             if projected:
                 assert_public_safe_shape(projected)
                 diagnostics[key] = projected
@@ -5062,24 +5070,6 @@ def _controller_error_diagnostics(provider_payload: dict[str, Any]) -> dict[str,
     return diagnostics
 
 
-def _safe_refusal_diagnostics(provider_payload: dict[str, object]) -> dict[str, str]:
-    error = provider_payload.get("error")
-    details = provider_payload.get("details")
-    diagnostics: dict[str, str] = {}
-    for key, value, validate in (
-        ("error_reason", error.get("reason") if isinstance(error, dict) else None, public_code),
-        ("blocking_deployment_id", details.get("blocking_deployment_id") if isinstance(details, dict) else None, public_identifier),
-    ):
-        try:
-            projected = validate(value)
-            public_summary_string(projected, max_length=128)
-            assert_public_safe_shape(projected)
-        except (LaunchplaneSafetyError, TypeError):
-            continue
-        diagnostics[key] = projected
-    return diagnostics
-
-
 def summarize_http_error(
     *, operation: str, request: dict[str, object], exc: urllib.error.HTTPError,
     provider_payload: dict[str, object] | None = None,
@@ -5137,7 +5127,6 @@ def summarize_http_error(
         if operation in READ_ONLY_OPERATIONS
         else "Launchplane write action was rejected; inspect the trace in an approved operator surface."
     )
-    summary.update(_safe_refusal_diagnostics(provider_payload))
     payload["warnings"] = [warning(str(summary["error_code"]), message)]
     return payload
 
