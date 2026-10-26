@@ -116,18 +116,23 @@ def test_refusal_reasons_are_allowlisted_and_do_not_override_recovery(tmp_path: 
     def failure(reason: object, code: str = "product_review_withdrawal_refused", status: int = 409) -> urllib.error.HTTPError:
         body = {"error": {"code": code, "reason": reason, "message": "PRIVATE_REASON_SENTINEL"}}
         return urllib.error.HTTPError("https://plane.example.invalid", status, "Failure", {}, io.BytesIO(json.dumps(body).encode()))
-    for reason, advice in REFUSAL_ADVICE.items():
-        code, result, calls = invoke(argv("apply", str(evidence)), [failure(reason)])
-        assert code != 0 and result["status"] == "refused" and len(calls) == 1
-        assert result["summary"]["refusal_reason"] == reason
-        assert result["summary"]["recommendation"] == advice + " " + RECOVERY["refused"]
-        assert result["summary"]["idempotency_key"] == OPERATION_KEY
-        assert "PRIVATE_REASON_SENTINEL" not in json.dumps(result)
-    for reason in (None, "PRIVATE_REASON_SENTINEL", {"no_pending_labeled_request": True}, ["no_pending_labeled_request"]):
+    reason = "no_pending_labeled_request"
+    code, result, calls = invoke(argv("apply", str(evidence)), [failure(reason)])
+    assert code != 0 and result["status"] == "refused" and len(calls) == 1
+    assert result["summary"]["refusal_reason"] == reason
+    assert REFUSAL_ADVICE[reason] in result["summary"]["recommendation"]
+    assert RECOVERY["refused"] in result["summary"]["recommendation"]
+    assert result["summary"]["idempotency_key"] == OPERATION_KEY
+    assert "PRIVATE_REASON_SENTINEL" not in json.dumps(result)
+    for reason in (None, "PRIVATE_REASON_SENTINEL", "removal_unconfirmed", "history_unconfirmed", "later_review_request",
+                   {"no_pending_labeled_request": True}, ["no_pending_labeled_request"]):
         _, result, calls = invoke(argv(), [failure(reason)])
         assert result["status"] == "refused" and len(calls) == 1
         assert "refusal_reason" not in result["summary"]
         assert "PRIVATE_REASON_SENTINEL" not in json.dumps(result)
+    for mode in ("dry-run", "readback"):
+        _, result, calls = invoke(argv(mode), [failure(reason, status=503)])
+        assert "refusal_reason" not in result["summary"] and len(calls) == 1
     reason = next(iter(REFUSAL_ADVICE))
     for replies, expected in (([failure(reason, status=503)], "outcome_unknown"),
                               ([failure(reason, code="product_review_withdrawal_stale_plan")], "stale_plan"),

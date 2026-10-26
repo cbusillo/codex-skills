@@ -2574,11 +2574,13 @@ A new withdrawal still requires an open PR; readback never removes a label.
 
 A permanent eligibility refusal keeps HTTP 409 and
 `product_review_withdrawal_refused`. The optional service `error.reason` is
-projected as `summary.refusal_reason` only for the helper's finite reason set;
+projected as `summary.refusal_reason` only for the pre-dispatch eligibility
+reasons in `launchplane_review_withdrawal.py`'s `REFUSAL_ADVICE`;
 its recommendation comes from local bounded text. An unlabeled request reports
 `no_pending_labeled_request`: there is no labeled Client review request to
 withdraw. Missing, unknown or malformed reasons keep the generic refusal;
-service/provider prose is never copied. Applied receipts, stale plans and
+service/provider prose is never copied. Recovery or uncertain-effect reasons
+are not eligibility reasons. Applied receipts, stale plans and
 uncertain outcomes take precedence over a supplied reason. This consumer ships
 before the service adds reasons; older consumers keep the same refusal code.
 
