@@ -10,6 +10,7 @@ import fcntl
 import hashlib
 import json
 import os
+from pathlib import Path
 import plistlib
 import re
 import shlex
@@ -76,8 +77,8 @@ class Terminal:
             capture_output=True, text=True, timeout=10,
         )
         if check and result.returncode:
-            # tmux diagnostics can echo the command/brief; retain targets, not text.
-            raise ValueError(f"tmux {argv[0]} failed; list and read before retrying")
+            diagnostic = ": command too long" if result.stderr.strip() == "command too long" else ""
+            raise ValueError(f"tmux {argv[0]} failed{diagnostic}; list and read before retrying")
         return result
 
     def send_keys(self, pane, *keys):
@@ -418,6 +419,7 @@ async def operate(args):
                     "backend": "tmux", "tmux_socket": args.tmux_socket}
         if choice:
             progress["account"] = account_choice.public(choice)
+        launch_script = None
         try:
             identity = uuid.uuid4().hex
             gate = "start-" + identity
@@ -426,12 +428,16 @@ async def operate(args):
             staged = ("IFS= read -r supervisor_start; "
                       f'[ "$supervisor_start" = {shlex.quote(gate)} ] && '
                       f"exec /bin/zsh -c {shlex.quote(command)}")
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="supervisor-launch-",
+                                             suffix=".sh", delete=False) as handle:
+                launch_script = Path(handle.name)
+                handle.write('rm -f -- "$0" || exit\n' + staged + "\n")
             environment = [argument for key in LAUNCH_ENVIRONMENT_KEYS if key in os.environ
                            for argument in ("-e", key + "=" + os.environ[key])]
             created = terminal.run("new-window", "-d", "-t", args.window_id + ":", "-n", "agent",
                                    *environment,
                                    "-P", "-F", "#{window_id}\t#{pane_id}",
-                                   "exec /bin/sh -c " + shlex.quote(staged)).stdout.strip().split("\t")
+                                   "exec /bin/sh " + shlex.quote(str(launch_script))).stdout.strip().split("\t")
             if len(created) != 2:
                 raise ValueError("new terminal identity unavailable")
             tab, pane = created
@@ -464,6 +470,8 @@ async def operate(args):
             iterm_tab.source_launch_metadata(result, choice)
             results.append(result)
         except Exception as error:
+            if launch_script is not None and progress["tab_id"] is None:
+                launch_script.unlink(missing_ok=True)
             iterm_tab.cancel_unsubmitted_gui(choice, progress)
             raise iterm_tab.LaunchFailure(results, progress, error) from error
         if len(results) == 1:
