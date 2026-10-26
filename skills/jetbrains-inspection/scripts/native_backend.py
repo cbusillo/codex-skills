@@ -5,8 +5,8 @@
 # ///
 """Stock PyCharm inspection using an independently activated profile in place.
 
-Only public launcher properties, the non-secret SDK table, plugin descriptors
-and disabled_plugins.txt are read from the worker. Account, activation and credential files are never enumerated,
+Only public launcher properties and the non-secret SDK table are read from
+the worker. Account, activation and credential files are never enumerated,
 opened, staged or transferred. The profile lock is shared with its UI launcher.
 """
 from __future__ import annotations
