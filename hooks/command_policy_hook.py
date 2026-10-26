@@ -600,7 +600,18 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
         normalized = unwrap(raw_argv)
         if not normalized or normalized[0][:1] != ["launchplane"]:
             continue
+        consumer_command = (
+            normalized[0][:2] == ["launchplane", "local-consumer"]
+            and normalized[0][2:3] in (["prepare"], ["deliver"], ["receive"])
+        )
+        executable_position = len(raw_argv) - len(normalized[0])
         for position, token in enumerate(raw_argv):
+            if (
+                consumer_command
+                and position > executable_position + 2
+                and token.split("=", 1)[0] == "--directory"
+            ):
+                continue
             if (
                 token in {"--active", "--no-project"}
                 or token.startswith("-C")
@@ -613,6 +624,7 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
             if (
                 Path(token).name == "launchplane"
                 and token != "launchplane"
+                and (not consumer_command or position <= executable_position)
                 and not (repository_slug and REPOSITORY_SLUG.fullmatch(repository))
             ):
                 return None

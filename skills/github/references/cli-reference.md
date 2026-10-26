@@ -719,7 +719,9 @@ check, unfinished workflow and every failure still refuses.
 repository, directly or as an addon source pinned in an Odoo product's prod or
 testing lane, to an active product whose Client is not the Director, or when the
 PR carries an explicit hold: an `owner-review` label, or a
-`launchplane/owner-review` check that is not completed neutral. A product that
+`launchplane/owner-review` check other than a completed neutral check or an
+unfinished advisory for current engineering notes. Both readers exclude that
+unfinished advisory from pending checks. A product that
 releases on `director_standing` is the Director's, so it keeps standing
 acceptance unless explicitly held. A repository with no Client gets a plain
 Ready with no notes, `Client change:` statement or no-test declaration.
@@ -769,8 +771,7 @@ refuse a class that disagrees with it: Client test steps or
 statements, or release test steps on engineering work
 (`Engineering: merge to testing; Client tests at release.`). The review by
 another model checks the statement and any engineering reason against the
-diff. The release review is not a safety net. A review label, a non-neutral review check, or another
-section or batch member requiring acceptance still keeps that gate. Every
+diff. The release review is not a safety net. Every
 release still needs the Client's acceptance; engineering classification grants
 no release authority.
 

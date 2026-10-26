@@ -238,11 +238,13 @@ class ClientHandoff(NamedTuple):
 def explicit_client_hold(pr, check_runs) -> bool:
     if any(label["name"].casefold() == "owner-review" for label in pr.get("labels") or []):
         return True
-    # Launchplane completes engineering-only advisory checks as neutral.
-    # Pending, accepted and rejected reviews still follow the acceptance path.
+    engineering = bool(test_notes_sections(pr.get("body") or "")) and _client_path(
+        pr, held=False, waiting_for_client=False,
+    ) == ClientHandoff()
     return any(
         check["name"] == "launchplane/owner-review"
         and not (check.get("status") == "completed" and check.get("conclusion") == "neutral")
+        and not (check.get("status") != "completed" and engineering)
         for check in check_runs
     )
 
@@ -273,6 +275,15 @@ def client_handoff(pr, check_runs, *, repository, waiting_for_client=False) -> C
         strict.acceptance_required,
         f"Launchplane could not confirm whether {repository} has a Client ({release.reason}), "
         "so this PR stays on the Client path",
+    )
+
+
+def pending_client_reviews(check_runs: list[dict[str, object]], handoff: ClientHandoff, *, waiting_for_client: bool = False) -> int:
+    if not waiting_for_client and handoff != ClientHandoff():
+        return 0
+    return sum(
+        check.get("name") == "launchplane/owner-review" and check.get("status") != "completed"
+        for check in check_runs
     )
 
 

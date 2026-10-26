@@ -775,6 +775,12 @@ policy:
         - repository: cbusillo/launchplane
           argv_prefix: ["launchplane", "local-consumer", "--help"]
         - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "local-consumer", "prepare"]
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "local-consumer", "deliver"]
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "local-consumer", "receive"]
+        - repository: cbusillo/launchplane
           argv_prefix: ["launchplane", "odoo-ownership", "check"]
         - repository: cbusillo/launchplane
           argv_prefix: ["launchplane", "ci", "postgres-integration"]
@@ -823,11 +829,21 @@ loopback database through `--database-url` or a leading
 `LAUNCHPLANE_TEST_POSTGRES_URL=`. Use the session's working directory or a
 single literal absolute `cd <checkout> &&` prefix; on Codex, an exec `workdir`
 is not visible to the hook, so use the `cd` prefix. Other shell
-directory/project overrides retain the block. All live/admin CLI commands
-retain their helper route below. Consumers without
+directory/project overrides retain the block. Consumers without
 repository-exception support keep the original block; do not bypass it through
 an alternate entry point. The local gates support chained checks and output
-redirection. `local-consumer prepare|receive` remain Director-run transfers.
+redirection.
+
+For the Director-approved testing local-consumer path (Q921), read the
+[custody contract](https://github.com/cbusillo/launchplane/blob/main/docs/testing-local-consumer.md)
+before running `uv run launchplane local-consumer prepare`, `deliver` or
+`receive` from a verified Launchplane checkout. For real transfers, use a clean
+primary/runtime installation at a merged default-branch commit; task worktrees
+use fake isolated fixtures. These commands use existing
+exact-testing-lane authority; the service enforces the credential and caller
+boundary. Keep recipient files outside repositories and task evidence; never
+inspect or emit their key or token values. Every other live/admin CLI command retains its helper
+route below. This routing exception creates no access or grant.
 
 Use this skill to inspect product/runtime state and perform safe,
 authenticated mutations via the Launchplane service API.
