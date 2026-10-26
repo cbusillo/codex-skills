@@ -225,7 +225,8 @@ renewal failures, even without a worker on that account. It saves allowlisted
 auth events from `logs_2.sqlite` opened read-only, plus the observed process
 inventory, under that home's private `skill-data/supervisor-auth/`. It never
 opens credentials or saves raw log bodies, process arguments or environments.
-Evidence survives Codex's log rotation. Process inventory describes capture
+Captured evidence survives Codex's log rotation. Keep this watcher running;
+events rotated away before any observation cannot be recovered. Process inventory describes capture
 time; earlier process identities come only from retained log events.
 
 An `auth_failure` notice wakes the Supervisor once per failure episode through
@@ -1605,10 +1606,14 @@ and the helper uses the first corresponding IDs in the provider's published
 a private reserve. Account configuration only maps snapshot rows to launch
 environments. An unmatched or ambiguous choice refuses before creating tabs.
 
-Confirmed permanent Codex renewal failures are excluded from that published
+Confirmed expired or revoked Codex renewal failures are excluded from that published
 order. The launcher walks Context Panel's remaining order without re-ranking;
 an explicit `--account` cannot bypass a confirmed failure. Short-lived access
 expiry, an unavailable usage reading and network errors do not cause this hold.
+An already-used key is recorded without a hold: another process may have saved
+its replacement. A hold requires the preceding renewal attempt to have begun
+after the current sign-in file was saved. An old in-flight failure therefore
+cannot pause a replacement sign-in. Missing attempt evidence stays diagnostic.
 Interactive last-account fallback and managed fresh/resume clients check the
 same evidence before execution. Native `codex login` remains available for the
 Director to use; no helper signs in, signs out or renews credentials itself.

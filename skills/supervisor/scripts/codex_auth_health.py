@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -25,6 +26,7 @@ EVENTS = {
     "refresh_attempt": "Refreshing token",
     "reload_changed": "Skipping token refresh because auth changed after guarded reload.",
 }
+BLOCKING_FAILURES = {"expired", "revoked"}
 
 
 def read_log(home: Path) -> dict:
@@ -39,13 +41,18 @@ def read_log(home: Path) -> dict:
             "WHERE target = 'codex_login::auth::manager' ORDER BY id"
         )
         events = []
+        attempts = {}
         for ident, seconds, nanos, level, process, body in rows:
             for kind, message in EVENTS.items():
                 if message in (body or "") and (kind not in FAILURES or level == "ERROR"):
+                    timestamp = seconds * 1_000_000_000 + nanos
+                    if kind == "refresh_attempt":
+                        attempts[process] = timestamp
                     events.append(
                         {
                             "id": ident,
-                            "ts_ns": seconds * 1_000_000_000 + nanos,
+                            "ts_ns": timestamp,
+                            "attempt_ns": attempts.get(process),
                             "event": kind,
                             "message": message,
                             "process": process
@@ -94,6 +101,29 @@ def save(path: Path, data: dict) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def read_state(path: Path) -> dict:
+    state = json.loads(path.read_text()) if path.exists() else {}
+    if (
+        not isinstance(state, dict)
+        or state
+        and (
+            not all(type(state.get(key)) is int for key in ("failure_ns", "episode_ns", "credential_modified_ns"))
+            or state.get("reason") not in FAILURES
+        )
+    ):
+        raise ValueError("invalid auth evidence state")
+    return state
+
+
+def is_current_failure(state: dict, modified: int) -> bool:
+    return (
+        modified > 0
+        and state.get("reason") in BLOCKING_FAILURES
+        and isinstance(state.get("attempt_ns"), int)
+        and state["attempt_ns"] >= modified
+    )
+
+
 def observe(home: Path) -> dict:
     home = home.expanduser().resolve()
     directory = home / "skill-data/supervisor-auth"
@@ -104,21 +134,24 @@ def observe(home: Path) -> dict:
     modified = 0
     try:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        state = json.loads(state_path.read_text()) if state_path.exists() else {}
-        if not isinstance(state, dict):
-            state = {}
-            raise ValueError("invalid auth evidence state")
+        state = read_state(state_path)
         modified = credential_modified_at(home)
+        log = read_log(home)
+        events = log["events"]
+        failures = [event for event in events if event["event"] in FAILURES]
+        latest = max(failures, key=lambda event: event["ts_ns"], default=None)
+        previous = state
+        if latest and latest["ts_ns"] >= state.get("failure_ns", 0):
+            state = {**state, "failure_ns": latest["ts_ns"], "reason": latest["event"], "attempt_ns": latest["attempt_ns"]}
+            if not previous or modified != previous.get("credential_modified_ns"):
+                state.update(episode_ns=latest["ts_ns"], credential_modified_ns=modified)
         with (directory / "state.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            state = json.loads(state_path.read_text()) if state_path.exists() else {}
-            modified = credential_modified_at(home)
-            log = read_log(home)
-            events = log["events"]
-            failures = [event for event in events if event["event"] in FAILURES]
-            latest = max(failures, key=lambda event: event["ts_ns"], default=None)
-            if latest and latest["ts_ns"] > state.get("failure_ns", 0):
-                if not state or modified != state.get("credential_modified_ns"):
+            persisted = read_state(state_path)
+            if persisted.get("failure_ns", 0) >= state.get("failure_ns", 0):
+                state = {**state, **persisted}
+            if latest and state != persisted:
+                if not persisted or modified != persisted.get("credential_modified_ns"):
                     evidence = directory / f"failure-{latest['ts_ns']}.json"
                     try:
                         processes = process_inventory()
@@ -136,16 +169,18 @@ def observe(home: Path) -> dict:
                             "credential_modified_ns": modified,
                         },
                     )
-                    state = {"evidence": str(evidence), "credential_modified_ns": modified, "episode_ns": latest["ts_ns"]}
-                state.update(failure_ns=latest["ts_ns"], reason=latest["event"])
+                    state["evidence"] = str(evidence)
                 save(state_path, state)
             if not state:
                 return {"blocked": False}
-            if not (modified or state.get("credential_modified_ns")):
+            modified = credential_modified_at(home)
+            if not modified:
                 return {"blocked": False, "diagnostic": "credential_generation_unavailable"}
-            return {**state, "blocked": modified <= state["failure_ns"]}
+            if state.get("attempt_ns") is None and modified <= state["failure_ns"]:
+                return {"blocked": False, "diagnostic": "renewal_attempt_unavailable"}
+            return {**state, "blocked": is_current_failure(state, modified)}
     except (OSError, ValueError, TypeError, sqlite3.Error):
-        return {**state, "blocked": bool(state) and modified <= state["failure_ns"], "diagnostic": "auth_evidence_unavailable"}
+        return {**state, "blocked": is_current_failure(state, modified), "diagnostic": "auth_evidence_unavailable"}
 
 
 def require_usable(home: Path) -> None:
@@ -155,6 +190,10 @@ def require_usable(home: Path) -> None:
         )
 
 
+def home_id(home: Path) -> str:
+    return hashlib.sha256(str(home.expanduser().resolve()).encode()).hexdigest()
+
+
 def notices(homes: dict[str, Path]) -> list[dict]:
     result = []
     for name, home in homes.items():
@@ -162,11 +201,13 @@ def notices(homes: dict[str, Path]) -> list[dict]:
         if health.get("blocked"):
             result.append(
                 {
-                    "auth_failure": {"account": name, "episode_ns": health["episode_ns"]},
+                    "auth_failure": {"home_id": home_id(home), "episode_ns": health["episode_ns"]},
                     "message": f"Codex {name} needs you to sign in again. Launches on this account are paused.",
                     "clean": None,
                 }
             )
         elif health.get("diagnostic"):
-            result.append({"auth_diagnostic": {"account": name, "reason": health["diagnostic"]}, "clean": None})
+            result.append(
+                {"auth_diagnostic": {"home_id": home_id(home), "reason": health["diagnostic"]}, "account": name, "clean": None}
+            )
     return result

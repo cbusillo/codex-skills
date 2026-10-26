@@ -30,7 +30,8 @@ def poll(ledger: Path, seen: dict, idle_seconds: float, now: float,
         if harness == "codex" and entry.get("codex_home"):
             home = Path(entry["codex_home"]).expanduser().resolve()
             if home not in homes.values():
-                homes[home.name] = home
+                name = home.name if home.name not in homes else f"{home.name} ({codex_auth_health.home_id(home)[:8]})"
+                homes[name] = home
     for notice in codex_auth_health.notices(homes):
         key = json.dumps(notice, sort_keys=True)
         if key not in seen:
@@ -111,12 +112,16 @@ def watch(args, state: dict | None) -> int:
                      for account in account_choice.load_config()["accounts"] if account["provider"] == "openai"}
         except ValueError:
             homes = {}
+        default = Path.home() / ".codex"
+        if (default / "logs_2.sqlite").is_file() and default.resolve() not in {home.expanduser().resolve() for home in homes.values()}:
+            homes["default home"] = default
     while True:
         try:
             notices = poll(args.ledger, seen, args.idle_seconds, time.time(),
                            state, args.capacity_state, args.resume_capacity, args.harness, homes)
             for notice in notices:
-                if not notice.get("auth_failure") or json.dumps(notice["auth_failure"], sort_keys=True) not in delivered:
+                auth = notice.get("auth_failure") or notice.get("auth_diagnostic")
+                if not auth or json.dumps(auth, sort_keys=True) not in delivered:
                     print(json.dumps(notice), flush=True)
         except (OSError, ValueError, TypeError) as error:
             print(json.dumps({"error": str(error)}), flush=True)
@@ -125,6 +130,8 @@ def watch(args, state: dict | None) -> int:
                     for notice in notices if notice.get("closeout_request")}
         requests.update(json.dumps(notice["auth_failure"], sort_keys=True)
                         for notice in notices if notice.get("auth_failure"))
+        requests.update(json.dumps(notice["auth_diagnostic"], sort_keys=True)
+                        for notice in notices if notice.get("auth_diagnostic"))
         if args.delivered_state and requests - delivered:
             save_delivered(args.delivered_state, delivered | requests)
             return 0
