@@ -104,6 +104,10 @@ class LaunchplaneEndpoint:
     origin: tuple[str, str, int]
 
 
+class _PublicIdentifier(str):
+    __slots__ = ()
+
+
 def _compact_key(key: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", key.strip().lower())
 
@@ -234,7 +238,7 @@ def assert_public_safe_shape(value: Any) -> None:
         for item in value:
             assert_public_safe_shape(item)
         return
-    if isinstance(value, str) and _redact_token_like(value) != value:
+    if isinstance(value, str) and _redact_token_like(value, identifier=isinstance(value, _PublicIdentifier)) != value:
         raise LaunchplaneSafetyError("unsafe_response_shape")
 
 
@@ -257,7 +261,7 @@ def public_identifier(value: object) -> str:
         or not IDENTIFIER_RE.fullmatch(compact)
     ):
         raise LaunchplaneSafetyError("invalid_response")
-    return compact
+    return _PublicIdentifier(compact)
 
 
 def public_trace_id(value: object) -> str:

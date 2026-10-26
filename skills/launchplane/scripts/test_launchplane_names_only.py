@@ -152,3 +152,21 @@ def test_inventory_limits_and_unusable_responses(kind, case):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
+
+
+@pytest.mark.parametrize("name", ["desk-marker", "helpdesk-ssh", "task-review", "risk-check"])
+def test_ordinary_identifier_survives_names_only_projection(name: str) -> None:
+    response = body("secrets", "testing")
+    response["secrets"][0]["name"] = name
+    code, payload, _ = invoke("secrets", "testing", response)
+    assert code == 0
+    assert payload["result"]["secrets"][0]["name"] == name
+
+
+@pytest.mark.parametrize("name", ["sk-synthetic", "ref/sk-synthetic", "ref:sk-synthetic", "ghp_synthetic"])
+def test_token_like_secret_name_is_rejected_without_output(name: str) -> None:
+    response = body("secrets", "testing")
+    response["secrets"][0]["name"] = name
+    code, payload, _ = invoke("secrets", "testing", response)
+    assert code != 0
+    assert name not in json.dumps(payload)
