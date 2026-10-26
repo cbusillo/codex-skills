@@ -1351,7 +1351,8 @@ reasons in the Launchplane UI.
 (`generic_web_prod_promotion.execute`). Launchplane checks the current evidence
 against the fingerprint, creates no backup, deploys nothing, and records the
 accepted dry-run for this identity, fingerprint and bump. Output keeps the
-per-step statuses and drops artifacts, record ids, target names and error text.
+per-step statuses, including rollback status, and drops artifacts, record ids
+(including rollback deployment ids), target names and error text.
 
 No helper command sends a live promotion. Launchplane's driver route refuses a
 live promotion from an admin's or agent's token, and its workflow-dispatch route
