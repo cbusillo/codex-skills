@@ -99,7 +99,10 @@ def _uncertain(response: object) -> bool:
                     and bool(result["controller_action"]))
     code = summary.get("error_code")
     return not (
-        response.get("status") in {"denied", "unauthorized", "stale", "invalid_request", "invalid", "unavailable"}
+        response.get("status") in {
+            "denied", "unauthorized", "stale", "invalid_request", "invalid", "unavailable",
+            "refused", "conflict", "not_found",
+        }
         and isinstance(code, str) and bool(code)
         and isinstance(summary.get("http_status"), int)
         and (400 <= summary["http_status"] < 500 or code in {

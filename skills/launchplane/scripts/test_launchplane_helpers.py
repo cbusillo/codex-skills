@@ -6484,12 +6484,10 @@ def test_http_refusal_does_not_publish_arbitrary_prose(code: str) -> None:
     assert message not in json.dumps(output)
 
 
-@pytest.mark.parametrize(("code", "message"), [
-    ("restart_refused", "The lane has no settled current deployment."),
-    ("testing_unavailable_ingress_unverified", "The stopped or absent testing copy needs its provider-owned router declaration and current managed listener configuration."),
-])
+@pytest.mark.parametrize("code", ["restart_refused", "testing_unavailable_ingress_unverified"])
 @pytest.mark.parametrize("operation", ["lane-service-restart", "testing-rebuild-dry-run", "testing-rebuild"])
-def test_http_refusal_retains_recognized_service_cause(code: str, message: str, operation: str) -> None:
+def test_http_refusal_retains_recognized_service_cause(code: str, operation: str) -> None:
+    message = next(iter(write_action.SAFE_REFUSAL_MESSAGES[code]))
     error = urllib.error.HTTPError("https://launchplane.example.invalid", 409, "error", Message(),
         io.BytesIO(json.dumps({"error": {"code": code, "message": message}}).encode()))
     output = write_action.summarize_http_error(operation=operation, request={}, exc=error)

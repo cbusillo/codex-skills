@@ -286,7 +286,7 @@ def test_active_operation_conflict_exposes_only_the_pollable_blocker():
     ("idempotency_key_reused", "conflict"),
 ])
 def test_native_rebuild_refusals_preserve_state_without_another_dispatch(command: str, error_code: str, expected: str) -> None:
-    message = "The stopped or absent testing copy needs its provider-owned router declaration and current managed listener configuration."
+    message = next(iter(helper.SAFE_REFUSAL_MESSAGES["testing_unavailable_ingress_unverified"]))
     error = urllib.error.HTTPError(SERVICE_URL, 409, "Conflict", {}, io.BytesIO(json.dumps({
         "trace_id": "launchplane_req_refusal", "error": {"code": error_code, "message": message},
     }).encode()))

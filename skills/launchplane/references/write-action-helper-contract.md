@@ -2198,8 +2198,11 @@ refusals report `refused`; busy targets and idempotency conflicts report
 `conflict`; unsettled mutations report `reconciliation_required`. Only explicit
 stale-evidence codes recommend refreshing the dry-run. A structured 404 reports
 `not_found`, without proving global absence or recovery clearance. A terminal
-`provider_mutation_failed` reports `failed`, preserving the original operation
-rather than recommending another dispatch. Service outages remain `unavailable`;
+`provider_mutation_failed` reports `failed` in this shared projection, preserving
+the original operation rather than recommending another dispatch. Write callers
+that cannot verify the effect of a server error still override it with
+`outcome_unknown`, including native rebuild submission and mutating train passes.
+Service outages remain `unavailable`;
 inspect the original outcome before supported recovery of a write.
 
 Recognized fixed restart and native ingress refusal causes are retained in
