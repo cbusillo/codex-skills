@@ -549,7 +549,9 @@ def test_upstream_exemption_preserves_explicit_client_locks() -> None:
         result = cli.run(args("apply", repo=["owner/upstream"], client_lock=True, client_lock_tags=True,
                               confirm_owner_admin_write=True), client=client, app_id=77)
     assert result["repository_count"] == 1
-    assert [key for _action, key, _identifier in client.writes] == ["client_branches", "client_tags"]
+    assert [key for _action, key, _identifier in client.writes] == [
+        spec.key for spec in github_rulesets.client_lock_specs(77, branches=True, tags=True)
+    ]
     assert github_rulesets.missing_standard_rulesets(client.repos["owner/upstream"]) == list(github_rulesets.required_ruleset_names())
 
 
