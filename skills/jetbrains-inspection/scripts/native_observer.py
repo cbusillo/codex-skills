@@ -84,6 +84,11 @@ class LicenseScanner:
         return self.observed
 
 
+GRADLE_IMPORT_STAGES = {"[Gradle]: Gradle resolve stage finished with success": "resolved",
+                        "[Gradle]: Gradle data import stage finished with success": "data_imported"}
+GRADLE_IMPORT_CANCELLED = "[Gradle]: Gradle resolve stage canceled"
+
+
 class EngineObserver:
     def __init__(self, project, receipt):
         self.project = project
@@ -102,6 +107,11 @@ class EngineObserver:
                     if relative not in self.receipt.setdefault("inspected_files", []):
                         self.receipt["inspected_files"].append(relative)
             return
+        for marker, stage in GRADLE_IMPORT_STAGES.items():
+            if not partial and marker in line:
+                self.receipt.setdefault("gradle_import", {})[stage] = True
+        if GRADLE_IMPORT_CANCELLED in line:
+            raise ObservationError("native_gradle_import_failed")
         plugin = re.search(r"Odoo IDE \(([0-9][\w.+-]*)\)", line)
         if plugin:
             self.receipt["odoo_plugin_version"] = plugin.group(1)

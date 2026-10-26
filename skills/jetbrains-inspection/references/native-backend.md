@@ -36,8 +36,7 @@ Configure the **helper's** shared JSON config at
 ```
 
 `nativeWorkers` holds one entry per product (`pycharm`, `intellij`, `webstorm`);
-each worker's `app` must be that product's distribution. `pycharm` and
-`webstorm` run today. The older single `nativeWorker` object is still read as
+each worker's `app` must be that product's distribution. All three run today. The older single `nativeWorker` object is still read as
 the `pycharm` entry; configure one or the other, not both.
 
 ### WebStorm
@@ -71,6 +70,42 @@ UNKNOWN. `inspect.sh` does not report TypeScript compiler errors
 rule and trace evidence still need a licensed run, and no WebStorm-specific
 healthy licence lines are allowed. `--native-recover-only` recovers the PyCharm
 worker unless `--native-worker` names another.
+
+### IntelliJ IDEA
+
+The `intellij` entry takes `path`, `app` and `cacheRoot` like `pycharm`, plus a
+required absolute `jdk`: a Java home with `bin/java` and a `release` file, of a
+version the project's Gradle build supports. A missing or unusable `jdk` is
+UNKNOWN with its setup step before any custody record.
+
+A selection routes to IntelliJ IDEA when the repository's `ide` (or each owning
+lane's `ide`, without `projectPath`) is IntelliJ IDEA, every file is `.kt`,
+`.kts` or `.java`, and at least one is `.kt` so the Kotlin controls apply. Other
+files, including Groovy `.gradle`, stay UNKNOWN. The repository needs a root
+`build.gradle.kts` or `build.gradle`; the declared Python `prepare` is not used.
+
+The snapshot's `.idea/modules.xml`, `.idea/*.iml`, `.idea/modules/`,
+`.idea/gradle.xml` and `misc.xml` are removed, so a stale tracked model is never
+inspected. The `jdk` is registered as a `JavaSDK` in the worker's SDK table under
+the same journalled lease as the Python SDK, set as the project SDK so the Gradle
+JVM resolves to it without a download, and removed afterwards. The engine gets
+`JAVA_HOME` set to it and a shared `GRADLE_USER_HOME` at `cacheRoot/gradle-home`,
+whose `gradle.properties` limits the detached Gradle daemon's idle life. Stock
+`inspect.sh` then links and imports the root Gradle build, executing the
+repository's build scripts. A cold Gradle cache needs network access on the
+first run, within `--timeout-ms`.
+
+The run counts only when the logs show both `[Gradle]: Gradle resolve stage
+finished with success` and `[Gradle]: Gradle data import stage finished with
+success`; otherwise it is UNKNOWN with `native_gradle_import_unproven`, or
+`native_gradle_import_failed` after a cancelled import or an engine error before
+the data import finished. Kotlin and Java tools must execute on each selected
+file of their language. Two Kotlin control pairs (`INTELLIJ_CANARY_FILES` and
+`INTELLIJ_CLEAN_TWINS` in `native_coverage.py`) are planted beside the first
+selected `.kt` file, inside its source root: an unused variable with a used
+twin, and an unresolved symbol with a stdlib-resolving twin, which proves the
+imported model resolves that source root. Rule ids, the Gradle log lines and
+timing still need a licensed run to qualify.
 
 The standard `JETBRAINS_INSPECTION_GLOBAL_CONFIG` override selects a helper
 config. `--native-worker` (or `JETBRAINS_INSPECTION_NATIVE_WORKER`), `--ide-app`
@@ -127,7 +162,7 @@ uv run <skill-dir>/scripts/jb-inspect.py agent-inspect \
 ```
 
 PyCharm selections support `.py`, `.yaml`, `.yml` and Odoo `.xml` in a root PyCharm model;
-WebStorm selections are listed above. Unsupported
+WebStorm and IntelliJ IDEA selections are listed above. Unsupported
 languages, filters or nested models remain UNKNOWN with a supported next step.
 Use explicit source files when a broader scope also contains documentation or
 other file types. Native assessment requires the same declared trusted roots

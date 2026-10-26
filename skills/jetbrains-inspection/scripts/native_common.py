@@ -191,11 +191,14 @@ def lane_gaps(host, config, selected, product_key="pycharm"):
     return []
 
 
+ALTERNATE_PRODUCT_KEYS = ("webstorm", "intellij")
+
+
 def configured_product_key(host, config, selected):
     if config.get("lanes"):
-        return "webstorm" if selected and not lane_gaps(host, config, selected, "webstorm") else "pycharm"
+        return next((key for key in ALTERNATE_PRODUCT_KEYS if selected and not lane_gaps(host, config, selected, key)), "pycharm")
     product = host.product_for_selector(config.get("ide")) if isinstance(config.get("ide"), str) else None
-    return "webstorm" if product is host.IDE_PRODUCTS["webstorm"] else "pycharm"
+    return next((key for key in ALTERNATE_PRODUCT_KEYS if product is host.IDE_PRODUCTS[key]), "pycharm")
 
 
 def npm_lockfile(root):

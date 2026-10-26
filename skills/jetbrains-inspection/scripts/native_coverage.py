@@ -35,11 +35,18 @@ UNIVERSAL_TOOLS = frozenset({
 
 WEBSTORM_CANARY_FILES = {"JSUnusedLocalSymbols": "unused_local.ts"}
 WEBSTORM_CLEAN_TWINS = {"JSUnusedLocalSymbols": "used_local.ts"}
+INTELLIJ_UNUSED_RULE = "UnusedVariable"
+INTELLIJ_RESOLUTION_RULE = "Annotator"
+INTELLIJ_CANARY_FILES = {INTELLIJ_UNUSED_RULE: "unused_variable.kt", INTELLIJ_RESOLUTION_RULE: "unresolved_symbol.kt"}
+INTELLIJ_CLEAN_TWINS = {INTELLIJ_UNUSED_RULE: "used_variable.kt", INTELLIJ_RESOLUTION_RULE: "resolved_symbol.kt"}
 
 NATIVE_PROVEN_SUFFIXES = frozenset({".py", ".xml", ".yaml", ".yml"})
 TYPESCRIPT_SUFFIXES = frozenset({".ts", ".tsx", ".mts", ".cts"})
 SCRIPT_SUFFIXES = TYPESCRIPT_SUFFIXES | {".js", ".jsx", ".mjs", ".cjs"}
 WEBSTORM_PROVEN_SUFFIXES = SCRIPT_SUFFIXES | {".json"}
+KOTLIN_SUFFIXES = frozenset({".kt", ".kts"})
+JAVA_SUFFIXES = frozenset({".java"})
+INTELLIJ_PROVEN_SUFFIXES = KOTLIN_SUFFIXES | JAVA_SUFFIXES
 SCRIPT_LANGUAGES = frozenset({"javascript", "ecmascript 6"})
 TYPESCRIPT_LANGUAGES = frozenset({"typescript", "typescript jsx"})
 UNPROVEN_LANGUAGES = frozenset({"css", "scss", "sass", "less", "javascript", "typescript", "html", "json", "sql", "java", "kotlin"})
@@ -65,6 +72,16 @@ def web_language_suffixes(tool: str, language: str | None) -> frozenset[str] | N
     return None
 
 
+def jvm_language_suffixes(tool: str, language: str | None) -> frozenset[str] | None:
+    if tool in INTELLIJ_CANARY_FILES or language == "kotlin":
+        return KOTLIN_SUFFIXES
+    if language == "java":
+        return JAVA_SUFFIXES
+    if language == "uast":
+        return INTELLIJ_PROVEN_SUFFIXES
+    return None
+
+
 def applicable_files(tool: str, selected: set[str], language: str | None = None, *, scope: str = "files",
                      proven_suffixes: frozenset[str] = NATIVE_PROVEN_SUFFIXES) -> set[str] | None:
     """None means unknown applicability, never permission to omit the tool."""
@@ -85,9 +102,9 @@ def applicable_files(tool: str, selected: set[str], language: str | None = None,
         return set()
     if tool == "Eslint" and any(Path(path).suffix.casefold() in SCRIPT_SUFFIXES for path in selected):
         return None
-    web_suffixes = web_language_suffixes(tool, language)
-    if web_suffixes is not None and web_suffixes <= proven_suffixes:
-        return {path for path in selected if Path(path).suffix.casefold() in web_suffixes}
+    for language_suffixes in (web_language_suffixes(tool, language), jvm_language_suffixes(tool, language)):
+        if language_suffixes is not None and language_suffixes <= proven_suffixes:
+            return {path for path in selected if Path(path).suffix.casefold() in language_suffixes}
     # These established profile families can be absent from PyCharm's registry;
     # their applicability does not depend on registration succeeding.
     if tool.startswith("Css") or tool == "Eslint" or language in UNPROVEN_LANGUAGES:
