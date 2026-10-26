@@ -41,13 +41,13 @@ def related_sessions_match(text: str, session: str) -> bool:
             fence = opener.group(1)
             continue
         fields = (
-            r"(?:^[ \t]*(?:[-*+][ \t]+)?|(?<=[(;|])[ \t]*"
-            r"|\b(?=Native[ \t_-]*Session|(?:Session|Thread)[ \t_-]*ID\b))"
             r"\b(?:Native[ \t_-]*)?(?:Session(?:[ \t_-]*ID)?|Thread[ \t_-]*ID)\b"
             r"(?:[ \t]*[:=][ \t]*|[ \t]+[—-][ \t]+)([^\s,;|]+)"
             r"|\|[ \t]*(?:Session(?:[ \t_-]*ID)?|Thread[ \t_-]*ID)[ \t]*\|[ \t]*([^\s|]+)"
         )
         for field in re.finditer(fields, line, re.IGNORECASE):
+            if claim.human_session_reference(line, field.start()):
+                continue
             value = (field.group(1) or field.group(2)).strip("()<>")
             if not re.fullmatch(rf"{re.escape(session)}\.?", value):
                 return False

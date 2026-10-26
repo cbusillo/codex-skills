@@ -287,6 +287,15 @@ def ownership_text(text: str, *, strip_quotes: bool = True) -> str:
     return re.sub(r"\x00(\d+)\x00", lambda match: code[int(match.group(1))], text)
 
 
+def human_session_reference(text: str, position: int) -> bool:
+    if not re.match(r"session[ \t]*:[ \t]*https?://", text[position:], re.IGNORECASE):
+        return False
+    prefix = text[:position]
+    return bool(re.search(r"\w[ \t]+$", prefix)) and not bool(re.search(
+        r"\b(?:Native|Claimed by \S+)[ \t]+$", prefix, re.IGNORECASE,
+    ))
+
+
 def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = None) -> bool:
     """Ignore explicit absence only at the assertion, never a whole status."""
     text = "\n".join(text.splitlines())
@@ -324,6 +333,8 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
         r"\s+(?:is|are|was|were|has been|have been)|no (?:implementation |execution )?ownership)\s*"
     )
     for match in re.finditer(r"owned by|claimed by|\bworker\s*:|\bsession\s*:", text, re.IGNORECASE):
+        if human_session_reference(text, match.start()):
+            continue
         raw_prefix = re.split(boundary, text[:match.start()])[-1]
         raw_prefix = raw_prefix.lstrip(" -*+").rstrip()
         prefix = re.sub(r"^[^:]+:\s*", "", raw_prefix)

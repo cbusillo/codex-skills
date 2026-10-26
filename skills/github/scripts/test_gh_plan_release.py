@@ -1097,11 +1097,20 @@ class ReleaseTests(ReleaseHarness):
 
     def test_explicit_session_fields_keep_conflicting_and_malformed_values_refused(self) -> None:
         for field in ("Session: {}", "- Session: {}", "Handoff; Session: {}",
-                      "Ownership record Native session ID: {}", "Thread ID: {}", "| Session | {} |"):
+                      "Ownership record Native session ID: {}", "Thread ID: {}", "| Session | {} |",
+                      "Claimed by trial-b Session: {}", "Claimed by trial-b, Session: {}",
+                      "1. Session: {}", "Worker: trial-b. Session: {}", "Handoff: Session: {}"):
             for value in ("other-session", "https://example.test/admin", "unknown"):
                 with self.subTest(field=field, value=value):
                     self.assertFalse(release.related_sessions_match(field.format(value), "session-b"))
             self.assertTrue(release.related_sessions_match(field.format("session-b"), "session-b"))
+
+    def test_human_session_link_is_not_a_standalone_ownership_assertion(self) -> None:
+        self.assertFalse(CLAIM.has_ownership_assertion(
+            "Next actor: Chris uses his existing administrator session: https://example.test/admin"))
+        for field in ("Session: https://example.test/admin", "Native session: https://example.test/admin",
+                      "Claimed by worker Session: https://example.test/admin"):
+            self.assertTrue(CLAIM.has_ownership_assertion(field))
 
     def test_related_source_followup_ignores_fenced_session_examples(self):
         for fence in ("```", "~~~"):
