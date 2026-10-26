@@ -157,6 +157,22 @@ then remove that specific plist; catalog bindings remain available.
 See [Codex skill discovery](https://learn.chatgpt.com/docs/build-skills) for
 current Codex locations and plugin-owned alternatives.
 
+### Upstream frontend design skill
+
+[`frontend-design`](skills/frontend-design/SKILL.md) is Anthropic's unmodified
+design guidance, installed with Codex's built-in `skill-installer` from this
+[`anthropics/skills` commit](https://github.com/anthropics/skills/tree/dbd4588f9e1033efb41dad4bef2f7947c8993d44/skills/frontend-design). Its
+[Apache 2.0 license](skills/frontend-design/LICENSE.txt) travels with it.
+The catalog binding makes it available on both harnesses; use the catalog's
+[invocation names](#claude-code).
+
+To refresh, ask Codex's `skill-installer` to install `skills/frontend-design`
+from `anthropics/skills` at a reviewed upstream commit into a fresh staging
+directory using `--dest`, then replace the upstream files together unedited,
+update the commit link, and use the catalog's normal PR checks. The installer
+refuses an existing destination. Stage in a task worktree when its default
+destination resolves to the catalog runtime checkout.
+
 ### Interactive account commands
 
 The installer ships `skills/supervisor/scripts/interactive-accounts.zsh` through
