@@ -322,8 +322,8 @@ def update(path: Path, *, seed: tuple[int, list[str]] | None = None, allocate: b
         repository = state.get("counter_repository") if allocate else configured_repository
         if state.get("counter_repository") and state["counter_repository"] != configured_repository:
             raise ValueError("Restore the recorded counter repository in [questions].queue before allocating")
-        if allocate and repository and not state.get("counter_commit"):
-            raise ValueError("Shared activation is pending; reconcile seed before allocating a question")
+        if allocate and repository and (not state.get("counter_commit") or state.get("counter_seed_pending")):
+            raise ValueError("Shared seed is pending; reconcile it before allocating a question")
         if restore_from is not None and (allocate or not repository or not confirm_prior_counters_complete):
             raise ValueError("Counter restoration requires seed, a configured queue and --confirm-prior-counters-complete after reconciling pending writes")
         if allocate:
@@ -341,11 +341,13 @@ def update(path: Path, *, seed: tuple[int, list[str]] | None = None, allocate: b
             for snapshot in snapshots:
                 state.setdefault("questions", {}).update(snapshot.get("questions", {}))
             state["counter_repository"] = repository
+            state["counter_seed_pending"] = True
             save_state(path, state)
             allocation = reserve_question(state["last_id"], None, repository,
                 create=confirm_prior_counters_complete and not known_history, assignments=imported, restore_from=restore_from)
             number = allocation.number
             state.update(last_id=max(state["last_id"], number), counter_repository=repository, counter_commit=allocation.commit_sha)
+            state.pop("counter_seed_pending", None)
         if question_url is not None:
             state["questions"][question_url] = number
         save_state(path, state)

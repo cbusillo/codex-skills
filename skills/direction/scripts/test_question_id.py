@@ -153,6 +153,14 @@ class QuestionCounterTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 counter.update(self.path)
             self.assertEqual(reserve.call_count, 1)
+            state["counter_commit"] = "previously-verified"
+            state.pop("counter_seed_pending", None)
+            self.path.write_text(json.dumps(state))
+            with self.assertRaises(ValueError):
+                counter.update(self.path, seed=self.seed, allocate=False)
+            with self.assertRaises(ValueError):
+                counter.update(self.path)
+            self.assertEqual(reserve.call_count, 2)
 
     def test_bootstrap_imports_every_prior_counter_without_changing_old_assignments(self) -> None:
         current = {"last_id": self.seed[0], "questions": {"https://example.test/a": self.seed[0]}}
