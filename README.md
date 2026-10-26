@@ -160,22 +160,18 @@ current Codex locations and plugin-owned alternatives.
 ### Upstream frontend design skill
 
 [`frontend-design`](skills/frontend-design/SKILL.md) is Anthropic's unmodified
-design guidance, installed with Codex's built-in `skill-installer` from
-[`anthropics/skills`](https://github.com/anthropics/skills/tree/dbd4588f9e1033efb41dad4bef2f7947c8993d44/skills/frontend-design)
-at commit `dbd4588f9e1033efb41dad4bef2f7947c8993d44`. Its
+design guidance, installed with Codex's built-in `skill-installer` from this
+[`anthropics/skills` commit](https://github.com/anthropics/skills/tree/dbd4588f9e1033efb41dad4bef2f7947c8993d44/skills/frontend-design). Its
 [Apache 2.0 license](skills/frontend-design/LICENSE.txt) travels with it.
-The catalog binding makes it available on both harnesses; invoke
-`$frontend-design` in Codex. Claude Code users who already installed
-`frontend-design@claude-plugins-official` can keep using that plugin.
+The catalog binding makes it available on both harnesses; use the catalog's
+[interactive invocation](#interactive-invocation) names.
 
 To refresh, ask Codex's `skill-installer` to install `skills/frontend-design`
 from `anthropics/skills` at a reviewed upstream commit into a fresh staging
-directory using `--dest`. Compare that directory with `skills/frontend-design`,
-replace the upstream files together without editing their guidance, update the
-commit above, and send the change through the catalog's normal PR checks.
-The installer refuses an existing destination. Keep its default destination
-untouched when it resolves to the catalog runtime checkout; stage in a task
-worktree instead. There is no separate updater or local design wrapper.
+directory using `--dest`, then replace the upstream files together unedited,
+update the commit link, and use the catalog's normal PR checks. The installer
+refuses an existing destination. Stage in a task worktree when its default
+destination resolves to the catalog runtime checkout.
 
 ### Interactive account commands
 
