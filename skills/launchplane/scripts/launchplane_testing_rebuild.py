@@ -40,8 +40,8 @@ def add_parser(subparsers: Any) -> None:
 def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[str, object]]:
     if args.command == COMMAND:
         h._require_idempotency(args)
-    product = h.public_identifier(h._required_argument(args, "product"))
-    artifact = h.public_identifier(h._required_argument(args, "artifact_id"))
+    product = h._required_argument(args, "product")
+    artifact = h._required_argument(args, "artifact_id")
     source = h._required_argument(args, "source_git_ref")
     reason = h._required_argument(args, "reason")
     if len(reason) > 1000:
@@ -49,6 +49,8 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
     for field, value in (("product", product), ("artifact_id", artifact)):
         if not h.PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(value):
             raise ValueError("invalid_" + field)
+    product = h.public_identifier(product)
+    artifact = h.public_identifier(artifact)
     if re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", source) is None:
         raise ValueError("immutable_source_commit_required")
     replacement: dict[str, object] = {

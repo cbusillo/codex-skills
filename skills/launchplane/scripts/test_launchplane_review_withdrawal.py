@@ -9,6 +9,8 @@ import json
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
+import pytest
+
 from test_launchplane_helpers import write_action as h
 
 HEAD = "a" * 40
@@ -18,8 +20,8 @@ REASON = "PRIVATE_REASON_SENTINEL Director rerouted the PR."
 DECISION = "https://github.com/example/direction/issues/1#issuecomment-20"
 
 
-def argv(mode="dry-run", evidence=""):
-    args = ["product-review-withdrawal-" + mode, "--product", "site", "--repo", "example/site", "--pr", "42", "--head", HEAD, "--reason", REASON, "--director-decision", DECISION]
+def argv(mode="dry-run", evidence="", repo="example/site"):
+    args = ["product-review-withdrawal-" + mode, "--product", "site", "--repo", repo, "--pr", "42", "--head", HEAD, "--reason", REASON, "--director-decision", DECISION]
     if mode != "dry-run":
         args += ["--expected-plan-digest", PLAN, "--idempotency-key", OPERATION_KEY]
     if mode == "apply":
@@ -27,10 +29,10 @@ def argv(mode="dry-run", evidence=""):
     return args
 
 
-def response(applied=False, readback=False):
+def response(applied=False, readback=False, repo="example/site"):
     result = {"applied": applied, "plan_sha256": PLAN, "head_sha": HEAD}
     if applied:
-        result.update(history_url="https://github.com/example/site/pull/42#issuecomment-100", history_marker="<!-- launchplane:review-withdrawal:" + "c" * 64 + " -->")
+        result.update(history_url=f"https://github.com/{repo}/pull/42#issuecomment-100", history_marker="<!-- launchplane:review-withdrawal:" + "c" * 64 + " -->")
     if readback:
         result["readback_matches"] = True
     return {"status": "accepted", "trace_id": "trace-test", "records": {}, "result": result}
@@ -43,19 +45,23 @@ def invoke(args, replies):
     return code, json.loads(output.getvalue()), post.call_args_list
 
 
-def test_dry_run_and_apply_readback_bind_exact_request(tmp_path):
-    code, dry, calls = invoke(argv(), [response()])
+@pytest.mark.parametrize("repo", ["example/site", "example/kiosk-app"])
+def test_dry_run_and_apply_readback_bind_exact_request(tmp_path, repo):
+    code, dry, calls = invoke(argv(repo=repo), [response(repo=repo)])
     assert code == 0 and calls[0].kwargs["body"]["mode"] == "dry-run"
     assert not calls[0].kwargs.get("idempotency_key")
     assert REASON not in json.dumps(dry)
     evidence = tmp_path / "dry.json"
     evidence.write_text(json.dumps(dry))
-    code, applied, calls = invoke(argv("apply", str(evidence)), [response(True), response(True, True)])
+    code, applied, calls = invoke(argv("apply", str(evidence), repo=repo), [response(True, repo=repo), response(True, True, repo=repo)])
     assert code == 0 and applied["result"]["readback_matches"] is True
     assert [call.kwargs["body"]["mode"] for call in calls] == ["apply", "readback"]
     assert all(call.kwargs["idempotency_key"] == OPERATION_KEY for call in calls)
     assert calls[0].kwargs["body"]["director_decision_url"] == DECISION
     assert REASON not in json.dumps(applied)
+    assert applied["result"]["history_url"] == response(True, repo=repo)["result"]["history_url"]
+    code, readback, calls = invoke(argv("readback", repo=repo), [response(True, True, repo=repo)])
+    assert code == 0 and readback["result"]["readback_matches"] is True and len(calls) == 1
 
 
 def test_changed_reason_refuses_before_network(tmp_path):
@@ -155,15 +161,6 @@ def test_recovery_classifier_preserves_receipts_and_distinguishes_other_callers(
     assert RECOVERY["replan_required"] in result["summary"]["recommendation"]
 
 
-
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__]))
-
-
-def test_withdrawal_accepts_ordinary_repository_identifier() -> None:
-    args = argv()
-    args[args.index("--repo") + 1] = "example/kiosk-app"
-    code, payload, calls = invoke(args, [response()])
-    assert code == 0 and len(calls) == 1
-    assert payload["request"]["repository"] == "example/kiosk-app"

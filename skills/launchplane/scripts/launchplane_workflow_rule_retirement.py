@@ -112,11 +112,7 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
 def _selector(h: Any, value: object) -> str:
     if not isinstance(value, str) or SELECTOR_RE.fullmatch(value) is None:
         raise h.LaunchplaneSafetyError("invalid_response")
-    try:
-        return h.public_identifier(value)
-    except h.LaunchplaneSafetyError:
-        h.assert_public_safe_shape(value)
-        return value
+    return h.public_identifier(value, pattern=SELECTOR_RE)
 
 
 def _decimal(h: Any, value: object) -> str:

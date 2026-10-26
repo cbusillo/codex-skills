@@ -79,7 +79,7 @@ def project(h: Any, response: object, body: dict[str, object]) -> dict[str, obje
         prefix = f"https://github.com/{body['repository']}/pull/{body['pull_request']}#issuecomment-"
         if not isinstance(url, str) or not url.casefold().startswith(prefix.casefold()) or not re.fullmatch(r"[1-9][0-9]*", url[len(prefix):]):
             raise h.LaunchplaneSafetyError("invalid_response")
-        projected["history_url"] = h.public_url(url)
+        projected["history_url"] = h.public_identifier(h.public_url(url))
     if "replan_required" in result:
         if type(result["replan_required"]) is not bool or result["applied"]:
             raise h.LaunchplaneSafetyError("invalid_response")

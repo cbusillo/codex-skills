@@ -256,16 +256,18 @@ def test_client_timeout_is_a_read_budget_diagnostic():
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
 
 
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))
-
-
 def test_scope_keeps_ordinary_repository_and_context_identifiers() -> None:
     reply = response()
     scope = reply["result"]["selected_rules"][0]["scope"]
-    scope.update(repository="owner/helpdesk-app", contexts=["kiosk-site"])
+    scope.update(repository="owner/helpdesk-app", contexts=["kiosk-site", "helpdesk-*"],
+        workflow_refs=["owner/kiosk-app/.github/workflows/*.yml@refs/heads/*"])
     code, payload, _, _ = invoke(reply=reply)
     assert code == 0
     projected = payload["result"]["selected_rules"][0]["scope"]
     assert projected["repository"] == scope["repository"]
     assert projected["contexts"] == scope["contexts"]
+    assert projected["workflow_refs"] == scope["workflow_refs"]
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))
