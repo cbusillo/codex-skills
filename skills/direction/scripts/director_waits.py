@@ -85,7 +85,7 @@ def wait_rows(repo, issues, terms, owner, now, discussions=None, trusted=None, e
         wait_record, review = resolution.record, resolution.review
         item.update({"structured_wait": wait_record} if wait_record else {"wait_review_required": True})
         source = resolution.source or {}
-        verified = source.get("updated_at") or source.get("created_at")
+        verified = source.get("created_at")
         last_verified = parse_date(verified)
         if review and (review == "structured_wait_review" or review.startswith("structured_wait_unreadable")):
             # A record that cannot be read may hide or release a hold, and a trusted

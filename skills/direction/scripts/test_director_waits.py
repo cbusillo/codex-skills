@@ -103,7 +103,8 @@ class WaitTests(unittest.TestCase):
         headingless = {**issue(extra="Waiting since: 2026-10-01\nLast verified: 2026-10-05"),
                        "body": "Waiting for: Director to choose\nWaiting since: 2026-10-01\nLast verified: 2026-10-05"}
         rows = director_waits.wait_rows("admin/repo", [headingless,
-            issue(2, "product owner Client to accept"), issue(3, "owner to choose")],
+            issue(2, "product owner Client to accept"), issue(3, "owner to choose"),
+            issue(4, "upstream owner to merge"), issue(5, "code owner review")],
             ["admin", "Director", "owner"], "admin", NOW)
         self.assertEqual([row["number"] for row in rows], [1, 3])
         self.assertEqual(rows[0]["wait_age_days"], 8)
@@ -222,6 +223,7 @@ class StructuredWaitTests(unittest.TestCase):
                     sample["updated_at"] = "2026-10-08T12:00:00Z"
                     hold = wait_comment("owner", waiting_for="Director to approve; since 2026-10-01", ends_when="Approved")
                     hold["created_at"] = stamp
+                    hold["updated_at"] = "2026-10-08T12:00:00Z"
                     unrelated = {"user": {"login": "owner"}, "body": "Progress", "created_at": "2026-10-08T12:00:00Z"}
                     untrusted = {**hold, "user": {"login": "mallory"}, "created_at": "2026-10-08T12:00:00Z"}
                     row = self.collect_one(sample, [hold, unrelated, untrusted])["waits"][0]
@@ -233,9 +235,10 @@ class StructuredWaitTests(unittest.TestCase):
 
     def test_body_record_uses_its_source_timestamp_and_explicit_start(self) -> None:
         sample = issue(extra="Waiting since: 2026-10-01\nLast verified: 2026-10-08")
-        sample.update(user={"login": "owner"}, updated_at="2026-09-30T12:00:00Z")
+        sample.update(user={"login": "owner"}, created_at="2026-09-30T12:00:00Z", updated_at="2026-10-08T12:00:00Z")
         sample["body"] += "\n" + wait_comment("owner", waiting_for="Director to approve", ends_when="Approved")["body"]
-        row = self.collect_one(sample, [])["waits"][0]
+        unrelated = {"user": {"login": "mallory"}, "body": "Progress", "created_at": sample["updated_at"]}
+        row = self.collect_one(sample, [unrelated])["waits"][0]
         self.assertTrue(row["possibly_stale"])
         self.assertEqual(row["wait_age_days"], 8)
         self.assertEqual(row["staleness_basis"], "verification_predates_wait")

@@ -238,8 +238,8 @@ shared human-attention classifier locally with the optional people index for
 the Director's names. This reads wait records
 across repositories; it does not audit their direction files or milestones.
 Report every wait and its `wait_age_days` (unknown without an explicit start).
-`last_verified` comes from the trusted structured wait record's source timestamp
-(comment or issue body), never `Last verified` prose. `possibly_stale` flags a
+`last_verified` comes from the trusted structured wait record's source creation time
+(comment, or conservatively the issue creation time for a body record), never `Last verified` prose. `possibly_stale` flags a
 missing record timestamp or verification before the wait began; `staleness_basis`
 explains which. A wait verified after it began is not stale merely because it is older. `verification_age_days` exposes old
 verification even when the wait start is unknown; there is no automatic age
