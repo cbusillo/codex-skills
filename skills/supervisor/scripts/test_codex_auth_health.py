@@ -5,6 +5,7 @@
 
 import asyncio
 import contextlib
+import importlib
 import io
 import json
 import os
@@ -14,14 +15,21 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock, patch
 
 import account_choice
 import codex_auth_health as health
 import codex_idle_watch
 import codex_session_proxy
-import github_plan_closure
 import interactive_accounts
+
+closure = importlib.import_module("github_plan_closure")
+
+
+def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    return patch.object(target, name, *args, **kwargs)
+
 
 MESSAGES = {
     "attempt": "Refreshing token",
@@ -60,7 +68,7 @@ class AuthHealthTests(unittest.TestCase):
         }
         self.good = {**self.account, "name": "healthy", "env": {"CODEX_HOME": str(self.root / "healthy")}, "match_value": "Healthy"}
         self.config = {"accounts": [self.account, self.good]}
-        self.snapshot = {
+        self.snapshot: dict[str, Any] = {
             "schemaVersion": 1,
             "accounts": [
                 {"provider": "openai", "id": "openai-a", "label": "Failed"},
@@ -135,17 +143,22 @@ class AuthHealthTests(unittest.TestCase):
     def test_first_error_is_preserved_before_native_read_and_no_credentials_are_opened(self) -> None:
         self.failure()
         self.append("attempt", body="Refreshing token secret=DO-NOT-COPY")
+        other_process = "pid:55:01234567-89ab-cdef-0123-456789abcdef"
+        with sqlite3.connect(self.database) as connection:
+            connection.execute(
+                "INSERT INTO logs VALUES (-1, 0, 0, 'INFO', 'codex_tui::client', ?, ?)", (other_process, "DO-NOT-COPY")
+            )
         auth = self.home / "auth.json"
         auth.write_text("opaque synthetic credential")
         original_open = Path.open
 
-        def guarded_open(path: Path, *args: object, **kwargs: object) -> object:
+        def guarded_open(path: Path, *args: Any, **kwargs: Any) -> Any:
             self.assertNotEqual(path, auth)
             return original_open(path, *args, **kwargs)
 
         def check_capture(home: Path) -> health.AuthStatus:
-            journal = home / "skill-data/supervisor-auth/evidence.jsonl"
-            self.assertIn("expired", journal.read_text())
+            captured_journal = home / "skill-data/supervisor-auth/evidence.jsonl"
+            self.assertIn("expired", captured_journal.read_text())
             return self.failed_probe(home)
 
         self.probe.side_effect = check_capture
@@ -156,6 +169,19 @@ class AuthHealthTests(unittest.TestCase):
         self.assertNotIn("DO-NOT-COPY", journal.read_text())
         self.assertNotIn("opaque synthetic credential", journal.read_text())
         self.assertEqual(journal.stat().st_mode & 0o777, 0o600)
+        batches = [json.loads(line) for line in journal.read_text().splitlines() if line]
+        self.assertTrue(any(other_process in batch["home_log_processes"] for batch in batches))
+
+    def test_evidence_symlink_cannot_read_or_modify_a_credential_file(self) -> None:
+        directory = self.home / "skill-data/supervisor-auth"
+        directory.mkdir(parents=True)
+        credential = self.home / "auth.json"
+        credential.write_text("synthetic credential")
+        (directory / "evidence.jsonl").symlink_to(credential)
+        self.failure()
+        self.assertIn("diagnostic", health.observe(self.home))
+        self.assertEqual(credential.read_text(), "synthetic credential")
+        self.probe.assert_not_called()
 
     def test_reused_then_blocking_failure_remains_in_journal_after_rotation(self) -> None:
         self.failure("reused")
@@ -280,7 +306,7 @@ class AuthHealthTests(unittest.TestCase):
         execute.assert_not_called()
         interactive_accounts.launch("codex", ["login"])
         execute.assert_called_once()
-        with patch.object(github_plan_closure, "register_proxy") as register:
+        with patch_attr(closure, "register_proxy") as register:
             with self.assertRaises(ValueError):
                 asyncio.run(codex_session_proxy.run_client(self.home, ["codex"]))
         register.assert_not_called()

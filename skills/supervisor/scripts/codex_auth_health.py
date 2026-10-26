@@ -118,6 +118,17 @@ def process_inventory() -> list[dict]:
     return processes
 
 
+def recorded_processes(home: Path) -> list[str]:
+    deadline = time.monotonic() + 1
+    with sqlite3.connect((home / "logs_2.sqlite").as_uri() + "?mode=ro", uri=True, timeout=0.1) as connection:
+        connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+        return [
+            row[0]
+            for row in connection.execute("SELECT DISTINCT process_uuid FROM logs")
+            if isinstance(row[0], str) and PROCESS.fullmatch(row[0])
+        ]
+
+
 def capture(home: Path, current: list[dict]) -> list[dict]:
     directory = home / "skill-data/supervisor-auth"
     journal = directory / "evidence.jsonl"
@@ -138,7 +149,19 @@ def capture(home: Path, current: list[dict]) -> list[dict]:
                     process_error = None
                 except (OSError, subprocess.SubprocessError):
                     processes, process_error = [], "process_inventory_unavailable"
-                batch = {"captured_ns": time.time_ns(), "events": added, "processes": processes, "process_error": process_error}
+                try:
+                    home_processes = recorded_processes(home)
+                    home_process_error = None
+                except (OSError, sqlite3.Error):
+                    home_processes, home_process_error = [], "home_process_inventory_unavailable"
+                batch = {
+                    "captured_ns": time.time_ns(),
+                    "events": added,
+                    "processes": processes,
+                    "process_error": process_error,
+                    "home_log_processes": home_processes,
+                    "home_process_error": home_process_error,
+                }
                 with os.fdopen(os.open(journal, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600), "a") as output:
                     output.write("\n" + json.dumps(batch) + "\n")
                     output.flush()
@@ -201,8 +224,8 @@ def read_native_status(home: Path) -> AuthStatus:
         pid = peer_pid(connection.socket)
         identity = daemon_identity(home, pid)
 
-        def request(ident: int, method: str, params: dict) -> dict:
-            connection.send(json.dumps({"id": ident, "method": method, "params": params}))
+        def request(ident: int, rpc_method: str, params: dict) -> dict:
+            connection.send(json.dumps({"id": ident, "method": rpc_method, "params": params}))
             while True:
                 message = json.loads(connection.recv(timeout=max(0.001, deadline - time.monotonic())))
                 if message.get("id") == ident:
