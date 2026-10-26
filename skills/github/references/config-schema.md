@@ -327,51 +327,32 @@ Common top-level keys:
   [merge-train policy documentation](https://github.com/cbusillo/launchplane/blob/main/docs/merge-train-policy.md)
   describes its Actions runner entrypoints. Repository `docs` may point to
   those sources; do not copy runner defaults or response-field paths into config.
-- `jetbrains`: preferred IDE inspection target when it is not obvious. Use
-  `ide` for the macOS app name, `mainWorktreePath` for the canonical checkout
-  path when linked worktrees exist, `openProjectPath` for the repo-relative path
-  to open, `worktreeStrategy` for current-worktree safety, and
-  `scopePreference` for the default inspection scope.
+- `jetbrains`: `scopePreference` sets the default inspection scope when
+  `qualityGate.inspection` does not.
 - `qualityGate.inspection`: repository readiness policy for JetBrains checks.
   Use `ide`, `profile`, and `scopePreference` for the required target, named
-  inspection profile, and scope. Optional `prepare` may be an exact idempotent
-  command string or a structured `python` object. Structured Python preparation
-  resolves the skill-owned project helper, creates a worktree-local `.venv` and
-  `.idea` model. Use `sync` for a root Python project or `pep723Scripts` for
-  standalone scripts; [inspection configuration](../../jetbrains-inspection/references/inspection-config.md)
-  owns the dependency-source options, bounds, conflicts and receipt validation.
-  `projectPath` inside the Python object prepares an existing nested project
-  without replacing the root JVM model; its generated and input paths become
-  relative to that directory. The Python lane uses the same `projectPath`. Put
-  `requiredGeneratedState` inside the structured `python` object; command-string
-  preparation retains the outer sibling field for backward compatibility.
-  `agent-inspect`, `inspect`, and `inspect-closeout` execute preparation in the
-  exact target worktree before IDE lifecycle open/claim, but only when the
-  worktree is under a configured trusted root. Generated-state paths are a
-  bounded array of repository-relative paths that must exist before a successful
-  preparation can proceed or be reused from its durable receipt.
-  The helper executes the validated argv without a shell, applies a dedicated
-  timeout, records a bounded receipt, and fails closed on nonzero exit, timeout,
-  tracked worktree mutation, hidden index mutation, missing generated state,
-  recursion, or untrusted roots. Use `--skip-preparation` only after running
-  the command manually, and `--force-preparation` to refresh a valid receipt.
-  For mixed-language repositories, use ordered `lanes` instead of `ide`.
+  inspection profile, and scope. Optional structured `prepare.python` tells the
+  native PyCharm worker how to build the Python environment inside its private
+  snapshot; use `sync` for a root Python project or `pep723Scripts` for
+  standalone scripts. [Inspection configuration](../../jetbrains-inspection/references/inspection-config.md)
+  owns the options, bounds and conflicts. A command string or nested
+  `projectPath` is not run, and native assessment of those selections is UNKNOWN.
+  `coveredBy` maps an inspection a headless run cannot prove to the repository
+  gate that covers it. For mixed-language repositories, use ordered `lanes` instead of `ide`.
   Each lane requires a unique `id`, an `ide`, and a non-empty `include` array;
   `required` defaults to `true`, `exclude` defaults to an empty array, and an
-  optional repository-relative `projectPath` routes the lane to a nested IDE
-  project. Selected files must remain inside that project directory.
+  optional repository-relative `projectPath` marks a nested project, whose files
+  native workers do not inspect. Selected files must remain inside that project
+  directory.
   Patterns are repository-relative POSIX globs. The first lane whose `include`
   matches owns the file; a matching `exclude` removes that file from ordinary
   changed-file, directory, or whole-project readiness instead of allowing it to
   fall through to a later lane. An explicit `files` scope still assigns the
   file to its lane and records the exclusion override so deliberate red-lane
   smoke fixtures remain runnable. The helper records excluded and unmatched
-  selected files, skips empty lanes without
-  opening an IDE, executes non-empty lanes sequentially with exact `files`
-  scopes, and aggregates required lanes as `RED`, then `UNKNOWN`, then `GREEN`.
-  Optional-lane failures remain visible but do not override required-lane
-  semantics. When `lanes` is absent, the existing single-IDE `ide` behavior is
-  unchanged.
+  selected files. A native assessment covers files in root lanes of one
+  product; a selection spanning other lanes is UNKNOWN. When `lanes` is absent,
+  the single `ide` applies to the whole repository.
 - `githubSignals`: post-merge and security/quality signal expectations.
 - `githubSettings`: expected GitHub repository settings that snapshot helpers
   report as `ok`, `warning`, or `unavailable` without silently mutating.

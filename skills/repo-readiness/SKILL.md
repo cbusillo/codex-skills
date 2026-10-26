@@ -59,12 +59,6 @@ inspection, browser, CI, deployment, or security gates.
    default only when the helper can infer the route, and ask the user before
    changing repo policy.
 
-   If `qualityGate.inspection.prepare` is configured, run that exact command in
-   the target linked worktree before the first JetBrains assessment. The command
-   may create ignored local `.venv/` or `.idea/` state, but a nonzero exit or any
-   tracked-file mutation is a preparation blocker. Do not invent or substitute a
-   replacement setup command.
-
    Use the GitHub skill's [Merging](../github/SKILL.md#merging) route when
    landing readiness matters, including its direction and instruction precedence.
    When that procedure selects the protected-branch route for a Director without
@@ -217,41 +211,12 @@ when the next milestone depends on it. Ask before running gates that mutate
 shared environments or external resources. If linting a file for the first time,
 dry-run first when the environment supports it.
 
-For code-change readiness, inspection evidence is one of: a clean
-`jetbrains-inspection closeout` result with scope and route, actionable findings
-that were fixed or tracked, or a concrete not-run reason such as unavailable IDE,
-blocked indexing, docs-only scope, or user-approved parking. Missing inspection
+For code-change readiness, inspection evidence is one of: a GREEN
+`jetbrains-inspection` result with its backend and scope, actionable findings
+that were fixed or tracked, or a concrete not-run reason such as the helper's
+UNKNOWN reason, docs-only scope, or user-approved parking. Missing inspection
 evidence for a configured code gate means the readiness answer is not fully
 ready.
-
-In an executing `go <milestone>` landing, the extra assessment exception has
-two triggers: an adopted foreign run whose timeout reports
-`cancellation.reason=foreign_run_not_owned`, or
-`inspection_terminal_outcome=preempted` / `exact_proof_write_preempted` from an
-installed plugin not verified to contain the in-proof resumption in
-`jetbrains-inspection-api` commit `b3892c03ff1beb85ea422a0580f5fb985d660ea3` or a
-descendant. The route-pinned fingerprint
-`b3892c03ff1beb85ea422a0580f5fb985d660ea3-clean` qualifies as updated; a
-later clean fingerprint needs verified ancestry in the plugin repository.
-Dirty or unknown provenance keeps the older-build exception. A generic timeout
-does not qualify. A preemption from a verified updated build means its internal
-resumption failed; diagnose that failure before landing.
-
-For a qualifying `UNKNOWN`, invoke at most one additional exact-worktree
-assessment per revision in addition to any internal retry. Let the competing
-session end when that is observable; the later invocation has its own bounded
-route-readiness wait. Do not add an outer polling loop. If the IDE does not
-settle or the later assessment remains `UNKNOWN`, keep the original or later
-`UNKNOWN`; it is never clean.
-Record the scope, reason, and any findings in the PR and final report. Readiness
-stays not fully ready. Open a focused follow-up outside the milestone unless
-one already owns the IDE failure. Continue the already authorized landing
-under this exception without turning the tool failure into a Director question.
-Handle findings under the normal RED policy. Failing or missing executable
-checks, an unsafe worktree, unresolved lifecycle cleanup, or a different
-inspection failure disqualifies this exception. Resolve deferred cleanup through
-the later assessment or the stale-lease helper before landing; if it remains
-unresolved, stop and report it.
 
 Existing lint/inspection noise is not an invisible background condition. Fix
 real findings the right way when straightforward or in the affected area. If
@@ -284,14 +249,13 @@ update is needed, say why briefly in readiness output.
 ## JetBrains IDE And Inspections
 
 Delegate JetBrains/PyCharm/IntelliJ/WebStorm inspection execution and triage to
-`jetbrains-inspection`. Treat stale results, incomplete capture, indexing,
-session drift, unavailable IDE, ambiguous routing, or wrong-worktree routing as
-not-clean states. Follow the shared
+`jetbrains-inspection`. Treat every UNKNOWN, including an unavailable worker or
+unsupported selection, as not clean. Follow the shared
 [suppression and inspection configuration rule](../jetbrains-inspection/SKILL.md#suppressions-and-inspection-configuration).
 
 If the repo inspection config is blank or feels wrong, ask the user when the
 choice affects durable repo policy or readiness. Examples: configured IDE does
-not match the open project, configured scope is disproportionate to the change,
+not match the repository's main language, configured scope is disproportionate to the change,
 or configured paths point away from the active worktree. For a one-off local
 check with no durable policy change, prefer the helper's safe inferred route and
 `changed_files` scope, and report that assumption.

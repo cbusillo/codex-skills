@@ -155,8 +155,9 @@ Before unattended Desktop launches into worktrees, verify that Desktop's own
 location and trust controls support the chosen root; no unattended trust path
 has been established here.
 
-JetBrains `trustedAutoOpenRoots` authorizes IDE inspection opening only; see
-[inspection lifecycle](../../jetbrains-inspection/references/lifecycle-diagnostics.md).
+JetBrains `trustedAutoOpenRoots` names the source roots where native inspection
+may run repository preparation; see
+[native backend](../../jetbrains-inspection/references/native-backend.md).
 It does not configure the worktree root or trust Claude Desktop. Codex's
 registered-worktree trust handling is a separate harness behavior documented
 in the [Supervisor launch helpers](../../supervisor/references/helpers.md).

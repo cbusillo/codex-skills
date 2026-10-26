@@ -131,7 +131,7 @@ class LeaseRetirementTests(unittest.TestCase):
         self.assertTrue(path.exists())
         output = io.StringIO()
         with redirect_stdout(output):
-            jb_inspect.print_human(result, assess=False)
+            jb_inspect.emit(result, False, 0, "cleanup-helper-leases")
         self.assertIn("PREVIEW", output.getvalue())
         self.assertIn(f"would_remove={len(result['would_remove'])}", output.getvalue())
         self.assertIn("--no-dry-run", output.getvalue())
