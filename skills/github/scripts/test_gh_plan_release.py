@@ -1083,7 +1083,14 @@ class ReleaseTests(ReleaseHarness):
 
     def test_related_followup_prose_is_not_a_session_field(self):
         for prose in ("session-start hook", "session-scoped work", "thread-safe cleanup",
-                      "Review thread: https://github.com/owner/repo/pull/99"):
+                      "Review thread: https://github.com/owner/repo/pull/99",
+                      "Next actor: Chris performs Q914 in his existing Launchplane administrator session: "
+                      "https://github.com/owner/repo/issues/42#issuecomment-7",
+                      "Chris uses his browser session: https://example.test/admin",
+                      "Chris uses his administrator session: [comment](https://example.test/admin)",
+                      "Chris uses his administrator session: <https://example.test/admin>",
+                      "Chris uses his administrator\nsession: https://example.test/admin",
+                      "Chris uses his browser session: the one already open"):
             with self.subTest(prose=prose):
                 self.setUp()
                 self.f.comments.append(self.comment(2, "Claimed by trial-b to fix " + prose,
@@ -1091,6 +1098,33 @@ class ReleaseTests(ReleaseHarness):
                 self.args.related_claim_comment = [2]
                 self.run_release()
                 self.successor()
+
+    def test_explicit_session_fields_keep_conflicting_and_malformed_values_refused(self) -> None:
+        for field in ("Session: {}", "- Session: {}", "Handoff; Session: {}",
+                      "Ownership record Native session ID: {}", "Thread ID: {}", "| Session | {} |",
+                      "Claimed by trial-b Session: {}", "Claimed by trial-b, Session: {}",
+                      "1. Session: {}", "Worker: trial-b. Session: {}", "Handoff: Session: {}",
+                      "Claimed by: administrator Session: {}", "Worker: browser Session: {}",
+                      "Owner: human Session: {}", "Next actor: human\nSession: {}",
+                      "Approval: browser\nSession: {}", "his browser\n\nSession: {}"):
+            for value in ("other-session", "https://example.test/admin", "unknown"):
+                with self.subTest(field=field, value=value):
+                    self.assertFalse(release.related_sessions_match(field.format(value), "session-b"))
+            self.assertTrue(release.related_sessions_match(field.format("session-b"), "session-b"))
+
+    def test_human_session_link_is_not_a_standalone_ownership_assertion(self) -> None:
+        for prose in (
+            "Next actor: Chris uses his existing administrator session: https://example.test/admin",
+            "Chris uses his administrator session: [comment](https://example.test/admin)",
+            "Chris uses his administrator session: <https://example.test/admin>",
+            "Chris uses his administrator\nsession: https://example.test/admin",
+            "Chris uses his browser session: the one already open",
+        ):
+            self.assertFalse(CLAIM.has_ownership_assertion(prose))
+        for field in ("Session: https://example.test/admin", "Native session: https://example.test/admin",
+                      "Claimed by worker Session: https://example.test/admin",
+                      "Next actor: human\nSession: other-session", "his browser\n\nSession: other-session"):
+            self.assertTrue(CLAIM.has_ownership_assertion(field))
 
     def test_related_source_followup_ignores_fenced_session_examples(self):
         for fence in ("```", "~~~"):
