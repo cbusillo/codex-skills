@@ -70,6 +70,27 @@ def write_owner(path, identity):
         os.close(directory)
 
 
+GRADLE_RESIDUE_ENTRY_LIMIT = 4096
+
+
+def is_gradle_daemon_residue(private, children):
+    project = private / "project"
+    if children != [project] or [entry.name for entry in os.scandir(project)] != [".gradle"]:
+        return False
+    pending, seen = [project / ".gradle"], 0
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                seen += 1
+                if seen > GRADLE_RESIDUE_ENTRY_LIMIT or entry.is_symlink():
+                    return False
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(Path(entry.path))
+                elif not entry.is_file(follow_symlinks=False):
+                    return False
+    return True
+
+
 def prove_private(identity, materialized):
     private = Path(identity["private"])
     if not private.exists():
@@ -80,6 +101,12 @@ def prove_private(identity, materialized):
     marker = private / "owner.json"
     if not children:
         return
+    if not marker.exists() and not marker.is_symlink():
+        try:
+            if is_gradle_daemon_residue(private, children):
+                return
+        except OSError:
+            raise LifecycleError("native_recovery_ownership_unproven") from None
     if marker.is_symlink():
         raise LifecycleError("native_recovery_ownership_unproven")
     if not materialized and children == [marker] and marker.is_file():
@@ -137,7 +164,7 @@ def release_stop(worker, run_id):
 
 
 def recover(worker, receipt, common, write_record, remove_sdk, *, result_path=None, release_run=None, process_proof=None,
-            licensed_inspection_logged=lambda _private: False):
+            licensed_inspection_logged=lambda _private: False, stop_build_daemons=lambda _record: None):
     journal = worker / "native-run.json"
     if not journal.exists():
         if release_run:
@@ -161,10 +188,11 @@ def recover(worker, receipt, common, write_record, remove_sdk, *, result_path=No
         phase = record.get("phase")
         if phase not in {"reserved", "materialized", "sdk_attempted", "engine_running", "terminal"}:
             raise LifecycleError("native_recovery_phase_unproven")
-        prove_private(identity, record.get("private_materialized", False))
         process = active_process(record)
         if process is not None and process_proof != {"run_id": identity["run_id"], "active_process": process}:
             raise LifecycleError("native_recovery_process_group_unproven")
+        stop_build_daemons(record)
+        prove_private(identity, record.get("private_materialized", False))
         if result_path:
             record = reconcile_result(result_path, worker, record, common)
             write_record(journal, record)
@@ -218,6 +246,7 @@ class RunContext:
         self.sdk_lease = None
         self.finalized = False
         self.failures = []
+        self.before_private_removal = None
 
     def phase(self, phase, **fields):
         updated = {**self.record, "phase": phase, **fields}
@@ -291,6 +320,8 @@ class RunContext:
                 self.receipt["sdk_removed"] = self.attempt("sdk_removal", lambda: self.remove_sdk(*self.sdk_lease, missing_ok=True))
             if self.private is not None and self.record is not None and process_closed:
                 def dispose_private():
+                    if self.before_private_removal is not None:
+                        self.before_private_removal()
                     prove_private(self.identity, self.record.get("private_materialized", False))
                     if self.private.exists():
                         self.common.delete_private(self.private, receipt=self.receipt)

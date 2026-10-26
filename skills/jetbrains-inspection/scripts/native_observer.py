@@ -84,10 +84,20 @@ class LicenseScanner:
         return self.observed
 
 
+GRADLE_IMPORT_STAGES = {"[Gradle]: Gradle resolve stage finished with success": "resolved",
+                        "[Gradle]: Gradle data import stage finished with success": "data_imported"}
+GRADLE_IMPORT_CANCELLED = "[Gradle]: Gradle resolve stage canceled"
+
+
+INSPECTION_COMPLETION = re.compile(r"Done\.?\s*")
+WARMUP_COMPLETION = re.compile(r"IDE Warm-up finished\.\s*")
+
+
 class EngineObserver:
-    def __init__(self, project, receipt):
+    def __init__(self, project, receipt, completion_line=INSPECTION_COMPLETION):
         self.project = project
         self.receipt = receipt
+        self.completion_line = completion_line
         self.completion = False
 
     def observe(self, line, *, partial=False):
@@ -102,10 +112,15 @@ class EngineObserver:
                     if relative not in self.receipt.setdefault("inspected_files", []):
                         self.receipt["inspected_files"].append(relative)
             return
+        for marker, stage in GRADLE_IMPORT_STAGES.items():
+            if not partial and marker in line:
+                self.receipt.setdefault("gradle_import", {})[stage] = True
+        if GRADLE_IMPORT_CANCELLED in line:
+            raise ObservationError("native_gradle_import_failed")
         plugin = re.search(r"Odoo IDE \(([0-9][\w.+-]*)\)", line)
         if plugin:
             self.receipt["odoo_plugin_version"] = plugin.group(1)
-        if not partial and re.fullmatch(r"Done\.?\s*", line):
+        if not partial and self.completion_line.fullmatch(line):
             self.completion = True
         if re.search(r"Using default project profile|Cannot load project|No files to inspect|No modules", line, re.I):
             raise ObservationError("native_project_or_profile_unprepared")

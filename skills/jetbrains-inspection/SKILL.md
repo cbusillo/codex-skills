@@ -112,7 +112,9 @@ On macOS, `agent-inspect` defaults to isolated native PyCharm for Python/YAML
 selections and Odoo Python/XML/YAML selections in root PyCharm lanes when an eligible
 independent worker, interpreter and profile are configured. In a repository whose
 configured IDE is WebStorm, root npm projects with a `package-lock.json` route
-TypeScript, JavaScript and JSON selections to native WebStorm instead. Native is
+TypeScript, JavaScript and JSON selections to native WebStorm instead, and in
+one whose configured IDE is IntelliJ IDEA, root Gradle projects route Kotlin and
+Java selections that include a `.kt` file to native IntelliJ IDEA. Native is
 the only isolated backend. Automatic selection never enters the desktop API lifecycle:
 without an eligible native worker, and for unsupported selections, it returns
 UNKNOWN with `isolated_backend_unavailable` and setup instructions before

@@ -48,8 +48,21 @@ DRAIN_SECONDS = 2
 DRAIN_BYTES = 4 * 1024 * 1024
 PYTHON_PRODUCT_KEY = "pycharm"
 WEBSTORM_PRODUCT_KEY = "webstorm"
+INTELLIJ_PRODUCT_KEY = "intellij"
 PREPARATION_CACHES = {PYTHON_PRODUCT_KEY: {"UV_CACHE_DIR": "uv-cache", "UV_PYTHON_INSTALL_DIR": "uv-python"},
-                      WEBSTORM_PRODUCT_KEY: {"npm_config_cache": "npm-cache"}}
+                      WEBSTORM_PRODUCT_KEY: {"npm_config_cache": "npm-cache"},
+                      INTELLIJ_PRODUCT_KEY: {"GRADLE_USER_HOME": "gradle-home"}}
+GRADLE_BUILD_FILES = ("build.gradle.kts", "build.gradle")
+GRADLE_DAEMON_IDLE_TIMEOUT_MS = 60000
+STALE_JVM_MODEL = ("modules.xml", "gradle.xml", "misc.xml", "modules")
+GRADLE_FAILURE_SYMPTOMS = frozenset({"native_engine_error", "native_execution_incomplete", "native_project_or_profile_unprepared"})
+WARMUP_LAUNCHER = "Contents/MacOS/idea"
+AWAIT_ACTIVITIES_INSTEAD_OF_CONFIGURATORS = "-Dide.inspect.activity.based.inspections.enabled=true"
+BUILD_OUTPUT_LOGS = frozenset({"gradle-import.log"})
+GRADLE_HOME_NAME = PREPARATION_CACHES[INTELLIJ_PRODUCT_KEY]["GRADLE_USER_HOME"]
+GRADLE_DAEMON_MAIN = "org.gradle.launcher.daemon.bootstrap.GradleDaemon"
+GRADLE_STOP_SECONDS = 30
+GRADLE_DAEMON_EXIT_SECONDS = 5
 CONTROL_ASSETS = Path(__file__).parents[1] / "assets/native-controls"
 
 
@@ -89,6 +102,8 @@ def select_backend(args, host, host_default=None):
             return "api", "selection_empty"
         if product_key == WEBSTORM_PRODUCT_KEY:
             return "native", "webstorm_native_route"
+        if product_key == INTELLIJ_PRODUCT_KEY:
+            return "native", "intellij_native_route"
         if any(Path(f).suffix not in NATIVE_SUFFIXES for f in selected):
             return "api", "selection_file_type_unsupported"
         if common.lane_gaps(host, config, selected):
@@ -109,6 +124,10 @@ def native_product_key(host, config, selected):
             and all(Path(f).suffix in proof.WEBSTORM_PROVEN_SUFFIXES for f in selected)
             and common.configured_product_key(host, config, selected) == WEBSTORM_PRODUCT_KEY):
         return WEBSTORM_PRODUCT_KEY
+    if (any(Path(f).suffix == ".kt" for f in selected)
+            and all(Path(f).suffix in proof.INTELLIJ_PROVEN_SUFFIXES for f in selected)
+            and common.configured_product_key(host, config, selected) == INTELLIJ_PRODUCT_KEY):
+        return INTELLIJ_PRODUCT_KEY
     return PYTHON_PRODUCT_KEY
 
 
@@ -141,6 +160,11 @@ def eligibility_reason(args, host, repo, settings, product_key=PYTHON_PRODUCT_KE
             if settings.get("prepare"):
                 return "native_preparation_shape_unsupported"
             common.npm_lockfile(repo)
+            common.profile_for(repo, args.profile or settings.get("profile", ""))
+            return None
+        if product_key == INTELLIJ_PRODUCT_KEY:
+            java_home(host)
+            gradle_build_file(repo)
             common.profile_for(repo, args.profile or settings.get("profile", ""))
             return None
         if settings.get("prepare") and common.requested_python_version(settings) is None:
@@ -275,6 +299,100 @@ def node_executable(host):
     if not node.is_file() or not os.access(node, os.X_OK) or not os.access(node.parent / "npm", os.X_OK):
         raise Blocked("native_node_unavailable")
     return node
+
+
+def java_home(host):
+    raw = native_worker_config(host, INTELLIJ_PRODUCT_KEY).get("jdk")
+    home = Path(raw).expanduser() if isinstance(raw, str) and raw else None
+    if home is None or not home.is_absolute():
+        raise Blocked("native_jdk_not_configured")
+    if not home.is_dir() or not os.access(home / "bin/java", os.X_OK) or not (home / "release").is_file():
+        raise Blocked("native_jdk_unavailable")
+    return home
+
+
+def gradle_build_file(root):
+    for name in GRADLE_BUILD_FILES:
+        if (root / name).is_file():
+            return root / name
+    raise Blocked("native_gradle_build_required")
+
+
+def bound_gradle_daemon(gradle_home):
+    properties = Path(gradle_home) / "gradle.properties"
+    if properties.is_symlink():
+        raise Blocked("native_cache_path_unsafe")
+    atomic_write(properties, f"org.gradle.daemon.idletimeout={GRADLE_DAEMON_IDLE_TIMEOUT_MS}\n".encode())
+
+
+def gradle_daemons(gradle_home: Path) -> set[int]:
+    result = common.command(["ps", "-axo", "pid=,command="], timeout=5, env={"PATH": os.defpath, "LC_ALL": "C"})
+    if result.returncode:
+        raise Blocked("native_gradle_daemon_census_failed")
+    owned = re.compile(re.escape(str(gradle_home)) + "/")
+    daemons = set()
+    for line in result.stdout.decode(errors="replace").splitlines():
+        pid, _, command_line = line.strip().partition(" ")
+        if GRADLE_DAEMON_MAIN in command_line.split() and owned.search(command_line):
+            daemons.add(int(pid))
+    return daemons
+
+
+def surviving_daemons(gradle_home: Path, daemons: set[int], seconds: float) -> set[int]:
+    deadline = time.monotonic() + seconds
+    while True:
+        remaining = daemons & gradle_daemons(gradle_home)
+        if not remaining or time.monotonic() >= deadline:
+            return remaining
+        time.sleep(0.1)
+
+
+def request_gradle_stop(gradle_home: Path, jdk: Path | None):
+    env = {"PATH": os.defpath, "HOME": str(gradle_home), "GRADLE_USER_HOME": str(gradle_home)}
+    if jdk is not None and os.access(jdk / "bin/java", os.X_OK):
+        env["JAVA_HOME"] = str(jdk)
+    for launcher in sorted(gradle_home.glob("wrapper/dists/*/*/gradle-*/bin/gradle")):
+        if launcher.is_symlink() or not launcher.resolve().is_relative_to(gradle_home.resolve()):
+            continue
+        try:
+            common.command([str(launcher), "--stop"], cwd=gradle_home, env=env, timeout=GRADLE_STOP_SECONDS)
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def stop_gradle_daemons(gradle_home: Path, jdk: Path | None, receipt: dict[str, Any]):
+    daemons = gradle_daemons(gradle_home)
+    remaining = daemons
+    if daemons:
+        request_gradle_stop(gradle_home, jdk)
+        remaining = surviving_daemons(gradle_home, daemons, GRADLE_DAEMON_EXIT_SECONDS)
+    for operation in (signal.SIGTERM, signal.SIGKILL):
+        if not remaining:
+            break
+        for pid in remaining:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, operation)
+        remaining = surviving_daemons(gradle_home, remaining, GRADLE_DAEMON_EXIT_SECONDS)
+    receipt["gradle_daemons_stopped"] = sorted(daemons - remaining)
+    if remaining:
+        raise Blocked("native_gradle_daemon_stop_unproven")
+
+
+def stop_recorded_gradle_daemons(record: dict[str, Any], receipt: dict[str, Any]):
+    recorded = record.get("gradle_home")
+    if recorded is None:
+        return
+    gradle_home = Path(recorded)
+    if (not gradle_home.is_absolute() or gradle_home.name != GRADLE_HOME_NAME or gradle_home.resolve() != gradle_home
+            or not gradle_home.is_relative_to(Path(record["storage_anchor"]))):
+        raise Blocked("native_recovery_journal_malformed")
+    stop_gradle_daemons(gradle_home, Path(record["interpreter"]), receipt)
+
+
+def require_gradle_import(receipt):
+    stages = receipt.get("gradle_import", {})
+    if not (stages.get("resolved") and stages.get("data_imported")):
+        raise Blocked("native_gradle_import_unproven")
 
 
 def npm_preparation(node, project, private, caches):
@@ -442,13 +560,17 @@ LOCAL_INSPECTION_PREFIX = "Running local inspections on "
 RECOVERY_LOG_LIMIT = 64 * 1024 * 1024
 
 
+def engine_logs(logs: Path) -> list[Path]:
+    return sorted(path for path in logs.glob("*.log") if path.name not in BUILD_OUTPUT_LOGS)
+
+
 def logged_licensed_inspection(private: Path) -> bool:
     logs, project = private / "logs", private / "project"
     if logs.is_symlink() or not logs.is_dir():
         return False
     inspected = False
     try:
-        for path in sorted(logs.glob("*.log")):
+        for path in engine_logs(logs):
             descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
             with os.fdopen(descriptor, "rb") as log:
                 status = os.fstat(log.fileno())
@@ -478,7 +600,8 @@ def recover_run(worker, receipt=None, result_path=None, release_run=None, proces
     try:
         lifecycle.recover(worker, current, common, write_record, remove_sdk, result_path=result_path,
                           release_run=release_run, process_proof=process_proof,
-                          licensed_inspection_logged=logged_licensed_inspection)
+                          licensed_inspection_logged=logged_licensed_inspection,
+                          stop_build_daemons=lambda record: stop_recorded_gradle_daemons(record, current))
     except lifecycle.LifecycleError as error:
         raise Blocked(str(error)) from None
 
@@ -626,7 +749,14 @@ class ChildExitObserver:
             self.queue.close()
 
 
-def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, receipt: dict[str, Any], *, lock_fd: int, global_lock_fd: int | None = None, require_completion=True, on_spawn=None, on_exit=None):
+class LogObservation:
+    def __init__(self):
+        self.offsets, self.framers, self.license_scanners = {}, {}, {}
+        self.identities, self.failures = set(), set()
+
+
+def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, receipt: dict[str, Any], *, lock_fd: int, global_lock_fd: int | None = None, require_completion=True, on_spawn=None, on_exit=None,
+            completion=observations.INSPECTION_COMPLETION, logs: LogObservation | None = None):
     """One guarded process group; preparation never uses IDE event parsing."""
     process = None
     exit_watch = None
@@ -635,13 +765,12 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
     gate_read, gate_write = os.pipe()
     stdout = None
     paused = False
-    log_offsets, log_framers = {}, {}
-    log_license_scanners = {}
-    log_identities = set()
-    observation_failures = set()
+    logs = logs or LogObservation()
+    log_offsets, log_framers, log_license_scanners = logs.offsets, logs.framers, logs.license_scanners
+    log_identities, observation_failures = logs.identities, logs.failures
     output_framer = observations.LineFramer()
     output_license_scanner = observations.LicenseScanner()
-    observer = observations.EngineObserver(private / "project", receipt)
+    observer = observations.EngineObserver(private / "project", receipt, completion)
     selector = selectors.DefaultSelector()
     receipt["license_observation_complete"] = not require_completion
 
@@ -683,7 +812,7 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
     def read_logs(final=False, budget=None):
         if not require_completion:
             return
-        for path in (private / "logs").glob("*.log"):
+        for path in engine_logs(private / "logs"):
             ordinary_read_size(budget, 1)
             if path.is_symlink():
                 raise Blocked("native_log_path_unsafe")
@@ -760,7 +889,7 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
 
         try:
             paths = []
-            for path in (private / "logs").glob("*.log"):
+            for path in engine_logs(private / "logs"):
                 if len(paths) == 64:
                     incomplete("log_count_bound")
                     break
@@ -928,11 +1057,15 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
         raise Blocked("native_execution_incomplete" if require_completion else "native_preparation_failed")
 
 
-def write_selection_scope(idea: Path, selected: set[str]):
+def content_root_suffixes(selected: set[str]) -> set[str]:
+    return {"/".join(Path(path).parts[start:]) for path in selected for start in range(len(Path(path).parts))}
+
+
+def write_selection_scope(idea: Path, selected: set[str], patterns: set[str] | None = None):
     scope = ElementTree.Element("component", name="DependencyValidationManager")
     if any(re.search(r'[\s"!&|()*?:\[\]\\]', path) for path in selected):
         raise Blocked("native_scope_path_unsupported")
-    ElementTree.SubElement(scope, "scope", name="JBNativeSelection", pattern="||".join("file:" + path for path in sorted(selected)))
+    ElementTree.SubElement(scope, "scope", name="JBNativeSelection", pattern="||".join("file:" + path for path in sorted(patterns or selected)))
     (idea / "scopes").mkdir(exist_ok=True)
     ElementTree.ElementTree(scope).write(idea / "scopes/JBNativeSelection.xml", encoding="unicode")
 
@@ -959,6 +1092,24 @@ def prepare_web_model(project: Path, selected: set[str]):
     write_selection_scope(idea, selected)
 
 
+def write_project_sdk(idea: Path, sdk_name: str, sdk_type: str):
+    misc = ElementTree.Element("project", version="4")
+    ElementTree.SubElement(misc, "component", name="ProjectRootManager", version="2", attrib={"project-jdk-name": sdk_name, "project-jdk-type": sdk_type})
+    ElementTree.ElementTree(misc).write(idea / "misc.xml", encoding="unicode")
+
+
+def prepare_jvm_model(project: Path, sdk_name: str, selected: set[str]):
+    idea = project / ".idea"
+    idea.mkdir(exist_ok=True)
+    for stale in [*(idea / name for name in STALE_JVM_MODEL), *idea.glob("*.iml")]:
+        if stale.is_dir() and not stale.is_symlink():
+            shutil.rmtree(stale)
+        else:
+            stale.unlink(missing_ok=True)
+    write_project_sdk(idea, sdk_name, JAVA_SDK_TYPE)
+    write_selection_scope(idea, selected, content_root_suffixes(selected))
+
+
 def prepare_model(project: Path, sdk_name: str, framework_roots: list[Path], selected: set[str]):
     idea = project / ".idea"
     idea.mkdir(exist_ok=True)
@@ -976,9 +1127,7 @@ def prepare_model(project: Path, sdk_name: str, framework_roots: list[Path], sel
     ElementTree.SubElement(manager, "orderEntry", type="jdk", jdkName=sdk_name, jdkType="Python SDK")
     ElementTree.SubElement(manager, "orderEntry", type="sourceFolder", forTests="false")
     write_module_manager(idea, module)
-    misc = ElementTree.Element("project", version="4")
-    ElementTree.SubElement(misc, "component", name="ProjectRootManager", version="2", attrib={"project-jdk-name": sdk_name, "project-jdk-type": "Python SDK"})
-    ElementTree.ElementTree(misc).write(idea / "misc.xml", encoding="unicode")
+    write_project_sdk(idea, sdk_name, PYTHON_SDK_TYPE)
     pyproject_model = ElementTree.Element("project", version="4")
     component = ElementTree.SubElement(pyproject_model, "component", name="PyProjectModelSettings")
     ElementTree.SubElement(component, "option", name="usePyprojectToml", value="false")
@@ -986,10 +1135,14 @@ def prepare_model(project: Path, sdk_name: str, framework_roots: list[Path], sel
     write_selection_scope(idea, selected)
 
 
-def plant_controls(project, run_id, odoo, product_key=PYTHON_PRODUCT_KEY):
+def kotlin_source_directory(selected: set[str]) -> Path:
+    return Path(min(f for f in selected if f.endswith(".kt"))).parent
+
+
+def plant_controls(project, run_id, odoo, product_key=PYTHON_PRODUCT_KEY, base=Path()):
     fixtures = CONTROL_ASSETS
-    prefix = "jb_native_controls_" + run_id.replace("-", "")
-    destination = project / prefix
+    root = base / ("jb_native_controls_" + run_id.replace("-", ""))
+    destination = project / root
     destination.mkdir()
     names = ["coverage.py", "duplicates.py", "python_types.py"]
     if odoo:
@@ -997,14 +1150,44 @@ def plant_controls(project, run_id, odoo, product_key=PYTHON_PRODUCT_KEY):
     if product_key == WEBSTORM_PRODUCT_KEY:
         fixtures = CONTROL_ASSETS / WEBSTORM_PRODUCT_KEY
         names = sorted({*proof.WEBSTORM_CANARY_FILES.values(), *proof.WEBSTORM_CLEAN_TWINS.values()})
+    if product_key == INTELLIJ_PRODUCT_KEY:
+        fixtures = CONTROL_ASSETS / INTELLIJ_PRODUCT_KEY
+        names = sorted({*proof.INTELLIJ_CANARY_FILES.values(), *proof.INTELLIJ_CLEAN_TWINS.values()})
     for name in names:
         target = destination / name
         target.parent.mkdir(exist_ok=True)
         shutil.copyfile(fixtures / name, target)
-    return {(Path(prefix) / name).as_posix() for name in names}
+    return root.as_posix(), {(root / name).as_posix() for name in names}
 
 
-def register_sdk(config: Path, interpreter: Path, version: str, sdk_name: str, *, on_attempt=None):
+PYTHON_SDK_TYPE = "Python SDK"
+JAVA_SDK_TYPE = "JavaSDK"
+
+
+class SdkEntry(NamedTuple):
+    sdk_type: str
+    version: str
+    class_roots: list[str]
+
+
+def python_sdk(interpreter: Path, version: str) -> SdkEntry:
+    output = common.checked([str(interpreter), "-c", "import sysconfig,json; print(json.dumps([sysconfig.get_path('stdlib'),sysconfig.get_path('purelib')]))"])
+    return SdkEntry(PYTHON_SDK_TYPE, "Python " + version, [Path(path).as_uri() for path in json.loads(output)])
+
+
+def java_sdk(home: Path) -> SdkEntry:
+    release = {}
+    for line in (home / "release").read_text().splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            release[key.strip()] = value.strip().strip('"')
+    modules = release.get("MODULES", "").split()
+    if not release.get("JAVA_VERSION") or "java.base" not in modules:
+        raise Blocked("native_jdk_unavailable")
+    return SdkEntry(JAVA_SDK_TYPE, f'java version "{release["JAVA_VERSION"]}"', [f"jrt://{home}!/{module}" for module in modules])
+
+
+def register_sdk(config: Path, home: Path, sdk_name: str, sdk: SdkEntry, *, on_attempt=None):
     """Register the run's non-secret entry; its custody context owns removal."""
     table = config / "options/jdk.table.xml"
     if table.is_symlink() or table.parent.is_symlink():
@@ -1020,15 +1203,14 @@ def register_sdk(config: Path, interpreter: Path, version: str, sdk_name: str, *
         if name is not None and name.get("value") == sdk_name:
             raise Blocked("native_sdk_identity_conflict")
     jdk = ElementTree.SubElement(component, "jdk", version="2")
-    for tag, value in (("name", sdk_name), ("type", "Python SDK"), ("version", "Python " + version), ("homePath", str(interpreter))):
+    for tag, value in (("name", sdk_name), ("type", sdk.sdk_type), ("version", sdk.version), ("homePath", str(home))):
         ElementTree.SubElement(jdk, tag, value=value)
-    output = common.checked([str(interpreter), "-c", "import sysconfig,json; print(json.dumps([sysconfig.get_path('stdlib'),sysconfig.get_path('purelib')]))"])
     roots = ElementTree.SubElement(jdk, "roots")
     for tag in ("classPath", "sourcePath"):
         composite = ElementTree.SubElement(ElementTree.SubElement(roots, tag), "root", type="composite")
         if tag == "classPath":
-            for path in json.loads(output):
-                ElementTree.SubElement(composite, "root", url=Path(path).as_uri(), type="simple")
+            for url in sdk.class_roots:
+                ElementTree.SubElement(composite, "root", url=url, type="simple")
     ElementTree.SubElement(jdk, "additional")
     table.parent.mkdir(exist_ok=True)
     if on_attempt is not None:
@@ -1213,6 +1395,12 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
         action = f"Configure jetbrains.nativeWorkers.{product.key}.path/app in the shared helper config for the independently Director-activated worker, or supply --native-worker and --ide-app. See references/native-backend.md."
     elif reason in {"native_node_not_configured", "native_node_unavailable"}:
         action = "Set jetbrains.nativeWorkers.webstorm.node in the shared helper config to the absolute path of an executable node with npm in the same directory. See references/native-backend.md."
+    elif reason in {"native_jdk_not_configured", "native_jdk_unavailable"}:
+        action = "Set jetbrains.nativeWorkers.intellij.jdk in the shared helper config to the absolute home of a JDK the project's Gradle build supports (a directory with bin/java and a release file). See references/native-backend.md."
+    elif reason == "native_gradle_build_required":
+        action = "Native IntelliJ IDEA imports the project through Gradle and needs a root build.gradle.kts or build.gradle. Keep this selection UNKNOWN for other build systems."
+    elif reason in {"native_gradle_import_failed", "native_gradle_import_unproven"}:
+        action = "The Gradle import in the private snapshot failed or did not log both successful stages. Run the repository's Gradle build with the configured jdk to find the import failure, check network access for a cold Gradle cache, then request one fresh assessment."
     elif reason == "native_npm_lockfile_required":
         action = "Native WebStorm needs a root package.json and package-lock.json; it runs only npm ci --ignore-scripts and never npm install. Commit the lockfile or keep this selection UNKNOWN."
     elif reason == "native_pnpm_unsupported":
@@ -1316,9 +1504,11 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         worker, app, framework, product = worker_settings(args, host, requested_product_key(args, host))
         receipt["product"] = product.key
         webstorm = product.key == WEBSTORM_PRODUCT_KEY
+        intellij = product.key == INTELLIJ_PRODUCT_KEY
         context.worker = worker
         config, plugins, home = launcher_paths(worker)
         node = node_executable(host) if webstorm and not args.native_recover_only else None
+        jdk = java_home(host) if intellij and not args.native_recover_only else None
         if not args.native_recover_only:
             distribution = json.loads((app / "Contents/Resources/product-info.json").read_text())
             receipt.update(ide_version=distribution.get("version"), ide_build=distribution.get("buildNumber"))
@@ -1350,7 +1540,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_trusted_root_required")
         if selected and native_product_key(host, settings, selected) != product.key:
             raise Blocked("native_source_selection_changed")
-        odoo = not webstorm and is_odoo(repo)
+        odoo = product.key == PYTHON_PRODUCT_KEY and is_odoo(repo)
         if not odoo:
             framework = []
         elif not framework:
@@ -1365,7 +1555,8 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_framework_inputs_unproven")
         if not selected:
             raise Blocked("native_scope_empty")
-        suffixes = proof.WEBSTORM_PROVEN_SUFFIXES if webstorm else NATIVE_SUFFIXES
+        suffixes = {WEBSTORM_PRODUCT_KEY: proof.WEBSTORM_PROVEN_SUFFIXES,
+                    INTELLIJ_PRODUCT_KEY: proof.INTELLIJ_PROVEN_SUFFIXES}.get(product.key, NATIVE_SUFFIXES)
         if any(Path(f).suffix not in suffixes for f in selected) or common.lane_gaps(host, settings, selected, product.key):
             raise Blocked("native_scope_unsupported")
         if args.max_files is not None and len(selected) > args.max_files:
@@ -1383,12 +1574,19 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
                 raise Blocked("native_preparation_shape_unsupported")
             common.npm_lockfile(repo)
             expected |= set(proof.WEBSTORM_CANARY_FILES)
+        if intellij:
+            gradle_build_file(repo)
+            expected |= set(proof.INTELLIJ_CANARY_FILES)
         receipt["profile_sha256"] = common.digest(profile)
         planned_private = state / ("private-" + receipt["run_id"])
         source_interpreter = repo / ".venv/bin/python"
-        requested = None if webstorm else common.requested_python_version(settings)
-        interpreter = node if webstorm else planned_private / "project/.venv/bin/python" if requested is not None else source_interpreter
+        requested = None if webstorm or intellij else common.requested_python_version(settings)
+        interpreter = node if webstorm else jdk if intellij else planned_private / "project/.venv/bin/python" if requested is not None else source_interpreter
         context.reserve(state, worker, config, interpreter)
+        if intellij:
+            gradle_home = Path(preparation_caches["GRADLE_USER_HOME"])
+            context.phase(context.record["phase"], gradle_home=str(gradle_home))
+            context.before_private_removal = lambda: stop_gradle_daemons(gradle_home, jdk, receipt)
         private = context.private
         sdk_name = context.identity["sdk_name"]
         for name in ("project", "system", "logs", "tmp", "results", "registry"):
@@ -1400,7 +1598,8 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         if any((project / path).stat().st_size > common.MAX_ANALYZED_FILE_KB * 1024 for path in selected):
             raise Blocked("native_selected_file_over_analysis_limit")
         receipt["source_manifest_sha256"] = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
-        controls = plant_controls(project, receipt["run_id"], odoo, product.key)
+        control_base = kotlin_source_directory(selected) if intellij else Path()
+        control_root, controls = plant_controls(project, receipt["run_id"], odoo, product.key, control_base)
         def record_process(kind, pid):
             identity = process_identity(pid, private)
             if identity is None or identity["pgid"] != pid or identity["private"] != str(private):
@@ -1417,10 +1616,14 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
                     on_spawn=lambda pid: record_process("preparation", pid), on_exit=record_exit)
 
         check_lifetime(parent_fd, deadline)
-        version = None
+        sdk = None
         if webstorm:
             prepare(*npm_preparation(node, project, private, preparation_caches))
             prepare_web_model(project, selected | controls)
+        elif intellij:
+            sdk = java_sdk(jdk)
+            bound_gradle_daemon(preparation_caches["GRADLE_USER_HOME"])
+            prepare_jvm_model(project, sdk_name, selected | controls)
         else:
             if requested is not None:
                 prepare(common.preparation(settings, private), {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(private / "prepare-home"),
@@ -1434,6 +1637,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             if requested and not (version == requested or version.startswith(requested + ".")):
                 raise Blocked("native_python_version_mismatch")
             receipt["python_version"] = version
+            sdk = python_sdk(interpreter, version)
             prepare_model(project, sdk_name, framework, selected | controls)
         shutil.copyfile(profile, private / "profile.xml")
         properties = {"config": config, "plugins": plugins, "system": private / "system", "log": private / "logs"}
@@ -1446,25 +1650,51 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         vm += [f"-Didea.diagnostic.opentelemetry.file={private}/inspection-trace.json",
                "-Didea.diagnostic.opentelemetry.detailed.scopes=inspection"]
         vm += [f"-XX:ErrorFile={private}/logs/java-error-%p.log", f"-XX:HeapDumpPath={private}/logs"]
+        if intellij:
+            vm.append(AWAIT_ACTIVITIES_INSTEAD_OF_CONFIGURATORS)
         (private / "native.vmoptions").write_text("\n".join(vm) + "\n")
         engine_path = os.environ.get("PATH", "/usr/bin:/bin")
         env = {"PATH": str(node.parent) + os.pathsep + engine_path if node else engine_path, "HOME": str(home), "TMPDIR": str(private / "tmp"),
                f"{product.env_var_base_name}_PROPERTIES": str(private / "idea.properties"),
                f"{product.env_var_base_name}_VM_OPTIONS": str(private / "native.vmoptions"),
                "JETBRAINS_INSPECTION_REGISTRY_DIR": str(private / "registry")}
+        if intellij:
+            env.update(JAVA_HOME=str(jdk), GRADLE_USER_HOME=preparation_caches["GRADLE_USER_HOME"])
         argv = ["/usr/bin/nice", "-n", str(NICE), str(app / "Contents/bin/inspect.sh"), str(project), str(private / "profile.xml"), str(private / "results"), "-v2"]
-        if not webstorm:
-            register_sdk(config, interpreter, version, sdk_name,
+        if sdk is not None:
+            register_sdk(config, interpreter, sdk_name, sdk,
                          on_attempt=lambda: context.sdk_attempt(config, interpreter, sdk_name))
         context.phase("engine_running")
-        execute(argv, env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(), global_lock_fd=global_lock.fileno(),
-                on_spawn=lambda pid: record_process("engine", pid), on_exit=record_exit)
+
+        engine_logs_seen = LogObservation()
+
+        def launch(launch_argv, completion=observations.INSPECTION_COMPLETION):
+            execute(launch_argv, env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(), global_lock_fd=global_lock.fileno(),
+                    on_spawn=lambda pid: record_process("engine", pid), on_exit=record_exit, completion=completion, logs=engine_logs_seen)
+
+        try:
+            if intellij:
+                warmup_started = time.monotonic()
+                launch(["/usr/bin/nice", "-n", str(NICE), str(app / WARMUP_LAUNCHER), "warmup", f"--project-dir={project}"],
+                       observations.WARMUP_COMPLETION)
+                receipt["gradle_warmup_seconds"] = round(time.monotonic() - warmup_started, 3)
+                if not receipt["license_observation_complete"]:
+                    raise Blocked("native_license_observation_unproven")
+                require_gradle_import(receipt)
+            launch(argv)
+        except Blocked as error:
+            if intellij and str(error) in GRADLE_FAILURE_SYMPTOMS and receipt.get("gradle_import", {}).get("data_imported") is not True:
+                raise Blocked("native_gradle_import_failed") from None
+            raise
+        if intellij:
+            require_gradle_import(receipt)
         all_findings, registered, languages = read_results(private / "results", project)
         findings = [finding for finding in all_findings if finding["file"] in selected]
         trace_tools, trace_failed = proof.read_trace(private / "inspection-trace.json", project)
-        control_root = next(iter(controls)).split("/", 1)[0]
-        product_proof = ({"proven_suffixes": proof.WEBSTORM_PROVEN_SUFFIXES, "canary_files": proof.WEBSTORM_CANARY_FILES,
-                          "clean_twins": proof.WEBSTORM_CLEAN_TWINS} if webstorm else {})
+        product_proof = {WEBSTORM_PRODUCT_KEY: {"proven_suffixes": proof.WEBSTORM_PROVEN_SUFFIXES, "canary_files": proof.WEBSTORM_CANARY_FILES,
+                                                "clean_twins": proof.WEBSTORM_CLEAN_TWINS},
+                         INTELLIJ_PRODUCT_KEY: {"proven_suffixes": proof.INTELLIJ_PROVEN_SUFFIXES, "canary_files": proof.INTELLIJ_CANARY_FILES,
+                                                "clean_twins": proof.INTELLIJ_CLEAN_TWINS}}.get(product.key, {})
         receipt["coverage"], gaps = proof.assess(expected, registered, trace_tools, trace_failed, selected,
                                                 all_findings, control_root=control_root, tool_languages=languages, scope=scope,
                                                 **product_proof)

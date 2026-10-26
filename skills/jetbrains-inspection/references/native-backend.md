@@ -36,8 +36,7 @@ Configure the **helper's** shared JSON config at
 ```
 
 `nativeWorkers` holds one entry per product (`pycharm`, `intellij`, `webstorm`);
-each worker's `app` must be that product's distribution. `pycharm` and
-`webstorm` run today. The older single `nativeWorker` object is still read as
+each worker's `app` must be that product's distribution. All three run today. The older single `nativeWorker` object is still read as
 the `pycharm` entry; configure one or the other, not both.
 
 ### WebStorm
@@ -71,6 +70,72 @@ UNKNOWN. `inspect.sh` does not report TypeScript compiler errors
 rule and trace evidence still need a licensed run, and no WebStorm-specific
 healthy licence lines are allowed. `--native-recover-only` recovers the PyCharm
 worker unless `--native-worker` names another.
+
+### IntelliJ IDEA
+
+The `intellij` entry takes `path`, `app` and `cacheRoot` like `pycharm`, plus a
+required absolute `jdk`: a Java home with `bin/java` and a `release` file, of a
+version the project's Gradle build supports. A missing or unusable `jdk` is
+UNKNOWN with its setup step before any custody record.
+
+A selection routes to IntelliJ IDEA when the repository's `ide` (or each owning
+lane's `ide`, without `projectPath`) is IntelliJ IDEA, every file is `.kt`,
+`.kts` or `.java`, and at least one is `.kt` so the Kotlin controls apply. Other
+files, including Groovy `.gradle`, stay UNKNOWN. The repository needs a root
+`build.gradle.kts` or `build.gradle`; the declared Python `prepare` is not used.
+
+The snapshot's `.idea/modules.xml`, `.idea/*.iml`, `.idea/modules/`,
+`.idea/gradle.xml` and `misc.xml` are removed, so a stale tracked model is never
+inspected. The `jdk` is registered as a `JavaSDK` in the worker's SDK table under
+the same journalled lease as the Python SDK, set as the project SDK so the Gradle
+JVM resolves to it without a download, and removed afterwards. The engine gets
+`JAVA_HOME` set to it and a shared `GRADLE_USER_HOME` at `cacheRoot/gradle-home`,
+whose `gradle.properties` limits the detached Gradle daemon's idle life.
+`inspect.sh` only schedules a Gradle sync it does not wait for, so the run first
+launches the product's headless `warmup --project-dir=<snapshot>` on the same
+private system, config and log paths. Warmup links and imports the root Gradle
+build, executing the repository's build scripts, and the imported model carries
+into `inspect.sh`. Warmup is a licensed launch under the same journal, licence
+scan and `--timeout-ms` deadline; it must log `IDE Warm-up finished.`, both
+Gradle stages below and a closed process group, and complete its licence
+observation, or the inspection never starts. Both launches share one log
+observation, so `inspect.sh` scans only bytes warmup has not. On a linked
+project, stock `inspect.sh`'s Gradle configurator ends the analysis task without
+inspecting anything, so `inspect.sh` runs with
+`ide.inspect.activity.based.inspections.enabled=true`: it skips the configurators,
+awaits project configuration and schedules no second sync. Gradle gives each
+source set its own content root, such as `src/main`, so the selection scope also
+matches each file's path below any parent directory. A file elsewhere that shares
+that tail is traversed and makes the run UNKNOWN with
+`native_unselected_file_traversal`. A cold Gradle cache needs network access and
+can take minutes on the first run. `gradle-import.log` holds the build's raw
+output, joins progress messages into unbounded lines, and is not an IDE log, so
+it is not observed.
+
+Before the private directory is deleted, and during recovery from the journal's
+recorded `gradle_home`, Gradle daemons whose command line runs
+`org.gradle.launcher.daemon.bootstrap.GradleDaemon` from that `gradle-home` are
+stopped: first with each wrapper distribution's `gradle --stop`, then SIGTERM and
+SIGKILL, each bounded. The receipt records `gradle_daemons_stopped`; a daemon that
+survives keeps the private directory and custody. Recovery reclaims a private
+directory without its ownership marker whose only content is a bounded
+`project/.gradle` tree, which a daemon recreated after deletion.
+
+The run counts only when its launches log both `[Gradle]: Gradle resolve stage
+finished with success` and `[Gradle]: Gradle data import stage finished with
+success`; otherwise it is UNKNOWN with `native_gradle_import_unproven`, or
+`native_gradle_import_failed` after a cancelled import or an engine error before
+the data import finished. Kotlin and Java tools must execute on each selected
+file of their language. Two Kotlin control pairs (`INTELLIJ_CANARY_FILES` and
+`INTELLIJ_CLEAN_TWINS` in `native_coverage.py`) are planted beside the first
+selected `.kt` file, inside its source root: an unused variable with a used
+twin, and a `map { }.joinToString()` chain that `SimplifiableCallChain` reports
+only when the Kotlin standard library resolves, with a single-call twin, which
+proves the imported model resolves that source root and its libraries. Batch
+inspection does not report Kotlin compiler diagnostics such as unresolved
+references unless the profile's `Annotator` runs highlight visitors. A profile
+inspection this edition lacks, such as `DuplicatedCode` in IntelliJ IDEA's free
+mode, stays UNKNOWN unless the repository's `coveredBy` names a gate for it.
 
 The standard `JETBRAINS_INSPECTION_GLOBAL_CONFIG` override selects a helper
 config. `--native-worker` (or `JETBRAINS_INSPECTION_NATIVE_WORKER`), `--ide-app`
@@ -127,7 +192,7 @@ uv run <skill-dir>/scripts/jb-inspect.py agent-inspect \
 ```
 
 PyCharm selections support `.py`, `.yaml`, `.yml` and Odoo `.xml` in a root PyCharm model;
-WebStorm selections are listed above. Unsupported
+WebStorm and IntelliJ IDEA selections are listed above. Unsupported
 languages, filters or nested models remain UNKNOWN with a supported next step.
 Use explicit source files when a broader scope also contains documentation or
 other file types. Native assessment requires the same declared trusted roots

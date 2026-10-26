@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 from unittest.mock import patch
+import contextlib
 from contextlib import contextmanager, redirect_stdout
 
 
@@ -31,6 +32,17 @@ def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
 
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+FAKE_GRADLE_DAEMON = """import os,pathlib,signal,sys,time
+if sys.argv[4]=='ignore-term': signal.signal(signal.SIGTERM,signal.SIG_IGN)
+pathlib.Path(sys.argv[5]).write_text(str(os.getpid()))
+while True:
+ try:
+  (pathlib.Path(sys.argv[3])/'.gradle').mkdir(parents=True,exist_ok=True)
+  (pathlib.Path(sys.argv[3])/'.gradle/last-build.bin').write_text('fixture')
+ except OSError:
+  pass
+ time.sleep(0.05)
+"""
 os.environ["JB_INSPECT_OUTCOME_LOG"] = "0"
 os.environ["JB_INSPECT_UNKNOWN_LOG"] = "0"
 
@@ -813,7 +825,7 @@ print('Done.')
         context = self.reserve_run()
         interpreter = self.repo / ".venv/bin/python"
         sdk_name = context.identity["sdk_name"]
-        native.register_sdk(self.worker / "config", interpreter, "fixture", sdk_name,
+        native.register_sdk(self.worker / "config", interpreter, sdk_name, native.python_sdk(interpreter, "fixture"),
                             on_attempt=lambda: context.sdk_attempt(self.worker / "config", interpreter, sdk_name))
         context.phase("terminal", outcome="native_parent_exited", license_boundary=False)
         native.recover_run(self.worker)
@@ -828,9 +840,9 @@ print('Done.')
         table.write_text(original)
         with patch.object(os, "replace", side_effect=OSError("interrupted write")):
             with self.assertRaises(OSError):
-                native.register_sdk(self.worker / "config", self.repo / ".venv/bin/python", "fixture", "owned")
+                native.register_sdk(self.worker / "config", self.repo / ".venv/bin/python", "owned", native.python_sdk(self.repo / ".venv/bin/python", "fixture"))
         self.assertEqual(table.read_text(), original)
-        native.register_sdk(self.worker / "config", self.repo / ".venv/bin/python", "fixture", "owned")
+        native.register_sdk(self.worker / "config", self.repo / ".venv/bin/python", "owned", native.python_sdk(self.repo / ".venv/bin/python", "fixture"))
         native.remove_sdk(self.worker / "config", self.repo / ".venv/bin/python", "owned", True)
         self.assertIn("<!--keep-->", table.read_text())
         self.assertIn('value="owner"', table.read_text())
@@ -1883,6 +1895,406 @@ print('Done.')
         self.assertFalse(result["coverage"]["canary_results"]["JSUnusedLocalSymbols"]["detected"])
         self.script.write_text(self.script.read_text().replace("report_canary=False", "report_canary=True"))
         self.assertEqual(self.assess()["agent_result"]["verdict"], "GREEN")
+
+
+class IntelliJLifecycleTests(unittest.TestCase):
+    SOURCE = "src/main/kotlin/App.kt"
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        for target, name, kwargs in ((native, "state_dir", {"return_value": self.root / "state"}),
+                                     (native.common, "storage_identity", {"side_effect": lambda anchor: {"fixture": str(anchor)}})):
+            started = patch_attr(target, name, **kwargs)
+            started.start()
+            self.addCleanup(started.stop)
+        self.repo = self.root / "repo"
+        (self.repo / "src/main/kotlin").mkdir(parents=True)
+        (self.repo / "src/main/java").mkdir(parents=True)
+        subprocess.run(["git", "init", "--quiet", str(self.repo)], check=True)
+        self.declare({"ide": "IntelliJ IDEA"})
+        (self.repo / self.SOURCE).write_text("fun app(): Int = 1\n")
+        (self.repo / "src/main/java/Util.java").write_text("class Util {}\n")
+        (self.repo / "build.gradle.kts").write_text('plugins { kotlin("jvm") version "2.0.0" }\n')
+        (self.repo / "settings.gradle.kts").write_text('rootProject.name = "fixture"\n')
+        idea = self.repo / ".idea"
+        (idea / "modules").mkdir(parents=True)
+        (idea / "modules/repo.iml").write_text('<module type="JAVA_MODULE" version="4"/>\n')
+        (idea / "repo.iml").write_text('<module type="JAVA_MODULE" version="4"/>\n')
+        (idea / "modules.xml").write_text('<project version="4"><component name="ProjectModuleManager"/></project>\n')
+        (idea / "gradle.xml").write_text('<project version="4"><component name="GradleSettings"/></project>\n')
+        (idea / "misc.xml").write_text('<project version="4"><component name="ProjectRootManager" version="2" project-jdk-name="JBR-21" project-jdk-type="JavaSDK"/></project>\n')
+        profile = idea / "inspectionProfiles/Test.xml"
+        profile.parent.mkdir(parents=True)
+        profile.write_text('<profile><option name="myName" value="Test"/>'
+                           '<inspection_tool class="RedundantSemicolon" enabled="true"/></profile>')
+        self.worker = self.root / "worker"
+        for name in ("config/options", "plugins", "home"):
+            (self.worker / name).mkdir(parents=True)
+        (self.worker / "idea.properties").write_text(
+            f"idea.config.path={self.worker}/config\nidea.plugins.path={self.worker}/plugins\n")
+        self.app = self.root / "IntelliJ IDEA.app"
+        (self.app / "Contents/bin").mkdir(parents=True)
+        (self.app / "Contents/Resources").mkdir()
+        (self.app / "Contents/Resources/product-info.json").write_text(json.dumps({"productCode": "IU", "envVarBaseName": "IDEA"}))
+        (self.app / "Contents/bin/idea.vmoptions").write_text("")
+        self.jdk = self.root / "jdk/Contents/Home"
+        (self.jdk / "bin").mkdir(parents=True)
+        (self.jdk / "bin/java").write_text("#!/bin/sh\nexit 0\n")
+        (self.jdk / "bin/java").chmod(0o755)
+        (self.jdk / "release").write_text('JAVA_VERSION="21.0.11"\nMODULES="java.base java.sql"\n')
+        self.cache = self.root / "host-caches"
+        self.cache.mkdir()
+        self.engine_record = self.root / "engine-record.json"
+        self.warmup_record = self.root / "warmup-record.json"
+        (self.app / "Contents/bin/inspect.sh").write_text('#!/bin/sh\nexec "${0%/*}/../MacOS/idea" inspect "$@"\n')
+        (self.app / "Contents/bin/inspect.sh").chmod(0o700)
+        (self.app / "Contents/MacOS").mkdir()
+        self.script = self.app / native.WARMUP_LAUNCHER
+        self.script.write_text(f"#!{sys.executable}\nrecord={str(self.engine_record)!r}\nwarmup_record={str(self.warmup_record)!r}\n"
+                               f"config={str(self.worker / 'config')!r}\n"
+                               f"source={self.SOURCE!r}\ncanary_files={native.proof.INTELLIJ_CANARY_FILES!r}\n"
+                               f"clean_twins={native.proof.INTELLIJ_CLEAN_TWINS!r}\nresolution_rule={native.proof.INTELLIJ_RESOLUTION_RULE!r}\n"
+                               f"await_activities={native.AWAIT_ACTIVITIES_INSTEAD_OF_CONFIGURATORS!r}\n" + """import json,os,pathlib,sys
+gradle_lines=['[Gradle]: Gradle resolve stage finished with success: fixture','[Gradle]: Gradle data import stage finished with success: fixture']
+report_canary=True
+report_clean=False
+report_user=False
+tools={'UnusedVariable':'kotlin',resolution_rule:'kotlin','RedundantSemicolon':'kotlin'}
+system=next(pathlib.Path(line.split('=',1)[1]) for line in pathlib.Path(os.environ['IDEA_PROPERTIES']).read_text().splitlines() if line.startswith('idea.system.path='))
+logs=next(pathlib.Path(line.split('=',1)[1]) for line in pathlib.Path(os.environ['IDEA_PROPERTIES']).read_text().splitlines() if line.startswith('idea.log.path='))
+table=pathlib.Path(config)/'options/jdk.table.xml'
+gradle_home=pathlib.Path(os.environ['GRADLE_USER_HOME'])
+if sys.argv[1]=='warmup':
+ project=pathlib.Path(sys.argv[2].removeprefix('--project-dir='))
+ idea=project/'.idea'
+ pathlib.Path(warmup_record).write_text(json.dumps({'env':{key:os.environ.get(key) for key in ('JAVA_HOME','GRADLE_USER_HOME')},
+    'stale':{name:(idea/name).exists() for name in ('modules.xml','gradle.xml','modules','repo.iml')},
+    'misc':(idea/'misc.xml').read_text(),'sdk_table':table.read_text() if table.exists() else None,
+    'gradle_properties':(gradle_home/'gradle.properties').read_text()}))
+ (logs/'gradle-import.log').write_text(''.join(f'Downloading https://example.invalid/ide.zip ({size} MB / 2000 MB)' for size in range(2000)))
+ for line in gradle_lines:
+  print(line)
+ (system/'imported-gradle-model').write_text('fixture')
+ print('IDE Warm-up finished.')
+ sys.exit(0)
+project=pathlib.Path(sys.argv[2])
+out=pathlib.Path(sys.argv[4])
+control=next(project.rglob('jb_native_controls_*'))
+pathlib.Path(record).write_text(json.dumps({'imported_model':(system/'imported-gradle-model').is_file()}))
+if await_activities not in pathlib.Path(os.environ['IDEA_VM_OPTIONS']).read_text().splitlines():
+ sys.exit(0)
+import re
+scope=re.search(r'pattern="([^"]*)"',(project/'.idea/scopes/JBNativeSelection.xml').read_text()).group(1)
+source_set_root=project/'src/main'
+if not any(path.relative_to(source_set_root).as_posix() in {item.removeprefix('file:') for item in scope.split('||')} for path in [project/source,*control.iterdir()]):
+ sys.exit(0)
+files=[project/source,*control.iterdir()]
+spans=[{'operationName':'inspectionRun','duration':1,'tags':[{'key':'inspectionId','value':tool},{'key':'file','value':str(path)}]} for tool in tools for path in files]
+(out.parent/'inspection-trace.json').write_text(json.dumps({'data':[{'spans':spans}]}))
+print('Running local inspections on '+str(project/source))
+(out/'.descriptions.xml').write_text('<inspections>'+''.join(f'<inspection shortName="{tool}" language="{language}"/>' for tool,language in tools.items())+'</inspections>')
+problems=[]
+for tool,name in canary_files.items():
+ if report_canary: problems.append((tool,control/name))
+ if report_clean: problems.append((tool,control/clean_twins[tool]))
+ if report_user: problems.append((tool,project/source))
+for tool in tools:
+ (out/(tool+'.xml')).write_text('<problems>'+''.join(f'<problem><file>{path.as_uri()}</file><line>1</line><problem_class id="{rule}" severity="WARNING"/><description>Planted</description></problem>' for rule,path in problems if rule==tool)+'</problems>')
+print('Done.')
+""")
+        self.script.chmod(0o700)
+        self.entry = {"path": str(self.worker), "app": str(self.app), "cacheRoot": str(self.cache), "jdk": str(self.jdk)}
+
+    def declare(self, inspection):
+        (self.repo / ".github").mkdir(exist_ok=True)
+        (self.repo / ".github/github.json").write_text(json.dumps({"qualityGate": {"inspection": inspection}}))
+
+    def args(self, *files, backend=("--backend", "native")):
+        selection = [argument for path in files or (self.SOURCE,) for argument in ("--file", path)]
+        return host.build_parser().parse_args(["agent-inspect", *backend, "--repo", str(self.repo), "--scope", "files", *selection, "--profile", "Test"])
+
+    @contextmanager
+    def native_host(self):
+        with patch.object(sys, "platform", "darwin"), patch.dict(os.environ, {}, clear=False), \
+                patch_attr(host, "cache_dir", return_value=self.root / "cache"), \
+                patch_attr(host, "read_global_config", return_value={"jetbrains": {"nativeWorkers": {"intellij": self.entry}}}), \
+                patch_attr(host, "trusted_auto_open_roots", return_value=[str(self.repo)]), \
+                patch.object(os, "getloadavg", return_value=(1, 1, 1)):
+            os.environ.pop("JETBRAINS_INSPECTION_NATIVE_WORKER", None)
+            os.environ.pop("JETBRAINS_INSPECTION_CACHE_DIR", None)
+            yield
+
+    def assess(self, *files):
+        with self.native_host():
+            return native.run(self.args(*files), host)
+
+    def select(self, *files):
+        with self.native_host():
+            return native.select_backend(self.args(*files, backend=()), host)
+
+    def engine(self, old, new):
+        assert old in self.script.read_text()
+        self.script.write_text(self.script.read_text().replace(old, new))
+
+    def test_intellij_repositories_route_kotlin_and_java_selections_to_native_intellij(self):
+        self.assertEqual(self.select(self.SOURCE, "src/main/java/Util.java"), ("native", "intellij_native_route"))
+        self.declare({"lanes": [{"id": "jvm", "ide": "IntelliJ IDEA", "include": ["*", "**/*"]}]})
+        self.assertEqual(self.select(self.SOURCE, "build.gradle.kts")[0], "native")
+        self.assertEqual(self.select("src/main/java/Util.java")[0], "api")
+        for inspection in ({}, {"ide": "PyCharm"}, {"lanes": [{"id": "jvm", "ide": "IntelliJ IDEA", "include": ["**/*"], "projectPath": "src"}]}):
+            with self.subTest(inspection=inspection):
+                self.declare(inspection)
+                self.assertEqual(self.select(self.SOURCE)[0], "api")
+
+    def test_intellij_needs_an_absolute_jdk_home_before_custody(self):
+        for change, reason in ((lambda: self.entry.pop("jdk"), "native_jdk_not_configured"),
+                               (lambda: self.entry.update(jdk="jdk/Contents/Home"), "native_jdk_not_configured"),
+                               (lambda: (self.jdk / "bin/java").chmod(0o644), "native_jdk_unavailable")):
+            with self.subTest(reason=reason):
+                self.setUp()
+                change()
+                self.assertEqual(self.select(), ("api", "native_ineligible=" + reason))
+                result = self.assess()
+                self.assertEqual(result["inspection_outcome"]["reason"], reason)
+                self.assertFalse((self.worker / "native-run.json").exists())
+                self.assertFalse(self.engine_record.exists())
+
+    def test_missing_root_gradle_build_is_refused_before_launch(self):
+        (self.repo / "build.gradle.kts").unlink()
+        self.assertEqual(self.select(), ("api", "native_ineligible=native_gradle_build_required"))
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_gradle_build_required")
+        self.assertFalse(self.engine_record.exists())
+
+    def test_stale_module_model_is_replaced_by_the_runs_jdk_and_removed_after(self):
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_completed", result["proof_failures"])
+        engine = json.loads(self.warmup_record.read_text())
+        self.assertFalse(any(engine["stale"].values()), engine["stale"])
+        project_sdk = ElementTree.fromstring(engine["misc"]).find("component[@name='ProjectRootManager']")
+        entry = next(jdk for jdk in ElementTree.fromstring(engine["sdk_table"]).iter("jdk")
+                     if jdk.find("name").get("value") == project_sdk.get("project-jdk-name"))
+        self.assertEqual((entry.find("type").get("value"), entry.find("homePath").get("value")),
+                         (project_sdk.get("project-jdk-type"), str(self.jdk)))
+        self.assertIn(f"jrt://{self.jdk}!/java.base", {root.get("url") for root in entry.iter("root")})
+        self.assertFalse((self.worker / "config/options/jdk.table.xml").exists())
+        self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def test_engine_gets_the_jdk_and_a_bounded_daemon_in_the_shared_gradle_home(self):
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_completed", result["proof_failures"])
+        engine = json.loads(self.warmup_record.read_text())
+        self.assertEqual(engine["env"], {"JAVA_HOME": str(self.jdk), "GRADLE_USER_HOME": str(self.cache / "gradle-home")})
+        self.assertIn(f"org.gradle.daemon.idletimeout={native.GRADLE_DAEMON_IDLE_TIMEOUT_MS}", engine["gradle_properties"].splitlines())
+
+    def test_gradle_import_needs_both_successful_stages(self):
+        failures = (("gradle_lines=['[Gradle]: Gradle resolve stage finished with success: fixture',", "gradle_lines=[", "native_gradle_import_unproven"),
+                    (",'[Gradle]: Gradle data import stage finished with success: fixture']", "]", "native_gradle_import_unproven"),
+                    ("gradle_lines=[", "gradle_lines=['[Gradle]: Gradle resolve stage canceled fixture',", "native_gradle_import_failed"),
+                    ("gradle_lines=[", "gradle_lines=['2026-01-01 00:00:00,000 [   1]  ERROR - #o.j.p.g.GradleImport - import failed',", "native_gradle_import_failed"),
+                    (" for line in gradle_lines:", " sys.exit(3)\n for line in gradle_lines:", "native_gradle_import_failed"))
+        for old, new, reason in failures:
+            with self.subTest(reason=reason, new=new):
+                self.setUp()
+                self.engine(old, new)
+                result = self.assess()
+                self.assertEqual((result["agent_result"]["verdict"], result["inspection_outcome"]["reason"]), ("UNKNOWN", reason))
+                self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def test_warmup_imports_gradle_into_the_runs_system_before_inspection(self):
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_completed", result["proof_failures"])
+        self.assertTrue(json.loads(self.engine_record.read_text())["imported_model"])
+        self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def test_licensing_during_warmup_stops_before_inspection(self):
+        self.engine("print('IDE Warm-up finished.')", "print('No valid license found')\n print('IDE Warm-up finished.')")
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_owner_activation_required")
+        self.assertFalse(self.engine_record.exists())
+
+    def test_incomplete_warmup_licence_observation_stops_before_inspection(self):
+        real_execute = native.execute
+
+        def observe_incompletely(argv, *args, **kwargs):
+            real_execute(argv, *args, **kwargs)
+            if "warmup" in argv:
+                args[4]["license_observation_complete"] = False
+
+        with patch_attr(native, "execute", side_effect=observe_incompletely):
+            result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_license_observation_unproven")
+        self.assertFalse(self.engine_record.exists())
+
+    def test_kotlin_tools_must_execute_on_each_selected_kotlin_file(self):
+        self.engine("files=[project/source,*control.iterdir()]", "files=[*control.iterdir()]")
+        result = self.assess()
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(set(result["coverage"]["missing_execution"]), {"UnusedVariable", native.proof.INTELLIJ_RESOLUTION_RULE, "RedundantSemicolon"})
+
+    def test_defect_and_resolution_controls_must_both_behave_beside_the_selected_source(self):
+        green = self.assess()
+        self.assertEqual(green["agent_result"]["verdict"], "GREEN", green["proof_failures"])
+        self.assertTrue(all(Path(result["file"]).parent.parent == Path(self.SOURCE).parent
+                            for result in green["coverage"]["canary_results"].values()))
+        for old, new in (("report_canary=True", "report_canary=False"), ("report_clean=False", "report_clean=True")):
+            with self.subTest(change=new):
+                self.setUp()
+                self.engine(old, new)
+                result = self.assess()
+                self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+                self.assertEqual({tool for tool, outcome in result["coverage"]["canary_results"].items() if not outcome["detected"]},
+                                 set(native.proof.INTELLIJ_CANARY_FILES))
+
+    def start_daemon(self, gradle_home, project, *, ignore_term=False):
+        pid_file = self.root / f"daemon-{len(list(self.root.glob('daemon-*.pid')))}.pid"
+        process = subprocess.Popen([sys.executable, "-c", FAKE_GRADLE_DAEMON, native.GRADLE_DAEMON_MAIN,
+                                    f"{gradle_home}/wrapper/dists/fixture/lib/gradle-daemon-main.jar", str(project),
+                                    "ignore-term" if ignore_term else "default", str(pid_file)],
+                                   start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: process.poll() is None and (process.kill(), process.wait()))
+        while not pid_file.exists():
+            time.sleep(0.01)
+        return process
+
+    def warmup_starts_a_daemon(self, *, ignore_term=False):
+        self.engine("print('IDE Warm-up finished.')", "import subprocess\n subprocess.Popen([sys.executable,'-c',daemon,"
+                    f"{native.GRADLE_DAEMON_MAIN!r},str(gradle_home)+'/wrapper/dists/fixture/lib/gradle-daemon-main.jar',str(project),"
+                    f"{'ignore-term' if ignore_term else 'default'!r},str(gradle_home/'daemon.pid')],start_new_session=True,"
+                    "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+                    " while not (gradle_home/'daemon.pid').exists(): pass\n print('IDE Warm-up finished.')")
+        self.engine("import json,os,pathlib,sys\n", f"import json,os,pathlib,sys\ndaemon={FAKE_GRADLE_DAEMON!r}\n")
+        self.addCleanup(self.kill_recorded_daemon)
+
+    def kill_recorded_daemon(self):
+        with contextlib.suppress(FileNotFoundError, ProcessLookupError):
+            os.kill(int((self.cache / "gradle-home/daemon.pid").read_text()), signal.SIGKILL)
+
+    def install_gradle_stop(self):
+        launcher = self.cache / "gradle-home/wrapper/dists/gradle-fixture-bin/fixture/gradle-fixture/bin/gradle"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text(f"#!{sys.executable}\nimport os,pathlib,signal,sys\n"
+                            "home=pathlib.Path(os.environ['GRADLE_USER_HOME'])\n"
+                            "(home/'stop-request.txt').write_text(os.environ.get('JAVA_HOME',''))\n"
+                            "if sys.argv[1:]==['--stop'] and os.environ.get('JAVA_HOME'): os.kill(int((home/'daemon.pid').read_text()),signal.SIGKILL)\n")
+        launcher.chmod(0o700)
+        return self.cache / "gradle-home/stop-request.txt"
+
+    def assert_daemon_gone_and_private_stays_deleted(self, result):
+        pid = int((self.cache / "gradle-home/daemon.pid").read_text())
+        self.assertEqual(result["diagnostic"]["native"]["gradle_daemons_stopped"], [pid])
+        self.assertEqual(result["cleanup"]["status"], "closed")
+        time.sleep(0.3)
+        self.assertEqual(list(self.cache.glob("private-*")), [])
+
+    def test_guardian_stops_the_runs_gradle_daemon_through_gradle_stop_before_deleting_private(self):
+        stop_request = self.install_gradle_stop()
+        self.warmup_starts_a_daemon(ignore_term=True)
+        with patch_attr(native, "GRADLE_DAEMON_EXIT_SECONDS", 1):
+            result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_completed", result["proof_failures"])
+        self.assert_daemon_gone_and_private_stays_deleted(result)
+        self.assertEqual(stop_request.read_text(), str(self.jdk))
+
+    def test_a_daemon_that_ignores_gradle_stop_is_terminated_then_killed(self):
+        self.warmup_starts_a_daemon(ignore_term=True)
+        with patch_attr(native, "GRADLE_DAEMON_EXIT_SECONDS", 1):
+            result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_completed", result["proof_failures"])
+        self.assert_daemon_gone_and_private_stays_deleted(result)
+
+    def test_a_gradle_daemon_without_this_workers_gradle_home_is_never_signalled(self):
+        foreign = self.start_daemon(self.root / "elsewhere/gradle-home", self.root / "elsewhere/project")
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_completed", result["proof_failures"])
+        self.assertEqual(result["diagnostic"]["native"]["gradle_daemons_stopped"], [])
+        self.assertIsNone(foreign.poll())
+
+    def record_finished_run(self, gradle_home):
+        run_id = "0f0e0d0c-0b0a-4908-8706-050403020100"
+        private = self.cache / f"private-{run_id}"
+        anchor = native.common.storage_anchor(self.cache)
+        record = {"run_id": run_id, "private": str(private), "sdk_name": f"jb-native-{run_id}", "interpreter": str(self.jdk),
+                  "table_existed": False, "storage_anchor": str(anchor), "storage_identity": {"fixture": str(anchor)},
+                  "backend_revision": "sha256:" + "0" * 64, "schema_version": 2, "phase": "terminal", "outcome": "native_completed",
+                  "license_boundary": False, "worker_exited": True, "sdk_attempted": False, "private_materialized": True,
+                  "active_process": None, "gradle_home": str(gradle_home)}
+        (self.worker / "native-run.json").write_text(json.dumps(record))
+        return private
+
+    def test_recovery_stops_the_recorded_daemon_and_reclaims_its_recreated_project_cache(self):
+        gradle_home = self.cache / "gradle-home"
+        gradle_home.mkdir()
+        private = self.record_finished_run(gradle_home)
+        daemon = self.start_daemon(gradle_home, private / "project")
+        while not (private / "project/.gradle/last-build.bin").exists():
+            time.sleep(0.01)
+        receipt = {}
+        native.recover_run(self.worker, receipt)
+        self.assertIsNotNone(daemon.wait(timeout=5))
+        self.assertEqual(receipt["gradle_daemons_stopped"], [daemon.pid])
+        time.sleep(0.3)
+        self.assertFalse(private.exists())
+        self.assertFalse((self.worker / "native-run.json").exists())
+
+    def test_recovery_keeps_a_private_directory_that_is_not_only_daemon_residue(self):
+        for extra, limit in (("project/src/App.kt", native.lifecycle.GRADLE_RESIDUE_ENTRY_LIMIT), ("logs/idea.log", native.lifecycle.GRADLE_RESIDUE_ENTRY_LIMIT),
+                             ("project/.gradle/9.8.1/gc.properties", 1)):
+            with self.subTest(extra=extra, limit=limit):
+                self.setUp()
+                private = self.record_finished_run(self.cache / "gradle-home")
+                for path in ("project/.gradle/9.8.1/fileChanges/last-build.bin", extra):
+                    (private / path).parent.mkdir(parents=True, exist_ok=True)
+                    (private / path).write_text("fixture")
+                with patch_attr(native.lifecycle, "GRADLE_RESIDUE_ENTRY_LIMIT", limit), self.assertRaises(native.Blocked) as refused:
+                    native.recover_run(self.worker, {})
+                self.assertEqual(str(refused.exception), "native_recovery_ownership_unproven")
+                self.assertTrue((private / extra).exists())
+
+    def test_recovery_refuses_a_recorded_gradle_home_reached_through_a_link(self):
+        real_home = self.cache / "real/gradle-home"
+        real_home.mkdir(parents=True)
+        (self.cache / "linked").symlink_to(self.cache / "real")
+        self.record_finished_run(self.cache / "linked/gradle-home")
+        daemon = self.start_daemon(real_home, self.root / "elsewhere/project")
+        receipt = {}
+        with self.assertRaises(native.Blocked):
+            native.recover_run(self.worker, receipt)
+        self.assertEqual(receipt.get("recovery_failure"), "native_recovery_journal_malformed")
+        self.assertIsNone(daemon.poll())
+
+    def test_warmup_without_both_gradle_stages_never_launches_inspection(self):
+        self.engine("gradle_lines=['[Gradle]: Gradle resolve stage finished with success: fixture',", "gradle_lines=[")
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_gradle_import_unproven")
+        self.assertFalse(self.engine_record.exists())
+
+    def test_an_unclosed_warmup_group_keeps_custody_and_never_launches_inspection(self):
+        real_group_gone = native.group_gone
+
+        def warmup_group_survives(pid, *args, **kwargs):
+            return not self.warmup_record.exists() and real_group_gone(pid, *args, **kwargs)
+
+        with patch_attr(native, "group_gone", side_effect=warmup_group_survives):
+            result = self.assess()
+        self.assertTrue(self.warmup_record.exists())
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_process_group_unproven")
+        self.assertFalse(self.engine_record.exists())
+        self.assertTrue((self.worker / "native-run.json").exists())
+
+    def test_inspection_does_not_rescan_warmups_logs_against_its_own_drain_budget(self):
+        self.engine("print('IDE Warm-up finished.')", "(logs/'idea.log').write_text(''.join(f'2026-01-01 00:00:00,000 [ {index}]   INFO - #fixture - warmup line {index:07}\\n' for index in range(110000)))\n"
+                    " import time\n time.sleep(2)\n print('IDE Warm-up finished.')")
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_completed", result["proof_failures"])
+
+    def test_user_findings_on_a_proven_import_are_red(self):
+        self.engine("report_user=False", "report_user=True")
+        result = self.assess()
+        self.assertEqual(result["agent_result"]["verdict"], "RED", result["proof_failures"])
+        self.assertEqual({finding["file"] for finding in json.loads(Path(result["findings_artifact"]).read_text())}, {self.SOURCE})
 
 
 @unittest.skipUnless(os.environ.get("JB_NATIVE_LIVE") == "1", "independently activated native worker required")
