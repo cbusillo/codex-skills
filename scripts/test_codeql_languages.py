@@ -24,6 +24,8 @@ class SelectionTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.repo = Path(self.directory.name)
         self.git("init", "--initial-branch=fixture")
+        self.git("config", "maintenance.auto", "false")
+        self.git("config", "gc.auto", "0")
         self.git("config", "user.name", "Fixture")
         self.git("config", "user.email", "fixture@example.invalid")
         self.write("README.md", "fixture\n")
