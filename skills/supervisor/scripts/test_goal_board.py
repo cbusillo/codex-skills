@@ -8,6 +8,7 @@
 from contextlib import redirect_stdout
 import io
 import json
+import re
 import unittest
 from typing import Any
 from unittest.mock import Mock, patch
@@ -102,6 +103,12 @@ class GoalBoardTests(unittest.TestCase):
                 if detail is None:
                     detail = next(responses)
                 body = detail
+                if isinstance(body, dict):
+                    aliases = re.findall(r"t[0-9]+(?=:)", text)
+                    selected = {alias: body["data"]["repository"].get(alias) for alias in aliases}
+                    errors = [error for error in body.get("errors", [])
+                              if not error.get("path") or any(alias in error["path"] for alias in aliases)]
+                    body = {"data": {"repository": selected}, "errors": errors}
             return body if isinstance(body, ApiResult) else ApiResult(ok=True, status=200, body=body)
 
         self.reader.graphql_json.side_effect = query
@@ -344,23 +351,31 @@ class GoalBoardTests(unittest.TestCase):
         self.assertIsNotNone(board["tracks"][0]["latest_decision"])
 
     def test_unread_field_keeps_sibling_fields_children_and_tracks_readable(self) -> None:
-        row = child(10, prs=[pr(100), pr(101)])
+        unread_handoff = pr(101)
+        unread_handoff["comments"] = None
+        row = child(10, prs=[pr(100), unread_handoff, None])
         row["closedByPullRequestsReferences"]["nodes"][0]["mergeable"] = None
         broken_comments = child(11)
         broken_comments["comments"] = None
+        unread_repository = child(13)
+        unread_repository["repository"] = None
         board = self.replay(listing([{"number": 1, "title": "Track: One"}, {"number": 2, "title": "Track: Two"}]),
-                            details(t1=track(1, children=[row, broken_comments, child(12)]), t2=track(2)))
+            details(t1=track(1, children=[None, row, broken_comments, child(12), unread_repository]), t2=track(2)))
         self.assertEqual(board["coverage"], {"discovered": 2, "read": 2, "complete": False})
         children = board["tracks"][0]["children"]
         self.assertEqual(children[0]["open_prs"][0]["mergeable"], goal_board.UNKNOWN)
         self.assertEqual(children[0]["open_prs"][0]["handoff"], "no handoff")
         self.assertEqual(children[0]["open_prs"][1]["mergeable"], "mergeable")
+        self.assertEqual(children[0]["open_prs"][1]["handoff"], goal_board.UNKNOWN)
+        self.assertEqual(children[3]["repository"], goal_board.UNKNOWN)
+        self.assertEqual(children[3]["next_action"], "Child 13 step.")
         self.assertEqual(children[0]["next_action"], "Child 10 step.")
         self.assertEqual(children[1]["next_action"], goal_board.UNKNOWN)
         self.assertEqual(children[2]["next_action"], "Child 12 step.")
         text = goal_board.markdown({**board, "checked_at": "now"})
-        self.assertIn("mergeability on " + pr(100)["url"], text)
-        self.assertIn("next action (TypeError:", text)
+        for observed in [board["tracks"][0], *children]:
+            for reason in observed["unread"]:
+                self.assertIn(reason, text)
         self.assertFalse(board["tracks"][1]["unread"])
 
     def test_graphql_errors_name_the_field_and_preserve_readable_tracks(self) -> None:
@@ -375,20 +390,24 @@ class GoalBoardTests(unittest.TestCase):
         text = goal_board.markdown({**board, "checked_at": "now"})
         self.assertIn("repository.t1.subIssues", text)
         self.assertIn("Field unavailable", text)
-        self.assertIn("children (TypeError:", text)
+        self.assertIn(board["tracks"][0]["unread"][0], text)
 
     def test_http_200_detail_failure_cannot_hide_every_track(self) -> None:
         failure = {"message": "Detail query unavailable"}
-        self.reader.graphql_json.side_effect = [ApiResult(ok=True, status=200, body=body) for body in (
-            listing([{"number": 1, "title": "Track: One"}, {"number": 2, "title": "Track: Two"}]),
-            {"data": {"repository": None}, "errors": [failure]},
-            details(t2=track(2)))]
-        board = goal_board.goal_board(self.reader, "owner", trusted=TRUSTED, wait_trusted=TRUSTED)
-        self.assertEqual(board["coverage"], {"discovered": 2, "read": 1, "complete": False})
-        self.assertFalse(board["tracks"][0]["read"])
-        self.assertTrue(board["tracks"][1]["read"])
-        self.assertEqual(board["tracks"][1]["next_action"], "Track 2 step.")
-        self.assertIn(failure["message"], goal_board.markdown({**board, "checked_at": "now"}))
+        for errors in ([failure], [None], {"message": "Malformed error collection"}):
+            with self.subTest(errors=errors):
+                self.reader.graphql_json.side_effect = [ApiResult(ok=True, status=200, body=body) for body in (
+                    listing([{"number": 1, "title": "Track: One"}, {"number": 2, "title": "Track: Two"}]),
+                    {"data": {"repository": None}, "errors": errors},
+                    details(t2=track(2)))]
+                board = goal_board.goal_board(self.reader, "owner", trusted=TRUSTED, wait_trusted=TRUSTED)
+                self.assertEqual(board["coverage"], {"discovered": 2, "read": 1, "complete": False})
+                self.assertFalse(board["tracks"][0]["read"])
+                self.assertTrue(board["tracks"][1]["read"])
+                self.assertEqual(board["tracks"][1]["next_action"], "Track 2 step.")
+                text = goal_board.markdown({**board, "checked_at": "now"})
+                for reason in board["errors"]:
+                    self.assertIn(reason, text)
 
     def test_discovery_failures_refuse_rather_than_return_a_short_board(self):
         for pages in ([ApiResult(ok=False, status=403, body=None)],

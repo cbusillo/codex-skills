@@ -126,17 +126,27 @@ def read_tracks(
             detail_query([number]), {"owner": owner, "name": name}, step=f"work_graph_track_{number}"
         )
         data = result.body.get("data") if result.ok and isinstance(result.body, dict) else None
-        repository = (data or {}).get("repository") or {}
+        repository = data.get("repository") if isinstance(data, dict) else None
+        repository = repository if isinstance(repository, dict) else {}
+        before = len(errors)
         if not result.ok or not isinstance(result.body, dict):
             reason = result.failure.message if result.failure else f"HTTP {result.status}: invalid or unavailable response"
             errors.append(f"Track read failed for #{number}: {reason}")
         elif result.body.get("errors"):
-            for error in result.body["errors"]:
-                path = ".".join(map(str, error.get("path") or [])) or "query"
-                errors.append(f"Track read failed at {path}: {error.get('message', 'GraphQL error')}")
+            failures = result.body["errors"]
+            for error in failures if isinstance(failures, list) else [failures]:
+                if not isinstance(error, dict):
+                    errors.append(f"Track #{number} read failed: invalid GraphQL error {str(error)[:1000]}")
+                    continue
+                parts = error.get("path")
+                path = ".".join(map(str, parts)) if isinstance(parts, list) and parts else "query"
+                errors.append(f"Track #{number} read failed at {path}: {error.get('message', 'GraphQL error')}")
         node = repository.get(f"t{number}")
         if isinstance(node, dict) and node.get("state") == "OPEN":
             nodes[number] = node
+        elif len(errors) == before:
+            reason = f"state changed to {node.get('state')} since discovery" if isinstance(node, dict) else "issue data missing"
+            errors.append(f"Track #{number} unread: {reason}")
     return {"tracks": tracks, "nodes": nodes, "errors": errors}
 
 

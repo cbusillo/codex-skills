@@ -2493,14 +2493,14 @@ entrypoint = "supervisor/scripts/goal_board.py"
 intent = "Rebuild the Supervisor's goal board from every open Track issue on each check, after compaction and at takeover, instead of carrying status in a private ledger."
 current_transport = "gh_cli_graphql"
 selected_transport = "gh_cli_graphql"
-endpoint_or_command = "POST /graphql repository.issues open listing, cursor-paginated, then aliased Track issues with subIssues, comments and closedByPullRequestsReferences"
+endpoint_or_command = "POST /graphql repository.issues open listing, cursor-paginated, then Track details with subIssues, comments and closedByPullRequestsReferences"
 quota_bucket = "graphql"
 actor_policy = "automation_required"
 mutation_class = "read"
 idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "paged_read"
-retained_graphql_rationale = "One listing page plus one aliased query per ten Tracks reads the whole Track graph, its decision comments and closing PR handoffs; the REST route needs several calls per Track. GraphQL has no conditional REST cache."
+retained_graphql_rationale = "GraphQL exposes the native Track graph and closing PR handoffs without separate REST relationship reads."
 source_refs = ["supervisor/scripts/goal_board.py:goal_board"]
 test_refs = ["supervisor/scripts/test_goal_board.py:test_every_open_track_across_pages_is_read_with_children_decisions_and_prs", "supervisor/scripts/test_goal_board.py:test_failed_or_partial_track_read_says_unknown_and_never_complete"]
 
