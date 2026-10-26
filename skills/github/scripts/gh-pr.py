@@ -29,6 +29,7 @@ import github_plan_wait
 import director_question_gate
 from ready_handoff import (
     client_handoff,
+    pending_client_reviews,
     handoff_body,
     review_evidence_gap,
     review_result_body,
@@ -627,11 +628,12 @@ def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
         or summary.get("unavailableComponents")
     ):
         raise PrHelperError("PR check evidence is incomplete", repo=repo, pr=number)
-    pending_client = sum(
-        check.get("name") == "launchplane/owner-review"
-        and check.get("status") != "completed"
-        for check in checks["checkRuns"]
-    ) if args.waiting_for_client else 0
+    current = cmd_view(target, cache_enabled=False, include_body=True)["pr"]
+    validate_ready_pr(current, repo=repo, number=number)
+    if current["headRefOid"] != checks["headSha"] or current["labels"] != pr["labels"]:
+        raise PrHelperError("PR head or labels changed during readiness checks; read it again", repo=repo, pr=number)
+    handoff = client_handoff(current, checks["checkRuns"], repository=repo, waiting_for_client=args.waiting_for_client)
+    pending_client = pending_client_reviews(checks["checkRuns"], handoff, waiting_for_client=args.waiting_for_client)
     if (
         summary["failingCount"]
         or summary["pendingCount"] > pending_client
@@ -640,14 +642,7 @@ def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
         raise PrHelperError("PR checks are pending or failing", repo=repo, pr=number, summary=summary)
     if not (summary["checkRunCount"] or summary["statusCount"]) and not args.allow_no_checks:
         raise PrHelperError("No checks exist for this head yet; wait for CI, or use --allow-no-checks for a repository with no CI checks configured", repo=repo, pr=number)
-    # Bypass coalesced view caches: renewed holds and Client notes must be fresh.
-    current = cmd_view(target, cache_enabled=False, include_body=True)["pr"]
-    validate_ready_pr(current, repo=repo, number=number)
-    if current["headRefOid"] != checks["headSha"] or current["labels"] != pr["labels"]:
-        raise PrHelperError("PR head or labels changed during readiness checks; read it again", repo=repo, pr=number)
-    client_refusal = client_handoff(
-        current, checks["checkRuns"], repository=repo, waiting_for_client=args.waiting_for_client,
-    ).refusal(accepted=args.waiting_for_client or any(
+    client_refusal = handoff.refusal(accepted=args.waiting_for_client or any(
         check.get("name") == "launchplane/owner-review"
         and check.get("status") == "completed"
         and check.get("conclusion") == "success"

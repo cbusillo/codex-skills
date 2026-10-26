@@ -32,6 +32,7 @@ from skills.github.scripts import github_api, github_pr_batch, github_open_prs
 from skills.github.scripts.github_identity import automation_login
 from skills.github.scripts.ready_handoff import (
     client_handoff,
+    pending_client_reviews,
     latest_ready,
     review_evidence_gap,
 )
@@ -528,12 +529,13 @@ class Live:
             self.reader, repo, number, head_sha=pr["head"]["sha"]
         )
         summary = checks["summary"]
+        handoff = client_handoff(pr, checks["checkRuns"], repository=repo)
         if (
             not summary["countsComplete"]
             or summary["unavailableComponents"]
             or (
                 summary["failingCount"]
-                or summary["pendingCount"]
+                or summary["pendingCount"] > pending_client_reviews(checks["checkRuns"], handoff)
                 or summary["unfinishedWorkflowRunCount"]
             )
         ):
@@ -573,7 +575,6 @@ class Live:
                     or any(item["state"] != "success" for item in statuses)
                 ):
                     return False
-        handoff = client_handoff(pr, checks["checkRuns"], repository=repo)
         return not handoff.refusal(
             accepted=not handoff.acceptance_required or self.acceptance(repo, pr)
         )

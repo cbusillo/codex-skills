@@ -353,9 +353,9 @@ Default to PR-backed implementation work.
 
 ### Client-Impact Trailers
 
-Each change still needs its own Client acceptance; release acceptance is a
-separate final check and never replaces it. After a PR asks its Client for
-review, end every later commit message with one trailer, for example
+Each Client-visible change still needs its own Client acceptance; release
+acceptance is a separate final check and never replaces it. After a PR asks
+its Client for review, end every later commit message with one trailer, for example
 `git-commit-as-bot --worktree /absolute/task/path -m "..." --trailer "Client-impact: none"`:
 
 - `Client-impact: none` only when the commit cannot change anything the Client
