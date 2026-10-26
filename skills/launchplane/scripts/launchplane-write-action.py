@@ -89,6 +89,8 @@ READ_ONLY_OPERATIONS = {
     "target-replacement-operation-read",
     "target-replacement-plan-read",
     "production-backup-authority-read",
+    "production-backup-preflight-read",
+    "backup-worker-bindings-read",
     "private-health-endpoint-read",
     "product-promotion-status-read",
     "workflow-rule-retirement-inspect",
@@ -11277,6 +11279,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     from launchplane_runtime_setting_removal import add_parser as add_runtime_setting_removal_parser
     add_runtime_setting_removal_parser(subparsers)
 
+    from launchplane_backup_credentials import add_parser as add_backup_credentials_parser
+    add_backup_credentials_parser(subparsers)
     from launchplane_review_withdrawal import add_parser as add_review_withdrawal_parser
     add_review_withdrawal_parser(subparsers)
 
@@ -12233,6 +12237,9 @@ def main(argv: list[str]) -> int:
         )
         if args.command in runtime_setting_removal_commands:
             return execute_runtime_setting_removal(sys.modules[__name__], args)
+        from launchplane_backup_credentials import COMMANDS as backup_credentials_commands, execute as execute_backup_credentials
+        if args.command in backup_credentials_commands:
+            return execute_backup_credentials(sys.modules[__name__], args)
         from launchplane_review_withdrawal import COMMANDS as review_withdrawal_commands, execute as execute_review_withdrawal
         if args.command in review_withdrawal_commands:
             return execute_review_withdrawal(sys.modules[__name__], args)

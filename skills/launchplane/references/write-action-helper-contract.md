@@ -2609,3 +2609,41 @@ This standalone read does not add a train, deployment or recovery gate.
 Readiness describes the head observed at `generated_at`; it is not reusable
 readiness after a push. Read once for the decision being made: the producer
 uses the train's GitHub rate budget for live evidence.
+
+## Backup worker references and capture-free preflight
+
+`production-backup-preflight-read --product P --context C --instance prod
+--promotion-action ACTION [--proposal-id ID]` uses the service's
+`GET /v1/production-backup-authority/preflight`. It returns policy revision,
+record and boundary binding ids, boundary/PBS status, finish time and trace.
+It requires an explicit `capture_started: false` response. No capture is
+queued. Pending-proposal qualification remains subject to service authorization.
+
+`backup-worker-bindings-read --product P --context C --instance prod` reads
+`GET /v1/products/{product}/environments/prod/backup-worker-bindings`.
+The helper checks the returned lane and projects only `bindings` with
+`binding_id`, `binding_key` and current `version_id`. Values and ciphertext
+are discarded; the service controls which exact-lane references are available.
+
+Use `backup-worker-bindings-dry-run` with the same lane, an optional
+`--promotion-action`, `--private-key-binding ID`, `--known-hosts-binding ID`,
+`--reason TEXT` and an original `--idempotency-key KEY`. Both references must
+be distinct and available in the metadata read. The service plans rebinding
+those references to its generic production backup SSH keys and any associated
+capture enrollment. This neither copies credentials nor creates access.
+
+Save the JSON output. `backup-worker-bindings-apply` takes those same arguments
+plus `--dry-run-evidence-file FILE`, `--expected-plan-digest DIGEST` and
+`--reviewed-dry-run`. The saved review binds the exact intent, service endpoint,
+lane, selected binding/version identities and original operation key. The helper
+sends the service's reference-only request to the same route with `/apply`,
+including `reviewed_plan_sha256`. The service enforces current-plan comparison
+and same-key replay. Readback checks both selected binding/version identities
+and intended generic keys; a missing or changed reference cannot verify apply.
+
+An accepted response with failed readback stays `accepted_unverified`; a lost
+apply response stays `outcome_unknown`. Preserve the saved review, receipt,
+caller, exact request and original key. Inspect binding metadata before retrying
+that same operation; never select another credential, identity, key or workflow
+to evade a denial or conflict. Terminal agents remain refused by the service.
+These commands add no grants and never call a provider directly.
