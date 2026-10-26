@@ -525,6 +525,7 @@ def log_assessment_records(payload: dict[str, Any]) -> None:
 
 def outcome_record_base(payload: dict[str, Any]) -> dict[str, Any]:
     public = public_payload(payload)
+    native = dict_field(dict_field(public, "diagnostic"), "native")
     timestamp_ms = int(time.time() * 1000)
     return {
         "schema_version": OUTCOME_LOG_SCHEMA_VERSION,
@@ -542,7 +543,12 @@ def outcome_record_base(payload: dict[str, Any]) -> dict[str, Any]:
         "verdict_reason": public.get("verdict_reason"),
         "status": public.get("status"),
         "scope": public.get("scope"),
-        "repo_head_sha": dict_field(dict_field(public, "diagnostic"), "native").get("repo_head_sha"),
+        "repo_head_sha": native.get("repo_head_sha"),
+        "load_pause_count": native.get("load_pause_count"),
+        "load_paused_ms": native.get("load_paused_ms"),
+        "admission_wait_ms": native.get("admission_wait_ms"),
+        "load_wait_ms": native.get("load_wait_ms"),
+        "wall_seconds": native.get("wall_seconds"),
         "helper_revision": helper_revision(),
         "inspection_started": public.get("inspection_started"),
         "inspection_run_id": dict_field(public, "identity").get("inspection_run_id"),
@@ -1973,6 +1979,11 @@ def public_outcome_event(event: dict[str, Any]) -> dict[str, Any]:
         "agent_report",
         "status",
         "scope",
+        "load_pause_count",
+        "load_paused_ms",
+        "admission_wait_ms",
+        "load_wait_ms",
+        "wall_seconds",
         "ide",
         "ide_channel",
         "ide_version",
