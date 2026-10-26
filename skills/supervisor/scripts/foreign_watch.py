@@ -21,6 +21,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import director_mentions
+from oq import QUESTION_PREFIXES
 from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args
 from github_review_markers import PRODUCT_REVIEW_MARKER
 
@@ -159,11 +160,13 @@ def scan(repos, watermarks, own_logins, launchplane_logins, started, reader):
                 marker = PRODUCT_REVIEW_MARKER.fullmatch(lines[0]) if lines else None
                 is_launchplane = (login or "").casefold() in launchplane or (
                     (login or "").casefold() in own and marker is not None)
-                if is_launchplane or (login or "").casefold() not in own:
+                is_question = ((login or "").casefold() in own
+                               and body.strip().lstrip("*").startswith(QUESTION_PREFIXES))
+                if is_question or is_launchplane or (login or "").casefold() not in own:
                     notice = {
                         "repository": repo, "author": login, "url": url,
                         "updated_at": updated, "excerpt": excerpt(body),
-                        "kind": "launchplane" if is_launchplane else "foreign",
+                        "kind": "director_question" if is_question else "launchplane" if is_launchplane else "foreign",
                         "untrusted": True,
                         "review_marker": marker is not None,
                     }

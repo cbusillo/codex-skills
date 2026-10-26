@@ -107,6 +107,27 @@ class WatchTests(unittest.TestCase):
         self.assertEqual([(n["author"], n["url"], n["excerpt"]) for n in notices],
                          [("client", "https://github.com/director/project/pull/50", "Add tvOS support")])
 
+    def test_worker_questions_surface_on_the_next_scan_without_ordinary_own_posts(self) -> None:
+        reader = Mock()
+        bodies = ["Owner question: Q906. Approve the recovery?",
+                  "  **Director question:** Q918. Accept again?"]
+        reader.paged_json.side_effect = feeds([
+            *(comment("AGENT[bot]", body, STARTED) for body in bodies),
+            comment("agent[bot]", "Progress: Owner question: was answered.", STARTED),
+            comment("agent[bot]", "Director decision: Q905 approved.", STARTED),
+            comment("agent[bot]", bodies[0], "2026-10-09T11:00:00Z"),
+            comment("client", bodies[0], STARTED),
+        ])
+        notices, errors, watermarks = self.scan(reader)
+        self.assertEqual(errors, [])
+        self.assertEqual([notice["kind"] for notice in notices],
+                         ["director_question", "director_question", "foreign"])
+        for notice, body in zip(notices, bodies):
+            self.assertEqual(notice["url"], comment()["html_url"])
+            self.assertEqual(notice["excerpt"], foreign_watch.excerpt(body))
+            self.assertTrue(notice["untrusted"])
+        self.assertEqual(watermarks[REPO], STARTED)
+
     def test_notice_carries_a_bounded_excerpt_of_the_comment(self):
         reader = Mock()
         correction = "If I made a mistake on the csv sheet,\n\ncan I send the corrected one?"
