@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -794,6 +795,88 @@ print('Done.')
         self.assertFalse(marker.exists())
         self.assertEqual(result["inspection_outcome"]["reason"], "native_exit_observer_unavailable")
         self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def require_plugins(self, *plugins):
+        entries = "".join(f'<plugin {" ".join(f"{key}={value!r}" for key, value in plugin.items())}/>' for plugin in plugins)
+        (self.repo / native.common.REQUIRED_PLUGINS_FILE).write_text(
+            f'<project version="4"><component name="ExternalDependencies">{entries}</component></project>')
+
+    def install_plugin(self, plugin_id, version="2026.6.3-262"):
+        jar = self.worker / f"plugins/{plugin_id}/lib/{plugin_id}.jar"
+        jar.parent.mkdir(parents=True)
+        with zipfile.ZipFile(jar, "w") as archive:
+            archive.writestr("META-INF/plugin.xml", f"<idea-plugin><id>{plugin_id}</id><version>{version}</version></idea-plugin>")
+
+    def assert_plugin_blocked(self, result, reason, *named):
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(result["inspection_outcome"]["reason"], reason)
+        self.assertNotIn("worker_pid", result["diagnostic"]["native"])
+        for text in named:
+            self.assertIn(text, result["agent_result"]["next_action"])
+
+    def test_a_repository_without_required_plugins_never_reads_worker_plugins(self):
+        with patch_attr(native.common, "worker_plugins", side_effect=AssertionError("plugins read")):
+            result = self.assess(direct=True)
+        self.assertEqual(result["agent_result"]["verdict"], "RED")
+        self.assertNotIn("required_plugins", result["diagnostic"]["native"])
+
+    def test_an_installed_required_plugin_lets_the_inspection_run(self):
+        self.install_plugin("dev.ngocta.pycharm-odoo")
+        self.require_plugins({"id": "dev.ngocta.pycharm-odoo"})
+        result = self.assess()
+        self.assertEqual(result["agent_result"]["verdict"], "RED")
+        self.assertEqual(result["diagnostic"]["native"]["required_plugins"], ["dev.ngocta.pycharm-odoo 2026.6.3-262"])
+
+    def test_a_bundled_required_plugin_counts_as_installed(self):
+        info = self.app / "Contents/Resources/product-info.json"
+        info.write_text(json.dumps(json.loads(info.read_text()) | {"buildNumber": "262.1", "bundledPlugins": ["Docker"]}))
+        self.require_plugins({"id": "Docker"})
+        result = self.assess()
+        self.assertEqual(result["agent_result"]["verdict"], "RED")
+        self.assertEqual(result["diagnostic"]["native"]["required_plugins"], ["Docker 262.1"])
+
+    def test_a_missing_required_plugin_is_unknown_before_launch(self):
+        self.install_plugin("ru.adelf.idea.dotenv")
+        self.require_plugins({"id": "dev.blachut.svelte.lang"})
+        self.assert_plugin_blocked(self.assess(), "native_required_plugin_missing",
+                                   "dev.blachut.svelte.lang (not installed)", str(self.worker), "Plugins screen", "quit")
+
+    def test_a_disabled_required_plugin_is_unknown_before_launch(self):
+        self.install_plugin("dev.ngocta.pycharm-odoo")
+        (self.worker / "config/disabled_plugins.txt").write_text("com.example.other\ndev.ngocta.pycharm-odoo\n")
+        self.require_plugins({"id": "dev.ngocta.pycharm-odoo"})
+        self.assert_plugin_blocked(self.assess(), "native_required_plugin_missing", "dev.ngocta.pycharm-odoo (disabled)", str(self.worker))
+
+    def test_required_plugin_versions_are_honoured(self):
+        self.install_plugin("dev.ngocta.pycharm-odoo")
+        for bound, needs in (({"min-version": "2026.10"}, "2026.10 or later"), ({"max-version": "2026.6.2"}, "2026.6.2 or earlier")):
+            with self.subTest(bound=bound):
+                self.require_plugins({"id": "dev.ngocta.pycharm-odoo", **bound})
+                self.assert_plugin_blocked(self.assess(), "native_required_plugin_missing", "dev.ngocta.pycharm-odoo 2026.6.3-262", needs)
+        self.require_plugins({"id": "dev.ngocta.pycharm-odoo", "min-version": "2026.6", "max-version": "2026.6.3-262"})
+        self.assertEqual(self.assess()["agent_result"]["verdict"], "RED")
+
+    def test_a_malformed_required_plugins_file_is_unknown_with_its_reason(self):
+        for content in ("<project", "<project><component name='ExternalDependencies'><plugin/></component></project>",
+                        "<project><component name='Other'/></project>"):
+            with self.subTest(content=content):
+                (self.repo / native.common.REQUIRED_PLUGINS_FILE).write_text(content)
+                self.assert_plugin_blocked(self.assess(), "native_required_plugins_unreadable", "externalDependencies.xml")
+
+    def test_automatic_route_names_the_missing_plugin_and_worker(self):
+        self.require_plugins({"id": "dev.blachut.svelte.lang"})
+        workers = {"jetbrains": {"nativeWorkers": {"pycharm": {"path": str(self.worker), "app": str(self.app)}}}}
+        with self.native_host(), patch_attr(host, "read_global_config", return_value=workers), \
+                patch_attr(host, "native_backend_module", return_value=native), \
+                patch_attr(host, "command_native", side_effect=AssertionError("worker started")), \
+                patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--repo", str(self.repo), "--scope", "files", "--file", "source.py"]), \
+                redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(host.main(), 0)
+        result = json.loads(output.getvalue())["agent_result"]
+        self.assertEqual(result["verdict"], "UNKNOWN")
+        for text in ("dev.blachut.svelte.lang (not installed)", str(self.worker)):
+            self.assertIn(text, result["agent_report"])
+            self.assertIn(text, result["next_action"])
 
     def test_another_ide_distribution_is_refused_before_launch(self):
         (self.app / "Contents/Resources/product-info.json").write_text(json.dumps({"productCode": "WS", "envVarBaseName": "WEBSTORM"}))

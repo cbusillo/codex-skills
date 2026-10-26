@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import errno
+import json
 import os
 import plistlib
 import re
@@ -14,6 +15,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -21,6 +23,7 @@ from xml.etree import ElementTree
 LOAD_LIMIT = 64
 FINDING_LIMIT = 25
 MAX_ANALYZED_FILE_KB = 2500
+REQUIRED_PLUGINS_FILE = ".idea/externalDependencies.xml"
 NATIVE_OPTIONS = ("native_worker", "native_recover_only", "native_framework_root", "native_reconcile_result", "native_release_run")
 
 
@@ -342,6 +345,75 @@ def scope_selection(args: Any, host: Any, receipt: dict[str, Any] | None = None)
         if receipt is not None:
             receipt.update(unmatched_files=selection["unmatched_files"], excluded_files=selection["excluded_files"])
     return repo, config, scope, selected
+
+
+def required_plugins(repo: Path) -> list[dict[str, str]]:
+    path = repo / REQUIRED_PLUGINS_FILE
+    if not path.exists() and not path.is_symlink():
+        return []
+    try:
+        if path.is_symlink():
+            raise ValueError(REQUIRED_PLUGINS_FILE)
+        root = ElementTree.parse(path).getroot()
+        component = root.find("component[@name='ExternalDependencies']")
+        if root.tag != "project" or component is None:
+            raise ValueError(REQUIRED_PLUGINS_FILE)
+        required = [dict(plugin.attrib) for plugin in component.findall("plugin")]
+        if any(not plugin.get("id", "").strip() or any(plugin.get(bound) is not None and not version_key(plugin[bound])
+                                                       for bound in ("min-version", "max-version")) for plugin in required):
+            raise ValueError(REQUIRED_PLUGINS_FILE)
+        return required
+    except (OSError, ValueError, ElementTree.ParseError):
+        raise Blocked("native_required_plugins_unreadable") from None
+
+
+def version_key(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", version))
+
+
+def plugin_descriptor(jar: Path) -> tuple[str, str] | None:
+    try:
+        with zipfile.ZipFile(jar) as archive:
+            root = ElementTree.fromstring(archive.read("META-INF/plugin.xml"))
+    except (KeyError, OSError, zipfile.BadZipFile, ElementTree.ParseError):
+        return None
+    plugin_id = (root.findtext("id") or root.findtext("name") or "").strip()
+    return (plugin_id, (root.findtext("version") or "").strip()) if plugin_id else None
+
+
+def worker_plugins(app: Path, config: Path, plugins: Path) -> tuple[dict[str, str], set[str]]:
+    distribution = json.loads((app / "Contents/Resources/product-info.json").read_text())
+    installed = dict.fromkeys(distribution.get("bundledPlugins", []), distribution.get("buildNumber", ""))
+    for entry in sorted(plugins.iterdir()):
+        jars = [entry] if entry.suffix == ".jar" else sorted((entry / "lib").glob("*.jar"))
+        descriptor = next(filter(None, map(plugin_descriptor, jars)), None)
+        if descriptor:
+            installed[descriptor[0]] = descriptor[1]
+    disabled = config / "disabled_plugins.txt"
+    names = disabled.read_text().split() if disabled.is_file() and not disabled.is_symlink() else []
+    return installed, set(names)
+
+
+def plugin_gaps(repo: Path, app: Path, config: Path, plugins: Path) -> tuple[list[str], list[str]]:
+    required = required_plugins(repo)
+    if not required:
+        return [], []
+    installed, disabled = worker_plugins(app, config, plugins)
+    verified, gaps = [], []
+    for plugin in required:
+        plugin_id, minimum, maximum = plugin["id"].strip(), plugin.get("min-version"), plugin.get("max-version")
+        version = installed.get(plugin_id)
+        if version is None:
+            gaps.append(f"{plugin_id} (not installed)")
+        elif plugin_id in disabled:
+            gaps.append(f"{plugin_id} (disabled)")
+        elif minimum and version_key(version) < version_key(minimum):
+            gaps.append(f"{plugin_id} {version or 'of unknown version'} (needs {minimum} or later)")
+        elif maximum and version_key(version) > version_key(maximum):
+            gaps.append(f"{plugin_id} {version} (needs {maximum} or earlier)")
+        else:
+            verified.append(f"{plugin_id} {version}".strip())
+    return verified, gaps
 
 
 def native_options_supplied(args):
