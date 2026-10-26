@@ -615,6 +615,45 @@ class UnavailableExplanationTests(unittest.TestCase):
         report, action, _ = self.explain(["scripts/tool.py"], {"lanes": lanes})
         self.assert_unavailable(report, action, "scripts-lane")
 
+    def test_supported_files_in_mixed_selections_get_their_own_run(self):
+        nested = [{"id": "root", "ide": "PyCharm", "include": ["backend/**"]},
+                  {"id": "scripts-lane", "ide": "PyCharm", "include": ["scripts/**"], "projectPath": "scripts"}]
+        for files, inspection, supported in ((["tool.py", "style.css"], {}, "tool.py"), (["tool.py", "notes.md"], {}, "tool.py"),
+                                             (["backend/api.py", "scripts/tool.py"], {"lanes": nested}, "backend/api.py"),
+                                             (["app.py", "pom.xml"], {}, "app.py"),
+                                             (["tool.py", "src/app.ts"], {"ide": "PyCharm"}, "tool.py"),
+                                             (["ci.yml", "style.css"], {"ide": "WebStorm"}, "ci.yml")):
+            with self.subTest(files=files):
+                report, action, _ = self.explain(files, inspection)
+                self.assertIn(supported, report)
+                self.assertIn(supported, action)
+                self.assertIn("--scope files", action)
+                if inspection.get("ide") == "WebStorm":
+                    self.assertIn(inspection["ide"], report)
+
+    def test_dotfiles_follow_the_routing_suffix_rule(self):
+        for files in ([".yaml"], [".ts", "src/app.ts"]):
+            with self.subTest(files=files):
+                report, _action, _ = self.explain(files, {"ide": "WebStorm"})
+                self.assertIn(f"{files[0]} (", report)
+
+    def test_selection_read_failures_keep_the_selection_reason(self):
+        for code, failing in (("native_selection_unavailable", (native.common, "scope_selection")),
+                              ("xml_selection_requires_odoo", (native, "is_odoo"))):
+            with self.subTest(code=code), \
+                    patch_attr(host, "native_backend_module", return_value=native), \
+                    patch_attr(native, "select_backend", return_value=("unavailable", code)), \
+                    patch_attr(native.common, "scope_selection", return_value=(self.repo, {}, "files", {"views/form.xml"})), \
+                    patch_attr(*failing, side_effect=native.Blocked("native_prerequisite_failed")), \
+                    patch_attr(host, "command_native", side_effect=AssertionError("worker started")), \
+                    patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--repo", str(self.repo)]), \
+                    redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(host.main(), 0)
+            result = json.loads(output.getvalue())
+            self.assertEqual((result["agent_result"]["bucket"], result["diagnostic"]["error_reason"]),
+                             ("environment_blocked", "isolated_backend_unavailable"))
+            self.assertIn(code, result["agent_result"]["agent_report"])
+
     def test_hosts_without_macos_say_coverage_is_unavailable(self):
         report, action, selection = self.explain(["tool.py"], platform="linux")
         self.assertIn(selection.removeprefix("native_ineligible="), report)

@@ -155,7 +155,18 @@ UNAVAILABLE_REASONS = {
                        + UNAVAILABLE_COVERAGE.format(coverage="coverage for {suffixes} alone")),
     "mixed": ("native {product} does not inspect {suffixes} in one run with other languages",
               "inspect {suffixes} in a separate --scope files run"),
+    "supported": ("native PyCharm can inspect {suffixes} on their own", "inspect {suffixes} in a separate --scope files run"),
+    "pycharm_outside_ide": ("native PyCharm can inspect {suffixes} on their own, though the repository's IDE is {ide}",
+                            "inspect {suffixes} in a separate --scope files run, which needs the worktree's .venv or a root"
+                            " prepare.python; otherwise " + UNAVAILABLE_COVERAGE.format(coverage="coverage for {suffixes}")),
 }
+GAP_CODES = frozenset({"selection_file_type_unsupported", "selection_outside_root_pycharm_lane", "xml_selection_requires_odoo"})
+SELECTION_ERRORS = (Blocked, OSError, subprocess.SubprocessError, ValueError)
+
+
+def listing(labels):
+    ordered = sorted(labels)
+    return ", ".join(ordered) if len(ordered) <= 3 else ", ".join(ordered[:3]) + f" and {len(ordered) - 3} more"
 
 
 def coverage_gaps(host: Any, repo: Path, config: dict[str, Any], selected: set[str]):
@@ -163,7 +174,9 @@ def coverage_gaps(host: Any, repo: Path, config: dict[str, Any], selected: set[s
     odoo = any(Path(f).suffix == ".xml" for f in selected) and is_odoo(repo)
     groups: dict[tuple[str, tuple[tuple[str, str], ...]], set[str]] = {}
     for path in sorted(selected):
-        suffix = Path(path).suffix or Path(path).name
+        suffix = Path(path).suffix
+        label = suffix or f"{path} (no extension)"
+        configured = common.configured_product_key(host, config, {path})
         owner = common.lane_owner(host, lanes, path)
         fields: dict[str, str] = {}
         if owner is not None and owner.project_path:
@@ -173,8 +186,10 @@ def coverage_gaps(host: Any, repo: Path, config: dict[str, Any], selected: set[s
                 key, fields = "lane_ide", {"lane": owner.lane_id, "ide": owner.ide}
             elif suffix == ".xml" and not odoo:
                 key = "xml_outside_odoo"
+            elif configured != PYTHON_PRODUCT_KEY:
+                key, label, fields = "pycharm_outside_ide", path, {"ide": host.IDE_PRODUCTS[configured].display_name}
             else:
-                continue
+                key, label = "supported", path
         else:
             worker = next((entry for entry in ALTERNATE_WORKERS if suffix in entry[1]), None)
             if worker is None:
@@ -182,28 +197,35 @@ def coverage_gaps(host: Any, repo: Path, config: dict[str, Any], selected: set[s
             else:
                 product_key, _suffixes, anchors, anchor = worker
                 fields = {"product": host.IDE_PRODUCTS[product_key].display_name, "anchor": anchor}
-                if common.configured_product_key(host, config, {path}) != product_key:
+                if configured != product_key:
                     key = "ide_not_configured"
                 elif not any(Path(f).suffix in anchors for f in selected):
                     key = "anchor_missing"
                 else:
                     key = "mixed"
-        groups.setdefault((key, tuple(sorted(fields.items()))), set()).add(suffix)
+        groups.setdefault((key, tuple(sorted(fields.items()))), set()).add(label)
     return groups
 
 
 def unavailable_explanation(host, args, selection):
     code = selection.removeprefix("native_ineligible=")
+
+    def without_selection(entry):
+        return f"No isolated native worker can inspect this selection: {UNAVAILABLE_REASONS[entry][0]} ({code}).", UNAVAILABLE_REASONS[entry][1]
+
     if code == "native_macos_not_available":
-        why, action = UNAVAILABLE_REASONS[code]
-        return f"No isolated native worker can inspect this selection: {why} ({code}).", action
+        return without_selection(code)
     receipt: dict[str, Any] = {}
-    repo, config, scope, selected = common.scope_selection(args, host, receipt)
-    product = host.IDE_PRODUCTS[native_product_key(host, config, selected)]
-    if code in {"selection_file_type_unsupported", "selection_outside_root_pycharm_lane", "xml_selection_requires_odoo"}:
+    try:
+        repo, config, scope, selected = common.scope_selection(args, host, receipt)
+        product = host.IDE_PRODUCTS[native_product_key(host, config, selected)]
+        gaps = coverage_gaps(host, repo, config, selected) if code in GAP_CODES else {}
+    except SELECTION_ERRORS:
+        return without_selection("native_selection_unavailable")
+    if code in GAP_CODES:
         parts = []
-        for (key, fields), suffixes in coverage_gaps(host, repo, config, selected).items():
-            values = dict(fields, suffixes=", ".join(sorted(suffixes)))
+        for (key, fields), labels in gaps.items():
+            values = dict(fields, suffixes=listing(labels))
             parts.append([text.format(**values) for text in UNAVAILABLE_REASONS[key]])
         why = "; ".join(part[0] for part in parts) or code
         action = " ".join(part[1][:1].upper() + part[1][1:] + "." for part in parts) or "This coverage is unavailable; report it as UNKNOWN."
