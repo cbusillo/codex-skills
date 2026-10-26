@@ -150,21 +150,22 @@ def journal_status(home: Path) -> dict:
     return result
 
 
-def record_status(home: Path, status: dict) -> bool:
+def record_status(home: Path, status: dict) -> dict:
     directory = home / "skill-data/supervisor-auth"
     try:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         with (directory / "capture.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            if journal_status(home)["observed_ns"] > status["observed_ns"]:
-                return False
+            latest = journal_status(home)
+            if latest["observed_ns"] > status["observed_ns"]:
+                return latest
             with os.fdopen(os.open(directory / "evidence.jsonl", os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600), "a") as output:
                 output.write("\n" + json.dumps({"auth_observation": status}) + "\n")
                 output.flush()
                 os.fsync(output.fileno())
-        return True
+        return status
     except OSError:
-        return False
+        return {**status, "diagnostic": "auth_observation_not_saved"}
 
 
 def process_inventory() -> list[dict]:
@@ -340,24 +341,31 @@ def failure_episode(events: list[dict]) -> int | None:
     return first
 
 
+def unknown_status(home: Path, previous: dict, reason: str) -> dict:
+    try:
+        previous = journal_status(home)
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
+    return {**previous, "diagnostic": reason}
+
+
 def observe(home: Path) -> dict:
     home = home.expanduser().resolve()
     previous = {"blocked": False, "episode_ns": None, "observed_ns": 0}
     try:
         previous = journal_status(home)
-        events = capture(home, read_log(home))
+        capture(home, read_log(home))
         identity = daemon_identity(home)
         status = native_status(home)
         if status.identity != identity:
-            return {**previous, "diagnostic": "auth_daemon_changed"}
+            return unknown_status(home, previous, "auth_daemon_changed")
         events = capture(home, read_log(home))
         if status.account_present or not status.requires_auth:
             if previous["blocked"] or any(event["ts_ns"] >= previous["observed_ns"] and event["event"] in FAILURES for event in events):
-                if not record_status(home, {"blocked": False, "episode_ns": None, "observed_ns": status.requested_ns}):
-                    return {"blocked": False, "diagnostic": "auth_observation_not_saved"}
+                return record_status(home, {"blocked": False, "episode_ns": None, "observed_ns": status.requested_ns})
             return {"blocked": False}
         if status.auth_method != "chatgpt":
-            return {**previous, "diagnostic": "auth_mode_unknown"}
+            return unknown_status(home, previous, "auth_mode_unknown")
         deadline = time.monotonic() + LOG_DELIVERY_SECONDS
         while True:
             events = capture(home, read_log(home))
@@ -366,14 +374,13 @@ def observe(home: Path) -> dict:
             if episode is not None:
                 result = {"blocked": True, "episode_ns": previous["episode_ns"] if previous["blocked"] else episode}
                 if not previous["blocked"]:
-                    if not record_status(home, {**result, "observed_ns": status.requested_ns}):
-                        result["diagnostic"] = "auth_observation_not_saved"
+                    return record_status(home, {**result, "observed_ns": status.requested_ns})
                 return result
             if time.monotonic() >= deadline:
-                return {**previous, "diagnostic": "auth_log_delivery_unknown"}
+                return unknown_status(home, previous, "auth_log_delivery_unknown")
             time.sleep(0.02)
     except (OSError, ValueError, TypeError, KeyError, sqlite3.Error, subprocess.SubprocessError, ImportError, TimeoutError):
-        return {**previous, "diagnostic": "auth_evidence_unavailable"}
+        return unknown_status(home, previous, "auth_evidence_unavailable")
 
 
 def require_usable(home: Path) -> None:

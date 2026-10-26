@@ -159,8 +159,25 @@ class AuthHealthTests(unittest.TestCase):
 
     def test_old_responses_cannot_overwrite_a_newer_saved_hold(self) -> None:
         health.record_status(self.home, {"blocked": True, "episode_ns": 4, "observed_ns": 5})
-        self.assertFalse(health.record_status(self.home, {"blocked": False, "episode_ns": None, "observed_ns": 3}))
+        self.assertTrue(health.record_status(self.home, {"blocked": False, "episode_ns": None, "observed_ns": 3})["blocked"])
         self.assertTrue(health.journal_status(self.home)["blocked"])
+
+    def test_older_healthy_reply_cannot_release_a_newer_observed_failure(self) -> None:
+        def stale_reply(_home: Path) -> health.AuthStatus:
+            self.failure()
+            health.record_status(self.home, {"blocked": True, "episode_ns": self.clock, "observed_ns": self.clock + 2})
+            return health.AuthStatus(self.identity, 1, "chatgpt", True, True)
+
+        self.probe.side_effect = stale_reply
+        self.assertTrue(health.observe(self.home)["blocked"])
+
+    def test_timeout_uses_a_hold_saved_by_another_observer(self) -> None:
+        def timed_out(_home: Path) -> health.AuthStatus:
+            health.record_status(self.home, {"blocked": True, "episode_ns": 4, "observed_ns": 5})
+            raise TimeoutError
+
+        self.probe.side_effect = timed_out
+        self.assertTrue(health.observe(self.home)["blocked"])
 
     def test_a_new_daemon_or_missing_proof_does_not_release_a_confirmed_hold(self) -> None:
         health.observe(self.home)
@@ -384,7 +401,7 @@ class NativeStatusTests(unittest.TestCase):
         connection = Mock()
         connection.__enter__ = Mock(return_value=connection)
         connection.__exit__ = Mock(return_value=False)
-        responses = [
+        responses: list[dict[str, Any]] = [
             {"id": 1, "result": {}},
             {"id": 2, "result": {"authMethod": "chatgpt", "authToken": None, "requiresOpenaiAuth": True}},
             {"id": 3, "result": {"account": {"type": "chatgpt"}, "requiresOpenaiAuth": True}},
