@@ -2586,3 +2586,26 @@ receipt and reports a mismatch when permanent history limits prevent verificatio
 original apply with that same key. `invalid_request` requires correcting the
 request; `stale_plan` requires refreshing and reviewing the exact dry-run. The full caller identity remains in the durable
 operation; public PR history contains the head, reason and Director citation.
+
+
+## Governance projection read
+
+`governance-projection-read --repository OWNER/REPO --base-branch BRANCH --pr N`
+uses the existing admin config and GET `/v1/governance/projection`. It uses
+no POST, idempotency key or mutation authority. The producer owns the
+[governance contract](https://github.com/cbusillo/launchplane/blob/main/docs/governance-evidence.md).
+
+The bounded result retains readiness availability, reason and state, admission
+status, record id and decision, landing status, target applicability, outcome id
+and merge commit, generation time and trace id. `unavailable` and `not_active`
+keep a null readiness state. A missing current target is explicitly marked;
+stored records remain historical or unknown evidence and authorize no effect.
+Private `owner_judgment`, advisory text, raw readiness evidence, admission lease
+metadata and provider messages are omitted. Unexpected envelope, projection or
+facet fields fail closed; nested evidence records are projected by named scalar
+fields only. Denials and transport failures use the shared read error path.
+This standalone read does not add a train, deployment or recovery gate.
+
+Readiness describes the head observed at `generated_at`; it is not reusable
+readiness after a push. Read once for the decision being made: the producer
+uses the train's GitHub rate budget for live evidence.

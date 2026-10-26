@@ -12,6 +12,11 @@
     "reservation_attempt",
     "reservation_state"
   ],
+  "governance-projection-read": [
+    "projection",
+    "status",
+    "trace_id"
+  ],
   "integration-allowances-read": [
     "original_trace_id",
     "records",

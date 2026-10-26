@@ -116,6 +116,11 @@ commands:
     example_argv:
       ["uv", "run", "scripts/launchplane-context.py", "--repo", "OWNER/REPO"]
     purpose: Reads Launchplane context through the structural helper.
+  - name: launchplane-governance-projection-read
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "governance-projection-read", "--repository", "OWNER/REPO", "--base-branch", "main", "--pr", "42"]
+    purpose: Reads bounded current readiness and historical admission and landing evidence without granting mutation authority.
   - name: launchplane-repository-inventory-read
     source: skill
     resource_path: scripts/launchplane-write-action.py
