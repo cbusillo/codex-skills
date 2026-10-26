@@ -490,6 +490,7 @@ def main() -> int:
     parser.add_argument("--home-dir", type=Path, help="Fixture home; overrides both native host destinations")
     parser.add_argument("--codex-dir", type=Path, help="Codex configuration directory (default CODEX_HOME, then ~/.codex)")
     parser.add_argument("--claude-dir", type=Path, help="Claude configuration directory (default CLAUDE_CONFIG_DIR, then ~/.claude)")
+    parser.add_argument("--destination", type=Path, help="Synchronize only this native instruction file instead of the default pair")
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--allow-missing-local", action="store_true", help="Explicitly overwrite existing instruction files without the local source, dropping private instructions")
     parser.add_argument("--codex-hook", action="store_true", help="Consolidate Codex user hooks into hooks.json and register catalog hooks; trust remains Codex-managed")
@@ -512,9 +513,10 @@ def main() -> int:
         hook_outputs = prepare_codex_hooks(codex_dir, upgrade_session_start=args.upgrade_session_start) if args.codex_hook else {}
         hook_previews = [entry for path, content in hook_outputs.items() for entry in synchronize(content, [path], write=False)]
         local_missing = not args.local_source.exists()
-        outputs = [] if args.hooks_only else synchronize_instructions(render(args.source, args.local_source, direction_content(args.home_dir or Path.home())), [
-            claude_dir / "CLAUDE.md", codex_dir / "AGENTS.md",
-        ], write=args.write, local_source_missing=local_missing, allow_missing_local=args.allow_missing_local)
+        destinations = [args.destination] if args.destination else [claude_dir / "CLAUDE.md", codex_dir / "AGENTS.md"]
+        unmanaged = [] if args.hooks_only else [str(path) for path in destinations if path.is_file() and path.read_text().strip() and not path.read_text().startswith(HEADER)]
+        outputs = [] if args.hooks_only else synchronize_instructions(render(args.source, args.local_source, direction_content(args.home_dir or Path.home())),
+            destinations, write=args.write, local_source_missing=local_missing, allow_missing_local=args.allow_missing_local)
         if args.write:
             if hook_outputs:
                 outputs.extend(write_codex_hooks(hook_outputs, codex_dir))
@@ -527,7 +529,7 @@ def main() -> int:
         for output in outputs:
             if Path(output["path"]) in hook_outputs:
                 output.pop("diff", None)
-    result: dict[str, object] = {"outputs": outputs}
+    result: dict[str, object] = {"outputs": outputs, "unmanaged_instruction_sources": unmanaged}
     if args.codex_hook:
         result.update({"migrated_events": hook_outputs.migrated_events, "disabled_migrated_handlers": hook_outputs.disabled_migrated_handlers, "hook_trust": HOOK_TRUST_NOTICE})
     print(json.dumps(result, indent=2))

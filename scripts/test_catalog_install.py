@@ -217,6 +217,9 @@ class InstallTests(unittest.TestCase):
     def check_native_delivery(self, harness: str) -> None:
         from hooks import direction_check_hook as hook
 
+        direction = mock.patch.object(self.sync, "direction_content", return_value=self.sync.DIRECTION_START + "\nInitial merged direction.")
+        direction.start()
+        self.addCleanup(direction.stop)
         self.install()
         installation = json.loads((self.catalog / ".local/catalog-install.json").read_text())
         selected = self.home / "selected-account"
@@ -229,8 +232,11 @@ class InstallTests(unittest.TestCase):
         if harness == "claude":
             env["CLAUDECODE"] = "1"
 
-        def preview(root: Path, arguments: list[str]) -> dict:
-            self.assertEqual(root, self.catalog)
+        real_preview = runtime.preview_instructions
+
+        def preview(arguments: list[str]) -> dict:
+            if Path(arguments[0]).name == "sync-global-instructions.py":
+                return real_preview(arguments)
             codex = Path(arguments[arguments.index("--codex-dir") + 1])
             claude = Path(arguments[arguments.index("--claude-dir") + 1])
             return installer.install(self.home, codex, claude, write=False, updater=False,
@@ -267,19 +273,32 @@ class InstallTests(unittest.TestCase):
                 self.assertIn(str(self.catalog / "scripts/catalog_runtime.py"), warning)
             self.assertEqual(before, {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()})
             self.assertEqual(json.loads((self.catalog / ".local/catalog-install.json").read_text()), installation)
+            direction.stop()
+            self.install()
+            installation = json.loads((self.catalog / ".local/catalog-install.json").read_text())
             destination.unlink()
-            warning = startup()
-            self.assertIn(str(destination), warning)
             scripts = self.catalog / "scripts"
             scripts.mkdir()
             for name in ("sync-global-instructions.py", "install-catalog.py", "chrome_mcp.py"):
                 shutil.copyfile(Path(__file__).with_name(name), scripts / name)
             shutil.copyfile(Path(hook.__file__), self.catalog / "hooks/direction_check_hook.py")
+            warning = startup()
+            self.assertIn(str(destination), warning)
             repair = shlex.split(re.search(r"uv run [^\n]+?;", warning).group()[:-1])
             command(sys.executable, *repair[2:])
             self.assertEqual(json.loads((self.catalog / ".local/catalog-install.json").read_text()), installation)
             self.assertEqual(destination.read_bytes(), original.read_bytes())
             self.assertNotIn(runtime.DELIVERY_NOTICE, startup())
+            registered_before = {path: path.read_bytes() for path in (self.codex / "AGENTS.md", self.claude / "CLAUDE.md")}
+            for source in (self.catalog / "instructions/global.md", self.catalog / ".local/global-instructions.md"):
+                source.write_text(source.read_text() + "\nA changed authoritative source.\n")
+                warning = startup()
+                self.assertIn(str(destination), warning)
+                repair = shlex.split(re.search(r"uv run [^\n]+?;", warning).group()[:-1])
+                command(sys.executable, *repair[2:])
+                self.assertNotIn(runtime.DELIVERY_NOTICE, startup())
+                self.assertEqual(json.loads((self.catalog / ".local/catalog-install.json").read_text()), installation)
+                self.assertEqual({path: path.read_bytes() for path in registered_before}, registered_before)
             destination.unlink()
             dotfile = self.home / "dotfile-source"
             dotfile.write_text("Keep my dotfiles.")
@@ -320,7 +339,7 @@ class InstallTests(unittest.TestCase):
         )
         with (mock.patch.object(runtime, "INSTRUCTION_PREVIEW_TIMEOUT", 1),
               self.assertRaises(subprocess.TimeoutExpired)):
-            runtime.preview_instructions(self.catalog, [])
+            runtime.preview_instructions([str(scripts / "install-catalog.py")])
         pid = int(child_pid.read_text())
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
