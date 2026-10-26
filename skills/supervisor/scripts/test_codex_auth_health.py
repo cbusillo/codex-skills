@@ -150,10 +150,11 @@ class AuthHealthTests(unittest.TestCase):
             )
         auth = self.home / "auth.json"
         auth.write_text("opaque synthetic credential")
-        original_open = Path.open
+        original_open = io.open
 
-        def guarded_open(path: Path, *args: Any, **kwargs: Any) -> Any:
-            self.assertNotEqual(path, auth)
+        def guarded_open(path: Any, *args: Any, **kwargs: Any) -> Any:
+            if isinstance(path, str | os.PathLike):
+                self.assertNotEqual(Path(path), auth)
             return original_open(path, *args, **kwargs)
 
         def check_capture(home: Path) -> health.AuthStatus:
@@ -162,7 +163,7 @@ class AuthHealthTests(unittest.TestCase):
             return self.failed_probe(home)
 
         self.probe.side_effect = check_capture
-        with patch.object(Path, "open", guarded_open):
+        with patch.object(io, "open", guarded_open):
             result = health.observe(self.home)
         self.assertTrue(result["blocked"])
         journal = self.home / "skill-data/supervisor-auth/evidence.jsonl"
