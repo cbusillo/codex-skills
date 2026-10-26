@@ -2205,10 +2205,11 @@ that cannot verify the effect of a server error still override it with
 Service outages remain `unavailable`;
 inspect the original outcome before supported recovery of a write.
 
-Recognized fixed restart and native ingress refusal causes are retained in
-warnings. A recognized newer-deployment refusal also retains its bounded
-`summary.blocking_deployment_id`. Unknown prose, extra fields, and unsafe
-references are omitted independently of safe code and trace diagnostics.
+Service `error.reason` and `details.blocking_deployment_id` are projected as
+`summary.error_reason` and `summary.blocking_deployment_id` through the existing
+public-code and identifier checks. Each field is checked independently. Missing
+legacy fields remain unknown. Service prose and extra fields are omitted;
+message edits do not change diagnostics or original-operation recovery advice.
 
 Preview-feedback projection failures retain independently validated
 `summary.error_code`, `summary.trace_id` and transport `summary.http_status`
