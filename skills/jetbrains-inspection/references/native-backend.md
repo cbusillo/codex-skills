@@ -184,6 +184,24 @@ a trial, purchase or grant access. After the Director's recorded confirmation,
 the authorized continuation removes only that stop receipt before reassessing;
 do not clear it merely to retry. Privacy-consent setup remains Director-held too.
 
+## Missing shared profile
+
+`native_populated_profile_required` means the repository has no unique populated
+profile matching its declaration. Obtain the product's default project inspection
+profile. Tracking a new shared profile follows the existing Director-approval rule;
+reuse approval already recorded. Track only
+`.idea/inspectionProfiles/Project_Default.xml`, keep other IDE state ignored, and
+set `qualityGate.inspection.profile` to that repository-relative path. Do not
+disable or tune inspections to make a prerequisite pass. A fresh assessment then
+reports actual findings or another explicit gap.
+
+The older `qodana_populated_profile_required` described the same prerequisite;
+Qodana is retired from the helper, so use the current native route rather than
+restoring that backend. An inventory is a fresh read of repository declarations
+and tracked profile XML, not another maintained repository list. A desktop
+serialization explanation needs its own observed evidence; an empty profile
+alone does not prove how it became empty.
+
 ## Execution and cleanup
 
 ```sh

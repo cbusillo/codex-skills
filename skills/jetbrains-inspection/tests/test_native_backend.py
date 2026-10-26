@@ -11,6 +11,7 @@ import io
 import json
 import multiprocessing
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -85,6 +86,25 @@ def hold_lock(path, seconds, held, release_when=None):
 
 
 class NativeTests(unittest.TestCase):
+    def test_missing_profile_verdict_names_a_path_that_resolves_the_prerequisite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            with self.assertRaises(native.Blocked) as caught:
+                native.common.profile_for(repo, None)
+            receipt = native.new_receipt(host) | {"scope": "files", "selected_file_count": 1}
+            result = native.envelope(host, receipt, [], str(caught.exception), [])
+            self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+            paths = re.findall(r"`([^`]+\.xml)`", result["agent_result"]["next_action"])
+            self.assertEqual(len(paths), 1)
+            profile = repo / paths[0]
+            self.assertTrue(profile.resolve().is_relative_to(repo.resolve()))
+            profile.parent.mkdir(parents=True)
+            fixture = SCRIPTS.parent / "tests/fixtures/native-odoo/.idea/inspectionProfiles/Controls.xml"
+            profile.write_bytes(fixture.read_bytes())
+            resolved, enabled = native.common.profile_for(repo, paths[0])
+            self.assertEqual(resolved, profile)
+            self.assertTrue(enabled)
+
     def test_process_group_exit_waits_through_permission_transition(self):
         with patch.object(os, os.killpg.__name__, side_effect=[PermissionError(errno.EPERM, "exiting"), PermissionError(errno.EPERM, "exiting"), ProcessLookupError(errno.ESRCH, "gone")]), \
                 patch.object(time, "sleep"):

@@ -1389,6 +1389,12 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
                    " or product names to the repository's .idea/dictionaries/project.xml.")
     if reason in {"native_owner_activation_required", "native_activation_stop_recorded"}:
         action = "Owner question: the Director must restore the configured independent worker's activation through the product UI using existing entitlements. Stop licensed runs; never start a trial or copy credentials."
+    elif reason == "native_populated_profile_required":
+        action = (f"Obtain a populated {product.display_name} default project inspection profile. "
+                  "Tracking a new shared profile requires the Director's existing approval; reuse approval already recorded. "
+                  "Track only `.idea/inspectionProfiles/Project_Default.xml`, keep other IDE state ignored, and set "
+                  "`qualityGate.inspection.profile` in `.github/github.json` to that repository-relative path. "
+                  "Do not disable or tune inspections to pass. Run a fresh assessment after the prerequisite is resolved.")
     elif reason in {"native_worker_not_configured", "native_app_not_configured"}:
         action = f"Configure jetbrains.nativeWorkers.{product.key}.path/app in the shared helper config for the independently Director-activated worker, or supply --native-worker and --ide-app. See references/native-backend.md."
     elif reason in {"native_node_not_configured", "native_node_unavailable"}:
