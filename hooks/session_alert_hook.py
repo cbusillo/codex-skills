@@ -14,9 +14,6 @@ import sys
 from pathlib import Path
 from typing import Mapping
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.agent_activity import hook_activity
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills/github/scripts"))
 from github_plan_lease import renew_from_hook
 
@@ -87,10 +84,6 @@ def main() -> int:
         renew_from_hook(payload)
     except (OSError, ValueError):
         print("Claim lease renewal unavailable; claims still need their exact release.", file=sys.stderr)
-    try:
-        hook_activity(payload, dict(os.environ))
-    except (OSError, ValueError, TypeError, KeyError):
-        print("Agent activity unavailable; existing advisory alerts are independent.", file=sys.stderr)
     # Empty JSON is accepted by both hosts and has no decision fields.
     print("{}")
     return 0
