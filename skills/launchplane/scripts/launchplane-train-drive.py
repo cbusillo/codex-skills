@@ -416,9 +416,8 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
     while True:
         if io.now() >= settings.deadline:
             io.finish_reads()
-        # The controller observes an admitted candidate and reports its landing.
-        # Do not separately poll every PR in that batch while checks run.
-        outcome = None if state.candidate_active and io.now() < settings.deadline else _record_landings(settings, io, state, emit)
+        outcome = _record_landings(settings, io, state, emit,
+                                   numbers={settings.number} if state.candidate_active else None)
         if outcome == "landed":
             _finish_landing(settings, io, state, emit, started)
             return _stop(settings, state, emit, "landed")
@@ -540,10 +539,12 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
                 _finish_landing(settings, io, state, emit, started)
                 return _stop(settings, state, emit, "landed")
             return _stop(settings, state, emit, outcome, **detail)
-        if action in {"batch_landed", "land_batch", "complete_landing"}:
-            if _record_landings(settings, io, state, emit) == "landed":
-                _finish_landing(settings, io, state, emit, started)
-                return _stop(settings, state, emit, "landed")
+        disposition = _record_landings(settings, io, state, emit, numbers={settings.number})
+        if disposition == "landed":
+            _finish_landing(settings, io, state, emit, started)
+            return _stop(settings, state, emit, "landed")
+        if disposition is not None:
+            return _stop(settings, state, emit, disposition)
         # A repeated call-again action is not known progress; it backs off.
         known_work = action in CALL_AGAIN_ACTIONS and state.unchanged_passes == 0
         _pause(settings, io, state, reason="progress" if known_work else "backoff")
@@ -636,13 +637,15 @@ def _update_branch(
 
 
 def _record_landings(
-    settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callable[[str, dict[str, Any]], None]
+    settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callable[[str, dict[str, Any]], None],
+    *, numbers: set[int] | None = None,
 ) -> str | None:
+    numbers = state.batch if numbers is None else numbers
     target_state = None
-    for number in state.batch:
+    for number in numbers:
         if number not in state.landed and state.dispositions.get(number) not in {"closed", "superseded"}:
             state.dispositions[number] = "unknown"
-    for number in sorted(state.batch):
+    for number in sorted(numbers):
         if number in state.landed:
             continue
         pull_request = io.pull_request(settings.repository, number)

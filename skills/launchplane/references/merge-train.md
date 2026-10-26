@@ -126,6 +126,8 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   The controller helper projects validated candidate PR numbers. While the
   controller observes a candidate containing this driver's PR, it leaves the batch PRs
   to that observation and reads them again on a phase change or final landing.
+  It still reads its tracked PR before each pass and after each accepted reply,
+  so another controller's landing ends the drive before another pass or pause.
   Every controller call makes Launchplane re-read the whole repository train
   from GitHub, and Launchplane also runs its own passes. Unchanged controller
   phases and a lease held by another holder therefore poll less often, doubling

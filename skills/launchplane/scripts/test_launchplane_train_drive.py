@@ -162,6 +162,36 @@ def _write_action_helper() -> Any:
 
 
 class TrainDriveTests(unittest.TestCase):
+    def test_external_landing_stops_before_unrelated_pass_or_sleep(self) -> None:
+        for landing_during in ("controller", "sleep"):
+            with self.subTest(landing_during=landing_during):
+                candidate = {"candidate_sha": "abc", "pull_request_numbers": [7, 8]}
+                train = FakeTrain([_response("observe_candidate", candidate=candidate),
+                                   _response("build_candidate", **_queue((99, [])))])
+                if landing_during == "controller":
+                    train.merge_after[7] = 1
+                else:
+                    sleep = train.sleep
+
+                    def land_while_sleeping(seconds: float) -> None:
+                        sleep(seconds)
+                        train.merge_after[7] = 1
+
+                    train.sleep = land_while_sleeping
+                reads = []
+                read = train.pull_request
+
+                def pull_request(repository: str, number: int) -> dict[str, Any]:
+                    reads.append((number, train.calls, len(train.sleeps)))
+                    return read(repository, number)
+
+                train.pull_request = pull_request
+                code, receipt = _cli(train)
+                self.assertEqual((code, receipt["outcome"], receipt["landing_sha"]), (0, "landed", "sha-7"))
+                self.assertEqual(train.calls, 1)
+                self.assertEqual(len(train.sleeps), int(landing_during == "sleep"))
+                self.assertFalse(any(number == 8 for number, calls, _ in reads if calls == 0))
+
     def test_landing_reconciles_every_landed_batch_member(self) -> None:
         train = FakeTrain([], merge_after={7: 0, 8: 0})
         events = []
@@ -465,7 +495,8 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         train.pull_request = lambda repository, number: reads.append(number) or original(repository, number)
         outcome, events = _drive(train)
         self.assertEqual(outcome, "landed")
-        self.assertEqual(reads, [7, 7, 8, 9])
+        self.assertEqual([number for number in reads if number != 7], [8, 9])
+        self.assertLessEqual(reads.count(7), 2 * train.calls)
         self.assertEqual({item["number"] for item in events[-1][1]["prs"]}, {7, 8, 9})
 
     def test_live_pr_reads_use_shared_conditional_cache_and_deadline(self) -> None:
