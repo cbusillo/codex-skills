@@ -243,8 +243,9 @@ ChatGPT auth-method label alone is never proof of successful renewal.
 A separate `codex login` can replace the stored sign-in while the daemon keeps
 an old, still-fresh access token and its cached permanent failure. The non-forcing
 auth read does not reload that cache before its renewal window. If a confirmed
-CLI sign-in still appears held, an agent checks active and queued work through
-the existing daemon preflight, then uses that explicit home's native
+CLI sign-in still appears held, an agent checks `thread/list`, `thread/read` and
+`thread/queue/list` plus the session ledger; admission preflight alone does not
+prove idle. It then uses that explicit home's native
 `codex app-server daemon restart` when it can do so without interrupting work.
 There is no automatic restart or extra forced refresh. Login, logout and native
 daemon start/restart through the wrapper require a named account function,
