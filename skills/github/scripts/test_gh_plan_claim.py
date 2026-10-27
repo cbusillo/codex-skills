@@ -1260,12 +1260,19 @@ class ClaimTests(unittest.TestCase):
                 self.assert_no_writes()
 
     def test_deleted_historical_branch_can_be_reused_without_reporting_phantom_artifacts(self):
-        self.ended_holder_fixture()
-        self.inventory.update(worktrees=[], local_branches=[], remote_branches=[])
-        self.args.branch = OTHER["branch"]
-        self.run_claim()
-        self.assertTrue(self.emitted.call_args.args[0]["ok"])
-        self.assertEqual(self.emitted.call_args.args[0]["retained_artifacts"], [])
+        for resume in (False, True):
+            with self.subTest(resume=resume):
+                self.setUp()
+                if resume:
+                    self.sequential_no_pr_resume_fixture()
+                    self.comments[0]["user"] = self.comments[1]["user"] = {"login": "earlier-author"}
+                else:
+                    self.ended_holder_fixture()
+                    self.args.branch = OTHER["branch"]
+                self.inventory.update(worktrees=[], local_branches=[], remote_branches=[])
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                self.assertEqual(self.emitted.call_args.args[0]["retained_artifacts"], [])
 
     def test_handoff_sees_live_holder_recorded_only_on_the_retained_pr(self):
         self.refresh_fixture()
@@ -1787,9 +1794,36 @@ class ClaimTests(unittest.TestCase):
                     self.comments[0]["updated_at"] = "2026-09-30T02:00:00Z"
                 expired = {source["session"]} if change in {"lease_only", "missing_timestamp", "late_edit"} else set()
                 with patch.object(CLAIM, "expired_lease_sessions", return_value=expired):
+                    with self.assertRaises(PLAN.PlanError) as failure:
+                        self.run_claim()
+                if change != "selected_unreleased":
+                    self.assertIsInstance(failure.exception, PLAN.ClassifiedPlanError)
+                    self.assertEqual(failure.exception.code, "claim_resume_custody_unqualified")
+                self.assert_no_writes()
+
+    def test_no_pr_resume_checks_intermediate_pr_history_without_adopting_open_work(self) -> None:
+        for state in ("open", "merged"):
+            with self.subTest(state=state):
+                self.setUp()
+                source = self.sequential_no_pr_resume_fixture()
+                self.args.resume_from = 88
+                self.comments[-1]["body"] += " Retain PR #99."
+                pull = {"number": 99, "state": "open" if state == "open" else "closed",
+                    "merged_at": None if state == "open" else "2026-10-02T03:00:00Z",
+                    "user": {"login": TEST_BOT}, "body": "Refs #42",
+                    "head": {"ref": source["branch"], "repo": {"full_name": self.args.repo}},
+                    "base": {"repo": {"full_name": self.args.repo}}}
+                artifacts = copy.deepcopy(self.inventory)
+                if state == "open":
+                    self.pulls = [pull]
                     with self.assertRaises(PLAN.PlanError):
                         self.run_claim()
-                self.assert_no_writes()
+                    self.assert_no_writes()
+                else:
+                    self.closed_pulls[pull["number"]] = pull
+                    self.run_claim()
+                    self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
+                self.assertEqual(self.inventory, artifacts)
 
     def test_no_pr_resume_rechecks_predecessor_release_after_publication(self) -> None:
         for phase in ("after_post", "after_status"):

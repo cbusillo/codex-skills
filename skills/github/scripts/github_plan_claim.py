@@ -654,6 +654,8 @@ def resumed_branch_claim_ids(
             return set()
         record = parsed[0]
         comment_id = comment.get("id")
+        if not isinstance(comment_id, int):
+            return set()
         if comment_id not in released and same_owner(record, claim):
             continue
         if (comment_id not in released or comment["user"]["login"] != author

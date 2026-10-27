@@ -2761,12 +2761,14 @@ def claim_once(args: argparse.Namespace) -> None:
         ended_owners = ended_ownership(current_comments, inventory)
         branches = set(inventory["local_branches"]) | set(inventory["remote_branches"]) | {t["branch"] for t in inventory["worktrees"]}
         custody = set()
-        prior_custody = any(entry["branch"] == claim["branch"] and entry["claim_id"] != args.resume_from for entry in ended_owners)
-        if (prior_custody and record_kind == "issue" and args.resume_from and selection is not None
-                and selection["mode"] == "plain" and phase.get("source", {}).get("record", {}).get("branch") == claim["branch"]):
+        prior_custody = claim["branch"] in branches and any(
+            entry["branch"] == claim["branch"] and entry["claim_id"] != args.resume_from for entry in ended_owners)
+        if (prior_custody and record_kind == "issue" and args.resume_from
+                and (selection or {}).get("mode") == "plain" and phase.get("source", {}).get("record", {}).get("branch") == claim["branch"]):
             custody = github_plan_claim.resumed_branch_claim_ids(current_comments, args.resume_from, claim)
             if args.resume_from not in custody:
-                raise PlanError("Preserved branch custody requires sequential exact authored releases and matching source history")
+                raise ClassifiedPlanError("claim_resume_custody_unqualified",
+                    "Preserved branch custody requires sequential exact authored releases and matching source history")
         if any(entry["branch"] == claim["branch"] and entry["branch"] in branches
                and entry["claim_id"] != args.resume_from and entry["claim_id"] not in custody for entry in ended_owners):
             raise PlanError("Ended ownership requires a new task branch; preserve the retained source branch and worktree")
