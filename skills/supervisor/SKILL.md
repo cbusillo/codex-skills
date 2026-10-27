@@ -661,9 +661,8 @@ for recovery or repeat them as fact.
 ## Procedure
 
 1. Check the permission mode as above.
-2. Load `direction` and take the daily turn, which covers the Director's whole
-   account whatever folder this session opened in and clears the turn
-   reminder, before launching or taking over any session.
+2. Load `direction` and follow its
+   [Direction Session procedure](../direction/SKILL.md#direction-session).
 3. Find the Director's [handoff record](references/helpers.md#handoff-record)
    with `handoff_record.py`. Read its latest handoff, then every comment after it.
    Before you repeat what the Director said, read the exact words where the
