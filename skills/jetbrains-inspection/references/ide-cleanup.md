@@ -24,11 +24,23 @@ commands. Resolve those separately before a fresh retirement attempt.
 
 On macOS, an unprepared worktree proves there is nothing to clean from local
 preparation records, every standard JetBrains config's SDK and recent-project
-records (plus the explicit `JETBRAINS_INSPECTION_IDE_CONFIG_DIR` override), and
-sealed/finalizing project-cache ownership markers. A `.venv` alone is not a
-registration. Matching records, unreadable/malformed records, storage redirects
-in config `idea.properties`, local `.idea` project-model/workspace state, or a
-running supported IDE retain the worktree. Existing desktop state needs separate
+records (plus the explicit `JETBRAINS_INSPECTION_IDE_CONFIG_DIR` override),
+sealed/finalizing project-cache ownership markers, and running IDE open files.
+A `.venv` alone is not a registration. Matching records, unreadable/malformed records, storage redirects
+in config `idea.properties`, or local `.idea` project-model/workspace state
+retain the worktree. A running supported IDE retains it only when `lsof` shows
+an open file or working directory at or below the worktree in the launcher or
+any descendant, or process/open-file
+discovery cannot prove complete, stable coverage. Failed commands, warnings,
+missing process records and process changes during proof retain it.
+The remover's own process and observer children are excluded; ancestor terminal
+shells and other IDE descendants are still checked.
+Native workers receive the same check on their open paths under private snapshots,
+without an exemption based on launcher names or a guess about their role.
+Open-file and persisted-record checks cannot inventory in-memory projects or
+unsaved editor buffers before the IDE writes its records. They do not replace
+the caller's cleanup disposition and inactivity checks; uncertain human use
+requires retaining the worktree. Existing desktop state needs separate
 cleanup; retirement never edits global IDE files or removes project caches.
 Other platforms retain the worktree because local proof is unavailable.
 The scan covers standard macOS storage plus the explicit config override;
