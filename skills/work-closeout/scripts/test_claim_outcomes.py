@@ -97,6 +97,48 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                 self.assertTrue(report["unresolved_invocations"])
                 self.assertNotIn("commands", report["unresolved_invocations"][0])
 
+    def test_unsupported_calls_report_their_location_and_keep_real_targets(self) -> None:
+        sources = [
+            'tools.exec_command({cmd:"cat README.md"}).then(r=>text(r)).catch(e=>text(String(e)))',
+            'tools.exec_command({cmd:"cat README.md"}).finally(()=>text("done"))',
+            'Promise.all([]).then(r=>text(r))',
+            'async function main(){} await main()',
+            'load("runner")()',
+            'tools.exec_command({cmd:load("command")})',
+        ]
+        for source in sources:
+            for newline in ("\n", "\r\n"):
+                with self.subTest(source=source, newline=newline):
+                    prefix = f'text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));'
+                    cell = prefix + newline + 'text("é🙂"); ' + source
+                    report = check_claims.history.literal_targets(invocation(cell), SESSION)
+                    self.assertEqual(report["targets"], {("test/a", 5)})
+                    item = report["unresolved_invocations"][0]
+                    self.assertEqual(item["commands"], [COMMAND])
+                    refusal = item["refusals"][0]
+                    line = cell.split(newline)[refusal["line"] - 1]
+                    self.assertTrue(line[refusal["column"] - 1:].startswith(source))
+                    self.assertTrue(refusal["reason"])
+
+    def test_immediate_arrow_parameters_shadow_outer_commands(self) -> None:
+        for pattern in ("command", "(command)"):
+            with self.subTest(pattern=pattern):
+                source = f'const command={json.dumps(COMMAND)};(async {pattern}=>'
+                source += 'text(await tools.exec_command({cmd:command})))();'
+                report = check_claims.history.literal_targets(invocation(source), SESSION)
+                self.assertEqual(report["targets"], set())
+                self.assertTrue(report["unresolved_invocations"])
+
+    def test_lexical_refusals_point_to_the_original_cell(self) -> None:
+        for source, fragment in ((r'const \u0063=1;', r'\u0063'), ('(', '('), ('/*/.test("x")', '/*')):
+            with self.subTest(source=source):
+                cell = 'text("é🙂");\r\n' + source
+                report = check_claims.history.literal_targets(invocation(cell), SESSION)
+                self.assertEqual(report["targets"], set())
+                refusal = report["unresolved_invocations"][0]["refusals"][0]
+                line = cell.split("\r\n")[refusal["line"] - 1]
+                self.assertTrue(line[refusal["column"] - 1:].startswith(fragment))
+
     def assert_discovered_targets(self, rows: list[dict], targets: set[tuple[str, int]]) -> None:
         report = check_claims.history.literal_targets(rows, SESSION)
         self.assertEqual(report["targets"], targets)
@@ -710,6 +752,7 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             'const a=1;a\n/tools.exec_command({cmd:"uv run gh-plan.py claim 5"})/i.test(a);',
             'text(ALL_TOOLS.filter(x=>/x//**/.test(x.name)));',
             'text(ALL_TOOLS.filter(x=>/x/ /*comment*/ .test(x.name)));',
+            'text(ALL_TOOLS.filter(x=>/*/.test(x.name)));',
         ]
         for flags in ("g", "y", "m", "s", "u", "v", "d", "ii"):
             expressions.append(f"text(ALL_TOOLS.filter(x=>/x/{flags}.test(x.name)));")

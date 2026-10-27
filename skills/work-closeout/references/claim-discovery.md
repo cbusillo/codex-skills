@@ -74,7 +74,8 @@ native or JSON data reads. Immediately invoked, parameterless arrow functions
 and function expressions are checked in the same way as inline callbacks.
 GitHub connector operations named with the read verbs `fetch`, `get`, `list`,
 `search`, `compare` and `download` are data reads. Write verbs and unknown tool
-namespaces remain conditional. One inline `then` callback on a native tool
+namespaces remain conditional; verbs are matched as prefixes of tool names.
+One inline `then` callback on a native tool
 promise or an immediate async function is checked in the same way.
 Read-only string/array methods support the recorded
 JSON parsing, filtering, mapping and output-formatting shapes. Inline callbacks
@@ -107,7 +108,8 @@ verification even when the surrounding cell is conditional. A literal regex's
 `test` accepts one checked data argument, no gap before `.test`, and empty or
 `i` flags. Inline regex arguments to `split`, `replace` and `replaceAll` are
 data too. Patterns are read from the syntax tree without a second character
-allowlist or execution. Regex values, aliases, constructors and other methods
+allowlist or execution; regex nodes that start a JavaScript comment stay
+conditional. Regex values, aliases, constructors and other methods
 remain conditional. The serializable-data and unchanged-builtins assumption also
 covers `RegExp.prototype.exec`; no recorded regex is executed by the reader.
 
@@ -155,8 +157,10 @@ process generation remains unambiguous. Earlier polls, reused IDs and partially
 printed intervening launches cannot supply that proof.
 Help and decoded read-only commands need no claim-completion proof. When a real
 code-mode claim remains uncertain, its report names the decoded shell commands
-when available and the native call ID. Undecoded cells retain their call ID and
-recovery reason; projecting `.output` alone never proves that a claim ended.
+when available and the native call ID. Refusals also name the unsupported
+construct and its line and character column in that cell, including undecoded
+shell calls. These diagnostics never clear uncertainty. Projecting `.output`
+alone never proves that a claim ended.
 
 Serial `text(await ...)` wrappers can combine literal shell calls and empty
 `write_stdin` polls. Their whole results must match the complete command count
