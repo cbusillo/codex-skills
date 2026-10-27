@@ -19,7 +19,48 @@ import github_plan_termination as termination
 COMMENT_URL = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)#issuecomment-([1-9]\d*)")
 RELEASE_MARKER = "github-plan:abandoned-release "
 PENDING_MARKER = "github-plan:pending-release "
+EXCLUSIONS_MARKER = "github-plan:release-exclusions "
 ISSUE_REFUSAL_SCOPE = "issue"
+
+
+def exclusion_marker(source_id: int, excluded: set[str]) -> str:
+    prs = []
+    for url in sorted(excluded):
+        match = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/([1-9]\d*)", url, re.IGNORECASE)
+        if match is None:
+            raise ValueError("Excluded PR requires an exact GitHub PR URL")
+        prs.append([match[1].casefold(), int(match[2])])
+    return "<!-- " + EXCLUSIONS_MARKER + json.dumps({"version": 1, "claim": source_id, "prs": prs}, sort_keys=True) + " -->"
+
+
+def excluded_prs(comments: list[dict[str, Any]], source: dict[str, Any]) -> set[str]:
+    released = claim.released_source(comments, source["id"])
+    candidates = claim.handoff_candidates(comments, released)
+    excluded = set()
+    for candidate in candidates:
+        text = candidate.get("body") or ""
+        if EXCLUSIONS_MARKER not in text:
+            continue
+        matches = re.findall(r"^<!-- " + EXCLUSIONS_MARKER + r"(.*?) -->$", text, re.MULTILINE)
+        if len(matches) != 1 or text.count(EXCLUSIONS_MARKER) != 1:
+            raise ValueError("Release exclusions require one complete attribution marker")
+        value = json.loads(matches[0])
+        if (not isinstance(value, dict) or set(value) != {"version", "claim", "prs"}
+                or type(value["version"]) is not int or value["version"] != 1
+                or type(value["claim"]) is not int or value["claim"] != source["id"]
+                or not isinstance(value["prs"], list)):
+            raise ValueError("Release exclusions do not match this source claim")
+        for item in value["prs"]:
+            if (not isinstance(item, list) or len(item) != 2 or not isinstance(item[0], str)
+                    or not re.fullmatch(r"[\w.-]+/[\w.-]+", item[0])
+                    or type(item[1]) is not int or item[1] < 1):
+                raise ValueError("Release exclusions contain an invalid PR")
+            repo, number = item
+            if any(number in claim.handoff_pr_numbers(c.get("body") or "", issue_repo=repo, target_repo=repo)
+                   for c in candidates):
+                raise ValueError("Excluded PR is also named as retained work")
+            excluded.add(f"https://github.com/{repo.casefold()}/pull/{number}")
+    return excluded
 
 
 class IssueReleaseRefusal(ValueError):

@@ -1312,7 +1312,12 @@ other branches and repositories in the source record's reference timeline.
 Shared bot authorship and handoff prose do not identify a session: each
 other-branch candidate needs an explicit `--retained-pr URL`. Use
 `--exclude-pr URL` for another session's work; exclusions never become retained
-handoff links. Remove references to excluded PRs from the handoff file too;
+handoff links. The helper records their attribution on the exact authored
+release so closeout does not infer ownership again. For an already released
+claim, repeat the same command with the handoff and explicit exclusions; it
+rechecks current PRs and appends a checked source handoff. It does not edit the
+original release, and repeating the same exclusions writes nothing.
+Remove references to excluded PRs from the handoff file too;
 `release_excluded_pr_mentioned` identifies any remaining reference. The helper
 uses the successor's parser to check narrative references, including older
 source-linked PRs, before posting. An unclassified candidate stops and lists

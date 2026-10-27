@@ -1900,6 +1900,38 @@ class OwnReleaseTests(ReleaseHarness):
         self.args.exclude_pr = [url]
         self.run_own_release()
         self.assertNotIn(99, CLAIM.handoff_pr_numbers(self.f.comments[-1]["body"], issue_repo="owner/repo", target_repo="owner/repo"))
+        self.assertEqual(release.excluded_prs(self.f.comments, self.f.comments[0]), {url})
+
+    def test_released_source_can_add_checked_exclusions_without_rewriting_its_release(self) -> None:
+        self.run_own_release()
+        original = copy.deepcopy(self.f.comments[-1])
+        url = "https://github.com/owner/repo/pull/99"
+        self.f.pulls = [{"number": 99, "state": "open", "user": {"login": BOT},
+            "created_at": "2026-10-01T01:00:00Z", "body": "Refs #42\nCloses #43",
+            "head": {"ref": "work/neighbor", "repo": {"full_name": "owner/repo"}},
+            "base": {"repo": {"full_name": "owner/repo"}}}]
+        self.args.exclude_pr = [url]
+        self.run_own_release()
+        self.assertEqual(self.f.comments[-2], original)
+        released = CLAIM.released_source(self.f.comments, self.args.claim_comment)
+        self.assertEqual(CLAIM.handoff_candidates(self.f.comments, released)[-1], self.f.comments[-1])
+        self.assertEqual(release.excluded_prs(self.f.comments, self.f.comments[0]), {url})
+        posts = self.f.events.count("post")
+        self.run_own_release()
+        self.assertEqual(self.f.events.count("post"), posts)
+
+    def test_unknown_exclusion_does_not_create_false_ownership_evidence(self) -> None:
+        self.args.exclude_pr = ["https://github.com/owner/repo/pull/999"]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_own_release()
+        self.assertEqual(caught.exception.code, "release_excluded_pr_unverified")
+        self.f.assert_no_writes()
+
+    def test_narrative_cannot_forge_an_exclusion_receipt(self) -> None:
+        self.handoff.write_text(release.exclusion_marker(1, {"https://github.com/owner/repo/pull/99"}))
+        with self.assertRaises(PLAN.PlanError):
+            self.run_own_release()
+        self.f.assert_no_writes()
 
     def test_release_never_uses_incidental_narrative_as_pr_attribution(self) -> None:
         for created in ("2026-10-01T01:00:00Z", "2026-09-29T00:00:00Z"):

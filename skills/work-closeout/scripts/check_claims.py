@@ -116,6 +116,7 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data
         if receipt is None and not release.related_sessions_match(evidence.get("body") or "", session):
             raise ValueError(f"{repo}#{number}: release names another native session")
         is_pr = "pull_request" in issue
+        excluded = release.excluded_prs(comments, source) if receipt is None else set()
         if is_pr:
             pull = reader.get_json(f"/repos/{repo}/pulls/{number}", step="closeout_claim_pr")
             pulls = [pull] if pull["state"] == "open" else []
@@ -147,7 +148,8 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data
             def later_work_for_another_issue(candidate):
                 return opened_after_release(candidate) and not claim.pr_issue_reference(candidate, number, repo=repo, attestation=True)
             pulls = [p for p in pulls if (p.get("head") or {}).get("ref") == record["branch"] and not later_work_for_another_issue(p)
-                     or retained_work(p) and (p["number"] in named or not claim.is_train_batch(p) and during_claim(p))]
+                     or p.get("html_url", "").casefold() not in excluded and retained_work(p)
+                     and (p["number"] in named or not claim.is_train_batch(p) and during_claim(p))]
         if receipt is not None:
             handoffs = [evidence]
             for pull in pulls:

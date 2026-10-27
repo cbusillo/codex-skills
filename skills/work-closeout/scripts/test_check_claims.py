@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import check_claims as helper
+import test_gh_plan_release as release_tests
 
 
 def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
@@ -86,6 +87,54 @@ def native_runtime() -> dict:
 
 
 class ClaimCloseoutTests(unittest.TestCase):
+
+    def test_accepted_release_exclusion_survives_closeout(self) -> None:
+        producer = release_tests.OwnReleaseTests()
+        producer.setUp()
+        self.addCleanup(producer.doCleanups)
+        self.addCleanup(producer.f.doCleanups)
+        source = producer.f.comments[0]
+        record = helper.release.source_record(source)
+        own = pull(90, record["branch"], body="Closes #42", created_at="2026-10-01T01:00:00Z")
+        other = pull(99, "work/neighbor", body="Refs #42\nCloses #43", created_at=own["created_at"])
+        for candidate in (own, other):
+            candidate["html_url"] = f"https://github.com/owner/repo/pull/{candidate['number']}"
+            candidate["user"]["login"] = release_tests.BOT
+            for side in ("head", "base"):
+                candidate[side]["repo"]["full_name"] = "owner/repo"
+        producer.f.pulls = [own, other]
+        producer.args.exclude_pr = [other["html_url"]]
+        producer.run_own_release()
+        result = helper.check_record(self.reader, "owner/repo", 42, record["session"], release_tests.BOT,
+            data_cache={("owner/repo", 42): (producer.f.issue, producer.f.comments)},
+            pulls_cache={"owner/repo": producer.f.pulls})
+        self.assertEqual(result[0]["retained_prs"], [own["html_url"]])
+
+    def test_exclusions_never_hide_source_branch_work(self) -> None:
+        self.pulls = [pull()]
+        self.release["body"] += "\n\n" + helper.release.exclusion_marker(self.source["id"], {self.pulls[0]["html_url"]})
+        self.comments.append(self.release)
+        with self.assertRaises(ValueError):
+            self.check()
+
+    def test_exclusion_receipts_require_the_exact_authored_source_handoff(self) -> None:
+        for mode in ("wrong-claim", "foreign-author", "ordinary-comment", "malformed", "unknown-version"):
+            with self.subTest(mode=mode):
+                self.pulls = [pull(branch="work/neighbor")]
+                marker = helper.release.exclusion_marker(self.source["id"], {self.pulls[0]["html_url"]})
+                if mode == "wrong-claim":
+                    marker = helper.release.exclusion_marker(self.source["id"] + 1, {self.pulls[0]["html_url"]})
+                if mode == "malformed":
+                    marker = marker.replace('"prs":', '"prs"')
+                if mode == "unknown-version":
+                    marker = marker.replace('"version": 1', '"version": 99')
+                receipt = comment(12, "Released claim 10\n\n" + marker,
+                                  actor="someone-else" if mode == "foreign-author" else ACTOR)
+                if mode == "ordinary-comment":
+                    receipt["body"] = "Context\n\n" + marker
+                self.comments = [self.source, self.release, receipt]
+                with self.assertRaises(ValueError):
+                    self.check()
 
     def setUp(self):
         self.folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
