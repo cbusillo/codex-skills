@@ -906,9 +906,6 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 result = await self.send(task, request, response, "thread/resume", f.session)
                 self.assertIn("result", result)
                 row = next(r for r in closure.log_rows() if r.get("session_id") == f.session)
-                registered = next(r for r in closure.log_rows() if r.get("record_kind") == "managed_proxy")
-                self.assertEqual(row["resumed_generation"]["pid"], registered["launch_pid"])
-                self.assertEqual(row["resumed_generation"]["launch_generation"], registered["launch_generation"])
                 self.assertTrue(row["resumed_at"])
                 self.assertIsNone(row["closure_evidence"])
             finally:

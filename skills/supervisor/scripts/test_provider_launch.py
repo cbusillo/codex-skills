@@ -304,7 +304,7 @@ class ProviderLaunchTests(unittest.TestCase):
         with patch.object(session_liveness, "inventory", return_value=[(456, "fixture-tty", "codex --remote unix:///observed"),
                                                               (457, "fixture-tty", "python3 /fixture/codex-session.py launch --codex-home /fixture")]), \
                 patch_attr(github_plan_closure, "process_started_at") as started, \
-                patch_attr(github_plan_closure, "log_rows", return_value=[]):
+                patch_attr(github_plan_closure, "log_rows", side_effect=FileNotFoundError("fixture log absent")):
             from datetime import datetime, timezone
             started.return_value = datetime(2026, 10, 1, tzinfo=timezone.utc)
             result = iterm_tab.source_launch_metadata(source, choice)

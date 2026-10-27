@@ -1365,8 +1365,12 @@ identified on the exact launch TTY. Launch and reattachment share that proxy's
 process and generation identity, including before the native client starts.
 Preserve those fields when adding the native
 thread ID and transcript to the ledger. If capture is unavailable, the launch
-still works and ordinary verified closure/release remains supported; it cannot
-supply idle-admission proof. Resume and queue mutations use the source account's
+still works but cannot supply idle-admission proof. After reattachment, refresh
+missing or mismatched ledger identity fields from `codex-session.py status`
+before `finish`; status reads the recorded generation even after the client
+exits. Already-running clients from an older catalog keep their in-memory
+generation recorder until they exit and may need that same refresh.
+Resume and queue mutations use the source account's
 existing daemon and the same per-thread lease as closure and successor admission:
 
 ```sh

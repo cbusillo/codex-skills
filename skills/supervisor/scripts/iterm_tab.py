@@ -1384,7 +1384,10 @@ def source_launch_metadata(result, choice):
             argv = harness_arguments(command)
             if terminal == tty.removeprefix("/dev/") and argv and Path(argv[0]).name.casefold().startswith("codex"):
                 candidates.append((pid, command.split()[0] == argv[0]))
-        registrations = github_plan_closure.log_rows() if github_plan_closure.closed_log().exists() else []
+        try:
+            registrations = github_plan_closure.log_rows()
+        except FileNotFoundError:
+            registrations = []
         proxies = {r.get("launch_pid"): r for r in registrations
                    if r.get("record_kind") == "managed_proxy" and r.get("codex_home") == result["codex_home"]}
         matches = [pid for pid, _ in candidates if pid in proxies and
