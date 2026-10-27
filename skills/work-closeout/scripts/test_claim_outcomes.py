@@ -23,6 +23,122 @@ def invocation(source: str, output: object = "") -> list[dict]:
 
 
 class RecordedClaimOutcomeTests(unittest.TestCase):
+    def test_read_only_discovery_cells_do_not_create_claim_uncertainty(self) -> None:
+        reads = [
+            'await Promise.allSettled([(async()=>text(await tools.exec_command({cmd:"gh-plan.py claim --help"})))(),'
+            '(async()=>text(await tools.exec_command({cmd:"gh-plan.py --repo test/a show 5 --full"})))()]);',
+            'const results=await Promise.allSettled([tools.exec_command({cmd:"cat brief-rules.md"}),'
+            'tools.exec_command({cmd:"rg claims MEMORY.md"}),tools.exec_command({cmd:"cat DIRECTION.md"}),'
+            'tools.exec_command({cmd:"pwd; git status --short --branch; git remote -v; rg --files"})]);'
+            'results.forEach((r,i)=>text({i,...r}));'
+            r'text(ALL_TOOLS.filter(x=>/launchplane|github|skills\.|computer/i.test(x.name+" "+x.description))'
+            '.map(x=>({name:x.name,description:x.description.slice(0,150)})));',
+            'text(ALL_TOOLS.filter(x=>/github_fetch_issue$|github_fetch_issue_comments$|computer/.test(x.name))'
+            '.map(x=>({name:x.name,description:x.description.slice(0,350)})));',
+            'text(ALL_TOOLS.filter(x=>/computer|screenshot|app.*launch|window/i.test(x.name+" "+x.description))'
+            '.map(x=>({name:x.name,description:x.description.slice(0,160)})));'
+            'text((await tools.exec_command({cmd:"printenv CODEX_THREAD_ID"})).output);',
+            'await Promise.allSettled(['
+            '(async()=>{let r=await tools.mcp__codex_apps__github_fetch_issue('
+            '{issue_number:5,repository_full_name:"test/a"});store("issue",r);text(r)})(),'
+            '(async()=>{let r=await tools.mcp__codex_apps__github_fetch_issue_comments('
+            '{issue_number:5,repo_full_name:"test/a"});store("comments",r);text(r)})(),'
+            '(async()=>text(await tools.exec_command({cmd:"cat README.md"})))()]);',
+            'text(await tools.mcp__codex_apps__github_fetch_issue_comments('
+            '{issue_number:5,repo_full_name:"test/a"}).then(r=>r.structuredContent.comments.map(c=>({id:c.id,url:c.url}))));',
+            'const c=load("comments").structuredContent.comments;text(c.at(-1).body);'
+            'await Promise.allSettled([(async()=>text(await tools.web__run({search_query:[{q:"SMB reconnect"}]})))(),'
+            '(async()=>text(await tools.exec_command({cmd:"cat evidence.txt"})))()]);',
+            'text(ALL_TOOLS.filter(x=>/github_(fetch|search)_\\w+/.test(x.name)||/\\bissue[s]?\\d*\\b/i.test(x.description)));',
+            'text(ALL_TOOLS.filter(x=>{return /github/.test(x.name);}));text(/github/.test("github"));',
+            'text("a,b; c".split(/[,;]\\s*/).map(x=>x.replace(/\\w+/,"item")));',
+            'text(await tools.mcp__codex_apps__github_search({query:"claims"}));'
+            'text(await tools.mcp__codex_apps__github_get_repo({repo:"test/a"}));'
+            'text(await tools.mcp__codex_apps__github_list_recent_issues({repo:"test/a"}));',
+            '(async function(){text(await tools.exec_command({cmd:"cat README.md"}));})();',
+            '(async()=>text(await tools.exec_command({cmd:"cat README.md"})))().then(r=>text(r));',
+        ]
+        for source in reads:
+            with self.subTest(source=source):
+                self.assertEqual(
+                    check_claims.history.literal_targets(invocation(source), SESSION),
+                    {"targets": set(), "unresolved_invocations": []},
+                )
+
+    def test_immediate_callbacks_still_discover_real_uncertain_claims(self) -> None:
+        for source in (
+            f'(async()=>text((await tools.exec_command({{cmd:{json.dumps(COMMAND)}}})).output))();',
+            f'await tools.mcp__codex_apps__github_fetch_issue({{}}).then(async r=>'
+            f'text((await tools.exec_command({{cmd:{json.dumps(COMMAND)}}})).output));',
+            f'tools.exec_command({{cmd:{json.dumps(COMMAND)}}}).then(r=>text(r));',
+        ):
+            with self.subTest(source=source):
+                report = check_claims.history.literal_targets(invocation(source), SESSION)
+                self.assertEqual(report["targets"], {("test/a", 5)})
+                self.assertTrue(report["unresolved_invocations"])
+                self.assertEqual(report["unresolved_invocations"][0]["commands"], [COMMAND])
+
+    def test_immediate_callbacks_and_read_tools_do_not_admit_unknown_execution(self) -> None:
+        for source in (
+            '(async()=>load("runner")())();',
+            '(async runner=>runner())(load("runner"));',
+            'await tools.mcp__codex_apps__github_add_comment_to_issue({body:load("claim")});',
+            'await tools.mcp__codex_apps__github_fetch_issue({}).then(r=>eval(r.body));',
+            'load("result").then(r=>text(r));',
+            '(async()=>{const tools=load("tools");await tools.exec_command({cmd:load("claim")});})();',
+        ):
+            with self.subTest(source=source):
+                self.assertTrue(check_claims.history.literal_targets(invocation(source), SESSION)["unresolved_invocations"])
+
+    def test_opaque_cells_do_not_report_an_empty_decoded_command_list(self) -> None:
+        for source in ('load("runner")();', 'text(await tools.exec_command({cmd:load("claim")}));'):
+            with self.subTest(source=source):
+                report = check_claims.history.literal_targets(invocation(source), SESSION)
+                self.assertTrue(report["unresolved_invocations"])
+                self.assertNotIn("commands", report["unresolved_invocations"][0])
+
+    def test_unsupported_calls_report_their_location_and_keep_real_targets(self) -> None:
+        sources = [
+            'tools.exec_command({cmd:"cat README.md"}).then(r=>text(r)).catch(e=>text(String(e)))',
+            'tools.exec_command({cmd:"cat README.md"}).finally(()=>text("done"))',
+            'Promise.all([]).then(r=>text(r))',
+            'async function main(){} await main()',
+            'load("runner")()',
+            'tools.exec_command({cmd:load("command")})',
+        ]
+        for source in sources:
+            for newline in ("\n", "\r\n"):
+                with self.subTest(source=source, newline=newline):
+                    prefix = f'text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));'
+                    cell = prefix + newline + 'text("é🙂"); ' + source
+                    report = check_claims.history.literal_targets(invocation(cell), SESSION)
+                    self.assertEqual(report["targets"], {("test/a", 5)})
+                    item = report["unresolved_invocations"][0]
+                    self.assertEqual(item["commands"], [COMMAND])
+                    refusal = item["refusals"][0]
+                    line = cell.split(newline)[refusal["line"] - 1]
+                    self.assertTrue(line[refusal["column"] - 1:].startswith(source))
+                    self.assertTrue(refusal["reason"])
+
+    def test_immediate_arrow_parameters_shadow_outer_commands(self) -> None:
+        for pattern in ("command", "(command)"):
+            with self.subTest(pattern=pattern):
+                source = f'const command={json.dumps(COMMAND)};(async {pattern}=>'
+                source += 'text(await tools.exec_command({cmd:command})))();'
+                report = check_claims.history.literal_targets(invocation(source), SESSION)
+                self.assertEqual(report["targets"], set())
+                self.assertTrue(report["unresolved_invocations"])
+
+    def test_lexical_refusals_point_to_the_original_cell(self) -> None:
+        for source, fragment in ((r'const \u0063=1;', r'\u0063'), ('(', '('), ('/*/.test("x")', '/*')):
+            with self.subTest(source=source):
+                cell = 'text("é🙂");\r\n' + source
+                report = check_claims.history.literal_targets(invocation(cell), SESSION)
+                self.assertEqual(report["targets"], set())
+                refusal = report["unresolved_invocations"][0]["refusals"][0]
+                line = cell.split("\r\n")[refusal["line"] - 1]
+                self.assertTrue(line[refusal["column"] - 1:].startswith(fragment))
+
     def assert_discovered_targets(self, rows: list[dict], targets: set[tuple[str, int]]) -> None:
         report = check_claims.history.literal_targets(rows, SESSION)
         self.assertEqual(report["targets"], targets)
@@ -77,9 +193,11 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                 },
             },
         }
-        for kind in ("ended", "prior", "foreign", "duplicate", "unknown_count", "overlap", "yielded", "while", "do", "local_function", "parameterless_callback"):
+        for kind in ("ended", "immediate", "prior", "foreign", "duplicate", "unknown_count", "overlap", "yielded", "while", "do", "local_function", "parameterless_callback"):
             with self.subTest(kind=kind):
                 code = source
+                if kind == "immediate":
+                    code = f'await Promise.allSettled([(async()=>{{{source}}})()]);'
                 if kind == "duplicate":
                     code = f"for(const n of [1,2]){{{source}}}"
                 if kind == "while":
@@ -114,7 +232,7 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                     rows.append(item)
                 report = check_claims.history.literal_targets(rows, SESSION)
                 self.assertEqual(report["targets"], {("test/a", 5)})
-                self.assertEqual(not report["unresolved_invocations"], kind == "ended")
+                self.assertEqual(not report["unresolved_invocations"], kind in {"ended", "immediate"})
 
     def test_only_later_polls_from_the_same_process_generation_can_complete(self) -> None:
         claim = f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));"
@@ -629,13 +747,12 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             'text(ALL_TOOLS.filter(x=>new RegExp("x").test(x.name)));',
             'text(ALL_TOOLS.filter(x=>RegExp("x").test(x.name)));',
             "text(ALL_TOOLS.filter(/x/.test));",
-            "text(ALL_TOOLS.filter(x=>{return /x/.test(x.name);}));",
             "const r={value:/x/};",
             "const r=[/x/];",
-            'text(/x/.test("x"));',
             'const a=1;a\n/tools.exec_command({cmd:"uv run gh-plan.py claim 5"})/i.test(a);',
             'text(ALL_TOOLS.filter(x=>/x//**/.test(x.name)));',
             'text(ALL_TOOLS.filter(x=>/x/ /*comment*/ .test(x.name)));',
+            'text(ALL_TOOLS.filter(x=>/*/.test(x.name)));',
         ]
         for flags in ("g", "y", "m", "s", "u", "v", "d", "ii"):
             expressions.append(f"text(ALL_TOOLS.filter(x=>/x/{flags}.test(x.name)));")
@@ -651,19 +768,6 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
         ):
             separator = "" if operation.startswith("[") else "."
             expressions.append(f"text(ALL_TOOLS.filter(x=>/x/{separator}{operation}));")
-        for pattern in (
-            r"\d",
-            '"',
-            "'",
-            "`",
-            "[/]",
-            "(?i:x)",
-            "#!",
-            "<!--",
-            "-->",
-            "*",
-        ):
-            expressions.append(f"text(ALL_TOOLS.filter(x=>/{pattern}/.test(x.name)));")
         for method in ("replace", "match"):
             expressions.append(f"text(ALL_TOOLS.map(x=>x.name.{method}(/x/)));")
         expressions.append(

@@ -1960,6 +1960,8 @@ class ClaimCloseoutTests(unittest.TestCase):
             'let r=load("draft"); for(const [a,b] of [["old","new"]]) { r=r.split(a).join(b); } text(r);',
             'const fmt=xs=>xs.map(x=>"`"+x+"`").join(", "); text(fmt(load("rows")));',
             'const r=load("draft"); text(r.replace(/old/g,"new"));',
+            'text(load("r").split(/"/));',
+            'text(load("r").split(/`/));',
             'const r=load("draft"); text({words:r.split(/\\s+/).length}); '
             'text(await tools.exec_command({cmd:"mkdir -p /fixture/evidence"}));',
             'const r=load("draft"); text(await tools.apply_patch("*** Begin Patch\\n"+r+"\\n*** End Patch"));',
@@ -1987,8 +1989,6 @@ class ClaimCloseoutTests(unittest.TestCase):
             'const h=f(load("code")); await {then:h};',
             'let i=0; const g=()=>load("r")[i]; i=load("k"); text(g());',
             'let a=[]; {a=load("o");} text(load("r")[a.length]);',
-            'text(load("r").split(/"/));',
-            'text(load("r").split(/`/));',
             r'text(load("r").split(/\\/\\//));',
             'const f=x=>tools.exec_command({cmd:x}); text(f(load("command")));',
             'let r=load("draft"); r=eval(r); text(r);',
@@ -3274,7 +3274,7 @@ print(root)"""
                     "type": "custom_tool_call",
                     "name": "exec",
                     "call_id": "filter",
-                    "input": 'text(ALL_TOOLS.filter(x=>/launchplane|dokploy/i.test(x.name+" "+x.description)));',
+                    "input": r'text(ALL_TOOLS.filter(x=>/github_(fetch|search)_\w+/i.test(x.name+" "+x.description)));',
                 }
             },
             {
