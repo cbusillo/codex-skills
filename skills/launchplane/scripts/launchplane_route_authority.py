@@ -436,7 +436,7 @@ def execute(h: Any, args: Any) -> int:
         else:
             code = str(exc)
             if isinstance(exc, ValueError) and code in {
-                "plan_lane_not_unique", "invalid_plan_lane_url", "plan_domain_scope_mismatch",
+                "plan_lane_not_unique",
                 "plan_endpoint_not_active", "invalid_plan_domains", "invalid_product",
                 "tls_ownership_unknown", "binding_current_mismatch", "binding_source_unverified",
                 "binding_current_unavailable",

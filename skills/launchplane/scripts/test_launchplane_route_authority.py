@@ -206,9 +206,14 @@ def audit_readback():
         "idempotency_key": "record-repair-example"}}
 
 
-def test_ingress_apply_keeps_every_provider_mutation_disabled_and_reads_audit():
-    code, output, _, post = run("ingress-route-authority-apply", [*ingress_reads(), audit_readback()],
-        [ingress_response(), ingress_apply_response()], ingress_plan())
+@pytest.mark.parametrize("profile_host", [DOMAINS[0], "business.example.invalid"])
+def test_ingress_apply_keeps_every_provider_mutation_disabled_and_reads_audit(profile_host: str) -> None:
+    reads = ingress_reads()
+    reads[0]["profile"]["lanes"][0]["base_url"] = f"https://{profile_host}"
+    reads[0]["profile"]["lanes"][0]["health_url"] = f"https://{profile_host}/health"
+    evidence = run(INGRESS_COMMAND, reads, [ingress_response()])[1]
+    code, output, _, post = run("ingress-route-authority-apply", [*reads, audit_readback()],
+        [ingress_response(), ingress_apply_response()], evidence)
     assert code == 0 and output["result"]["read_back_matches"] is True
     ingress = post.call_args.kwargs["body"]["ingress"]
     assert ingress["mode"] == "apply" and ingress["require_exact_expected_host_domains"] is True
