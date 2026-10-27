@@ -45,6 +45,13 @@ Rules for this brief (every Supervisor brief carries them):
   that names it. Browser and page checks run headless (Playwright or the
   repository's own browser harness). Close anything you open
   ([browser preflight](helpers.md#browser-and-computer-use-preflight)).
+- If a named-app step needs Computer Use and your tools are missing, stop
+  that step and post a Supervisor GUI relaunch request on your item, naming
+  the app's bundle ID and the action needed. Follow
+  [Opt-in Codex GUI work](helpers.md#opt-in-codex-gui-work); do not ask the
+  Director to enable or install a plugin. Continue independent work, then
+  hand off and close out safely for the replacement worker. App approval,
+  Accessibility and Screen Recording permissions remain the Director's.
 - Read the item in full first, every comment and linked issue, then re-check
   it against current code before starting (overall DIRECTION.md Issue trial,
   [direction#96](https://github.com/cbusillo/direction/issues/96)). If the
