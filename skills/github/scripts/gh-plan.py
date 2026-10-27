@@ -2760,9 +2760,15 @@ def claim_once(args: argparse.Namespace) -> None:
         inventory = phase["inventory"]
         ended_owners = ended_ownership(current_comments, inventory)
         branches = set(inventory["local_branches"]) | set(inventory["remote_branches"]) | {t["branch"] for t in inventory["worktrees"]}
-        predecessors = github_plan_claim.resumed_predecessor_claim_ids(current_comments, args.resume_from, claim["branch"])
+        custody = set()
+        prior_custody = any(entry["branch"] == claim["branch"] and entry["claim_id"] != args.resume_from for entry in ended_owners)
+        if (prior_custody and record_kind == "issue" and args.resume_from and selection is not None
+                and selection["mode"] == "plain" and phase.get("source", {}).get("record", {}).get("branch") == claim["branch"]):
+            custody = github_plan_claim.resumed_branch_claim_ids(current_comments, args.resume_from, claim)
+            if args.resume_from not in custody:
+                raise PlanError("Preserved branch custody requires sequential exact authored releases and matching source history")
         if any(entry["branch"] == claim["branch"] and entry["branch"] in branches
-               and entry["claim_id"] != args.resume_from and entry["claim_id"] not in predecessors for entry in ended_owners):
+               and entry["claim_id"] != args.resume_from and entry["claim_id"] not in custody for entry in ended_owners):
             raise PlanError("Ended ownership requires a new task branch; preserve the retained source branch and worktree")
         conflicts, owned = github_plan_claim.discussion_evidence(
             current_status, current_comments, claim, resume_from=args.resume_from,
@@ -3132,6 +3138,10 @@ def claim_once(args: argparse.Namespace) -> None:
                 if source_number != number or issue_repo.casefold() != target_repo.casefold() or source_open:
                     raise github_plan_claim.ClaimProofError("claim_handoff_pr_required",
                         "Released work requires a qualified source-authored retained-PR handoff")
+                if claim["branch"] == record["branch"]:
+                    _, own = github_plan_claim.discussion_evidence("", current_comments, claim)
+                    if not any(existing.get("_legacy") != "yes" for existing in own):
+                        claim["resume_from"] = str(args.resume_from)
                 return None
             if handoff is None:
                 raise github_plan_claim.ClaimProofError("claim_handoff_pr_required", "Released retained work has no qualified handoff")

@@ -1642,6 +1642,16 @@ fresh task branch or fabricate a PR to meet the retained-PR contract.
 This uses the existing source-recovery exception, not a second adoption path.
 Historical PR references alone leave this same-record recovery route available;
 current PR ownership, artifacts and peers still determine admission.
+New same-branch successor claims record `resume_from` even without retained PRs.
+When several released claims name that preserved branch, the helper checks their
+custody together on each readback: exact same-author releases, strictly
+non-overlapping claim periods, no retained-PR or refresh lineage, and any recorded
+source must name an earlier claim in that branch's history. This includes older
+claims without source lineage and later released partial attempts, so the next
+native session can use the existing selector after a failed claim is released.
+Foreign authors, unreleased or lease-only history, overlapping periods and
+unrelated source lineage still refuse. A legacy partial claim from the current
+worker/session renews without rewriting its record.
 Ownership, live peers, issue waits, native blockers and other retained artifacts
 keep their checks; a refusal stops the action for reconciliation.
 

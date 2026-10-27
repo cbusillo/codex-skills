@@ -1694,12 +1694,20 @@ class ClaimTests(unittest.TestCase):
         return source
 
     def test_no_pr_resume_preserves_sequential_released_claims_on_its_branch(self) -> None:
-        source = self.sequential_no_pr_resume_fixture()
-        self.run_claim()
-        result = self.emitted.call_args.args[0]
-        self.assertIn("metadata_readback", result["completed_steps"])
-        self.assertEqual(result["claim"]["branch"], source["branch"])
-        self.assertNotIn("retained_handoff", result["claim"])
+        for cross_session, selector in product((False, True), (1, 88)):
+            with self.subTest(cross_session=cross_session, selector=selector):
+                self.setUp()
+                source = self.sequential_no_pr_resume_fixture()
+                if cross_session:
+                    prior = CLAIM.records(self.comments[0]["body"])[0]
+                    self.comments[0]["body"] = CLAIM.marker({**prior, "worker": "first-worker", "session": "first-session"})
+                self.args.resume_from = selector
+                self.run_claim()
+                result = self.emitted.call_args.args[0]
+                self.assertIn("metadata_readback", result["completed_steps"])
+                self.assertEqual(result["claim"]["branch"], source["branch"])
+                self.assertEqual(result["claim"]["resume_from"], str(self.args.resume_from))
+                self.assertNotIn("retained_handoff", result["claim"])
 
     def test_released_partial_no_pr_claim_preserves_resume_for_the_next_session(self) -> None:
         for next_session in (False, True):
@@ -1720,7 +1728,7 @@ class ClaimTests(unittest.TestCase):
                 self.comments.append({"id": partial_id + 1, "user": {"login": TEST_BOT},
                     "body": f"Released claim {partial_id}", "created_at": "2026-10-03T01:00:00Z"})
                 self.after_status = lambda: None
-                self.wait = wait_record.reviewed(evidence="The readback hold is resolved")
+                self.args.wait_resolved = "The readback hold is resolved"
                 if next_session:
                     self.args.worker, self.args.session = "next-worker", "next-native-session"
                 artifacts = copy.deepcopy(self.inventory)
@@ -1732,15 +1740,26 @@ class ClaimTests(unittest.TestCase):
                 self.assertEqual(result["claim"]["resume_from"], str(self.args.resume_from))
                 self.assertEqual(self.inventory, artifacts)
 
+    def test_plain_resume_renews_legacy_partial_custody_without_reposting(self) -> None:
+        source = self.no_pr_resume_fixture()
+        self.args.branch = source["branch"]
+        legacy_partial = {**OWNER, "branch": source["branch"], "claimed_at": "2026-10-03T00:00:00Z"}
+        self.comments.append({"id": 88, "user": {"login": TEST_BOT}, "body": CLAIM.marker(legacy_partial),
+                              "created_at": legacy_partial["claimed_at"]})
+        self.run_claim()
+        self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
+        self.assertNotIn("post", self.events)
+
     def test_no_pr_resume_preserves_unqualified_predecessor_refusals(self) -> None:
-        for change in ("session", "worker", "author", "late_release", "equal_release", "lease_only",
-                       "later_claim", "selected_unreleased", "selected_legacy", "missing_timestamp", "late_edit"):
+        for change in ("foreign_lineage", "retained", "refresh", "author", "late_release", "equal_release", "lease_only",
+                       "overlapping_claim", "selected_unreleased", "selected_legacy", "missing_timestamp", "late_edit"):
             with self.subTest(change=change):
                 self.setUp()
                 source = self.sequential_no_pr_resume_fixture()
                 prior = CLAIM.records(self.comments[0]["body"])[0]
-                if change in {"session", "worker"}:
-                    self.comments[0]["body"] = CLAIM.marker({**prior, change: "different-history"})
+                if change in {"foreign_lineage", "retained", "refresh"}:
+                    field = {"foreign_lineage": "resume_from", "retained": "retained_handoff", "refresh": "refresh_pr"}[change]
+                    self.comments[0]["body"] = CLAIM.marker({**prior, field: "different-history"})
                 if change == "author":
                     for comment in self.comments[:2]:
                         comment["user"] = {"login": "different-author"}
@@ -1750,8 +1769,8 @@ class ClaimTests(unittest.TestCase):
                     self.comments[1]["created_at"] = source["claimed_at"]
                 if change == "lease_only":
                     self.comments.pop(1)
-                if change == "later_claim":
-                    later = {**source, "claimed_at": "2026-10-03T00:00:00Z"}
+                if change == "overlapping_claim":
+                    later = {**source, "claimed_at": "2026-10-02T00:00:00Z"}
                     self.comments.extend([
                         {"id": 90, "body": CLAIM.marker(later), "user": {"login": TEST_BOT},
                          "created_at": later["claimed_at"]},
