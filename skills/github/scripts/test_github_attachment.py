@@ -275,6 +275,15 @@ class AttachmentTests(unittest.TestCase):
         self.assertEqual(self.invoke()[0], 1)
         self.run.assert_not_called()
 
+    def test_director_comment_downloads_without_per_command_approval(self) -> None:
+        self.standing_scope()
+        os.environ["GH_WITH_ENV_TOKEN_OWN_USER_LOGIN"] = self.login
+        self.comment.update({"author_association": "OWNER", "user": {"type": "User", "login": self.login.upper()}})
+        status, result = self.invoke()
+        self.assertEqual(status, 0)
+        self.assertEqual(result["authority"], "standing_approval")
+        self.assertEqual(pathlib.Path(result["path"]).read_bytes(), self.body)
+
     def test_director_owner_comment_downloads_with_per_command_approval(self):
         self.standing_scope()
         os.environ["GH_WITH_ENV_TOKEN_OWN_USER"] = "1"
@@ -325,7 +334,8 @@ class AttachmentTests(unittest.TestCase):
     def test_unverified_author_and_bot_comments_are_outside_standing_scope(self):
         self.standing_scope()
         for change in ({"author_association": "NONE"}, {"author_association": "OWNER"},
-                       {"user": {"type": "Bot"}}):
+                       {"author_association": "OWNER", "user": {"type": "User", "login": "third-party"}},
+                       {"user": {"type": "Bot", "login": self.login}}):
             with self.subTest(change=change), patch.dict(self.comment, change):
                 self.assertEqual(self.invoke()[0], 1)
         self.run.assert_not_called()

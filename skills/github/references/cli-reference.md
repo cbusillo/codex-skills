@@ -2667,7 +2667,7 @@ Human warnings and progress remain on stderr, and the process exit code matches
 
 ### Comment attachments
 
-Use `gh-attachment.py` for files Clients or their staff attach to comments in
+Use `gh-attachment.py` for files the Director, Clients or their staff attach to comments in
 Director-owned repositories. The [Q467 standing approval](https://github.com/cbusillo/codex-skills/issues/2021#issuecomment-6241276473)
 covers read-only downloads under `cbusillo`'s login in `cbusillo/*`, into task
 evidence only. Do not ask for per-file approval or request a token. GitHub
@@ -2699,16 +2699,16 @@ Recognized Q467 replies without unqualified approval also withhold it, including
 an older reply edited after the approval. A later unqualified `Q467 yes` restores
 it. Quoted or third-party text does not.
 
-The standing route accepts human collaborator/member comments in personally
-owned repositories; unknown authors and bots are outside that verified
-Client/staff scope. It verifies the canonical repository and exact comment link
+The standing route accepts comments by the declared personal login and human
+collaborator/member comments in personally owned repositories; unknown authors
+and bots remain outside that scope. It verifies the canonical repository and exact comment link
 using automation-only REST reads. The existing `gh` credential for `cbusillo`
 is retrieved inside the helper and checked against `/user`; it is never printed,
 persisted or handed to the agent. A conflicting declared personal login is not
 silently changed. All Directors retain the existing declared-login,
 per-command `GH_WITH_ENV_TOKEN_OWN_USER=1` route under their own explicit approval.
-That command selects per-command authority instead of Q467, including for `OWNER`
-comments or after standing approval is withdrawn; automation-only mode still
+That command selects per-command authority instead of Q467, including after
+standing approval is withdrawn; automation-only mode still
 refuses it. Q467 never grants use of other Directors' accounts.
 
 Only the fixed `/user` identity read and attachment GET use the personal token.
