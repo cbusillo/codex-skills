@@ -1641,7 +1641,7 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
     elif reason == "native_python_environment_required":
         action = "Run the repository's documented Python setup in the exact worktree; native needs its .venv or declared structured prepare.python."
     elif reason in {"native_preparation_shape_unsupported", "native_preparation_unsupported"}:
-        action = ("Native PyCharm runs structured root prepare.python; WebStorm ignores structured Python preparation and prepares its lane's npm or pnpm project. Other preparation shapes are unsupported, so this coverage is "
+        action = ("Native PyCharm runs structured root prepare.python; WebStorm ignores structured Python preparation and prepares its lane's npm, pinned Yarn 4 or pinned pnpm project. Other preparation shapes are unsupported, so this coverage is "
                   "unavailable; report it as UNKNOWN. When the exact root .venv is already prepared, --backend native uses it.")
     elif reason.startswith("native_odoo_"):
         action = "Run the workspace's documented dependency sync so its declared addon refs resolve locally. Match the selected addon's version and workspace build.odoo_version to one Odoo core checkout plus the declared addon dependency roots. Supply those clean roots with --native-framework-root; preserve source version declarations."

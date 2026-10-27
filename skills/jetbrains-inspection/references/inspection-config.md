@@ -33,7 +33,7 @@ and whole-project readiness; an explicit `files` scope records an override and
 still selects the file. A native run covers one worker's product at a time.
 PyCharm and IntelliJ IDEA require root lanes. WebStorm also supports one nested `projectPath`: every
 selected file must lie beneath it, and dependencies are prepared from that
-project's npm or pinned pnpm lockfile. Its engine model and findings remain
+project's npm, pinned Yarn 4 or pinned pnpm lockfile. Its engine model and findings remain
 relative to the repository root. Mixing projects or products is UNKNOWN;
 inspect each project's files in a separate assessment. Structured
 `prepare.python` may coexist with WebStorm lanes and is ignored by WebStorm; PyCharm still requires root Python preparation.
