@@ -101,8 +101,10 @@ def verify_comment(repository: str, comment: int, url: str):
 def authorization(login: str, reader, record: dict) -> str:
     if github_identity.own_user_opted_in():
         return "per_command"
-    if (record.get("author_association") not in {"COLLABORATOR", "MEMBER"}
-            or not isinstance(record.get("user"), dict) or record["user"].get("type") != "User"):
+    author = record.get("user")
+    if (not isinstance(author, dict) or author.get("type") != "User"
+            or (str(author.get("login", "")).casefold() != login.casefold()
+                and record.get("author_association") not in {"COLLABORATOR", "MEMBER"})):
         raise AttachmentError("standing approval covers Client/staff collaborator comments, not unverified authors")
 
     def read_comment(repository: str, comment: int):
