@@ -758,6 +758,12 @@ def global_fixture(
     def wait_api(method: str, path: str, **_kwargs: Any) -> Any:
         if module.NEXT_READS is not None and module.NEXT_READS.observation(path) is not None:
             return module.real_api_json(method, path, **_kwargs)
+        if path == "/graphql":
+            assert method == "POST" and _kwargs["is_write"] is False
+            variables = _kwargs["payload"]["variables"]
+            raw = all_nodes[(f"{variables['owner']}/{variables['name']}", variables["number"])]
+            return "automation-gh", {"data": {"repository": {"issue": {
+                "createdAt": raw["created_at"], "lastEditedAt": raw.get("last_edited_at")}}}}
         assert method == "GET", "global next must remain read-only"
         parts = path.split("?", 1)[0].strip("/").split("/")
         target = "/".join(parts[1:3])
@@ -4100,6 +4106,8 @@ def test_global_next_reads_milestone_proofs_before_a_descendant_uses_the_scan_bu
     proof = "The site serves real visitors after backup and tested rollback."
     root["body"] = f"## Objective\n{proof}\n\n## Current Status\nState: The accepted release is complete.\n"
     last["body"] = "## Finish Line\nThe original issues close and the accepted release reaches production.\n"
+    last["body"] += "\n## Current Status\nState: Active.\n"
+    last["updated_at"] = "2027-01-02T00:00:00Z"
     later = global_issue("someone/product", 560)
     comments = {("someone/direction", 102): [{"id": 1, "user": {"login": "someone"},
         "body": "## Current Status\nState: The accepted release is complete.", "created_at": "2027-01-01T00:00:00Z"}]}
@@ -4108,7 +4116,7 @@ def test_global_next_reads_milestone_proofs_before_a_descendant_uses_the_scan_bu
         module.cmd_next(next_args(scan_limit=1))
         reviews = result["milestone_closure_reviews"]
         assert len(reviews) == 2, result
-        assert reviews[0]["proof"] == proof, reviews
+        assert reviews[0]["track_proof"] == proof, reviews
         assert reviews[1]["recorded_status"] == comments[("someone/direction", 102)][0]["body"].split("\n", 1)[1], reviews
         assert result["graph_context"]["truncated"], result
 

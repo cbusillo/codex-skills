@@ -2092,13 +2092,15 @@ def test_milestone_outcomes_report_closures_links_and_checked_finish_line_items(
         if path == "graphql":
             values = dict(arg.split("=", 1) for arg in args if "=" in arg and not arg.startswith("query="))
             key = (f"{values['owner']}/{values['name']}", int(values["number"]))
+            if any("lastEditedAt" in arg for arg in args):
+                return {"data": {"repository": {"issue": {"createdAt": before, "lastEditedAt": before}}}}
             graphql_reads.append(key)
             return {"data": {"repository": {"issue": activity[key]}}}
         if path == "repos/o/direction/milestones":
             return [{"number": 1, "title": "Thin fork decision", "state": "open"},
                     {"number": 2, "title": "Dogfood week", "state": "open"}]
         if args[1].startswith("repos/o/direction/issues?state=all&milestone=1"):
-            return [{"number": 1, "title": "Track: thin fork", "state": "open", "updated_at": inside,
+            return [{"number": 1, "title": "Track: thin fork", "state": "open", "updated_at": stamp(NOW),
                      "body": "## Objective\nShip the spike.\n\n## Current Status\nState: Spike complete.\n"},
                     {"number": 4, "title": "Ordinary work", "state": "open", "updated_at": inside}]
         if path == "repos/o/direction/issues/1/comments":
@@ -2108,7 +2110,7 @@ def test_milestone_outcomes_report_closures_links_and_checked_finish_line_items(
     thin, dogfood = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=fetch)
     assert thin["milestone"] == "Thin fork decision" and thin["complete"], thin
     assert thin["tracks"] == ["https://github.com/o/direction/issues/1"]
-    assert thin["closure_reviews"][0]["proof"] == "Ship the spike."
+    assert thin["closure_reviews"][0]["track_proof"] == "Ship the spike."
     assert thin["closure_reviews"][0]["recorded_status"] == module.github_direction_next.section_map(
         completion["body"])["Current Status"]
     assert [item["url"] for item in thin["issues_closed"]] == ["https://github.com/x/product/issues/9"]
@@ -2149,6 +2151,15 @@ def test_milestone_outcomes_report_closures_links_and_checked_finish_line_items(
     assert not unread_proof["complete"]
     assert not unread_proof["closure_reviews"][0]["discussion_complete"]
     assert unread_proof["closure_reviews"][0]["recorded_status"] is None
+
+    def unread_body_time(args: list[str]) -> Any:
+        if any("lastEditedAt" in arg for arg in args):
+            return {"data": {"repository": {"issue": {"createdAt": before}}}}
+        return fetch(args)
+
+    unordered = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=unread_body_time)[0]
+    assert not unordered["complete"]
+    assert unordered["closure_reviews"][0]["recorded_status"] is None
 
     for response in (None, {}):
         def unread_node(args: list[str], response: dict[str, Any] | None = response) -> Any:

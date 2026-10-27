@@ -4688,47 +4688,35 @@ def next_selection_context(args: argparse.Namespace) -> dict[str, Any]:
         raise PlanError(f"Invalid selection context: {exc}") from exc
 
 
+def next_status_body_time(item: dict[str, Any], trusted: set[str]) -> str | None:
+    def read_edit() -> Any:
+        owner, name = item["repo"].split("/")
+        def read() -> tuple[str, Any]:
+            return api_json("POST", "/graphql", bucket="graphql", failed_step="next_delivery_body_edit",
+                payload={"query": github_work_graph.STATUS_BODY_TIME_QUERY,
+                         "variables": {"owner": owner, "name": name, "number": item["number"]}},
+                is_write=False, repository=item["repo"])
+        _, edited = (NEXT_READS.observe(f"graphql:delivery_body_edit:{item['repo']}#{item['number']}", read)
+                     if NEXT_READS is not None else read())
+        return edited
+
+    try:
+        return github_work_graph.status_body_time(item.get("discussion") or {}, trusted, read_edit)
+    except (ValueError, github_next_reads.ReadDeadline) as exc:
+        raise PlanError(str(exc)) from exc
+
+
 def next_source_delivery(item: dict[str, Any], trusted: set[str], *, repositories: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Resolve the current status before verifying its bounded source-PR links."""
     result: dict[str, Any] = {"complete": True, "merged_prs": [], "completion_proven": False,
                               "scope": "current_status_explicit_pr_references", "all_linked_prs_searched": False}
-    discussion = item.get("discussion") or {}
-    body_status = re.sub(r"<!--.*?-->", "", section_map(discussion.get("body") or "").get("Current Status", ""), flags=re.S).strip()
-    comment_statuses = [re.sub(r"<!--.*?-->", "", section_map(comment.get("body") or "").get("Current Status", ""), flags=re.S).strip()
-                        for comment in discussion.get("comments", [])
-                        if str(comment.get("author") or "").casefold() in trusted]
-    # Activity time cannot choose between disagreeing authored status records,
-    # even when no source PR was named or its implementation link is absent.
-    comment_statuses = [status for status in comment_statuses if status]
-    if body_status and comment_statuses and comment_statuses[-1] != body_status:
-        try:
-            owner, name = item["repo"].split("/")
-            def read_edit() -> tuple[str, Any]:
-                return api_json("POST", "/graphql", bucket="graphql", failed_step="next_delivery_body_edit",
-                    payload={"query": "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){createdAt lastEditedAt}}}",
-                             "variables": {"owner": owner, "name": name, "number": item["number"]}}, is_write=False,
-                    repository=item["repo"])
-            try:
-                _, edited = (NEXT_READS.observe(f"graphql:delivery_body_edit:{item['repo']}#{item['number']}", read_edit)
-                             if NEXT_READS is not None else read_edit())
-            except github_next_reads.ReadDeadline as exc:
-                raise PlanError(str(exc)) from exc
-            data = edited.get("data") if isinstance(edited, dict) else None
-            repository = data.get("repository") if isinstance(data, dict) else None
-            issue = repository.get("issue") if isinstance(repository, dict) else None
-            if not isinstance(issue, dict) or "lastEditedAt" not in issue or not issue.get("createdAt"):
-                raise PlanError("Source action body-edit evidence unavailable")
-            result["body_recorded_at"] = issue["lastEditedAt"] or issue["createdAt"]
-            try:
-                recorded = datetime.fromisoformat(result["body_recorded_at"].replace("Z", "+00:00"))
-                if recorded.tzinfo is None:
-                    raise ValueError("Body edit timestamp lacks timezone")
-            except (AttributeError, TypeError, ValueError) as exc:
-                raise PlanError("Source action body-edit time unavailable") from exc
-        except PlanError as exc:
-            result["complete"] = False
-            result["body_edit_error"] = next_source_error(exc)
-            return result
+    try:
+        body_time = next_status_body_time(item, trusted)
+        if body_time is not None:
+            result["body_recorded_at"] = body_time
+    except PlanError as exc:
+        result["complete"] = False
+        result["body_edit_error"] = next_source_error(exc)
+        return result
     refs = github_next_queue.delivery_references(item, trusted, body_recorded_at=result.get("body_recorded_at"))
     if len(refs) > NEXT_DELIVERY_REFERENCE_LIMIT:
         result.update(complete=False, omitted_reference_count=len(refs) - NEXT_DELIVERY_REFERENCE_LIMIT)
@@ -5410,7 +5398,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
                 comment_limit=getattr(args, "comment_limit", None) or 100,
                 read_comments=lambda count: graph_comments(issue_repo, number, count),
                 read_relationships=lambda: graph_relationships(issue_repo, number, raw_issue),
-                resolve_wait=lambda comments: graph_wait(raw_issue, comments, issue_repo))
+                resolve_wait=lambda comments: graph_wait(raw_issue, comments, issue_repo),
+                resolve_body_time=lambda item: next_status_body_time(item, github_plan_wait.authors(issue_repo)))
         except PlanError as exc:
             # Inaccessible cross-owner nodes are unknown, not unblocked. Quota,
             # auth and provider failures retain the shared helper's stop policy.

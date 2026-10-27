@@ -224,13 +224,15 @@ def child_rows(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] |
 
 def track_row(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | None = None) -> dict[str, Any]:
     unread: list[str] = []
+    status = read_part("milestone proof status", unread, lambda: current_status(node, trusted, unread))
     return {**issue_row(node, trusted, wait_trusted, unread),
-        "closure_review": read_part("milestone proof", unread,
+        "closure_review": {**read_part("milestone proof", unread,
             lambda: github_direction_next.milestone_closure_review(node.get("body") or "",
-                current_status(node, trusted, unread)), {"proof": None, "recorded_status": None}),
+                "" if status == UNKNOWN else status), {"track_proof": None, "recorded_status": None}),
+            "discussion_complete": status != UNKNOWN},
         "milestone": read_part("milestone", unread, lambda: (node.get("milestone") or {}).get("title"), None),
         "children": read_part("children", unread, lambda: child_rows(node, trusted, wait_trusted, unread), []),
-        "unread": unread}
+        "unread": list(dict.fromkeys(unread))}
 
 
 def goal_board(reader, owner, *, repo="direction", trusted, wait_trusted=None, max_pages=10):
@@ -295,7 +297,7 @@ def markdown(board, *, links_only=False):
         lines.append(f"\n- {track['url']}{name}: {track['status'] or 'no status label'}"
                      f"{blocking_text(track, links_only)}{action_text(track, links_only)}{decision}{unread_text(track)}")
         if not links_only:
-            proof = " ".join((review["proof"] or UNKNOWN).split())
+            proof = " ".join((review["track_proof"] or UNKNOWN).split())
             state = " ".join(github_next_queue.status_field(review["recorded_status"] or "", "State").split()) or UNKNOWN
             proof = proof[:NEXT_ACTION_CHARS] + "…" if len(proof) > NEXT_ACTION_CHARS else proof
             state = state[:NEXT_ACTION_CHARS] + "…" if len(state) > NEXT_ACTION_CHARS else state

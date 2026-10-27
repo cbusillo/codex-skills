@@ -1410,12 +1410,22 @@ def milestone_outcomes(
                     except AuditError:
                         comments, comments_cut = [], True
                     discussion = github_direction_next.discussion_snapshot(root, comments, complete=not comments_cut)
-                    status = github_next_queue.current_status(discussion, github_plan_wait.authors(direction_repo)) if not comments_cut else ""
+                    trusted = github_plan_wait.authors(direction_repo)
+                    def read_edit() -> Any:
+                        owner, name = direction_repo.split("/")
+                        return fetch(["api", "graphql", "-f", f"query={github_work_graph.STATUS_BODY_TIME_QUERY}",
+                            "-f", f"owner={owner}", "-f", f"name={name}", "-F", f"number={root['number']}"])
+                    try:
+                        body_time = github_work_graph.status_body_time(discussion, trusted, read_edit) if not comments_cut else None
+                    except (AuditError, ValueError):
+                        comments_cut, body_time = True, None
+                    status = github_next_queue.current_status(discussion, trusted,
+                        body_recorded_at=body_time) if not comments_cut else ""
                     row.setdefault("closure_reviews", []).append({"url": row["tracks"][-1],
                         **github_direction_next.milestone_closure_review(root.get("body") or "", status),
                         "discussion_complete": not comments_cut})
                     if comments_cut:
-                        row["unavailable"].append(f"proof_comments:{root['number']}")
+                        row["unavailable"].append(f"proof_discussion:{root['number']}")
         except AuditError:
             row["unavailable"].append("tracks")
         graph = read_audit_graph([{**node, "repo": key[0], "number": key[1]} for key, node in nodes.items()],

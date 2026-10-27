@@ -98,7 +98,7 @@ def milestone_closure_review(body: str, status_text: str | None = None) -> dict[
     sections = section_map(body)
     status = sections.get("Current Status", "") if status_text is None else status_text
     return {
-        "proof": sections.get("Finish Line") or sections.get("Objective") or None,
+        "track_proof": sections.get("Finish Line") or sections.get("Objective") or None,
         "recorded_status": status or None,
     }
 
@@ -427,6 +427,7 @@ def discussion_snapshot(issue: dict[str, Any], comments: list[dict[str, Any]], *
         "body": issue.get("body") or "",
         "author": github_plan_graph.rest_author(issue.get("user"))["login"],
         "updated_at": issue.get("updated_at"),
+        **({"body_recorded_at": issue.get("last_edited_at") or issue.get("created_at")} if "last_edited_at" in issue else {}),
         "comments": [{
             "id": comment.get("id"), "author": github_plan_graph.rest_author(comment.get("user"))["login"],
             "created_at": comment.get("created_at"),
@@ -1375,11 +1376,14 @@ def rank_direction_work(
     track_next_actions: dict[str, dict[str, Any]] = {}
     from github_next_queue import current_status
     closure_reviews: list[dict[str, Any]] = []
-    for root in tracks:
+    for index, root in enumerate(tracks):
+        if prefetch_nodes is not None:
+            prefetch_nodes(tracks[index:])
         key = root["repo"].casefold(), root["number"]
         node_cache[key] = read_node(root["repo"], root["number"])
         discussion = node_cache[key]["item"].get("discussion") or {}
-        status = current_status(discussion, github_plan_wait.authors(root["repo"])) if discussion.get("complete") else ""
+        status = current_status(discussion, github_plan_wait.authors(root["repo"]),
+            body_recorded_at=discussion.get("body_recorded_at")) if discussion.get("complete") else ""
         closure_reviews.append({"url": root["url"], "milestone": root["milestone"]["title"],
             **milestone_closure_review(discussion.get("body", ""), status),
             "discussion_complete": bool(discussion.get("complete"))})

@@ -90,8 +90,7 @@ class GoalBoardTests(unittest.TestCase):
                      "repository": {"nameWithOwner": "owner/app"}} for index in range(later)]}
                 board = self.replay(listing([{"number": number, "title": node["title"]}]), details(**{f"t{number}": node}))
                 row = board["tracks"][0]
-                self.assertEqual(row["closure_review"], before)
-                self.assertEqual(before["proof"], proof)
+                self.assertEqual(row["closure_review"]["track_proof"], proof)
                 self.assertIn(state, before["recorded_status"])
                 self.assertEqual(len(row["blocked_by"]), later)
                 self.assertIn(proof, goal_board.markdown({**board, "checked_at": "now"}))
@@ -526,6 +525,13 @@ class GoalBoardTests(unittest.TestCase):
         self.assertEqual(row["next_action"], "Child 10 step.")
         self.assertEqual(row["status"], goal_board.UNKNOWN)
         self.assertFalse(board["coverage"]["complete"])
+
+        root = track(1, comments=window)
+        root["comments"]["totalCount"] = 145
+        root_row = goal_board.track_row(root, TRUSTED, TRUSTED)
+        self.assertIsNone(root_row["closure_review"]["recorded_status"])
+        self.assertFalse(root_row["closure_review"]["discussion_complete"])
+        self.assertEqual(len(root_row["unread"]), len(set(root_row["unread"])))
 
 
 if __name__ == "__main__":
