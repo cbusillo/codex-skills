@@ -11360,6 +11360,11 @@ def test_event_recovery_apply_binds_review_without_caller_key(action: str, outco
 
 
 @pytest.mark.parametrize("instance,action,outcome,retry,allowed", [
+    ("testing", "close_out_observed", "absent", False, True),
+    ("prod", "close_out_observed", "absent", False, False),
+    ("testing", "close_out_observed", "unknown", False, False),
+    ("testing", "close_out_observed", "present", False, False),
+    ("testing", "close_out_observed", "absent", True, False),
     ("testing", "settle_testing_failure", "present", False, True),
     ("prod", "settle_testing_failure", "present", False, False),
     ("testing", "settle_testing_failure", "unknown", False, False),
@@ -11392,6 +11397,8 @@ def test_explicit_recovery_settlement_preserves_testing_and_evidence_fences(
         assert receipt["status"] == "accepted"
         assert receipt["summary"]["recovery_action"] == action
         assert len(posts) == 1 and posts[0]["idempotency_key"] == "original-deploy-key-1"
+        assert posts[0]["body"] == {**private, "expected_recovery_digest": result["recovery_digest"]}
+        assert not reads
     else:
         assert status == 2 and not posts and not reads
         assert receipt["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"

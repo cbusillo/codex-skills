@@ -1915,9 +1915,9 @@ with the saved review; a mismatch is `accepted_unverified`. A reference does
 not grant recovery authority.
 
 Reference recovery also accepts the service's `close_out_observed` plan when
-the outcome is `absent` and `retry_safe` is false: the provider operation's
-deployment record is absent, while separate runtime evidence proves the exact
-running artifact. It closes the reservation without retrying it. Testing
+the outcome is `absent` and `retry_safe` is false. The service proves a terminal
+pre-dispatch refusal, or an absent provider deployment with separate runtime
+evidence of the exact running artifact. It closes the reservation without retrying it. Testing
 recovery accepts `settle_testing_failure` only with `present` and
 `retry_safe: false`. Reference recovery accepts `abandon_testing_original`
 only for testing with `unknown` and `retry_safe: false`. This archives the
@@ -1972,9 +1972,13 @@ during dry-run. The helper requires:
 For original-deploy payloads, the helper refuses to send apply unless the evidence is the successful
 generic-web recovery dry-run, its digest exactly matches the supplied digest,
 its product and instance exactly match the private apply payload,
-its proposed action is `adopt_observed` or `retry_original_operation`, its
-provider outcome is determinate (`present` or `absent`), and `retry_safe` is
-true. `hold_unknown`, `wait_for_active_lease`, `replay_completed`, unknown or
+and its proposed action/outcome is `adopt_observed`/`present` or
+`retry_original_operation`/`absent` with `retry_safe: true`. Testing also accepts
+`settle_testing_failure`/`present` and `close_out_observed`/`absent`, both with
+`retry_safe: false`. Closeout settles the exact original reservation without
+retry; the service rechecks the original request, provider evidence and reviewed
+digest. Production original-deploy closeout remains ineligible.
+`hold_unknown`, `wait_for_active_lease`, `replay_completed`, unknown or
 uninspected provider evidence, malformed evidence, and digest mismatches fail
 locally with `reviewed_dry_run_not_apply_eligible`; no service request is sent.
 The helper also refuses when the supplied digest conflicts with an
