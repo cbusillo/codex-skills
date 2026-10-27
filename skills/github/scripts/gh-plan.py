@@ -5394,7 +5394,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
                     contexts[context_key] = (target_config, focus_values)
                     focus_contexts[issue_repo] = focus_context
             target_config, focus_values = contexts[context_key]
-            focus = focus_values.get(source_issue.get("html_url") or source_issue.get("url"))
+            focus = focus_values.get(source_issue.get("html_url") or source_issue.get("url") or "")
             return github_work_graph.read_direction_node(source_issue, config=target_config, focus=focus,
                 comment_limit=getattr(args, "comment_limit", None) or 100,
                 read_comments=lambda count: graph_comments(issue_repo, number, count),
