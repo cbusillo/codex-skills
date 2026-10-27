@@ -58,7 +58,18 @@ TypeScript canary applies. JSON-only selections and other files, including
 cacheRoot/npm-cache` and no user or global npm config, honouring only the
 repository's own `.npmrc`, through the same journalled, unlicensed preparation
 path as Python. It needs a root `package.json` and `package-lock.json` and never runs
-`npm install`; `pnpm-lock.yaml` is refused for now. The snapshot excludes
+`npm install`. A root Yarn 4 project instead needs `yarn.lock`, an exact
+`packageManager` pin in `package.json`, and executable `corepack` beside the
+configured `node`. It runs that pinned Yarn with `install --immutable
+--mode=skip-build`, disables scripts and repository `yarnPath` overrides, and
+forces the `node-modules` linker inside the snapshot. Repository patches and
+Yarn configuration stay available; Yarn and Corepack caches live under
+`cacheRoot`, with a fresh HOME and no inherited user configuration or tokens.
+Tracked Yarn plugins still load as trusted repository code; disabling lifecycle
+scripts does not disable plugins. An exact Yarn 4 pin selects Yarn when both
+lockfiles exist; otherwise `package-lock.json` retains npm preparation.
+A structured root `prepare.python` may coexist with WebStorm lanes; only
+PyCharm selections execute it. `pnpm-lock.yaml` is refused for now. The snapshot excludes
 ignored files, so `node_modules` comes only from that step.
 
 The snapshot's tracked `.idea` is used when it has `modules.xml`; otherwise a
