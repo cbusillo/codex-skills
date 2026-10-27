@@ -5601,7 +5601,7 @@ def _require_apply_eligible_recovery_dry_run(
             ("close_out_observed", "absent", False),
         })
     if expected_request_sha256 is not None:
-        eligible.update({("adopt_observed", "present", False), ("close_out_observed", "absent", False)})
+        eligible.add(("adopt_observed", "present", False))
         if expected_instance == "testing":
             eligible.add(("abandon_testing_original", "unknown", False))
     actionable = (

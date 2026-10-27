@@ -1915,9 +1915,9 @@ with the saved review; a mismatch is `accepted_unverified`. A reference does
 not grant recovery authority.
 
 Reference recovery also accepts the service's `close_out_observed` plan when
-the outcome is `absent` and `retry_safe` is false. The service proves a terminal
-pre-dispatch refusal, or an absent provider deployment with separate runtime
-evidence of the exact running artifact. It closes the reservation without retrying it. Testing
+the outcome is `absent` and `retry_safe` is false. The service proposes the
+closeout and rechecks the original request, provider evidence and reviewed
+digest. It closes the reservation without retrying it. Testing
 recovery accepts `settle_testing_failure` only with `present` and
 `retry_safe: false`. Reference recovery accepts `abandon_testing_original`
 only for testing with `unknown` and `retry_safe: false`. This archives the
