@@ -659,6 +659,9 @@ class ReadyTests(unittest.TestCase):
                     self.assertFalse(latest_ready(pushed, [ready], {"engineer"}))
                     waiting = {**ready, "id": 2, "body": handoff_body(SHA, waiting_for_client=True)}
                     self.assertFalse(latest_ready(self.reader.pr, [ready, waiting], {"engineer"}))
+                    self.assertTrue(latest_ready(self.reader.pr, [ready, waiting], {"engineer"}, include_client_wait=True))
+                    self.assertFalse(latest_ready(pushed, [waiting], {"engineer"}, include_client_wait=True))
+                    self.assertFalse(latest_ready(self.reader.pr, [waiting], {"someone-else"}, include_client_wait=True))
 
     def test_bold_renewed_wait_invalidates_formatted_ready(self):
         ready = {"body": f"**{READY}**\n\nHead: **{SHA}**", "user": {"login": "engineer"}, "id": 1, "created_at": "2026-01-01T00:00:00Z"}
