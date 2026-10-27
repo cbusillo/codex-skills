@@ -34,6 +34,44 @@ class ReceiptFixture(HistoricalReceiptFixture):
 
 
 class IngressTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tmux_launch_reattachment_finishes_with_or_without_a_queue_nudge(self) -> None:
+        import iterm_tab
+        import session_liveness
+
+        for queued in (False, True):
+            with self.subTest(queued=queued):
+                f = ReceiptFixture()
+                f.__enter__()
+                self.addCleanup(f.__exit__)
+                closure.replace_rows([])
+                task, request, response, _ = await self.start_client(f, external=True)
+                terminal = "tmux:supervisor:" + uuid.uuid4().hex
+                processes = [(int(line.split()[0]), "?", line.split(maxsplit=1)[1])
+                             for line in f.commands.splitlines() if line.split()]
+                with patch.object(session_liveness, "inventory", return_value=processes):
+                    receipt = iterm_tab.source_launch_metadata(
+                        {"session_id": terminal, "tty": "/dev/?", "tmux_session_id": terminal},
+                        {"provider": "openai", "env": {"CODEX_HOME": str(f.home)}})
+                self.assertNotIn("launch_identity_unavailable", receipt)
+                entry = f.release.session_record.normalize_ledger_entry(f.log, {**f.entry, **receipt, "session_id": f.session})
+                try:
+                    self.assertIn("result", await self.send(task, request, response, "thread/resume", f.session))
+                    if queued:
+                        self.assertIn("result", await self.send(task, request, response, "thread/queue/add", f.session,
+                                                               input=[{"type": "text", "text": "finish"}]))
+                    with f.transcript.open("a") as stream:
+                        for payload in ({"type": "task_started", "turn_id": "final-turn"},
+                                        {"type": "agent_message", "message": "Safe to exit: yes"},
+                                        {"type": "task_complete", "turn_id": "final-turn"}):
+                            stream.write(json.dumps({"type": "event_msg", "timestamp": datetime.now(timezone.utc).isoformat(),
+                                                     "payload": payload}) + "\n")
+                finally:
+                    (f.root / "stop").touch()
+                    await asyncio.wait_for(task, 8)
+                closed = await asyncio.to_thread(lambda: f.release.record_closure(f.log, entry, "supervisor"))
+                self.assertTrue(closed["process_exit_verified"])
+                self.assertTrue((await asyncio.to_thread(lambda: f.release.validate_closure(closed, "supervisor")))["safe_verdict"])
+
     async def test_spawned_label_reaches_new_native_threads_before_their_first_turn(self) -> None:
         with ReceiptFixture() as f, patch.dict(os.environ, {"DISCORD_BLUE_SESSION_KIND": "spawned"}):
             forwarded = []
@@ -606,11 +644,11 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 (f.root / "stop").touch()
                 await asyncio.wait_for(task, 8)
 
-    async def test_child_metadata_failure_reaps_only_the_owned_child(self):
+    async def test_terminal_metadata_failure_reaps_only_the_owned_child(self):
         with ReceiptFixture() as f:
             children = []
             rescued = threading.Event()
-            popen, metadata = subprocess.Popen, closure.launch_metadata
+            popen = subprocess.Popen
             native = f.root / "codex"
             native.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(10)\n")
             native.chmod(0o700)
@@ -629,12 +667,9 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 timer.start()
                 self.addCleanup(timer.cancel)
                 return child
-            def capture(pid, *args):
-                if pid != os.getpid():
-                    raise OSError("fixture ps failed")
-                return metadata(pid, *args)
-            with patch.object(subprocess, "Popen", side_effect=spawn), patch.object(closure, "launch_metadata", side_effect=capture):
-                with self.assertRaisesRegex(OSError, "fixture ps failed"):
+            with patch.object(subprocess, "Popen", side_effect=spawn), patch.object(os, "isatty", return_value=True), \
+                    patch.object(os, "ttyname", side_effect=OSError("fixture TTY failed")):
+                with self.assertRaisesRegex(OSError, "fixture TTY failed"):
                     await proxy.run_client(f.home, [str(native)])
             self.assertEqual(len(children), 1)
             self.assertIsNotNone(children[0].poll())
@@ -866,12 +901,11 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
     async def test_multiline_native_launch_tui_resume_owns_the_source(self):
         with ReceiptFixture() as f:
             f.approval_on_resume = True
-            task, request, response, pid = await self.start_client(f)
+            task, request, response, _ = await self.start_client(f)
             try:
                 result = await self.send(task, request, response, "thread/resume", f.session)
                 self.assertIn("result", result)
                 row = next(r for r in closure.log_rows() if r.get("session_id") == f.session)
-                self.assertEqual(row["resumed_generation"]["pid"], pid)
                 self.assertTrue(row["resumed_at"])
                 self.assertIsNone(row["closure_evidence"])
             finally:

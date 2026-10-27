@@ -161,7 +161,7 @@ class Ingress:
     def __init__(self, home: Path):
         self.home = home
         self.upstream = closure.daemon_endpoint(home)
-        self.child_metadata = None
+        self.launch_metadata = None
         self.child_tty = "?"
 
     def exact_resume(self, message):
@@ -303,7 +303,7 @@ class Ingress:
                                 if action_method not in closure.ROUTED_METHODS:
                                     for target in guarded | owned:
                                         closure.set_action_pending(target, True, method=action_method, home=self.home)
-                                if session and "result" in message and self.child_metadata:
+                                if session and "result" in message and self.launch_metadata:
                                     thread = message["result"]["thread"]
                                     path = Path(thread.get("path") or "/").resolve()
                                     if thread.get("id") != session or not any(path.is_relative_to((self.home / root).resolve()) for root in ("sessions", "archived_sessions")):
@@ -311,7 +311,7 @@ class Ingress:
                                     try:
                                         # Publish in the actual lease-owning context. A
                                         # cancelled worker must never outlive its flock.
-                                        closure.resumed_launch(session, self.child_metadata, str(path), self.child_tty)
+                                        closure.resumed_launch(session, self.launch_metadata, str(path), self.child_tty)
                                     except (OSError, ValueError) as error:
                                         # Native resume happened. Durable invalidation
                                         # remains until verified closure, including when
@@ -370,7 +370,8 @@ async def run_client(home: Path, native: list[str], *, session: str | None = Non
                         pass
                 with subprocess.Popen(boot, env={**os.environ, "CODEX_HOME": str(home)}) as child:
                     try:
-                        ingress.child_metadata = closure.launch_metadata(child.pid, proxy["launch_generation"], str(home))
+                        ingress.launch_metadata = {key: proxy[key] for key in (
+                            "codex_home", "launch_pid", "launch_generation", "launch_started_at")}
                         ingress.child_tty = os.ttyname(0).removeprefix("/dev/") if os.isatty(0) else "?"
                         return await asyncio.to_thread(child.wait)
                     finally:
