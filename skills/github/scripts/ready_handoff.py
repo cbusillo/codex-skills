@@ -17,6 +17,7 @@ from urllib.parse import quote
 
 READY = "Ready for the merge train"
 WAITING = "Engineering ready; waiting for"
+CLIENT_WAIT = f"{WAITING} the Client's acceptance"
 HEAD = re.compile(
     r"(?im)^Head(?: SHA)?:[ \t]*(?P<marker>\*\*|`)?"
     r"(?P<sha>[0-9a-f]{40})(?(marker)(?P=marker))(?:[.\s]|$)"
@@ -98,7 +99,7 @@ def handoff_line(line):
 def handoff_body(head_sha: str, *, waiting_for_client: bool = False) -> str:
     if not re.fullmatch(r"[0-9a-f]{40}", head_sha):
         raise ValueError("handoff requires a full 40-character head SHA")
-    first = f"{WAITING} the Client's acceptance" if waiting_for_client else READY
+    first = CLIENT_WAIT if waiting_for_client else READY
     return f"{first}\n\nHead: {head_sha}"
 
 
@@ -314,7 +315,7 @@ def latest_ready(pr, comments, trusted, *, client_accepted: bool = False) -> boo
     )
     body = latest["body"]
     first = handoff_line(body.splitlines()[0])
-    return (first == READY or client_accepted and first == f"{WAITING} the Client's acceptance") and [
+    return (first == READY or client_accepted and first == CLIENT_WAIT) and [
         match.group("sha") for match in HEAD.finditer(body)
     ] == [pr["head"]["sha"]]
 

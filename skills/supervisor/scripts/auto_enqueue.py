@@ -513,11 +513,9 @@ class Live:
             extra_trusted - {author}
             if agent_review_required else {author} | extra_trusted
         )
-        accepted = False
-        if not latest_ready(pr, comments, trusted):
-            accepted = latest_ready(pr, comments, trusted, client_accepted=True) and self.acceptance(repo, pr)
-            if not accepted:
-                return False
+        ready = latest_ready(pr, comments, trusted)
+        if not ready and not latest_ready(pr, comments, trusted, client_accepted=True):
+            return False
         reviews = self.pages(f"/repos/{repo}/pulls/{number}/reviews")
         newest = {}
         for item in sorted(reviews, key=lambda value: value["id"]):
@@ -580,7 +578,7 @@ class Live:
                 ):
                     return False
         return not handoff.refusal(
-            accepted=accepted or not handoff.acceptance_required or self.acceptance(repo, pr)
+            accepted=(ready and not handoff.acceptance_required) or self.acceptance(repo, pr)
         )
 
     def review_gap(self, target, pr, extra_trusted, *, file_inventory=None):
@@ -731,6 +729,7 @@ def report_ready_skips(io, target, args, emit, reason, *, pulls=None, queue=None
                 emit("skipped", {
                     "repository": target["repo"], "pr": pr["number"],
                     "head": pr["head"]["sha"],
+                    "client_wait": not latest_ready(pr, comments, trusted),
                     "reason": "not_in_controller_queue" if reason == "controller_ineligible" and row is None else reason,
                     "controller_admission": "ineligible" if row else "unknown",
                     "ineligible_reasons": reasons, **detail,

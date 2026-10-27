@@ -740,7 +740,9 @@ handoff by creation/edit time from its author, or a Supervisor explicitly listed
 an earlier Ready. The exact Client acceptance wait becomes eligible when the
 existing Launchplane read confirms acceptance for its current head, including
 acceptance Launchplane carries forward. Other waits remain blocking. Skip
-diagnostics include checked Client waits even before acceptance is recorded.
+diagnostics include checked Client waits even before acceptance is recorded;
+`client_wait` distinguishes those receipts from plain Ready without claiming
+whether acceptance is present.
 Missing/stale heads, drafts, blocking train dispositions,
 current-head change requests and unavailable checks do not enqueue. A file
 inventory changed during reading skips that PR; other ready members continue.

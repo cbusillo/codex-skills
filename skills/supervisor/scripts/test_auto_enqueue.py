@@ -20,7 +20,7 @@ from typing import Any
 from unittest.mock import Mock, patch
 
 import auto_enqueue as watch
-from skills.github.scripts.ready_handoff import READY, WAITING
+from skills.github.scripts.ready_handoff import READY, WAITING, handoff_body
 from skills.github.scripts import github_read, ready_handoff
 
 REPO = "example/tool"
@@ -319,9 +319,10 @@ class EnqueueTests(unittest.TestCase):
         self.run_pass(fake)
         self.assertFalse(any(event == 'skipped' for event, _ in self.events))
         self.assertEqual(fake.writes, [])
-        fake.pages = lambda _path: [comment(f"{WAITING} the Client's acceptance\n\nHead: {SHA}")]
+        fake.pages = lambda _path: [comment(handoff_body(SHA, waiting_for_client=True))]
         self.run_pass(fake)
         self.assertEqual({payload['pr'] for event, payload in self.events if event == 'skipped'}, set(fake.pulls))
+        self.assertTrue(all(payload['client_wait'] for event, payload in self.events if event == 'skipped'))
         self.assertEqual(fake.writes, [])
 
     def test_unavailable_skip_inventory_does_not_hold_lock_or_stop_other_trains(self):
@@ -1889,9 +1890,10 @@ class QualificationTests(unittest.TestCase):
     def test_checked_client_wait_enters_only_after_current_head_service_acceptance(self) -> None:
         self.release.return_value = self.client_repository
         self.pull["body"] = "## Client test notes\nClient change: retain invoice history after deletion.\nDelete a test account."
-        self.comments = [comment(f"{WAITING} the Client's acceptance\n\nHead: {SHA}")]
+        self.comments = [comment(handoff_body(SHA, waiting_for_client=True))]
         self.io.args = argparse.Namespace(config=None, env_config=None, url=None, timeout=10)
         self.io.acceptance = lambda repo, pull: watch.Live.acceptance(self.io, repo, pull)
+        project_review = getattr(watch.review, "project_review")
         for decision, head, carried_from, expected in (
             ("accepted", SHA, None, True),
             ("accepted", SHA, "b" * 40, True),
@@ -1901,21 +1903,30 @@ class QualificationTests(unittest.TestCase):
             (None, SHA, None, False),
         ):
             with self.subTest(decision=decision, head=head, carried_from=carried_from):
-                record = {"decision": decision, "head_sha": head, "carried_from": carried_from} if decision else None
-                with patch_attr(watch.review, "read_review", return_value=record):
+                record = {
+                    "record_id": "review", "product": "verireel", "repository": REPO,
+                    "pull_request_number": self.pull["number"], "head_sha": head,
+                    "preview_url": "https://preview.example.invalid", "decision": decision,
+                    "reason": "", "owner_github_id": "123", "owner_github_login": "client",
+                    "decided_at": "2026-10-26T23:45:07.914Z", "feedback_url": "",
+                    "carried_from": carried_from,
+                } if decision else None
+                payload = {"status": "ok", "repository": REPO, "pull_request_number": self.pull["number"],
+                           "latest_decision": record}
+                with patch_attr(watch.review, "read_review", side_effect=lambda args: project_review(args, payload)):
                     self.assertEqual(self.qualified(), expected)
 
     def test_accepted_client_wait_preserves_receipt_and_ci_guards(self) -> None:
         self.release.return_value = self.client_repository
         self.pull["body"] = "## Client test notes\nClient change: retain invoice history.\nCheck invoices."
-        waiting = comment(f"{WAITING} the Client's acceptance\n\nHead: {SHA}")
+        waiting = comment(handoff_body(SHA, waiting_for_client=True))
         self.comments = [waiting]
         self.io.acceptance = lambda *_args: True
         self.assertTrue(self.qualified())
         for change in (
             {"body": f"{WAITING} the Supervisor\n\nHead: {SHA}"},
-            {"body": f"{WAITING} the Client's acceptance\n\nHead: {'b' * 40}"},
-            {"body": f"{WAITING} the Client's acceptance"},
+            {"body": handoff_body('b' * 40, waiting_for_client=True)},
+            {"body": ready_handoff.CLIENT_WAIT},
             {"user": {"login": "stranger"}},
         ):
             with self.subTest(change=change):
@@ -1925,7 +1936,11 @@ class QualificationTests(unittest.TestCase):
         self.assertFalse(self.qualified())
         self.comments = [waiting]
         self.checks["summary"]["failingCount"] = 1
+        acceptance = Mock(side_effect=ValueError("unavailable service"))
+        self.io.acceptance = acceptance
         self.assertFalse(self.qualified())
+        acceptance.assert_not_called()
+        self.io.acceptance = lambda *_args: True
         self.checks["summary"]["failingCount"] = 0
         self.reviews = [{"id": 1, "user": {"login": "reviewer"}, "state": "CHANGES_REQUESTED", "commit_id": SHA}]
         self.assertFalse(self.qualified())
