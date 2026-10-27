@@ -118,9 +118,8 @@ Rules for this brief (every Supervisor brief carries them):
   [model-review](../../model-review/SKILL.md) skill
   (`review_with_model.py run`), from the provider other than your own (Q267),
   then weigh it and post the disposition with
-  `gh-pr.py comment --reviewed-head`. Do not ask the Supervisor to run it. Do
-  not run a Google (Gemini) review unless the brief asks for one: its quota is
-  scarce (Director, October 16, 2026). If the helper refuses with EPERM or
+  `gh-pr.py comment --reviewed-head`. Do not ask the Supervisor to run it. If
+  the helper refuses with EPERM or
   another receipt error, stop that action, report its exact text, and only
   then fall back to the [worker review request](helpers.md#worker-review-request)
   ([codex-skills#2069](https://github.com/cbusillo/codex-skills/issues/2069)).
