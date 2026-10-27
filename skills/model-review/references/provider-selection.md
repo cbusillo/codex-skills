@@ -20,8 +20,7 @@ supplementary = ["google"]
 timeout = 1800
 ```
 
-`providers` lists allowed primary providers in preference order; Google requires
-explicit `--provider google` for reviews and file-read checks. `supplementary`
+`providers` lists allowed primary providers in preference order. `supplementary`
 lists a separate role; capacity cannot promote one into the primary role. A
 provider omitted from both lists is disabled. Each optional `provider.NAME`
 table accepts `model` and a positive integer `timeout` in seconds. Omit `model`
