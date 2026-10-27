@@ -16,8 +16,8 @@ class NoProvider(ValueError):
     def __init__(self, skipped):
         self.skipped = skipped
         detail = "; ".join(f"{p['provider']}: {p['reason']}" for p in skipped)
-        super().__init__("no allowed independent review provider has a Context Panel account choice; "
-                         + (detail or "policy has no default-eligible provider other than the author; Google requires explicit --provider google"))
+        super().__init__("no allowed independent review provider is available; "
+                         + (detail or "policy has no eligible default provider other than the author"))
 
 
 class PolicyConflict(ValueError):
