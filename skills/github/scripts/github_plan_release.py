@@ -33,7 +33,17 @@ def exclusion_marker(source_id: int, excluded: set[str]) -> str:
     return "<!-- " + EXCLUSIONS_MARKER + json.dumps({"version": 1, "claim": source_id, "prs": prs}, sort_keys=True) + " -->"
 
 
-def excluded_prs(comments: list[dict[str, Any]], source: dict[str, Any]) -> set[str]:
+def require_exclusions_unmentioned(candidates: list[dict[str, Any]], excluded: set[str], *, issue_repo: str) -> None:
+    for url in excluded:
+        match = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/([1-9]\d*)", url, re.IGNORECASE)
+        if match is None:
+            raise ValueError("Excluded PR requires an exact GitHub PR URL")
+        if any(int(match[2]) in claim.handoff_pr_numbers(c.get("body") or "", issue_repo=issue_repo, target_repo=match[1])
+               for c in candidates):
+            raise ValueError("Excluded PR is also named as retained work")
+
+
+def excluded_prs(comments: list[dict[str, Any]], source: dict[str, Any], *, issue_repo: str) -> set[str]:
     released = claim.released_source(comments, source["id"])
     candidates = claim.handoff_candidates(comments, released)
     excluded = set()
@@ -56,10 +66,8 @@ def excluded_prs(comments: list[dict[str, Any]], source: dict[str, Any]) -> set[
                     or type(item[1]) is not int or item[1] < 1):
                 raise ValueError("Release exclusions contain an invalid PR")
             repo, number = item
-            if any(number in claim.handoff_pr_numbers(c.get("body") or "", issue_repo=repo, target_repo=repo)
-                   for c in candidates):
-                raise ValueError("Excluded PR is also named as retained work")
             excluded.add(f"https://github.com/{repo.casefold()}/pull/{number}")
+    require_exclusions_unmentioned(candidates, excluded, issue_repo=issue_repo)
     return excluded
 
 

@@ -116,7 +116,7 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data
         if receipt is None and not release.related_sessions_match(evidence.get("body") or "", session):
             raise ValueError(f"{repo}#{number}: release names another native session")
         is_pr = "pull_request" in issue
-        excluded = release.excluded_prs(comments, source) if receipt is None else set()
+        excluded = release.excluded_prs(comments, source, issue_repo=repo) if receipt is None else set()
         if is_pr:
             pull = reader.get_json(f"/repos/{repo}/pulls/{number}", step="closeout_claim_pr")
             pulls = [pull] if pull["state"] == "open" else []

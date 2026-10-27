@@ -1317,6 +1317,8 @@ release so closeout does not infer ownership again. For an already released
 claim, repeat the same command with the handoff and explicit exclusions; it
 rechecks current PRs and appends a checked source handoff. It does not edit the
 original release, and repeating the same exclusions writes nothing.
+Any earlier handoff that retained the PR prevents excluding it later; the
+helper checks that conflict before posting.
 Remove references to excluded PRs from the handoff file too;
 `release_excluded_pr_mentioned` identifies any remaining reference. The helper
 uses the successor's parser to check narrative references, including older
