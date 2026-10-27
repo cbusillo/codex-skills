@@ -36,6 +36,9 @@ class PrepareWorkerTests(unittest.TestCase):
         (self.app / "Contents/Resources").mkdir()
         (self.app / "Contents/bin/inspect.sh").touch()
         self.destination = self.root / "new worker"
+        worker_override = patch.dict(os.environ, JETBRAINS_INSPECTION_NATIVE_WORKER=str(self.root / "ambient-worker"))
+        worker_override.start()
+        self.addCleanup(worker_override.stop)
         uv = self.root / "fixture uv"
         uv.write_text(f'#!/bin/sh\nwhile [ "$1" != python ]; do shift; done\nshift\nexec {sys.executable} "$@"\n')
         uv.chmod(0o700)
@@ -53,7 +56,11 @@ class PrepareWorkerTests(unittest.TestCase):
                 }
             )
         )
-        (self.app / "Contents/bin" / product.vm_options_name).write_text("-ea\n-Xmx1024m\n")
+        (self.app / "Contents/bin" / product.vm_options_name).write_text(
+            f"-ea\n-Duser.home={self.root / 'other-home'}\n-Djava.io.tmpdir={self.root / 'other-temp'}\n"
+            f"-Didea.config.path={self.root / 'other-config'}\n-XX:ErrorFile={self.root / 'other-error.log'}\n"
+            "-XX:+HeapDumpOnOutOfMemoryError\n"
+        )
         executable = self.app / "Contents/MacOS" / product.launcher_names[0]
         executable.write_text(f"#!{sys.executable}\nimport json,os\nprint(json.dumps(dict(os.environ)))\n")
         executable.chmod(0o700)
@@ -89,7 +96,8 @@ class PrepareWorkerTests(unittest.TestCase):
                     result = setup.prepare(args)
                 config = result["config"]
                 configured_host = SimpleNamespace(IDE_PRODUCTS=host.IDE_PRODUCTS, read_global_config=lambda current=config: current)
-                worker = native.worker_settings(host.build_parser().parse_args(["agent-inspect"]), configured_host, product_key)
+                selection = host.build_parser().parse_args(["agent-inspect", "--native-worker", str(self.destination)])
+                worker = native.worker_settings(selection, configured_host, product_key)
                 native.launcher_paths(worker.worker)
                 if product_key == "webstorm":
                     native.node_executable(configured_host)
@@ -98,6 +106,20 @@ class PrepareWorkerTests(unittest.TestCase):
                 for name in ("config", "plugins", "home"):
                     self.assertEqual(list((self.destination / name).iterdir()), [])
                 self.assertEqual(self.destination.stat().st_mode & 0o777, 0o700)
+                effective = {}
+                for option in (self.destination / worker.product.vm_options_name).read_text().splitlines():
+                    key, separator, value = option.partition("=")
+                    if separator:
+                        effective[key] = value
+                    elif option.startswith(("-XX:+", "-XX:-")):
+                        effective[f"-XX:{option[5:]}"] = option[4] == "+"
+                self.assertEqual(Path(effective["-Duser.home"]), self.destination / "home")
+                self.assertEqual(Path(effective["-Djava.io.tmpdir"]), self.destination / "tmp")
+                self.assertTrue(Path(effective["-XX:ErrorFile"]).is_relative_to(self.destination / "log"))
+                self.assertFalse(effective["-XX:HeapDumpOnOutOfMemoryError"])
+                for key, value in effective.items():
+                    if key.startswith("-Didea.") and key.endswith(".path"):
+                        self.assertTrue(Path(value).is_relative_to(self.destination))
 
     def test_existing_paths_are_refused_before_reading_any_input(self) -> None:
         args = self.arguments()
