@@ -570,9 +570,11 @@ class TranscriptTests(unittest.TestCase):
 
 class LedgerTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch.object(account_choice, "load_config", return_value={"accounts": []}))
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.enterContext(patch.object(codex_idle_watch.Path, "home", return_value=self.root))
         self.transcript = self.root / "session.jsonl"
         self.ledger = self.root / "ledger.json"
         self.entry = {

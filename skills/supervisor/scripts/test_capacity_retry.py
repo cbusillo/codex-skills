@@ -231,8 +231,9 @@ class CapacityTests(unittest.TestCase):
             self.assertEqual(result["state"], "exhausted")
         self.assertEqual(status.snapshot(self.ledger, self.state_path)[0]["capacity_retry"], result)
         # File idleness uses this disposable file's clock, not the archived trace.
-        notice = codex_idle_watch.poll(self.ledger, {}, 90, self.transcript.stat().st_mtime + 100000,
-                                      capacity_retry.load_state(self.state_path))[0]
+        notices = codex_idle_watch.poll(self.ledger, {}, 90, self.transcript.stat().st_mtime + 100000,
+                                       capacity_retry.load_state(self.state_path))
+        notice = next(item for item in notices if item.get("session_id") == self.native_id)
         self.assertEqual(notice["capacity_retry"]["state"], "exhausted")
 
     def test_uncertain_send_and_crash_reservation_never_replay(self):

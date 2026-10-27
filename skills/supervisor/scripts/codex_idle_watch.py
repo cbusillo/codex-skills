@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["aiohttp==3.14.5"]
+# dependencies = ["aiohttp==3.14.5", "websockets==17.2"]
 # ///
 
 import argparse
@@ -12,16 +12,31 @@ from pathlib import Path
 from session_record import load_ledger, session_status
 from capacity_retry import locked_state, resume, retry_status
 from finished_map import closeout_request
+import account_choice
+import codex_auth_health
 
 
 def poll(ledger: Path, seen: dict, idle_seconds: float, now: float,
          capacity_state: dict | None = None, state_path: Path | None = None,
-         resume_capacity: bool = False, harness: str = "codex") -> list[dict]:
+         resume_capacity: bool = False, harness: str = "codex",
+         account_homes: dict[str, Path] | None = None) -> list[dict]:
     if resume_capacity and state_path is None:
         raise ValueError("capacity resume requires a persistent state path")
     notices = []
     skipped = []
     entries = load_ledger(ledger, harness=harness, skipped=skipped)
+    homes = {name: home.expanduser().resolve() for name, home in (account_homes or {}).items()} if harness == "codex" else {}
+    for entry in entries:
+        if harness == "codex" and entry.get("codex_home"):
+            home = Path(entry["codex_home"]).expanduser().resolve()
+            if home not in homes.values():
+                name = home.name if home.name not in homes else f"{home.name} ({codex_auth_health.home_id(home)[:8]})"
+                homes[name] = home
+    for notice in codex_auth_health.notices(homes):
+        key = json.dumps(notice, sort_keys=True)
+        if key not in seen:
+            notices.append(notice)
+            seen[key] = True
     for diagnostic in skipped:
         key = ("skipped", diagnostic["ledger_index"])
         value = json.dumps(diagnostic, sort_keys=True)
@@ -90,17 +105,36 @@ def watch(args, state: dict | None) -> int:
     deadline = time.monotonic() + args.deadline_seconds
     seen = {}
     delivered = load_delivered(args.delivered_state) if args.delivered_state else set()
+    homes = {}
+    if args.harness == "codex":
+        try:
+            homes = {account["name"]: Path(account["env"]["CODEX_HOME"])
+                     for account in account_choice.load_config()["accounts"] if account["provider"] == "openai"}
+        except ValueError:
+            homes = {}
+        default = Path.home() / ".codex"
+        if (default / "logs_2.sqlite").is_file() and default.resolve() not in {home.expanduser().resolve() for home in homes.values()}:
+            homes["default home"] = default
     while True:
         try:
             notices = poll(args.ledger, seen, args.idle_seconds, time.time(),
-                           state, args.capacity_state, args.resume_capacity, args.harness)
+                           state, args.capacity_state, args.resume_capacity, args.harness, homes)
             for notice in notices:
-                print(json.dumps(notice), flush=True)
+                auth = notice.get("auth_failure") or notice.get("auth_diagnostic")
+                if not auth or json.dumps(auth, sort_keys=True) not in delivered:
+                    print(json.dumps(notice), flush=True)
         except (OSError, ValueError, TypeError) as error:
             print(json.dumps({"error": str(error)}), flush=True)
             return 1
+        diagnostics = {json.dumps(notice["auth_diagnostic"], sort_keys=True)
+                       for notice in notices if notice.get("auth_diagnostic")}
+        if args.delivered_state and diagnostics - delivered:
+            delivered.update(diagnostics)
+            save_delivered(args.delivered_state, delivered)
         requests = {json.dumps(notice["closeout_request"], sort_keys=True)
                     for notice in notices if notice.get("closeout_request")}
+        requests.update(json.dumps(notice["auth_failure"], sort_keys=True)
+                        for notice in notices if notice.get("auth_failure"))
         if args.delivered_state and requests - delivered:
             save_delivered(args.delivered_state, delivered | requests)
             return 0

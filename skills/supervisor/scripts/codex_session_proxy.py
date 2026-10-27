@@ -18,6 +18,7 @@ import stat
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import github_plan_closure as closure
 import session_liveness
+import codex_auth_health
 
 # App thread IDs select effective configuration, not execution ownership.
 READS = {"app/installed", "app/list", "app/read", "thread/read", "thread/list", "thread/loaded/list", "thread/items/list",
@@ -335,6 +336,7 @@ class Ingress:
 
 async def run_client(home: Path, native: list[str], *, session: str | None = None) -> int:
     """Run one TUI through a private ingress; never start or restart its daemon."""
+    codex_auth_health.require_usable(home)
     from websockets.asyncio.server import unix_serve
     ingress = Ingress(home)
     import stat
