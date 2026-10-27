@@ -105,7 +105,7 @@ def authorization(login: str, reader, record: dict) -> str:
     if (not isinstance(author, dict) or author.get("type") != "User"
             or (str(author.get("login", "")).casefold() != login.casefold()
                 and record.get("author_association") not in {"COLLABORATOR", "MEMBER"})):
-        raise AttachmentError("standing approval covers Client/staff collaborator comments, not unverified authors")
+        raise AttachmentError("standing approval covers the declared login or human collaborator/member comments, not unverified authors")
 
     def read_comment(repository: str, comment: int):
         if repository != APPROVAL_REPOSITORY or comment != APPROVAL_COMMENT:

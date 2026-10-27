@@ -277,8 +277,8 @@ class AttachmentTests(unittest.TestCase):
 
     def test_director_comment_downloads_without_per_command_approval(self) -> None:
         self.standing_scope()
-        os.environ["GH_WITH_ENV_TOKEN_OWN_USER_LOGIN"] = self.login.upper()
-        self.comment.update({"author_association": "OWNER", "user": {"type": "User", "login": self.login}})
+        os.environ["GH_WITH_ENV_TOKEN_OWN_USER_LOGIN"] = self.login
+        self.comment.update({"author_association": "OWNER", "user": {"type": "User", "login": self.login.upper()}})
         status, result = self.invoke()
         self.assertEqual(status, 0)
         self.assertEqual(result["authority"], "standing_approval")
