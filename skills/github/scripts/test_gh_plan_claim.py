@@ -17,6 +17,7 @@ import tempfile
 import time
 import unittest
 from argparse import Namespace
+from datetime import datetime
 from itertools import product
 from pathlib import Path
 from typing import Any
@@ -1259,12 +1260,19 @@ class ClaimTests(unittest.TestCase):
                 self.assert_no_writes()
 
     def test_deleted_historical_branch_can_be_reused_without_reporting_phantom_artifacts(self):
-        self.ended_holder_fixture()
-        self.inventory.update(worktrees=[], local_branches=[], remote_branches=[])
-        self.args.branch = OTHER["branch"]
-        self.run_claim()
-        self.assertTrue(self.emitted.call_args.args[0]["ok"])
-        self.assertEqual(self.emitted.call_args.args[0]["retained_artifacts"], [])
+        for resume in (False, True):
+            with self.subTest(resume=resume):
+                self.setUp()
+                if resume:
+                    self.sequential_no_pr_resume_fixture()
+                    self.comments[0]["user"] = self.comments[1]["user"] = {"login": "earlier-author"}
+                else:
+                    self.ended_holder_fixture()
+                    self.args.branch = OTHER["branch"]
+                self.inventory.update(worktrees=[], local_branches=[], remote_branches=[])
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                self.assertEqual(self.emitted.call_args.args[0]["retained_artifacts"], [])
 
     def test_handoff_sees_live_holder_recorded_only_on_the_retained_pr(self):
         self.refresh_fixture()
@@ -1693,22 +1701,72 @@ class ClaimTests(unittest.TestCase):
         return source
 
     def test_no_pr_resume_preserves_sequential_released_claims_on_its_branch(self) -> None:
-        source = self.sequential_no_pr_resume_fixture()
+        for cross_session, selector in product((False, True), (1, 88)):
+            with self.subTest(cross_session=cross_session, selector=selector):
+                self.setUp()
+                source = self.sequential_no_pr_resume_fixture()
+                if cross_session:
+                    prior = CLAIM.records(self.comments[0]["body"])[0]
+                    self.comments[0]["body"] = CLAIM.marker({**prior, "worker": "first-worker", "session": "first-session"})
+                self.args.resume_from = selector
+                self.run_claim()
+                result = self.emitted.call_args.args[0]
+                self.assertIn("metadata_readback", result["completed_steps"])
+                self.assertEqual(result["claim"]["branch"], source["branch"])
+                self.assertEqual(result["claim"]["resume_from"], str(self.args.resume_from))
+                self.assertNotIn("retained_handoff", result["claim"])
+
+    def test_released_partial_no_pr_claim_preserves_resume_for_the_next_session(self) -> None:
+        for next_session in (False, True):
+            with self.subTest(next_session=next_session):
+                self.setUp()
+                source = self.no_pr_resume_fixture()
+                self.args.branch = source["branch"]
+                self.handoff_id = None
+                self.after_status = self.record_wait
+                clock = self.enterContext(patch.object(PLAN, "datetime", wraps=datetime))
+                clock.now.return_value = datetime.fromisoformat("2026-10-03T00:00:00Z")
+                with self.assertRaises(PLAN.PlanError) as failure:
+                    self.run_claim()
+                partial_id = failure.exception.payload["claim_recovery"]["release_own_claim"]["comment_id"]
+                partial = next(comment for comment in self.comments if comment["id"] == partial_id)
+                partial_record = CLAIM.records(partial["body"])[0]
+                partial["created_at"] = partial_record["claimed_at"]
+                self.comments.append({"id": partial_id + 1, "user": {"login": TEST_BOT},
+                    "body": f"Released claim {partial_id}", "created_at": "2026-10-03T01:00:00Z"})
+                self.after_status = lambda: None
+                self.args.wait_resolved = "The readback hold is resolved"
+                if next_session:
+                    self.args.worker, self.args.session = "next-worker", "next-native-session"
+                artifacts = copy.deepcopy(self.inventory)
+                clock.now.return_value = datetime.fromisoformat("2026-10-04T00:00:00Z")
+                self.run_claim()
+                result = self.emitted.call_args.args[0]
+                self.assertIn("metadata_readback", result["completed_steps"])
+                self.assertEqual(result["claim"]["branch"], source["branch"])
+                self.assertEqual(result["claim"]["resume_from"], str(self.args.resume_from))
+                self.assertEqual(self.inventory, artifacts)
+
+    def test_plain_resume_renews_legacy_partial_custody_without_reposting(self) -> None:
+        source = self.no_pr_resume_fixture()
+        self.args.branch = source["branch"]
+        legacy_partial = {**OWNER, "branch": source["branch"], "claimed_at": "2026-10-03T00:00:00Z"}
+        self.comments.append({"id": 88, "user": {"login": TEST_BOT}, "body": CLAIM.marker(legacy_partial),
+                              "created_at": legacy_partial["claimed_at"]})
         self.run_claim()
-        result = self.emitted.call_args.args[0]
-        self.assertIn("metadata_readback", result["completed_steps"])
-        self.assertEqual(result["claim"]["branch"], source["branch"])
-        self.assertNotIn("retained_handoff", result["claim"])
+        self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
+        self.assertNotIn("post", self.events)
 
     def test_no_pr_resume_preserves_unqualified_predecessor_refusals(self) -> None:
-        for change in ("session", "worker", "author", "late_release", "equal_release", "lease_only",
-                       "later_claim", "selected_unreleased", "selected_legacy", "missing_timestamp", "late_edit"):
+        for change in ("foreign_lineage", "retained", "refresh", "author", "late_release", "equal_release", "lease_only",
+                       "overlapping_claim", "selected_unreleased", "selected_legacy", "missing_timestamp", "late_edit"):
             with self.subTest(change=change):
                 self.setUp()
                 source = self.sequential_no_pr_resume_fixture()
                 prior = CLAIM.records(self.comments[0]["body"])[0]
-                if change in {"session", "worker"}:
-                    self.comments[0]["body"] = CLAIM.marker({**prior, change: "different-history"})
+                if change in {"foreign_lineage", "retained", "refresh"}:
+                    field = {"foreign_lineage": "resume_from", "retained": "retained_handoff", "refresh": "refresh_pr"}[change]
+                    self.comments[0]["body"] = CLAIM.marker({**prior, field: "different-history"})
                 if change == "author":
                     for comment in self.comments[:2]:
                         comment["user"] = {"login": "different-author"}
@@ -1718,8 +1776,8 @@ class ClaimTests(unittest.TestCase):
                     self.comments[1]["created_at"] = source["claimed_at"]
                 if change == "lease_only":
                     self.comments.pop(1)
-                if change == "later_claim":
-                    later = {**source, "claimed_at": "2026-10-03T00:00:00Z"}
+                if change == "overlapping_claim":
+                    later = {**source, "claimed_at": "2026-10-02T00:00:00Z"}
                     self.comments.extend([
                         {"id": 90, "body": CLAIM.marker(later), "user": {"login": TEST_BOT},
                          "created_at": later["claimed_at"]},
@@ -1736,9 +1794,36 @@ class ClaimTests(unittest.TestCase):
                     self.comments[0]["updated_at"] = "2026-09-30T02:00:00Z"
                 expired = {source["session"]} if change in {"lease_only", "missing_timestamp", "late_edit"} else set()
                 with patch.object(CLAIM, "expired_lease_sessions", return_value=expired):
+                    with self.assertRaises(PLAN.PlanError) as failure:
+                        self.run_claim()
+                if change != "selected_unreleased":
+                    self.assertIsInstance(failure.exception, PLAN.ClassifiedPlanError)
+                    self.assertEqual(failure.exception.code, "claim_resume_custody_unqualified")
+                self.assert_no_writes()
+
+    def test_no_pr_resume_checks_intermediate_pr_history_without_adopting_open_work(self) -> None:
+        for state in ("open", "merged"):
+            with self.subTest(state=state):
+                self.setUp()
+                source = self.sequential_no_pr_resume_fixture()
+                self.args.resume_from = 88
+                self.comments[-1]["body"] += " Retain PR #99."
+                pull: dict[str, Any] = {"number": 99, "state": "open" if state == "open" else "closed",
+                    "merged_at": None if state == "open" else "2026-10-02T03:00:00Z",
+                    "user": {"login": TEST_BOT}, "body": "Refs #42",
+                    "head": {"ref": source["branch"], "repo": {"full_name": self.args.repo}},
+                    "base": {"repo": {"full_name": self.args.repo}}}
+                artifacts = copy.deepcopy(self.inventory)
+                if state == "open":
+                    self.pulls = [pull]
                     with self.assertRaises(PLAN.PlanError):
                         self.run_claim()
-                self.assert_no_writes()
+                    self.assert_no_writes()
+                else:
+                    self.closed_pulls[pull["number"]] = pull
+                    self.run_claim()
+                    self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
+                self.assertEqual(self.inventory, artifacts)
 
     def test_no_pr_resume_rechecks_predecessor_release_after_publication(self) -> None:
         for phase in ("after_post", "after_status"):
