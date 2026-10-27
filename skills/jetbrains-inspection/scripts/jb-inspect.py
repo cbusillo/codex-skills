@@ -2799,9 +2799,11 @@ def ide_process_tree_pids(launcher_names: tuple[str, ...]) -> list[int]:
     if not parents:
         raise ValueError("Empty process inventory")
     observer_pid = os.getpid()
-    while children := {pid for pid, parent in parents.items() if parent in pids and pid != observer_pid} - pids:
+    while True:
+        children = {pid for pid, parent in parents.items() if parent in pids and pid != observer_pid} - pids
+        if not children:
+            return sorted(pids)
         pids.update(children)
-    return sorted(pids)
 
 
 def offline_ide_open_files(pids: list[int]) -> dict[int, list[str]]:
