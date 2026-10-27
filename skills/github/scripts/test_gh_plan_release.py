@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from pathlib import Path
 from argparse import Namespace
 from unittest.mock import Mock, patch
+from typing import Any
 import unittest
 
 import test_gh_plan_claim as fixtures
@@ -1809,6 +1810,20 @@ class OwnReleaseTests(ReleaseHarness):
         self.assertEqual(self.f.events.count("post"), posts)
         self.assertEqual(self.f.emitted.call_args.args[0]["release_state"], "already_released")
 
+    def test_supplement_does_not_claim_later_successor_prs(self) -> None:
+        self.run_own_release()
+        earlier: dict[str, Any] = {"number": 99, "state": "open", "user": {"login": BOT},
+            "created_at": "2026-10-01T01:00:00Z", "body": "Refs #42\nCloses #43",
+            "head": {"ref": "work/neighbor", "repo": {"full_name": "owner/repo"}},
+            "base": {"repo": {"full_name": "owner/repo"}}}
+        later = copy.deepcopy(earlier)
+        later.update(number=120, body="Closes #42", created_at="2026-10-04T00:00:00Z")
+        later["head"]["ref"] = "work/successor"
+        self.f.pulls = [earlier, later]
+        self.args.exclude_pr = ["https://github.com/owner/repo/pull/99"]
+        self.run_own_release()
+        self.assertNotIn(120, CLAIM.handoff_pr_numbers(self.f.comments[-1]["body"], issue_repo="owner/repo", target_repo="owner/repo"))
+
     def test_handoff_requires_qualified_references_before_release(self) -> None:
         for text in ("Read owner/other#550 after landing, then confirm #550.", "Read PR550 after landing.",
                      "Do the rank &#35;1 item first.", "Verify -#77.", "Verify .#77."):
@@ -1900,6 +1915,72 @@ class OwnReleaseTests(ReleaseHarness):
         self.args.exclude_pr = [url]
         self.run_own_release()
         self.assertNotIn(99, CLAIM.handoff_pr_numbers(self.f.comments[-1]["body"], issue_repo="owner/repo", target_repo="owner/repo"))
+        self.assertEqual(release.excluded_prs(self.f.comments, self.f.comments[0], issue_repo="owner/repo"), {url})
+
+    def test_released_source_can_add_checked_exclusions_without_rewriting_its_release(self) -> None:
+        self.run_own_release()
+        original = copy.deepcopy(self.f.comments[-1])
+        url = "https://github.com/owner/repo/pull/99"
+        self.f.pulls = [{"number": 99, "state": "open", "user": {"login": BOT},
+            "created_at": "2026-10-01T01:00:00Z", "body": "Refs #42\nCloses #43",
+            "head": {"ref": "work/neighbor", "repo": {"full_name": "owner/repo"}},
+            "base": {"repo": {"full_name": "owner/repo"}}}]
+        self.args.exclude_pr = [url]
+        self.run_own_release()
+        self.assertEqual(self.f.comments[-2], original)
+        released = CLAIM.released_source(self.f.comments, self.args.claim_comment)
+        self.assertEqual(CLAIM.handoff_candidates(self.f.comments, released)[-1], self.f.comments[-1])
+        self.assertEqual(release.excluded_prs(self.f.comments, self.f.comments[0], issue_repo="owner/repo"), {url})
+        posts = self.f.events.count("post")
+        self.f.pulls = []
+        self.run_own_release()
+        self.assertEqual(self.f.events.count("post"), posts)
+
+    def test_supplement_cannot_discard_previously_retained_work_after_posting(self) -> None:
+        url = "https://github.com/owner/repo/pull/99"
+        self.f.pulls = [{"number": 99, "state": "open", "user": {"login": BOT},
+            "created_at": "2026-10-01T01:00:00Z", "body": "Refs #42\nCloses #43",
+            "head": {"ref": "work/neighbor", "repo": {"full_name": "owner/repo"}},
+            "base": {"repo": {"full_name": "owner/repo"}}}]
+        self.args.retained_pr = [url]
+        self.run_own_release()
+        before = copy.deepcopy(self.f.comments)
+        self.args.retained_pr = []
+        self.args.exclude_pr = [url]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_own_release()
+        self.assertEqual(caught.exception.code, "release_excluded_pr_mentioned")
+        self.assertEqual(self.f.comments, before)
+
+    def test_cross_repo_exclusion_does_not_reinterpret_legacy_local_references(self) -> None:
+        self.run_own_release()
+        self.f.comments[-1]["body"] += "\n\nContext: PR7"
+        self.f.comments[-1]["body"] += "\n\n" + release.exclusion_marker(1, {"https://github.com/other/lib/pull/7"})
+        self.assertEqual(release.excluded_prs(self.f.comments, self.f.comments[0], issue_repo="owner/repo"),
+                         {"https://github.com/other/lib/pull/7"})
+
+    def test_malformed_prior_attribution_stops_with_a_structured_error_before_posting(self) -> None:
+        self.run_own_release()
+        self.f.comments[-1]["body"] += "\n\n<!-- " + release.EXCLUSIONS_MARKER + "invalid -->"
+        before = copy.deepcopy(self.f.comments)
+        self.args.retained_pr = ["https://github.com/owner/repo/pull/99"]
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.run_own_release()
+        self.assertEqual(caught.exception.payload["completed_steps"], ["release_preflight"])
+        self.assertEqual(self.f.comments, before)
+
+    def test_unknown_exclusion_does_not_create_false_ownership_evidence(self) -> None:
+        self.args.exclude_pr = ["https://github.com/owner/repo/pull/999"]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_own_release()
+        self.assertEqual(caught.exception.code, "release_excluded_pr_unverified")
+        self.f.assert_no_writes()
+
+    def test_narrative_cannot_forge_an_exclusion_receipt(self) -> None:
+        self.handoff.write_text(release.exclusion_marker(1, {"https://github.com/owner/repo/pull/99"}))
+        with self.assertRaises(PLAN.PlanError):
+            self.run_own_release()
+        self.f.assert_no_writes()
 
     def test_release_never_uses_incidental_narrative_as_pr_attribution(self) -> None:
         for created in ("2026-10-01T01:00:00Z", "2026-09-29T00:00:00Z"):

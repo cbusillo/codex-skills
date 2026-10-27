@@ -2417,7 +2417,7 @@ def read_release_inherited_prs(record: dict[str, str]) -> set[str]:
 
 
 def release_retained_prs(issue: dict[str, Any], source: dict[str, Any], actor: str, *,
-                         handoff: str, declared: set[str], excluded: set[str]) -> list[str]:
+                         handoff: str, declared: set[str], excluded: set[str], ended_at: str | None = None) -> list[str]:
     repo, number = issue["repo"], issue["number"]
     record = github_plan_release.source_record(source)
     started = github_plan_release.stamp(source["created_at"])
@@ -2438,7 +2438,7 @@ def release_retained_prs(issue: dict[str, Any], source: dict[str, Any], actor: s
         if not match:
             continue
         mentioned = int(match[2]) in github_plan_claim.handoff_pr_numbers(handoff, issue_repo=repo, target_repo=match[1])
-        declared_link = f"https://github.com/{match[1]}/pull/{match[2]}".casefold() in declared
+        declared_link = f"https://github.com/{match[1]}/pull/{match[2]}".casefold() in declared | excluded
         if linked.get("state") == "closed" and not mentioned and not declared_link:
             continue
         if linked.get("created_at") and not mentioned and not declared_link and github_plan_release.stamp(linked["created_at"]) < started:
@@ -2473,7 +2473,10 @@ def release_retained_prs(issue: dict[str, Any], source: dict[str, Any], actor: s
         if not source_branch and not subject and url not in inherited:
             if not linked_source or github_plan_claim.is_train_batch(pull):
                 continue
-            if not named and url not in declared and github_plan_release.stamp(pull.get("created_at")) < started:
+            if not named and url not in declared | excluded and github_plan_release.stamp(pull.get("created_at")) < started:
+                continue
+            if (ended_at is not None and not named and url not in declared | excluded
+                    and github_plan_release.stamp(pull.get("created_at")) > github_plan_release.stamp(ended_at)):
                 continue
         accounted.add(url)
         if url in excluded:
@@ -2497,6 +2500,9 @@ def release_retained_prs(issue: dict[str, Any], source: dict[str, Any], actor: s
     if declared - accounted:
         raise ClassifiedPlanError("release_declared_pr_unverified", "Declared PR is not verified source-linked work or inherited custody",
                                   payload={"unverified_prs": sorted(declared - accounted)})
+    if excluded - accounted:
+        raise ClassifiedPlanError("release_excluded_pr_unverified", "Excluded PR is not verified source-linked work",
+                                  payload={"unverified_prs": sorted(excluded - accounted)})
     return sorted(retained)
 
 
@@ -2519,10 +2525,20 @@ def cmd_release(args: argparse.Namespace) -> None:
     body = f"Released claim {args.claim_comment}" + (f"\n\n{handoff}" if handoff else "")
     # The handoff is narrative only: it can neither restate nor forge release authority.
     if (github_plan_claim.released_claim_id(body) != args.claim_comment
-            or any(marker in body for marker in (github_plan_release.RELEASE_MARKER, github_plan_release.PENDING_MARKER))
+            or any(marker in body for marker in (github_plan_release.RELEASE_MARKER, github_plan_release.PENDING_MARKER,
+                                                 github_plan_release.EXCLUSIONS_MARKER))
             or github_plan_claim.records(body)):
         raise PlanError("Handoff must be narrative; it cannot carry a release receipt or ownership record")
     completed = []
+
+    def checked_exclusions(snapshot_state: dict[str, Any]) -> set[str]:
+        try:
+            return github_plan_release.excluded_prs(snapshot_state["comments"], snapshot_state["source"], issue_repo=repo)
+        except ValueError as attribution_error:
+            raise PlanError(str(attribution_error), payload={"source_claim": args.claim_comment,
+                            "completed_steps": list(completed), "release_comment": posted_comment}) from attribution_error
+
+    posted_comment = None
 
     def snapshot() -> dict[str, Any]:
         record, _status, comments, _can_update = claim_snapshot(args.issue, repo, allow_closed=True)
@@ -2534,23 +2550,44 @@ def cmd_release(args: argparse.Namespace) -> None:
                             "an ended session's claim uses release-claim")
         confirmed = next((c for c in comments if c.get("id") != source["id"]
                           and github_plan_release.exact_source_release(source["id"], c, comments)), None)
-        return {"issue": record, "release": confirmed, "source": source}
+        return {"issue": record, "release": confirmed, "source": source, "comments": comments}
 
     preflight = snapshot()
     issue, existing = preflight["issue"], preflight["release"]
     completed.append("release_preflight")
-    if existing is not None:
+    declared = set(getattr(args, "retained_pr", None) or [])
+    excluded = set(getattr(args, "exclude_pr", None) or [])
+    if existing is not None and not (declared or excluded):
         emit({"ok": True, "release_state": "already_released", "source_claim": args.claim_comment,
               "release_comment": {"id": existing["id"], "url": existing.get("html_url")}, "completed_steps": completed})
         return
-    declared, excluded = set(getattr(args, "retained_pr", []) or []), set(getattr(args, "exclude_pr", []) or [])
     if {url.casefold() for url in declared} & {url.casefold() for url in excluded} or any(not re.fullmatch(r"https://github\.com/[\w.-]+/[\w.-]+/pull/[1-9]\d*", url)
                                   for url in declared | excluded):
         raise PlanError("Retained and excluded PRs require distinct exact GitHub PR URLs")
+    prior_excluded = set()
+    candidates = []
+    if existing is not None:
+        prior_excluded = checked_exclusions(preflight)
+        released = github_plan_claim.released_source(preflight["comments"], args.claim_comment)
+        candidates = github_plan_claim.handoff_candidates(preflight["comments"], released)
+        if {url.casefold() for url in excluded} <= prior_excluded:
+            emit({"ok": True, "release_state": "already_released", "source_claim": args.claim_comment,
+                  "release_comment": {"id": existing["id"], "url": existing.get("html_url")}, "completed_steps": completed})
+            return
+        record = github_plan_release.source_record(preflight["source"])
+        body = (f"Handoff from {record['worker']}\n\nSource claim: {args.claim_comment}\nSession: {args.session}"
+                + (f"\n\n{handoff}" if handoff else ""))
     retained_prs = release_retained_prs(issue, preflight["source"], expected_actor,
-                                      handoff=handoff, declared=declared, excluded=excluded)
+        handoff=handoff, declared=declared, excluded=excluded, ended_at=existing["created_at"] if existing is not None else None)
     if retained_prs:
         body += "\n\nRetained PR handoff: " + ", ".join(retained_prs)
+    if excluded:
+        body += "\n\n" + github_plan_release.exclusion_marker(args.claim_comment, excluded)
+    try:
+        github_plan_release.require_exclusions_unmentioned([*candidates, {"body": body}], prior_excluded | excluded, issue_repo=repo)
+    except ValueError as error:
+        raise ClassifiedPlanError("release_excluded_pr_mentioned", str(error),
+                                  payload={"completed_steps": list(completed)}) from error
     if args.dry_run:
         emit({"ok": True, "dry_run": True, "release_body": body, "release_state": "not_started",
               "source_claim": args.claim_comment, "completed_steps": completed})
@@ -2558,14 +2595,26 @@ def cmd_release(args: argparse.Namespace) -> None:
     result = github_comment_core.comment("pr" if "pull_request" in issue else "issue", issue["number"], body,
         repo=issue["repo"], gh_cmd=gh_cmd, operation=CURRENT_OPERATION, expected_actor=expected_actor,
         completed_steps=completed, failed_step="post_release", dedupe_body=True)
+    posted_comment = result["comment"]
     completed.append("post_release")
-    existing = snapshot()["release"]
-    if existing is None or existing["id"] != result["comment"]["id"]:
+    observed = snapshot()
+    if existing is not None:
+        released = github_plan_claim.released_source(observed["comments"], args.claim_comment)
+        handoffs = github_plan_claim.handoff_candidates(observed["comments"], released)
+        verified = any(c["id"] == result["comment"]["id"] for c in handoffs)
+        verified &= {url.casefold() for url in excluded} <= checked_exclusions(observed)
+    else:
+        existing = observed["release"]
+        verified = existing is not None and existing["id"] == result["comment"]["id"]
+        if verified and excluded:
+            verified = {url.casefold() for url in excluded} <= checked_exclusions(observed)
+    if not verified or existing is None:
         raise PlanError("Release readback is not an exact release of this claim; inspect the record before any retry",
                         payload={"release_comment": result["comment"], "completed_steps": completed})
     completed.append("release_readback")
     emit({"ok": True, "actor": actor, "release_state": "confirmed", "source_claim": args.claim_comment,
-          "release_comment": {"id": existing["id"], "url": existing.get("html_url")}, "completed_steps": completed})
+          "release_comment": {"id": existing["id"], "url": existing.get("html_url")},
+          "handoff_comment": result["comment"], "completed_steps": completed})
 
 
 def claim_reference(args: argparse.Namespace) -> argparse.Namespace:

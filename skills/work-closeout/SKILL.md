@@ -405,9 +405,15 @@ a PR on the claim's branch, unless it was opened after the release and does not
 link the issue, or an open PR by the automation identity that links
 the issue and is named in the release or opened during the claim, the same rule
 `gh-plan.py release` uses. A PR the release mentions only as context is not
-retained work. Neither is a merge-train batch PR (head under
-`launchplane/train/` with Launchplane's batch marker) opened during the claim,
-unless the release names it or it is on the claim's own branch. A PR-only claim
+retained work. Explicit `--exclude-pr` classifications are recorded by the
+release helper and honored by closeout for other branches. They never hide
+the claim's own branch or subject PR. For an older release that lacks this
+attribution, rerun its exact release command with the reviewed handoff and
+`--exclude-pr`; the helper checks current PRs and appends an authored source
+handoff without editing the original release. An unknown or malformed
+classification keeps closeout blocked. Merge-train batch PRs (head under
+`launchplane/train/` with Launchplane's batch marker) opened during the claim
+are excluded unless the release names them or they use the claim's own branch. A PR-only claim
 uses the PR itself as its work record. Preserve the branch, worktree and the
 next actor's custody.
 
