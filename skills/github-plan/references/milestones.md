@@ -35,7 +35,7 @@ each Track's proof against the merged milestone line, trusted Current Status
 and linked evidence, independently of open blockers or newly admitted work.
 Their proof-review projections carry recorded text, never a completion verdict.
 Close met Tracks and milestones within authority, or surface closing candidates
-with the exact missing evidence and named owner. Review every Track even when
+with the exact missing evidence and next actor. Review every Track even when
 there was no graph movement; incomplete evidence stays unknown.
 
 With a root `DIRECTION.md`, use only milestone titles listed in the merged file.
