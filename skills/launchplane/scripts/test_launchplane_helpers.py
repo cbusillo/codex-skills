@@ -2926,11 +2926,14 @@ def test_product_secret_bindings_read_keeps_metadata_and_counts_the_rest(include
         },
     ]
     assert result["omitted_binding_count"] == 1
-    assert result["dropped_field_paths"] == [
+    expected_dropped_paths = [
         "bindings[].<unlisted field>",
         "bindings[].binding_key",
     ]
-    assert result["dropped_field_count"] == 2
+    if include_coverage:
+        expected_dropped_paths.extend(["coverage", "lane_binding_resolution"])
+    assert result["dropped_field_paths"] == expected_dropped_paths
+    assert result["dropped_field_count"] == len(expected_dropped_paths)
     rendered = json.dumps(payload)
     assert "provider_note" not in rendered
     assert "private provider text" not in rendered
