@@ -30,10 +30,13 @@ scope once, validates every file and lane project path against the exact
 worktree, assigns files by first matching lane, and records unmatched and
 explicitly excluded files. Exclusions apply to ordinary changed-file, directory,
 and whole-project readiness; an explicit `files` scope records an override and
-still selects the file. A native run covers files whose owning lane is a root
-lane (no `projectPath`) for the worker's product. A selection that includes a
-file in a nested-project lane, or in a lane of another product, is UNKNOWN;
-inspect each product's files in their own assessment.
+still selects the file. A native run covers one worker's product at a time.
+PyCharm and IntelliJ IDEA require root lanes. WebStorm also supports one nested `projectPath`: every
+selected file must lie beneath it, and dependencies are prepared from that
+project's npm, pinned Yarn 4 or pinned pnpm lockfile. Its engine model and findings remain
+relative to the repository root. Mixing projects or products is UNKNOWN;
+inspect each project's files in a separate assessment. Structured
+`prepare.python` may coexist with WebStorm lanes and is ignored by WebStorm; PyCharm still requires root Python preparation.
 
 ## Python preparation
 

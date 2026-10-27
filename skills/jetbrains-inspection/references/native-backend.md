@@ -56,19 +56,34 @@ TypeScript canary applies. JSON-only selections and other files, including
 `npm ci --ignore-scripts --no-audit --no-fund` with `--cache
 cacheRoot/npm-cache` and no user or global npm config, honouring only the
 repository's own `.npmrc`, through the same journalled, unlicensed preparation
-path as Python. It needs a root `package.json` and `package-lock.json` and never runs
-`npm install`. A root Yarn 4 project instead needs `yarn.lock`, an exact
-`packageManager` pin in `package.json`, and executable `corepack` beside the
-configured `node`. It runs that pinned Yarn with `install --immutable
---mode=skip-build`, disables scripts and repository `yarnPath` overrides, and
-forces the `node-modules` linker inside the snapshot. Repository patches and
-Yarn configuration stay available; Yarn and Corepack caches live under
-`cacheRoot`, with a fresh HOME and no inherited user configuration or tokens.
-Tracked Yarn plugins still load as trusted repository code; disabling lifecycle
-scripts does not disable plugins. An exact Yarn 4 pin selects Yarn when both
-lockfiles exist; otherwise `package-lock.json` retains npm preparation.
-A structured root `prepare.python` may coexist with WebStorm lanes; only
-PyCharm selections execute it. `pnpm-lock.yaml` is refused for now. The snapshot excludes
+path as Python. It needs `package.json` and `package-lock.json` in the lane's project directory
+and never runs `npm install`. A WebStorm lane may set `projectPath` to a nested
+project; all selected files must belong to that one project and lie beneath it.
+The engine still opens the private repository root so scope and findings retain
+repository-relative paths. Python preparation is ignored on a WebStorm run.
+
+A Yarn 4 project needs `yarn.lock`, an exact `packageManager` pin in
+`package.json`, and executable `corepack` beside the configured `node`. It runs
+that pinned Yarn with `install --immutable --mode=skip-build`, disables scripts
+and repository `yarnPath` overrides, and forces the `node-modules` linker inside
+the snapshot. Repository patches and Yarn configuration stay available; Yarn
+and Corepack caches live under `cacheRoot`, with a fresh HOME and no inherited
+user configuration or tokens. Tracked Yarn plugins still load as trusted
+repository code; disabling lifecycle scripts does not disable plugins. An exact
+Yarn 4 pin selects Yarn when its lockfile and an npm lockfile coexist; otherwise
+`package-lock.json` retains npm preparation. A pnpm lockfile selects its pinned
+pnpm preparation.
+
+For `pnpm-lock.yaml`, `package.json` must pin an exact pnpm `packageManager`
+version. Corepack must be executable beside the configured `node`. The runner
+uses that pin with `install --frozen-lockfile --ignore-scripts --ignore-pnpmfile`, a private home and empty user/global npm configurations.
+A lockfile with `pnpmfileChecksum` is refused before preparation because its
+hook cannot run under this policy; use the repository's own lint and type checks
+and keep native coverage UNKNOWN. Corepack is an explicit prerequisite,
+including on Node distributions that do not bundle it.
+Corepack and pnpm store caches stay under the worker's cache root. No lifecycle
+scripts or pnpmfile hooks run; the lockfile cannot be updated. See
+[pnpm installation options](https://pnpm.io/10.x/cli/install). The snapshot excludes
 ignored files, so `node_modules` comes only from that step.
 
 The snapshot's tracked `.idea` is used when it has `modules.xml`; otherwise a
@@ -274,7 +289,7 @@ Structured `prepare.python` runs the maintained environment generator in that
 snapshot, with an isolated preparation home. Otherwise the exact source
 worktree must already have its documented `.venv`. Native does not guess a
 Python version. YAML selections keep this prerequisite because each run includes
-Python defect controls. Command-string and nested-project preparation remain ineligible
+Python defect controls. Command-string and nested Python preparation remain ineligible
 for automatic native selection; they return UNKNOWN before a worker starts. Explicit native uses the prepared root `.venv` instead
 of treating those commands as a structured root generator. Native does not read a
 desktop SDK table. A unique non-secret SDK entry is

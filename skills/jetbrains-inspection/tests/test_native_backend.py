@@ -619,6 +619,17 @@ class UnavailableExplanationTests(unittest.TestCase):
         report, action, _ = self.explain(["scripts/tool.py"], {"lanes": lanes})
         self.assert_unavailable(report, action, "scripts-lane")
 
+    def test_nested_webstorm_in_a_mixed_selection_suggests_a_separate_run(self):
+        lanes = [{"id": "frontend", "ide": "WebStorm", "include": ["frontend/**"], "projectPath": "frontend"},
+                 {"id": "python", "ide": "PyCharm", "include": ["**/*.py"]}]
+        gaps = native.coverage_gaps(host, self.repo, {"lanes": lanes}, {"backend.py", "frontend/app.ts"})
+        frontend = [(kind, dict(fields).get("product")) for (kind, fields), suffixes in gaps.items() if ".ts" in suffixes]
+        self.assertEqual(frontend, [("mixed", host.IDE_PRODUCTS[native.WEBSTORM_PRODUCT_KEY].display_name)])
+        lanes[0]["projectPath"] = "elsewhere"
+        gaps = native.coverage_gaps(host, self.repo, {"lanes": lanes}, {"frontend/app.ts"})
+        mismatch = [(kind, dict(fields).get("path")) for kind, fields in gaps]
+        self.assertEqual(mismatch, [("web_project_mismatch", "frontend/app.ts")])
+
     def test_supported_files_in_mixed_selections_get_their_own_run(self):
         nested = [{"id": "root", "ide": "PyCharm", "include": ["backend/**"]},
                   {"id": "scripts-lane", "ide": "PyCharm", "include": ["scripts/**"], "projectPath": "scripts"}]
@@ -2189,6 +2200,40 @@ print('Done.')
         (self.repo / "tsconfig.json").write_text("{}\n")
         self.assertEqual(self.select("tsconfig.json", "package.json")[0], "unavailable")
 
+    def test_nested_webstorm_prepares_dependencies_without_using_python_preparation(self):
+        frontend = self.repo / "frontend"
+        frontend.mkdir()
+        for name in ("package.json", "package-lock.json", "src"):
+            shutil.move(str(self.repo / name), frontend / name)
+        self.script.write_text(self.script.read_text().replace("src/app.ts", "frontend/src/app.ts").replace(
+            "project/'node_modules/.fixture'", "project/'frontend/node_modules/.fixture'"))
+        self.declare({"prepare": {"python": {"version": "3.12", "moduleName": "backend", "projectPath": "backend"}}, "lanes": [
+            {"id": "frontend", "ide": "WebStorm", "include": ["frontend/**"], "projectPath": "frontend"},
+            {"id": "python", "ide": "PyCharm", "include": ["**/*.py"]}]})
+        self.assertEqual(self.select("frontend/src/app.ts"), ("native", "webstorm_native_route"))
+        result = self.assess("frontend/src/app.ts")
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_completed", result["proof_failures"])
+        self.assertEqual(result["agent_result"]["verdict"], "RED")
+        self.assertTrue(json.loads(self.engine_record.read_text())["node_modules"])
+        self.assertFalse((frontend / "node_modules").exists())
+
+    def test_webstorm_selection_cannot_mix_project_roots_or_escape_its_project(self):
+        (self.repo / "other").mkdir()
+        (self.repo / "other/app.ts").write_text("export const value = 1;\n")
+        for directory in ("src", "other"):
+            for name in ("package.json", "package-lock.json"):
+                shutil.copyfile(self.repo / name, self.repo / directory / name)
+        for project_path in ("src", "other"):
+            self.declare({"lanes": [
+                {"id": "frontend", "ide": "WebStorm", "include": ["src/**"], "projectPath": project_path},
+                {"id": "other", "ide": "WebStorm", "include": ["other/**"], "projectPath": "other"}]})
+            self.assertEqual(self.select("src/app.ts", "other/app.ts")[0], "unavailable")
+            self.assertEqual(self.select("other/app.ts")[0], "native")
+            if project_path == "other":
+                self.assertEqual(self.select("src/app.ts")[0], "unavailable")
+            else:
+                self.assertEqual(self.select("src/app.ts")[0], "native")
+
     def test_python_selection_in_a_webstorm_repository_keeps_the_pycharm_route(self):
         (self.repo / "tool.py").write_text("print(1)\n")
         with patch_attr(native, "eligible", return_value=True) as eligible, patch_attr(native, "is_odoo", return_value=False):
@@ -2283,10 +2328,10 @@ print('Done.')
         self.assertFalse(self.npm_record.exists())
         self.assertFalse(self.engine_record.exists())
 
-    def test_missing_lockfile_and_pnpm_projects_are_refused_before_preparation(self):
+    def test_missing_lockfile_and_unpinned_pnpm_are_refused_before_preparation(self):
         for change, reason in ((lambda: (self.repo / "package-lock.json").unlink(), "native_npm_lockfile_required"),
                                (lambda: (self.repo / "package.json").unlink(), "native_npm_lockfile_required"),
-                               (lambda: (self.repo / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n"), "native_pnpm_unsupported")):
+                               (lambda: (self.repo / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n"), "native_pnpm_version_required")):
             with self.subTest(reason=reason):
                 self.setUp()
                 change()
@@ -2296,6 +2341,53 @@ print('Done.')
                 self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
                 self.assertFalse(self.npm_record.exists())
                 self.assertFalse(self.engine_record.exists())
+
+    def test_pnpm_uses_manifest_pin_frozen_lock_and_private_home_without_hooks(self):
+        manager = "pnpm@10.10.0"
+        (self.repo / "package.json").write_text(json.dumps({"packageManager": manager}))
+        (self.repo / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n")
+        corepack = self.node.parent / "corepack"
+        corepack.write_text(f"#!{sys.executable}\nimport json,os,pathlib,sys\n"
+                           "project=pathlib.Path(sys.argv[sys.argv.index('--dir')+1])\n"
+                           "(project/'node_modules').mkdir()\n(project/'node_modules/.fixture').touch()\n"
+                           f"pathlib.Path({str(self.npm_record)!r}).write_text(json.dumps({{'argv':sys.argv[1:],'env':dict(os.environ)}}))\n")
+        corepack.chmod(0o755)
+        self.assertEqual(self.select(), ("native", "webstorm_native_route"))
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_completed", result["proof_failures"])
+        invocation = json.loads(self.npm_record.read_text())
+        self.assertEqual(invocation["argv"][0], json.loads((self.repo / "package.json").read_text())["packageManager"])
+        self.assertTrue({"--frozen-lockfile", "--ignore-scripts", "--ignore-pnpmfile"} <= set(invocation["argv"]))
+        self.assertTrue(Path(invocation["env"]["COREPACK_HOME"]).is_relative_to(self.cache))
+        self.assertTrue(json.loads(self.engine_record.read_text())["node_modules"])
+        self.assertFalse((self.repo / "node_modules").exists())
+        corepack.unlink()
+        self.assertEqual(self.select(), ("unavailable", "native_ineligible=native_corepack_unavailable"))
+
+    def test_pnpm_manifest_errors_are_specific_without_reading_linked_inputs(self):
+        lock = self.repo / "pnpm-lock.yaml"
+        lock.write_text("lockfileVersion: '9.0'\n")
+        manifest = self.repo / "package.json"
+        for value in ("{", "[]", '{"packageManager": 5}'):
+            manifest.write_text(value)
+            self.assertEqual(self.select()[1], "native_ineligible=native_pnpm_version_required")
+        manifest.unlink()
+        self.assertEqual(self.select()[1], "native_ineligible=native_npm_lockfile_required")
+        target = self.root / "outside-manifest"
+        target.write_text('{"packageManager":"pnpm@10.10.0"}')
+        manifest.symlink_to(target)
+        with patch.object(Path, "read_bytes", side_effect=AssertionError("linked source read")):
+            with self.assertRaisesRegex(native.Blocked, "native_pnpm_version_required"):
+                native.common.node_package_manager(self.repo)
+
+    def test_hook_dependent_pnpm_lockfile_is_refused_before_preparation(self):
+        (self.repo / "package.json").write_text('{"packageManager":"pnpm@10.10.0"}')
+        (self.repo / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\npnpmfileChecksum: fixture-hook-digest\n")
+        self.assertEqual(self.select(), ("unavailable", "native_ineligible=native_pnpm_hook_lockfile_unsupported"))
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_pnpm_hook_lockfile_unsupported")
+        self.assertFalse(self.npm_record.exists())
+        self.assertFalse(self.engine_record.exists())
 
     def test_tracked_project_model_is_used_and_a_web_module_is_generated_without_one(self):
         result = self.assess()
