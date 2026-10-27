@@ -72,6 +72,9 @@ that every effect belongs to a bounded data language. It accepts direct native
 shell/output calls, literal arrays, plain loops and conditions, and immutable
 native or JSON data reads. Immediately invoked, parameterless arrow functions
 and function expressions are checked in the same way as inline callbacks.
+Native `codex_tui__list_threads` and `codex_tui__read_thread` calls are data
+reads too; their arguments still undergo the same checks. A parser refusal
+such as `KeyError: 'tools'` is not evidence that a native cell did not execute.
 GitHub connector operations named with the read verbs `fetch`, `get`, `list`,
 `search`, `compare` and `download` are data reads. Write verbs and unknown tool
 namespaces remain conditional; verbs are matched as prefixes of tool names.

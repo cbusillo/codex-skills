@@ -65,6 +65,25 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                     {"targets": set(), "unresolved_invocations": []},
                 )
 
+    def test_native_thread_reads_preserve_claim_discovery(self) -> None:
+        cells = json.loads((Path(__file__).parent / "fixtures/thread-read-cells.json").read_text())
+        for identifier, source in cells.items():
+            with self.subTest(call_id=identifier):
+                self.assertEqual(
+                    check_claims.history.literal_targets(invocation(source), SESSION),
+                    {"targets": set(), "unresolved_invocations": []},
+                )
+                real_claim = source + f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));"
+                report = check_claims.history.literal_targets(invocation(real_claim), SESSION)
+                self.assertEqual(report["targets"], {("test/a", 5)})
+                self.assertTrue(report["unresolved_invocations"])
+                for opaque in (
+                    source + 'text(await tools.exec_command({cmd:load("claim-command")}));',
+                    source.replace("codex_tui__", "unknown__"),
+                    source.replace("codex_tui__", "codex_tui__write_"),
+                ):
+                    self.assertTrue(check_claims.history.literal_targets(invocation(opaque), SESSION)["unresolved_invocations"])
+
     def test_immediate_callbacks_still_discover_real_uncertain_claims(self) -> None:
         for source in (
             f'(async()=>text((await tools.exec_command({{cmd:{json.dumps(COMMAND)}}})).output))();',
