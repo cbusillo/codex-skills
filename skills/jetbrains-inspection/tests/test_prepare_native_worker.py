@@ -3,6 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+import importlib
 import json
 import os
 import shutil
@@ -16,7 +17,7 @@ from typing import Any
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import native_backend as native
+native: Any = importlib.import_module("native_backend")
 
 setup: Any = native.sibling_module("prepare_native_worker_test", "prepare-native-worker.py")
 host: Any = setup.host
