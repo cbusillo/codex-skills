@@ -514,7 +514,7 @@ class Live:
             if agent_review_required else {author} | extra_trusted
         )
         ready = latest_ready(pr, comments, trusted)
-        if not ready and not latest_ready(pr, comments, trusted, client_accepted=True):
+        if not ready and not latest_ready(pr, comments, trusted, include_client_wait=True):
             return False
         reviews = self.pages(f"/repos/{repo}/pulls/{number}/reviews")
         newest = {}
@@ -531,7 +531,7 @@ class Live:
             self.reader, repo, number, head_sha=pr["head"]["sha"]
         )
         summary = checks["summary"]
-        handoff = client_handoff(pr, checks["checkRuns"], repository=repo)
+        handoff = client_handoff(pr, checks["checkRuns"], repository=repo, waiting_for_client=not ready)
         if (
             not summary["countsComplete"]
             or summary["unavailableComponents"]
@@ -578,7 +578,7 @@ class Live:
                 ):
                     return False
         return not handoff.refusal(
-            accepted=(ready and not handoff.acceptance_required) or self.acceptance(repo, pr)
+            accepted=not handoff.acceptance_required or self.acceptance(repo, pr)
         )
 
     def review_gap(self, target, pr, extra_trusted, *, file_inventory=None):
@@ -725,7 +725,7 @@ def report_ready_skips(io, target, args, emit, reason, *, pulls=None, queue=None
             handoff = set(args.handoff_login)
             trusted = handoff - {author} if DEPENDENCY_REVIEW in reasons else handoff | {author}
             comments = io.pages(f"/repos/{target['repo']}/issues/{pr['number']}/comments")
-            if latest_ready(pr, comments, trusted, client_accepted=True):
+            if latest_ready(pr, comments, trusted, include_client_wait=True):
                 emit("skipped", {
                     "repository": target["repo"], "pr": pr["number"],
                     "head": pr["head"]["sha"],

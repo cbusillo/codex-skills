@@ -295,7 +295,7 @@ def timestamp(value):
     return parsed.timestamp()
 
 
-def latest_ready(pr, comments, trusted, *, client_accepted: bool = False) -> bool:
+def latest_ready(pr, comments, trusted, *, include_client_wait: bool = False) -> bool:
     handoffs = []
     for comment in comments:
         if (comment.get("user") or {}).get("login", "").casefold() not in trusted:
@@ -315,7 +315,7 @@ def latest_ready(pr, comments, trusted, *, client_accepted: bool = False) -> boo
     )
     body = latest["body"]
     first = handoff_line(body.splitlines()[0])
-    return (first == READY or client_accepted and first == CLIENT_WAIT) and [
+    return (first == READY or include_client_wait and first == CLIENT_WAIT) and [
         match.group("sha") for match in HEAD.finditer(body)
     ] == [pr["head"]["sha"]]
 

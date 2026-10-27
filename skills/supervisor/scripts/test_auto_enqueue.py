@@ -1888,7 +1888,8 @@ class QualificationTests(unittest.TestCase):
                 self.assertFalse(self.qualified())
 
     def test_checked_client_wait_enters_only_after_current_head_service_acceptance(self) -> None:
-        self.release.return_value = self.client_repository
+        states = ready_handoff.acceptance_reader()
+        releases = (self.client_repository, states.ClientRelease(states.NO_CLIENT), states.ClientRelease(states.DIRECTOR_STANDING))
         self.pull["body"] = "## Client test notes\nClient change: retain invoice history after deletion.\nDelete a test account."
         self.comments = [comment(handoff_body(SHA, waiting_for_client=True))]
         self.io.args = argparse.Namespace(config=None, env_config=None, url=None, timeout=10)
@@ -1914,7 +1915,16 @@ class QualificationTests(unittest.TestCase):
                 payload = {"status": "ok", "repository": REPO, "pull_request_number": self.pull["number"],
                            "latest_decision": record}
                 with patch_attr(watch.review, "read_review", side_effect=lambda args: project_review(args, payload)):
-                    self.assertEqual(self.qualified(), expected)
+                    for release in releases:
+                        with self.subTest(release=release.state):
+                            self.release.return_value = release
+                            self.assertEqual(self.qualified(), expected)
+        self.pull["body"] = "## Client test notes\nNothing for the Client to test: engineering only."
+        self.io.acceptance = lambda *_args: True
+        for release in releases:
+            with self.subTest(edited_notes=True, release=release.state):
+                self.release.return_value = release
+                self.assertFalse(self.qualified())
 
     def test_accepted_client_wait_preserves_receipt_and_ci_guards(self) -> None:
         self.release.return_value = self.client_repository
