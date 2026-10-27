@@ -205,31 +205,52 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertTrue(cwd_file.exists())
         self.assertTrue(Path(result["launch_receipt"]).exists())
 
-    def test_capacity_fallback_uses_only_the_allowed_other_provider_choice(self) -> None:
+    def test_default_never_selects_google_even_when_other_providers_are_unavailable(self) -> None:
         self.install("claude", FAKE_CLAUDE)
         self.install("agy", FAKE_AGY)
-        self.policy.write_text('version = 1\ndecision = "allow fallback"\nproviders = ["anthropic", "google"]\n')
+        (self.repo / "probe.txt").write_text("fixture probe line\n")
+        cwd_file = self.root / "google-cwd"
+        snapshot = json.loads(self.snapshot_file.read_text())
+        snapshot["answers"]["useNext"] = [r for r in snapshot["answers"]["useNext"] if r["provider"] != "anthropic"]
+        self.snapshot_file.write_text(json.dumps(snapshot))
+        for providers in (["google", "anthropic"], ["anthropic", "google"], ["google"]):
+            self.policy.write_text('version = 1\ndecision = "explicit Google only"\nproviders = ' + json.dumps(providers) + '\n')
+            for command in ("run", "check"):
+                with self.subTest(providers=providers, command=command):
+                    args = [command, "--repo", str(self.repo), "--author-provider", "openai"]
+                    if command == "run":
+                        args.extend(["--prompt-file", str(self.prompt)])
+                    code, result = self.run_helper(
+                        *args, FAKE_AGY_CWD_FILE=str(cwd_file),
+                        FAKE_AGY_JSON=json.dumps({"response": completed("fixture probe line")}))
+                    self.assertNotEqual(result.get("provider"), "google")
+                    self.assertNotEqual(code, 0)
+                    self.assertFalse(cwd_file.exists())
+                    self.assertFalse((self.storage / "Launch Receipts").exists())
+
+    def test_capacity_fallback_uses_only_the_allowed_other_provider_choice(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        self.install("codex", FAKE_CODEX)
+        self.policy.write_text('version = 1\ndecision = "allow fallback"\nproviders = ["anthropic", "openai"]\n')
         snapshot = json.loads(self.snapshot_file.read_text())
         snapshot["answers"]["useNext"] = [r for r in snapshot["answers"]["useNext"] if r["provider"] != "anthropic"]
         snapshot["ranking"] = [{"provider": "anthropic", "nextCapacityAt": "2099-01-01T00:00:00Z"}]
         self.snapshot_file.write_text(json.dumps(snapshot))
         capture = self.root / "child-env"
         code, result = self.run_helper(
-            "run", "--repo", str(self.repo), "--prompt-file", str(self.prompt), "--author-provider", "openai",
-            FAKE_REVIEW_ENV_FILE=str(capture), FAKE_AGY_CWD_FILE=str(self.root / "cwd"),
-            FAKE_AGY_JSON=json.dumps({"response": completed("none")}))
-        self.assertEqual((code, result["provider"]), (0, "google"))
+            "run", "--repo", str(self.repo), "--prompt-file", str(self.prompt), "--author-provider", "google",
+            FAKE_REVIEW_ENV_FILE=str(capture), FAKE_ANSWER=completed("none"))
+        self.assertEqual((code, result["provider"]), (0, "openai"))
         self.assertEqual(result["account"]["account_id"], next(r["accountID"] for r in snapshot["answers"]["useNext"]
-                                                            if r["provider"] == "google"))
+                                                            if r["provider"] == "openai"))
         self.assertIn(snapshot["ranking"][0]["nextCapacityAt"], result["selection"]["skipped"][0]["reason"])
-        self.assertFalse(capture.exists())
+        self.assertTrue(capture.exists())
         self.assertEqual(len(list((self.storage / "Launch Receipts").glob("*.json"))), 1)
-        # A later candidate's budget mismatch must preserve the earlier capacity reason.
-        self.policy.write_text(self.policy.read_text() + '[provider.google]\ntimeout = 10\n')
+        self.policy.write_text(self.policy.read_text() + '[provider.openai]\ntimeout = 10\n')
         code, result = self.run_helper(
-            "run", "--repo", str(self.repo), "--prompt-file", str(self.prompt), "--author-provider", "openai", "--timeout", "20")
+            "run", "--repo", str(self.repo), "--prompt-file", str(self.prompt), "--author-provider", "google", "--timeout", "20")
         self.assertEqual((code, result["ok"]), (1, False))
-        self.assertEqual((result["provider"], [r["provider"] for r in result["skipped"]]), ("google", ["anthropic"]))
+        self.assertEqual((result["provider"], [r["provider"] for r in result["skipped"]]), ("openai", ["anthropic"]))
         self.assertIn(snapshot["ranking"][0]["nextCapacityAt"], result["skipped"][0]["reason"])
         self.assertEqual(len(list((self.storage / "Launch Receipts").glob("*.json"))), 1)
 
@@ -315,7 +336,7 @@ class ReviewWithModelTests(unittest.TestCase):
                                '[provider.google]\ntimeout = 1800\n')
         (self.repo / "probe.txt").write_text("fixture probe line\n")
         code, result = self.run_helper(
-            "check", "--repo", str(self.repo), "--author-provider", "openai", "--supplementary", "--timeout", "12",
+            "check", "--repo", str(self.repo), "--author-provider", "openai", "--provider", "google", "--supplementary", "--timeout", "12",
             FAKE_AGY_CWD_FILE=str(self.root / "cwd"), FAKE_AGY_JSON=json.dumps({"response": completed("fixture probe line")}))
         self.assertEqual((code, result["providers"][0]["provider"], result["providers"][0]["state"]),
                          (0, "google", "ready"))

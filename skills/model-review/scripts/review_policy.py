@@ -78,7 +78,7 @@ def select(policy, author, requested=None, supplementary=False, model=None, time
     if requested and (requested not in allowed or requested == author):
         raise ValueError(f"standing review decision does not allow {requested} for this role and author: "
                          + policy["decision"])
-    candidates = [requested] if requested else [p for p in allowed if p != author]
+    candidates = [requested] if requested else [p for p in allowed if p not in {author, "google"}]
     config = account_choice.load_config()
     snapshot, problem = account_choice.read_snapshot(config["snapshot_command"])
     if snapshot is None:

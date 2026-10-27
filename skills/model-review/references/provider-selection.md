@@ -40,7 +40,8 @@ recorded decision does not permit.
 
 Pass the actual author's provider with `--author-provider`. The default run
 uses the first allowed primary provider other than the author that has an
-installed CLI and a Context Panel account choice:
+installed CLI and a Context Panel account choice. Google requires an explicit
+`--provider google` for both reviews and file-read checks:
 
 ```sh
 uv run scripts/review_with_model.py run --author-provider openai --repo <repo> --prompt-file <file> --out <review.md>

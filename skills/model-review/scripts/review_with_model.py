@@ -803,7 +803,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         print(json.dumps({"ok": False, "error": str(error)}))
         return 1
     role = "supplementary" if args.supplementary else "providers"
-    for provider in args.provider or [p for p in policy[role] if p != args.author_provider]:
+    for provider in args.provider or [p for p in policy[role] if p not in {args.author_provider, "google"}]:
         try:
             selected = review_policy.select(policy, args.author_provider, provider, args.supplementary,
                                             timeout=args.timeout, probe=True)
