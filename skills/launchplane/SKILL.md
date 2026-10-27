@@ -1345,7 +1345,9 @@ reviewed-inspect procedure and verify the situation.
   action, reason, commit, digests and ids. When testing keeps an older build,
   `rejected_builds` lists newer commits, selected run ids and bounded rejection
   codes. `pr_feedback` retains delivery decisions and record identity while
-  dropping error prose; missing legacy fields remain unknown. See the
+  dropping error prose. `artifact_scan` retains status, reason, HIGH/CRITICAL
+  counts and scan time while withholding its image reference and other fields;
+  missing legacy fields remain unknown. See the
   [reconcile read contract](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads)
   for retained evidence and deliberately withheld objects. Use `--target-key <exact-target-key>`
   to select a target from the service response before the helper's output bound;
@@ -1361,8 +1363,14 @@ reviewed-inspect procedure and verify the situation.
   (`product-secret-bindings-read --product`) of a product's runtime secret
   binding metadata: binding key, name, scope, context, instance, declared
   class, sharing reason and current `version_id`. It never returns a value or
-  ciphertext, and lists only bindings the caller's `secret.list` access covers,
-  so an empty list does not prove absence. Use a binding's context, instance
+  ciphertext, and lists only authorized metadata, so an empty list does not
+  prove absence. Service `coverage` states population, source, authorization
+  and exclusions; older responses report unknown. Client `projection_coverage`
+  is separate and never certifies fleet completeness. `--include-resolution`
+  optionally preserves configured lane selection for one `--integration` and
+  repeated typed `--scope` options, with coverage per lane. Read the
+  [metadata contract](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads)
+  for bounds and selection limits. Use a binding's context, instance
   and `version_id` as `copy_from` in a product-config secret entry to copy a
   product's own stable-lane secret into another of its lanes without
   collecting the value; see the
@@ -1482,8 +1490,8 @@ reviewed-inspect procedure and verify the situation.
   `route-authority-discover` and `route-binding-read` obtain fresh scope/CAS
   evidence; the separate apply commands require saved matching dry-run evidence,
   a reviewed digest, idempotency and readback. They add no service authority.
-- For capture-free production backup qualification and reference-only worker
-  rebinding, read [backup worker references and preflight](references/write-action-helper-contract.md#backup-worker-references-and-capture-free-preflight).
+- For capture-free production backup qualification, initial capture-key setup
+  and reference-only worker rebinding, read [backup worker references and preflight](references/write-action-helper-contract.md#backup-worker-references-and-capture-free-preflight).
   Use `production-backup-preflight-read` and `backup-worker-bindings-read` /
   `-dry-run` / `-apply`; saved review, original-key and readback checks apply.
 - `GET /v1/production-backup-authority` and

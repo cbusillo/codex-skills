@@ -608,9 +608,12 @@ installed local helper bindings.
   `held_reservations_truncated` flag, with the existing scalar safety rules.
   `destroy_retry_key`, `preview_recovery_plan`, `destroy_retry_stop_reason` and
   `feedback_recovery_stop_reason` are withheld and counted under their own names.
-  The reviewed `artifact_scan` object can carry a registry/image reference;
-  `held_reservations` and `testing_deploy_recovery` carry original-operation or
-  provider evidence. These raw objects are deliberately withheld and counted by
+  `artifact_scan` retains only validated `status`, `reason`, nonnegative `high`
+  and `critical` counts, and UTC `scanned_at`. Its `image_reference` is withheld
+  and counted by name; other nested fields are dropped under `<unlisted field>`.
+  Missing scan fields stay missing. `held_reservations` and
+  `testing_deploy_recovery` carry original-operation or provider evidence.
+  These raw objects are deliberately withheld and counted by
   name; their presence is not absence or a recovery clearance. The plan's
   duplicate `product` is withheld because the result already supplies the
   product scope. The retained action, reason, hold and refusal fields remain
@@ -618,18 +621,54 @@ installed local helper bindings.
   under `requests[].last_plan.<unlisted field>`;
   the same drop and omit rules apply.
 - `product-secret-bindings-read --product` calls
-  `GET /v1/products/{product}/secret-bindings` with no query. It returns up to
+  `GET /v1/products/{product}/secret-bindings`. It returns up to
   200 of the product's runtime secret bindings, each with `binding_key`,
   `name`, `scope` (`context` or `context_instance`), `context`, `instance`,
   `secret_class`, `sharing_reason` (kind, reason, evidence, recorded by and
   at) and the current `version_id`. The service needs `product_profile.read`
-  and lists only bindings covered by the caller's `secret.list` access; preview,
-  removed-lane, global and worker stores are never listed. A field named like a
+  and lists only authorized metadata. This copy-oriented population covers
+  runtime configuration in exclusive declared product contexts, including
+  configured preview targets; it excludes global secrets, historical or
+  undeclared lanes, ambiguous contexts and other integrations. A field named like a
   value, ciphertext or other secret fails the whole read, as does a
   secret-looking value in any field, including one that would be dropped; any
   other unlisted field is dropped and counted under
   `bindings[].<unlisted field>`, and a binding without a usable key, context
   or scope is omitted and counted.
+
+  `coverage` preserves the service's typed `population`, `status`, `source`,
+  `authorization` and `exclusions`. Absent, malformed, inconsistent or
+  unsupported coverage shapes become explicit `unknown`, with null population
+  and exclusions. The narrowly validated coverage `authorization` enum is not
+  an authorization policy or a grant. No other envelope allows that field.
+
+  Add `--include-resolution` to request the producer's optional
+  `lane_binding_resolution`. Optional `--integration NAME` selects one exact
+  integration; repeat `--scope global|context|context_instance` to select scopes.
+  Without those options, the service chooses its runtime integration and all
+  three scopes. Integration/scope options require `--include-resolution`.
+  Selection needs authority over every requested scope. A scoped caller that
+  cannot read global bindings should request only its readable scopes, for
+  example `--scope context --scope context_instance`; otherwise the service
+  withholds that lane's whole selection and reports scoped coverage.
+  The helper sends repeated `scopes` query parameters through the same GET.
+  Resolution retains the exact integration, selection scopes, declared lane
+  identities, binding names, classes, sharing reasons and version ids, and
+  separate service coverage for the selection and each lane. Global binding
+  metadata is allowed only in this selection, with empty context and instance.
+  This proves configured selection for those scopes, not runtime delivery,
+  value validation or all worker/provider paths. Hidden source identities and
+  counts are never inferred. Each list retains at most 200 entries.
+
+  Each collection also reports client `projection_coverage` separately from
+  service coverage. `limited` means a local cap, omitted row, dropped field or
+  missing required binding evidence; `unknown` means coverage or requested
+  selection evidence was unavailable or malformed. Child projection losses
+  propagate to the selection and top-level result. Client `complete` means
+  only that the stated returned evidence survived projection. Zero omissions
+  and client completeness never certify server or fleet completeness.
+  A returned integration or scope set that differs from the explicit request
+  makes client selection coverage unknown while retaining the server's facts.
 - `testing-rebuild-dry-run --product --copy-source --artifact-id --source-git-ref
   --reason` reads the native preflight through
   `POST /v1/drivers/odoo/target-replacement-plan`. It records no artifact,
@@ -2147,9 +2186,9 @@ change first and says so in its PR body.
 
 For bounded GET reads, the top-level allowlists live in
 `BOUNDED_READ_RESPONSE_FIELDS` in `scripts/launchplane_contract.py`. A field
-Launchplane declares there but the read does not project, such as the
-environment read's `host_network_capacity_available` and
-`host_network_capacity`, is accepted and dropped; any other field still fails
+Launchplane declares there but the read does not project is accepted and
+dropped; the secret-binding read counts omitted top-level fields in its existing
+`dropped_field_paths` and `dropped_field_count`. Any undeclared field still fails
 closed. `references/launchplane-read-response-fields.json` pins the top-level
 fields Launchplane's generated OpenAPI declares for each of those routes, and
 the tests require every pinned field to be in its read's allowlist. Refresh the
@@ -2641,6 +2680,11 @@ queued. Pending-proposal qualification remains subject to service authorization.
 The helper checks the returned lane and projects only `bindings` with
 `binding_id`, `binding_key` and current `version_id`. Values and ciphertext
 are discarded; the service controls which exact-lane references are available.
+Add `--include-public-key` when public enrollment/readback is needed. It
+projects the service-generated SSH public key and verified fingerprint, with
+`capture_binding_id`, `hosts_binding_id` and `boundary_binding_id`. Both
+references must match the lane's canonical managed binding roles. Ordinary
+metadata reads and reference-only rebinding ignore this additional public data.
 
 Use `backup-worker-bindings-dry-run` with the same lane, an optional
 `--promotion-action`, `--private-key-binding ID`, `--known-hosts-binding ID`,
@@ -2658,9 +2702,32 @@ including `reviewed_plan_sha256`. The service enforces current-plan comparison
 and same-key replay. Readback checks both selected binding/version identities
 and intended generic keys; a missing or changed reference cannot verify apply.
 
+For approved initial capture setup, replace both binding-reference arguments
+with `--generate-capture-key --known-hosts-file FILE` and supply the exact
+`--promotion-action`. The file contains one independently verified public
+known-hosts entry. Private-key files and mixed generation/reference requests
+are refused before transport. The service plans without generating a key; its
+reviewed apply generates the pair directly into encrypted worker custody.
+The caller accepts no private half. This uses the same service routes and
+existing authority; creating access still needs the Director's scoped decision.
+
+Save this dry-run evidence and use the same apply review flags and original
+key. Generation intent and the complete public host pin are bound into the
+review. Successful apply returns `public_capture_key`, canonical binding/version
+metadata and `readback_matches: true` only after an independent metadata read
+matches the public key, fingerprint and binding references. The service refuses
+replacement of existing credentials. A retry of the original reviewed request
+and key can replay a committed pair after a lost response; the caller does not
+require empty metadata before replay and never retries automatically. Read back
+with `backup-worker-bindings-read --include-public-key` using the same lane.
+Generation starts no capture, restore or product release action. The producer's
+[capture-key contract](https://github.com/cbusillo/launchplane/blob/main/docs/production-backup-provider.md)
+owns custody and host-enrollment requirements.
+
 An accepted response with failed readback stays `accepted_unverified`; a lost
-apply response stays `outcome_unknown`. Preserve the saved review, receipt,
-caller, exact request and original key. Inspect binding metadata before retrying
+apply response stays `outcome_unknown`. Preserve the saved review, unchanged
+public pin file when generating, receipt, caller, exact request and original key.
+Inspect binding metadata before retrying
 that same operation; never select another credential, identity, key or workflow
 to evade a denial or conflict. Terminal agents remain refused by the service.
 These commands add no grants and never call a provider directly.

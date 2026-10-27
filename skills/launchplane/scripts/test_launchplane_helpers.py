@@ -2883,7 +2883,8 @@ def _secret_bindings_response() -> dict[str, object]:
 
 def test_product_secret_bindings_read_keeps_metadata_and_counts_the_rest() -> None:
     argv = ["product-secret-bindings-read", "--product", "example-product"]
-    status, payload, calls = _run_product_read(argv, _secret_bindings_response())
+    response = _secret_bindings_response()
+    status, payload, calls = _run_product_read(argv, response)
 
     assert status == 0, payload
     assert calls[0]["path"] == "/v1/products/example-product/secret-bindings"
@@ -2916,14 +2917,18 @@ def test_product_secret_bindings_read_keeps_metadata_and_counts_the_rest() -> No
         },
     ]
     assert result["omitted_binding_count"] == 1
-    assert result["dropped_field_paths"] == [
+    expected_dropped_paths = [
         "bindings[].<unlisted field>",
         "bindings[].binding_key",
     ]
-    assert result["dropped_field_count"] == 2
+    assert result["dropped_field_paths"] == expected_dropped_paths
+    assert result["dropped_field_count"] == len(expected_dropped_paths)
     rendered = json.dumps(payload)
     assert "provider_note" not in rendered
     assert "private provider text" not in rendered
+    assert result["coverage"]["status"] == "unknown"
+    assert result["projection_coverage"] == "limited"
+    assert result["lane_binding_resolution"] is None
 
 
 def test_product_secret_bindings_read_fails_closed_on_values_and_ciphertext() -> None:
@@ -4864,7 +4869,7 @@ def test_reconcile_requests_read_shows_why_testing_skipped_a_newer_build() -> No
     assert "preview_recovery_plan" not in kept
     assert "destroy_retry_stop_reason" not in kept
     assert payload["result"]["dropped_field_paths"] == [
-        "requests[].last_plan.artifact_scan",
+        "requests[].last_plan.artifact_scan.image_reference",
         "requests[].last_plan.destroy_retry_stop_reason",
         "requests[].last_plan.held_reservations",
         "requests[].last_plan.preview_recovery_plan",
