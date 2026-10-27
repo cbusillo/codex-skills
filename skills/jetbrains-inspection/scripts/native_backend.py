@@ -1805,11 +1805,13 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_filter_unsupported")
         profile, expected = common.profile_for(repo, args.profile or settings.get("profile", ""))
         profile_requested = set(expected)
+        web_relative = Path()
         if any(f.endswith(".py") for f in selected):
             expected |= NAMED_PYTHON
         if odoo:
             expected |= NAMED_ODOO
         if webstorm:
+            assert node is not None
             if not common.web_preparation_supported(settings):
                 raise Blocked("native_preparation_shape_unsupported")
             web_relative = common.web_project_path(host, repo, settings, selected)
@@ -1862,6 +1864,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         check_lifetime(parent_fd, deadline)
         sdk = None
         if webstorm:
+            assert node is not None
             prepare(*web_preparation(node, project / web_relative, private, preparation_caches))
             prepare_web_model(project, selected | controls)
         elif intellij:
