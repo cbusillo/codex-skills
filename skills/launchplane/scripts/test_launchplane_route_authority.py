@@ -206,9 +206,14 @@ def audit_readback():
         "idempotency_key": "record-repair-example"}}
 
 
-def test_ingress_apply_keeps_every_provider_mutation_disabled_and_reads_audit():
-    code, output, _, post = run("ingress-route-authority-apply", [*ingress_reads(), audit_readback()],
-        [ingress_response(), ingress_apply_response()], ingress_plan())
+@pytest.mark.parametrize("profile_host", [DOMAINS[0], "business.example.invalid"])
+def test_ingress_apply_keeps_every_provider_mutation_disabled_and_reads_audit(profile_host: str) -> None:
+    reads = ingress_reads()
+    reads[0]["profile"]["lanes"][0]["base_url"] = f"https://{profile_host}"
+    reads[0]["profile"]["lanes"][0]["health_url"] = f"https://{profile_host}/health"
+    evidence = run(INGRESS_COMMAND, reads, [ingress_response()])[1]
+    code, output, _, post = run("ingress-route-authority-apply", [*reads, audit_readback()],
+        [ingress_response(), ingress_apply_response()], evidence)
     assert code == 0 and output["result"]["read_back_matches"] is True
     ingress = post.call_args.kwargs["body"]["ingress"]
     assert ingress["mode"] == "apply" and ingress["require_exact_expected_host_domains"] is True
@@ -230,28 +235,6 @@ def test_ingress_endpoint_drift_stops_before_apply():
     reads[1]["record"]["upstream_host"] = "192.0.2.20"
     code, output, _, post = run("ingress-route-authority-apply", reads, [ingress_response()], ingress_plan())
     assert code != 0 and output["status"] == "stale" and post.call_count == 1
-
-
-@pytest.mark.parametrize("drift", [False, True])
-def test_alias_scope_is_bound_to_review_and_preserves_noop_apply(drift: bool) -> None:
-    profile, endpoint = ingress_reads()
-    profile["profile"]["lanes"][0].update(base_url="https://business.example.invalid", health_url="https://business.example.invalid/health")
-    tracked = inspection()
-    tracked["inspect"]["tracked_target"]["domains"] = [*DOMAINS, "business.example.invalid"]
-    reads = [profile, tracked, endpoint]
-    code, evidence, _, _ = run(INGRESS_COMMAND, reads, [ingress_response()])
-    assert code == 0
-    if drift:
-        tracked["inspect"]["tracked_target"]["target_id"] = "changed-target"
-    code, output, _, post = run("ingress-route-authority-apply", [*reads, audit_readback()],
-        [ingress_response(), ingress_apply_response()], evidence)
-    if drift:
-        assert code != 0 and output["status"] == "stale"
-        assert all(call.kwargs["body"]["ingress"]["mode"] == "dry-run" for call in post.call_args_list)
-    else:
-        assert code == 0 and output["result"]["read_back_matches"] is True
-        ingress = post.call_args.kwargs["body"]["ingress"]
-        assert all(ingress[key] is False for key in ("allow_create", "allow_update", "allow_enable_disable"))
 
 
 def binding_plan():

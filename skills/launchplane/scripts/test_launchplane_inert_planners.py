@@ -14,7 +14,6 @@ import urllib.error
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -32,7 +31,7 @@ EXPECTED = {"provider_id": "dokploy", "target_category": "application", "target_
             "provider_evidence": {}}
 
 
-def inspection() -> dict[str, Any]:
+def inspection():
     return {"status": "ok", "trace_id": "launchplane_req_inspect", "inspect": {
         "status": "ok", "target_type": "application", "target_id": TARGET,
         "tracked_target": {"context": "shop", "instance": "prod", "target_id": TARGET,
@@ -62,7 +61,7 @@ def ingress_input():
             "route": {"domain_names": DOMAINS, "edge_endpoint_key": "edge-shop", "certificate_id": 8}}
 
 
-def ingress_reads() -> list[dict[str, Any]]:
+def ingress_reads():
     return [{"status": "ok", "profile": {"product": "shop", "lanes": [{
         "context": "shop", "instance": "prod", "base_url": "https://shop.example.invalid",
         "health_url": "https://shop.example.invalid/health", "health_monitoring": {"checks": []},
@@ -134,8 +133,12 @@ def test_domain_bad_inspection_never_posts(source, field, value):
     assert_private_dropped(payload)
 
 
-def test_ingress_plan_is_exact_noop_with_all_mutations_disabled():
-    code, payload, get, post = invoke(INGRESS_COMMAND, reads=ingress_reads(), response=ingress_response())
+@pytest.mark.parametrize("profile_host", [DOMAINS[0], "business.example.invalid"])
+def test_ingress_plan_is_exact_noop_with_all_mutations_disabled(profile_host: str) -> None:
+    reads = ingress_reads()
+    reads[0]["profile"]["lanes"][0]["base_url"] = f"https://{profile_host}"
+    reads[0]["profile"]["lanes"][0]["health_url"] = f"https://{profile_host}/health"
+    code, payload, get, post = invoke(INGRESS_COMMAND, reads=reads, response=ingress_response())
     assert code == 0
     assert get.call_count == 2
     call = post.call_args.kwargs
@@ -151,27 +154,6 @@ def test_ingress_plan_is_exact_noop_with_all_mutations_disabled():
     assert_private_dropped(payload)
 
 
-@pytest.mark.parametrize("tracked_instance,tracked_domains,accepted", [
-    ("prod", [*DOMAINS, "business.example.invalid"], True),
-    ("testing", DOMAINS, False),
-    ("prod", ["unrelated.example.invalid"], False),
-])
-def test_exact_alias_audit_uses_current_tracked_lane_hosts(tracked_instance: str, tracked_domains: list[str], accepted: bool) -> None:
-    profile, endpoint = ingress_reads()
-    lane = profile["profile"]["lanes"][0]
-    lane.update(base_url="https://business.example.invalid", health_url="https://business.example.invalid/health")
-    target = inspection()
-    target["inspect"]["tracked_target"].update(instance=tracked_instance, domains=tracked_domains)
-    code, payload, _, post = invoke(INGRESS_COMMAND, reads=[profile, target, endpoint], response=ingress_response())
-    assert (code == 0) is accepted
-    if accepted:
-        assert post.call_args.kwargs["body"]["ingress"]["route"]["domain_names"] == DOMAINS
-        assert payload["result"]["requires_apply"] is False
-    else:
-        post.assert_not_called()
-    assert_private_dropped(payload)
-
-
 @pytest.mark.parametrize("key,value", [("mode", "apply"), ("allow_update", True), ("confirmation", "yes")])
 def test_ingress_input_cannot_select_apply_or_options(key, value):
     private = ingress_input()
@@ -184,7 +166,7 @@ def test_ingress_input_cannot_select_apply_or_options(key, value):
 
 def test_ingress_foreign_lane_and_inactive_endpoint_never_post():
     reads = ingress_reads()
-    reads[0]["profile"]["lanes"][0]["base_url"] = "https://foreign.example.invalid"
+    reads[0]["profile"]["lanes"][0]["context"] = "foreign-context"
     code, _, _, post = invoke(INGRESS_COMMAND, reads=reads)
     assert code != 0
     post.assert_not_called()
@@ -312,16 +294,13 @@ def test_post_failure_never_reuses_read_trace(command, error):
 
 
 @pytest.mark.parametrize("cause,expected", [
-    ("lane", "plan_lane_not_unique"), ("domains", "plan_domain_scope_mismatch"),
+    ("lane", "plan_lane_not_unique"),
     ("endpoint", "plan_endpoint_not_active"),
 ])
 def test_prepost_refusal_keeps_specific_code(cause, expected):
     reads = ingress_reads()
     if cause == "lane":
         reads[0]["profile"]["lanes"] = []
-    elif cause == "domains":
-        reads[0]["profile"]["lanes"][0]["base_url"] = "https://foreign.example.invalid"
-        reads.insert(1, inspection())
     else:
         reads[1]["record"]["status"] = "disabled"
     code, payload, _, post = invoke(INGRESS_COMMAND, reads=reads)

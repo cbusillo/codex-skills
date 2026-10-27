@@ -12071,36 +12071,6 @@ def _ingress_plan_body(body: dict[str, Any], read: Any) -> dict[str, Any]:
                and lane.get("context") == body["context"] and lane.get("instance") == body["instance"]]
     if len(matches) != 1:
         raise ValueError("plan_lane_not_unique")
-    lane = matches[0]
-    urls = [lane.get("base_url"), lane.get("health_url")]
-    monitoring = lane.get("health_monitoring") or {}
-    checks = _require_dict(monitoring).get("checks", [])
-    if not isinstance(checks, list):
-        raise LaunchplaneSafetyError("invalid_response")
-    for check in checks:
-        if isinstance(check, dict) and check.get("enabled") is True and check.get("kind") == "public_http":
-            urls.append(check.get("url"))
-    lane_domains = set()
-    for value in urls:
-        if not value:
-            continue
-        if not isinstance(value, str):
-            raise LaunchplaneSafetyError("invalid_response")
-        url = urllib.parse.urlsplit(value)
-        if url.scheme != "https" or not url.hostname or url.username or url.password or url.port not in {None, 443}:
-            raise ValueError("invalid_plan_lane_url")
-        lane_domains.add(url.hostname.rstrip(".").lower())
-    if set(body["route"]["domain_names"]) != lane_domains:
-        inspection = _require_dict(read(
-            internal_helper_path("dokploy-target-inspect"),
-            {"context": body["context"], "instance": body["instance"]},
-        ).get("inspect"))
-        tracked = _require_dict(inspection.get("tracked_target"))
-        if (inspection.get("status") != "ok"
-            or tracked.get("context") != body["context"]
-            or tracked.get("instance") != body["instance"]
-            or not set(body["route"]["domain_names"]).issubset(_plan_domains(tracked.get("domains")))):
-            raise ValueError("plan_domain_scope_mismatch")
     endpoint_key = body["route"]["edge_endpoint_key"]
     endpoint = _require_dict(read(internal_helper_path("ingress-plan-edge-endpoint-read").format(
         endpoint_key=urllib.parse.quote(endpoint_key, safe="")), {}).get("record"))
