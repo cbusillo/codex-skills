@@ -72,7 +72,7 @@ def write_json(path: Path, payload: dict) -> None:
 
 class OfflineIdeProcessTests(unittest.TestCase):
     def test_running_ide_is_visible_without_a_plugin_registry(self):
-        process_list = "123 /Applications/PyCharm.app/Contents/MacOS/pycharm\n124 /bin/sh\n"
+        process_list = "123 1 /Applications/PyCharm.app/Contents/MacOS/pycharm\n124 1 /bin/sh\n"
         with patch.object(subprocess, "check_output", return_value=process_list):
             self.assertEqual(jb_inspect.offline_ide_processes(), [123])
         with patch.object(subprocess, "check_output", side_effect=OSError("fixture")):
@@ -91,7 +91,7 @@ class RunningIdeRetirementTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(primary), "-c", "user.name=Fixture", "-c",
                         "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "fixture"], check=True)
         subprocess.run(["git", "-C", str(primary), "worktree", "add", "-q", "-b", "task", str(self.root)], check=True)
-        self.processes = "123 /Applications/PyCharm.app/Contents/MacOS/pycharm\n"
+        self.processes = "123 1 /Applications/PyCharm.app/Contents/MacOS/pycharm\n"
         self.open_files = "p123\0\nfcwd\0n/another/project\0\n"
         self.discovery_error: Exception | None = None
         self.file_error: Exception | None = None
@@ -132,7 +132,7 @@ class RunningIdeRetirementTests(unittest.TestCase):
         self.assertFalse(self.root.exists())
 
     def test_native_workers_on_private_snapshots_allow_retirement(self) -> None:
-        self.processes += "124 /Applications/IntelliJ IDEA.app/Contents/MacOS/idea\n"
+        self.processes += "124 1 /Applications/IntelliJ IDEA.app/Contents/MacOS/idea\n"
         self.open_files = ("p123\0\nfcwd\0n/host-caches/native/run/project\0\n"
                            "p124\0\nfcwd\0n/host-caches/native/another-run/project\0\n")
         self.retire()
@@ -142,6 +142,7 @@ class RunningIdeRetirementTests(unittest.TestCase):
         self.retire()
 
     def test_desktop_ide_open_or_recorded_worktree_refuses_retirement(self) -> None:
+        self.open_files = f"p123\0\nfcwd\0n{self.root}-other/source.py\0\n"
         self.assertTrue(jb_inspect.command_remove_worktree(self.args)["offline_cleanup_proved"])
         self.args.dry_run = False
         self.open_files = f"p123\0\nfcwd\0n{self.root}\0\n"
@@ -157,6 +158,15 @@ class RunningIdeRetirementTests(unittest.TestCase):
         self.assertEqual(caught.exception.payload["offline_retirement_record"], str(record))
         self.assertTrue(self.root.is_dir())
 
+    def test_ide_descendant_with_open_worktree_refuses_retirement(self) -> None:
+        self.processes += "124 123 /bin/zsh\n125 124 /usr/bin/python3\n"
+        self.open_files += f"p124\0\nfcwd\0n/another/project\0\np125\0\nf7\0n{self.root}/source.py\0\n"
+        self.args.dry_run = False
+        with self.assertRaises(jb_inspect.InspectError) as caught:
+            jb_inspect.command_remove_worktree(self.args)
+        self.assertEqual(caught.exception.payload["offline_retirement_ide_pids"], [125])
+        self.assertTrue(self.root.is_dir())
+
     def test_process_discovery_failure_refuses_retirement(self) -> None:
         self.assertTrue(jb_inspect.command_remove_worktree(self.args)["offline_cleanup_proved"])
         self.args.dry_run = False
@@ -167,6 +177,8 @@ class RunningIdeRetirementTests(unittest.TestCase):
 
     def test_incomplete_open_file_proof_refuses_retirement(self) -> None:
         for output, error, stderr in (("", None, ""), ("p123\0\nfNOFD\0\n", None, ""),
+                                      ("p123\0\nfcwd\0tDIR\0n/another/project\0\nf7\0tREG\0nunknown\0\n", None, ""),
+                                      ("p123\0\nfcwd\0n/Volumes/Developer-Artifacts -- /source.py\0\n", None, ""),
                                       (self.open_files, None, "permission denied"),
                                       (self.open_files, FileNotFoundError("lsof"), ""),
                                       (self.open_files, subprocess.TimeoutExpired("lsof", 5), "")):
@@ -175,6 +187,12 @@ class RunningIdeRetirementTests(unittest.TestCase):
                 with self.assertRaises(jb_inspect.InspectError):
                     jb_inspect.command_remove_worktree(self.args)
                 self.assertTrue(self.root.is_dir())
+
+    def test_malformed_process_discovery_refuses_retirement(self) -> None:
+        self.processes = "unreadable process list\n"
+        with self.assertRaises(jb_inspect.InspectError):
+            jb_inspect.command_remove_worktree(self.args)
+        self.assertTrue(self.root.is_dir())
 
 
 class SdkRetirementTests(unittest.TestCase):
