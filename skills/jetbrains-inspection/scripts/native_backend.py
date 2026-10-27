@@ -1858,7 +1858,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         vm += [f"-Didea.diagnostic.opentelemetry.file={private}/inspection-trace.json",
                "-Didea.diagnostic.opentelemetry.detailed.scopes=inspection"]
         vm += [f"-XX:ErrorFile={private}/logs/java-error-%p.log", f"-XX:HeapDumpPath={private}/logs"]
-        if intellij:
+        if not webstorm:
             vm.append(AWAIT_ACTIVITIES_INSTEAD_OF_CONFIGURATORS)
         (private / "native.vmoptions").write_text("\n".join(vm) + "\n")
         engine_path = os.environ.get("PATH", "/usr/bin:/bin")

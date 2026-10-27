@@ -460,6 +460,10 @@ licence observation incomplete and preserves the outcome hold.
 
 ## Coverage and qualification
 
+PyCharm also uses the activity-based startup described above for SDK configuration.
+The wait shares the execution timeout and custody; missing controls or selected-file
+spans, including package inspections, still mean UNKNOWN.
+
 Results name `backend: native`, the selected scope, source/profile/helper and
 framework provenance, coverage, findings and separate cleanup. Reports must
 name the backend and any `coverage.unavailable` or `coverage.unproven` entries.
