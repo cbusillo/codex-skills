@@ -14,6 +14,7 @@ import urllib.error
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -61,7 +62,7 @@ def ingress_input():
             "route": {"domain_names": DOMAINS, "edge_endpoint_key": "edge-shop", "certificate_id": 8}}
 
 
-def ingress_reads():
+def ingress_reads() -> list[dict[str, Any]]:
     return [{"status": "ok", "profile": {"product": "shop", "lanes": [{
         "context": "shop", "instance": "prod", "base_url": "https://shop.example.invalid",
         "health_url": "https://shop.example.invalid/health", "health_monitoring": {"checks": []},
