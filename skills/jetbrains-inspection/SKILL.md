@@ -4,6 +4,9 @@ description: Use JetBrains inspections through isolated headless native PyCharm,
 metadata:
   short-description: Run JetBrains IDE inspections safely
 resources:
+  - path: scripts/prepare-native-worker.py
+    kind: script
+    description: Prepares a fresh isolated macOS worker and prints its nativeWorkers entry without activation data.
   - path: scripts/jb-inspect.py
     kind: script
     description: Native-worker inspection helper with outcome logging and retirement of IDE state the desktop route left behind.
@@ -11,6 +14,11 @@ resources:
     kind: reference
     description: Regression tests for the helper's lane routing, outcome logs and worktree retirement.
 commands:
+  - name: jetbrains-inspection-prepare-native-worker
+    source: skill
+    resource_path: scripts/prepare-native-worker.py
+    example_argv: ["uv", "run", "scripts/prepare-native-worker.py", "--product", "pycharm", "--destination", "/absolute/new-worker", "--app", "/Applications/PyCharm.app", "--cache-root", "/absolute/existing/host-caches/native-inspection"]
+    purpose: Creates a new worker profile and locked activation launcher; never starts an IDE or copies an existing profile.
   - name: jetbrains-inspection-agent-inspect
     source: skill
     resource_path: scripts/jb-inspect.py
@@ -30,7 +38,7 @@ commands:
     source: skill
     resource_path: scripts/jb-inspect.py
     example_argv: ["uv", "run", "scripts/jb-inspect.py", "remove-worktree", "--repo", "/exact/task/path"]
-    purpose: Dry-runs helper-owned SDK retirement; with --no-dry-run retires SDKs before non-force linked worktree removal.
+    purpose: Dry-runs local retirement proof; with --no-dry-run repeats the safety checks before non-force linked worktree removal.
   - name: jetbrains-inspection-cleanup-helper-sdks
     source: skill
     resource_path: scripts/jb-inspect.py
@@ -63,8 +71,9 @@ Marketplace product for people. Do not call the plugin's HTTP or MCP API.
 On macOS, `agent-inspect` routes Python/YAML selections and Odoo
 Python/XML/YAML selections in root PyCharm lanes to native PyCharm when an
 eligible independent worker, interpreter and profile are configured. In a
-repository whose configured IDE is WebStorm, npm or manifest-pinned pnpm projects, including a nested WebStorm lane,
-route TypeScript, JavaScript and JSON selections to native
+repository whose configured IDE is WebStorm, npm or manifest-pinned Yarn 4 and
+pnpm projects, including a nested WebStorm lane, route TypeScript, JavaScript
+and JSON selections to native
 WebStorm, and in one whose configured IDE is IntelliJ IDEA, root Gradle projects
 route Kotlin and Java selections that include a `.kt` file to native IntelliJ
 IDEA. Any other selection, and any host without an eligible worker, returns
@@ -124,10 +133,11 @@ Command model:
   aliases. `--backend native` forces the native worker for one run.
 - `summarize-outcomes`: diagnostic verdict/bucket/retry summary of the outcome
   log, without inspecting.
-- `remove-worktree`, `cleanup-helper-sdks` and `cleanup-helper-leases` retire
-  SDK registrations, project caches and leases that the retired desktop route
-  left behind. They contact only an IDE that is already running and never open
-  a project or launch an app. Read [IDE cleanup](references/ide-cleanup.md)
+- `remove-worktree` uses local cleanup proof and never contacts a desktop IDE.
+  It retains worktrees with legacy leases or IDE state requiring cleanup.
+  `cleanup-helper-sdks` and `cleanup-helper-leases` remain separate legacy
+  cleanup commands; they contact only already-running IDEs and never open a
+  project or launch an app. Read [IDE cleanup](references/ide-cleanup.md)
   before using them.
 
 Read verdict and retry permission from `agent_result` and `retry_policy.retry`,

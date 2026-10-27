@@ -220,6 +220,62 @@ released. Other user turns or any later assistant turn invalidate it.
 
 ## Checks and morning digest
 
+The existing Codex idle watcher and launcher guard share the same per-home
+auth helper. Every check connects to that account's existing daemon, verifies
+its PID/start identity and Unix peer, and requests token-free `getAuthStatus`
+with `includeToken:false` and `refreshToken:false`. Codex evaluates its own
+access-token expiry and renews only when its managed-auth policy says it is due.
+The watcher polls; it never forces renewal on a fixed timer, starts a second
+renewer or reads credentials. The launcher uses the same check before selection
+and execution. Native login remains available for recovery.
+
+`getAuthStatus` is deprecated. It remains a known compatibility dependency under
+[Q933](https://github.com/cbusillo/codex-skills/issues/2919#issuecomment-6429925021).
+The current `account/rateLimits/read` was tested with the installed native
+binary and a loopback issuer: a fresh token stayed untouched and a near-expiry
+token renewed, but a dead refresh token could still yield usage data. It cannot
+supply the required renewal verdict. The auth helper follows the expiry-aware
+read with `account/read` using `refreshToken:false`; a null ChatGPT account plus
+a preserved permanent renewal error, including an issuer HTTP 401, establishes
+a hold. Other unclassified issuer statuses do not establish one. A result envelope or
+ChatGPT auth-method label alone is never proof of successful renewal.
+
+A separate `codex login` can replace the stored sign-in while the daemon keeps
+an old, still-fresh access token and its cached permanent failure. The non-forcing
+auth read does not reload that cache before its renewal window. If a confirmed
+CLI sign-in still appears held, an agent checks `thread/list`, `thread/read` and
+`thread/queue/list` plus the session ledger; admission preflight alone does not
+prove idle. It then uses that explicit home's native
+`codex app-server daemon restart` when it can do so without interrupting work.
+There is no automatic restart or extra forced refresh. Login, logout and native
+daemon start/restart through the wrapper require a named account function,
+`--account NAME`, or explicit `CODEX_HOME`; they never use automatic account
+selection. The notice's `recovery_command` names the exact home for sign-in.
+
+Before native reads, the helper saves allowlisted auth events from
+`logs_2.sqlite` opened read-only, plus process associations on the first failure per process in an episode, to the home's
+private `skill-data/supervisor-auth/evidence.jsonl`. The same helper keeps its latest verified observation in a compact private
+`status.json`, atomically replaced under the capture lock. It is the single
+current-state source used by the watcher and launcher. It never saves raw log bodies, token values,
+process arguments or environments. Captured evidence survives log rotation.
+Keep the watcher running; events rotated away before observation cannot be
+recovered. Process inventory describes capture time; earlier identities come
+from retained log events.
+
+An `auth_failure` notice wakes the Supervisor once per episode through the
+existing delivered-state file. Tell the Director which account needs a normal
+Codex sign-in, then re-arm the watcher with that same file. The launcher skips
+the held home while following Context Panel's remaining published order. The
+train driver is unchanged, and no renewal-status feed goes to Context Panel.
+
+A verified current account clears the hold after native recovery; a later
+failure is a new episode. UNKNOWN evidence never creates a hold, and a timeout
+or unavailable daemon cannot release a previously confirmed one. Unavailable
+logs or native state remain diagnostics; they do not impose a provider-wide
+hold or repeatedly end/re-arm the monitor. A dead-key check may wait up to eleven
+seconds for native log delivery before reporting UNKNOWN. Healthy accounts do
+not wait for log publication.
+
 ```sh
 uv run skills/supervisor/scripts/goal_board.py --owner OWNER --format markdown
 uv run skills/supervisor/scripts/fleet_counts.py --owner OWNER
@@ -1589,6 +1645,13 @@ and the helper uses the first corresponding IDs in the provider's published
 `launchOrder`. It never re-ranks, substitutes a configured account or applies
 a private reserve. Account configuration only maps snapshot rows to launch
 environments. An unmatched or ambiguous choice refuses before creating tabs.
+
+Codex uses the [shared native renewal and hold path](#checks-and-morning-digest).
+Only accounts actually considered for launch are checked; an explicit healthy
+choice does not probe unrelated failed homes. Native `codex login` and the exact
+home's `codex app-server daemon start/restart` remain available for recovery. An agent
+starts a stopped account daemon after the Director signs in; this is the
+existing native recovery command, not another renewer.
 
 Read Context Panel's
 [Use next ranking and launch receipts contract](https://github.com/cbusillo/context-panel/blob/main/docs/provider-usage-access.md#use-next-ranking-and-launch-receipts)

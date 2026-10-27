@@ -50,7 +50,7 @@ PYTHON_PRODUCT_KEY = "pycharm"
 WEBSTORM_PRODUCT_KEY = "webstorm"
 INTELLIJ_PRODUCT_KEY = "intellij"
 PREPARATION_CACHES = {PYTHON_PRODUCT_KEY: {"UV_CACHE_DIR": "uv-cache", "UV_PYTHON_INSTALL_DIR": "uv-python"},
-                      WEBSTORM_PRODUCT_KEY: {"npm_config_cache": "npm-cache", "COREPACK_HOME": "corepack", "PNPM_STORE_DIR": "pnpm-store"},
+                      WEBSTORM_PRODUCT_KEY: {"npm_config_cache": "npm-cache", "COREPACK_HOME": "corepack", "PNPM_STORE_DIR": "pnpm-store", "YARN_CACHE_FOLDER": "yarn-cache"},
                       INTELLIJ_PRODUCT_KEY: {"GRADLE_USER_HOME": "gradle-home"}}
 GRADLE_BUILD_FILES = ("build.gradle.kts", "build.gradle")
 GRADLE_DAEMON_IDLE_TIMEOUT_MS = 60000
@@ -311,7 +311,7 @@ def eligibility_reason(args, host, repo, settings, product_key=PYTHON_PRODUCT_KE
             if not common.web_preparation_supported(settings):
                 return "native_preparation_shape_unsupported"
             relative = common.web_project_path(host, repo, settings, common.scope_selection(args, host)[3])
-            require_web_preparation(node, repo / relative)
+            web_package_manager(repo / relative, node)
             common.profile_for(repo, args.profile or settings.get("profile", ""))
             return None
         if product_key == INTELLIJ_PRODUCT_KEY:
@@ -547,6 +547,28 @@ def require_gradle_import(receipt):
         raise Blocked("native_gradle_import_unproven")
 
 
+def web_package_manager(project: Path, node: Path) -> str:
+    manager = common.node_package_manager(project)
+    if manager != "npm" and not os.access(node.parent / "corepack", os.X_OK):
+        raise Blocked("native_corepack_unavailable")
+    return manager
+
+
+def web_preparation(node: Path, project: Path, private: Path, caches: dict[str, str]) -> tuple[list[str], dict[str, str]]:
+    manager = web_package_manager(project, node)
+    if manager == "npm":
+        return npm_preparation(node, project, private, caches)
+    if manager.startswith("pnpm@"):
+        return pnpm_preparation(node, manager, project, private, caches)
+    argv = [str(node.parent / "corepack"), manager, "--cwd", str(project), "install", "--immutable", "--mode=skip-build"]
+    env = {"PATH": str(node.parent) + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
+           "HOME": str(private / "prepare-home"), "TMPDIR": str(private / "tmp"),
+           "COREPACK_HOME": caches["COREPACK_HOME"], "COREPACK_ENABLE_DOWNLOAD_PROMPT": "0",
+           "YARN_CACHE_FOLDER": caches["YARN_CACHE_FOLDER"], "YARN_ENABLE_GLOBAL_CACHE": "false",
+           "YARN_ENABLE_SCRIPTS": "false", "YARN_NODE_LINKER": "node-modules", "YARN_IGNORE_PATH": "1", "YARN_ENABLE_TELEMETRY": "0"}
+    return argv, env
+
+
 def npm_preparation(node, project, private, caches):
     empty_configs = [private / "npm-user.npmrc", private / "npm-global.npmrc"]
     for config in empty_configs:
@@ -559,19 +581,8 @@ def npm_preparation(node, project, private, caches):
     return argv, env
 
 
-def require_web_preparation(node: Path, project: Path) -> Path:
-    lockfile = common.npm_lockfile(project)
-    if lockfile.name == "pnpm-lock.yaml" and not os.access(node.parent / "corepack", os.X_OK):
-        raise Blocked("native_corepack_unavailable")
-    return lockfile
-
-
-def web_preparation(node: Path, project: Path, private: Path, caches: dict[str, str]) -> tuple[list[str], dict[str, str]]:
-    lockfile = require_web_preparation(node, project)
-    argv, env = npm_preparation(node, project, private, caches)
-    if lockfile.name != "pnpm-lock.yaml":
-        return argv, env
-    manager = json.loads((project / "package.json").read_text())["packageManager"]
+def pnpm_preparation(node: Path, manager: str, project: Path, private: Path, caches: dict[str, str]) -> tuple[list[str], dict[str, str]]:
+    _npm_argv, env = npm_preparation(node, project, private, caches)
     argv = [str(node.parent / "corepack"), manager, "--dir", str(project), "install", "--frozen-lockfile",
             "--ignore-scripts", "--ignore-pnpmfile", "--store-dir", caches["PNPM_STORE_DIR"],
             "--config.manage-package-manager-versions=false", "--config.userconfig=" + str(private / "npm-user.npmrc"),
@@ -1614,11 +1625,13 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
     elif reason in {"native_gradle_import_failed", "native_gradle_import_unproven"}:
         action = "The Gradle import in the private snapshot failed or did not log both successful stages. Run the repository's Gradle build with the configured jdk to find the import failure, check network access for a cold Gradle cache, then request one fresh assessment."
     elif reason == "native_npm_lockfile_required":
-        action = "Native WebStorm needs package.json and a package-lock.json or pnpm-lock.yaml in the selected lane project. Commit its lockfile or keep this selection UNKNOWN."
+        action = "Native WebStorm needs package.json and a package-lock.json, yarn.lock or pnpm-lock.yaml in the selected lane project. Commit its lockfile or keep this selection UNKNOWN."
+    elif reason == "native_yarn_package_manager_required":
+        action = "Native WebStorm needs an exact Yarn 4 packageManager pin in package.json alongside yarn.lock."
     elif reason == "native_pnpm_version_required":
         action = "Pin an exact pnpm version in the selected project package.json packageManager field for its pnpm-lock.yaml."
     elif reason == "native_corepack_unavailable":
-        action = "Install Corepack beside the configured WebStorm node executable; native pnpm preparation uses that executable with the manifest pin."
+        action = "Install Corepack beside the configured WebStorm node executable; native Yarn and pnpm preparation use that executable with the manifest pin."
     elif reason == "native_pnpm_hook_lockfile_unsupported":
         action = "The pnpm lockfile depends on a pnpmfile hook. Native preparation disables hooks and cannot reproduce this lockfile; keep native coverage UNKNOWN and run the repository's own lint and type checks. Do not remove the checksum or weaken the frozen install."
     elif reason == "native_web_project_unavailable":
@@ -1817,7 +1830,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             if not common.web_preparation_supported(settings):
                 raise Blocked("native_preparation_shape_unsupported")
             web_relative = common.web_project_path(host, repo, settings, selected)
-            require_web_preparation(node, repo / web_relative)
+            web_package_manager(repo / web_relative, node)
             receipt["web_project_path"] = web_relative.as_posix()
             expected |= set(proof.WEBSTORM_CANARY_FILES)
         if intellij:

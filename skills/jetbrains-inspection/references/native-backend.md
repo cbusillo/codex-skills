@@ -18,36 +18,35 @@ and, for [required plugins](#required-plugins), plugin descriptors and
 `config/disabled_plugins.txt`.
 The product itself uses its existing activation normally.
 
-Configure the **helper's** shared JSON config at
-`~/.config/jetbrains-inspection/config.json`, outside the activated profile:
+Prepare a fresh worker on macOS with one command. Its destination's parent and
+host cache directory must already exist on the intended storage:
 
-```json
-{
-  "jetbrains": {
-    "trustedAutoOpenRoots": ["/absolute/trusted/source/root"],
-    "nativeWorkers": {
-      "pycharm": {
-        "path": "/absolute/independently-activated/worker",
-        "app": "/absolute/PyCharm.app",
-        "cacheRoot": "/absolute/existing/host-caches/native-inspection",
-        "frameworkRoots": ["/absolute/pinned-odoo-framework"]
-      }
-    }
-  }
-}
+```sh
+uv run <skill-dir>/scripts/prepare-native-worker.py \
+  --product pycharm --destination /absolute/new-worker \
+  --app /Applications/PyCharm.app \
+  --cache-root /absolute/existing/host-caches/native-inspection
 ```
 
-`nativeWorkers` holds one entry per product (`pycharm`, `intellij`, `webstorm`);
-each worker's `app` must be that product's distribution. All three run today. The older single `nativeWorker` object is still read as
-the `pycharm` entry; configure one or the other, not both.
+Choose a product and its installed app. WebStorm also needs `--node /absolute/bin/node`
+with executable `npm` beside it; IntelliJ IDEA needs `--jdk /absolute/java-home`
+with `bin/java` and `release`. Existing destinations are refused. Merge the printed
+`config.jetbrains.nativeWorkers` entry into `~/.config/jetbrains-inspection/config.json`,
+preserving other settings and permitted `trustedAutoOpenRoots`. The older
+`nativeWorker` object is the PyCharm entry; use it or `nativeWorkers`, never both.
+
+The only human setup step is to open the printed `.command` launcher, sign in
+with an existing entitlement, and quit. It isolates config, plugins, home, system,
+log and temp paths and holds the backend's `worker.lock`. IDE restarts retain that
+lock and paths, using JetBrains' [restart exit-code mode](https://github.com/JetBrains/intellij-community/blob/master/platform/platform-impl/src/com/intellij/util/Restarter.java).
+That mode cannot run app-update commands; update the installed app normally,
+then reopen the worker launcher. Preparation never launches an IDE or handles
+activation data. Required plugins and Odoo framework roots are covered below.
 
 ### WebStorm
 
-The `webstorm` entry takes `path`, `app` and `cacheRoot` like `pycharm`, plus a
-required absolute `node` path to an executable `node` with `npm` in the same
-directory (on Chris-Studio the nvm install's `bin/node`, which is not on the
-runner's PATH). That directory goes first on the preparation and engine PATH.
-A missing or non-executable `node` is UNKNOWN with its setup step.
+The configured `node` directory goes first on the preparation and engine PATH.
+A missing or non-executable runtime is UNKNOWN with its setup step.
 
 A selection routes to WebStorm when the repository's `ide` (or each owning
 lane's `ide`) is WebStorm and every file is `.ts`, `.tsx`, `.mts`, `.cts`,
@@ -62,6 +61,18 @@ and never runs `npm install`. A WebStorm lane may set `projectPath` to a nested
 project; all selected files must belong to that one project and lie beneath it.
 The engine still opens the private repository root so scope and findings retain
 repository-relative paths. Python preparation is ignored on a WebStorm run.
+
+A Yarn 4 project needs `yarn.lock`, an exact `packageManager` pin in
+`package.json`, and executable `corepack` beside the configured `node`. It runs
+that pinned Yarn with `install --immutable --mode=skip-build`, disables scripts
+and repository `yarnPath` overrides, and forces the `node-modules` linker inside
+the snapshot. Repository patches and Yarn configuration stay available; Yarn
+and Corepack caches live under `cacheRoot`, with a fresh HOME and no inherited
+user configuration or tokens. Tracked Yarn plugins still load as trusted
+repository code; disabling lifecycle scripts does not disable plugins. An exact
+Yarn 4 pin selects Yarn when its lockfile and an npm lockfile coexist; otherwise
+`package-lock.json` retains npm preparation. A pnpm lockfile selects its pinned
+pnpm preparation.
 
 For `pnpm-lock.yaml`, `package.json` must pin an exact pnpm `packageManager`
 version. Corepack must be executable beside the configured `node`. The runner
@@ -89,10 +100,8 @@ worker unless `--native-worker` names another.
 
 ### IntelliJ IDEA
 
-The `intellij` entry takes `path`, `app` and `cacheRoot` like `pycharm`, plus a
-required absolute `jdk`: a Java home with `bin/java` and a `release` file, of a
-version the project's Gradle build supports. A missing or unusable `jdk` is
-UNKNOWN with its setup step before any custody record.
+Use a `jdk` version the project's Gradle build supports. A missing or unusable
+runtime is UNKNOWN with its setup step before any custody record.
 
 A selection routes to IntelliJ IDEA when the repository's `ide` (or each owning
 lane's `ide`, without `projectPath`) is IntelliJ IDEA, every file is `.kt`,
@@ -158,7 +167,8 @@ config. `--native-worker` (or `JETBRAINS_INSPECTION_NATIVE_WORKER`), `--ide-app`
 and repeatable `--native-framework-root` provide one-run selections. Framework
 roots include one Odoo core repository containing `odoo/release.py` and any
 required addon dependency repositories, each as a clean pinned Git checkout.
-Omit them for ordinary Python projects.
+Persist these as the PyCharm entry's optional `frameworkRoots` array of absolute
+paths; omit it for ordinary Python projects.
 Record the framework commits and follow the tenant workspace's declared dependency
 locations and ref policy, rather than borrowing another tenant's roots. The
 runner compares the selected addon's manifest and `workspace.toml` build series
@@ -184,12 +194,9 @@ in task evidence. Preparation uses shared non-secret uv cache and Python-install
 paths under `cacheRoot`, with a fresh preparation HOME; it forwards no account
 store, token or desktop-home settings.
 
-The worker contains `config/`, `plugins/`, `home/`, `idea.properties` and
-`worker.lock`. Its properties must point config and plugins into that exact
-worker. Its GUI launcher must hold the same kernel `worker.lock` for its whole
-lifetime. Close that independent GUI before using the CLI. Never open the
-Director's normal PyCharm to repair a native prerequisite. Public plugin ZIPs
-can supply code, but never activation or credentials from another installation.
+Close the independent GUI before using the CLI. Never open the Director's
+normal IDE to repair a native prerequisite. Public plugin ZIPs can supply code,
+but never activation or credentials from another installation.
 
 If activation has lapsed, a licence prompt appears, or any trial is offered,
 the runner stops its process group, cleans its private state and writes a
@@ -536,6 +543,7 @@ The opt-in `JB_NATIVE_LIVE=1` test in `tests/test_native_backend.py` uses the
 committed planted/corrected Odoo fixture through the configured independent
 worker. It copies committed Git blobs into a committed disposable repository,
 so local edits and generated files cannot change its provenance. It requires actual Odoo XML, quoted `odoo.model.*` type, duplicate and
-named Odoo findings, with corrected controls clean. `JB_NATIVE_LIVE_OUT` can
-retain its sanitized result. Qualify with a real tenant change too; a synthetic
+named Odoo findings, with corrected controls clean. The fixture's collection-valued
+package option also exercises completed inspection on every selected Python file.
+`JB_NATIVE_LIVE_OUT` can retain its sanitized result. Qualify with a real tenant change too; a synthetic
 RED alone does not prove that repository's profile or model is complete.

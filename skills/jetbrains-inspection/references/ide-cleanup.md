@@ -7,48 +7,39 @@ skill directory.
 Agents no longer inspect through the desktop IDE. The retired desktop route
 left state behind: local lifecycle leases, Python SDKs it registered in the
 Director's IDEs, sealed project caches, and repository-preparation receipts.
-These commands retire that state. They talk only to an IDE whose Inspection API
-plugin is already running, never open a project, launch an app or inspect, and
-run under the helper's lifecycle lock. Native assessments create none of this
-state.
+The standalone lease and SDK cleanup commands retire that state through an IDE
+whose Inspection API plugin is already running. They never open a project, launch
+an app or inspect. Worktree removal uses local proof only. All commands run under
+the helper's lifecycle lock. Native assessments create none of this state.
 
 ## Removing a worktree
 
 `remove-worktree --repo /exact/task/path` runs after the repository cleanup
-checks establish disposition. It refuses primary checkouts, locked apply
-attempts and uncommitted work, then reconciles only the leases recorded for
-that exact worktree; an unresolved or live lease retains the worktree and the
-refusal names each blocking lease ID with its scoped `cleanup-helper-leases
---lease-id <UUID> --no-dry-run` command. It then dry-runs SDK and project-cache
-retirement through every discovered running IDE.
+checks establish disposition. It never discovers or contacts a desktop IDE.
+It refuses primary checkouts, locked apply attempts and uncommitted work.
+It reconciles only leases for that exact worktree whose staleness and local
+records prove no project needs closing. Leases that need live ownership proof
+retain the worktree; the refusal names the blocking lease IDs and scoped cleanup
+commands. Resolve those separately before a fresh retirement attempt.
 
-With no running IDE on macOS, an unprepared worktree can instead prove there is
-nothing to clean from local preparation records, every standard JetBrains
-config's SDK and recent-project records (plus the explicit
-`JETBRAINS_INSPECTION_IDE_CONFIG_DIR` override), and sealed/finalizing
-project-cache ownership markers. A `.venv` alone is not a registration.
-Matching records, unreadable/malformed records, storage redirects in config
-`idea.properties`, or local `.idea` project-model/workspace state retain the
-worktree for the live IDE cleanup route. Offline proof is repeated before Git
-removal and reported as `offline_cleanup_proved`, with `offline_records_checked`
-naming the records read. Add `--offline-only` when the session must not contact
-an IDE; preview and apply then skip identity discovery and use the same local
-proof, and existing leases hold the worktree without reconciliation. A running
-supported IDE holds offline retirement; keep the worktree until a session that
-may contact the IDE can use the live route. The offline scan covers standard
-macOS storage plus the explicit config override; redirects in VM options,
-environment variables or edited application bundles are not discovered and
-need live cleanup proof. It never edits global IDE files. Other platforms
-retain the live-IDE requirement.
+On macOS, an unprepared worktree proves there is nothing to clean from local
+preparation records, every standard JetBrains config's SDK and recent-project
+records (plus the explicit `JETBRAINS_INSPECTION_IDE_CONFIG_DIR` override), and
+sealed/finalizing project-cache ownership markers. A `.venv` alone is not a
+registration. Matching records, unreadable/malformed records, storage redirects
+in config `idea.properties`, local `.idea` project-model/workspace state, or a
+running supported IDE retain the worktree. Existing desktop state needs separate
+cleanup; retirement never edits global IDE files or removes project caches.
+Other platforms retain the worktree because local proof is unavailable.
+The scan covers standard macOS storage plus the explicit config override;
+redirects in VM options, environment variables or edited application bundles
+are not discovered. Keep those worktrees until their cleanup can be proved.
 
-With `--no-dry-run`, the command unregisters only SDKs proved helper-owned,
-sending the apply only to IDEs whose preview lists one (`sdk_apply_skipped`
-names the rest), rechecks every IDE, retires sealed project caches, then
-removes the clean, unlocked linked worktree with non-force Git removal. Close
-its IDE project first. Missing plugin support, session drift and unsafe SDK
-cleanup retain the worktree. Unrecorded SDKs stay registered and are reported
-as preserved; their `not_helper_owned` refusal does not prevent removal. When
-Git unregisters the worktree but cannot empty it because Finder wrote
+With `--no-dry-run`, local Git, lease and offline checks repeat before non-force
+Git removal. Receipts report `offline_cleanup_proved` and
+`offline_records_checked`. `--offline-only` remains accepted for existing
+callers; it also retains every existing target lease without reconciliation.
+When Git unregisters the worktree but cannot empty it because Finder wrote
 `.DS_Store` files during the delete, the command deletes what is left only if
 every entry is `.DS_Store` or unchanged since before removal; otherwise it
 keeps them all and lists the others in `retained_entries`. The branch is
