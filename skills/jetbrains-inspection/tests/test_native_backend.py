@@ -2234,6 +2234,55 @@ print('Done.')
         self.assertEqual(engine["path"].split(os.pathsep)[0], str(self.node.parent))
         self.assertFalse((self.repo / "node_modules").exists())
 
+    def test_yarn_install_uses_the_pin_and_snapshot_with_python_preparation_configured(self) -> None:
+        (self.repo / "package-lock.json").unlink()
+        (self.repo / "package.json").write_text(json.dumps({"packageManager": "yarn@4.17.0"}))
+        (self.repo / "yarn.lock").write_text("__metadata:\n  version: 8\n")
+        corepack = self.node.parent / "corepack"
+        corepack.write_text(f"#!{sys.executable}\nimport json,os,pathlib,sys\n"
+                            "project=pathlib.Path(sys.argv[sys.argv.index('--cwd')+1])\n"
+                            "(project/'node_modules').mkdir()\n(project/'node_modules/.fixture').touch()\n"
+                            f"pathlib.Path({str(self.npm_record)!r}).write_text(json.dumps({{'argv':sys.argv[1:],'env':dict(os.environ)}}))\n")
+        corepack.chmod(0o755)
+        self.declare({"lanes": [{"id": "ts", "ide": "WebStorm", "include": ["src/**"]}],
+                      "prepare": {"python": {"version": "3.13", "moduleName": "fixture", "sync": True}}})
+        self.assertEqual(self.select()[0], "native")
+        with patch_attr(native.common, "preparation", side_effect=AssertionError("Python preparation must not run for WebStorm")):
+            result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_completed", result["proof_failures"])
+        install = json.loads(self.npm_record.read_text())
+        self.assertEqual(install["argv"][0], json.loads((self.repo / "package.json").read_text())["packageManager"])
+        self.assertTrue(Path(install["env"]["YARN_CACHE_FOLDER"]).is_relative_to(self.cache))
+        self.assertTrue(Path(install["env"]["COREPACK_HOME"]).is_relative_to(self.cache))
+        self.assertTrue(json.loads(self.engine_record.read_text())["node_modules"])
+        self.assertFalse((self.repo / "node_modules").exists())
+        self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def test_npm_lockfile_still_prepares_projects_with_a_leftover_yarn_lock(self) -> None:
+        (self.repo / "yarn.lock").write_text("# yarn lockfile v1\n")
+        for manager in (None, "npm@11.0.0", "yarn@1.22.22"):
+            with self.subTest(manager=manager):
+                (self.repo / "package.json").write_text(json.dumps({"packageManager": manager}))
+                self.assertEqual(self.select(), ("native", "webstorm_native_route"))
+                self.assertEqual(self.assess()["inspection_outcome"]["reason"], "native_completed")
+                self.assertEqual(json.loads(self.npm_record.read_text())["argv"][0], "ci")
+        (self.repo / "package.json").write_text(json.dumps({"packageManager": "yarn@4.17.0"}))
+        self.assertEqual(self.select(), ("unavailable", "native_ineligible=native_corepack_unavailable"))
+
+    def test_yarn_needs_a_pinned_manager_and_corepack_before_any_process(self) -> None:
+        (self.repo / "package-lock.json").unlink()
+        (self.repo / "yarn.lock").write_text("__metadata:\n  version: 8\n")
+        for manager in (None, "yarn@latest", "yarn@1.22.22", "npm@11.0.0", {"name": "yarn"}):
+            with self.subTest(manager=manager):
+                (self.repo / "package.json").write_text(json.dumps({"packageManager": manager}))
+                self.assertEqual(self.select(), ("unavailable", "native_ineligible=native_yarn_package_manager_required"))
+                self.assertFalse(self.npm_record.exists())
+                self.assertFalse(self.engine_record.exists())
+        (self.repo / "package.json").write_text(json.dumps({"packageManager": "yarn@4.17.0"}))
+        self.assertEqual(self.select(), ("unavailable", "native_ineligible=native_corepack_unavailable"))
+        self.assertFalse(self.npm_record.exists())
+        self.assertFalse(self.engine_record.exists())
+
     def test_missing_lockfile_and_pnpm_projects_are_refused_before_preparation(self):
         for change, reason in ((lambda: (self.repo / "package-lock.json").unlink(), "native_npm_lockfile_required"),
                                (lambda: (self.repo / "package.json").unlink(), "native_npm_lockfile_required"),
