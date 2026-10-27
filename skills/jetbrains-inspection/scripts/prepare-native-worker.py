@@ -31,6 +31,7 @@ def inspection_host() -> Any:
 
 host: Any = inspection_host()
 WORKER_DIRECTORIES = ("config", "plugins", "home", "system", "log", "tmp")
+RESTART_EXIT_CODE = 88
 
 
 def absolute_path(value: str) -> Path:
@@ -55,7 +56,7 @@ def worker_entry(args: argparse.Namespace, destination: Path) -> dict[str, str]:
 def validate_entry(product_key: str, entry: dict[str, str]) -> Any:
     config = {"jetbrains": {"nativeWorkers": {product_key: entry}}}
     configured_host = SimpleNamespace(IDE_PRODUCTS=host.IDE_PRODUCTS, read_global_config=lambda: config)
-    args = host.build_parser().parse_args(["agent-inspect"])
+    args = host.build_parser().parse_args(["agent-inspect", "--native-worker", entry["path"]])
     settings = native.worker_settings(args, configured_host, product_key)
     launcher = settings.app / "Contents/MacOS" / settings.product.launcher_names[0]
     if not launcher.is_file() or not os.access(launcher, os.X_OK):
@@ -74,18 +75,22 @@ def gui_launcher(worker: Path, app: Path, product: Any) -> str:
         "TMPDIR": str(worker / "tmp"),
         f"{product.env_var_base_name}_PROPERTIES": str(worker / "idea.properties"),
         f"{product.env_var_base_name}_VM_OPTIONS": str(worker / product.vm_options_name),
+        "IDEA_RESTART_VIA_EXIT_CODE": str(RESTART_EXIT_CODE),
     }
     executable = str(app / "Contents/MacOS" / product.launcher_names[0])
     return f"""import fcntl
 import os
+import subprocess
 
 lock = os.open({str(worker / "worker.lock")!r}, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
 try:
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except BlockingIOError:
     raise SystemExit('Worker busy. Quit its GUI or let its inspection finish first.')
-os.set_inheritable(lock, True)
-os.execve({executable!r}, [{executable!r}], {environment!r})
+while True:
+    result = subprocess.run([{executable!r}], env={environment!r}, pass_fds=(lock,))
+    if result.returncode != {RESTART_EXIT_CODE}:
+        raise SystemExit(result.returncode)
 """
 
 
@@ -93,6 +98,27 @@ def write_private(path: Path, text: str, mode: int = 0o600) -> None:
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
     with os.fdopen(descriptor, "w") as output:
         output.write(text)
+
+
+def write_profile(destination: Path, files: dict[str, str]) -> None:
+    destination.mkdir(mode=0o700)
+    original = destination.stat()
+    try:
+        for name in WORKER_DIRECTORIES:
+            (destination / name).mkdir(mode=0o700)
+        for name, content in files.items():
+            write_private(destination / name, content, mode=0o700 if name.endswith(".command") else 0o600)
+        native.launcher_paths(destination)
+    except BaseException:
+        if native.common.same_directory(destination, original):
+            for name in files:
+                (destination / name).unlink(missing_ok=True)
+            for name in reversed(WORKER_DIRECTORIES):
+                directory = destination / name
+                if directory.is_dir():
+                    directory.rmdir()
+            destination.rmdir()
+        raise
 
 
 def prepare(args: argparse.Namespace) -> dict[str, Any]:
@@ -117,18 +143,19 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         f"-XX:ErrorFile={destination / 'log'}/java-error-%p.log",
         "-XX:-HeapDumpOnOutOfMemoryError",
     ]
-    destination.mkdir(mode=0o700)
-    for name in WORKER_DIRECTORIES:
-        (destination / name).mkdir(mode=0o700)
     properties = "".join(f"idea.{name}.path={destination / name}\n" for name in ("config", "plugins", "system", "log"))
-    write_private(destination / "idea.properties", properties + "idea.initially.ask.config=never\n")
-    write_private(destination / product.vm_options_name, "\n".join(vm) + "\n")
-    write_private(destination / "worker.lock", "")
-    write_private(destination / "launch.py", gui_launcher(destination, settings.app, product))
     launcher = destination / f"Activate {product.display_name} worker.command"
     command = shlex.join([uv, "run", "--no-project", "--no-config", "python", "-I", str(destination / "launch.py")])
-    write_private(launcher, f"#!/bin/sh\nexec {command}\n", mode=0o700)
-    native.launcher_paths(destination)
+    write_profile(
+        destination,
+        {
+            "idea.properties": properties + "idea.initially.ask.config=never\n",
+            product.vm_options_name: "\n".join(vm) + "\n",
+            "worker.lock": "",
+            "launch.py": gui_launcher(destination, settings.app, product),
+            launcher.name: f"#!/bin/sh\nexec {command}\n",
+        },
+    )
     return {
         "config": {"jetbrains": {"nativeWorkers": {args.product: entry}}},
         "launcher": str(launcher),

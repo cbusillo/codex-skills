@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -35,7 +36,7 @@ class PrepareWorkerTests(unittest.TestCase):
         (self.app / "Contents/bin/inspect.sh").touch()
         self.destination = self.root / "new worker"
         uv = self.root / "fixture uv"
-        uv.write_text(f'#!/bin/sh\nshift 5\nexec {sys.executable} "$@"\n')
+        uv.write_text(f'#!/bin/sh\nwhile [ "$1" != python ]; do shift; done\nshift\nexec {sys.executable} "$@"\n')
         uv.chmod(0o700)
         resolve_uv = patch.object(shutil, "which", return_value=str(uv))
         resolve_uv.start()
@@ -83,15 +84,16 @@ class PrepareWorkerTests(unittest.TestCase):
             with self.subTest(product=product_key):
                 self.destination = self.root / product_key
                 args = self.arguments(product_key)
-                result = setup.prepare(args)
+                with patch.dict(os.environ, JETBRAINS_INSPECTION_NATIVE_WORKER="relative-override"):
+                    result = setup.prepare(args)
                 config = result["config"]
-                with patch.object(host, "read_global_config", return_value=config):
-                    worker = native.worker_settings(host.build_parser().parse_args(["agent-inspect"]), host, product_key)
-                    native.launcher_paths(worker.worker)
-                    if product_key == "webstorm":
-                        native.node_executable(host)
-                    if product_key == "intellij":
-                        native.java_home(host)
+                configured_host = SimpleNamespace(IDE_PRODUCTS=host.IDE_PRODUCTS, read_global_config=lambda current=config: current)
+                worker = native.worker_settings(host.build_parser().parse_args(["agent-inspect"]), configured_host, product_key)
+                native.launcher_paths(worker.worker)
+                if product_key == "webstorm":
+                    native.node_executable(configured_host)
+                if product_key == "intellij":
+                    native.java_home(configured_host)
                 for name in ("config", "plugins", "home"):
                     self.assertEqual(list((self.destination / name).iterdir()), [])
                 self.assertEqual(self.destination.stat().st_mode & 0o777, 0o700)
@@ -144,7 +146,7 @@ class PrepareWorkerTests(unittest.TestCase):
 
     def test_launcher_uses_isolated_environment_and_inherits_the_backend_lock(self) -> None:
         args = self.arguments()
-        setup.prepare(args)
+        prepared = setup.prepare(args)
         product = host.IDE_PRODUCTS[args.product]
         executable = self.app / "Contents/MacOS" / product.launcher_names[0]
         executable.write_text(
@@ -160,17 +162,53 @@ with (Path(os.environ['HOME']).parent / 'worker.lock').open('a') as lock:
 """
         )
         environment = dict(os.environ, IDEA_PROPERTIES="desktop", PYCHARM_VM_OPTIONS="desktop", JDK_JAVA_OPTIONS="desktop")
-        launcher = self.destination / f"Activate {product.display_name} worker.command"
+        launcher = Path(prepared["launcher"])
         result = subprocess.run([str(launcher)], env=environment, capture_output=True, text=True, check=True)
         values = json.loads(result.stdout.splitlines()[0])
         self.assertEqual(Path(values["HOME"]), self.destination / "home")
+        self.assertEqual(Path(values["TMPDIR"]), self.destination / "tmp")
         self.assertEqual(Path(values[f"{product.env_var_base_name}_PROPERTIES"]), self.destination / "idea.properties")
+        self.assertEqual(Path(values[f"{product.env_var_base_name}_VM_OPTIONS"]), self.destination / product.vm_options_name)
         self.assertNotIn("IDEA_PROPERTIES", values)
         self.assertNotIn("JDK_JAVA_OPTIONS", values)
         self.assertIn("lock-held", result.stdout)
         with native.profile_lock(self.destination):
             busy = subprocess.run([sys.executable, str(self.destination / "launch.py")], capture_output=True)
         self.assertNotEqual(busy.returncode, 0)
+
+    def test_write_failure_removes_only_the_unactivated_profile_and_allows_retry(self) -> None:
+        args = self.arguments()
+        with patch.object(os, "open", side_effect=OSError("write failed")):
+            with self.assertRaises(OSError):
+                setup.prepare(args)
+        self.assertFalse(self.destination.exists())
+        setup.prepare(args)
+
+    def test_ide_requested_restart_keeps_the_lock_and_isolated_environment(self) -> None:
+        args = self.arguments()
+        prepared = setup.prepare(args)
+        executable = self.app / "Contents/MacOS" / host.IDE_PRODUCTS[args.product].launcher_names[0]
+        executable.write_text(
+            f"#!{sys.executable}\n"
+            + """
+import fcntl,json,os
+from pathlib import Path
+worker = Path(os.environ['HOME']).parent
+with (worker / 'worker.lock').open('a') as lock:
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print('lock-held', flush=True)
+marker = worker / 'restarted'
+if not marker.exists():
+    marker.touch()
+    raise SystemExit(int(os.environ['IDEA_RESTART_VIA_EXIT_CODE']))
+print(json.dumps(dict(os.environ)))
+"""
+        )
+        result = subprocess.run([prepared["launcher"]], capture_output=True, text=True, check=True, timeout=10)
+        self.assertEqual(result.stdout.count("lock-held"), 2)
+        self.assertEqual(Path(json.loads(result.stdout.splitlines()[-1])["HOME"]), self.destination / "home")
 
 
 if __name__ == "__main__":

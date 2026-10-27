@@ -28,21 +28,20 @@ uv run <skill-dir>/scripts/prepare-native-worker.py \
   --cache-root /absolute/existing/host-caches/native-inspection
 ```
 
-Choose `pycharm`, `intellij` or `webstorm` and its installed app. WebStorm also
-needs `--node /absolute/bin/node` with executable `npm` beside it; IntelliJ IDEA
-needs `--jdk /absolute/java-home` with `bin/java` and `release`. The command
-refuses existing destinations, reads only public product files, creates empty
-config, plugins and home directories, and prints JSON. Merge its
-`config.jetbrains.nativeWorkers` entry into the **helper's** shared
-`~/.config/jetbrains-inspection/config.json`, preserving other settings. Keep
-`trustedAutoOpenRoots` set to permitted source roots. The older `nativeWorker`
-object is the PyCharm entry; use it or `nativeWorkers`, never both.
+Choose a product and its installed app. WebStorm also needs `--node /absolute/bin/node`
+with executable `npm` beside it; IntelliJ IDEA needs `--jdk /absolute/java-home`
+with `bin/java` and `release`. Existing destinations are refused. Merge the printed
+`config.jetbrains.nativeWorkers` entry into `~/.config/jetbrains-inspection/config.json`,
+preserving other settings and permitted `trustedAutoOpenRoots`. The older
+`nativeWorker` object is the PyCharm entry; use it or `nativeWorkers`, never both.
 
 The only human setup step is to open the printed `.command` launcher, sign in
-with an existing entitlement, and quit. It holds the backend's `worker.lock`
-throughout the GUI's lifetime and isolates config, plugins, home, system, log
-and temp paths. Preparation never launches an IDE or handles activation data.
-Required repository plugins and Odoo framework roots are covered below.
+with an existing entitlement, and quit. It isolates config, plugins, home, system,
+log and temp paths and holds the backend's `worker.lock`. IDE restarts retain that
+lock and paths, using JetBrains' [restart exit-code mode](https://github.com/JetBrains/intellij-community/blob/master/platform/platform-impl/src/com/intellij/util/Restarter.java).
+That mode cannot run app-update commands; update the installed app normally,
+then reopen the worker launcher. Preparation never launches an IDE or handles
+activation data. Required plugins and Odoo framework roots are covered below.
 
 ### WebStorm
 
@@ -142,7 +141,8 @@ config. `--native-worker` (or `JETBRAINS_INSPECTION_NATIVE_WORKER`), `--ide-app`
 and repeatable `--native-framework-root` provide one-run selections. Framework
 roots include one Odoo core repository containing `odoo/release.py` and any
 required addon dependency repositories, each as a clean pinned Git checkout.
-Omit them for ordinary Python projects.
+Persist these as the PyCharm entry's optional `frameworkRoots` array of absolute
+paths; omit it for ordinary Python projects.
 Record the framework commits and follow the tenant workspace's declared dependency
 locations and ref policy, rather than borrowing another tenant's roots. The
 runner compares the selected addon's manifest and `workspace.toml` build series
