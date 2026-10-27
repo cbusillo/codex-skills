@@ -17,9 +17,10 @@ the helper's lifecycle lock. Native assessments create none of this state.
 `remove-worktree --repo /exact/task/path` runs after the repository cleanup
 checks establish disposition. It never discovers or contacts a desktop IDE.
 It refuses primary checkouts, locked apply attempts and uncommitted work.
-Any lease recorded for that exact worktree retains it, without reconciliation;
-the refusal names the blocking lease IDs. Resolve legacy ownership separately
-through the scoped lease cleanup below before a fresh retirement attempt.
+It reconciles only leases for that exact worktree whose stale-owner and local
+records prove no project needs closing. Leases that need live ownership proof
+retain the worktree; the refusal names the blocking lease IDs and scoped cleanup
+commands. Resolve those separately before a fresh retirement attempt.
 
 On macOS, an unprepared worktree proves there is nothing to clean from local
 preparation records, every standard JetBrains config's SDK and recent-project
@@ -37,7 +38,7 @@ are not discovered. Keep those worktrees until their cleanup can be proved.
 With `--no-dry-run`, local Git, lease and offline checks repeat before non-force
 Git removal. Receipts report `offline_cleanup_proved` and
 `offline_records_checked`. `--offline-only` remains accepted for existing
-callers and has the same behavior as the default.
+callers; it also retains every existing target lease without reconciliation.
 When Git unregisters the worktree but cannot empty it because Finder wrote
 `.DS_Store` files during the delete, the command deletes what is left only if
 every entry is `.DS_Store` or unchanged since before removal; otherwise it

@@ -2639,7 +2639,7 @@ def paths_same(left: Any, right: Any) -> bool:
         return str(left) == str(right)
 
 
-def retirement_worktree(path: Path, dry_run: bool = False) -> Path:
+def retirement_worktree(path: Path, dry_run: bool = False, offline_only: bool = False) -> Path:
     root = path.expanduser().resolve()
     if git_root(root) != root:
         raise InspectError("Removal requires the exact linked worktree root.", 3)
@@ -2655,18 +2655,28 @@ def retirement_worktree(path: Path, dry_run: bool = False) -> Path:
         raise InspectError("Cannot resolve the primary checkout for worktree removal.", 3)
     if subprocess.check_output(["git", "-C", str(root), "status", "--porcelain"], text=True).strip():
         raise InspectError("Preserve uncommitted work before removing this worktree.", 3)
-    require_no_retirement_leases(root)
+    reconcile_retirement_leases(root, dry_run, offline_only)
     return root
 
 
-def require_no_retirement_leases(root: Path) -> None:
+def reconcile_retirement_leases(root: Path, dry_run: bool, offline_only: bool = False) -> None:
     leases = [(path, lease) for path, lease in read_local_leases()
               if paths_same(lease.get("worktree_root"), root)]
-    if leases:
-        ids = [str(lease.get("lease_id") or path.stem) for path, lease in leases]
+    if not leases:
+        return
+    result = {} if offline_only else cleanup_stale_helper_leases(argparse.Namespace(
+        max_age_ms=24 * 60 * 60 * 1000, dry_run=dry_run, worktree_root=root, local_only=True,
+    ))
+    released = set(result.get("would_remove" if dry_run else "removed") or [])
+    blockers = [(path, lease) for path, lease in leases if str(path) not in released]
+    if blockers:
+        ids = [str(lease.get("lease_id") or path.stem) for path, lease in blockers]
+        commands = [] if offline_only else [f"uv run {shlex.quote(str(Path(__file__).resolve()))} cleanup-helper-leases "
+                    f"--lease-id {shlex.quote(lease_id)} --no-dry-run" for lease_id in ids]
         raise InspectError(
-            f"IDE leases block offline retirement: {', '.join(ids)}. Retain the worktree until a session authorized to contact the IDE resolves them.", 3,
-            {"blocking_lease_ids": ids, "cleanup_commands": [], "lease_cleanup": {}},
+            (f"IDE leases block offline retirement: {', '.join(ids)}. Retain the worktree until separate lease cleanup resolves them."
+             if offline_only else f"IDE leases block retirement: {', '.join(ids)}. After resolving ownership/activity, run: " + "; ".join(commands)), 3,
+            {"blocking_lease_ids": ids, "cleanup_commands": commands, "lease_cleanup": result},
         )
 
 
@@ -2874,14 +2884,8 @@ def offline_retirement_records(root: Path) -> list[str]:
                             "offline_retirement_record": getattr(error, "filename", None)}) from error
 
 
-def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, dry_run: bool,
-                           offline_records: list[str] | None = None) -> list[dict[str, Any]]:
+def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, dry_run: bool) -> list[dict[str, Any]]:
     if not identities:
-        if root is not None:
-            records = offline_retirement_records(root)
-            if offline_records is not None:
-                offline_records.extend(records)
-            return []
         raise InspectError("No live IDE is available to prove SDK cleanup; start the prepared worktree's IDE first.", 3)
     # Validate every session before sending any mutating request.
     for identity in identities:
@@ -2942,10 +2946,11 @@ def command_remove_worktree(args: argparse.Namespace) -> dict[str, Any]:
     offline_records: list[str] = []
     with lifecycle_lock(args.lifecycle_lock_timeout_ms):
         try:
-            root = retirement_worktree(Path(args.repo), args.dry_run)
+            offline_only = getattr(args, "offline_only", False)
+            root = retirement_worktree(Path(args.repo), args.dry_run, offline_only)
             offline_records.extend(offline_retirement_records(root))
             if not args.dry_run:
-                retirement_worktree(root)
+                retirement_worktree(root, False, offline_only)
                 offline_records.extend(offline_retirement_records(root))
                 common = git_common_worktree(root)
                 if common is None:
@@ -3100,6 +3105,10 @@ def cleanup_stale_helper_leases(args: argparse.Namespace) -> dict[str, Any]:
             "failed": [],
             "unresolved": [],
         }
+    if getattr(args, "local_only", False):
+        unresolved.extend({"status": "skipped", "reason": "ownership_route_unavailable", "lease_id": lease.get("lease_id")}
+                          for _, lease in stale_leases if lease_may_own_open_project(lease))
+        stale_leases = [(path, lease) for path, lease in stale_leases if not lease_may_own_open_project(lease)]
     routes: list[dict[str, Any]] = []
     observed_sessions: set[str] = set()
     if any(lease_may_own_open_project(lease) for _, lease in stale_leases):

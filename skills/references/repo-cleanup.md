@@ -40,7 +40,7 @@ does not trigger a global repository scan, cache sweep, or retirement workflow.
    the worktree with that command. The landing step retires a landed PR's
    source worktree the same way through `github`'s After A Merge, since the
    session that created it has usually ended. It replaces the manual unlock and removal
-   in step 6, including the IDE SDK retirement, and restores the lock if it
+   in step 6, including local IDE-state proof, and restores the lock if it
    fails.
 2. Establish current Git evidence. Resolve the live default branch and pin its
    advertised SHA (`git ls-remote --symref`); obtain missing objects through an
@@ -82,23 +82,26 @@ does not trigger a global repository scan, cache sweep, or retirement workflow.
    Prefer non-force Git removal. Force syntax never substitutes for resolving a
    hold; use it only when necessary for the exact already-authorized disposition
    after preservation and ownership evidence is complete.
-   For worktrees the retired desktop inspection route prepared, start each IDE
-   that prepared the worktree, close its project and reconcile its helper
-   leases ([IDE cleanup](../jetbrains-inspection/references/ide-cleanup.md)).
-   After the disposition above is established, keep the worktree lock during the
-   preview. Use
+   Agents never open source worktrees in a desktop IDE. After the disposition
+   above is established, keep the worktree lock during the preview. Use
    `uv run <catalog>/skills/jetbrains-inspection/scripts/jb-inspect.py remove-worktree --repo /exact/task/path`
-   for a dry-run, then release only the completed task's lock and add `--no-dry-run` to retire helper-owned
-   SDKs through the live plugin before non-force Git removal. Missing plugin
-   support or an unsafe refusal retains the worktree; restore its lock if apply fails.
-   Unrecorded SDKs remain registered and are reported as preserved. A
-   `not_helper_owned` refusal alone permits eligible worktree removal while
-   preserving the SDK; other refusal reasons remain holds. A Git removal failure can follow
-   successful SDK retirement; the helper finishes only a removal that Finder
-   raced with `.DS_Store` writes. Retain and report any other result rather than
-   forcing removal. Use `cleanup-helper-sdks` dry-run then `--no-dry-run --worktree-path /reviewed/orphan` (repeat the path flag for each listed candidate) for
-   proved helper-owned SDKs whose worktrees were already removed. Never edit
-   running IDE config files or infer ownership from SDK names.
+   for a dry-run, then release only the completed task's lock and add
+   `--no-dry-run` for non-force Git removal. The helper clears only target leases
+   whose stale-owner and local records already prove no project needs closing;
+   it never discovers or contacts an IDE. Existing `--offline-only` callers
+   retain leases without reconciliation. Both modes require the same local
+   safety proof ([IDE cleanup](../jetbrains-inspection/references/ide-cleanup.md)).
+   An active IDE, legacy SDK/project/cache state or ambiguous proof retains the
+   worktree; restore its lock if apply fails. Resolve legacy state separately,
+   never launch an IDE as a retirement prerequisite or bypass the refusal.
+   The helper finishes only a Git removal that Finder raced with `.DS_Store`
+   writes; retain and report any other result rather than forcing removal.
+   The separate `cleanup-helper-leases` command supports scoped legacy lease
+   cleanup. Use `cleanup-helper-sdks` dry-run then `--no-dry-run
+   --worktree-path /reviewed/orphan` (repeat the path flag for each listed
+   candidate) for proved helper-owned SDKs whose worktrees were already removed.
+   These commands use only already-running IDEs. Never edit running IDE config
+   files or infer ownership from SDK names.
 7. Verify the intended effect and preservation of the remaining state. Use the
    helper's revalidation/postcondition commands where its contract applies. A
    helper hold or failed verification is not a successful result. If a separately
