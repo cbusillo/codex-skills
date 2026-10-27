@@ -87,7 +87,7 @@ does not trigger a global repository scan, cache sweep, or retirement workflow.
    `uv run <catalog>/skills/jetbrains-inspection/scripts/jb-inspect.py remove-worktree --repo /exact/task/path`
    for a dry-run, then release only the completed task's lock and add
    `--no-dry-run` for non-force Git removal. The helper clears only target leases
-   whose stale-owner and local records already prove no project needs closing;
+   whose staleness and local records already prove no project needs closing;
    it never discovers or contacts an IDE. Existing `--offline-only` callers
    retain leases without reconciliation. Both modes require the same local
    safety proof ([IDE cleanup](../jetbrains-inspection/references/ide-cleanup.md)).

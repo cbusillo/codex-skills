@@ -17,7 +17,7 @@ the helper's lifecycle lock. Native assessments create none of this state.
 `remove-worktree --repo /exact/task/path` runs after the repository cleanup
 checks establish disposition. It never discovers or contacts a desktop IDE.
 It refuses primary checkouts, locked apply attempts and uncommitted work.
-It reconciles only leases for that exact worktree whose stale-owner and local
+It reconciles only leases for that exact worktree whose staleness and local
 records prove no project needs closing. Leases that need live ownership proof
 retain the worktree; the refusal names the blocking lease IDs and scoped cleanup
 commands. Resolve those separately before a fresh retirement attempt.
