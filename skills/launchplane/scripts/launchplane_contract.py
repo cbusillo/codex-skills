@@ -511,7 +511,9 @@ BOUNDED_READ_RESPONSE_FIELDS: dict[str, frozenset[str]] = {
         },
         "product-profile-read": {"status", "trace_id", "profile"},
         "product-promotion-status-read": {"status", "trace_id", "promotion_status"},
-        "product-secret-bindings-read": {"status", "trace_id", "product", "bindings"},
+        "product-secret-bindings-read": {
+            "status", "trace_id", "product", "bindings", "coverage", "lane_binding_resolution",
+        },
         "production-backup-authority-read": {"status", "trace_id", "authority", "policy_configuration"},
         "protected-artifacts-read": {"status", "trace_id", "protected_artifacts"},
         "reconcile-requests-read": {"status", "trace_id", "product", "requests"},

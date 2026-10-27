@@ -86,6 +86,8 @@
   ],
   "product-secret-bindings-read": [
     "bindings",
+    "coverage",
+    "lane_binding_resolution",
     "product",
     "status",
     "trace_id"

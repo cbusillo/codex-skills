@@ -2149,7 +2149,8 @@ For bounded GET reads, the top-level allowlists live in
 `BOUNDED_READ_RESPONSE_FIELDS` in `scripts/launchplane_contract.py`. A field
 Launchplane declares there but the read does not project, such as the
 environment read's `host_network_capacity_available` and
-`host_network_capacity`, is accepted and dropped; any other field still fails
+`host_network_capacity`, or the secret-binding read's `coverage` and
+`lane_binding_resolution`, is accepted and dropped; any other field still fails
 closed. `references/launchplane-read-response-fields.json` pins the top-level
 fields Launchplane's generated OpenAPI declares for each of those routes, and
 the tests require every pinned field to be in its read's allowlist. Refresh the
