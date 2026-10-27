@@ -4,6 +4,9 @@ description: Use JetBrains inspections through isolated headless native PyCharm,
 metadata:
   short-description: Run JetBrains IDE inspections safely
 resources:
+  - path: scripts/prepare-native-worker.py
+    kind: script
+    description: Prepares a fresh isolated macOS worker and prints its nativeWorkers entry without activation data.
   - path: scripts/jb-inspect.py
     kind: script
     description: Native-worker inspection helper with outcome logging and retirement of IDE state the desktop route left behind.
@@ -11,6 +14,11 @@ resources:
     kind: reference
     description: Regression tests for the helper's lane routing, outcome logs and worktree retirement.
 commands:
+  - name: jetbrains-inspection-prepare-native-worker
+    source: skill
+    resource_path: scripts/prepare-native-worker.py
+    example_argv: ["uv", "run", "scripts/prepare-native-worker.py", "--product", "pycharm", "--destination", "/absolute/new-worker", "--app", "/Applications/PyCharm.app", "--cache-root", "/absolute/existing/host-caches/native-inspection"]
+    purpose: Creates a new worker profile and locked activation launcher; never starts an IDE or copies an existing profile.
   - name: jetbrains-inspection-agent-inspect
     source: skill
     resource_path: scripts/jb-inspect.py

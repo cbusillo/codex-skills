@@ -18,36 +18,36 @@ and, for [required plugins](#required-plugins), plugin descriptors and
 `config/disabled_plugins.txt`.
 The product itself uses its existing activation normally.
 
-Configure the **helper's** shared JSON config at
-`~/.config/jetbrains-inspection/config.json`, outside the activated profile:
+Prepare a fresh worker on macOS with one command. Its destination's parent and
+host cache directory must already exist on the intended storage:
 
-```json
-{
-  "jetbrains": {
-    "trustedAutoOpenRoots": ["/absolute/trusted/source/root"],
-    "nativeWorkers": {
-      "pycharm": {
-        "path": "/absolute/independently-activated/worker",
-        "app": "/absolute/PyCharm.app",
-        "cacheRoot": "/absolute/existing/host-caches/native-inspection",
-        "frameworkRoots": ["/absolute/pinned-odoo-framework"]
-      }
-    }
-  }
-}
+```sh
+uv run <skill-dir>/scripts/prepare-native-worker.py \
+  --product pycharm --destination /absolute/new-worker \
+  --app /Applications/PyCharm.app \
+  --cache-root /absolute/existing/host-caches/native-inspection
 ```
 
-`nativeWorkers` holds one entry per product (`pycharm`, `intellij`, `webstorm`);
-each worker's `app` must be that product's distribution. All three run today. The older single `nativeWorker` object is still read as
-the `pycharm` entry; configure one or the other, not both.
+Choose `pycharm`, `intellij` or `webstorm` and its installed app. WebStorm also
+needs `--node /absolute/bin/node` with executable `npm` beside it; IntelliJ IDEA
+needs `--jdk /absolute/java-home` with `bin/java` and `release`. The command
+refuses existing destinations, reads only public product files, creates empty
+config, plugins and home directories, and prints JSON. Merge its
+`config.jetbrains.nativeWorkers` entry into the **helper's** shared
+`~/.config/jetbrains-inspection/config.json`, preserving other settings. Keep
+`trustedAutoOpenRoots` set to permitted source roots. The older `nativeWorker`
+object is the PyCharm entry; use it or `nativeWorkers`, never both.
+
+The only human setup step is to open the printed `.command` launcher, sign in
+with an existing entitlement, and quit. It holds the backend's `worker.lock`
+throughout the GUI's lifetime and isolates config, plugins, home, system, log
+and temp paths. Preparation never launches an IDE or handles activation data.
+Required repository plugins and Odoo framework roots are covered below.
 
 ### WebStorm
 
-The `webstorm` entry takes `path`, `app` and `cacheRoot` like `pycharm`, plus a
-required absolute `node` path to an executable `node` with `npm` in the same
-directory (on Chris-Studio the nvm install's `bin/node`, which is not on the
-runner's PATH). That directory goes first on the preparation and engine PATH.
-A missing or non-executable `node` is UNKNOWN with its setup step.
+The configured `node` directory goes first on the preparation and engine PATH.
+A missing or non-executable runtime is UNKNOWN with its setup step.
 
 A selection routes to WebStorm when the repository's `ide` (or each owning
 lane's `ide`) is WebStorm and every file is `.ts`, `.tsx`, `.mts`, `.cts`,
@@ -75,10 +75,8 @@ worker unless `--native-worker` names another.
 
 ### IntelliJ IDEA
 
-The `intellij` entry takes `path`, `app` and `cacheRoot` like `pycharm`, plus a
-required absolute `jdk`: a Java home with `bin/java` and a `release` file, of a
-version the project's Gradle build supports. A missing or unusable `jdk` is
-UNKNOWN with its setup step before any custody record.
+Use a `jdk` version the project's Gradle build supports. A missing or unusable
+runtime is UNKNOWN with its setup step before any custody record.
 
 A selection routes to IntelliJ IDEA when the repository's `ide` (or each owning
 lane's `ide`, without `projectPath`) is IntelliJ IDEA, every file is `.kt`,
@@ -170,12 +168,9 @@ in task evidence. Preparation uses shared non-secret uv cache and Python-install
 paths under `cacheRoot`, with a fresh preparation HOME; it forwards no account
 store, token or desktop-home settings.
 
-The worker contains `config/`, `plugins/`, `home/`, `idea.properties` and
-`worker.lock`. Its properties must point config and plugins into that exact
-worker. Its GUI launcher must hold the same kernel `worker.lock` for its whole
-lifetime. Close that independent GUI before using the CLI. Never open the
-Director's normal PyCharm to repair a native prerequisite. Public plugin ZIPs
-can supply code, but never activation or credentials from another installation.
+Close the independent GUI before using the CLI. Never open the Director's
+normal IDE to repair a native prerequisite. Public plugin ZIPs can supply code,
+but never activation or credentials from another installation.
 
 If activation has lapsed, a licence prompt appears, or any trial is offered,
 the runner stops its process group, cleans its private state and writes a
