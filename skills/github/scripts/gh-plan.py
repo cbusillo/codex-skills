@@ -2417,7 +2417,7 @@ def read_release_inherited_prs(record: dict[str, str]) -> set[str]:
 
 
 def release_retained_prs(issue: dict[str, Any], source: dict[str, Any], actor: str, *,
-                         handoff: str, declared: set[str], excluded: set[str]) -> list[str]:
+                         handoff: str, declared: set[str], excluded: set[str], ended_at: str | None = None) -> list[str]:
     repo, number = issue["repo"], issue["number"]
     record = github_plan_release.source_record(source)
     started = github_plan_release.stamp(source["created_at"])
@@ -2475,6 +2475,9 @@ def release_retained_prs(issue: dict[str, Any], source: dict[str, Any], actor: s
                 continue
             if not named and url not in declared | excluded and github_plan_release.stamp(pull.get("created_at")) < started:
                 continue
+            if (ended_at is not None and not named and url not in declared | excluded
+                    and github_plan_release.stamp(pull.get("created_at")) > github_plan_release.stamp(ended_at)):
+                continue
         accounted.add(url)
         if url in excluded:
             if source_branch or subject or url in inherited:
@@ -2528,12 +2531,12 @@ def cmd_release(args: argparse.Namespace) -> None:
         raise PlanError("Handoff must be narrative; it cannot carry a release receipt or ownership record")
     completed = []
 
-    def checked_exclusions(observed: dict[str, Any]) -> set[str]:
+    def checked_exclusions(snapshot_state: dict[str, Any]) -> set[str]:
         try:
-            return github_plan_release.excluded_prs(observed["comments"], observed["source"], issue_repo=repo)
-        except ValueError as error:
-            raise PlanError(str(error), payload={"source_claim": args.claim_comment,
-                            "completed_steps": list(completed), "release_comment": posted_comment}) from error
+            return github_plan_release.excluded_prs(snapshot_state["comments"], snapshot_state["source"], issue_repo=repo)
+        except ValueError as attribution_error:
+            raise PlanError(str(attribution_error), payload={"source_claim": args.claim_comment,
+                            "completed_steps": list(completed), "release_comment": posted_comment}) from attribution_error
 
     posted_comment = None
 
@@ -2561,8 +2564,6 @@ def cmd_release(args: argparse.Namespace) -> None:
     if {url.casefold() for url in declared} & {url.casefold() for url in excluded} or any(not re.fullmatch(r"https://github\.com/[\w.-]+/[\w.-]+/pull/[1-9]\d*", url)
                                   for url in declared | excluded):
         raise PlanError("Retained and excluded PRs require distinct exact GitHub PR URLs")
-    retained_prs = release_retained_prs(issue, preflight["source"], expected_actor,
-                                      handoff=handoff, declared=declared, excluded=excluded)
     prior_excluded = set()
     candidates = []
     if existing is not None:
@@ -2576,6 +2577,8 @@ def cmd_release(args: argparse.Namespace) -> None:
         record = github_plan_release.source_record(preflight["source"])
         body = (f"Handoff from {record['worker']}\n\nSource claim: {args.claim_comment}\nSession: {args.session}"
                 + (f"\n\n{handoff}" if handoff else ""))
+    retained_prs = release_retained_prs(issue, preflight["source"], expected_actor,
+        handoff=handoff, declared=declared, excluded=excluded, ended_at=existing["created_at"] if existing is not None else None)
     if retained_prs:
         body += "\n\nRetained PR handoff: " + ", ".join(retained_prs)
     if excluded:

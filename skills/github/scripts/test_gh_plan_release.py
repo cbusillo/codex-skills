@@ -1809,6 +1809,20 @@ class OwnReleaseTests(ReleaseHarness):
         self.assertEqual(self.f.events.count("post"), posts)
         self.assertEqual(self.f.emitted.call_args.args[0]["release_state"], "already_released")
 
+    def test_supplement_does_not_claim_later_successor_prs(self) -> None:
+        self.run_own_release()
+        earlier = {"number": 99, "state": "open", "user": {"login": BOT},
+            "created_at": "2026-10-01T01:00:00Z", "body": "Refs #42\nCloses #43",
+            "head": {"ref": "work/neighbor", "repo": {"full_name": "owner/repo"}},
+            "base": {"repo": {"full_name": "owner/repo"}}}
+        later = copy.deepcopy(earlier)
+        later.update(number=120, body="Closes #42", created_at="2026-10-04T00:00:00Z")
+        later["head"]["ref"] = "work/successor"
+        self.f.pulls = [earlier, later]
+        self.args.exclude_pr = ["https://github.com/owner/repo/pull/99"]
+        self.run_own_release()
+        self.assertNotIn(120, CLAIM.handoff_pr_numbers(self.f.comments[-1]["body"], issue_repo="owner/repo", target_repo="owner/repo"))
+
     def test_handoff_requires_qualified_references_before_release(self) -> None:
         for text in ("Read owner/other#550 after landing, then confirm #550.", "Read PR550 after landing.",
                      "Do the rank &#35;1 item first.", "Verify -#77.", "Verify .#77."):
@@ -1917,6 +1931,7 @@ class OwnReleaseTests(ReleaseHarness):
         self.assertEqual(CLAIM.handoff_candidates(self.f.comments, released)[-1], self.f.comments[-1])
         self.assertEqual(release.excluded_prs(self.f.comments, self.f.comments[0], issue_repo="owner/repo"), {url})
         posts = self.f.events.count("post")
+        self.f.pulls = []
         self.run_own_release()
         self.assertEqual(self.f.events.count("post"), posts)
 
@@ -1948,9 +1963,8 @@ class OwnReleaseTests(ReleaseHarness):
         self.f.comments[-1]["body"] += "\n\n<!-- " + release.EXCLUSIONS_MARKER + "invalid -->"
         before = copy.deepcopy(self.f.comments)
         self.args.retained_pr = ["https://github.com/owner/repo/pull/99"]
-        with patch.object(PLAN, "release_retained_prs", return_value=[]):
-            with self.assertRaises(PLAN.PlanError) as caught:
-                self.run_own_release()
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.run_own_release()
         self.assertEqual(caught.exception.payload["completed_steps"], ["release_preflight"])
         self.assertEqual(self.f.comments, before)
 
