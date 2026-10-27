@@ -2881,18 +2881,9 @@ def _secret_bindings_response() -> dict[str, object]:
     }
 
 
-@pytest.mark.parametrize("include_coverage", [False, True])
-def test_product_secret_bindings_read_keeps_metadata_and_counts_the_rest(include_coverage: bool) -> None:
+def test_product_secret_bindings_read_keeps_metadata_and_counts_the_rest() -> None:
     argv = ["product-secret-bindings-read", "--product", "example-product"]
     response = _secret_bindings_response()
-    if include_coverage:
-        response.update({
-            "coverage": {
-                "population": "product_secret_bindings", "status": "scoped", "source": "complete",
-                "authorization": "scoped", "exclusions": ["unreadable_sources"],
-            },
-            "lane_binding_resolution": None,
-        })
     status, payload, calls = _run_product_read(argv, response)
 
     assert status == 0, payload
@@ -2930,15 +2921,14 @@ def test_product_secret_bindings_read_keeps_metadata_and_counts_the_rest(include
         "bindings[].<unlisted field>",
         "bindings[].binding_key",
     ]
-    if include_coverage:
-        expected_dropped_paths.extend(["coverage", "lane_binding_resolution"])
     assert result["dropped_field_paths"] == expected_dropped_paths
     assert result["dropped_field_count"] == len(expected_dropped_paths)
     rendered = json.dumps(payload)
     assert "provider_note" not in rendered
     assert "private provider text" not in rendered
-    assert "coverage" not in result
-    assert "lane_binding_resolution" not in result
+    assert result["coverage"]["status"] == "unknown"
+    assert result["projection_coverage"] == "limited"
+    assert result["lane_binding_resolution"] is None
 
 
 def test_product_secret_bindings_read_fails_closed_on_values_and_ciphertext() -> None:
@@ -4879,7 +4869,7 @@ def test_reconcile_requests_read_shows_why_testing_skipped_a_newer_build() -> No
     assert "preview_recovery_plan" not in kept
     assert "destroy_retry_stop_reason" not in kept
     assert payload["result"]["dropped_field_paths"] == [
-        "requests[].last_plan.artifact_scan",
+        "requests[].last_plan.artifact_scan.image_reference",
         "requests[].last_plan.destroy_retry_stop_reason",
         "requests[].last_plan.held_reservations",
         "requests[].last_plan.preview_recovery_plan",
