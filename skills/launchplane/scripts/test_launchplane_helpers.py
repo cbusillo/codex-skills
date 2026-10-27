@@ -2881,9 +2881,19 @@ def _secret_bindings_response() -> dict[str, object]:
     }
 
 
-def test_product_secret_bindings_read_keeps_metadata_and_counts_the_rest() -> None:
+@pytest.mark.parametrize("include_coverage", [False, True])
+def test_product_secret_bindings_read_keeps_metadata_and_counts_the_rest(include_coverage: bool) -> None:
     argv = ["product-secret-bindings-read", "--product", "example-product"]
-    status, payload, calls = _run_product_read(argv, _secret_bindings_response())
+    response = _secret_bindings_response()
+    if include_coverage:
+        response.update({
+            "coverage": {
+                "population": "product_secret_bindings", "status": "scoped", "source": "complete",
+                "authorization": "scoped", "exclusions": ["unreadable_sources"],
+            },
+            "lane_binding_resolution": None,
+        })
+    status, payload, calls = _run_product_read(argv, response)
 
     assert status == 0, payload
     assert calls[0]["path"] == "/v1/products/example-product/secret-bindings"
@@ -2916,14 +2926,19 @@ def test_product_secret_bindings_read_keeps_metadata_and_counts_the_rest() -> No
         },
     ]
     assert result["omitted_binding_count"] == 1
-    assert result["dropped_field_paths"] == [
+    expected_dropped_paths = [
         "bindings[].<unlisted field>",
         "bindings[].binding_key",
     ]
-    assert result["dropped_field_count"] == 2
+    if include_coverage:
+        expected_dropped_paths.extend(["coverage", "lane_binding_resolution"])
+    assert result["dropped_field_paths"] == expected_dropped_paths
+    assert result["dropped_field_count"] == len(expected_dropped_paths)
     rendered = json.dumps(payload)
     assert "provider_note" not in rendered
     assert "private provider text" not in rendered
+    assert "coverage" not in result
+    assert "lane_binding_resolution" not in result
 
 
 def test_product_secret_bindings_read_fails_closed_on_values_and_ciphertext() -> None:

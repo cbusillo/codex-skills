@@ -3633,6 +3633,8 @@ def _project_product_secret_bindings(provider_payload: dict[str, Any]) -> dict[s
     if not isinstance(bindings, list):
         raise LaunchplaneSafetyError("invalid_response")
     drops = _FieldDrops()
+    for field in provider_payload.keys() - {"status", "trace_id", "product", "bindings"}:
+        drops.drop(field)
     projected_bindings: list[dict[str, object]] = []
     omitted_binding_count = 0
     for binding_value in bindings[:PRODUCT_SECRET_BINDINGS_MAX]:
