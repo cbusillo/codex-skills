@@ -2866,6 +2866,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         executable_text = without_patch_text(text) if javascript else text
         claim_related_here = "gh-plan" in executable_text or CLAIM_WORD.search(executable_text) is not None
         invocations = []
+        claim_commands = []
         ended_invocations = []
         opaque = False
         reason = "missing_output"
@@ -2906,6 +2907,8 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
             for source, ended in zip(sources.commands, source_ended, strict=True):
                 receipt_pure = receipt_pure and not source.interactive
                 discovery = shell_claims(source.text, claim_related=source.interactive and claim_may_be_interactive)
+                if discovery.arguments or discovery.opaque or discovery.decode_failed:
+                    claim_commands.append(source.text)
                 launched_in_background = launched_in_background or discovery.asynchronous
                 invocations.extend(discovery.arguments)
                 ended_invocations.extend([ended and not discovery.asynchronous] * len(discovery.arguments))
@@ -2967,6 +2970,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
                 {
                     "call_id": identifier,
                     "reason": reason,
+                    **({"commands": claim_commands} if javascript else {}),
                     "ended": bool(source_ended) and all(source_ended) and not (launched_in_background or decode_failed),
                     "recovery": (
                         "This code-mode cell is outside the bounded subset after possible interactive claim input. "

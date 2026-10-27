@@ -15,6 +15,15 @@ LITERAL_LOOP_VALUES = 64
 
 NATIVE_NAMES = {"tools", "text", "store", "load", "exit", "Promise", "JSON", "Object", "String", "ALL_TOOLS", "undefined"}
 SHELL_TOOLS = {"exec_command", "shell_command", "shell", "write_stdin"}
+DATA_TOOLS = {
+    "apply_patch",
+    "clock__curr_time",
+    "web__run",
+    "mcp__codex_apps__github_fetch_issue",
+    "mcp__codex_apps__github_fetch_issue_comments",
+    "mcp__codex_apps__github_fetch_pr",
+    "mcp__codex_apps__github_fetch_pr_comments",
+}
 PROTOTYPE_NAMES = {
     "constructor",
     "prototype",
@@ -223,6 +232,13 @@ class JavascriptData:
         result_kind = "data"
         if any(argument.type == "spread_element" for argument in args):
             raise ValueError("spread arguments")
+        if callee.type == "parenthesized_expression" and len(children(callee)) == 1:
+            function = children(callee)[0]
+            parameters = function.child_by_field_name("parameters")
+            if function.type != "arrow_function" or parameters is None or children(parameters) or args:
+                raise ValueError("immediate callback")
+            self.expression(function, environment)
+            return "data"
         if callee.type == "identifier" and (
             source(callee) in {"text", "store", "load", "exit"}
             or environment.get(source(callee), (None,))[0] == "function"
@@ -234,8 +250,8 @@ class JavascriptData:
             receiver = callee.child_by_field_name("object")
             method = property_name(callee.child_by_field_name("property"))
             native = source(receiver) if receiver.type == "identifier" else ""
-            if native == "tools" and method in SHELL_TOOLS | {"apply_patch", "clock__curr_time", "web__run"}:
-                pass
+            if native == "tools" and method in SHELL_TOOLS | DATA_TOOLS:
+                result_kind = "promise"
             elif native == "Promise" and method in {"all", "allSettled"} and len(args) == 1:
                 result_kind = "array"
             elif native == "JSON" and method in {"parse", "stringify"} and len(args) == 1:
@@ -248,14 +264,14 @@ class JavascriptData:
                     method != "test"
                     or source(callee) != source(receiver) + ".test"
                     or len(args) != 1
-                    or re.fullmatch(r"/[A-Za-z0-9_ .|-]+/i?", source(receiver)) is None
+                    or re.fullmatch(r"/(?:[A-Za-z0-9_ .|^$-]|\.\*|\\\.)+/i?", source(receiver)) is None
                     or callback.type != "arrow_function"
                     or callback.child_by_field_name("body") != node
                 ):
                     raise ValueError("regex predicate")
             else:
                 receiver_kind = self.expression(receiver, environment)
-                if method in CALLBACK_METHODS and len(args) == 1:
+                if (method in CALLBACK_METHODS or method == "then" and receiver_kind == "promise") and len(args) == 1:
                     callback = args[0]
                     if method == "forEach" and callback.type == "identifier" and source(callback) == "text":
                         return "data"
@@ -492,6 +508,10 @@ class LiteralCommands:
                 pattern = node.child_by_field_name("parameter") or node.child_by_field_name("parameters")
                 if pattern is None:
                     continue
+                if node.parent.type == "parenthesized_expression" and not children(pattern):
+                    call = node.parent.parent
+                    if call.type == "call_expression" and not children(call.child_by_field_name("arguments")):
+                        continue
                 call = node.parent.parent if node.parent.type == "arguments" else None
                 callee = call.child_by_field_name("function") if call is not None else None
                 receiver = None

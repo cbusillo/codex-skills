@@ -23,6 +23,64 @@ def invocation(source: str, output: object = "") -> list[dict]:
 
 
 class RecordedClaimOutcomeTests(unittest.TestCase):
+    def test_read_only_discovery_cells_do_not_create_claim_uncertainty(self) -> None:
+        reads = [
+            'await Promise.allSettled([(async()=>text(await tools.exec_command({cmd:"gh-plan.py claim --help"})))(),'
+            '(async()=>text(await tools.exec_command({cmd:"gh-plan.py --repo test/a show 5 --full"})))()]);',
+            'const results=await Promise.allSettled([tools.exec_command({cmd:"cat brief-rules.md"}),'
+            'tools.exec_command({cmd:"rg claims MEMORY.md"}),tools.exec_command({cmd:"cat DIRECTION.md"}),'
+            'tools.exec_command({cmd:"pwd; git status --short --branch; git remote -v; rg --files"})]);'
+            'results.forEach((r,i)=>text({i,...r}));'
+            r'text(ALL_TOOLS.filter(x=>/launchplane|github|skills\.|computer/i.test(x.name+" "+x.description))'
+            '.map(x=>({name:x.name,description:x.description.slice(0,150)})));',
+            'text(ALL_TOOLS.filter(x=>/github_fetch_issue$|github_fetch_issue_comments$|computer/.test(x.name))'
+            '.map(x=>({name:x.name,description:x.description.slice(0,350)})));',
+            'text(ALL_TOOLS.filter(x=>/computer|screenshot|app.*launch|window/i.test(x.name+" "+x.description))'
+            '.map(x=>({name:x.name,description:x.description.slice(0,160)})));'
+            'text((await tools.exec_command({cmd:"printenv CODEX_THREAD_ID"})).output);',
+            'await Promise.allSettled(['
+            '(async()=>{let r=await tools.mcp__codex_apps__github_fetch_issue('
+            '{issue_number:5,repository_full_name:"test/a"});store("issue",r);text(r)})(),'
+            '(async()=>{let r=await tools.mcp__codex_apps__github_fetch_issue_comments('
+            '{issue_number:5,repo_full_name:"test/a"});store("comments",r);text(r)})(),'
+            '(async()=>text(await tools.exec_command({cmd:"cat README.md"})))()]);',
+            'text(await tools.mcp__codex_apps__github_fetch_issue_comments('
+            '{issue_number:5,repo_full_name:"test/a"}).then(r=>r.structuredContent.comments.map(c=>({id:c.id,url:c.url}))));',
+            'const c=load("comments").structuredContent.comments;text(c.at(-1).body);'
+            'await Promise.allSettled([(async()=>text(await tools.web__run({search_query:[{q:"SMB reconnect"}]})))(),'
+            '(async()=>text(await tools.exec_command({cmd:"cat evidence.txt"})))()]);',
+        ]
+        for source in reads:
+            with self.subTest(source=source):
+                self.assertEqual(
+                    check_claims.history.literal_targets(invocation(source), SESSION),
+                    {"targets": set(), "unresolved_invocations": []},
+                )
+
+    def test_immediate_callbacks_still_discover_real_uncertain_claims(self) -> None:
+        for source in (
+            f'(async()=>text((await tools.exec_command({{cmd:{json.dumps(COMMAND)}}})).output))();',
+            f'await tools.mcp__codex_apps__github_fetch_issue({{}}).then(async r=>'
+            f'text((await tools.exec_command({{cmd:{json.dumps(COMMAND)}}})).output));',
+        ):
+            with self.subTest(source=source):
+                report = check_claims.history.literal_targets(invocation(source), SESSION)
+                self.assertEqual(report["targets"], {("test/a", 5)})
+                self.assertTrue(report["unresolved_invocations"])
+                self.assertEqual(report["unresolved_invocations"][0]["commands"], [COMMAND])
+
+    def test_immediate_callbacks_and_read_tools_do_not_admit_unknown_execution(self) -> None:
+        for source in (
+            '(async()=>load("runner")())();',
+            '(async runner=>runner())(load("runner"));',
+            'await tools.mcp__codex_apps__github_add_comment_to_issue({body:load("claim")});',
+            'await tools.mcp__codex_apps__github_fetch_issue({}).then(r=>eval(r.body));',
+            'load("result").then(r=>text(r));',
+            '(async()=>{const tools=load("tools");await tools.exec_command({cmd:load("claim")});})();',
+        ):
+            with self.subTest(source=source):
+                self.assertTrue(check_claims.history.literal_targets(invocation(source), SESSION)["unresolved_invocations"])
+
     def assert_discovered_targets(self, rows: list[dict], targets: set[tuple[str, int]]) -> None:
         report = check_claims.history.literal_targets(rows, SESSION)
         self.assertEqual(report["targets"], targets)
@@ -77,9 +135,11 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                 },
             },
         }
-        for kind in ("ended", "prior", "foreign", "duplicate", "unknown_count", "overlap", "yielded", "while", "do", "local_function", "parameterless_callback"):
+        for kind in ("ended", "immediate", "prior", "foreign", "duplicate", "unknown_count", "overlap", "yielded", "while", "do", "local_function", "parameterless_callback"):
             with self.subTest(kind=kind):
                 code = source
+                if kind == "immediate":
+                    code = f'await Promise.allSettled([(async()=>{{{source}}})()]);'
                 if kind == "duplicate":
                     code = f"for(const n of [1,2]){{{source}}}"
                 if kind == "while":
@@ -114,7 +174,7 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                     rows.append(item)
                 report = check_claims.history.literal_targets(rows, SESSION)
                 self.assertEqual(report["targets"], {("test/a", 5)})
-                self.assertEqual(not report["unresolved_invocations"], kind == "ended")
+                self.assertEqual(not report["unresolved_invocations"], kind in {"ended", "immediate"})
 
     def test_only_later_polls_from_the_same_process_generation_can_complete(self) -> None:
         claim = f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));"
