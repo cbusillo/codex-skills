@@ -1808,7 +1808,7 @@ class ClaimTests(unittest.TestCase):
                 source = self.sequential_no_pr_resume_fixture()
                 self.args.resume_from = 88
                 self.comments[-1]["body"] += " Retain PR #99."
-                pull = {"number": 99, "state": "open" if state == "open" else "closed",
+                pull: dict[str, Any] = {"number": 99, "state": "open" if state == "open" else "closed",
                     "merged_at": None if state == "open" else "2026-10-02T03:00:00Z",
                     "user": {"login": TEST_BOT}, "body": "Refs #42",
                     "head": {"ref": source["branch"], "repo": {"full_name": self.args.repo}},
