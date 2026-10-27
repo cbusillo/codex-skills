@@ -21,13 +21,18 @@ from test_launchplane_helpers import (
 ARGS = ["product-secret-bindings-read", "--product", "example-product"]
 
 
-def coverage(*, source: str = "complete", authorization: str = "complete") -> dict[str, object]:
+def coverage(
+    *,
+    source: str = "complete",
+    authorization: str = "complete",
+    population: str = write_action.BINDING_COPY_POPULATION,
+) -> dict[str, object]:
     return {
-        "population": "configured_runtime_copy_metadata_in_exclusive_declared_product_contexts",
+        "population": population,
         "status": authorization if source == "complete" else source,
         "source": source,
         "authorization": authorization,
-        "exclusions": ["global_secrets", "historical_and_undeclared_lanes", "ambiguous_contexts", "other_integrations"],
+        "exclusions": sorted(write_action.BINDING_COVERAGE_EXCLUSIONS[population]),
     }
 
 
@@ -38,25 +43,12 @@ def response() -> dict[str, Any]:
 
 
 def resolution() -> dict[str, Any]:
-    lane_coverage = {
-        **coverage(),
-        "population": "configured_binding_selection_for_requested_integration_and_scopes",
-        "exclusions": ["runtime_delivery_and_value_validation"],
-    }
+    lane_coverage = coverage(population=write_action.BINDING_LANE_POPULATION)
     return {
         "integration": "runtime_environment",
         "selection_scopes": ["global", "context", "context_instance"],
         "lanes": [{"context": "example-product", "instance": "prod", "bindings": response()["bindings"], "coverage": lane_coverage}],
-        "coverage": {
-            **coverage(),
-            "population": "declared_product_lanes_for_requested_integration_and_scopes",
-            "exclusions": [
-                "managed_preview_configuration_scope",
-                "historical_and_undeclared_lanes",
-                "other_integrations",
-                "runtime_delivery",
-            ],
-        },
+        "coverage": coverage(population=write_action.BINDING_SELECTION_POPULATION),
     }
 
 
@@ -127,6 +119,7 @@ def test_local_loss_limits_projection_without_rewriting_server_coverage(damage: 
 def test_requested_resolution_preserves_selection_and_global_metadata() -> None:
     body = response()
     selected = resolution()
+    selected["selection_scopes"] = ["global", "context_instance"]
     global_binding = copy.deepcopy(body["bindings"][0])
     global_binding.update(scope="global", context="", instance="")
     selected["lanes"][0]["bindings"].append(global_binding)
@@ -137,9 +130,9 @@ def test_requested_resolution_preserves_selection_and_global_metadata() -> None:
         "--integration",
         "runtime_environment",
         "--scope",
-        "global",
-        "--scope",
         "context_instance",
+        "--scope",
+        "global",
     ]
     status, payload, calls = _run_product_read(args, body)
     assert status == 0, payload
@@ -153,7 +146,7 @@ def test_requested_resolution_preserves_selection_and_global_metadata() -> None:
     assert calls[0]["query"] == {
         "include_resolution": "true",
         "integration": "runtime_environment",
-        "scopes": ["global", "context_instance"],
+        "scopes": ["context_instance", "global"],
     }
 
 
@@ -184,6 +177,50 @@ def test_missing_requested_resolution_stays_unknown() -> None:
     assert payload["result"]["coverage"] == response()["coverage"]
     assert payload["result"]["lane_binding_resolution"] is None
     assert payload["result"]["projection_coverage"] == "unknown"
+
+
+def test_nullable_undeclared_class_and_reason_are_complete_metadata() -> None:
+    body = response()
+    body["bindings"][0].update(secret_class=None, sharing_reason=None)
+    status, payload, _ = _run_product_read(ARGS, body)
+    assert status == 0, payload
+    assert payload["result"]["projection_coverage"] == "complete"
+    assert payload["result"]["bindings"][0]["secret_class"] == ""
+    assert payload["result"]["bindings"][0]["sharing_reason"] is None
+
+
+@pytest.mark.parametrize("options", [["--integration", "another_integration"], ["--scope", "context"]])
+def test_selection_that_does_not_match_the_request_is_unknown(options: list[str]) -> None:
+    body = response()
+    body["lane_binding_resolution"] = resolution()
+    status, payload, _ = _run_product_read([*ARGS, "--include-resolution", *options], body)
+    assert status == 0, payload
+    selected = payload["result"]["lane_binding_resolution"]
+    assert selected["coverage"] == body["lane_binding_resolution"]["coverage"]
+    assert selected["projection_coverage"] == payload["result"]["projection_coverage"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    "field,value,path",
+    [
+        ("context", "wrong-context", "context"),
+        ("context", "invalid context", "context"),
+        ("instance", "invalid instance", "instance"),
+        ("sharing_reason", "invalid", "sharing_reason"),
+    ],
+)
+def test_selection_counts_each_invalid_field_once_under_its_name(field: str, value: str, path: str) -> None:
+    body = response()
+    body["lane_binding_resolution"] = resolution()
+    binding = body["lane_binding_resolution"]["lanes"][0]["bindings"][0]
+    binding.update(scope="global", context="", instance="")
+    binding[field] = value
+    status, payload, _ = _run_product_read([*ARGS, "--include-resolution"], body)
+    assert status == 0, payload
+    lane = payload["result"]["lane_binding_resolution"]["lanes"][0]
+    assert lane["projection_coverage"] == "limited"
+    assert lane["dropped_field_count"] == 1
+    assert lane["dropped_field_paths"] == [f"bindings[].{path}"]
 
 
 def test_scope_query_is_repeated_on_the_existing_get_transport() -> None:
@@ -276,13 +313,13 @@ def test_malformed_selection_binding_cannot_project_complete(field: str, value: 
 @pytest.mark.parametrize(
     "scan",
     [
-        {"status": "pass", "reason": "no_high_or_critical_vulnerabilities", "high": 0, "critical": 0},
-        {"status": "fail", "reason": "high_or_critical_vulnerabilities", "high": 4, "critical": 2},
+        {"status": "pass", "reason": "clean", "high": 0, "critical": 0},
+        {"status": "fail", "reason": "fixable_vulnerabilities", "high": 4, "critical": 2},
         {"status": "unavailable", "reason": "scanner_busy", "high": 0, "critical": 0},
     ],
 )
 def test_reconcile_scan_evidence_keeps_only_public_fields(scan: dict[str, object]) -> None:
-    scan = {**scan, "scanned_at": "2026-10-27T13:00:00Z"}
+    scan = {**scan, "scanned_at": "2026-10-27T13:00:00.123456+00:00"}
     body = {
         "product": "example-product",
         "requests": [
@@ -300,7 +337,7 @@ def test_reconcile_scan_evidence_keeps_only_public_fields(scan: dict[str, object
     }
     status, payload, _ = _run_product_read(["reconcile-requests-read", "--product", "example-product"], body)
     assert status == 0, payload
-    assert payload["result"]["requests"][0]["last_plan"]["artifact_scan"] == scan
+    assert payload["result"]["requests"][0]["last_plan"]["artifact_scan"] == {**scan, "scanned_at": "2026-10-27T13:00:00.123456Z"}
     assert "private-image" not in json.dumps(payload)
     assert "PRIVATE_SENTINEL" not in json.dumps(payload)
 

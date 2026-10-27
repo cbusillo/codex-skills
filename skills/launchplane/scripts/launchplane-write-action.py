@@ -3594,6 +3594,23 @@ PRODUCT_SECRET_BINDING_FIELDS = frozenset(
     }
 )
 PRODUCT_SECRET_BINDING_SCOPES = {"context", "context_instance"}
+BINDING_COPY_POPULATION = "configured_runtime_copy_metadata_in_exclusive_declared_product_contexts"
+BINDING_SELECTION_POPULATION = "declared_product_lanes_for_requested_integration_and_scopes"
+BINDING_LANE_POPULATION = "configured_binding_selection_for_requested_integration_and_scopes"
+BINDING_COVERAGE_EXCLUSIONS = {
+    BINDING_COPY_POPULATION: frozenset(
+        {"global_secrets", "historical_and_undeclared_lanes", "ambiguous_contexts", "other_integrations"}
+    ),
+    BINDING_SELECTION_POPULATION: frozenset(
+        {
+            "managed_preview_configuration_scope",
+            "historical_and_undeclared_lanes",
+            "other_integrations",
+            "runtime_delivery",
+        }
+    ),
+    BINDING_LANE_POPULATION: frozenset({"runtime_delivery_and_value_validation"}),
+}
 
 
 def _product_secret_binding_scope(value: object) -> str:
@@ -3618,23 +3635,22 @@ def _project_product_secret_binding(
 
     binding_key = field("binding_key", public_identifier)
     scope = "global" if allow_global and binding.get("scope") == "global" else field("scope", _product_secret_binding_scope)
+    if scope == "global" and binding.get("context") != "":
+        drops.drop("bindings[].context")
+        return None
     context = "" if scope == "global" and binding.get("context") == "" else field("context", public_identifier)
     if not binding_key or not scope or (scope != "global" and not context):
-        return None
-    instance = field("instance", public_identifier)
-    if (scope == "context_instance") != bool(instance) or (scope == "global" and context):
-        drops.drop("bindings[].instance")
         return None
     if scope != "context_instance" and binding.get("instance") != "":
         drops.drop("bindings[].instance")
         return None
-    if scope == "global" and binding.get("context") != "":
-        drops.drop("bindings[].context")
+    instance = field("instance", public_identifier)
+    if scope == "context_instance" and not instance:
         return None
     sharing_reason: object = None
     if binding.get("sharing_reason") is not None:
         sharing_reason = field("sharing_reason", _project_sharing_reason) or None
-        if sharing_reason is None:
+        if binding.get("sharing_reason") == "":
             drops.drop("bindings[].sharing_reason")
     if binding.get("secret_class") == "":
         drops.drop("bindings[].secret_class")
@@ -3687,7 +3703,7 @@ def _assert_product_binding_shape(value: dict[str, Any]) -> None:
     assert_public_safe_shape(safe)
 
 
-def _project_binding_coverage(value: object, *, population: str, exclusions: set[str]) -> dict[str, object]:
+def _project_binding_coverage(value: object, *, population: str) -> dict[str, object]:
     if not isinstance(value, dict) or set(value) != {"population", "status", "source", "authorization", "exclusions"}:
         return _unknown_read_coverage()
     source = value["source"]
@@ -3702,7 +3718,7 @@ def _project_binding_coverage(value: object, *, population: str, exclusions: set
         or value["status"] != (authorization if source == "complete" else source)
         or not isinstance(excluded, list)
         or len(excluded) > 20
-        or any(not isinstance(item, str) or item not in exclusions for item in excluded)
+        or any(not isinstance(item, str) or item not in BINDING_COVERAGE_EXCLUSIONS[population] for item in excluded)
     ):
         return _unknown_read_coverage()
     return dict(value)
@@ -3747,7 +3763,7 @@ def _project_binding_collection(source: dict[str, Any], *, allow_global: bool = 
     }
 
 
-def _project_binding_resolution(value: object) -> dict[str, Any] | None:
+def _project_binding_resolution(value: object, *, request: dict[str, object]) -> dict[str, Any] | None:
     if value is None:
         return None
     if not isinstance(value, dict) or set(value) != {"integration", "selection_scopes", "lanes", "coverage"}:
@@ -3763,27 +3779,14 @@ def _project_binding_resolution(value: object) -> dict[str, Any] | None:
         or not isinstance(lanes, list)
     ):
         return {"coverage": _unknown_read_coverage(), "projection_coverage": "unknown"}
-    coverage = _project_binding_coverage(
-        value["coverage"],
-        population="declared_product_lanes_for_requested_integration_and_scopes",
-        exclusions={
-            "managed_preview_configuration_scope",
-            "historical_and_undeclared_lanes",
-            "other_integrations",
-            "runtime_delivery",
-        },
-    )
+    coverage = _project_binding_coverage(value["coverage"], population=BINDING_SELECTION_POPULATION)
     selected = []
     omitted = 0
     for lane in lanes[:PRODUCT_SECRET_BINDINGS_MAX]:
         if not isinstance(lane, dict) or set(lane) != {"context", "instance", "bindings", "coverage"}:
             omitted += 1
             continue
-        lane_coverage = _project_binding_coverage(
-            lane["coverage"],
-            population="configured_binding_selection_for_requested_integration_and_scopes",
-            exclusions={"runtime_delivery_and_value_validation"},
-        )
+        lane_coverage = _project_binding_coverage(lane["coverage"], population=BINDING_LANE_POPULATION)
         bindings = _project_binding_collection(lane, allow_global=True)
         selected.append(
             {
@@ -3798,6 +3801,9 @@ def _project_binding_resolution(value: object) -> dict[str, Any] | None:
                 ),
             }
         )
+    matching_selection = ("integration" not in request or request["integration"] == value["integration"]) and (
+        "scopes" not in request or set(cast(list[str], request["scopes"])) == set(scopes)
+    )
     return {
         "integration": public_identifier(value["integration"]),
         "selection_scopes": scopes,
@@ -3805,7 +3811,9 @@ def _project_binding_resolution(value: object) -> dict[str, Any] | None:
         "lanes_truncated": len(lanes) > PRODUCT_SECRET_BINDINGS_MAX,
         "omitted_lane_count": omitted,
         "coverage": coverage,
-        "projection_coverage": _binding_projection_coverage(
+        "projection_coverage": "unknown"
+        if not matching_selection
+        else _binding_projection_coverage(
             coverage,
             lost=bool(omitted or len(lanes) > PRODUCT_SECRET_BINDINGS_MAX),
             children=[lane["projection_coverage"] for lane in selected],
@@ -3816,19 +3824,19 @@ def _project_binding_resolution(value: object) -> dict[str, Any] | None:
 def _project_product_secret_bindings(
     provider_payload: dict[str, Any],
     *,
-    resolution_requested: bool = False,
+    request: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """A product's runtime secret binding metadata, bounded. Odd fields are dropped and
     unusable bindings omitted, with counts and field paths; a secret-looking value or a
     sensitive field name fails the read."""
     _assert_product_binding_shape(provider_payload)
+    request = request or {}
     bindings = _project_binding_collection(provider_payload)
     coverage = _project_binding_coverage(
         provider_payload.get("coverage"),
-        population="configured_runtime_copy_metadata_in_exclusive_declared_product_contexts",
-        exclusions={"global_secrets", "historical_and_undeclared_lanes", "ambiguous_contexts", "other_integrations"},
+        population=BINDING_COPY_POPULATION,
     )
-    resolution = _project_binding_resolution(provider_payload.get("lane_binding_resolution"))
+    resolution = _project_binding_resolution(provider_payload.get("lane_binding_resolution"), request=request)
     projected: dict[str, object] = {
         "product": public_identifier(provider_payload.get("product")),
         **bindings,
@@ -3839,7 +3847,13 @@ def _project_product_secret_bindings(
             lost=False,
             children=[
                 bindings["projection_coverage"],
-                *([resolution["projection_coverage"]] if resolution else ["unknown"] if resolution_requested else []),
+                *(
+                    [resolution["projection_coverage"]]
+                    if resolution
+                    else ["unknown"]
+                    if request.get("include_resolution") == "true"
+                    else []
+                ),
             ],
         ),
     }
@@ -6102,7 +6116,7 @@ def summarize_product_secret_bindings_read(
         status=status, operation="product-secret-bindings-read", request=request
     )
     payload["result"] = _project_product_secret_bindings(
-        provider_payload, resolution_requested=request.get("include_resolution") == "true",
+        provider_payload, request=request,
     )
     payload["summary"] = {
         "launchplane_status": status,

@@ -647,6 +647,10 @@ installed local helper bindings.
   integration; repeat `--scope global|context|context_instance` to select scopes.
   Without those options, the service chooses its runtime integration and all
   three scopes. Integration/scope options require `--include-resolution`.
+  Selection needs authority over every requested scope. A scoped caller that
+  cannot read global bindings should request only its readable scopes, for
+  example `--scope context --scope context_instance`; otherwise the service
+  withholds that lane's whole selection and reports scoped coverage.
   The helper sends repeated `scopes` query parameters through the same GET.
   Resolution retains the exact integration, selection scopes, declared lane
   identities, binding names, classes, sharing reasons and version ids, and
@@ -663,6 +667,8 @@ installed local helper bindings.
   propagate to the selection and top-level result. Client `complete` means
   only that the stated returned evidence survived projection. Zero omissions
   and client completeness never certify server or fleet completeness.
+  A returned integration or scope set that differs from the explicit request
+  makes client selection coverage unknown while retaining the server's facts.
 - `testing-rebuild-dry-run --product --copy-source --artifact-id --source-git-ref
   --reason` reads the native preflight through
   `POST /v1/drivers/odoo/target-replacement-plan`. It records no artifact,
