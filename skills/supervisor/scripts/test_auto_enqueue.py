@@ -1895,22 +1895,20 @@ class QualificationTests(unittest.TestCase):
         self.io.args = argparse.Namespace(config=None, env_config=None, url=None, timeout=10)
         self.io.acceptance = lambda repo, pull: watch.Live.acceptance(self.io, repo, pull)
         project_review = getattr(watch.review, "project_review")
-        for decision, head, carried_from, expected in (
-            ("accepted", SHA, None, True),
-            ("accepted", SHA, "b" * 40, True),
-            ("accepted", "b" * 40, None, False),
-            ("rejected", SHA, None, False),
-            ("pending", SHA, None, False),
-            (None, SHA, None, False),
+        for decision, head, expected in (
+            ("accepted", SHA, True),
+            ("accepted", "b" * 40, False),
+            ("rejected", SHA, False),
+            ("pending", SHA, False),
+            (None, SHA, False),
         ):
-            with self.subTest(decision=decision, head=head, carried_from=carried_from):
+            with self.subTest(decision=decision, head=head):
                 record = {
                     "record_id": "review", "product": "verireel", "repository": REPO,
                     "pull_request_number": self.pull["number"], "head_sha": head,
                     "preview_url": "https://preview.example.invalid", "decision": decision,
                     "reason": "", "owner_github_id": "123", "owner_github_login": "client",
                     "decided_at": "2026-10-26T23:45:07.914Z", "feedback_url": "",
-                    "carried_from": carried_from,
                 } if decision else None
                 payload = {"status": "ok", "repository": REPO, "pull_request_number": self.pull["number"],
                            "latest_decision": record}
