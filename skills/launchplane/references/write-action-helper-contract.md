@@ -608,9 +608,12 @@ installed local helper bindings.
   `held_reservations_truncated` flag, with the existing scalar safety rules.
   `destroy_retry_key`, `preview_recovery_plan`, `destroy_retry_stop_reason` and
   `feedback_recovery_stop_reason` are withheld and counted under their own names.
-  The reviewed `artifact_scan` object can carry a registry/image reference;
-  `held_reservations` and `testing_deploy_recovery` carry original-operation or
-  provider evidence. These raw objects are deliberately withheld and counted by
+  `artifact_scan` retains only validated `status`, `reason`, nonnegative `high`
+  and `critical` counts, and UTC `scanned_at`. Its `image_reference` is withheld
+  and counted by name; other nested fields are dropped under `<unlisted field>`.
+  Missing scan fields stay missing. `held_reservations` and
+  `testing_deploy_recovery` carry original-operation or provider evidence.
+  These raw objects are deliberately withheld and counted by
   name; their presence is not absence or a recovery clearance. The plan's
   duplicate `product` is withheld because the result already supplies the
   product scope. The retained action, reason, hold and refusal fields remain
@@ -618,18 +621,54 @@ installed local helper bindings.
   under `requests[].last_plan.<unlisted field>`;
   the same drop and omit rules apply.
 - `product-secret-bindings-read --product` calls
-  `GET /v1/products/{product}/secret-bindings` with no query. It returns up to
+  `GET /v1/products/{product}/secret-bindings`. It returns up to
   200 of the product's runtime secret bindings, each with `binding_key`,
   `name`, `scope` (`context` or `context_instance`), `context`, `instance`,
   `secret_class`, `sharing_reason` (kind, reason, evidence, recorded by and
   at) and the current `version_id`. The service needs `product_profile.read`
-  and lists only bindings covered by the caller's `secret.list` access; preview,
-  removed-lane, global and worker stores are never listed. A field named like a
+  and lists only authorized metadata. This copy-oriented population covers
+  runtime configuration in exclusive declared product contexts, including
+  configured preview targets; it excludes global secrets, historical or
+  undeclared lanes, ambiguous contexts and other integrations. A field named like a
   value, ciphertext or other secret fails the whole read, as does a
   secret-looking value in any field, including one that would be dropped; any
   other unlisted field is dropped and counted under
   `bindings[].<unlisted field>`, and a binding without a usable key, context
   or scope is omitted and counted.
+
+  `coverage` preserves the service's typed `population`, `status`, `source`,
+  `authorization` and `exclusions`. Absent, malformed, inconsistent or
+  unsupported coverage shapes become explicit `unknown`, with null population
+  and exclusions. The narrowly validated coverage `authorization` enum is not
+  an authorization policy or a grant. No other envelope allows that field.
+
+  Add `--include-resolution` to request the producer's optional
+  `lane_binding_resolution`. Optional `--integration NAME` selects one exact
+  integration; repeat `--scope global|context|context_instance` to select scopes.
+  Without those options, the service chooses its runtime integration and all
+  three scopes. Integration/scope options require `--include-resolution`.
+  Selection needs authority over every requested scope. A scoped caller that
+  cannot read global bindings should request only its readable scopes, for
+  example `--scope context --scope context_instance`; otherwise the service
+  withholds that lane's whole selection and reports scoped coverage.
+  The helper sends repeated `scopes` query parameters through the same GET.
+  Resolution retains the exact integration, selection scopes, declared lane
+  identities, binding names, classes, sharing reasons and version ids, and
+  separate service coverage for the selection and each lane. Global binding
+  metadata is allowed only in this selection, with empty context and instance.
+  This proves configured selection for those scopes, not runtime delivery,
+  value validation or all worker/provider paths. Hidden source identities and
+  counts are never inferred. Each list retains at most 200 entries.
+
+  Each collection also reports client `projection_coverage` separately from
+  service coverage. `limited` means a local cap, omitted row, dropped field or
+  missing required binding evidence; `unknown` means coverage or requested
+  selection evidence was unavailable or malformed. Child projection losses
+  propagate to the selection and top-level result. Client `complete` means
+  only that the stated returned evidence survived projection. Zero omissions
+  and client completeness never certify server or fleet completeness.
+  A returned integration or scope set that differs from the explicit request
+  makes client selection coverage unknown while retaining the server's facts.
 - `testing-rebuild-dry-run --product --copy-source --artifact-id --source-git-ref
   --reason` reads the native preflight through
   `POST /v1/drivers/odoo/target-replacement-plan`. It records no artifact,

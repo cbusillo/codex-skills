@@ -19,7 +19,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -688,10 +688,10 @@ def request_launchplane_read(
     service_url: str,
     path: str,
     settings: dict[str, str],
-    query: dict[str, str],
+    query: Mapping[str, str | list[str]],
     timeout: float,
 ) -> dict[str, Any]:
-    encoded_query = urllib.parse.urlencode(query)
+    encoded_query = urllib.parse.urlencode(query, doseq=True)
     request = urllib.request.Request(
         build_launchplane_url(service_url, path, query=encoded_query), method="GET"
     )
@@ -3374,7 +3374,6 @@ RECONCILE_PLAN_WITHHELD = frozenset({
     "preview_recovery_plan",
     "destroy_retry_stop_reason",
     "feedback_recovery_stop_reason",
-    "artifact_scan",
     "held_reservations",
     "testing_deploy_recovery",
     "product",
@@ -3448,6 +3447,29 @@ def _project_reconcile_feedback(value: object, drops: _FieldDrops) -> dict[str, 
     return projected
 
 
+def _project_reconcile_scan(value: object, drops: _FieldDrops) -> dict[str, object]:
+    if not isinstance(value, dict):
+        drops.drop("requests[].last_plan.artifact_scan")
+        return {}
+    validators = {
+        "status": public_code,
+        "reason": _public_dotted_code,
+        "high": _nonnegative_int,
+        "critical": _nonnegative_int,
+        "scanned_at": _utc_timestamp,
+    }
+    projected: dict[str, object] = {}
+    for key, item in value.items():
+        path = key if key in validators or key == "image_reference" else "<unlisted field>"
+        if key not in validators:
+            drops.drop(f"requests[].last_plan.artifact_scan.{path}")
+            continue
+        kept = drops.keep(f"requests[].last_plan.artifact_scan.{path}", validators[key], item)
+        if kept != "":
+            projected[key] = kept
+    return projected
+
+
 def _project_reconcile_plan(plan_value: object, drops: _FieldDrops) -> dict[str, object]:
     """The plan fields the reconciler is known to write. Any other field, and a value
     that does not validate, is dropped and counted."""
@@ -3469,6 +3491,8 @@ def _project_reconcile_plan(plan_value: object, drops: _FieldDrops) -> dict[str,
             projected[key] = _project_rejected_builds(value, drops)
         elif key == "pr_feedback":
             projected[key] = _project_reconcile_feedback(value, drops)
+        elif key == "artifact_scan":
+            projected[key] = _project_reconcile_scan(value, drops)
         elif key in RECONCILE_PLAN_WITHHELD:
             drops.drop(f"requests[].last_plan.{key}")
         elif key in RECONCILE_PLAN_KEY_NAME_LISTS and isinstance(value, list):
@@ -3570,6 +3594,23 @@ PRODUCT_SECRET_BINDING_FIELDS = frozenset(
     }
 )
 PRODUCT_SECRET_BINDING_SCOPES = {"context", "context_instance"}
+BINDING_COPY_POPULATION = "configured_runtime_copy_metadata_in_exclusive_declared_product_contexts"
+BINDING_SELECTION_POPULATION = "declared_product_lanes_for_requested_integration_and_scopes"
+BINDING_LANE_POPULATION = "configured_binding_selection_for_requested_integration_and_scopes"
+BINDING_COVERAGE_EXCLUSIONS = {
+    BINDING_COPY_POPULATION: frozenset(
+        {"global_secrets", "historical_and_undeclared_lanes", "ambiguous_contexts", "other_integrations"}
+    ),
+    BINDING_SELECTION_POPULATION: frozenset(
+        {
+            "managed_preview_configuration_scope",
+            "historical_and_undeclared_lanes",
+            "other_integrations",
+            "runtime_delivery",
+        }
+    ),
+    BINDING_LANE_POPULATION: frozenset({"runtime_delivery_and_value_validation"}),
+}
 
 
 def _product_secret_binding_scope(value: object) -> str:
@@ -3579,7 +3620,7 @@ def _product_secret_binding_scope(value: object) -> str:
 
 
 def _project_product_secret_binding(
-    binding_value: object, drops: _FieldDrops
+    binding_value: object, drops: _FieldDrops, *, allow_global: bool = False
 ) -> dict[str, object] | None:
     """One binding's metadata, or None when its identity is unusable. A sensitive
     field name, such as a value or ciphertext, or a secret-looking value in any
@@ -3593,17 +3634,26 @@ def _project_product_secret_binding(
         return drops.keep(f"bindings[].{name}", validate, binding.get(name))
 
     binding_key = field("binding_key", public_identifier)
-    context = field("context", public_identifier)
-    scope = field("scope", _product_secret_binding_scope)
-    if not binding_key or not context or not scope:
+    scope = "global" if allow_global and binding.get("scope") == "global" else field("scope", _product_secret_binding_scope)
+    if scope == "global" and binding.get("context") != "":
+        drops.drop("bindings[].context")
+        return None
+    context = "" if scope == "global" and binding.get("context") == "" else field("context", public_identifier)
+    if not binding_key or not scope or (scope != "global" and not context):
+        return None
+    if scope != "context_instance" and binding.get("instance") != "":
+        drops.drop("bindings[].instance")
         return None
     instance = field("instance", public_identifier)
-    if (scope == "context_instance") != bool(instance):
-        drops.drop("bindings[].instance")
+    if scope == "context_instance" and not instance:
         return None
     sharing_reason: object = None
     if binding.get("sharing_reason") is not None:
         sharing_reason = field("sharing_reason", _project_sharing_reason) or None
+        if binding.get("sharing_reason") == "":
+            drops.drop("bindings[].sharing_reason")
+    if binding.get("secret_class") == "":
+        drops.drop("bindings[].secret_class")
     _report_dropped_fields(
         binding,
         prefix="bindings[]",
@@ -3625,33 +3675,189 @@ def _project_product_secret_binding(
     }
 
 
-def _project_product_secret_bindings(provider_payload: dict[str, Any]) -> dict[str, object]:
-    """A product's runtime secret binding metadata, bounded. Odd fields are dropped and
-    unusable bindings omitted, with counts and field paths; a secret-looking value or a
-    sensitive field name fails the read."""
-    bindings = provider_payload.get("bindings") or []
+def _unknown_read_coverage() -> dict[str, object]:
+    return {"population": None, "status": "unknown", "source": "unknown", "authorization": "unknown", "exclusions": None}
+
+
+def _binding_coverage_safe_shape(value: object) -> object:
+    if not isinstance(value, dict):
+        return value
+    assert_public_safe_shape(value.get("authorization"))
+    return {key: item for key, item in value.items() if key != "authorization"}
+
+
+def _assert_product_binding_shape(value: dict[str, Any]) -> None:
+    safe = {**value, "coverage": _binding_coverage_safe_shape(value.get("coverage"))}
+    resolution = value.get("lane_binding_resolution")
+    if isinstance(resolution, dict):
+        safe["lane_binding_resolution"] = {
+            **resolution,
+            "coverage": _binding_coverage_safe_shape(resolution.get("coverage")),
+        }
+        lanes = resolution.get("lanes")
+        if isinstance(lanes, list):
+            safe["lane_binding_resolution"]["lanes"] = [
+                {**lane, "coverage": _binding_coverage_safe_shape(lane.get("coverage"))} if isinstance(lane, dict) else lane
+                for lane in lanes
+            ]
+    assert_public_safe_shape(safe)
+
+
+def _project_binding_coverage(value: object, *, population: str) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {"population", "status", "source", "authorization", "exclusions"}:
+        return _unknown_read_coverage()
+    source = value["source"]
+    authorization = value["authorization"]
+    excluded = value["exclusions"]
+    if (
+        value["population"] != population
+        or not isinstance(source, str)
+        or source not in {"complete", "limited", "unsupported", "unknown"}
+        or not isinstance(authorization, str)
+        or authorization not in {"complete", "scoped", "unknown"}
+        or value["status"] != (authorization if source == "complete" else source)
+        or not isinstance(excluded, list)
+        or len(excluded) > 20
+        or any(not isinstance(item, str) or item not in BINDING_COVERAGE_EXCLUSIONS[population] for item in excluded)
+    ):
+        return _unknown_read_coverage()
+    return dict(value)
+
+
+def _binding_projection_coverage(coverage: dict[str, object], *, lost: bool, children: list[str] | None = None) -> str:
+    children = children or []
+    if lost or "limited" in children:
+        return "limited"
+    if coverage["population"] is None or "unknown" in children:
+        return "unknown"
+    return "complete"
+
+
+def _project_binding_collection(source: dict[str, Any], *, allow_global: bool = False) -> dict[str, Any]:
+    bindings = source.get("bindings")
     if not isinstance(bindings, list):
         raise LaunchplaneSafetyError("invalid_response")
     drops = _FieldDrops()
-    for field in provider_payload.keys() - {"status", "trace_id", "product", "bindings"}:
-        drops.drop(field)
-    projected_bindings: list[dict[str, object]] = []
-    omitted_binding_count = 0
-    for binding_value in bindings[:PRODUCT_SECRET_BINDINGS_MAX]:
-        projected_binding = _project_product_secret_binding(binding_value, drops)
-        if projected_binding is None:
-            omitted_binding_count += 1
+    projected = []
+    omitted = 0
+    for binding in bindings[:PRODUCT_SECRET_BINDINGS_MAX]:
+        item = _project_product_secret_binding(binding, drops, allow_global=allow_global)
+        if item is None:
+            omitted += 1
         else:
-            projected_bindings.append(projected_binding)
-    projected: dict[str, object] = {
-        "product": public_identifier(provider_payload.get("product")),
-        "bindings": projected_bindings,
+            projected.append(item)
+    required_missing = any(not row.get(key) for row in projected for key in ("name", "version_id")) or any(
+        not PRODUCT_SECRET_BINDING_FIELDS.issubset(binding)
+        for binding in bindings[:PRODUCT_SECRET_BINDINGS_MAX]
+        if isinstance(binding, dict)
+    )
+    return {
+        "bindings": projected,
         "bindings_truncated": len(bindings) > PRODUCT_SECRET_BINDINGS_MAX,
-        "omitted_binding_count": omitted_binding_count,
+        "omitted_binding_count": omitted,
         "dropped_field_count": drops.count,
         "dropped_field_paths": sorted(drops.paths),
+        "projection_coverage": "limited"
+        if omitted or drops.count or required_missing or len(bindings) > PRODUCT_SECRET_BINDINGS_MAX
+        else "complete",
     }
-    assert_public_safe_shape(projected)
+
+
+def _project_binding_resolution(value: object, *, request: dict[str, object]) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"integration", "selection_scopes", "lanes", "coverage"}:
+        return {"coverage": _unknown_read_coverage(), "projection_coverage": "unknown"}
+    scopes = value["selection_scopes"]
+    lanes = value["lanes"]
+    if (
+        not isinstance(scopes, list)
+        or not scopes
+        or len(scopes) > 3
+        or any(not isinstance(item, str) or item not in {"global", "context", "context_instance"} for item in scopes)
+        or len(set(scopes)) != len(scopes)
+        or not isinstance(lanes, list)
+    ):
+        return {"coverage": _unknown_read_coverage(), "projection_coverage": "unknown"}
+    coverage = _project_binding_coverage(value["coverage"], population=BINDING_SELECTION_POPULATION)
+    selected = []
+    omitted = 0
+    for lane in lanes[:PRODUCT_SECRET_BINDINGS_MAX]:
+        if not isinstance(lane, dict) or set(lane) != {"context", "instance", "bindings", "coverage"}:
+            omitted += 1
+            continue
+        lane_coverage = _project_binding_coverage(lane["coverage"], population=BINDING_LANE_POPULATION)
+        bindings = _project_binding_collection(lane, allow_global=True)
+        selected.append(
+            {
+                "context": public_identifier(lane["context"]),
+                "instance": public_identifier(lane["instance"]),
+                **bindings,
+                "coverage": lane_coverage,
+                "projection_coverage": _binding_projection_coverage(
+                    lane_coverage,
+                    lost=False,
+                    children=[bindings["projection_coverage"]],
+                ),
+            }
+        )
+    matching_selection = ("integration" not in request or request["integration"] == value["integration"]) and (
+        "scopes" not in request or set(cast(list[str], request["scopes"])) == set(scopes)
+    )
+    return {
+        "integration": public_identifier(value["integration"]),
+        "selection_scopes": scopes,
+        "lanes": selected,
+        "lanes_truncated": len(lanes) > PRODUCT_SECRET_BINDINGS_MAX,
+        "omitted_lane_count": omitted,
+        "coverage": coverage,
+        "projection_coverage": "unknown"
+        if not matching_selection
+        else _binding_projection_coverage(
+            coverage,
+            lost=bool(omitted or len(lanes) > PRODUCT_SECRET_BINDINGS_MAX),
+            children=[lane["projection_coverage"] for lane in selected],
+        ),
+    }
+
+
+def _project_product_secret_bindings(
+    provider_payload: dict[str, Any],
+    *,
+    request: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """A product's runtime secret binding metadata, bounded. Odd fields are dropped and
+    unusable bindings omitted, with counts and field paths; a secret-looking value or a
+    sensitive field name fails the read."""
+    _assert_product_binding_shape(provider_payload)
+    request = request or {}
+    bindings = _project_binding_collection(provider_payload)
+    coverage = _project_binding_coverage(
+        provider_payload.get("coverage"),
+        population=BINDING_COPY_POPULATION,
+    )
+    resolution = _project_binding_resolution(provider_payload.get("lane_binding_resolution"), request=request)
+    projected: dict[str, object] = {
+        "product": public_identifier(provider_payload.get("product")),
+        **bindings,
+        "coverage": coverage,
+        "lane_binding_resolution": resolution,
+        "projection_coverage": _binding_projection_coverage(
+            coverage,
+            lost=False,
+            children=[
+                bindings["projection_coverage"],
+                *(
+                    [resolution["projection_coverage"]]
+                    if resolution
+                    else ["unknown"]
+                    if request.get("include_resolution") == "true"
+                    else []
+                ),
+            ],
+        ),
+    }
+    _assert_product_binding_shape(projected)
     return projected
 
 
@@ -5909,7 +6115,9 @@ def summarize_product_secret_bindings_read(
     payload = base_payload(
         status=status, operation="product-secret-bindings-read", request=request
     )
-    payload["result"] = _project_product_secret_bindings(provider_payload)
+    payload["result"] = _project_product_secret_bindings(
+        provider_payload, request=request,
+    )
     payload["summary"] = {
         "launchplane_status": status,
         "trace_id": public_trace_id(provider_payload.get("trace_id")),
@@ -6286,7 +6494,7 @@ def execute_product_read(
     operation: str,
     request: dict[str, object],
     path: str,
-    query: dict[str, str] | None = None,
+    query: Mapping[str, str | list[str]] | None = None,
 ) -> int:
     summarize = PRODUCT_READ_SUMMARIZERS[operation]
     settings = prepare_operator_settings(args=args, operation=operation, request=request)
@@ -11522,6 +11730,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     product_secret_bindings_read.add_argument("--product", required=True)
+    product_secret_bindings_read.add_argument("--include-resolution", action="store_true")
+    product_secret_bindings_read.add_argument("--integration")
+    product_secret_bindings_read.add_argument("--scope", action="append", choices=("global", "context", "context_instance"))
 
     for command in NAMES_ONLY_READS:
         names_read = subparsers.add_parser(command, help="Read names and metadata only; never emit values.")
@@ -12485,8 +12696,19 @@ def main(argv: list[str]) -> int:
             }
             if args.command == "reconcile-requests-read" and args.target_key is not None:
                 request["target_key"] = _request_identifier(args.target_key)
+            query: dict[str, str | list[str]] = {}
+            if args.command == "product-secret-bindings-read":
+                if not args.include_resolution and (args.integration is not None or args.scope is not None):
+                    raise LaunchplaneSafetyError("invalid_request")
+                if args.include_resolution:
+                    query["include_resolution"] = "true"
+                    if args.integration is not None:
+                        query["integration"] = _request_identifier(args.integration)
+                    if args.scope is not None:
+                        query["scopes"] = list(dict.fromkeys(args.scope))
+                    request.update(query)
             return execute_product_read(
-                args=args, operation=args.command, request=request, path=path
+                args=args, operation=args.command, request=request, path=path, query=query,
             )
         if args.command == "target-replacement-plan-read":
             return execute_target_replacement_plan_read(args=args)
