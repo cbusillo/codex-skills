@@ -636,6 +636,9 @@ them ([Q415](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6
 and a hand-kept board line called two parked ideas a Director hold
 ([#2053](https://github.com/cbusillo/codex-skills/issues/2053)).
 
+Use each Track's `closure_review` at this same check under the
+[milestone contract](../github-plan/references/milestones.md).
+
 ## Local State
 
 Keep locally only what GitHub cannot rebuild:

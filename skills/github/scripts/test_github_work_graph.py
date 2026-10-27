@@ -16,6 +16,7 @@ from unittest.mock import Mock
 
 import github_api
 import github_plan_wait
+import github_next_queue
 import github_work_graph as graph
 
 FIXTURE = Path(__file__).parent / "fixtures/planning_graph.json"
@@ -112,6 +113,30 @@ def evaluate(row: dict[str, Any], *, limit: int = 100, read_comments: Any = unav
 
 
 class WorkGraphTests(unittest.TestCase):
+    def test_status_order_uses_body_edits_instead_of_later_issue_activity(self):
+        discussion = {"body": "## Current Status\nState: Active.", "updated_at": "2026-10-26T23:00:00Z",
+            "comments": [{"author": "owner", "created_at": "2026-10-25T12:00:00Z",
+                          "body": "## Current Status\nState: Complete."}]}
+        for edited_at, source in (("2026-10-24T12:00:00Z", discussion["comments"][0]["body"]),
+                                  ("2026-10-26T12:00:00Z", discussion["body"])):
+            read = Mock(return_value={"data": {"repository": {"issue": {
+                "createdAt": "2026-10-01T00:00:00Z", "lastEditedAt": edited_at}}}})
+            body_time = graph.status_body_time(discussion, {"owner"}, read)
+            self.assertEqual(github_next_queue.current_status(discussion, {"owner"}, body_recorded_at=body_time),
+                             graph.github_direction_next.section_map(source)["Current Status"])
+            read.assert_called_once()
+            read.reset_mock()
+            self.assertEqual(graph.status_body_time({**discussion, "body_recorded_at": body_time}, {"owner"}, read), body_time)
+            read.assert_not_called()
+        for response in ({}, {"data": {"repository": {"issue": {"createdAt": "2026-10-01T00:00:00Z"}}}},
+                         {"data": {"repository": {"issue": {"createdAt": "invalid", "lastEditedAt": None}}}}):
+            with self.assertRaises(ValueError):
+                graph.status_body_time(discussion, {"owner"}, Mock(return_value=response))
+        for record, trusted in (({**discussion, "body": "No body status"}, {"owner"}), (discussion, {"someone_else"})):
+            read = Mock()
+            self.assertIsNone(graph.status_body_time(record, trusted, read))
+            read.assert_not_called()
+
     def test_live_label_batches_empty_repositories_and_hydrates_only_minimal_refs(self) -> None:
         repositories = [{"full_name": f"owner/repo{index}"} for index in range(23)]
         reader = Mock()

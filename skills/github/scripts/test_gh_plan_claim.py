@@ -5473,16 +5473,28 @@ class ClaimTests(unittest.TestCase):
         self.milestone_edges["/repos/owner/direction/issues/9/dependencies/blocked_by"] = []
         return "https://github.com/owner/direction/issues/9#issuecomment-123"
 
-    def test_milestone_claim_links_before_publication_and_recovery_is_idempotent(self) -> None:
-        link = self.milestone_fixture()
-        self.args.admission, self.args.admission_link = "milestone", [link]
-        self.run_claim()
-        self.assertLess(self.events.index("milestone_link"), self.events.index("post"))
-        self.assertTrue(self.emitted.call_args.args[0]["ok"])
-        self.assertIn(link, self.comments[-1]["body"])
-        self.assertEqual(self.projections, [("owner/direction", 9)])
-        self.run_claim()
-        self.assertEqual(self.events.count("milestone_link"), 1)
+    def test_admission_does_not_extend_met_milestones_or_write_track_state(self) -> None:
+        for state, later_work in (
+            ("The site is live and the accepted indexing/analytics release is complete.", 25),
+            ("The accepted release, rollback-drill recovery and legacy package retirement are complete.", 3),
+        ):
+            with self.subTest(occurrence=state):
+                self.setUp()
+                link = self.milestone_fixture()
+                self.targets["9"]["body"] = "## Current Status\nState: " + state
+                path = "/repos/owner/direction/issues/9/dependencies/blocked_by"
+                self.milestone_edges[path] = [{"number": 100 + index} for index in range(later_work)]
+                before = copy.deepcopy(self.milestone_edges)
+                track_before = copy.deepcopy(self.targets)
+                self.args.admission, self.args.admission_link = "milestone", [link]
+                self.run_claim()
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                self.assertIn(link, self.comments[-1]["body"])
+                self.assertEqual(self.milestone_edges, before)
+                self.assertEqual(self.targets, track_before)
+                self.assertNotIn("milestone_link", self.events)
+                self.assertEqual(self.projections, [])
 
     def test_repository_milestone_claim_uses_its_merged_direction_and_recovers(self) -> None:
         self.issue["milestone"] = {"title": "Remove obsolete tools", "state": "open"}
@@ -5572,22 +5584,14 @@ class ClaimTests(unittest.TestCase):
                 self.assert_no_writes()
                 self.assertNotIn("milestone_link", self.events)
 
-    def test_milestone_claim_refuses_unconfirmed_or_removed_native_link(self) -> None:
-        for phase in ("link_readback", "final_readback"):
-            with self.subTest(phase=phase):
-                self.setUp()
-                link = self.milestone_fixture()
-                self.args.admission, self.args.admission_link = "milestone", [link]
-                def remove_link() -> None:
-                    self.milestone_edges[next(iter(self.milestone_edges))].clear()
-                    self.milestone_blocking.clear()
-                if phase == "link_readback": self.after_milestone_link = remove_link
-                else: self.after_status = remove_link
-                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                    self.run_claim()
-                self.assertEqual(caught.exception.code, "claim_admission_unlinked")
-                if phase == "link_readback": self.assertNotIn("post", self.events)
-                else: self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+    def test_milestone_closing_after_publication_keeps_release_recovery(self) -> None:
+        link = self.milestone_fixture()
+        self.args.admission, self.args.admission_link = "milestone", [link]
+        self.after_status = lambda: self.targets["9"].update(state="closed")
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+        self.assertNotIn("milestone_link", self.events)
 
     def test_milestone_claim_recovers_recorded_admission_when_flags_are_omitted(self) -> None:
         link = self.milestone_fixture()
@@ -5598,11 +5602,10 @@ class ClaimTests(unittest.TestCase):
         self.args.admission, self.args.admission_link = None, []
         self.run_claim()
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
-        self.assertEqual(self.events.count("milestone_link"), 1)
+        self.assertNotIn("milestone_link", self.events)
         self.after_status = self.milestone_blocking.clear
-        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-            self.run_claim()
-        self.assertEqual(caught.exception.code, "claim_admission_unlinked")
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_legacy_milestone_claim_accepts_a_missing_track_citation_during_recovery(self) -> None:
         link = self.milestone_fixture()
@@ -5610,6 +5613,7 @@ class ClaimTests(unittest.TestCase):
         with patch.object(self, "edit", side_effect=PLAN.PlanError("Status write failed")):
             with self.assertRaises(PLAN.PlanError): self.run_claim()
         self.comments[-1]["body"] = self.comments[-1]["body"].replace(link, "legacy context without a Track")
+        self.parent = {"html_url": "https://github.com/owner/direction/issues/9"}
         self.run_claim()
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
         self.args.admission, self.args.admission_link = None, []
@@ -5622,7 +5626,7 @@ class ClaimTests(unittest.TestCase):
         self.direction_repo = "director/direction"
         self.args.admission, self.args.admission_link = "milestone", [link]
         self.run_claim()
-        self.assertEqual(self.projections, [("director/direction", 9)])
+        self.assertEqual(self.projections, [])
 
     def test_milestone_claim_does_not_read_or_change_cited_context_issues(self) -> None:
         link = self.milestone_fixture()
@@ -5633,7 +5637,7 @@ class ClaimTests(unittest.TestCase):
             return original(ref, repo)
         with patch.object(self, "get_issue", side_effect=get_issue):
             self.run_claim()
-        self.assertEqual(self.projections, [("owner/direction", 9)])
+        self.assertEqual(self.projections, [])
 
     def test_direction_repository_uses_the_shared_read_only_account_lookup(self) -> None:
         self.assertEqual(PLAN.milestone_direction_repo("client/product"), "client/direction")
@@ -5654,33 +5658,12 @@ class ClaimTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "claim_admission_changed")
                 self.assertFalse(set(self.events[before:]) & {"milestone_link", "post", "status", "labels"})
 
-    def test_milestone_label_projection_failure_is_advisory_after_native_link_proof(self) -> None:
-        self.args.admission, self.args.admission_link = "milestone", [self.milestone_fixture()]
-        self.projection_result = {"ok": False, "coverage": "partial", "issues": []}
-        self.run_claim()
-        result = self.emitted.call_args.args[0]
-        self.assertTrue(result["ok"])
-        self.assertIn("recovery", result["milestone_projection"])
-
     def test_milestone_claim_preserves_a_native_parent_path(self) -> None:
         link = self.milestone_fixture()
         self.parent = {"html_url": "https://github.com/owner/direction/issues/9"}
         self.args.admission, self.args.admission_link = "milestone", [link]
         self.run_claim()
         self.assertNotIn("milestone_link", self.events)
-
-    def test_milestone_link_failure_preserves_the_error_and_names_the_origin_route(self) -> None:
-        link = self.milestone_fixture()
-        self.args.admission, self.args.admission_link = "milestone", [link]
-        original = self.read_api
-        def read_api(method: str, path: str, *args: Any, **kwargs: Any) -> tuple[str, Any]:
-            if method == "POST": raise PLAN.PlanError("Dependency limit", api_result={"status": 422})
-            return original(method, path, *args, **kwargs)
-        with patch.object(self, "read_api", side_effect=read_api), self.assertRaises(PLAN.PlanError) as caught:
-            self.run_claim()
-        self.assertEqual(caught.exception.api_result["status"], 422)
-        self.assertIn("milestone_link_recovery", caught.exception.payload)
-        self.assert_no_writes()
 
     def test_milestone_direction_read_failure_preserves_its_original_error(self) -> None:
         link = self.milestone_fixture()

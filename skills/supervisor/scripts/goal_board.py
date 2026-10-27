@@ -98,12 +98,7 @@ def latest_decision(comments, trusted, unread):
     return None
 
 
-def next_action(node, trusted, unread):
-    """The live Next action from the issue's Current Status, on one line.
-
-    A status comment as new as the body wins, so a long thread without one
-    in the window settles only when the body is strictly newer than that window.
-    """
+def current_status(node, trusted, unread):
     comments = node["comments"]
     body_at = node.get("lastEditedAt") or node["createdAt"]
     discussion: dict[str, Any] = {"body": node.get("body") or "", "comments": [
@@ -119,8 +114,16 @@ def next_action(node, trusted, unread):
         unread.append("next action")
         return UNKNOWN
     if not in_window and not in_body:
+        return None
+    return github_next_queue.current_status(discussion, trusted, body_recorded_at=body_at)
+
+
+def next_action(node, trusted, unread):
+    status = current_status(node, trusted, unread)
+    if status == UNKNOWN:
+        return UNKNOWN
+    if status is None:
         return "no Current Status"
-    status = github_next_queue.current_status(discussion, trusted, body_recorded_at=body_at)
     action = " ".join(github_next_queue.status_field(status, "Next action").split())
     if not action:
         return "no Next action in Current Status"
@@ -221,10 +224,15 @@ def child_rows(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] |
 
 def track_row(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | None = None) -> dict[str, Any]:
     unread: list[str] = []
+    status = read_part("milestone proof status", unread, lambda: current_status(node, trusted, unread))
     return {**issue_row(node, trusted, wait_trusted, unread),
+        "closure_review": {**read_part("milestone proof", unread,
+            lambda: github_direction_next.milestone_closure_review(node.get("body") or "",
+                "" if status == UNKNOWN else status), {"track_proof": None, "recorded_status": None}),
+            "discussion_complete": status != UNKNOWN},
         "milestone": read_part("milestone", unread, lambda: (node.get("milestone") or {}).get("title"), None),
         "children": read_part("children", unread, lambda: child_rows(node, trusted, wait_trusted, unread), []),
-        "unread": unread}
+        "unread": list(dict.fromkeys(unread))}
 
 
 def goal_board(reader, owner, *, repo="direction", trusted, wait_trusted=None, max_pages=10):
@@ -285,8 +293,15 @@ def markdown(board, *, links_only=False):
             lines.append(f"\n- {track['url']}{name}: {UNKNOWN}")
             continue
         decision = f"; decision {track['latest_decision']}" if track["latest_decision"] else ""
+        review = track["closure_review"]
         lines.append(f"\n- {track['url']}{name}: {track['status'] or 'no status label'}"
                      f"{blocking_text(track, links_only)}{action_text(track, links_only)}{decision}{unread_text(track)}")
+        if not links_only:
+            proof = " ".join((review["track_proof"] or UNKNOWN).split())
+            state = " ".join(github_next_queue.status_field(review["recorded_status"] or "", "State").split()) or UNKNOWN
+            proof = proof[:NEXT_ACTION_CHARS] + "…" if len(proof) > NEXT_ACTION_CHARS else proof
+            state = state[:NEXT_ACTION_CHARS] + "…" if len(state) > NEXT_ACTION_CHARS else state
+            lines.append(f"  - Proof to assess: {proof}; recorded state: {state}")
         for child in track["children"]:
             title = "" if links_only else f" {child['title']}"
             decision = f"; decision {child['latest_decision']}" if child["latest_decision"] else ""

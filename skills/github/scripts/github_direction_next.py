@@ -94,6 +94,15 @@ def section_map(body: str) -> dict[str, str]:
     return sections
 
 
+def milestone_closure_review(body: str, status_text: str | None = None) -> dict[str, Any]:
+    sections = section_map(body)
+    status = sections.get("Current Status", "") if status_text is None else status_text
+    return {
+        "track_proof": sections.get("Finish Line") or sections.get("Objective") or None,
+        "recorded_status": status or None,
+    }
+
+
 def undated_wait_reason(reason: str) -> str:
     """Keep explicit wait-start metadata separate from the pending condition."""
     return re.sub(r";\s*since\s+\d{4}-\d{2}-\d{2}(?:T\S+)?$", "", reason.strip().rstrip(" ."), flags=re.I)
@@ -418,6 +427,7 @@ def discussion_snapshot(issue: dict[str, Any], comments: list[dict[str, Any]], *
         "body": issue.get("body") or "",
         "author": github_plan_graph.rest_author(issue.get("user"))["login"],
         "updated_at": issue.get("updated_at"),
+        **({"body_recorded_at": issue.get("last_edited_at") or issue.get("created_at")} if "last_edited_at" in issue else {}),
         "comments": [{
             "id": comment.get("id"), "author": github_plan_graph.rest_author(comment.get("user"))["login"],
             "created_at": comment.get("created_at"),
@@ -1364,6 +1374,19 @@ def rank_direction_work(
     ordinary_evaluated = 0
     other_family_evaluated = 0
     track_next_actions: dict[str, dict[str, Any]] = {}
+    from github_next_queue import current_status
+    closure_reviews: list[dict[str, Any]] = []
+    for index, root in enumerate(tracks):
+        if prefetch_nodes is not None:
+            prefetch_nodes(tracks[index:])
+        key = root["repo"].casefold(), root["number"]
+        node_cache[key] = read_node(root["repo"], root["number"])
+        discussion = node_cache[key]["item"].get("discussion") or {}
+        status = current_status(discussion, github_plan_wait.authors(root["repo"]),
+            body_recorded_at=discussion.get("body_recorded_at")) if discussion.get("complete") else ""
+        closure_reviews.append({"url": root["url"], "milestone": root["milestone"]["title"],
+            **milestone_closure_review(discussion.get("body", ""), status),
+            "discussion_complete": bool(discussion.get("complete"))})
     # A stack keeps even a deep dependency chain within the explicit scan bound.
     pending: list[tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], bool, list[dict[str, Any]]]] = [
         (root, root["milestone"], [], True, []) for root in reversed(tracks)
@@ -1400,7 +1423,8 @@ def rank_direction_work(
         routes.add(route_key)
         if key not in seen:
             seen.add(key)
-            node_cache[key] = read_node(ref["repo"], ref["number"])
+            if key not in node_cache:
+                node_cache[key] = read_node(ref["repo"], ref["number"])
             mismatch = github_agent.exclusion(node_cache[key]["item"], agent)
             if mismatch and mismatch["exclusion"] == "assigned_elsewhere" and other_family_evaluated < scan_limit:
                 other_family_evaluated += 1
@@ -1505,6 +1529,7 @@ def rank_direction_work(
     return {
         "candidates": candidates,
         "candidate_count": len(candidates),
+        "milestone_closure_reviews": closure_reviews,
         "excluded": excluded,
         "waiting": waiting,
         "findings": [item[field] for item in [*candidates, *excluded]

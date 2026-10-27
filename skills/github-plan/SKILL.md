@@ -236,6 +236,8 @@ active issue labels and continuing background jobs do not lift a hold.
 2. Read the candidate with `show <issue> --full`: original request, finish
    line, Current Status, blockers, and all comments. Reconcile comment-only
    requirements before recommending or implementing it.
+   For milestone admission, apply the [milestone contract](references/milestones.md)
+   before citing a Track.
 3. Check current ownership using available issue/PR/branch/worktree evidence
    and supported read-only task/session tools. Recommend the highest-ranked
    available independent item; report work owned by another active worker as
@@ -255,7 +257,7 @@ active issue labels and continuing background jobs do not lift a hold.
    --branch <task-branch> --next-action "<action>"` before creating a
    branch or worktree, adding `--admission <kind>` when the overall Order
    admits the work: live-site breakage, a named `milestone` item (cite its overall Track
-   with `--admission-link`; claim automatically links the issue into its native graph), a
+   with `--admission-link`; admission records its citation without changing the graph), a
    `repeat-stop` with both occurrences, `own-project` work from the Order's
    weekly own-projects share, or `spare-capacity`. Name the
    real kind: work that clears a milestone blocker is milestone work once
