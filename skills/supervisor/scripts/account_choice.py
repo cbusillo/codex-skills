@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["websockets==17.2"]
 # ///
 """Follow Context Panel's ranked choices and record count-only launch receipts.
 
@@ -22,8 +22,21 @@ import tomllib
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 PROVIDERS = ("openai", "anthropic", "google")
+
+
+def codex_health():
+    if __package__:
+        from skills.supervisor.scripts import codex_auth_health
+    else:
+        import codex_auth_health
+    return codex_auth_health
+
+
+class UnconfiguredChoice(ValueError):
+    pass
 # Supported variables that put a launched harness on an account. AGY uses its existing login.
 ACCOUNT_VARIABLES = {"openai": "CODEX_HOME", "anthropic": "CLAUDE_CONFIG_DIR"}
 GOOGLE_ACCOUNT_BINDING = "existing-agy-login"
@@ -193,7 +206,7 @@ def provider_ranking(snapshot, provider):
     return matches[0] if matches else {}
 
 
-def resolve_choice(provider, config, snapshot, account_id, source, reason):
+def resolve_choice(provider: str, config: dict, snapshot: dict, account_id: object, source: str, reason: str) -> dict[str, Any]:
     if not isinstance(account_id, str) or not re.fullmatch(rf"{provider}-[0-9a-f]{{1,64}}", account_id):
         raise ValueError("Context Panel choice needs the snapshot's opaque account ID")
     rows = [r for r in snapshot["accounts"] if isinstance(r, dict) and r.get("provider") == provider]
@@ -202,6 +215,8 @@ def resolve_choice(provider, config, snapshot, account_id, source, reason):
         raise ValueError(f"Context Panel {provider} choice matches no single account row")
     configured = [a for a in config["accounts"] if a["provider"] == provider
                   and matching_rows(a, rows) == matched]
+    if not configured:
+        raise UnconfiguredChoice(f"Context Panel {provider} choice matches no single configured account")
     if len(configured) != 1:
         raise ValueError(f"Context Panel {provider} choice matches no single configured account")
     row = matched[0]
@@ -282,6 +297,8 @@ def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, na
         matches = matching_rows(named[0], rows)
         if len(matches) != 1 or not matches[0].get("id"):
             raise ValueError("named account needs one Context Panel row for its launch receipt")
+        if provider == "openai" and named[0]["env"].get("CODEX_HOME"):
+            codex_health().require_usable(Path(named[0]["env"]["CODEX_HOME"]))
         return [resolve_choice(provider, config, snapshot, matches[0]["id"], "named",
                                "explicit --account; capacity not checked") for _ in range(count)]
     ranking = provider_ranking(snapshot, provider)
@@ -309,11 +326,38 @@ def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, na
         ids = order[:count]
         source = "context-panel-stale" if stale else "context-panel-batch"
         reason = "Context Panel recent stale launch order" if stale else "Context Panel ranked launch order"
+    if ids and len(ids) != count:
+        raise ValueError(f"Context Panel {provider} launch order covers only {len(ids)} of {count} launches; use a smaller batch")
+    if provider == "openai" and ids:
+        published = order if count > 1 or stale else [*ids, *order]
+        available = []
+        checked = {}
+        skipped_failure = False
+        for ident in published:
+            try:
+                choice = resolve_choice(provider, config, snapshot, ident, source, reason)
+            except UnconfiguredChoice:
+                if skipped_failure:
+                    continue
+                raise
+            if choice["name"] not in checked:
+                home = choice["env"].get("CODEX_HOME")
+                checked[choice["name"]] = isinstance(home, str) and bool(codex_health().observe(Path(home)).get("blocked"))
+            if not checked[choice["name"]]:
+                if skipped_failure:
+                    choice["source"] = "context-panel-auth-fallback"
+                    choice["reason"] = "Context Panel published order after skipping a failed sign-in"
+                available.append(choice)
+            else:
+                skipped_failure = True
+            if len(available) == count:
+                return available
+        if len(available) < count:
+            raise ValueError("Context Panel has too few usable Codex accounts for this batch; "
+                             "an account needs sign-in. Use a smaller batch or sign in again")
     if not ids:
         raise ValueError(f"Context Panel has no {provider} choice; next capacity at "
                          f"{ranking.get('nextCapacityAt') or 'unknown'}")
-    if len(ids) != count:
-        raise ValueError(f"Context Panel {provider} launch order covers only {len(ids)} of {count} launches; use a smaller batch")
     return [resolve_choice(provider, config, snapshot, i, source, reason) for i in ids]
 
 
