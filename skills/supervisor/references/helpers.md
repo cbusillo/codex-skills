@@ -3041,8 +3041,8 @@ branch rather than the PR branch, `Author session:` is required. A branch that
 happens to share the commit must not become the inferred author or provider. The ledger's `author_provider`, when present, records the actual
 provider; otherwise the native `codex`/`claude` harness family records
 OpenAI/Anthropic, as enforced by the launcher. The existing review helper
-checks the standing policy and selects the other provider; there is no Google
-fallback. Worktree matching requires the exact same-repository head, a matching origin
+checks the standing policy and selects the other provider.
+Worktree matching requires the exact same-repository head, a matching origin
 and a clean checkout. Tracked changes and untracked project files refuse;
 the same shared predicate as `review_with_model` permits only its untracked
 `.model-review-*` scratch files. Existing helper scratch does not trigger a
