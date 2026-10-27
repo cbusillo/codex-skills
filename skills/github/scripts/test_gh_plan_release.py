@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from pathlib import Path
 from argparse import Namespace
 from unittest.mock import Mock, patch
+from typing import Any
 import unittest
 
 import test_gh_plan_claim as fixtures
@@ -1811,7 +1812,7 @@ class OwnReleaseTests(ReleaseHarness):
 
     def test_supplement_does_not_claim_later_successor_prs(self) -> None:
         self.run_own_release()
-        earlier = {"number": 99, "state": "open", "user": {"login": BOT},
+        earlier: dict[str, Any] = {"number": 99, "state": "open", "user": {"login": BOT},
             "created_at": "2026-10-01T01:00:00Z", "body": "Refs #42\nCloses #43",
             "head": {"ref": "work/neighbor", "repo": {"full_name": "owner/repo"}},
             "base": {"repo": {"full_name": "owner/repo"}}}
