@@ -631,32 +631,50 @@ def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any],
     return ended
 
 
-def resumed_predecessor_claim_ids(comments: list[dict[str, Any]], source_id: int | None, branch: str) -> set[int]:
+def resumed_branch_claim_ids(
+    comments: list[dict[str, Any]], source_id: int | None, claim: dict[str, str],
+) -> set[int]:
     from github_plan_release import effective_comments, stamp
 
-    if source_id is None:
-        return set()
     comments = effective_comments(comments)
-    released = exact_released_sources(comments)
-    source = next((item for item in released if comments[item[0]]["id"] == source_id), None)
-    if source is None:
+    released = {comments[index]["id"]: release_index
+                for index, _record, release_index in exact_released_sources(comments)}
+    if source_id not in released:
         return set()
-    source_index, source_record, _release_index = source
-    if source_record["branch"] != branch:
-        return set()
-    author = comments[source_index]["user"]["login"]
-    try:
-        started = min(stamp(comments[source_index].get("created_at")), stamp(source_record["claimed_at"]))
-    except (ValueError, TypeError):
-        return set()
-    return {
-        comments[index]["id"]
-        for index, record, release_index in released
-        if index < source_index and release_index < source_index
-        and all(record[key] == source_record[key] for key in ("worker", "session", "branch"))
-        and comments[index]["user"]["login"] == author
-        and stamp(comments[release_index].get("created_at")) < started
-    }
+    source = next(comment for comment in comments if comment.get("id") == source_id)
+    author = source["user"]["login"]
+    history: set[int] = set()
+    previous_release = None
+    previous_release_index = -1
+    for index, comment in enumerate(comments):
+        parsed = records(comment.get("body") or "")
+        if not any(record["branch"] == claim["branch"] for record in parsed):
+            continue
+        if len(parsed) != 1:
+            return set()
+        record = parsed[0]
+        comment_id = comment.get("id")
+        if not isinstance(comment_id, int):
+            return set()
+        if comment_id not in released and same_owner(record, claim):
+            continue
+        if (comment_id not in released or comment["user"]["login"] != author
+                or record.get("retained_handoff") or record.get("refresh_pr")
+                or record.get("resume_from") is not None and record["resume_from"] not in {str(key) for key in history}):
+            return set()
+        try:
+            started = min(stamp(comment.get("created_at")), stamp(record["claimed_at"]))
+            ended = stamp(comments[released[comment_id]].get("created_at"))
+            if (index <= previous_release_index
+                    or (previous_release is not None and started <= previous_release)
+                    or ended >= stamp(claim["claimed_at"])):
+                return set()
+        except (ValueError, TypeError):
+            return set()
+        history.add(comment_id)
+        previous_release = ended
+        previous_release_index = released[comment_id]
+    return history if source_id in history else set()
 
 
 def lease_takeovers(ended: list[dict[str, Any]]) -> str:
