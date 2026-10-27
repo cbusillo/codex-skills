@@ -300,12 +300,20 @@ def configured_product_key(host, config, selected):
     return next((key for key in ALTERNATE_PRODUCT_KEYS if product is host.IDE_PRODUCTS[key]), "pycharm")
 
 
-def npm_lockfile(root):
+def node_package_manager(root: Path) -> str:
     if (root / "pnpm-lock.yaml").is_file():
         raise Blocked("native_pnpm_unsupported")
-    if not (root / "package.json").is_file() or not (root / "package-lock.json").is_file():
+    if not (root / "package.json").is_file():
         raise Blocked("native_npm_lockfile_required")
-    return root / "package-lock.json"
+    if (root / "yarn.lock").is_file():
+        package = json.loads(bounded_bytes(root / "package.json"))
+        manager = package.get("packageManager", "") if isinstance(package, dict) else ""
+        if not isinstance(manager, str) or not re.fullmatch(r"yarn@4\.\d+\.\d+(?:\+sha(?:224|256|384|512)\.[a-fA-F0-9]+)?", manager):
+            raise Blocked("native_yarn_package_manager_required")
+        return manager
+    if not (root / "package-lock.json").is_file():
+        raise Blocked("native_npm_lockfile_required")
+    return "npm"
 
 
 def requested_python_version(config):
