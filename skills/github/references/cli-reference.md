@@ -713,6 +713,9 @@ does not yet cover the current head, use `ready <pr> --waiting-for-client`.
 It posts `Engineering ready; waiting for the Client's acceptance` with the head
 and permits only pending `launchplane/owner-review` checks; every other pending
 check, unfinished workflow and every failure still refuses.
+Once Launchplane records acceptance for that head, including acceptance it carries
+forward, auto-enqueue can admit this checked Client wait without another `ready`
+call. Other waits still require a fresh Ready; all other train checks still apply.
 
 `ready` and the auto-enqueue watcher share one Client rule, `client_handoff` in
 `ready_handoff.py`. Client acceptance is required only when Launchplane maps the

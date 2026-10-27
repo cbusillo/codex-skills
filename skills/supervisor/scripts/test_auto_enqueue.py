@@ -35,6 +35,10 @@ TARGET = {
 }
 
 
+def patch_attr(target: Any, name: str, **kwargs: Any) -> Any:
+    return patch.object(target, name, **kwargs)
+
+
 def pr(number=1):
     return {
         "number": number,
@@ -314,6 +318,10 @@ class EnqueueTests(unittest.TestCase):
         fake.pages = comments
         self.run_pass(fake)
         self.assertFalse(any(event == 'skipped' for event, _ in self.events))
+        self.assertEqual(fake.writes, [])
+        fake.pages = lambda _path: [comment(f"{WAITING} the Client's acceptance\n\nHead: {SHA}")]
+        self.run_pass(fake)
+        self.assertEqual({payload['pr'] for event, payload in self.events if event == 'skipped'}, set(fake.pulls))
         self.assertEqual(fake.writes, [])
 
     def test_unavailable_skip_inventory_does_not_hold_lock_or_stop_other_trains(self):
@@ -1878,6 +1886,50 @@ class QualificationTests(unittest.TestCase):
                 self.pull["body"] = body
                 self.assertFalse(self.qualified())
 
+    def test_checked_client_wait_enters_only_after_current_head_service_acceptance(self) -> None:
+        self.release.return_value = self.client_repository
+        self.pull["body"] = "## Client test notes\nClient change: retain invoice history after deletion.\nDelete a test account."
+        self.comments = [comment(f"{WAITING} the Client's acceptance\n\nHead: {SHA}")]
+        self.io.args = argparse.Namespace(config=None, env_config=None, url=None, timeout=10)
+        self.io.acceptance = lambda repo, pull: watch.Live.acceptance(self.io, repo, pull)
+        for decision, head, carried_from, expected in (
+            ("accepted", SHA, None, True),
+            ("accepted", SHA, "b" * 40, True),
+            ("accepted", "b" * 40, None, False),
+            ("rejected", SHA, None, False),
+            ("pending", SHA, None, False),
+            (None, SHA, None, False),
+        ):
+            with self.subTest(decision=decision, head=head, carried_from=carried_from):
+                record = {"decision": decision, "head_sha": head, "carried_from": carried_from} if decision else None
+                with patch_attr(watch.review, "read_review", return_value=record):
+                    self.assertEqual(self.qualified(), expected)
+
+    def test_accepted_client_wait_preserves_receipt_and_ci_guards(self) -> None:
+        self.release.return_value = self.client_repository
+        self.pull["body"] = "## Client test notes\nClient change: retain invoice history.\nCheck invoices."
+        waiting = comment(f"{WAITING} the Client's acceptance\n\nHead: {SHA}")
+        self.comments = [waiting]
+        self.io.acceptance = lambda *_args: True
+        self.assertTrue(self.qualified())
+        for change in (
+            {"body": f"{WAITING} the Supervisor\n\nHead: {SHA}"},
+            {"body": f"{WAITING} the Client's acceptance\n\nHead: {'b' * 40}"},
+            {"body": f"{WAITING} the Client's acceptance"},
+            {"user": {"login": "stranger"}},
+        ):
+            with self.subTest(change=change):
+                self.comments = [{**waiting, **change}]
+                self.assertFalse(self.qualified())
+        self.comments = [waiting, comment(f"{WAITING} a defect fix\n\nHead: {SHA}", 2)]
+        self.assertFalse(self.qualified())
+        self.comments = [waiting]
+        self.checks["summary"]["failingCount"] = 1
+        self.assertFalse(self.qualified())
+        self.checks["summary"]["failingCount"] = 0
+        self.reviews = [{"id": 1, "user": {"login": "reviewer"}, "state": "CHANGES_REQUESTED", "commit_id": SHA}]
+        self.assertFalse(self.qualified())
+
     def test_latest_current_head_changes_requested_refuses(self):
         self.reviews = [
             {
@@ -2015,6 +2067,8 @@ class WatchLoopTests(unittest.TestCase):
         ):
             result = watch.main(argv)
         events = [json.loads(call.args[0]) for call in output.call_args_list]
+        for event in events:
+            self.assertIsInstance(ready_handoff.timestamp(event["timestamp"]), float)
         return result, live.call_count, sleeps.call_args_list, events
 
     def test_transient_reads_end_only_pass_then_fresh_pass_enqueues(self):

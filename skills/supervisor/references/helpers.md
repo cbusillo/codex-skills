@@ -727,7 +727,8 @@ completed and failed pass counts so an outage throughout the watch is visible.
 Every `stop` event includes a message. Helper-authored exception messages identify
 the specific failure; external exception details are withheld to keep provider
 bodies, credentials and private Client prose out of events. Failed-pass events
-use the same message policy.
+use the same message policy. Watch events include a UTC `timestamp` so passes
+and skips can be compared with acceptance and handoff times.
 
 When the task authorizes a Supervisor handoff, sessions use the installed GitHub
 skill's helper: `uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
@@ -736,7 +737,11 @@ skill's helper: `uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO re
 The producer and watcher share `github/scripts/ready_handoff.py`. The latest
 handoff by creation/edit time from its author, or a Supervisor explicitly listed with
 `--handoff-login`, wins. The `Engineering ready; waiting for ...` form invalidates
-an earlier Ready. Missing/stale heads, drafts, blocking train dispositions,
+an earlier Ready. The exact Client acceptance wait becomes eligible when the
+existing Launchplane read confirms acceptance for its current head, including
+acceptance Launchplane carries forward. Other waits remain blocking. Skip
+diagnostics include checked Client waits even before acceptance is recorded.
+Missing/stale heads, drafts, blocking train dispositions,
 current-head change requests and unavailable checks do not enqueue. A file
 inventory changed during reading skips that PR; other ready members continue.
 The shared parser normalizes trailing periods and bold markers on both Ready

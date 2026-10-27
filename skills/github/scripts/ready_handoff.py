@@ -294,8 +294,7 @@ def timestamp(value):
     return parsed.timestamp()
 
 
-def latest_ready(pr, comments, trusted):
-    """A renewed wait invalidates Ready; a push requires a new explicit head."""
+def latest_ready(pr, comments, trusted, *, client_accepted: bool = False) -> bool:
     handoffs = []
     for comment in comments:
         if (comment.get("user") or {}).get("login", "").casefold() not in trusted:
@@ -314,7 +313,8 @@ def latest_ready(pr, comments, trusted):
         ),
     )
     body = latest["body"]
-    return handoff_line(body.splitlines()[0]) == READY and [
+    first = handoff_line(body.splitlines()[0])
+    return (first == READY or client_accepted and first == f"{WAITING} the Client's acceptance") and [
         match.group("sha") for match in HEAD.finditer(body)
     ] == [pr["head"]["sha"]]
 

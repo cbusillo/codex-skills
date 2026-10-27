@@ -21,6 +21,7 @@ import time
 import urllib.error
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -512,8 +513,11 @@ class Live:
             extra_trusted - {author}
             if agent_review_required else {author} | extra_trusted
         )
+        accepted = False
         if not latest_ready(pr, comments, trusted):
-            return False
+            accepted = latest_ready(pr, comments, trusted, client_accepted=True) and self.acceptance(repo, pr)
+            if not accepted:
+                return False
         reviews = self.pages(f"/repos/{repo}/pulls/{number}/reviews")
         newest = {}
         for item in sorted(reviews, key=lambda value: value["id"]):
@@ -576,7 +580,7 @@ class Live:
                 ):
                     return False
         return not handoff.refusal(
-            accepted=not handoff.acceptance_required or self.acceptance(repo, pr)
+            accepted=accepted or not handoff.acceptance_required or self.acceptance(repo, pr)
         )
 
     def review_gap(self, target, pr, extra_trusted, *, file_inventory=None):
@@ -723,7 +727,7 @@ def report_ready_skips(io, target, args, emit, reason, *, pulls=None, queue=None
             handoff = set(args.handoff_login)
             trusted = handoff - {author} if DEPENDENCY_REVIEW in reasons else handoff | {author}
             comments = io.pages(f"/repos/{target['repo']}/issues/{pr['number']}/comments")
-            if latest_ready(pr, comments, trusted):
+            if latest_ready(pr, comments, trusted, client_accepted=True):
                 emit("skipped", {
                     "repository": target["repo"], "pr": pr["number"],
                     "head": pr["head"]["sha"],
@@ -1175,7 +1179,7 @@ def main(argv=None):
     completed_passes = failed_passes = 0
 
     def emit(event, payload):
-        print(json.dumps({"event": event, "payload": payload}), flush=True)
+        print(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), "event": event, "payload": payload}), flush=True)
 
     try:
         while time.time() < deadline:
