@@ -2543,7 +2543,8 @@ def cmd_release(args: argparse.Namespace) -> None:
     preflight = snapshot()
     issue, existing = preflight["issue"], preflight["release"]
     completed.append("release_preflight")
-    declared, excluded = set(getattr(args, "retained_pr", []) or []), set(getattr(args, "exclude_pr", []) or [])
+    declared = set(getattr(args, "retained_pr", None) or [])
+    excluded = set(getattr(args, "exclude_pr", None) or [])
     if existing is not None and not (declared or excluded):
         emit({"ok": True, "release_state": "already_released", "source_claim": args.claim_comment,
               "release_comment": {"id": existing["id"], "url": existing.get("html_url")}, "completed_steps": completed})
@@ -2585,7 +2586,7 @@ def cmd_release(args: argparse.Namespace) -> None:
         verified = existing is not None and existing["id"] == result["comment"]["id"]
         if verified and excluded:
             verified = {url.casefold() for url in excluded} <= github_plan_release.excluded_prs(observed["comments"], observed["source"])
-    if not verified:
+    if not verified or existing is None:
         raise PlanError("Release readback is not an exact release of this claim; inspect the record before any retry",
                         payload={"release_comment": result["comment"], "completed_steps": completed})
     completed.append("release_readback")
