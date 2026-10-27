@@ -441,12 +441,15 @@ class AuthHealthTests(unittest.TestCase):
         healthy_calls = [call for call in self.probe.call_args_list if call.args[0] == Path(self.good["env"]["CODEX_HOME"])]
         self.assertEqual(len(healthy_calls), 1)
 
-    def test_a_held_account_can_start_its_existing_daemon_for_recovery(self) -> None:
-        health.observe(self.home)
+    def use_interactive_home(self) -> None:
         self.enterContext(patch.dict(os.environ, {"CODEX_HOME": str(self.home)}))
         self.enterContext(patch.object(account_choice, "load_config", return_value=self.config))
         self.enterContext(patch.object(interactive_accounts.shutil, "which", return_value="/fixture/codex"))
         self.enterContext(patch.object(interactive_accounts, "state_path", return_value=self.root / "last.json"))
+
+    def test_a_held_account_can_start_its_existing_daemon_for_recovery(self) -> None:
+        health.observe(self.home)
+        self.use_interactive_home()
         self.enterContext(patch.object(health, "daemon_identity", side_effect=ValueError))
         with patch.object(os, "execvpe") as execute:
             interactive_accounts.launch("codex", ["app-server", "daemon", "start"])
@@ -457,10 +460,7 @@ class AuthHealthTests(unittest.TestCase):
 
     def test_interactive_and_managed_clients_refuse_before_execution_but_login_remains_available(self) -> None:
         self.failure()
-        self.enterContext(patch.dict(os.environ, {"CODEX_HOME": str(self.home)}))
-        self.enterContext(patch.object(account_choice, "load_config", return_value=self.config))
-        self.enterContext(patch.object(interactive_accounts.shutil, "which", return_value="/fixture/codex"))
-        self.enterContext(patch.object(interactive_accounts, "state_path", return_value=self.root / "last.json"))
+        self.use_interactive_home()
         execute = self.enterContext(patch.object(os, "execvpe"))
         with self.assertRaises(ValueError):
             interactive_accounts.launch("codex", ["--resume"])

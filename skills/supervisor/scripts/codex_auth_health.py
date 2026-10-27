@@ -367,6 +367,18 @@ def unknown_status(home: Path, previous: dict, reason: str) -> dict:
     return {**previous, "diagnostic": reason}
 
 
+def checked_status(home: Path, identity: DaemonIdentity, previous: dict) -> tuple[AuthStatus, dict | None]:
+    status = native_status(home)
+    if status.identity != identity:
+        return status, unknown_status(home, previous, "auth_daemon_changed")
+    capture(home, read_log(home))
+    if status.account_present or not status.requires_auth:
+        return status, record_status(home, {"blocked": False, "episode_ns": None, "observed_ns": status.requested_ns})
+    if status.auth_method != "chatgpt":
+        return status, unknown_status(home, previous, "auth_mode_unknown")
+    return status, None
+
+
 def observe(home: Path) -> dict:
     home = home.expanduser().resolve()
     previous = {"blocked": False, "episode_ns": None, "observed_ns": 0}
@@ -374,14 +386,9 @@ def observe(home: Path) -> dict:
         previous = read_status(home)
         capture(home, read_log(home))
         identity = daemon_identity(home)
-        status = native_status(home)
-        if status.identity != identity:
-            return unknown_status(home, previous, "auth_daemon_changed")
-        capture(home, read_log(home))
-        if status.account_present or not status.requires_auth:
-            return record_status(home, {"blocked": False, "episode_ns": None, "observed_ns": status.requested_ns})
-        if status.auth_method != "chatgpt":
-            return unknown_status(home, previous, "auth_mode_unknown")
+        status, verdict = checked_status(home, identity, previous)
+        if verdict is not None:
+            return verdict
         deadline = time.monotonic() + LOG_DELIVERY_SECONDS
         while True:
             events = capture(home, read_log(home))
@@ -389,15 +396,9 @@ def observe(home: Path) -> dict:
             episode = failure_episode(selected)
             if episode is not None:
                 if not previous["blocked"] and any(event["event"] == "reused" and event["ts_ns"] >= episode for event in selected):
-                    refreshed = native_status(home)
-                    if refreshed.identity != identity:
-                        return unknown_status(home, previous, "auth_daemon_changed")
-                    capture(home, read_log(home))
-                    if refreshed.account_present or not refreshed.requires_auth:
-                        return record_status(home, {"blocked": False, "episode_ns": None, "observed_ns": refreshed.requested_ns})
-                    if refreshed.auth_method != "chatgpt":
-                        return unknown_status(home, previous, "auth_mode_unknown")
-                    status = refreshed
+                    status, verdict = checked_status(home, identity, previous)
+                    if verdict is not None:
+                        return verdict
                 result = {"blocked": True, "episode_ns": previous["episode_ns"] if previous["blocked"] else episode}
                 return record_status(home, {**result, "observed_ns": status.requested_ns})
             if time.monotonic() >= deadline:
