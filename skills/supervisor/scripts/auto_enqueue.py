@@ -21,6 +21,7 @@ import time
 import urllib.error
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -512,7 +513,8 @@ class Live:
             extra_trusted - {author}
             if agent_review_required else {author} | extra_trusted
         )
-        if not latest_ready(pr, comments, trusted):
+        ready = latest_ready(pr, comments, trusted)
+        if not ready and not latest_ready(pr, comments, trusted, include_client_wait=True):
             return False
         reviews = self.pages(f"/repos/{repo}/pulls/{number}/reviews")
         newest = {}
@@ -529,7 +531,7 @@ class Live:
             self.reader, repo, number, head_sha=pr["head"]["sha"]
         )
         summary = checks["summary"]
-        handoff = client_handoff(pr, checks["checkRuns"], repository=repo)
+        handoff = client_handoff(pr, checks["checkRuns"], repository=repo, waiting_for_client=not ready)
         if (
             not summary["countsComplete"]
             or summary["unavailableComponents"]
@@ -723,10 +725,11 @@ def report_ready_skips(io, target, args, emit, reason, *, pulls=None, queue=None
             handoff = set(args.handoff_login)
             trusted = handoff - {author} if DEPENDENCY_REVIEW in reasons else handoff | {author}
             comments = io.pages(f"/repos/{target['repo']}/issues/{pr['number']}/comments")
-            if latest_ready(pr, comments, trusted):
+            if latest_ready(pr, comments, trusted, include_client_wait=True):
                 emit("skipped", {
                     "repository": target["repo"], "pr": pr["number"],
                     "head": pr["head"]["sha"],
+                    "client_wait": not latest_ready(pr, comments, trusted),
                     "reason": "not_in_controller_queue" if reason == "controller_ineligible" and row is None else reason,
                     "controller_admission": "ineligible" if row else "unknown",
                     "ineligible_reasons": reasons, **detail,
@@ -1175,7 +1178,7 @@ def main(argv=None):
     completed_passes = failed_passes = 0
 
     def emit(event, payload):
-        print(json.dumps({"event": event, "payload": payload}), flush=True)
+        print(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), "event": event, "payload": payload}), flush=True)
 
     try:
         while time.time() < deadline:

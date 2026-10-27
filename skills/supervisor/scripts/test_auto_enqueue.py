@@ -20,7 +20,7 @@ from typing import Any
 from unittest.mock import Mock, patch
 
 import auto_enqueue as watch
-from skills.github.scripts.ready_handoff import READY, WAITING
+from skills.github.scripts.ready_handoff import READY, WAITING, handoff_body
 from skills.github.scripts import github_read, ready_handoff
 
 REPO = "example/tool"
@@ -33,6 +33,10 @@ TARGET = {
     "policy": {"record_id": "revision"},
     "scheduler_drives_train": True,
 }
+
+
+def patch_attr(target: Any, name: str, **kwargs: Any) -> Any:
+    return patch.object(target, name, **kwargs)
 
 
 def pr(number=1):
@@ -314,6 +318,11 @@ class EnqueueTests(unittest.TestCase):
         fake.pages = comments
         self.run_pass(fake)
         self.assertFalse(any(event == 'skipped' for event, _ in self.events))
+        self.assertEqual(fake.writes, [])
+        fake.pages = lambda _path: [comment(handoff_body(SHA, waiting_for_client=True))]
+        self.run_pass(fake)
+        self.assertEqual({payload['pr'] for event, payload in self.events if event == 'skipped'}, set(fake.pulls))
+        self.assertTrue(all(payload['client_wait'] for event, payload in self.events if event == 'skipped'))
         self.assertEqual(fake.writes, [])
 
     def test_unavailable_skip_inventory_does_not_hold_lock_or_stop_other_trains(self):
@@ -1878,6 +1887,72 @@ class QualificationTests(unittest.TestCase):
                 self.pull["body"] = body
                 self.assertFalse(self.qualified())
 
+    def test_checked_client_wait_enters_only_after_current_head_service_acceptance(self) -> None:
+        states = ready_handoff.acceptance_reader()
+        releases = (self.client_repository, states.ClientRelease(states.NO_CLIENT), states.ClientRelease(states.DIRECTOR_STANDING))
+        self.pull["body"] = "## Client test notes\nClient change: retain invoice history after deletion.\nDelete a test account."
+        self.comments = [comment(handoff_body(SHA, waiting_for_client=True))]
+        self.io.args = argparse.Namespace(config=None, env_config=None, url=None, timeout=10)
+        self.io.acceptance = lambda repo, pull: watch.Live.acceptance(self.io, repo, pull)
+        project_review = getattr(watch.review, "project_review")
+        for decision, head, expected in (
+            ("accepted", SHA, True),
+            ("accepted", "b" * 40, False),
+            ("rejected", SHA, False),
+            ("pending", SHA, False),
+            (None, SHA, False),
+        ):
+            with self.subTest(decision=decision, head=head):
+                record = {
+                    "record_id": "review", "product": "verireel", "repository": REPO,
+                    "pull_request_number": self.pull["number"], "head_sha": head,
+                    "preview_url": "https://preview.example.invalid", "decision": decision,
+                    "reason": "", "owner_github_id": "123", "owner_github_login": "client",
+                    "decided_at": "2026-10-26T23:45:07.914Z", "feedback_url": "",
+                } if decision else None
+                payload = {"status": "ok", "repository": REPO, "pull_request_number": self.pull["number"],
+                           "latest_decision": record}
+                with patch_attr(watch.review, "read_review", side_effect=lambda args: project_review(args, payload)):
+                    for release in releases:
+                        with self.subTest(release=release.state):
+                            self.release.return_value = release
+                            self.assertEqual(self.qualified(), expected)
+        self.pull["body"] = "## Client test notes\nNothing for the Client to test: engineering only."
+        self.io.acceptance = lambda *_args: True
+        for release in releases:
+            with self.subTest(edited_notes=True, release=release.state):
+                self.release.return_value = release
+                self.assertFalse(self.qualified())
+
+    def test_accepted_client_wait_preserves_receipt_and_ci_guards(self) -> None:
+        self.release.return_value = self.client_repository
+        self.pull["body"] = "## Client test notes\nClient change: retain invoice history.\nCheck invoices."
+        waiting = comment(handoff_body(SHA, waiting_for_client=True))
+        self.comments = [waiting]
+        self.io.acceptance = lambda *_args: True
+        self.assertTrue(self.qualified())
+        for change in (
+            {"body": f"{WAITING} the Supervisor\n\nHead: {SHA}"},
+            {"body": handoff_body('b' * 40, waiting_for_client=True)},
+            {"body": ready_handoff.CLIENT_WAIT},
+            {"user": {"login": "stranger"}},
+        ):
+            with self.subTest(change=change):
+                self.comments = [{**waiting, **change}]
+                self.assertFalse(self.qualified())
+        self.comments = [waiting, comment(f"{WAITING} a defect fix\n\nHead: {SHA}", 2)]
+        self.assertFalse(self.qualified())
+        self.comments = [waiting]
+        self.checks["summary"]["failingCount"] = 1
+        acceptance = Mock(side_effect=ValueError("unavailable service"))
+        self.io.acceptance = acceptance
+        self.assertFalse(self.qualified())
+        acceptance.assert_not_called()
+        self.io.acceptance = lambda *_args: True
+        self.checks["summary"]["failingCount"] = 0
+        self.reviews = [{"id": 1, "user": {"login": "reviewer"}, "state": "CHANGES_REQUESTED", "commit_id": SHA}]
+        self.assertFalse(self.qualified())
+
     def test_latest_current_head_changes_requested_refuses(self):
         self.reviews = [
             {
@@ -2015,6 +2090,8 @@ class WatchLoopTests(unittest.TestCase):
         ):
             result = watch.main(argv)
         events = [json.loads(call.args[0]) for call in output.call_args_list]
+        for event in events:
+            self.assertIsInstance(ready_handoff.timestamp(event["timestamp"]), float)
         return result, live.call_count, sleeps.call_args_list, events
 
     def test_transient_reads_end_only_pass_then_fresh_pass_enqueues(self):
