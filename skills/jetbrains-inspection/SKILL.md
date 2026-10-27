@@ -30,7 +30,7 @@ commands:
     source: skill
     resource_path: scripts/jb-inspect.py
     example_argv: ["uv", "run", "scripts/jb-inspect.py", "remove-worktree", "--repo", "/exact/task/path"]
-    purpose: Dry-runs helper-owned SDK retirement; with --no-dry-run retires SDKs before non-force linked worktree removal.
+    purpose: Dry-runs local retirement proof; with --no-dry-run repeats the safety checks before non-force linked worktree removal.
   - name: jetbrains-inspection-cleanup-helper-sdks
     source: skill
     resource_path: scripts/jb-inspect.py
@@ -124,10 +124,11 @@ Command model:
   aliases. `--backend native` forces the native worker for one run.
 - `summarize-outcomes`: diagnostic verdict/bucket/retry summary of the outcome
   log, without inspecting.
-- `remove-worktree`, `cleanup-helper-sdks` and `cleanup-helper-leases` retire
-  SDK registrations, project caches and leases that the retired desktop route
-  left behind. They contact only an IDE that is already running and never open
-  a project or launch an app. Read [IDE cleanup](references/ide-cleanup.md)
+- `remove-worktree` uses local cleanup proof and never contacts a desktop IDE.
+  It retains worktrees with legacy leases or IDE state requiring cleanup.
+  `cleanup-helper-sdks` and `cleanup-helper-leases` remain separate legacy
+  cleanup commands; they contact only already-running IDEs and never open a
+  project or launch an app. Read [IDE cleanup](references/ide-cleanup.md)
   before using them.
 
 Read verdict and retry permission from `agent_result` and `retry_policy.retry`,

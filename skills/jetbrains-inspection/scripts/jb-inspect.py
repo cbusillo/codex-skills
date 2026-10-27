@@ -9,7 +9,6 @@ import argparse
 import errno
 import fnmatch
 import hashlib
-import http.client
 import importlib.util
 import io
 import json
@@ -483,13 +482,14 @@ def build_parser() -> argparse.ArgumentParser:
         agent.add_argument(option, action=RetiredOption, help=argparse.SUPPRESS)
 
     for name in ("remove-worktree", "cleanup-helper-sdks"):
-        command = subparsers.add_parser(name, help="Retire SDKs and caches the retired desktop route registered; contacts only an already-running IDE.")
+        command = subparsers.add_parser(name, help=("Remove a linked worktree using local cleanup proof only." if name == "remove-worktree" else
+                                                   "Retire orphan SDKs through already-running IDEs."))
         command.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
         command.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True)
         command.add_argument("--lifecycle-lock-timeout-ms", type=int, default=DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)
     subparsers.choices["cleanup-helper-sdks"].add_argument("--worktree-path", action="append", help="Exact orphan path from the reviewed dry-run; repeat for each path to apply.")
     subparsers.choices["remove-worktree"].add_argument("--repo", required=True, help="Exact eligible linked worktree to remove; establish cleanup disposition first.")
-    subparsers.choices["remove-worktree"].add_argument("--offline-only", action="store_true", help="Use only local cleanup proof without discovering or contacting an IDE; retain the worktree if proof is unavailable.")
+    subparsers.choices["remove-worktree"].add_argument("--offline-only", action="store_true", help="Accepted for compatibility; removal always uses local cleanup proof without contacting an IDE.")
     leases = subparsers.add_parser("cleanup-helper-leases", help="Remove stale lifecycle leases the retired desktop route left behind.")
     leases.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     leases.add_argument("--max-age-ms", type=int, default=24 * 60 * 60 * 1000)
@@ -2639,7 +2639,7 @@ def paths_same(left: Any, right: Any) -> bool:
         return str(left) == str(right)
 
 
-def retirement_worktree(path: Path, dry_run: bool = False, offline_only: bool = False) -> Path:
+def retirement_worktree(path: Path, dry_run: bool = False) -> Path:
     root = path.expanduser().resolve()
     if git_root(root) != root:
         raise InspectError("Removal requires the exact linked worktree root.", 3)
@@ -2655,28 +2655,18 @@ def retirement_worktree(path: Path, dry_run: bool = False, offline_only: bool = 
         raise InspectError("Cannot resolve the primary checkout for worktree removal.", 3)
     if subprocess.check_output(["git", "-C", str(root), "status", "--porcelain"], text=True).strip():
         raise InspectError("Preserve uncommitted work before removing this worktree.", 3)
-    reconcile_retirement_leases(root, dry_run, offline_only)
+    require_no_retirement_leases(root)
     return root
 
 
-def reconcile_retirement_leases(root: Path, dry_run: bool, offline_only: bool = False) -> None:
+def require_no_retirement_leases(root: Path) -> None:
     leases = [(path, lease) for path, lease in read_local_leases()
               if paths_same(lease.get("worktree_root"), root)]
-    if not leases:
-        return
-    result = {} if offline_only else cleanup_stale_helper_leases(argparse.Namespace(
-        max_age_ms=24 * 60 * 60 * 1000, dry_run=dry_run, worktree_root=root,
-    ))
-    released = set(result.get("would_remove" if dry_run else "removed") or [])
-    blockers = [(path, lease) for path, lease in leases if str(path) not in released]
-    if blockers:
-        ids = [str(lease.get("lease_id") or path.stem) for path, lease in blockers]
-        commands = [] if offline_only else [f"uv run {shlex.quote(str(Path(__file__).resolve()))} cleanup-helper-leases "
-                    f"--lease-id {shlex.quote(lease_id)} --no-dry-run" for lease_id in ids]
+    if leases:
+        ids = [str(lease.get("lease_id") or path.stem) for path, lease in leases]
         raise InspectError(
-            (f"IDE leases block offline retirement: {', '.join(ids)}. Retain the worktree until a session authorized to contact the IDE resolves them."
-             if offline_only else f"IDE leases block retirement: {', '.join(ids)}. After resolving ownership/activity, run: " + "; ".join(commands)), 3,
-            {"blocking_lease_ids": ids, "cleanup_commands": commands, "lease_cleanup": result},
+            f"IDE leases block offline retirement: {', '.join(ids)}. Retain the worktree until a session authorized to contact the IDE resolves them.", 3,
+            {"blocking_lease_ids": ids, "cleanup_commands": [], "lease_cleanup": {}},
         )
 
 
@@ -2948,131 +2938,85 @@ def unregister_helper_sdks(identities: list[dict[str, Any]], root: Path | None, 
     return results
 
 
-def retire_helper_project_caches(identities: list[dict[str, Any]], root: Path, dry_run: bool) -> list[dict[str, Any]]:
-    results = []
-    for identity in identities:
-        if identity.get("helper_project_cache_lifecycle_version") != 1:
-            results.append({"ide": public_identity_summary(identity), "result": {
-                "status": "unsupported", "reason": "plugin_capability_unavailable", "caches": [],
-            }})
-            continue
-        params = {"worktree_path": str(root), "session_id": identity["session_id"],
-                  "dry_run": "true" if dry_run else "false"}
-        try:
-            body = http_post(identity["port"], "lifecycle/retire-project-caches", params, timeout=120.0).body
-        except InspectError as error:
-            error.payload.setdefault("completed_project_cache_preview" if dry_run else "completed_project_cache_cleanup", results)
-            raise
-        except (OSError, http.client.HTTPException) as error:
-            raise InspectError("Project-cache transport failed; retain the worktree.", 3,
-                               {"error_reason": "inspection_api_transport_error",
-                                "completed_project_cache_preview" if dry_run else "completed_project_cache_cleanup": results}) from error
-        entries = body.get("caches")
-        allowed_statuses = {"would_remove", "absent"} if dry_run else {"removed", "absent"}
-        if (body.get("session_id") != identity["session_id"] or body.get("status") != "ok"
-            or body.get("project_cache_lifecycle_version") != 1 or body.get("dry_run") is not dry_run
-            or not paths_same(body.get("worktree_path"), root) or not isinstance(entries, list)
-            or any(not isinstance(entry, dict) or entry.get("status") not in allowed_statuses
-                   or entry.get("reason") != "helper_owned_closed_project"
-                   or not paths_same(entry.get("worktree_path"), root)
-                   for entry in entries)):
-            raise InspectError("Project-cache retirement was not proved; retain the worktree.", 3,
-                               {"project_cache_retirement": public_payload(body), "completed_project_cache_preview" if dry_run else "completed_project_cache_cleanup": results})
-        results.append({"ide": public_identity_summary(identity), "result": public_payload(body)})
-    return results
-
-
-def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
-    preview: list[dict[str, Any]] = []
-    applied: list[dict[str, Any]] = []
-    skipped: list[dict[str, Any]] = []
-    cache_preview: list[dict[str, Any]] = []
-    cache_cleanup: list[dict[str, Any]] = []
+def command_remove_worktree(args: argparse.Namespace) -> dict[str, Any]:
     offline_records: list[str] = []
     with lifecycle_lock(args.lifecycle_lock_timeout_ms):
         try:
-            offline_only = getattr(args, "offline_only", False)
-            root = retirement_worktree(Path(args.repo), args.dry_run, offline_only) if args.command == "remove-worktree" else None
-            identities = [] if offline_only else discover_identities(None)
-            proof_identities = identities
-            preview = unregister_helper_sdks(identities, root, True, offline_records)
-            if root is not None:
-                cache_preview = retire_helper_project_caches(identities, root, True)
+            root = retirement_worktree(Path(args.repo), args.dry_run)
+            offline_records.extend(offline_retirement_records(root))
             if not args.dry_run:
-                if root is not None:
-                    # Only IDEs with a helper-owned SDK need the mutating call; the final preview rechecks every IDE.
-                    for item in preview:
-                        if any(entry["status"] == "would_remove" for entry in item["result"]["sdks"]):
-                            identity = next(identity for identity in identities if
-                                            identity["session_id"] == item["ide"]["session_id"] and identity["port"] == item["ide"]["port"])
-                            applied.extend(unregister_helper_sdks([identity], root, False))
-                        else:
-                            skipped.append(item)
-                else:
-                    # Explicit paths bind apply to the earlier reviewed dry-run.
-                    selected = {str(Path(path).expanduser().resolve()) for path in (getattr(args, "worktree_path", None) or [])}
-                    refused_roots = {str(Path(entry["worktree_path"]).resolve()) for item in preview for entry in item["result"]["sdks"] if entry["status"] == "refused"}
-                    candidates = {str(Path(entry["worktree_path"]).resolve()) for item in preview for entry in item["result"]["sdks"]} - refused_roots
-                    if candidates and not selected:
-                        raise InspectError("Repeat each reviewed orphan path with --worktree-path before applying cleanup.", 3)
-                    if not selected.issubset(candidates):
-                        raise InspectError("Selected orphan paths are absent from the current helper-owned preview.", 3)
-                    for candidate in selected:
-                        path = Path(candidate)
-                        if path.exists() or not path.parent.is_dir() or path.is_symlink():
-                            raise InspectError("Orphan removal requires a missing worktree and accessible parent.", 3)
-                    for item in preview:
-                        identity = next(identity for identity in identities if
-                                        identity["session_id"] == item["ide"]["session_id"] and identity["port"] == item["ide"]["port"])
-                        roots = {str(Path(entry["worktree_path"]).resolve()) for entry in item["result"]["sdks"]} & selected
-                        for candidate in sorted(roots):
-                            path = Path(candidate)
-                            if path.exists() or not path.parent.is_dir() or path.is_symlink():
-                                raise InspectError("Orphan path changed before SDK removal.", 3)
-                            applied.extend(unregister_helper_sdks([identity], path, False))
-                    selected_sdk_names = {entry["sdk_name"] for item in preview for entry in item["result"]["sdks"]
-                                          if str(Path(entry["worktree_path"]).resolve()) in selected}
-                    remaining = unregister_helper_sdks(identities, None, True)
-                    if any(entry.get("sdk_name") in selected_sdk_names and entry["status"] != "absent"
-                           for item in remaining for entry in item["result"]["sdks"]):
-                        raise InspectError("Reviewed orphan SDKs remain registered after apply.", 3, {"sdk_remaining": remaining})
-                if root is not None:
-                    # Recheck local state and live projects after SDK retirement.
-                    retirement_worktree(root, False, offline_only)
-                    current = [] if offline_only else discover_identities(None)
-                    proof_identities = current
-                    final_preview = unregister_helper_sdks(current, root, True, offline_records)
-                    if any(entry["status"] != "absent" and entry["reason"] != "not_helper_owned" for item in final_preview for entry in item["result"]["sdks"]):
-                        raise InspectError("An SDK still needs retirement; retain the worktree and repeat the preview.", 3,
-                                           {"sdk_remaining": final_preview})
-                    common = git_common_worktree(root)
-                    if common is None:
-                        raise InspectError("Cannot resolve the primary checkout for worktree removal.", 3)
-                    cache_cleanup = retire_helper_project_caches(current, root, False)
-                    remaining_caches = retire_helper_project_caches(current, root, True)
-                    if any(entry["status"] != "absent" for item in remaining_caches for entry in item["result"]["caches"]):
-                        raise InspectError("Project caches still need retirement; retain the worktree.", 3,
-                                           {"project_cache_remaining": remaining_caches})
-                    before = worktree_entries(root)
-                    completed = subprocess.run(["git", "-C", str(common), "worktree", "remove", str(root)],
-                                               capture_output=True, text=True)
-                    if completed.returncode or root.exists():
-                        finish_raced_worktree_removal(common, root, before, completed.stderr)
-            return {"status": "ok", "dry_run": args.dry_run, "worktree_path": str(root) if root else None,
-                    "offline_cleanup_proved": root is not None and not proof_identities,
-                    "offline_records_checked": sorted(set(offline_records)),
-                    "project_cache_preview": cache_preview, "project_cache_cleanup": cache_cleanup,
-                    "sdk_preview": preview, "sdk_cleanup": applied, "sdk_apply_skipped": [item["ide"] for item in skipped],
-                    "worktree_removed": root is not None and not args.dry_run,
-                    "refused_preview_sdk_count": sum(entry["status"] == "refused" for item in preview for entry in item["result"]["sdks"]),
-                    "preserved_unowned_sdk_count": sum(entry["reason"] == "not_helper_owned" for item in (preview if args.dry_run else applied + skipped) for entry in item["result"]["sdks"])}
+                retirement_worktree(root)
+                offline_records.extend(offline_retirement_records(root))
+                common = git_common_worktree(root)
+                if common is None:
+                    raise InspectError("Cannot resolve the primary checkout for worktree removal.", 3)
+                before = worktree_entries(root)
+                completed = subprocess.run(["git", "-C", str(common), "worktree", "remove", str(root)],
+                                           capture_output=True, text=True)
+                if completed.returncode or root.exists():
+                    finish_raced_worktree_removal(common, root, before, completed.stderr)
+            return {"status": "ok", "dry_run": args.dry_run, "worktree_path": str(root),
+                    "offline_cleanup_proved": True, "offline_records_checked": sorted(set(offline_records)),
+                    "project_cache_preview": [], "project_cache_cleanup": [],
+                    "sdk_preview": [], "sdk_cleanup": [], "sdk_apply_skipped": [],
+                    "worktree_removed": not args.dry_run,
+                    "refused_preview_sdk_count": 0, "preserved_unowned_sdk_count": 0}
         except (subprocess.CalledProcessError, OSError) as error:
             raise InspectError("Worktree retirement failed; retain the worktree and inspect the Git/filesystem error.", 3,
-                               {"sdk_preview": preview, "sdk_cleanup": applied, "project_cache_preview": cache_preview,
-                                "completed_project_cache_cleanup": cache_cleanup, "error": str(error)}) from error
+                               {"error": str(error)}) from error
+
+
+def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
+    if args.command == "remove-worktree":
+        return command_remove_worktree(args)
+    preview: list[dict[str, Any]] = []
+    applied: list[dict[str, Any]] = []
+    with lifecycle_lock(args.lifecycle_lock_timeout_ms):
+        try:
+            identities = discover_identities(None)
+            preview = unregister_helper_sdks(identities, None, True)
+            if not args.dry_run:
+                # Explicit paths bind apply to the earlier reviewed dry-run.
+                selected = {str(Path(path).expanduser().resolve()) for path in (getattr(args, "worktree_path", None) or [])}
+                refused_roots = {str(Path(entry["worktree_path"]).resolve()) for item in preview for entry in item["result"]["sdks"] if entry["status"] == "refused"}
+                candidates = {str(Path(entry["worktree_path"]).resolve()) for item in preview for entry in item["result"]["sdks"]} - refused_roots
+                if candidates and not selected:
+                    raise InspectError("Repeat each reviewed orphan path with --worktree-path before applying cleanup.", 3)
+                if not selected.issubset(candidates):
+                    raise InspectError("Selected orphan paths are absent from the current helper-owned preview.", 3)
+                for candidate in selected:
+                    path = Path(candidate)
+                    if path.exists() or not path.parent.is_dir() or path.is_symlink():
+                        raise InspectError("Orphan removal requires a missing worktree and accessible parent.", 3)
+                for item in preview:
+                    identity = next(identity for identity in identities if
+                                    identity["session_id"] == item["ide"]["session_id"] and identity["port"] == item["ide"]["port"])
+                    roots = {str(Path(entry["worktree_path"]).resolve()) for entry in item["result"]["sdks"]} & selected
+                    for candidate in sorted(roots):
+                        path = Path(candidate)
+                        if path.exists() or not path.parent.is_dir() or path.is_symlink():
+                            raise InspectError("Orphan path changed before SDK removal.", 3)
+                        applied.extend(unregister_helper_sdks([identity], path, False))
+                selected_sdk_names = {entry["sdk_name"] for item in preview for entry in item["result"]["sdks"]
+                                      if str(Path(entry["worktree_path"]).resolve()) in selected}
+                remaining = unregister_helper_sdks(identities, None, True)
+                if any(entry.get("sdk_name") in selected_sdk_names and entry["status"] != "absent"
+                       for item in remaining for entry in item["result"]["sdks"]):
+                    raise InspectError("Reviewed orphan SDKs remain registered after apply.", 3, {"sdk_remaining": remaining})
+            return {"status": "ok", "dry_run": args.dry_run, "worktree_path": None,
+                    "offline_cleanup_proved": False, "offline_records_checked": [],
+                    "project_cache_preview": [], "project_cache_cleanup": [],
+                    "sdk_preview": preview, "sdk_cleanup": applied, "sdk_apply_skipped": [],
+                    "worktree_removed": False,
+                    "refused_preview_sdk_count": sum(entry["status"] == "refused" for item in preview for entry in item["result"]["sdks"]),
+                    "preserved_unowned_sdk_count": sum(entry["reason"] == "not_helper_owned" for item in (preview if args.dry_run else applied) for entry in item["result"]["sdks"])}
+        except (subprocess.CalledProcessError, OSError) as error:
+            raise InspectError("Worktree retirement failed; retain the worktree and inspect the Git/filesystem error.", 3,
+                               {"sdk_preview": preview, "sdk_cleanup": applied, "project_cache_preview": [],
+                                "completed_project_cache_cleanup": [], "error": str(error)}) from error
         except InspectError as error:
-            error.payload.setdefault("project_cache_preview", cache_preview)
-            error.payload["completed_project_cache_cleanup"] = cache_cleanup + error.payload.get("completed_project_cache_cleanup", [])
+            error.payload.setdefault("project_cache_preview", [])
+            error.payload.setdefault("completed_project_cache_cleanup", [])
             error.payload.update({"sdk_preview": preview, "completed_sdk_cleanup": applied + error.payload.get("completed_sdk_cleanup", [])})
             raise
 
