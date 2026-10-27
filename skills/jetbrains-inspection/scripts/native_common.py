@@ -330,11 +330,7 @@ def web_project_path(host: Any, repo: Path, config: dict[str, Any], selected: se
         raise Blocked("native_lane_models_unqualified")
     lanes = host.parse_inspection_lanes(config) if config.get("lanes") else ()
     owner = lane_owner(host, lanes, next(iter(selected))) if selected else None
-    relative = Path()
-    if owner is not None:
-        project_path = owner.project_path
-        if project_path:
-            relative = Path(project_path)
+    relative = Path(getattr(owner, "project_path", None) or ".")
     project = repo / relative
     if not project.is_dir() or project.is_symlink() or not project.resolve().is_relative_to(repo):
         raise Blocked("native_web_project_unavailable")
