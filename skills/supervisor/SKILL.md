@@ -445,8 +445,7 @@ current default-branch checkout to read its product section.
    template is there too. Change a rule there, never in a local copy. The
    [ready handoff contract](../github/references/cli-reference.md#ready-handoffs)
    those rules link classifies acceptance from the PR's own Client test
-   notes, including engineering work that merges to testing with Client
-   checks at release. Do not ask for a new pre-merge decision when those notes
+   notes. Do not ask for a new pre-merge decision when those notes
    already settle it; a renewed wait follows that contract's withdrawal route.
    Desktop IDE closure alone does not establish that headless inspection is
    unavailable. When the Supervisor runs the review, point the author to the
@@ -582,6 +581,7 @@ for products a Client runs business on.
   including `director_standing` when the Director is the Client. Preserve
   release timing and Launchplane's gated release path; use
   [launchplane](../launchplane/SKILL.md) for that routing.
+- For Launchplane release mechanics, read [Client release review](https://github.com/cbusillo/launchplane/blob/main/docs/release-review.md).
 - Open a Client-visible PR as soon as its work is ready; it gets one preview
   request whenever it opens, so holding it only delays the Client.
 - When Launchplane maps the repository to a Client other than the Director,
@@ -589,23 +589,15 @@ for products a Client runs business on.
   each Client-visible PR needs the Client's own Accept before it lands, and the
   release needs a separate Accept. Hand the PR off with
   `--waiting-for-client` until then. A `director_standing` product or a
-  repository with no Client needs neither unless the PR is explicitly held. The train
-  [lands a product's ready accepted features together](https://github.com/cbusillo/launchplane/blob/main/docs/merge-train-policy.md)
-  and the release invitation names each one. A base update that leaves the
-  change unchanged
+  repository with no Client needs neither unless the PR is explicitly held.
+  A base update that leaves the change unchanged
   [keeps its acceptance](https://github.com/cbusillo/launchplane/blob/main/docs/owner-acceptance.md#carried-acceptance),
   so there is no landing order to track.
 - Green engineering PRs route to the train as soon as they are ready, under
   [Q312](https://github.com/cbusillo/launchplane/issues/3327#issuecomment-6182485308).
-  A merge deploys testing; engineering-only changes do not open a release
-  review on their own. Launchplane's
-  [release hold](https://github.com/cbusillo/launchplane/blob/main/control_plane/merge_train_release_hold.py)
-  holds the product's repositories while a Client-accepted release runs and
-  clears the hold when it finishes. Let the train enforce it.
 - Every PR in a repository that feeds a Client release (shared add-ons,
   devkit, images, tenants and the live sites) carries a `## Client test notes`
-  section. One missing section, even on a housekeeping PR, blocks the release
-  invitation and disables Accept.
+  section.
 - Classify each PR from its own notes under [Q537](https://github.com/cbusillo/codex-skills/issues/2332#issuecomment-6271199870)
   and the [ready handoff notes contract](../github/references/cli-reference.md#ready-handoffs).
   Bring the Director only real judgment calls.
