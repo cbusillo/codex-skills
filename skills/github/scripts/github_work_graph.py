@@ -11,6 +11,7 @@ import urllib.parse
 from collections.abc import Callable
 from concurrent.futures import CancelledError, Future
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import github_direction_next
@@ -30,6 +31,35 @@ BLOCKER_LIMIT = 100
 PR_LIMIT = 5
 PR_COMMENTS = 30
 TRACKS_PER_QUERY = 10
+STATUS_BODY_TIME_QUERY = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){createdAt lastEditedAt}}}"
+
+
+def status_body_time(discussion: dict[str, Any], trusted: set[str], read_edit: Callable[[], Any]) -> str | None:
+    def status(body: str) -> str:
+        return re.sub(r"<!--.*?-->", "", github_direction_next.section_map(body).get("Current Status", ""), flags=re.S).strip()
+
+    body_status = status(discussion.get("body") or "")
+    comments = [status(comment.get("body") or "") for comment in discussion.get("comments", [])
+                if str(comment.get("author") or "").casefold() in trusted]
+    comments = [value for value in comments if value]
+    if not body_status or not comments or comments[-1] == body_status:
+        return None
+    if "body_recorded_at" in discussion:
+        recorded_at = discussion["body_recorded_at"]
+    else:
+        response = read_edit()
+        data = response.get("data") if isinstance(response, dict) and not response.get("errors") else None
+        repository = data.get("repository") if isinstance(data, dict) else None
+        issue = repository.get("issue") if isinstance(repository, dict) else None
+        if not isinstance(issue, dict) or "lastEditedAt" not in issue or not issue.get("createdAt"):
+            raise ValueError("Source action body-edit evidence unavailable")
+        recorded_at = issue["lastEditedAt"] or issue["createdAt"]
+    try:
+        if datetime.fromisoformat(recorded_at.replace("Z", "+00:00")).tzinfo is None:
+            raise ValueError("Body edit timestamp lacks timezone")
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("Source action body-edit time unavailable") from exc
+    return recorded_at
 
 LIST_QUERY = """query WorkGraphTrackList($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
@@ -573,6 +603,7 @@ def read_direction_node(
     read_comments: Callable[[int], tuple[list[dict[str, Any]], bool]],
     read_relationships: Callable[[], tuple[dict[str, Any], list[str]]],
     resolve_wait: Callable[[list[dict[str, Any]]], dict[str, Any] | None],
+    resolve_body_time: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> dict[str, Any]:
     base = {
         **github_direction_next.compact_list_issue(issue["repo"], issue),
@@ -600,6 +631,11 @@ def read_direction_node(
             issue, config=config, focus=focus, relationships=relationships, truncated_relationships=truncated, structured_wait=wait
         )
     node["item"]["discussion"] = github_direction_next.discussion_snapshot(issue, comments, complete=complete)
+    if resolve_body_time is not None and complete and str(issue.get("title", "")).startswith("Track:"):
+        recorded_at = resolve_body_time(node["item"])
+        if recorded_at is not None:
+            node["item"]["discussion"] = github_direction_next.discussion_snapshot(
+                {**issue, "last_edited_at": recorded_at}, comments, complete=complete)
     return node
 
 

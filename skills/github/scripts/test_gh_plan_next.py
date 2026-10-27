@@ -758,6 +758,12 @@ def global_fixture(
     def wait_api(method: str, path: str, **_kwargs: Any) -> Any:
         if module.NEXT_READS is not None and module.NEXT_READS.observation(path) is not None:
             return module.real_api_json(method, path, **_kwargs)
+        if path == "/graphql":
+            assert method == "POST" and _kwargs["is_write"] is False
+            variables = _kwargs["payload"]["variables"]
+            observed_issue = all_nodes[(f"{variables['owner']}/{variables['name']}", variables["number"])]
+            return "automation-gh", {"data": {"repository": {"issue": {
+                "createdAt": observed_issue["created_at"], "lastEditedAt": observed_issue.get("last_edited_at")}}}}
         assert method == "GET", "global next must remain read-only"
         parts = path.split("?", 1)[0].strip("/").split("/")
         target = "/".join(parts[1:3])
@@ -3745,12 +3751,12 @@ def test_enrollment_helper_does_not_launch_after_inherited_deadline() -> None:
 
 
 
-def test_unused_provider_read_ahead_keeps_partial_result_and_credentials_still_stop() -> None:
+def test_required_proof_root_preserves_provider_and_credential_stop_policy() -> None:
     roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
     leaf = global_issue("someone/project", 10)
     edges = {("someone/direction", 1): relationships(sub_issues=[leaf])}
     for cause in ("network_provider_failure", "invalid_credentials"):
-        with global_fixture(roots, [leaf], edges, clear_waits=[leaf]) as (module, result, _reads):
+        with global_fixture(roots, [leaf], edges, clear_waits=[leaf]) as (module, _result, _reads):
             failure = module.github_api_core.FailureDetail(cause=cause, message="fixture rejected",
                 retryable=False, fallback_eligible=False, disposition="stop")
             error = module.PlanError(failure.message, failure=failure)
@@ -3762,18 +3768,12 @@ def test_unused_provider_read_ahead_keeps_partial_result_and_credentials_still_s
             module.collect_paged_rest_items = observed
             args = next_args(scan_limit=2)
             args.read_workers = 2
-            if cause == "invalid_credentials":
-                try:
-                    module.cmd_next(args)
-                except module.PlanError as exc:
-                    assert exc is error
-                else:
-                    raise AssertionError("unused credential failure was hidden")
-            else:
+            try:
                 module.cmd_next(args)
-                assert result["graph_context"]["truncated"]
-                assert not result["candidate_coverage"]["complete"]
-                assert result["performance"]["read_ahead_failures"][cause] == 1
+            except module.PlanError as exc:
+                assert exc is error
+            else:
+                raise AssertionError("A required proof-root read failure was hidden")
 
 
 def test_global_milestone_backend_receipt_contributes_actual_attempts() -> None:
@@ -3790,7 +3790,7 @@ def test_global_milestone_backend_receipt_contributes_actual_attempts() -> None:
         assert module.CURRENT_RETRY_SUMMARY.elapsed_wait == backend.elapsed_wait
 
 
-TESTS.extend([test_unused_provider_read_ahead_keeps_partial_result_and_credentials_still_stop,
+TESTS.extend([test_required_proof_root_preserves_provider_and_credential_stop_policy,
               test_global_milestone_backend_receipt_contributes_actual_attempts,
               test_graph_read_ahead_is_bounded_beyond_a_deep_scan_frontier,
               test_enrollment_helper_does_not_launch_after_inherited_deadline,
@@ -4098,6 +4098,30 @@ def test_local_next_comment_read_failure_is_wait_review_not_unknown_dependencies
 
 TESTS.extend([test_local_next_comment_limit_keeps_unread_discussion_under_review,
               test_local_next_comment_read_failure_is_wait_review_not_unknown_dependencies])
+
+
+def test_global_next_reads_milestone_proofs_before_a_descendant_uses_the_scan_budget() -> None:
+    root = track("someone/direction", 3, "First")
+    last = track("someone/direction", 102, "Second")
+    proof = "The site serves real visitors after backup and tested rollback."
+    root["body"] = f"## Objective\n{proof}\n\n## Current Status\nState: The accepted release is complete.\n"
+    last["body"] = "## Finish Line\nThe original issues close and the accepted release reaches production.\n"
+    last["body"] += "\n## Current Status\nState: Active.\n"
+    last["updated_at"] = "2027-01-02T00:00:00Z"
+    later = global_issue("someone/product", 560)
+    comments: dict[tuple[str, int], list[dict[str, Any]]] = {("someone/direction", 102): [{"id": 1, "user": {"login": "someone"},
+        "body": "## Current Status\nState: The accepted release is complete.", "created_at": "2027-01-01T00:00:00Z"}]}
+    with global_fixture([root, last], [later], {("someone/direction", 3): relationships(blocked_by=[later])},
+                        clear_waits=[root, last], comments=comments) as (module, result, _reads):
+        module.cmd_next(next_args(scan_limit=1))
+        reviews = result["milestone_closure_reviews"]
+        assert len(reviews) == 2, result
+        assert reviews[0]["track_proof"] == proof, reviews
+        assert reviews[1]["recorded_status"] == comments[("someone/direction", 102)][0]["body"].split("\n", 1)[1], reviews
+        assert result["graph_context"]["truncated"], result
+
+
+TESTS.append(test_global_next_reads_milestone_proofs_before_a_descendant_uses_the_scan_budget)
 
 
 def main() -> None:

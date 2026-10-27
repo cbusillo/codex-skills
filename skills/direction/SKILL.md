@@ -653,6 +653,8 @@ unchecked when the window opened and checked now) are read only for issues
 updated in the window, at most 200 of them. `unavailable` names any limit hit
 or unread issue, and `complete` is false when it is not empty. Report each
 milestone's line; a milestone with no movement says so.
+Use its `closure_reviews` in this same audit under the
+[milestone contract](../github-plan/references/milestones.md).
 
 It also returns `active_unadopted`: the stale-wait report and `gate_phrase`
 matches for every repository of that account with a push in the window that

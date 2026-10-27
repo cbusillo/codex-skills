@@ -7,17 +7,36 @@ alternate backlogs.
 - Read the milestone description and open issues before judging readiness or
   membership. Put exact exit criteria in that description; keep transient
   milestone state out of repository instructions.
-- Before admitting an issue, ask whether the milestone can honestly close while
-  it remains open. If yes, keep it outside the milestone.
+- Before admitting work, compare the milestone's proof with its recorded
+  evidence, independently of open blockers. If the proof is met, close it or
+  surface it as a closing candidate; admit later work under the milestone it
+  actually serves or another supported Order kind. A claim's native link is
+  membership evidence, never an addition to the milestone's proof.
+- Claim admission records why work was selected; it never adds a blocker.
+  Use `gh-plan.py link` deliberately for a real prerequisite or child. Global
+  `next` ranks those native paths and listed repository milestones, not claim
+  citations. Citing a Track alone cannot buy its priority or extend its gate.
+- Keep an issue outside the milestone if that milestone can honestly close
+  while the issue remains open.
 - Prefer one active milestone per release train. Use parallel milestones only
   for independent trains with separate exit gates.
 - Give each active milestone a due date or a named gate, dependency, or decision
   that determines when it can close.
 - Record why incomplete work no longer blocks before removing it to the backlog
   or admitting it elsewhere.
-- When scope keeps growing, cut scope deliberately rather than silently
-  extending the gate. Close the milestone when its release or phase ships;
-  reconcile survivors instead of leaving it open for every themed issue.
+- Close when the recorded proof is met. Reconcile surviving links and milestone
+  assignments with evidence, preserving each issue's work, custody and waits.
+  Do this in the existing planning/closeout pass; a separate closeout issue or
+  an agent's return is not another finish line. Propose a direction change only
+  when the proof itself must change.
+
+The existing Supervisor goal-board check and weekly direction audit assess
+each Track's proof against the merged milestone line, trusted Current Status
+and linked evidence, independently of open blockers or newly admitted work.
+Their proof-review projections carry recorded text, never a completion verdict.
+Close met Tracks and milestones within authority, or surface closing candidates
+with the exact missing evidence and next actor. Review every Track even when
+there was no graph movement; incomplete evidence stays unknown.
 
 With a root `DIRECTION.md`, use only milestone titles listed in the merged file.
 Propose a new waypoint through the `direction` skill before creating it. The
