@@ -307,13 +307,18 @@ def configured_product_key(host, config, selected):
 
 
 def npm_lockfile(root):
+    if not (root / "package.json").is_file():
+        raise Blocked("native_npm_lockfile_required")
     if (root / "pnpm-lock.yaml").is_file():
-        manifest = json.loads((root / "package.json").read_text())
+        try:
+            manifest = json.loads(bounded_bytes(root / "package.json"))
+        except (OSError, ValueError):
+            raise Blocked("native_pnpm_version_required") from None
         manager = manifest.get("packageManager") if isinstance(manifest, dict) else None
-        if not isinstance(manager, str) or not re.fullmatch(r"pnpm@\d+\.\d+\.\d+(?:\+sha(?:224|512)\.[a-fA-F0-9]+)?", manager):
+        if not isinstance(manager, str) or not re.fullmatch(r"pnpm@\d+\.\d+\.\d+(?:\+sha(?:1|224|256|512)\.[a-fA-F0-9]+)?", manager):
             raise Blocked("native_pnpm_version_required")
         return root / "pnpm-lock.yaml"
-    if not (root / "package.json").is_file() or not (root / "package-lock.json").is_file():
+    if not (root / "package-lock.json").is_file():
         raise Blocked("native_npm_lockfile_required")
     return root / "package-lock.json"
 
@@ -328,6 +333,11 @@ def web_project_path(host: Any, repo: Path, config: dict[str, Any], selected: se
     if not project.is_dir() or project.is_symlink() or not project.resolve().is_relative_to(repo):
         raise Blocked("native_web_project_unavailable")
     return relative
+
+
+def web_preparation_supported(config: dict[str, Any]) -> bool:
+    prepare = config.get("prepare")
+    return not prepare or isinstance(prepare, dict) and set(prepare) == {"python"} and isinstance(prepare["python"], dict)
 
 
 def requested_python_version(config):

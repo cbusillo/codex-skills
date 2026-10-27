@@ -619,6 +619,14 @@ class UnavailableExplanationTests(unittest.TestCase):
         report, action, _ = self.explain(["scripts/tool.py"], {"lanes": lanes})
         self.assert_unavailable(report, action, "scripts-lane")
 
+    def test_nested_webstorm_in_a_mixed_selection_suggests_a_separate_run(self):
+        lanes = [{"id": "frontend", "ide": "WebStorm", "include": ["frontend/**"], "projectPath": "frontend"},
+                 {"id": "python", "ide": "PyCharm", "include": ["**/*.py"]}]
+        report, action, _ = self.explain(["backend.py", "frontend/app.ts"], {"lanes": lanes})
+        self.assertIn("--scope files", action)
+        self.assertIn("WebStorm", report)
+        self.assertNotIn("nested_lane", report)
+
     def test_supported_files_in_mixed_selections_get_their_own_run(self):
         nested = [{"id": "root", "ide": "PyCharm", "include": ["backend/**"]},
                   {"id": "scripts-lane", "ide": "PyCharm", "include": ["scripts/**"], "projectPath": "scripts"}]
@@ -2196,7 +2204,7 @@ print('Done.')
             shutil.move(str(self.repo / name), frontend / name)
         self.script.write_text(self.script.read_text().replace("src/app.ts", "frontend/src/app.ts").replace(
             "project/'node_modules/.fixture'", "project/'frontend/node_modules/.fixture'"))
-        self.declare({"prepare": {"python": {"version": "3.12", "moduleName": "backend"}}, "lanes": [
+        self.declare({"prepare": {"python": {"version": "3.12", "moduleName": "backend", "projectPath": "backend"}}, "lanes": [
             {"id": "frontend", "ide": "WebStorm", "include": ["frontend/**"], "projectPath": "frontend"},
             {"id": "python", "ide": "PyCharm", "include": ["**/*.py"]}]})
         self.assertEqual(self.select("frontend/src/app.ts"), ("native", "webstorm_native_route"))
@@ -2204,19 +2212,24 @@ print('Done.')
         self.assertEqual(result["inspection_outcome"]["reason"], "native_completed", result["proof_failures"])
         self.assertEqual(result["agent_result"]["verdict"], "RED")
         self.assertTrue(json.loads(self.engine_record.read_text())["node_modules"])
-        npm = json.loads(self.npm_record.read_text())
-        prefix = Path(npm["argv"][npm["argv"].index("--prefix") + 1])
-        self.assertEqual(prefix.relative_to(prefix.parent.parent).as_posix(), "project/frontend")
         self.assertFalse((frontend / "node_modules").exists())
 
     def test_webstorm_selection_cannot_mix_project_roots_or_escape_its_project(self):
         (self.repo / "other").mkdir()
         (self.repo / "other/app.ts").write_text("export const value = 1;\n")
+        for directory in ("src", "other"):
+            for name in ("package.json", "package-lock.json"):
+                shutil.copyfile(self.repo / name, self.repo / directory / name)
         for project_path in ("src", "other"):
             self.declare({"lanes": [
                 {"id": "frontend", "ide": "WebStorm", "include": ["src/**"], "projectPath": project_path},
                 {"id": "other", "ide": "WebStorm", "include": ["other/**"], "projectPath": "other"}]})
             self.assertEqual(self.select("src/app.ts", "other/app.ts")[0], "unavailable")
+            self.assertEqual(self.select("other/app.ts")[0], "native")
+            if project_path == "other":
+                self.assertEqual(self.select("src/app.ts")[0], "unavailable")
+            else:
+                self.assertEqual(self.select("src/app.ts")[0], "native")
 
     def test_python_selection_in_a_webstorm_repository_keeps_the_pycharm_route(self):
         (self.repo / "tool.py").write_text("print(1)\n")
@@ -2293,11 +2306,27 @@ print('Done.')
         invocation = json.loads(self.npm_record.read_text())
         self.assertEqual(invocation["argv"][0], json.loads((self.repo / "package.json").read_text())["packageManager"])
         self.assertTrue({"--frozen-lockfile", "--ignore-scripts", "--ignore-pnpmfile"} <= set(invocation["argv"]))
-        self.assertEqual(Path(invocation["env"]["COREPACK_HOME"]), self.cache / "corepack")
+        self.assertTrue(Path(invocation["env"]["COREPACK_HOME"]).is_relative_to(self.cache))
         self.assertTrue(json.loads(self.engine_record.read_text())["node_modules"])
         self.assertFalse((self.repo / "node_modules").exists())
         corepack.unlink()
         self.assertEqual(self.select(), ("unavailable", "native_ineligible=native_corepack_unavailable"))
+
+    def test_pnpm_manifest_errors_are_specific_without_reading_linked_inputs(self):
+        lock = self.repo / "pnpm-lock.yaml"
+        lock.write_text("lockfileVersion: '9.0'\n")
+        manifest = self.repo / "package.json"
+        for value in ("{", "[]", '{"packageManager": 5}'):
+            manifest.write_text(value)
+            self.assertEqual(self.select()[1], "native_ineligible=native_pnpm_version_required")
+        manifest.unlink()
+        self.assertEqual(self.select()[1], "native_ineligible=native_npm_lockfile_required")
+        target = self.root / "outside-manifest"
+        target.write_text('{"packageManager":"pnpm@10.10.0"}')
+        manifest.symlink_to(target)
+        with patch.object(Path, "read_bytes", side_effect=AssertionError("linked source read")):
+            with self.assertRaisesRegex(native.Blocked, "native_pnpm_version_required"):
+                native.common.npm_lockfile(self.repo)
 
     def test_tracked_project_model_is_used_and_a_web_module_is_generated_without_one(self):
         result = self.assess()

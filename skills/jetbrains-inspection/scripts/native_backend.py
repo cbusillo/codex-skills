@@ -141,8 +141,10 @@ UNAVAILABLE_REASONS = {
     "native_app_not_configured": ("the native {product} worker has no app configured in the shared helper config", ""),
     "native_preparation_shape_unsupported": ("native {product} cannot run the declared qualityGate.inspection.prepare", ""),
     "no_worker": ("no native worker inspects {suffixes}", UNAVAILABLE_COVERAGE.format(coverage="coverage for {suffixes}")),
-    "nested_lane": ("lane {lane} sets projectPath, and native workers inspect only root projects, see cbusillo/codex-skills#2557",
+    "nested_lane": ("lane {lane} sets projectPath, which native workers support only for WebStorm",
                     UNAVAILABLE_COVERAGE.format(coverage="coverage for lane {lane}")),
+    "web_project_mismatch": ("file {path} is outside its WebStorm lane {lane} projectPath",
+                             "Correct lane {lane}'s include or projectPath so it contains {path}"),
     "lane_ide": ("lane {lane} is assigned to {ide}, which has no native worker for {suffixes}",
                  UNAVAILABLE_COVERAGE.format(coverage="coverage for {suffixes} in lane {lane}")),
     "xml_outside_odoo": ("native PyCharm inspects .xml only in Odoo repositories",
@@ -153,8 +155,8 @@ UNAVAILABLE_REASONS = {
     "anchor_missing": ("native {product} inspects {suffixes} only with a {anchor} file in the same selection",
                        "add a changed {anchor} file to the selection; otherwise "
                        + UNAVAILABLE_COVERAGE.format(coverage="coverage for {suffixes} alone")),
-    "mixed": ("native {product} does not inspect {suffixes} in one run with other languages",
-              "inspect {suffixes} in a separate --scope files run"),
+    "mixed": ("native {product} needs a separate assessment for {suffixes} in each project",
+              "inspect {suffixes} in a separate --scope files run per product and project"),
     "supported": ("native PyCharm can inspect {suffixes} on their own", "inspect {suffixes} in a separate --scope files run"),
     "native_required_plugin_missing": ("the repository's .idea/externalDependencies.xml requires {plugins} in the {product} worker at {worker}",
                                        "Open the {product} worker at {worker} with its launcher, open that worker's Plugins screen and"
@@ -192,9 +194,16 @@ def coverage_gaps(host: Any, repo: Path, config: dict[str, Any], selected: set[s
         configured = common.configured_product_key(host, config, {path})
         owner = common.lane_owner(host, lanes, path)
         fields: dict[str, str] = {}
-        if owner is not None and owner.project_path:
+        if owner is not None and owner.project_path and host.product_for_selector(owner.ide) is host.IDE_PRODUCTS[WEBSTORM_PRODUCT_KEY]:
+            if not Path(path).is_relative_to(owner.project_path):
+                key, fields = "web_project_mismatch", {"lane": owner.lane_id, "path": path}
+                groups.setdefault((key, tuple(sorted(fields.items()))), set()).add(label)
+                continue
+        elif owner is not None and owner.project_path:
             key, fields = "nested_lane", {"lane": owner.lane_id}
-        elif suffix in NATIVE_SUFFIXES:
+            groups.setdefault((key, tuple(sorted(fields.items()))), set()).add(label)
+            continue
+        if suffix in NATIVE_SUFFIXES:
             if owner is not None and host.product_for_selector(owner.ide) is not host.IDE_PRODUCTS[PYTHON_PRODUCT_KEY]:
                 key, fields = "lane_ide", {"lane": owner.lane_id, "ide": owner.ide}
             elif suffix == ".xml" and not odoo:
@@ -299,7 +308,7 @@ def eligibility_reason(args, host, repo, settings, product_key=PYTHON_PRODUCT_KE
             return "native_required_plugin_missing"
         if product_key == WEBSTORM_PRODUCT_KEY:
             node = node_executable(host)
-            if settings.get("prepare") and common.requested_python_version(settings) is None:
+            if not common.web_preparation_supported(settings):
                 return "native_preparation_shape_unsupported"
             relative = common.web_project_path(host, repo, settings, common.scope_selection(args, host)[3])
             require_web_preparation(node, repo / relative)
@@ -1617,8 +1626,7 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
     elif reason == "native_python_environment_required":
         action = "Run the repository's documented Python setup in the exact worktree; native needs its .venv or declared structured prepare.python."
     elif reason in {"native_preparation_shape_unsupported", "native_preparation_unsupported"}:
-        action = ("Native runs only a structured root prepare.python, and only for PyCharm. Nested projectPath preparation has no "
-                  "worker yet (cbusillo/codex-skills#2557) and other preparation shapes are unsupported, so this coverage is "
+        action = ("Native PyCharm runs structured root prepare.python; WebStorm ignores structured Python preparation and prepares its lane's npm or pnpm project. Other preparation shapes are unsupported, so this coverage is "
                   "unavailable; report it as UNKNOWN. When the exact root .venv is already prepared, --backend native uses it.")
     elif reason.startswith("native_odoo_"):
         action = "Run the workspace's documented dependency sync so its declared addon refs resolve locally. Match the selected addon's version and workspace build.odoo_version to one Odoo core checkout plus the declared addon dependency roots. Supply those clean roots with --native-framework-root; preserve source version declarations."
@@ -1802,7 +1810,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         if odoo:
             expected |= NAMED_ODOO
         if webstorm:
-            if settings.get("prepare") and common.requested_python_version(settings) is None:
+            if not common.web_preparation_supported(settings):
                 raise Blocked("native_preparation_shape_unsupported")
             web_relative = common.web_project_path(host, repo, settings, selected)
             require_web_preparation(node, repo / web_relative)
