@@ -761,9 +761,9 @@ def global_fixture(
         if path == "/graphql":
             assert method == "POST" and _kwargs["is_write"] is False
             variables = _kwargs["payload"]["variables"]
-            raw = all_nodes[(f"{variables['owner']}/{variables['name']}", variables["number"])]
+            observed_issue = all_nodes[(f"{variables['owner']}/{variables['name']}", variables["number"])]
             return "automation-gh", {"data": {"repository": {"issue": {
-                "createdAt": raw["created_at"], "lastEditedAt": raw.get("last_edited_at")}}}}
+                "createdAt": observed_issue["created_at"], "lastEditedAt": observed_issue.get("last_edited_at")}}}}
         assert method == "GET", "global next must remain read-only"
         parts = path.split("?", 1)[0].strip("/").split("/")
         target = "/".join(parts[1:3])
@@ -4109,7 +4109,7 @@ def test_global_next_reads_milestone_proofs_before_a_descendant_uses_the_scan_bu
     last["body"] += "\n## Current Status\nState: Active.\n"
     last["updated_at"] = "2027-01-02T00:00:00Z"
     later = global_issue("someone/product", 560)
-    comments = {("someone/direction", 102): [{"id": 1, "user": {"login": "someone"},
+    comments: dict[tuple[str, int], list[dict[str, Any]]] = {("someone/direction", 102): [{"id": 1, "user": {"login": "someone"},
         "body": "## Current Status\nState: The accepted release is complete.", "created_at": "2027-01-01T00:00:00Z"}]}
     with global_fixture([root, last], [later], {("someone/direction", 3): relationships(blocked_by=[later])},
                         clear_waits=[root, last], comments=comments) as (module, result, _reads):

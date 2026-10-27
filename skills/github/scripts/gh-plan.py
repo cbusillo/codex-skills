@@ -3478,7 +3478,8 @@ def claim_once(args: argparse.Namespace) -> None:
         if comment_recorded and admission is not None and admission != recorded_kind:
             raise ClassifiedPlanError("claim_admission_changed",
                 "This claim already records another admission kind; release it before choosing a different kind.")
-        milestone_track = milestone_claim_track(issue, milestone_links) if milestone_links is not None else None
+        if milestone_links is not None:
+            milestone_claim_track(issue, milestone_links)
         completed.append("ownership_preflight")
         wait_receipt = ("\n\nRetained PR waits verified for this step:\n" + "\n".join(
             f"PR #{pr}:\n" + "\n".join("> " + line for line in wait.splitlines())
@@ -3600,7 +3601,7 @@ def claim_once(args: argparse.Namespace) -> None:
                                   for record in github_plan_claim.records(final_status)):
             raise PlanError("Current Status claim changed during readback")
         admit_observed_sources()
-        if milestone_track is not None:
+        if milestone_links is not None:
             milestone_claim_track(final, milestone_links)
         completed.append("metadata_readback")
     except github_comment_core.CommentError as exc:
@@ -5380,8 +5381,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             elif raw_issue is None:
                 issue_actor, raw_issue = get_issue(str(number), issue_repo)
                 actor = issue_actor or actor
-            raw_issue = {**raw_issue, "repo": issue_repo}
-            seeds[key] = raw_issue
+            source_issue: dict[str, Any] = {**raw_issue, "repo": issue_repo}
+            seeds[key] = source_issue
             context_key = issue_repo.casefold()
             with context_lock:
                 repo_lock = context_locks.setdefault(context_key, threading.Lock())
@@ -5393,13 +5394,13 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
                     contexts[context_key] = (target_config, focus_values)
                     focus_contexts[issue_repo] = focus_context
             target_config, focus_values = contexts[context_key]
-            focus = focus_values.get(raw_issue.get("html_url") or raw_issue.get("url"))
-            return github_work_graph.read_direction_node(raw_issue, config=target_config, focus=focus,
+            focus = focus_values.get(source_issue.get("html_url") or source_issue.get("url"))
+            return github_work_graph.read_direction_node(source_issue, config=target_config, focus=focus,
                 comment_limit=getattr(args, "comment_limit", None) or 100,
                 read_comments=lambda count: graph_comments(issue_repo, number, count),
-                read_relationships=lambda: graph_relationships(issue_repo, number, raw_issue),
-                resolve_wait=lambda comments: graph_wait(raw_issue, comments, issue_repo),
-                resolve_body_time=lambda item: next_status_body_time(item, github_plan_wait.authors(issue_repo)))
+                read_relationships=lambda: graph_relationships(issue_repo, number, source_issue),
+                resolve_wait=lambda comments: graph_wait(source_issue, comments, issue_repo),
+                resolve_body_time=lambda work_item: next_status_body_time(work_item, github_plan_wait.authors(issue_repo)))
         except PlanError as exc:
             # Inaccessible cross-owner nodes are unknown, not unblocked. Quota,
             # auth and provider failures retain the shared helper's stop policy.
