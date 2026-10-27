@@ -413,6 +413,8 @@ def execute(h: Any, args: argparse.Namespace) -> int:
                 project_generation_plan(h, response, body, scope) if generating else project_plan(h, response, body, selected)
             )
             if mode == "apply":
+                if generating and payload["result"]["boundary_binding_id"] != reviewed["boundary_binding_id"]:
+                    raise ValueError("capture_boundary_mismatch")
                 readback_started = True
                 if generating:
                     observed_metadata = read_metadata(include_public_key=True)

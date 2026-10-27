@@ -203,6 +203,18 @@ def test_generated_public_key_requires_explicit_read_and_matching_bindings() -> 
     assert code != 0 and not post.called
 
 
+def test_public_fingerprint_agrees_with_openssh_vector() -> None:
+    vector = {
+        **public_pair(),
+        "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUm",
+        "fingerprint": "SHA256:WZ64x5CuWPIPCGCuuSA1DB7xipz7cI/vWRWoqW3keDM",
+    }
+    response = generated_metadata()
+    response["result"]["generated_capture_keys"] = [vector]
+    code, payload, _, _ = invoke(argv(BINDINGS + "-read") + ["--include-public-key"], [response])
+    assert code == 0 and payload["result"]["generated_capture_keys"][0]["fingerprint"] == vector["fingerprint"]
+
+
 def test_generation_apply_reads_back_without_creating_a_client_private_file(
     tmp_path: Path,
 ) -> None:
@@ -267,6 +279,16 @@ def test_generation_readback_mismatch_preserves_apply_receipt(tmp_path: Path) ->
     assert payload["summary"]["trace_id"] == "trace-generation" and get.call_count == 1 and post.call_count == 1
 
 
+def test_generation_apply_must_match_reviewed_boundary_even_when_readback_agrees(tmp_path: Path) -> None:
+    arguments = generation_apply_args(tmp_path)
+    response, observed = generation_plan(True), generated_metadata()
+    response["result"]["boundary_binding_id"] = "unreviewed-boundary"
+    observed["result"]["generated_capture_keys"][0]["boundary_binding_id"] = "unreviewed-boundary"
+    code, payload, get, post = invoke(arguments, [observed], [response])
+    assert code != 0 and payload["status"] == "accepted_unverified"
+    assert payload["summary"]["trace_id"] == response["trace_id"] and post.call_count == 1 and not get.called
+
+
 def test_private_pin_file_and_mixed_generation_references_never_leave_client(
     tmp_path: Path,
 ) -> None:
@@ -281,6 +303,11 @@ def test_private_pin_file_and_mixed_generation_references_never_leave_client(
         "--private-key-binding",
         BINDING_IDS[0],
     ]
+    code, _, get, post = invoke(arguments, [])
+    assert code != 0 and not get.called and not post.called
+
+
+    arguments = argv(BINDINGS + "-dry-run") + ["--known-hosts-file", str(tmp_path / "known_hosts")]
     code, _, get, post = invoke(arguments, [])
     assert code != 0 and not get.called and not post.called
 

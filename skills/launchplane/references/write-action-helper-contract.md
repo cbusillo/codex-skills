@@ -2686,8 +2686,9 @@ Generation starts no capture, restore or product release action. The producer's
 owns custody and host-enrollment requirements.
 
 An accepted response with failed readback stays `accepted_unverified`; a lost
-apply response stays `outcome_unknown`. Preserve the saved review, receipt,
-caller, exact request and original key. Inspect binding metadata before retrying
+apply response stays `outcome_unknown`. Preserve the saved review, unchanged
+public pin file when generating, receipt, caller, exact request and original key.
+Inspect binding metadata before retrying
 that same operation; never select another credential, identity, key or workflow
 to evade a denial or conflict. Terminal agents remain refused by the service.
 These commands add no grants and never call a provider directly.
