@@ -1053,6 +1053,11 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             helper.record_closure(log, self.entry, "supervisor")
         replacement = {**self.entry, **metadata, "pid": metadata["launch_pid"]}
+        for key, value in (("launch_pid", 790), ("launch_generation", "another-generation"),
+                           ("launch_started_at", "2026-01-01T00:01:41Z"), ("pid", 790),
+                           ("tty", "other-tty"), ("codex_home", str(self.root / "other-account"))):
+            with self.subTest(changed=key), self.assertRaises(ValueError):
+                helper.record_closure(log, {**replacement, key: value}, "supervisor")
         closed = helper.record_closure(log, replacement, "supervisor")
         self.assertEqual(closed["launch_generation"], metadata["launch_generation"])
 
