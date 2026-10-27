@@ -1104,6 +1104,19 @@ print('Done.')
         self.assertTrue(result["findings"])
         self.assertIn("PyCompatibilityInspection", result["coverage"]["unproven"])
 
+    def test_python_inspection_waits_for_sdk_setup_before_collecting_findings(self) -> None:
+        source = self.script.read_text()
+        source = source.replace("import pathlib,sys,json", "import pathlib,sys,json,os")
+        source = source.replace("report_user_findings=True", f"report_user_findings=True\n"
+                                f"sdk_ready={native.AWAIT_ACTIVITIES_INSTEAD_OF_CONFIGURATORS!r} in pathlib.Path(os.environ['PYCHARM_VM_OPTIONS']).read_text().splitlines()")
+        source = source.replace("paths=[control/canary_files[tool]]",
+                                "paths=[control/canary_files[tool]] if sdk_ready or tool!='PyUnresolvedReferencesInspection' else []")
+        self.script.write_text(source)
+        result = self.assess()
+        self.assertEqual(result["agent_result"]["verdict"], "RED")
+        self.assertTrue(result["coverage"]["complete"])
+        self.assertEqual(result["cleanup"]["status"], "closed")
+
     def test_clean_selected_spans_and_canaries_allow_green_without_control_findings(self):
         self.script.write_text(self.script.read_text().replace("report_user_findings=True", "report_user_findings=False"))
         result = self.assess()

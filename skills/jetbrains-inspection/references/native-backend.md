@@ -460,6 +460,12 @@ licence observation incomplete and preserves the outcome hold.
 
 ## Coverage and qualification
 
+PyCharm and IntelliJ use the stock activity-based inspection startup, which
+waits for tracked project configuration before collecting findings. Python SDK
+and package setup must finish before inspection; registering the interpreter
+alone does not prove readiness. This wait shares the existing execution timeout
+and process custody. A missing control or selected-file span still means UNKNOWN.
+
 Results name `backend: native`, the selected scope, source/profile/helper and
 framework provenance, coverage, findings and separate cleanup. Reports must
 name the backend and any `coverage.unavailable` or `coverage.unproven` entries.
