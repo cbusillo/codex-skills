@@ -17,6 +17,7 @@ import tempfile
 import time
 import unittest
 from argparse import Namespace
+from datetime import datetime
 from itertools import product
 from pathlib import Path
 from typing import Any
@@ -1699,6 +1700,37 @@ class ClaimTests(unittest.TestCase):
         self.assertIn("metadata_readback", result["completed_steps"])
         self.assertEqual(result["claim"]["branch"], source["branch"])
         self.assertNotIn("retained_handoff", result["claim"])
+
+    def test_released_partial_no_pr_claim_preserves_resume_for_the_next_session(self) -> None:
+        for next_session in (False, True):
+            with self.subTest(next_session=next_session):
+                self.setUp()
+                source = self.no_pr_resume_fixture()
+                self.args.branch = source["branch"]
+                self.handoff_id = None
+                self.after_status = self.record_wait
+                clock = self.enterContext(patch.object(PLAN, "datetime", wraps=datetime))
+                clock.now.return_value = datetime.fromisoformat("2026-10-03T00:00:00Z")
+                with self.assertRaises(PLAN.PlanError) as failure:
+                    self.run_claim()
+                partial_id = failure.exception.payload["claim_recovery"]["release_own_claim"]["comment_id"]
+                partial = next(comment for comment in self.comments if comment["id"] == partial_id)
+                partial_record = CLAIM.records(partial["body"])[0]
+                partial["created_at"] = partial_record["claimed_at"]
+                self.comments.append({"id": partial_id + 1, "user": {"login": TEST_BOT},
+                    "body": f"Released claim {partial_id}", "created_at": "2026-10-03T01:00:00Z"})
+                self.after_status = lambda: None
+                self.wait = wait_record.reviewed(evidence="The readback hold is resolved")
+                if next_session:
+                    self.args.worker, self.args.session = "next-worker", "next-native-session"
+                artifacts = copy.deepcopy(self.inventory)
+                clock.now.return_value = datetime.fromisoformat("2026-10-04T00:00:00Z")
+                self.run_claim()
+                result = self.emitted.call_args.args[0]
+                self.assertIn("metadata_readback", result["completed_steps"])
+                self.assertEqual(result["claim"]["branch"], source["branch"])
+                self.assertEqual(result["claim"]["resume_from"], str(self.args.resume_from))
+                self.assertEqual(self.inventory, artifacts)
 
     def test_no_pr_resume_preserves_unqualified_predecessor_refusals(self) -> None:
         for change in ("session", "worker", "author", "late_release", "equal_release", "lease_only",
