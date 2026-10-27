@@ -66,9 +66,17 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                 )
 
     def test_native_thread_reads_preserve_claim_discovery(self) -> None:
-        cells = json.loads((Path(__file__).parent / "fixtures/thread-read-cells.json").read_text())
-        for identifier, source in cells.items():
-            with self.subTest(call_id=identifier):
+        cells = (
+            'text(await tools.codex_tui__list_threads({limit:40}));'
+            'text(await tools.exec_command({cmd:"git diff --stat origin/main...origin/work/read-coverage"}));'
+            'text(await tools.exec_command({cmd:"rg claim cli-reference.md"}));',
+            'text(await tools.codex_tui__read_thread({threadId:"fixture-thread",turnLimit:1,'
+            'includeOutputs:false,maxOutputCharsPerItem:5000}));'
+            'text(await tools.exec_command({cmd:"git status --short --branch"}));'
+            'text(await tools.exec_command({cmd:"gh-plan.py --repo test/a show 52 --full"}));',
+        )
+        for source in cells:
+            with self.subTest(source=source):
                 self.assertEqual(
                     check_claims.history.literal_targets(invocation(source), SESSION),
                     {"targets": set(), "unresolved_invocations": []},
@@ -77,6 +85,9 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                 report = check_claims.history.literal_targets(invocation(real_claim), SESSION)
                 self.assertEqual(report["targets"], {("test/a", 5)})
                 self.assertTrue(report["unresolved_invocations"])
+                self.assertTrue(
+                    all(item["reason"] == check_claims.history.UNFINISHED_CLAIM for item in report["unresolved_invocations"])
+                )
                 for opaque in (
                     source + 'text(await tools.exec_command({cmd:load("claim-command")}));',
                     source.replace("codex_tui__", "unknown__"),
