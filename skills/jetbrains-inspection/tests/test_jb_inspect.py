@@ -71,8 +71,14 @@ def write_json(path: Path, payload: dict) -> None:
 
 
 class OfflineIdeProcessTests(unittest.TestCase):
+    def test_process_tree_keeps_ancestors_and_siblings_but_excludes_observers(self) -> None:
+        process_list = ("123 1 /Applications/PyCharm.app/Contents/MacOS/pycharm\n124 123 /bin/zsh\n"
+                        "125 124 /usr/bin/python3\n126 125 /bin/ps\n127 124 /usr/bin/node\n")
+        with patch.object(os, "getpid", return_value=125), patch.object(subprocess, "check_output", return_value=process_list):
+            self.assertEqual(jb_inspect.offline_ide_processes(), [123, 124, 127])
+
     def test_running_ide_is_visible_without_a_plugin_registry(self):
-        process_list = "123 /Applications/PyCharm.app/Contents/MacOS/pycharm\n124 /bin/sh\n"
+        process_list = "123 1 /Applications/PyCharm.app/Contents/MacOS/pycharm\n124 1 /bin/sh\n"
         with patch.object(subprocess, "check_output", return_value=process_list):
             self.assertEqual(jb_inspect.offline_ide_processes(), [123])
         with patch.object(subprocess, "check_output", side_effect=OSError("fixture")):
@@ -80,37 +86,127 @@ class OfflineIdeProcessTests(unittest.TestCase):
                 jb_inspect.offline_ide_processes()
 
 
+class RunningIdeRetirementTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name).resolve()
+        primary = self.home / "primary"
+        self.root = self.home / "task"
+        subprocess.run(["git", "init", "-q", str(primary)], check=True)
+        subprocess.run(["git", "-C", str(primary), "-c", "user.name=Fixture", "-c",
+                        "user.email=fixture@example.invalid", "commit", "-q", "--allow-empty", "-m", "fixture"], check=True)
+        subprocess.run(["git", "-C", str(primary), "worktree", "add", "-q", "-b", "task", str(self.root)], check=True)
+        self.processes = "123 1 /Applications/PyCharm.app/Contents/MacOS/pycharm\n"
+        self.open_files = "p123\0\nfcwd\0n/another/project\0\n"
+        self.discovery_error: Exception | None = None
+        self.file_error: Exception | None = None
+        self.file_stderr = ""
+        self.args = jb_inspect.build_parser().parse_args(["remove-worktree", "--repo", str(self.root)])
+        check_output = subprocess.check_output
+        run = subprocess.run
+
+        def discover(command: list[str], **kwargs: Any) -> str:
+            if command[0] != "ps":
+                return check_output(command, **kwargs)
+            if self.discovery_error:
+                raise self.discovery_error
+            return self.processes
+
+        def observe(command: list[str], **kwargs: Any) -> Any:
+            if Path(command[0]).name != "lsof":
+                return run(command, **kwargs)
+            if self.file_error:
+                raise self.file_error
+            return subprocess.CompletedProcess(command, 0, self.open_files, self.file_stderr)
+
+        for context in (patch_attr(jb_inspect.Path, "home", return_value=self.home),
+                        patch.object(sys, "platform", "darwin"),
+                        patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}),
+                        patch.object(subprocess, "check_output", side_effect=discover),
+                        patch.object(subprocess, "run", side_effect=observe),
+                        patch_attr(jb_inspect, "discover_identities", side_effect=AssertionError("desktop discovery")),
+                        patch_attr(jb_inspect, "http_request", side_effect=AssertionError("desktop request"))):
+            context.start()
+            self.addCleanup(context.stop)
+
+    def retire(self) -> None:
+        self.assertTrue(jb_inspect.command_remove_worktree(self.args)["offline_cleanup_proved"])
+        self.assertTrue(self.root.is_dir())
+        self.args.dry_run = False
+        self.assertTrue(jb_inspect.command_remove_worktree(self.args)["worktree_removed"])
+        self.assertFalse(self.root.exists())
+
+    def test_native_workers_on_private_snapshots_allow_retirement(self) -> None:
+        self.processes += "124 1 /Applications/IntelliJ IDEA.app/Contents/MacOS/idea\n"
+        self.open_files = ("p123\0\nfcwd\0n/host-caches/native/run/project\0\n"
+                           "p124\0\nfcwd\0n/host-caches/native/another-run/project\0\n")
+        self.retire()
+
+    def test_desktop_ide_without_worktree_allows_retirement_including_offline_only(self) -> None:
+        self.args.offline_only = True
+        self.retire()
+
+    def test_desktop_ide_open_or_recorded_worktree_refuses_retirement(self) -> None:
+        self.open_files = f"p123\0\nfcwd\0n{self.root}-other/source.py\0\n"
+        self.assertTrue(jb_inspect.command_remove_worktree(self.args)["offline_cleanup_proved"])
+        self.args.dry_run = False
+        self.open_files = f"p123\0\nfcwd\0n{self.root}\0\n"
+        with self.assertRaises(jb_inspect.InspectError):
+            jb_inspect.command_remove_worktree(self.args)
+        self.assertTrue(self.root.is_dir())
+        self.open_files = "p123\0\nfcwd\0n/another/project\0\n"
+        record = self.home / "Library/Application Support/JetBrains/PyCharm/options/recentProjects.xml"
+        record.parent.mkdir(parents=True)
+        record.write_text(f'<application><option value="{self.root}" /></application>')
+        with self.assertRaises(jb_inspect.InspectError) as caught:
+            jb_inspect.command_remove_worktree(self.args)
+        self.assertEqual(caught.exception.payload["offline_retirement_record"], str(record))
+        self.assertTrue(self.root.is_dir())
+
+    def test_ide_descendant_with_open_worktree_refuses_retirement(self) -> None:
+        self.processes += "124 123 /bin/zsh\n125 124 /usr/bin/python3\n"
+        self.open_files += f"p124\0\nfcwd\0n/another/project\0\np125\0\nf7\0n{self.root}/source.py\0\n"
+        self.args.dry_run = False
+        with self.assertRaises(jb_inspect.InspectError) as caught:
+            jb_inspect.command_remove_worktree(self.args)
+        self.assertEqual(caught.exception.payload["offline_retirement_ide_pids"], [125])
+        self.assertTrue(self.root.is_dir())
+
+    def test_process_discovery_failure_refuses_retirement(self) -> None:
+        self.assertTrue(jb_inspect.command_remove_worktree(self.args)["offline_cleanup_proved"])
+        self.args.dry_run = False
+        self.discovery_error = subprocess.CalledProcessError(1, "ps")
+        with self.assertRaises(jb_inspect.InspectError):
+            jb_inspect.command_remove_worktree(self.args)
+        self.assertTrue(self.root.is_dir())
+
+    def test_incomplete_open_file_proof_refuses_retirement(self) -> None:
+        for output, error, stderr in (("", None, ""), ("p123\0\nfNOFD\0\n", None, ""),
+                                      ("p123\0\nfcwd\0tDIR\0n/another/project\0\nf7\0tREG\0nunknown\0\n", None, ""),
+                                      ("p123\0\nfcwd\0n/Volumes/Developer-Artifacts -- /source.py\0\n", None, ""),
+                                      ("p123\0\nfcwd\0n/Volumes/Developer-Artifacts (/dev/disk9s1)\0\n", None, ""),
+                                      (self.open_files, None, "permission denied"),
+                                      (self.open_files, FileNotFoundError("lsof"), ""),
+                                      (self.open_files, subprocess.TimeoutExpired("lsof", 5), "")):
+            with self.subTest(output=output, error=error, stderr=stderr):
+                self.open_files, self.file_error, self.file_stderr = output, error, stderr
+                with self.assertRaises(jb_inspect.InspectError):
+                    jb_inspect.command_remove_worktree(self.args)
+                self.assertTrue(self.root.is_dir())
+
+    def test_malformed_process_discovery_refuses_retirement(self) -> None:
+        self.processes = "unreadable process list\n"
+        with self.assertRaises(jb_inspect.InspectError):
+            jb_inspect.command_remove_worktree(self.args)
+        self.assertTrue(self.root.is_dir())
+
+
 class SdkRetirementTests(unittest.TestCase):
     def setUp(self):
         processes = patch_attr(jb_inspect, "offline_ide_processes", return_value=[])
         processes.start()
         self.addCleanup(processes.stop)
-
-    def test_running_ide_without_identity_holds_offline_retirement(self):
-        with (patch.object(sys, "platform", "darwin"),
-              patch_attr(jb_inspect, "offline_ide_processes", return_value=[123])):
-            with self.assertRaises(jb_inspect.InspectError) as caught:
-                jb_inspect.offline_retirement_records(Path("/fixture/task"))
-            self.assertEqual(caught.exception.payload["offline_retirement_ide_pids"], [123])
-
-    def test_explicit_offline_retirement_retains_worktree_when_an_ide_runs(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            args = Namespace(command="remove-worktree", repo=str(root), dry_run=False,
-                             offline_only=True, lifecycle_lock_timeout_ms=1000)
-            with (patch.object(sys, "platform", "darwin"),
-                  patch_attr(jb_inspect, "retirement_worktree", return_value=root),
-                  patch_attr(jb_inspect, "offline_ide_processes", return_value=[123]),
-                  patch_attr(jb_inspect, "discover_identities", return_value=[]) as discover,
-                  patch_attr(jb_inspect, "http_post") as post,
-                  patch.object(subprocess, "run") as removal):
-                with self.assertRaises(jb_inspect.InspectError) as caught:
-                    jb_inspect.command_retire_sdks(args)
-                self.assertEqual(caught.exception.payload["offline_retirement_ide_pids"], [123])
-                discover.assert_not_called()
-                post.assert_not_called()
-                removal.assert_not_called()
-                self.assertTrue(root.is_dir())
 
     def test_offline_records_hold_registered_sdks_projects_and_caches(self):
         for kind in ("jdk.table.xml", jb_inspect.HELPER_SDK_RECORD_FILENAME, "recentProjects.xml", "cache", "finalizing", "idea", "receipt"):
