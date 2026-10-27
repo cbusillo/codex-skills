@@ -661,8 +661,7 @@ for recovery or repeat them as fact.
 ## Procedure
 
 1. Check the permission mode as above.
-2. Load `direction` and follow its
-   [Direction Session procedure](../direction/SKILL.md#direction-session).
+2. Load `direction` for its [daily-turn reads](../direction/SKILL.md#direction-session).
 3. Find the Director's [handoff record](references/helpers.md#handoff-record)
    with `handoff_record.py`. Read its latest handoff, then every comment after it.
    Before you repeat what the Director said, read the exact words where the
