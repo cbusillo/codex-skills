@@ -343,4 +343,4 @@ def test_reconcile_scan_evidence_keeps_only_public_fields(scan: dict[str, object
 
 
 if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-q"]))
+    raise SystemExit(pytest.main([__file__]))
