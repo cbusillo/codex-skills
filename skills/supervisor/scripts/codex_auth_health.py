@@ -223,8 +223,11 @@ def capture(home: Path, current: list[dict]) -> list[dict]:
                 first_process_failure = True
                 try:
                     state = read_status(home)
+                    last_reset = max(((event["ts_ns"], event["id"]) for event in merge_events(previous, current)
+                                      if event["event"] in RESETS), default=(0, 0))
                     known = {event["process"] for event in previous
                              if event["event"] in FAILURES or event["event"] == "issuer_rejection"
+                             if (event["ts_ns"], event["id"]) > last_reset
                              if state["blocked"] or event["ts_ns"] >= state["observed_ns"]}
                     first_process_failure = any(
                         (event["event"] in FAILURES or event["event"] == "issuer_rejection") and event["process"] not in known

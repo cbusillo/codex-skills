@@ -158,10 +158,12 @@ class AuthHealthTests(unittest.TestCase):
         self.assertGreater(health.observe(self.home)["episode_ns"], first)
 
     def test_new_sign_in_failure_gets_a_new_episode_without_an_observed_healthy_interval(self) -> None:
-        first = health.observe(self.home)["episode_ns"]
-        self.append("reset")
-        self.failure()
-        self.assertGreater(health.observe(self.home)["episode_ns"], first)
+        with patch.object(health, "process_inventory", return_value=[]) as inventory:
+            first = health.observe(self.home)["episode_ns"]
+            self.append("reset")
+            self.failure()
+            self.assertGreater(health.observe(self.home)["episode_ns"], first)
+            self.assertEqual(inventory.call_count, 2)
 
     def test_old_responses_cannot_overwrite_a_newer_saved_hold(self) -> None:
         health.record_status(self.home, {"blocked": True, "episode_ns": 4, "observed_ns": 5})
