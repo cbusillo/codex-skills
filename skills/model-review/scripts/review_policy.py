@@ -17,7 +17,7 @@ class NoProvider(ValueError):
         self.skipped = skipped
         detail = "; ".join(f"{p['provider']}: {p['reason']}" for p in skipped)
         super().__init__("no allowed independent review provider has a Context Panel account choice; "
-                         + (detail or "policy has no provider other than the author"))
+                         + (detail or "policy has no default-eligible provider other than the author; Google requires explicit --provider google"))
 
 
 class PolicyConflict(ValueError):
@@ -63,6 +63,10 @@ def load_policy(path=None):
     return policy
 
 
+def default_providers(allowed: list[str], author: str) -> list[str]:
+    return [provider for provider in allowed if provider not in {author, "google"}]
+
+
 def select(policy, author, requested=None, supplementary=False, model=None, timeout=None, probe=False):
     """Select before inference; never switch providers after a review has started."""
     if author not in account_choice.PROVIDERS:
@@ -78,7 +82,7 @@ def select(policy, author, requested=None, supplementary=False, model=None, time
     if requested and (requested not in allowed or requested == author):
         raise ValueError(f"standing review decision does not allow {requested} for this role and author: "
                          + policy["decision"])
-    candidates = [requested] if requested else [p for p in allowed if p not in {author, "google"}]
+    candidates = [requested] if requested else default_providers(allowed, author)
     config = account_choice.load_config()
     snapshot, problem = account_choice.read_snapshot(config["snapshot_command"])
     if snapshot is None:

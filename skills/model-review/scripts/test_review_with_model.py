@@ -223,7 +223,11 @@ class ReviewWithModelTests(unittest.TestCase):
                     code, result = self.run_helper(
                         *args, FAKE_AGY_CWD_FILE=str(cwd_file),
                         FAKE_AGY_JSON=json.dumps({"response": completed("fixture probe line")}))
-                    self.assertNotEqual(result.get("provider"), "google")
+                    if command == "run":
+                        self.assertNotEqual(result.get("provider"), "google")
+                    else:
+                        self.assertNotIn("google", [item["provider"] for item in result["providers"]])
+                    self.assertTrue(result.get("error") or result.get("providers"))
                     self.assertNotEqual(code, 0)
                     self.assertFalse(cwd_file.exists())
                     self.assertFalse((self.storage / "Launch Receipts").exists())

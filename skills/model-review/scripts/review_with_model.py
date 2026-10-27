@@ -803,7 +803,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         print(json.dumps({"ok": False, "error": str(error)}))
         return 1
     role = "supplementary" if args.supplementary else "providers"
-    for provider in args.provider or [p for p in policy[role] if p not in {args.author_provider, "google"}]:
+    for provider in args.provider or review_policy.default_providers(policy[role], args.author_provider):
         try:
             selected = review_policy.select(policy, args.author_provider, provider, args.supplementary,
                                             timeout=args.timeout, probe=True)
@@ -818,7 +818,10 @@ def cmd_check(args: argparse.Namespace) -> int:
             result.pop("response")
         state = "ready" if result["ok"] else "not installed" if result.get("installed") is False else "not ready"
         report.append({key: value for key, value in {**result, "state": state}.items() if key != "response"})
-    print(json.dumps({"probe": str(probe), "providers": report}, indent=2))
+    result = {"probe": str(probe), "providers": report}
+    if not report:
+        result["error"] = str(review_policy.NoProvider([]))
+    print(json.dumps(result, indent=2))
     return 0 if any(item["state"] == "ready" for item in report) else 1
 
 
