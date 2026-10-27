@@ -159,7 +159,7 @@ def _plan(s: Session, kind: str, scope: dict[str, str], ingress: dict[str, Any] 
         material = {"body": body, "sources": sources}
     elif kind == "ingress":
         body = h._ingress_plan_body(ingress, s.read)
-        profile, endpoint = s.reads
+        profile, endpoint = s.reads[0], s.reads[-1]
         lane = next(lane for lane in profile["profile"]["lanes"]
                     if lane.get("context") == scope["context"] and lane.get("instance") == scope["instance"])
         response = s.post(INGRESS + "-dry-run", body)
@@ -171,6 +171,8 @@ def _plan(s: Session, kind: str, scope: dict[str, str], ingress: dict[str, Any] 
             raise ValueError("tls_ownership_unknown")
         material = {"body": body, "lane": lane, "endpoint": endpoint["record"],
                     "host": _host_material(h, host)}
+        if len(s.reads) > 2:
+            material["tracked_target"] = s.reads[1]["inspect"]["tracked_target"]
     else:
         profile = s.read(h._product_read_path("product-profile-read", product=scope["product"]), {})
         _lane_from_profile(h, profile, scope)

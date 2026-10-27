@@ -12091,7 +12091,16 @@ def _ingress_plan_body(body: dict[str, Any], read: Any) -> dict[str, Any]:
             raise ValueError("invalid_plan_lane_url")
         lane_domains.add(url.hostname.rstrip(".").lower())
     if set(body["route"]["domain_names"]) != lane_domains:
-        raise ValueError("plan_domain_scope_mismatch")
+        inspection = _require_dict(read(
+            internal_helper_path("dokploy-target-inspect"),
+            {"context": body["context"], "instance": body["instance"]},
+        ).get("inspect"))
+        tracked = _require_dict(inspection.get("tracked_target"))
+        if (inspection.get("status") != "ok"
+            or tracked.get("context") != body["context"]
+            or tracked.get("instance") != body["instance"]
+            or not set(body["route"]["domain_names"]).issubset(_plan_domains(tracked.get("domains")))):
+            raise ValueError("plan_domain_scope_mismatch")
     endpoint_key = body["route"]["edge_endpoint_key"]
     endpoint = _require_dict(read(internal_helper_path("ingress-plan-edge-endpoint-read").format(
         endpoint_key=urllib.parse.quote(endpoint_key, safe="")), {}).get("record"))

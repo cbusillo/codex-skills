@@ -14,6 +14,7 @@ import urllib.error
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -31,7 +32,7 @@ EXPECTED = {"provider_id": "dokploy", "target_category": "application", "target_
             "provider_evidence": {}}
 
 
-def inspection():
+def inspection() -> dict[str, Any]:
     return {"status": "ok", "trace_id": "launchplane_req_inspect", "inspect": {
         "status": "ok", "target_type": "application", "target_id": TARGET,
         "tracked_target": {"context": "shop", "instance": "prod", "target_id": TARGET,
@@ -61,7 +62,7 @@ def ingress_input():
             "route": {"domain_names": DOMAINS, "edge_endpoint_key": "edge-shop", "certificate_id": 8}}
 
 
-def ingress_reads():
+def ingress_reads() -> list[dict[str, Any]]:
     return [{"status": "ok", "profile": {"product": "shop", "lanes": [{
         "context": "shop", "instance": "prod", "base_url": "https://shop.example.invalid",
         "health_url": "https://shop.example.invalid/health", "health_monitoring": {"checks": []},
@@ -147,6 +148,27 @@ def test_ingress_plan_is_exact_noop_with_all_mutations_disabled():
     assert ingress["expected_host_id"] == HOST_ID
     assert payload["result"]["requires_apply"] is False
     assert payload["records"]["ingress_route_audit_record_id"] == "audit-example"
+    assert_private_dropped(payload)
+
+
+@pytest.mark.parametrize("tracked_instance,tracked_domains,accepted", [
+    ("prod", [*DOMAINS, "business.example.invalid"], True),
+    ("testing", DOMAINS, False),
+    ("prod", ["unrelated.example.invalid"], False),
+])
+def test_exact_alias_audit_uses_current_tracked_lane_hosts(tracked_instance: str, tracked_domains: list[str], accepted: bool) -> None:
+    profile, endpoint = ingress_reads()
+    lane = profile["profile"]["lanes"][0]
+    lane.update(base_url="https://business.example.invalid", health_url="https://business.example.invalid/health")
+    target = inspection()
+    target["inspect"]["tracked_target"].update(instance=tracked_instance, domains=tracked_domains)
+    code, payload, _, post = invoke(INGRESS_COMMAND, reads=[profile, target, endpoint], response=ingress_response())
+    assert (code == 0) is accepted
+    if accepted:
+        assert post.call_args.kwargs["body"]["ingress"]["route"]["domain_names"] == DOMAINS
+        assert payload["result"]["requires_apply"] is False
+    else:
+        post.assert_not_called()
     assert_private_dropped(payload)
 
 
@@ -299,6 +321,7 @@ def test_prepost_refusal_keeps_specific_code(cause, expected):
         reads[0]["profile"]["lanes"] = []
     elif cause == "domains":
         reads[0]["profile"]["lanes"][0]["base_url"] = "https://foreign.example.invalid"
+        reads.insert(1, inspection())
     else:
         reads[1]["record"]["status"] = "disabled"
     code, payload, _, post = invoke(INGRESS_COMMAND, reads=reads)

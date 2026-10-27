@@ -1117,7 +1117,11 @@ capability gap, never an invitation to apply or hand-build a raw request.
 The service authorizes `ingress_route.plan`. Before posting, internal reads
 fetch the fresh product profile and exact active
 edge-endpoint record. Domains must equal the lane's public HTTPS hosts from its
-base URL, health URL and enabled public checks. The helper sends the endpoint
+base URL, health URL and enabled public checks, or be a subset of the exact
+lane's freshly inspected tracked hostnames. This permits an existing managed
+recovery alias beside externally maintained business domains. The service still
+rejects cross-lane ambiguity and requires the full exact existing proxy-host
+domain set. The helper sends the endpoint
 key, leaving upstream resolution to the service, and forces
 `require_exact_expected_host_domains: true`, `allow_create: false`,
 `allow_update: false` and `allow_enable_disable: false`. The service's fresh
