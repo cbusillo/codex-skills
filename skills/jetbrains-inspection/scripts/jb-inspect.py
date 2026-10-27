@@ -2742,7 +2742,7 @@ def finish_raced_worktree_removal(common: Path, root: Path, before: dict[str, tu
     listed = subprocess.run(["git", "-C", str(common), "worktree", "list", "--porcelain"],
                             capture_output=True, text=True, check=True).stdout.splitlines()
     if any(line.startswith("worktree ") and paths_same(line.removeprefix("worktree "), root) for line in listed):
-        raise InspectError("Git worktree removal failed; SDK cleanup may already have completed.", 3, {"git_error": git_error})
+        raise InspectError("Git worktree removal failed; retain the worktree and inspect the Git error.", 3, {"git_error": git_error})
     # Finder writes .DS_Store into folders while they are deleted; every other leftover must be unchanged since the snapshot.
     for _ in range(FINDER_RACE_ATTEMPTS):
         if not root.exists() and not root.is_symlink():
@@ -2779,7 +2779,7 @@ def offline_ide_processes() -> list[int]:
     try:
         return ide_launcher_pids(ALL_IDE_LAUNCHER_NAMES)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        raise InspectError("Cannot prove IDE processes have exited; restore process discovery or use live IDE cleanup.", 3) from error
+        raise InspectError("Cannot prove IDE processes have exited; retain the worktree and restore process discovery.", 3) from error
 
 
 def ide_launcher_pids(launcher_names: tuple[str, ...]) -> list[int]:
@@ -2796,9 +2796,9 @@ def ide_launcher_pids(launcher_names: tuple[str, ...]) -> list[int]:
 def offline_retirement_records(root: Path) -> list[str]:
     """Prove the no-cleanup case from disk; never edit an offline IDE's state."""
     if sys.platform != "darwin":
-        raise InspectError("Offline retirement record discovery is only supported on macOS; use a live IDE for cleanup.", 3)
+        raise InspectError("Local retirement proof is only supported on macOS; retain the worktree.", 3)
     if pids := offline_ide_processes():
-        raise InspectError("An IDE is running; retain the worktree until an authorized session can use live cleanup or close the IDE before offline retirement.", 3,
+        raise InspectError("An IDE is running; retain the worktree until no supported IDE process is running.", 3,
                            {"offline_retirement_ide_pids": pids})
     checked: list[str] = []
 
@@ -2824,7 +2824,7 @@ def offline_retirement_records(root: Path) -> list[str]:
     def require_unrelated(path: Path, values: list[str]) -> None:
         checked.append(str(path))
         if any(refers_to_worktree(value) for value in values):
-            raise InspectError("IDE records reference this worktree; use a live IDE to prove cleanup.", 3,
+            raise InspectError("IDE records reference this worktree; retain it until separate legacy-state cleanup is proved.", 3,
                                {"offline_retirement_record": str(path)})
 
     try:
@@ -2834,7 +2834,7 @@ def offline_retirement_records(root: Path) -> list[str]:
                          if path.name in {"misc.xml", "modules.xml", "workspace.xml", ".name"} or path.suffix == ".iml"]
         for path in [*project_state, repository_preparation_receipt_path({"worktree_root": str(root)})]:
             if present(path):
-                raise InspectError("IDE preparation records exist; use a live IDE to prove cleanup.", 3,
+                raise InspectError("IDE preparation records exist; retain the worktree until separate legacy-state cleanup is proved.", 3,
                                    {"offline_retirement_record": str(path)})
         configs = children(Path.home() / "Library" / "Application Support" / "JetBrains")
         override = os.environ.get("JETBRAINS_INSPECTION_IDE_CONFIG_DIR")
@@ -2856,7 +2856,7 @@ def offline_retirement_records(root: Path) -> list[str]:
             properties = config / "idea.properties"
             if present(properties) and any(re.match(r"\s*idea\.(system|config)\.path\s*=", line)
                                            for line in properties.read_text().splitlines()):
-                raise InspectError("Custom IDE storage paths require live IDE cleanup proof.", 3,
+                raise InspectError("Custom IDE storage prevents local cleanup proof; retain the worktree.", 3,
                                    {"offline_retirement_record": str(properties)})
         for system in children(Path.home() / "Library" / "Caches" / "JetBrains"):
             if not stat.S_ISDIR(system.stat().st_mode):
@@ -2868,18 +2868,18 @@ def offline_retirement_records(root: Path) -> list[str]:
                 marker = project if project.name.startswith(HELPER_FINALIZING_CACHE_PREFIX) else project / HELPER_PROJECT_CACHE_MARKER
                 if not present(marker):
                     if project.name.startswith(HELPER_SEALED_CACHE_PREFIX):
-                        raise InspectError("Unresolved IDE cache ownership requires live IDE cleanup proof.", 3,
+                        raise InspectError("IDE cache ownership is unresolved; retain the worktree.", 3,
                                            {"offline_retirement_record": str(marker)})
                     continue
                 record = json.loads(marker.read_text())
                 if (not isinstance(record, dict) or not isinstance(record.get("worktree_path"), str)
                         or not Path(record["worktree_path"]).is_absolute()):
-                    raise InspectError("Invalid IDE cache ownership requires live IDE cleanup proof.", 3,
+                    raise InspectError("IDE cache ownership is invalid; retain the worktree.", 3,
                                        {"offline_retirement_record": str(marker)})
                 require_unrelated(marker, [record["worktree_path"]])
         return checked
     except (OSError, ValueError, ElementTree.ParseError) as error:
-        raise InspectError("Cannot read offline IDE records; retain the worktree and restore record access or use a live IDE.", 3,
+        raise InspectError("Cannot read offline IDE records; retain the worktree and restore record access.", 3,
                            {"offline_retirement_error": type(error).__name__,
                             "offline_retirement_record": getattr(error, "filename", None)}) from error
 
@@ -2950,7 +2950,7 @@ def command_remove_worktree(args: argparse.Namespace) -> dict[str, Any]:
             root = retirement_worktree(Path(args.repo), args.dry_run, offline_only)
             offline_records.extend(offline_retirement_records(root))
             if not args.dry_run:
-                retirement_worktree(root, False, offline_only)
+                retirement_worktree(root, offline_only=offline_only)
                 offline_records.extend(offline_retirement_records(root))
                 common = git_common_worktree(root)
                 if common is None:

@@ -217,7 +217,7 @@ class SdkRetirementTests(unittest.TestCase):
             root = home / "task"
             root.mkdir()
             calls = []
-            def retire(_root, *_args):
+            def retire(_root: Path, *_args: Any, **_kwargs: Any) -> Path:
                 calls.append(True)
                 if len(calls) == 2 and not new_process:
                     (root / ".idea").mkdir()

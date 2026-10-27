@@ -6,6 +6,7 @@
 """Exercise retirement and cleanup with real lease files and linked Git fixtures."""
 import io
 import json
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -83,6 +84,11 @@ class LeaseRetirementTests(unittest.TestCase):
                     with self.assertRaises(jb_inspect.InspectError) as caught:
                         jb_inspect.command_retire_sdks(args)
                     self.assertEqual(caught.exception.payload["blocking_lease_ids"], [lease["lease_id"]])
+                    if not offline_only:
+                        command = caught.exception.payload["cleanup_commands"][0]
+                        recovery = jb_inspect.build_parser().parse_args(shlex.split(command)[3:])
+                        self.assertEqual(recovery.lease_id, [lease["lease_id"]])
+                        self.assertFalse(recovery.dry_run)
                     self.assertTrue(path.exists())
                     self.assertTrue(root.is_dir())
             path.unlink()
