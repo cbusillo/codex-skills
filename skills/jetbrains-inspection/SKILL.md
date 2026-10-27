@@ -63,8 +63,7 @@ Marketplace product for people. Do not call the plugin's HTTP or MCP API.
 On macOS, `agent-inspect` routes Python/YAML selections and Odoo
 Python/XML/YAML selections in root PyCharm lanes to native PyCharm when an
 eligible independent worker, interpreter and profile are configured. In a
-repository whose configured IDE is WebStorm, root npm projects with a
-`package-lock.json` route TypeScript, JavaScript and JSON selections to native
+repository whose configured IDE is WebStorm, npm or manifest-pinned pnpm projects, including a nested WebStorm lane, route TypeScript, JavaScript and JSON selections to native
 WebStorm, and in one whose configured IDE is IntelliJ IDEA, root Gradle projects
 route Kotlin and Java selections that include a `.kt` file to native IntelliJ
 IDEA. Any other selection, and any host without an eligible worker, returns

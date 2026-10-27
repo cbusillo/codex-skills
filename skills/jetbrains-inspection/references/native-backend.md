@@ -57,8 +57,18 @@ TypeScript canary applies. JSON-only selections and other files, including
 `npm ci --ignore-scripts --no-audit --no-fund` with `--cache
 cacheRoot/npm-cache` and no user or global npm config, honouring only the
 repository's own `.npmrc`, through the same journalled, unlicensed preparation
-path as Python. It needs a root `package.json` and `package-lock.json` and never runs
-`npm install`; `pnpm-lock.yaml` is refused for now. The snapshot excludes
+path as Python. It needs `package.json` and `package-lock.json` in the lane's project directory
+and never runs `npm install`. A WebStorm lane may set `projectPath` to a nested
+project; all selected files must belong to that one project and lie beneath it.
+The engine still opens the private repository root so scope and findings retain
+repository-relative paths. Python preparation is ignored on a WebStorm run.
+
+For `pnpm-lock.yaml`, `package.json` must pin an exact pnpm `packageManager`
+version. Corepack must be executable beside the configured `node`. The runner
+uses that pin with `install --frozen-lockfile --ignore-scripts --ignore-pnpmfile`, a private home and empty user/global npm configurations.
+Corepack and pnpm store caches stay under the worker's cache root. No lifecycle
+scripts or pnpmfile hooks run; the lockfile cannot be updated. See
+[pnpm installation options](https://pnpm.io/10.x/cli/install). The snapshot excludes
 ignored files, so `node_modules` comes only from that step.
 
 The snapshot's tracked `.idea` is used when it has `modules.xml`; otherwise a
@@ -268,7 +278,7 @@ Structured `prepare.python` runs the maintained environment generator in that
 snapshot, with an isolated preparation home. Otherwise the exact source
 worktree must already have its documented `.venv`. Native does not guess a
 Python version. YAML selections keep this prerequisite because each run includes
-Python defect controls. Command-string and nested-project preparation remain ineligible
+Python defect controls. Command-string and nested Python preparation remain ineligible
 for automatic native selection; they return UNKNOWN before a worker starts. Explicit native uses the prepared root `.venv` instead
 of treating those commands as a structured root generator. Native does not read a
 desktop SDK table. A unique non-secret SDK entry is

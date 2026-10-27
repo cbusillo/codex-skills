@@ -50,7 +50,7 @@ PYTHON_PRODUCT_KEY = "pycharm"
 WEBSTORM_PRODUCT_KEY = "webstorm"
 INTELLIJ_PRODUCT_KEY = "intellij"
 PREPARATION_CACHES = {PYTHON_PRODUCT_KEY: {"UV_CACHE_DIR": "uv-cache", "UV_PYTHON_INSTALL_DIR": "uv-python"},
-                      WEBSTORM_PRODUCT_KEY: {"npm_config_cache": "npm-cache"},
+                      WEBSTORM_PRODUCT_KEY: {"npm_config_cache": "npm-cache", "COREPACK_HOME": "corepack", "PNPM_STORE_DIR": "pnpm-store"},
                       INTELLIJ_PRODUCT_KEY: {"GRADLE_USER_HOME": "gradle-home"}}
 GRADLE_BUILD_FILES = ("build.gradle.kts", "build.gradle")
 GRADLE_DAEMON_IDLE_TIMEOUT_MS = 60000
@@ -298,10 +298,11 @@ def eligibility_reason(args, host, repo, settings, product_key=PYTHON_PRODUCT_KE
         if missing_plugins(repo, configured_worker.worker, configured_worker.app)[1]:
             return "native_required_plugin_missing"
         if product_key == WEBSTORM_PRODUCT_KEY:
-            node_executable(host)
-            if settings.get("prepare"):
+            node = node_executable(host)
+            if settings.get("prepare") and common.requested_python_version(settings) is None:
                 return "native_preparation_shape_unsupported"
-            common.npm_lockfile(repo)
+            relative = common.web_project_path(host, repo, settings, common.scope_selection(args, host)[3])
+            require_web_preparation(node, repo / relative)
             common.profile_for(repo, args.profile or settings.get("profile", ""))
             return None
         if product_key == INTELLIJ_PRODUCT_KEY:
@@ -546,6 +547,27 @@ def npm_preparation(node, project, private, caches):
             "--cache", caches["npm_config_cache"], "--prefix", str(project)]
     env = {"PATH": str(node.parent) + os.pathsep + os.environ.get("PATH", "/usr/bin:/bin"),
            "HOME": str(private / "prepare-home"), "TMPDIR": str(private / "tmp")}
+    return argv, env
+
+
+def require_web_preparation(node: Path, project: Path) -> Path:
+    lockfile = common.npm_lockfile(project)
+    if lockfile.name == "pnpm-lock.yaml" and not os.access(node.parent / "corepack", os.X_OK):
+        raise Blocked("native_corepack_unavailable")
+    return lockfile
+
+
+def web_preparation(node: Path, project: Path, private: Path, caches: dict[str, str]) -> tuple[list[str], dict[str, str]]:
+    lockfile = require_web_preparation(node, project)
+    argv, env = npm_preparation(node, project, private, caches)
+    if lockfile.name != "pnpm-lock.yaml":
+        return argv, env
+    manager = json.loads((project / "package.json").read_text())["packageManager"]
+    argv = [str(node.parent / "corepack"), manager, "--dir", str(project), "install", "--frozen-lockfile",
+            "--ignore-scripts", "--ignore-pnpmfile", "--store-dir", caches["PNPM_STORE_DIR"],
+            "--config.manage-package-manager-versions=false", "--config.userconfig=" + str(private / "npm-user.npmrc"),
+            "--config.globalconfig=" + str(private / "npm-global.npmrc")]
+    env.update(COREPACK_HOME=caches["COREPACK_HOME"], COREPACK_ENABLE_DOWNLOAD_PROMPT="0")
     return argv, env
 
 
@@ -1583,9 +1605,13 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
     elif reason in {"native_gradle_import_failed", "native_gradle_import_unproven"}:
         action = "The Gradle import in the private snapshot failed or did not log both successful stages. Run the repository's Gradle build with the configured jdk to find the import failure, check network access for a cold Gradle cache, then request one fresh assessment."
     elif reason == "native_npm_lockfile_required":
-        action = "Native WebStorm needs a root package.json and package-lock.json; it runs only npm ci --ignore-scripts and never npm install. Commit the lockfile or keep this selection UNKNOWN."
-    elif reason == "native_pnpm_unsupported":
-        action = "Native WebStorm does not prepare pnpm projects yet. Keep this selection UNKNOWN and rely on the repository's own lint and tests."
+        action = "Native WebStorm needs package.json and a package-lock.json or pnpm-lock.yaml in the selected lane project. Commit its lockfile or keep this selection UNKNOWN."
+    elif reason == "native_pnpm_version_required":
+        action = "Pin an exact pnpm version in the selected project package.json packageManager field for its pnpm-lock.yaml."
+    elif reason == "native_corepack_unavailable":
+        action = "Install Corepack beside the configured WebStorm node executable; native pnpm preparation uses that executable with the manifest pin."
+    elif reason == "native_web_project_unavailable":
+        action = "Set the WebStorm lane projectPath to an existing directory inside this worktree. Inspect one project per assessment."
     elif reason == "native_trusted_root_required":
         action = "Use the intended repository under jetbrains.trustedAutoOpenRoots in the standard helper config; native preparation executes only for a trusted source root."
     elif reason == "native_python_environment_required":
@@ -1776,9 +1802,11 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         if odoo:
             expected |= NAMED_ODOO
         if webstorm:
-            if settings.get("prepare"):
+            if settings.get("prepare") and common.requested_python_version(settings) is None:
                 raise Blocked("native_preparation_shape_unsupported")
-            common.npm_lockfile(repo)
+            web_relative = common.web_project_path(host, repo, settings, selected)
+            require_web_preparation(node, repo / web_relative)
+            receipt["web_project_path"] = web_relative.as_posix()
             expected |= set(proof.WEBSTORM_CANARY_FILES)
         if intellij:
             gradle_build_file(repo)
@@ -1826,7 +1854,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         check_lifetime(parent_fd, deadline)
         sdk = None
         if webstorm:
-            prepare(*npm_preparation(node, project, private, preparation_caches))
+            prepare(*web_preparation(node, project / web_relative, private, preparation_caches))
             prepare_web_model(project, selected | controls)
         elif intellij:
             sdk = java_sdk(jdk)

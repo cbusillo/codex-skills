@@ -279,10 +279,16 @@ def lane_gaps(host, config, selected, product_key="pycharm"):
     if not config.get("lanes"):
         return []
     lanes = host.parse_inspection_lanes(config)
+    projects = set()
     for path in selected:
         owner = lane_owner(host, lanes, path)
-        if owner is None or host.product_for_selector(owner.ide) is not host.IDE_PRODUCTS[product_key] or owner.project_path:
+        if owner is None or host.product_for_selector(owner.ide) is not host.IDE_PRODUCTS[product_key]:
             return ["native_lane_models_unqualified"]
+        if owner.project_path and (product_key != "webstorm" or not Path(path).is_relative_to(owner.project_path)):
+            return ["native_lane_models_unqualified"]
+        projects.add(owner.project_path or ".")
+    if len(projects) > 1:
+        return ["native_lane_models_unqualified"]
     return []
 
 
@@ -302,10 +308,26 @@ def configured_product_key(host, config, selected):
 
 def npm_lockfile(root):
     if (root / "pnpm-lock.yaml").is_file():
-        raise Blocked("native_pnpm_unsupported")
+        manifest = json.loads((root / "package.json").read_text())
+        manager = manifest.get("packageManager") if isinstance(manifest, dict) else None
+        if not isinstance(manager, str) or not re.fullmatch(r"pnpm@\d+\.\d+\.\d+(?:\+sha(?:224|512)\.[a-fA-F0-9]+)?", manager):
+            raise Blocked("native_pnpm_version_required")
+        return root / "pnpm-lock.yaml"
     if not (root / "package.json").is_file() or not (root / "package-lock.json").is_file():
         raise Blocked("native_npm_lockfile_required")
     return root / "package-lock.json"
+
+
+def web_project_path(host: Any, repo: Path, config: dict[str, Any], selected: set[str]) -> Path:
+    if lane_gaps(host, config, selected, "webstorm"):
+        raise Blocked("native_lane_models_unqualified")
+    lanes = host.parse_inspection_lanes(config) if config.get("lanes") else ()
+    owner = lane_owner(host, lanes, next(iter(selected))) if selected else None
+    relative = Path(owner.project_path) if owner and owner.project_path else Path()
+    project = repo / relative
+    if not project.is_dir() or project.is_symlink() or not project.resolve().is_relative_to(repo):
+        raise Blocked("native_web_project_unavailable")
+    return relative
 
 
 def requested_python_version(config):
