@@ -4,6 +4,8 @@
 # ///
 from __future__ import annotations
 
+import base64
+import hashlib
 import io
 import json
 import urllib.error
@@ -105,6 +107,192 @@ def apply_args(tmp_path: Path) -> tuple[list[str], dict[str, Any]]:
         "--expected-plan-digest",
         evidence["result"]["plan_sha256"],
     ], evidence
+
+
+def public_pair(seed: int = 7) -> dict[str, str]:
+    key_type = b"ssh-ed25519"
+    blob = len(key_type).to_bytes(4, "big") + key_type + (32).to_bytes(4, "big") + bytes(range(seed, seed + 32))
+    return {
+        "public_key": f"ssh-ed25519 {base64.b64encode(blob).decode()}",
+        "fingerprint": "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("="),
+        "boundary_binding_id": "capture-boundary",
+        "private_key_binding": BINDING_IDS[0],
+        "known_hosts_binding": BINDING_IDS[1],
+        "secret_value": "PRIVATE_SENTINEL",
+    }
+
+
+def generation_args(tmp_path: Path, mode: str) -> list[str]:
+    pin = tmp_path / "known_hosts"
+    pin.write_text(f"host.example.invalid {public_pair(0)['public_key']}\n")
+    return [
+        BINDINGS + "-" + mode,
+        *[value for key, item in SCOPE.items() for value in ("--" + key, item)],
+        "--generate-capture-key",
+        "--known-hosts-file",
+        str(pin),
+        "--promotion-action",
+        "generic_web_prod_promotion",
+        "--reason",
+        "PRIVATE_SENTINEL",
+        "--idempotency-key",
+        "original-generation-key",
+    ]
+
+
+def generation_plan(applied: bool = False) -> dict[str, Any]:
+    result = {
+        **SCOPE,
+        "plan_sha256": DIGEST,
+        "changed": True,
+        "applied": applied,
+        "capture_started": False,
+        "boundary_binding_id": "capture-boundary",
+    }
+    if applied:
+        result.update(public_pair())
+    return h._ServiceResponse({"status": "accepted", "trace_id": "trace-generation", "result": result}, 202)
+
+
+def generated_metadata() -> dict[str, Any]:
+    response = metadata(True)
+    response["result"]["generated_capture_keys"] = [public_pair()]
+    return response
+
+
+def generation_apply_args(tmp_path: Path) -> list[str]:
+    code, evidence, _, _ = invoke(generation_args(tmp_path, "dry-run"), [], [generation_plan()])
+    assert code == 0
+    path = tmp_path / "generation-review.json"
+    path.write_text(json.dumps(evidence))
+    return generation_args(tmp_path, "apply") + [
+        "--reviewed-dry-run",
+        "--dry-run-evidence-file",
+        str(path),
+        "--expected-plan-digest",
+        evidence["result"]["plan_sha256"],
+    ]
+
+
+def test_generation_dry_run_sends_only_public_pin_and_binds_review(
+    tmp_path: Path,
+) -> None:
+    arguments = generation_args(tmp_path, "dry-run")
+    code, payload, get, post = invoke(arguments, [], [generation_plan()])
+    assert code == 0 and not get.called and post.call_count == 1
+    body = post.call_args.kwargs["body"]
+    assert body["bindings"] == {} and body["generate_capture_key"] is True
+    assert body["known_hosts"] == Path(arguments[arguments.index("--known-hosts-file") + 1]).read_text().strip()
+    assert payload["result"]["capture_started"] is False
+    assert payload["request"]["intent_sha256"] and payload["request"]["idempotency_key_sha256"]
+    assert "known_hosts" not in json.dumps(payload)
+
+
+def test_generated_public_key_requires_explicit_read_and_matching_bindings() -> None:
+    response = generated_metadata()
+    code, ordinary, _, _ = invoke(argv(BINDINGS + "-read"), [response])
+    assert code == 0 and "generated_capture_keys" not in ordinary["result"]
+    code, payload, _, post = invoke(argv(BINDINGS + "-read") + ["--include-public-key"], [response])
+    assert code == 0 and not post.called
+    public = payload["result"]["generated_capture_keys"][0]
+    assert public["public_key"] == public_pair()["public_key"]
+    assert public["fingerprint"] == public_pair()["fingerprint"]
+    assert public["capture_binding_id"] == BINDING_IDS[0] and public["hosts_binding_id"] == BINDING_IDS[1]
+    response["result"]["credentials"][0]["binding_key"] = "unrelated"
+    code, _, _, post = invoke(argv(BINDINGS + "-read") + ["--include-public-key"], [response])
+    assert code != 0 and not post.called
+
+
+def test_generation_apply_reads_back_without_creating_a_client_private_file(
+    tmp_path: Path,
+) -> None:
+    arguments = generation_apply_args(tmp_path)
+    before = set(tmp_path.iterdir())
+    code, payload, get, post = invoke(arguments, [generated_metadata()], [generation_plan(True)])
+    assert code == 0 and payload["result"]["readback_matches"] is True
+    assert payload["result"]["capture_started"] is False
+    assert payload["result"]["public_capture_key"]["public_key"] == public_pair()["public_key"]
+    assert {item["binding_key"] for item in payload["result"]["bindings"]} == set(CREDENTIAL_KEYS)
+    assert get.call_count == 1 and post.call_count == 1 and set(tmp_path.iterdir()) == before
+
+
+@pytest.mark.parametrize("change", ["pin", "key", "action"])
+def test_generation_review_binds_pin_original_key_and_action(tmp_path: Path, change: str) -> None:
+    arguments = generation_apply_args(tmp_path)
+    if change == "pin":
+        Path(arguments[arguments.index("--known-hosts-file") + 1]).write_text(
+            f"host.example.invalid {public_pair(1)['public_key']}\n"
+        )
+    else:
+        field = "--idempotency-key" if change == "key" else "--promotion-action"
+        arguments[arguments.index(field) + 1] = "changed"
+    code, _, get, post = invoke(arguments, [])
+    assert code != 0 and not get.called and not post.called
+
+
+def test_generation_lost_response_replays_original_request_then_verifies_existing_pair(
+    tmp_path: Path,
+) -> None:
+    arguments = generation_apply_args(tmp_path)
+    code, uncertain, get, first_post = invoke(arguments, [], [TimeoutError()])
+    assert code != 0 and uncertain["status"] == "outcome_unknown" and not get.called
+    assert first_post.call_count == 1
+    response = generation_plan(True)
+    response.update(replayed=True, original_trace_id="trace-original-generation")
+    code, verified, get, retry_post = invoke(arguments, [generated_metadata()], [response])
+    assert code == 0 and verified["result"]["readback_matches"] is True
+    assert verified["summary"]["replayed"] is True
+    assert verified["summary"]["original_trace_id"] == response["original_trace_id"]
+    assert first_post.call_args.kwargs == retry_post.call_args.kwargs
+    assert uncertain["request"] == verified["request"] and get.call_count == 1
+
+
+@pytest.mark.parametrize("field", ["fingerprint", "public_key", "capture_started"])
+def test_malformed_generation_apply_is_unverified_and_never_retried(tmp_path: Path, field: str) -> None:
+    arguments = generation_apply_args(tmp_path)
+    response = generation_plan(True)
+    response["result"][field] = True if field == "capture_started" else "PRIVATE_SENTINEL"
+    code, payload, get, post = invoke(arguments, [], [response])
+    assert code != 0 and payload["status"] == "accepted_unverified"
+    assert payload["summary"]["trace_id"] == response["trace_id"] and post.call_count == 1 and not get.called
+
+
+def test_generation_readback_mismatch_preserves_apply_receipt(tmp_path: Path) -> None:
+    arguments = generation_apply_args(tmp_path)
+    response = generated_metadata()
+    response["result"]["generated_capture_keys"] = [public_pair(9)]
+    code, payload, get, post = invoke(arguments, [response], [generation_plan(True)])
+    assert code != 0 and payload["status"] == "accepted_unverified"
+    assert payload["result"]["readback_matches"] is False and payload["result"]["applied"] is True
+    assert payload["summary"]["trace_id"] == "trace-generation" and get.call_count == 1 and post.call_count == 1
+
+
+def test_private_pin_file_and_mixed_generation_references_never_leave_client(
+    tmp_path: Path,
+) -> None:
+    arguments = generation_args(tmp_path, "dry-run")
+    fake_private_blob = base64.b64encode(b"openssh-key-v1\0PRIVATE_SENTINEL").decode()
+    Path(arguments[arguments.index("--known-hosts-file") + 1]).write_text(
+        f"host.example.invalid ssh-ed25519 {fake_private_blob}\n"
+    )
+    code, _, get, post = invoke(arguments, [])
+    assert code != 0 and not get.called and not post.called
+    arguments = generation_args(tmp_path, "dry-run") + [
+        "--private-key-binding",
+        BINDING_IDS[0],
+    ]
+    code, _, get, post = invoke(arguments, [])
+    assert code != 0 and not get.called and not post.called
+
+
+def test_unrelated_public_metadata_cannot_break_reference_only_rebinding(
+    tmp_path: Path,
+) -> None:
+    arguments, _ = apply_args(tmp_path)
+    response = metadata(True)
+    response["result"]["generated_capture_keys"] = [{"public_key": "PRIVATE_SENTINEL"}]
+    code, payload, _, _ = invoke(arguments, [response], [plan(True)])
+    assert code == 0 and payload["result"]["readback_matches"] is True
 
 
 def test_metadata_is_exact_lane_and_reference_only() -> None:
