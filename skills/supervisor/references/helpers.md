@@ -240,9 +240,10 @@ a preserved permanent renewal error establishes a hold. A result envelope or
 ChatGPT auth-method label alone is never proof of successful renewal.
 
 Before native reads, the helper saves allowlisted auth events from
-`logs_2.sqlite` opened read-only, plus process associations, to the home's
-private `skill-data/supervisor-auth/evidence.jsonl`. The same journal records
-confirmed holds and recovery. It never saves raw log bodies, token values,
+`logs_2.sqlite` opened read-only, plus process associations on the first failure per process in an episode, to the home's
+private `skill-data/supervisor-auth/evidence.jsonl`. The same helper keeps its latest verified observation in a compact private
+`status.json`, atomically replaced under the capture lock. It is the single
+current-state source used by the watcher and launcher. It never saves raw log bodies, token values,
 process arguments or environments. Captured evidence survives log rotation.
 Keep the watcher running; events rotated away before observation cannot be
 recovered. Process inventory describes capture time; earlier identities come
@@ -1632,32 +1633,12 @@ and the helper uses the first corresponding IDs in the provider's published
 a private reserve. Account configuration only maps snapshot rows to launch
 environments. An unmatched or ambiguous choice refuses before creating tabs.
 
-Confirmed expired or revoked Codex renewal failures are excluded from that published
-order. The launcher walks Context Panel's remaining order without re-ranking;
-an explicit `--account` cannot bypass a confirmed failure. Short-lived access
-expiry, an unavailable usage reading and network errors do not cause this hold.
-An already-used key is recorded without a hold: another process may have saved
-its replacement. Capture begins at the first failure. A hold requires two
-guarded failures from the verified current daemon, with a new renewal attempt
-after the first error and no intervening native auth-change event.
-Interactive last-account fallback and managed fresh/resume clients check the
-same evidence before execution. Native `codex login` remains available for the
-Director to use; no helper signs in or out or reads a credential file.
-
-Before applying a hold, revalidate through the existing daemon's
-`getAuthStatus` with `includeToken:false` and `refreshToken:false`. That native
-read may perform Codex's normal proactive renewal; it never forces renewal or
-exports a token. The socket peer PID and native PID/start metadata must agree.
-A fresh native auth-change event clears old failure evidence, including for
-keyring storage. A ChatGPT auth-method response alone is not a health verdict.
-Missing identity, unavailable RPC or unproven log delivery stays UNKNOWN and
-does not hold the home. The detector depends on supported native event strings;
-unrecognized messages cannot establish a hold. It never calls `config/read`,
-whose complete response can contain secrets.
-Only accounts actually considered for launch are checked. A pending failure
-can require up to eleven seconds to cover Codex's ten-second log flush interval;
-an unrelated failed home is not probed for an explicit healthy-account choice.
-The evidence is private to these helpers, not a Context Panel status interface.
+Codex uses the [shared native renewal and hold path](#checks-and-morning-digest).
+Only accounts actually considered for launch are checked; an explicit healthy
+choice does not probe unrelated failed homes. Native `codex login` and the exact
+home's `codex app-server daemon start` remain available for recovery. An agent
+starts a stopped account daemon after the Director signs in; this is the
+existing native recovery command, not another renewer.
 
 Read Context Panel's
 [Use next ranking and launch receipts contract](https://github.com/cbusillo/context-panel/blob/main/docs/provider-usage-access.md#use-next-ranking-and-launch-receipts)

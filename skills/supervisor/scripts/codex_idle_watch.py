@@ -120,12 +120,17 @@ def watch(args, state: dict | None) -> int:
             notices = poll(args.ledger, seen, args.idle_seconds, time.time(),
                            state, args.capacity_state, args.resume_capacity, args.harness, homes)
             for notice in notices:
-                auth = notice.get("auth_failure")
+                auth = notice.get("auth_failure") or notice.get("auth_diagnostic")
                 if not auth or json.dumps(auth, sort_keys=True) not in delivered:
                     print(json.dumps(notice), flush=True)
         except (OSError, ValueError, TypeError) as error:
             print(json.dumps({"error": str(error)}), flush=True)
             return 1
+        diagnostics = {json.dumps(notice["auth_diagnostic"], sort_keys=True)
+                       for notice in notices if notice.get("auth_diagnostic")}
+        if args.delivered_state and diagnostics - delivered:
+            delivered.update(diagnostics)
+            save_delivered(args.delivered_state, delivered)
         requests = {json.dumps(notice["closeout_request"], sort_keys=True)
                     for notice in notices if notice.get("closeout_request")}
         requests.update(json.dumps(notice["auth_failure"], sort_keys=True)

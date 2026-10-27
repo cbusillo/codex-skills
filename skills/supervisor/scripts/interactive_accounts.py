@@ -117,7 +117,7 @@ def selection(harness, argv, named=None, env=None, config=None, snapshot=None, p
             if config is None:
                 raise ValueError(problem or "account configuration unavailable")
             choice = account_choice.choose(provider, config, snapshot, problem)
-            chosen = {"name": choice["name"], "env": choice["env"]}
+            chosen = {"name": choice["name"], "env": choice["env"], "auth_checked": provider == "openai"}
             reason = "Context Panel next" if choice["source"] == "context-panel" else choice["reason"]
         except ValueError:
             chosen = last or {"name": "default", "env": {}}
@@ -151,7 +151,9 @@ def launch(harness, argv, named=None):
     child_env.update(chosen["env"])
     if variable in child_env:
         child_env[variable] = str(Path(child_env[variable]).expanduser())
-    if harness == "codex" and arguments[:1] not in (["login"], ["logout"]):
+    if (harness == "codex" and not chosen.get("auth_checked")
+            and arguments[:1] not in (["login"], ["logout"])
+            and arguments[:3] != ["app-server", "daemon", "start"]):
         codex_auth_health.require_usable(Path(child_env.get(variable, str(Path.home() / ".codex"))))
     try:
         # Last-used state contains launch settings only, never login material.

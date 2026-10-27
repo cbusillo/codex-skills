@@ -160,7 +160,7 @@ class AuthHealthTests(unittest.TestCase):
     def test_old_responses_cannot_overwrite_a_newer_saved_hold(self) -> None:
         health.record_status(self.home, {"blocked": True, "episode_ns": 4, "observed_ns": 5})
         self.assertTrue(health.record_status(self.home, {"blocked": False, "episode_ns": None, "observed_ns": 3})["blocked"])
-        self.assertTrue(health.journal_status(self.home)["blocked"])
+        self.assertTrue(health.read_status(self.home)["blocked"])
 
     def test_older_healthy_reply_cannot_release_a_newer_observed_failure(self) -> None:
         def stale_reply(_home: Path) -> health.AuthStatus:
@@ -197,6 +197,39 @@ class AuthHealthTests(unittest.TestCase):
 
     def test_unknown_without_a_confirmed_failure_does_not_block_a_healthy_account(self) -> None:
         self.probe.side_effect = TimeoutError
+        self.assertFalse(health.observe(self.home)["blocked"])
+
+    def test_reused_key_with_a_saved_replacement_recovers_before_alerting(self) -> None:
+        self.failure("reused")
+        cached = health.AuthStatus(self.identity, self.clock + 1, "chatgpt", True, False)
+        replies = iter((False, True))
+        self.probe.side_effect = lambda home: self.reset_probe(home) if next(replies) else cached
+        self.assertFalse(health.observe(self.home)["blocked"])
+        self.assertEqual(self.probe.call_count, 2)
+        self.assertIn("reused", {event["event"] for event in health.read_journal(self.home / "skill-data/supervisor-auth/evidence.jsonl")})
+
+    def test_process_inventory_is_saved_once_per_failing_process_and_episode(self) -> None:
+        with patch.object(health, "process_inventory", return_value=[]) as inventory:
+            health.observe(self.home)
+            first = health.read_journal(self.home / "skill-data/supervisor-auth/evidence.jsonl")
+            health.observe(self.home)
+            self.assertEqual(inventory.call_count, 1)
+            self.assertGreater(len(health.read_journal(self.home / "skill-data/supervisor-auth/evidence.jsonl")), len(first))
+            self.probe.side_effect = self.reset_probe
+            health.observe(self.home)
+            self.probe.side_effect = self.failed_probe
+            health.observe(self.home)
+            self.assertEqual(inventory.call_count, 2)
+
+    def test_healthy_observations_replace_compact_state_without_growing_evidence(self) -> None:
+        self.probe.side_effect = self.reset_probe
+        health.observe(self.home)
+        health.observe(self.home)
+        self.assertFalse((self.home / "skill-data/supervisor-auth/evidence.jsonl").exists())
+        state = self.home / "skill-data/supervisor-auth/status.json"
+        self.assertFalse(json.loads(state.read_text())["blocked"])
+        self.assertEqual(state.stat().st_mode & 0o777, 0o600)
+        state.write_text("partial")
         self.assertFalse(health.observe(self.home)["blocked"])
 
     def test_confirmed_failure_excludes_only_its_account_and_preserves_published_order(self) -> None:
@@ -384,6 +417,43 @@ class AuthHealthTests(unittest.TestCase):
         ):
             codex_idle_watch.watch(args, None)
         wait.assert_called_once()
+
+    def test_diagnostic_is_printed_once_across_watcher_rearms(self) -> None:
+        args = self.args()
+        diagnostic = {"auth_diagnostic": {"home_id": "fixture", "reason": "unavailable"}}
+        first, second = io.StringIO(), io.StringIO()
+        with patch.object(health, "notices", return_value=[diagnostic]):
+            with contextlib.redirect_stdout(first):
+                codex_idle_watch.watch(args, None)
+            with contextlib.redirect_stdout(second):
+                codex_idle_watch.watch(args, None)
+        self.assertIn("auth_diagnostic", first.getvalue())
+        self.assertEqual(second.getvalue(), "")
+
+    def test_interactive_context_panel_choice_checks_its_healthy_home_once(self) -> None:
+        self.enterContext(patch.dict(os.environ, {}, clear=True))
+        self.enterContext(patch.object(account_choice, "load_config", return_value={**self.config, "snapshot_command": ["fixture"]}))
+        self.enterContext(patch.object(account_choice, "read_snapshot", return_value=(self.snapshot, None)))
+        self.enterContext(patch.object(interactive_accounts.shutil, "which", return_value="/fixture/codex"))
+        self.enterContext(patch.object(interactive_accounts, "state_path", return_value=self.root / "last.json"))
+        with patch.object(os, "execvpe"):
+            interactive_accounts.launch("codex", [])
+        healthy_calls = [call for call in self.probe.call_args_list if call.args[0] == Path(self.good["env"]["CODEX_HOME"])]
+        self.assertEqual(len(healthy_calls), 1)
+
+    def test_a_held_account_can_start_its_existing_daemon_for_recovery(self) -> None:
+        health.observe(self.home)
+        self.enterContext(patch.dict(os.environ, {"CODEX_HOME": str(self.home)}))
+        self.enterContext(patch.object(account_choice, "load_config", return_value=self.config))
+        self.enterContext(patch.object(interactive_accounts.shutil, "which", return_value="/fixture/codex"))
+        self.enterContext(patch.object(interactive_accounts, "state_path", return_value=self.root / "last.json"))
+        self.enterContext(patch.object(health, "daemon_identity", side_effect=ValueError))
+        with patch.object(os, "execvpe") as execute:
+            interactive_accounts.launch("codex", ["app-server", "daemon", "start"])
+            execute.assert_called_once()
+            self.assertEqual(execute.call_args.args[2]["CODEX_HOME"], str(self.home))
+            with self.assertRaises(ValueError):
+                interactive_accounts.launch("codex", ["app-server", "--listen", "stdio://"])
 
     def test_interactive_and_managed_clients_refuse_before_execution_but_login_remains_available(self) -> None:
         self.failure()

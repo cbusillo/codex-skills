@@ -15,6 +15,7 @@ import sqlite3
 import stat
 import struct
 import subprocess
+import tempfile
 import sys
 import time
 from dataclasses import dataclass
@@ -135,10 +136,14 @@ def read_journal(path: Path) -> list[dict]:
     return events
 
 
-def journal_status(home: Path) -> dict:
+def read_status(home: Path) -> dict:
     result = {"blocked": False, "episode_ns": None, "observed_ns": 0}
-    for record in read_records(home / "skill-data/supervisor-auth/evidence.jsonl"):
-        status = record.get("auth_observation")
+    path = home / "skill-data/supervisor-auth/status.json"
+    if not path.exists():
+        return result
+    try:
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW)) as stream:
+            status = json.loads(stream.read(4096))
         if (
             isinstance(status, dict)
             and type(status.get("blocked")) is bool
@@ -146,26 +151,34 @@ def journal_status(home: Path) -> dict:
             and "episode_ns" in status
             and (type(status["episode_ns"]) is int if status["blocked"] else status["episode_ns"] is None)
         ):
-            result = {key: status[key] for key in result}
+            return {key: status[key] for key in result}
+    except ValueError:
+        pass
     return result
 
 
 def record_status(home: Path, status: dict) -> dict:
     directory = home / "skill-data/supervisor-auth"
+    temporary = None
     try:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         with (directory / "capture.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            latest = journal_status(home)
+            latest = read_status(home)
             if latest["observed_ns"] > status["observed_ns"]:
                 return latest
-            with os.fdopen(os.open(directory / "evidence.jsonl", os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600), "a") as output:
-                output.write("\n" + json.dumps({"auth_observation": status}) + "\n")
+            with tempfile.NamedTemporaryFile(mode="w", dir=directory, delete=False) as output:
+                temporary = Path(output.name)
+                json.dump(status, output)
                 output.flush()
                 os.fsync(output.fileno())
+            os.replace(temporary, directory / "status.json")
         return status
     except OSError:
         return {**status, "diagnostic": "auth_observation_not_saved"}
+    finally:
+        if temporary:
+            temporary.unlink(missing_ok=True)
 
 
 def process_inventory() -> list[dict]:
@@ -206,17 +219,22 @@ def capture(home: Path, current: list[dict]) -> list[dict]:
             known = {event_key(event) for event in previous}
             added = [event for event in current if event_key(event) not in known]
             if added:
+                first_process_failure = True
                 try:
-                    processes = (
-                        process_inventory()
-                        if any(event["event"] in FAILURES or event["event"] == "issuer_rejection" for event in added)
-                        else []
+                    state = read_status(home)
+                    known = {event["process"] for event in previous
+                             if event["event"] in FAILURES or event["event"] == "issuer_rejection"
+                             if state["blocked"] or event["ts_ns"] >= state["observed_ns"]}
+                    first_process_failure = any(
+                        (event["event"] in FAILURES or event["event"] == "issuer_rejection") and event["process"] not in known
+                        for event in added
                     )
+                    processes = process_inventory() if first_process_failure else []
                     process_error = None
                 except (OSError, subprocess.SubprocessError):
                     processes, process_error = [], "process_inventory_unavailable"
                 try:
-                    home_processes = recorded_processes(home)
+                    home_processes = recorded_processes(home) if first_process_failure else []
                     home_process_error = None
                 except (OSError, sqlite3.Error):
                     home_processes, home_process_error = [], "home_process_inventory_unavailable"
@@ -343,7 +361,7 @@ def failure_episode(events: list[dict]) -> int | None:
 
 def unknown_status(home: Path, previous: dict, reason: str) -> dict:
     try:
-        previous = journal_status(home)
+        previous = read_status(home)
     except (OSError, ValueError, TypeError, KeyError):
         pass
     return {**previous, "diagnostic": reason}
@@ -353,7 +371,7 @@ def observe(home: Path) -> dict:
     home = home.expanduser().resolve()
     previous = {"blocked": False, "episode_ns": None, "observed_ns": 0}
     try:
-        previous = journal_status(home)
+        previous = read_status(home)
         capture(home, read_log(home))
         identity = daemon_identity(home)
         status = native_status(home)
@@ -370,11 +388,21 @@ def observe(home: Path) -> dict:
             selected = [event for event in current_events(events, identity) if previous["blocked"] or event["ts_ns"] >= previous["observed_ns"]]
             episode = failure_episode(selected)
             if episode is not None:
+                if not previous["blocked"] and any(event["event"] == "reused" and event["ts_ns"] >= episode for event in selected):
+                    refreshed = native_status(home)
+                    if refreshed.identity != identity:
+                        return unknown_status(home, previous, "auth_daemon_changed")
+                    capture(home, read_log(home))
+                    if refreshed.account_present or not refreshed.requires_auth:
+                        return record_status(home, {"blocked": False, "episode_ns": None, "observed_ns": refreshed.requested_ns})
+                    if refreshed.auth_method != "chatgpt":
+                        return unknown_status(home, previous, "auth_mode_unknown")
+                    status = refreshed
                 result = {"blocked": True, "episode_ns": previous["episode_ns"] if previous["blocked"] else episode}
                 return record_status(home, {**result, "observed_ns": status.requested_ns})
             if time.monotonic() >= deadline:
                 return unknown_status(home, previous, "auth_log_delivery_unknown")
-            time.sleep(0.02)
+            time.sleep(0.5)
     except (OSError, ValueError, TypeError, KeyError, sqlite3.Error, subprocess.SubprocessError, ImportError, TimeoutError):
         return unknown_status(home, previous, "auth_evidence_unavailable")
 
@@ -382,7 +410,8 @@ def observe(home: Path) -> dict:
 def require_usable(home: Path) -> None:
     if observe(home).get("blocked"):
         raise ValueError(
-            "Codex account needs sign-in; launches on this account are paused. Sign in to this account in Codex, then retry."
+            "Codex account needs sign-in; launches on this account are paused. Sign in to this account in Codex, then retry. "
+            "If its daemon is stopped, an agent can start the same home with CODEX_HOME=<home> codex app-server daemon start."
         )
 
 
