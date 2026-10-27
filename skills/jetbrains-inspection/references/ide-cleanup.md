@@ -33,6 +33,8 @@ an open file or working directory at or below the worktree in the launcher or
 any descendant, or process/open-file
 discovery cannot prove complete, stable coverage. Failed commands, warnings,
 missing process records and process changes during proof retain it.
+The remover's own process and observer children are excluded; ancestor terminal
+shells and other IDE descendants are still checked.
 Native workers receive the same check on their open paths under private snapshots,
 without an exemption based on launcher names or a guess about their role.
 Open-file and persisted-record checks cannot inventory in-memory projects or

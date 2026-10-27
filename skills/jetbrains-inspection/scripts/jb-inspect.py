@@ -2798,7 +2798,8 @@ def ide_process_tree_pids(launcher_names: tuple[str, ...]) -> list[int]:
             pids.add(pid)
     if not parents:
         raise ValueError("Empty process inventory")
-    while children := {pid for pid, parent in parents.items() if parent in pids} - pids:
+    observer_pid = os.getpid()
+    while children := {pid for pid, parent in parents.items() if parent in pids and pid != observer_pid} - pids:
         pids.update(children)
     return sorted(pids)
 
@@ -2831,7 +2832,7 @@ def offline_ide_open_files(pids: list[int]) -> dict[int, list[str]]:
                 file_type = field[1:]
             elif field.startswith("n"):
                 name = field[1:]
-                if " -- " in name or re.search(r"\s+\((?:dev|stat|readlink):?", name):
+                if " -- " in name or re.search(r"\s+\((?:/?dev|stat|readlink)", name):
                     raise ValueError("Unresolved file name")
                 if name.startswith("/"):
                     files[current].append(name)

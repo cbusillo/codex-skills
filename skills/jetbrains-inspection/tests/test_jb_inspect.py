@@ -71,6 +71,12 @@ def write_json(path: Path, payload: dict) -> None:
 
 
 class OfflineIdeProcessTests(unittest.TestCase):
+    def test_process_tree_keeps_ancestors_and_siblings_but_excludes_observers(self) -> None:
+        process_list = ("123 1 /Applications/PyCharm.app/Contents/MacOS/pycharm\n124 123 /bin/zsh\n"
+                        "125 124 /usr/bin/python3\n126 125 /bin/ps\n127 124 /usr/bin/node\n")
+        with patch.object(os, "getpid", return_value=125), patch.object(subprocess, "check_output", return_value=process_list):
+            self.assertEqual(jb_inspect.offline_ide_processes(), [123, 124, 127])
+
     def test_running_ide_is_visible_without_a_plugin_registry(self):
         process_list = "123 1 /Applications/PyCharm.app/Contents/MacOS/pycharm\n124 1 /bin/sh\n"
         with patch.object(subprocess, "check_output", return_value=process_list):
@@ -179,6 +185,7 @@ class RunningIdeRetirementTests(unittest.TestCase):
         for output, error, stderr in (("", None, ""), ("p123\0\nfNOFD\0\n", None, ""),
                                       ("p123\0\nfcwd\0tDIR\0n/another/project\0\nf7\0tREG\0nunknown\0\n", None, ""),
                                       ("p123\0\nfcwd\0n/Volumes/Developer-Artifacts -- /source.py\0\n", None, ""),
+                                      ("p123\0\nfcwd\0n/Volumes/Developer-Artifacts (/dev/disk9s1)\0\n", None, ""),
                                       (self.open_files, None, "permission denied"),
                                       (self.open_files, FileNotFoundError("lsof"), ""),
                                       (self.open_files, subprocess.TimeoutExpired("lsof", 5), "")):
