@@ -2970,7 +2970,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
                 {
                     "call_id": identifier,
                     "reason": reason,
-                    **({"commands": claim_commands} if javascript else {}),
+                    **({"commands": claim_commands} if javascript and claim_commands else {}),
                     "ended": bool(source_ended) and all(source_ended) and not (launched_in_background or decode_failed),
                     "recovery": (
                         "This code-mode cell is outside the bounded subset after possible interactive claim input. "

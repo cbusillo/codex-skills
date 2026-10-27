@@ -49,6 +49,14 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             'const c=load("comments").structuredContent.comments;text(c.at(-1).body);'
             'await Promise.allSettled([(async()=>text(await tools.web__run({search_query:[{q:"SMB reconnect"}]})))(),'
             '(async()=>text(await tools.exec_command({cmd:"cat evidence.txt"})))()]);',
+            'text(ALL_TOOLS.filter(x=>/github_(fetch|search)_\\w+/.test(x.name)||/\\bissue[s]?\\d*\\b/i.test(x.description)));',
+            'text(ALL_TOOLS.filter(x=>{return /github/.test(x.name);}));text(/github/.test("github"));',
+            'text("a,b; c".split(/[,;]\\s*/).map(x=>x.replace(/\\w+/,"item")));',
+            'text(await tools.mcp__codex_apps__github_search({query:"claims"}));'
+            'text(await tools.mcp__codex_apps__github_get_repo({repo:"test/a"}));'
+            'text(await tools.mcp__codex_apps__github_list_recent_issues({repo:"test/a"}));',
+            '(async function(){text(await tools.exec_command({cmd:"cat README.md"}));})();',
+            '(async()=>text(await tools.exec_command({cmd:"cat README.md"})))().then(r=>text(r));',
         ]
         for source in reads:
             with self.subTest(source=source):
@@ -62,6 +70,7 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             f'(async()=>text((await tools.exec_command({{cmd:{json.dumps(COMMAND)}}})).output))();',
             f'await tools.mcp__codex_apps__github_fetch_issue({{}}).then(async r=>'
             f'text((await tools.exec_command({{cmd:{json.dumps(COMMAND)}}})).output));',
+            f'tools.exec_command({{cmd:{json.dumps(COMMAND)}}}).then(r=>text(r));',
         ):
             with self.subTest(source=source):
                 report = check_claims.history.literal_targets(invocation(source), SESSION)
@@ -80,6 +89,13 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
         ):
             with self.subTest(source=source):
                 self.assertTrue(check_claims.history.literal_targets(invocation(source), SESSION)["unresolved_invocations"])
+
+    def test_opaque_cells_do_not_report_an_empty_decoded_command_list(self) -> None:
+        for source in ('load("runner")();', 'text(await tools.exec_command({cmd:load("claim")}));'):
+            with self.subTest(source=source):
+                report = check_claims.history.literal_targets(invocation(source), SESSION)
+                self.assertTrue(report["unresolved_invocations"])
+                self.assertNotIn("commands", report["unresolved_invocations"][0])
 
     def assert_discovered_targets(self, rows: list[dict], targets: set[tuple[str, int]]) -> None:
         report = check_claims.history.literal_targets(rows, SESSION)
@@ -689,10 +705,8 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             'text(ALL_TOOLS.filter(x=>new RegExp("x").test(x.name)));',
             'text(ALL_TOOLS.filter(x=>RegExp("x").test(x.name)));',
             "text(ALL_TOOLS.filter(/x/.test));",
-            "text(ALL_TOOLS.filter(x=>{return /x/.test(x.name);}));",
             "const r={value:/x/};",
             "const r=[/x/];",
-            'text(/x/.test("x"));',
             'const a=1;a\n/tools.exec_command({cmd:"uv run gh-plan.py claim 5"})/i.test(a);',
             'text(ALL_TOOLS.filter(x=>/x//**/.test(x.name)));',
             'text(ALL_TOOLS.filter(x=>/x/ /*comment*/ .test(x.name)));',
@@ -711,19 +725,6 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
         ):
             separator = "" if operation.startswith("[") else "."
             expressions.append(f"text(ALL_TOOLS.filter(x=>/x/{separator}{operation}));")
-        for pattern in (
-            r"\d",
-            '"',
-            "'",
-            "`",
-            "[/]",
-            "(?i:x)",
-            "#!",
-            "<!--",
-            "-->",
-            "*",
-        ):
-            expressions.append(f"text(ALL_TOOLS.filter(x=>/{pattern}/.test(x.name)));")
         for method in ("replace", "match"):
             expressions.append(f"text(ALL_TOOLS.map(x=>x.name.{method}(/x/)));")
         expressions.append(

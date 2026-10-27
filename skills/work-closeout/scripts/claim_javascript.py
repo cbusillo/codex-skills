@@ -15,15 +15,7 @@ LITERAL_LOOP_VALUES = 64
 
 NATIVE_NAMES = {"tools", "text", "store", "load", "exit", "Promise", "JSON", "Object", "String", "ALL_TOOLS", "undefined"}
 SHELL_TOOLS = {"exec_command", "shell_command", "shell", "write_stdin"}
-DATA_TOOLS = {
-    "apply_patch",
-    "clock__curr_time",
-    "web__run",
-    "mcp__codex_apps__github_fetch_issue",
-    "mcp__codex_apps__github_fetch_issue_comments",
-    "mcp__codex_apps__github_fetch_pr",
-    "mcp__codex_apps__github_fetch_pr_comments",
-}
+GITHUB_READ_TOOL = re.compile(r"mcp__codex_apps__github_(?:fetch|get|list|search|compare|download)(?:_[a-z0-9_]+)?")
 PROTOTYPE_NAMES = {
     "constructor",
     "prototype",
@@ -135,8 +127,6 @@ class JavascriptData:
                 or property_name(callee.child_by_field_name("property")) not in {"split", "replace", "replaceAll"}
             ):
                 raise ValueError("regex value")
-            if re.fullmatch(r"/(?:[A-Za-z0-9_ .|+*-]|\\s)+/[gi]*", source(node)) is None:
-                raise ValueError("regex pattern")
             return "data"
         if kind == "arrow_function":
             local = environment.copy()
@@ -235,10 +225,10 @@ class JavascriptData:
         if callee.type == "parenthesized_expression" and len(children(callee)) == 1:
             function = children(callee)[0]
             parameters = function.child_by_field_name("parameters")
-            if function.type != "arrow_function" or parameters is None or children(parameters) or args:
+            if function.type not in {"arrow_function", "function_expression"} or parameters is None or children(parameters) or args:
                 raise ValueError("immediate callback")
-            self.expression(function, environment)
-            return "data"
+            self.statement(function.child_by_field_name("body"), environment.copy())
+            return "promise" if any(child.type == "async" for child in function.children) else "data"
         if callee.type == "identifier" and (
             source(callee) in {"text", "store", "load", "exit"}
             or environment.get(source(callee), (None,))[0] == "function"
@@ -250,7 +240,9 @@ class JavascriptData:
             receiver = callee.child_by_field_name("object")
             method = property_name(callee.child_by_field_name("property"))
             native = source(receiver) if receiver.type == "identifier" else ""
-            if native == "tools" and method in SHELL_TOOLS | DATA_TOOLS:
+            if native == "tools" and (
+                method in SHELL_TOOLS | {"apply_patch", "clock__curr_time", "web__run"} or GITHUB_READ_TOOL.fullmatch(method)
+            ):
                 result_kind = "promise"
             elif native == "Promise" and method in {"all", "allSettled"} and len(args) == 1:
                 result_kind = "array"
@@ -259,14 +251,11 @@ class JavascriptData:
             elif native == "Object" and method in {"keys", "values", "entries"} and len(args) == 1:
                 result_kind = "array"
             elif receiver.type == "regex":
-                callback = node.parent
                 if (
                     method != "test"
                     or source(callee) != source(receiver) + ".test"
                     or len(args) != 1
-                    or re.fullmatch(r"/(?:[A-Za-z0-9_ .|^$-]|\.\*|\\\.)+/i?", source(receiver)) is None
-                    or callback.type != "arrow_function"
-                    or callback.child_by_field_name("body") != node
+                    or source(receiver).rpartition("/")[2] not in {"", "i"}
                 ):
                     raise ValueError("regex predicate")
             else:
@@ -504,7 +493,7 @@ class LiteralCommands:
                 if parameter is not None:
                     for row in rows:
                         self.bind(parameter, None, row)
-            if node.type == "arrow_function":
+            if node.type in {"arrow_function", "function_expression"}:
                 pattern = node.child_by_field_name("parameter") or node.child_by_field_name("parameters")
                 if pattern is None:
                     continue

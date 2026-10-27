@@ -71,9 +71,11 @@ In code-mode cells, a Tree-sitter JavaScript syntax tree checks
 that every effect belongs to a bounded data language. It accepts direct native
 shell/output calls, literal arrays, plain loops and conditions, and immutable
 native or JSON data reads. Immediately invoked, parameterless arrow functions
-are checked in the same way as inline callbacks. Direct GitHub connector reads
-of issues, PRs and their comments are supported, including one inline `then`
-callback on a native tool result; unknown tool methods remain conditional.
+and function expressions are checked in the same way as inline callbacks.
+GitHub connector operations named with the read verbs `fetch`, `get`, `list`,
+`search`, `compare` and `download` are data reads. Write verbs and unknown tool
+namespaces remain conditional. One inline `then` callback on a native tool
+promise or an immediate async function is checked in the same way.
 Read-only string/array methods support the recorded
 JSON parsing, filtering, mapping and output-formatting shapes. Inline callbacks
 and local arrow functions are checked under their own data bindings. Calls are
@@ -101,15 +103,12 @@ and their argument objects come from syntax-tree locations, including recovered
 nodes in unbounded cells. Any code-mode cell outside the bounded subset retains
 pending interactive claim uncertainty, including aliases, computed constructors
 and escaped shorthand keys. Every decoded target remains subject to release
-verification even when the surrounding cell is conditional. A direct expression-body
-predicate in a checked inline data callback may call a literal regex's `test`
-with one checked data argument and no gap before `.test`. Its pattern contains only letters, digits,
-underscore, space, dot, pipe, hyphen, anchors, escaped dots or `.*`, and its
-flags are empty or `i`.
-Inline regexes in `split`, `replace` and `replaceAll` accept a formatting subset
-of letters, digits, underscore, space, dot, pipe, plus, star, hyphen and `\s`,
-with `g`/`i` flags. Regex values, aliases, constructors and other methods remain
-conditional. The serializable-data and unchanged-builtins assumption also
+verification even when the surrounding cell is conditional. A literal regex's
+`test` accepts one checked data argument, no gap before `.test`, and empty or
+`i` flags. Inline regex arguments to `split`, `replace` and `replaceAll` are
+data too. Patterns are read from the syntax tree without a second character
+allowlist or execution. Regex values, aliases, constructors and other methods
+remain conditional. The serializable-data and unchanged-builtins assumption also
 covers `RegExp.prototype.exec`; no recorded regex is executed by the reader.
 
 `interactive_uncertain` means a prior invocation could have left claim input in
@@ -155,8 +154,9 @@ field. Later polls can finish their originating process only while its
 process generation remains unambiguous. Earlier polls, reused IDs and partially
 printed intervening launches cannot supply that proof.
 Help and decoded read-only commands need no claim-completion proof. When a real
-code-mode claim remains uncertain, its report names the exact decoded shell commands and
-native call ID; projecting `.output` alone never proves that a claim ended.
+code-mode claim remains uncertain, its report names the decoded shell commands
+when available and the native call ID. Undecoded cells retain their call ID and
+recovery reason; projecting `.output` alone never proves that a claim ended.
 
 Serial `text(await ...)` wrappers can combine literal shell calls and empty
 `write_stdin` polls. Their whole results must match the complete command count
