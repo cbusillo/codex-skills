@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "tomlkit==0.15.1",
+#     "tomlkit==0.15.2",
 # ]
 # ///
 """Install and update behavior against fixture homes and real local Git remotes."""

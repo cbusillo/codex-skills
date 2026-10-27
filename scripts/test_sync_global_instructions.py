@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "tomlkit==0.15.1",
+#     "tomlkit==0.15.2",
 # ]
 # ///
 """Global instructions preserve private sections and existing files on adoption."""
