@@ -522,6 +522,7 @@ The opt-in `JB_NATIVE_LIVE=1` test in `tests/test_native_backend.py` uses the
 committed planted/corrected Odoo fixture through the configured independent
 worker. It copies committed Git blobs into a committed disposable repository,
 so local edits and generated files cannot change its provenance. It requires actual Odoo XML, quoted `odoo.model.*` type, duplicate and
-named Odoo findings, with corrected controls clean. `JB_NATIVE_LIVE_OUT` can
-retain its sanitized result. Qualify with a real tenant change too; a synthetic
+named Odoo findings, with corrected controls clean. The profile's collection-valued
+package option must allow completed inspection on every selected Python file.
+`JB_NATIVE_LIVE_OUT` can retain its sanitized result. Qualify with a real tenant change too; a synthetic
 RED alone does not prove that repository's profile or model is complete.

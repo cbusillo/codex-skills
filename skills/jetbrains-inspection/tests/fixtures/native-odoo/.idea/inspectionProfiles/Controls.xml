@@ -3,6 +3,13 @@
     <option name="myName" value="Native Odoo Controls" />
     <inspection_tool class="DuplicatedCode" enabled="true" level="WARNING" enabled_by_default="true" />
     <inspection_tool class="HttpUrlsUsage" enabled="true" level="WARNING" enabled_by_default="true" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <list>
+          <option value="native-inspection-fixture" />
+        </list>
+      </option>
+    </inspection_tool>
     <inspection_tool class="PyTypeCheckerInspection" enabled="true" level="WARNING" enabled_by_default="true" />
     <inspection_tool class="PyUnresolvedReferencesInspection" enabled="true" level="WARNING" enabled_by_default="true" />
     <inspection_tool class="OdooPy" enabled="true" level="WARNING" enabled_by_default="true" />
