@@ -266,7 +266,9 @@ class JavascriptData:
             method = property_name(callee.child_by_field_name("property"))
             native = source(receiver) if receiver.type == "identifier" else ""
             if native == "tools" and (
-                method in SHELL_TOOLS | {"apply_patch", "clock__curr_time", "web__run"} or GITHUB_READ_TOOL.fullmatch(method)
+                method
+                in SHELL_TOOLS | {"apply_patch", "clock__curr_time", "web__run", "codex_tui__list_threads", "codex_tui__read_thread"}
+                or GITHUB_READ_TOOL.fullmatch(method)
             ):
                 result_kind = "promise"
             elif native == "Promise" and method in {"all", "allSettled"} and len(args) == 1:

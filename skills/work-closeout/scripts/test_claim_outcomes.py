@@ -65,6 +65,36 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                     {"targets": set(), "unresolved_invocations": []},
                 )
 
+    def test_native_thread_reads_preserve_claim_discovery(self) -> None:
+        cells = (
+            'text(await tools.codex_tui__list_threads({limit:40}));'
+            'text(await tools.exec_command({cmd:"git diff --stat origin/main...origin/work/read-coverage"}));'
+            'text(await tools.exec_command({cmd:"rg claim cli-reference.md"}));',
+            'text(await tools.codex_tui__read_thread({threadId:"fixture-thread",turnLimit:1,'
+            'includeOutputs:false,maxOutputCharsPerItem:5000}));'
+            'text(await tools.exec_command({cmd:"git status --short --branch"}));'
+            'text(await tools.exec_command({cmd:"gh-plan.py --repo test/a show 52 --full"}));',
+        )
+        for source in cells:
+            with self.subTest(source=source):
+                self.assertEqual(
+                    check_claims.history.literal_targets(invocation(source), SESSION),
+                    {"targets": set(), "unresolved_invocations": []},
+                )
+                real_claim = source + f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));"
+                report = check_claims.history.literal_targets(invocation(real_claim), SESSION)
+                self.assertEqual(report["targets"], {("test/a", 5)})
+                self.assertTrue(report["unresolved_invocations"])
+                self.assertTrue(
+                    all(item["reason"] == check_claims.history.UNFINISHED_CLAIM for item in report["unresolved_invocations"])
+                )
+                for opaque in (
+                    source + 'text(await tools.exec_command({cmd:load("claim-command")}));',
+                    source.replace("codex_tui__", "unknown__"),
+                    source.replace("codex_tui__", "codex_tui__write_"),
+                ):
+                    self.assertTrue(check_claims.history.literal_targets(invocation(opaque), SESSION)["unresolved_invocations"])
+
     def test_immediate_callbacks_still_discover_real_uncertain_claims(self) -> None:
         for source in (
             f'(async()=>text((await tools.exec_command({{cmd:{json.dumps(COMMAND)}}})).output))();',
