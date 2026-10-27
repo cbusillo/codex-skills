@@ -16,7 +16,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from test_jb_inspect import jb_inspect
+from test_jb_inspect import jb_inspect, patch_attr
 
 
 class LeaseRetirementTests(unittest.TestCase):
@@ -54,11 +54,13 @@ class LeaseRetirementTests(unittest.TestCase):
                         "task", str(root)], check=True)
         return root.resolve()
 
-    def test_retirement_previews_then_reconciles_only_target_dead_owner(self):
+    def test_retirement_previews_then_reconciles_only_target_dead_owner(self) -> None:
         root = self.worktree()
         owned, _ = self.lease(root)
         foreign, _ = self.lease(self.base / "foreign")
-        with patch.object(jb_inspect, "pid_alive", return_value=False):
+        with (patch_attr(jb_inspect, "pid_alive", return_value=False),
+              patch_attr(jb_inspect, "discover_routes_for_cleanup", side_effect=AssertionError("desktop discovery")),
+              patch_attr(jb_inspect, "http_request", side_effect=AssertionError("desktop request"))):
             self.assertEqual(jb_inspect.retirement_worktree(root, True), root)
             self.assertTrue(owned.exists())
             self.assertEqual(jb_inspect.retirement_worktree(root), root)
@@ -66,39 +68,30 @@ class LeaseRetirementTests(unittest.TestCase):
         self.assertTrue(foreign.exists())
         self.assertTrue(root.is_dir())
 
-    def test_retirement_preserves_live_owner_and_names_exact_recovery(self):
+    def test_retirement_keeps_live_uncertain_and_explicit_offline_leases(self) -> None:
         root = self.worktree()
-        path, lease = self.lease(root, updated_at_ms=1)
-        with patch.object(jb_inspect, "pid_alive", return_value=True):
-            with self.assertRaises(jb_inspect.InspectError) as caught:
-                jb_inspect.retirement_worktree(root)
-        self.assertTrue(path.exists())
-        self.assertEqual(caught.exception.payload["blocking_lease_ids"], [lease["lease_id"]])
-        command = caught.exception.payload["cleanup_commands"][0]
-        args = jb_inspect.build_parser().parse_args(shlex.split(command)[3:])
-        self.assertEqual(args.lease_id, [lease["lease_id"]])
-        self.assertFalse(args.dry_run)
-        self.assertIn(command, str(caught.exception))
-
-    def test_offline_retirement_keeps_leases_without_discovery_or_cleanup(self):
-        root = self.worktree()
-        path, lease = self.lease(root, updated_at_ms=1, opened_by_helper=True,
-                                 open_not_attempted=False, open_request_may_have_been_accepted=True)
-        for dry_run in (True, False):
-            args = Namespace(command="remove-worktree", repo=str(root), dry_run=dry_run,
-                             offline_only=True, lifecycle_lock_timeout_ms=1000)
-            with (self.subTest(dry_run=dry_run),
-                  patch.object(jb_inspect, "pid_alive", return_value=False),
-                  patch.object(jb_inspect, "discover_identities", return_value=[]) as discover,
-                  patch.object(jb_inspect, "http_post") as post):
-                with self.assertRaises(jb_inspect.InspectError) as caught:
-                    jb_inspect.command_retire_sdks(args)
-                discover.assert_not_called()
-                post.assert_not_called()
-                self.assertEqual(caught.exception.payload["blocking_lease_ids"], [lease["lease_id"]])
-                self.assertFalse(caught.exception.payload["cleanup_commands"])
-                self.assertTrue(path.exists())
-                self.assertTrue(root.is_dir())
+        for offline_only, live_owner, opened in ((False, False, True), (False, True, False),
+                                                 (True, False, False), (True, False, True)):
+            path, lease = self.lease(root, updated_at_ms=1, opened_by_helper=opened,
+                                     open_not_attempted=not opened, open_request_may_have_been_accepted=opened)
+            for dry_run in (True, False):
+                args = Namespace(command="remove-worktree", repo=str(root), dry_run=dry_run,
+                                 offline_only=offline_only, lifecycle_lock_timeout_ms=1000)
+                with (self.subTest(offline_only=offline_only, live_owner=live_owner, opened=opened, dry_run=dry_run),
+                      patch_attr(jb_inspect, "pid_alive", return_value=live_owner),
+                      patch_attr(jb_inspect, "discover_routes_for_cleanup", side_effect=AssertionError("desktop discovery")),
+                      patch_attr(jb_inspect, "http_request", side_effect=AssertionError("desktop request"))):
+                    with self.assertRaises(jb_inspect.InspectError) as caught:
+                        jb_inspect.command_retire_sdks(args)
+                    self.assertEqual(caught.exception.payload["blocking_lease_ids"], [lease["lease_id"]])
+                    if not offline_only:
+                        command = caught.exception.payload["cleanup_commands"][0]
+                        recovery = jb_inspect.build_parser().parse_args(shlex.split(command)[3:])
+                        self.assertEqual(recovery.lease_id, [lease["lease_id"]])
+                        self.assertFalse(recovery.dry_run)
+                    self.assertTrue(path.exists())
+                    self.assertTrue(root.is_dir())
+            path.unlink()
 
     def test_offline_apply_keeps_a_lease_that_appears_after_preview(self):
         root = self.worktree()
@@ -108,9 +101,9 @@ class LeaseRetirementTests(unittest.TestCase):
                                      open_not_attempted=False, open_request_may_have_been_accepted=True))
             return []
         args = Namespace(command="remove-worktree", repo=str(root), dry_run=False,
-                         offline_only=True, lifecycle_lock_timeout_ms=1000)
+                         offline_only=False, lifecycle_lock_timeout_ms=1000)
         with (patch.object(jb_inspect, "pid_alive", return_value=False),
-              patch.object(jb_inspect, "unregister_helper_sdks", side_effect=preview),
+              patch_attr(jb_inspect, "offline_retirement_records", side_effect=preview),
               patch.object(jb_inspect, "discover_identities", return_value=[]) as discover,
               patch.object(jb_inspect, "http_post") as post):
             with self.assertRaises(jb_inspect.InspectError) as caught:
