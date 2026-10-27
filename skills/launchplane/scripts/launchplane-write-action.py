@@ -5596,9 +5596,12 @@ def _require_apply_eligible_recovery_dry_run(
     retry_safe = result.get("retry_safe")
     eligible = {("adopt_observed", "present", True), ("retry_original_operation", "absent", True)}
     if expected_instance == "testing":
-        eligible.add(("settle_testing_failure", "present", False))
+        eligible.update({
+            ("settle_testing_failure", "present", False),
+            ("close_out_observed", "absent", False),
+        })
     if expected_request_sha256 is not None:
-        eligible.update({("adopt_observed", "present", False), ("close_out_observed", "absent", False)})
+        eligible.add(("adopt_observed", "present", False))
         if expected_instance == "testing":
             eligible.add(("abandon_testing_original", "unknown", False))
     actionable = (
