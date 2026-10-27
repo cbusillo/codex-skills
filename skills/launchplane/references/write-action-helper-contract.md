@@ -2680,6 +2680,11 @@ queued. Pending-proposal qualification remains subject to service authorization.
 The helper checks the returned lane and projects only `bindings` with
 `binding_id`, `binding_key` and current `version_id`. Values and ciphertext
 are discarded; the service controls which exact-lane references are available.
+Add `--include-public-key` when public enrollment/readback is needed. It
+projects the service-generated SSH public key and verified fingerprint, with
+`capture_binding_id`, `hosts_binding_id` and `boundary_binding_id`. Both
+references must match the lane's canonical managed binding roles. Ordinary
+metadata reads and reference-only rebinding ignore this additional public data.
 
 Use `backup-worker-bindings-dry-run` with the same lane, an optional
 `--promotion-action`, `--private-key-binding ID`, `--known-hosts-binding ID`,
@@ -2697,9 +2702,32 @@ including `reviewed_plan_sha256`. The service enforces current-plan comparison
 and same-key replay. Readback checks both selected binding/version identities
 and intended generic keys; a missing or changed reference cannot verify apply.
 
+For approved initial capture setup, replace both binding-reference arguments
+with `--generate-capture-key --known-hosts-file FILE` and supply the exact
+`--promotion-action`. The file contains one independently verified public
+known-hosts entry. Private-key files and mixed generation/reference requests
+are refused before transport. The service plans without generating a key; its
+reviewed apply generates the pair directly into encrypted worker custody.
+The caller accepts no private half. This uses the same service routes and
+existing authority; creating access still needs the Director's scoped decision.
+
+Save this dry-run evidence and use the same apply review flags and original
+key. Generation intent and the complete public host pin are bound into the
+review. Successful apply returns `public_capture_key`, canonical binding/version
+metadata and `readback_matches: true` only after an independent metadata read
+matches the public key, fingerprint and binding references. The service refuses
+replacement of existing credentials. A retry of the original reviewed request
+and key can replay a committed pair after a lost response; the caller does not
+require empty metadata before replay and never retries automatically. Read back
+with `backup-worker-bindings-read --include-public-key` using the same lane.
+Generation starts no capture, restore or product release action. The producer's
+[capture-key contract](https://github.com/cbusillo/launchplane/blob/main/docs/production-backup-provider.md)
+owns custody and host-enrollment requirements.
+
 An accepted response with failed readback stays `accepted_unverified`; a lost
-apply response stays `outcome_unknown`. Preserve the saved review, receipt,
-caller, exact request and original key. Inspect binding metadata before retrying
+apply response stays `outcome_unknown`. Preserve the saved review, unchanged
+public pin file when generating, receipt, caller, exact request and original key.
+Inspect binding metadata before retrying
 that same operation; never select another credential, identity, key or workflow
 to evade a denial or conflict. Terminal agents remain refused by the service.
 These commands add no grants and never call a provider directly.
