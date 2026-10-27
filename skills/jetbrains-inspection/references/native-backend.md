@@ -65,6 +65,9 @@ configured `node`. It runs that pinned Yarn with `install --immutable
 forces the `node-modules` linker inside the snapshot. Repository patches and
 Yarn configuration stay available; Yarn and Corepack caches live under
 `cacheRoot`, with a fresh HOME and no inherited user configuration or tokens.
+Tracked Yarn plugins still load as trusted repository code; disabling lifecycle
+scripts does not disable plugins. An exact Yarn 4 pin selects Yarn when both
+lockfiles exist; otherwise `package-lock.json` retains npm preparation.
 A structured root `prepare.python` may coexist with WebStorm lanes; only
 PyCharm selections execute it. `pnpm-lock.yaml` is refused for now. The snapshot excludes
 ignored files, so `node_modules` comes only from that step.

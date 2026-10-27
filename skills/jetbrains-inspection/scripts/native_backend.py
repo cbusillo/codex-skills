@@ -552,7 +552,7 @@ def web_preparation(node: Path, project: Path, private: Path, caches: dict[str, 
            "HOME": str(private / "prepare-home"), "TMPDIR": str(private / "tmp"),
            "COREPACK_HOME": caches["COREPACK_HOME"], "COREPACK_ENABLE_DOWNLOAD_PROMPT": "0",
            "YARN_CACHE_FOLDER": caches["YARN_CACHE_FOLDER"], "YARN_ENABLE_GLOBAL_CACHE": "false",
-           "YARN_ENABLE_SCRIPTS": "false", "YARN_NODE_LINKER": "node-modules", "YARN_IGNORE_PATH": "1"}
+           "YARN_ENABLE_SCRIPTS": "false", "YARN_NODE_LINKER": "node-modules", "YARN_IGNORE_PATH": "1", "YARN_ENABLE_TELEMETRY": "0"}
     return argv, env
 
 
@@ -1799,6 +1799,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         if odoo:
             expected |= NAMED_ODOO
         if webstorm:
+            assert node is not None
             if settings.get("prepare") and common.requested_python_version(settings) is None:
                 raise Blocked("native_preparation_shape_unsupported")
             web_package_manager(repo, node)
@@ -1849,6 +1850,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         check_lifetime(parent_fd, deadline)
         sdk = None
         if webstorm:
+            assert node is not None
             prepare(*web_preparation(node, project, private, preparation_caches))
             prepare_web_model(project, selected | controls)
         elif intellij:
