@@ -236,8 +236,20 @@ binary and a loopback issuer: a fresh token stayed untouched and a near-expiry
 token renewed, but a dead refresh token could still yield usage data. It cannot
 supply the required renewal verdict. The auth helper follows the expiry-aware
 read with `account/read` using `refreshToken:false`; a null ChatGPT account plus
-a preserved permanent renewal error establishes a hold. A result envelope or
+a preserved permanent renewal error, including an issuer HTTP 401, establishes
+a hold. Other unclassified issuer statuses do not establish one. A result envelope or
 ChatGPT auth-method label alone is never proof of successful renewal.
+
+A separate `codex login` can replace the stored sign-in while the daemon keeps
+an old, still-fresh access token and its cached permanent failure. The non-forcing
+auth read does not reload that cache before its renewal window. If a confirmed
+CLI sign-in still appears held, an agent checks active and queued work through
+the existing daemon preflight, then uses that explicit home's native
+`codex app-server daemon restart` when it can do so without interrupting work.
+There is no automatic restart or extra forced refresh. Login, logout and native
+daemon start/restart through the wrapper require a named account function,
+`--account NAME`, or explicit `CODEX_HOME`; they never use automatic account
+selection. The notice's `recovery_command` names the exact home for sign-in.
 
 Before native reads, the helper saves allowlisted auth events from
 `logs_2.sqlite` opened read-only, plus process associations on the first failure per process in an episode, to the home's
@@ -1636,7 +1648,7 @@ environments. An unmatched or ambiguous choice refuses before creating tabs.
 Codex uses the [shared native renewal and hold path](#checks-and-morning-digest).
 Only accounts actually considered for launch are checked; an explicit healthy
 choice does not probe unrelated failed homes. Native `codex login` and the exact
-home's `codex app-server daemon start` remain available for recovery. An agent
+home's `codex app-server daemon start/restart` remain available for recovery. An agent
 starts a stopped account daemon after the Director signs in; this is the
 existing native recovery command, not another renewer.
 

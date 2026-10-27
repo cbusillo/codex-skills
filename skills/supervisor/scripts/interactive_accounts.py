@@ -17,6 +17,7 @@ from pathlib import Path
 
 import account_choice
 import codex_auth_health
+import session_liveness
 
 HARNESSES = {"claude": "anthropic", "codex": "openai"}
 
@@ -93,12 +94,50 @@ def remember(path, chosen):
             temporary.unlink(missing_ok=True)
 
 
+def codex_command(arguments: list[str]) -> tuple[list[str], bool]:
+    index, read_only = 0, False
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            return [], read_only
+        option, equals, _value = argument.partition("=")
+        attached = len(argument) > 2 and argument[:2] in session_liveness.VALUE_OPTIONS and not argument.startswith("--")
+        if option in session_liveness.VALUE_OPTIONS or attached:
+            option = argument[:2] if attached else option
+            if option in {"-i", "--image"}:
+                return [], False
+            if not equals and not attached:
+                if index + 1 == len(arguments):
+                    return [], False
+                index += 1
+        elif argument in session_liveness.SWITCH_OPTIONS:
+            read_only |= argument in {"--help", "-h", "--version", "-V"}
+        elif argument.startswith("-") and argument != "-":
+            return [], False
+        else:
+            command = arguments[index:]
+            return command, read_only
+        index += 1
+    return [], read_only
+
+
+def is_codex_recovery(arguments: list[str]) -> bool:
+    command, read_only = codex_command(arguments)
+    return read_only or command[:1] in (["login"], ["logout"]) or (
+        command[:2] == ["app-server", "daemon"] and command[2:3] in (["start"], ["restart"])
+    )
+
+
 def selection(harness, argv, named=None, env=None, config=None, snapshot=None, problem=None, last=None):
     env = os.environ if env is None else env
     provider = HARNESSES[harness]
     variable = account_choice.ACCOUNT_VARIABLES[provider]
     flag, argv = account_argument(argv)
     name = named or flag
+    if harness == "codex" and is_codex_recovery(argv) and not codex_command(argv)[1] and not (name or env.get(variable)):
+        raise ValueError("Codex account recovery needs an explicit home. Use codex --account NAME login, "
+                         "the configured named account function, or CODEX_HOME=/absolute/account/home codex login; "
+                         "use the same explicit target for logout or app-server daemon start/restart.")
     if name:
         accounts = [a for a in (config or {}).get("accounts", [])
                     if a["provider"] == provider and a["name"] == name]
@@ -151,9 +190,7 @@ def launch(harness, argv, named=None):
     child_env.update(chosen["env"])
     if variable in child_env:
         child_env[variable] = str(Path(child_env[variable]).expanduser())
-    if (harness == "codex" and not chosen.get("auth_checked")
-            and arguments[:1] not in (["login"], ["logout"])
-            and arguments[:3] != ["app-server", "daemon", "start"]):
+    if harness == "codex" and not chosen.get("auth_checked") and not is_codex_recovery(arguments):
         codex_auth_health.require_usable(Path(child_env.get(variable, str(Path.home() / ".codex"))))
     try:
         # Last-used state contains launch settings only, never login material.

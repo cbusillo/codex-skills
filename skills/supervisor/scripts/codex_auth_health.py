@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import socket
 import sqlite3
 import stat
@@ -354,7 +355,7 @@ def failure_episode(events: list[dict]) -> int | None:
     for event in events:
         if event["event"] in RESETS:
             first = None
-        elif event["event"] in FAILURES:
+        elif event["event"] in FAILURES or event["event"] == "issuer_rejection" and event.get("status") == 401:
             first = first if first is not None else event["ts_ns"]
     return first
 
@@ -399,7 +400,10 @@ def observe(home: Path) -> dict:
                     status, verdict = checked_status(home, identity, previous)
                     if verdict is not None:
                         return verdict
-                result = {"blocked": True, "episode_ns": previous["episode_ns"] if previous["blocked"] else episode}
+                reset_since_hold = previous["blocked"] and any(
+                    event["event"] in RESETS and previous["episode_ns"] < event["ts_ns"] < episode for event in selected
+                )
+                result = {"blocked": True, "episode_ns": previous["episode_ns"] if previous["blocked"] and not reset_since_hold else episode}
                 return record_status(home, {**result, "observed_ns": status.requested_ns})
             if time.monotonic() >= deadline:
                 return unknown_status(home, previous, "auth_log_delivery_unknown")
@@ -411,9 +415,14 @@ def observe(home: Path) -> dict:
 def require_usable(home: Path) -> None:
     if observe(home).get("blocked"):
         raise ValueError(
-            "Codex account needs sign-in; launches on this account are paused. Sign in to this account in Codex, then retry. "
-            "If its daemon is stopped, an agent can start the same home with CODEX_HOME=<home> codex app-server daemon start."
+            f"Codex account needs sign-in; launches on this account are paused. Use {sign_in_command(home)} for this home, then retry. "
+            "An agent can start a stopped daemon in this same home. If a separate CLI sign-in leaves a cached failure, "
+            "the agent checks active and queued work before restarting this home's daemon."
         )
+
+
+def sign_in_command(home: Path) -> str:
+    return shlex.join(["env", f"CODEX_HOME={home.expanduser().resolve()}", "codex", "login"])
 
 
 def home_id(home: Path) -> str:
@@ -429,6 +438,7 @@ def notices(homes: dict[str, Path]) -> list[dict]:
                 {
                     "auth_failure": {"home_id": home_id(home), "episode_ns": health["episode_ns"]},
                     "message": f"Codex {name} needs you to sign in again. Launches on this account are paused.",
+                    "recovery_command": sign_in_command(home),
                     "clean": None,
                 }
             )

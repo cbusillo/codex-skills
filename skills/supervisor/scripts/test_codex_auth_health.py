@@ -157,6 +157,12 @@ class AuthHealthTests(unittest.TestCase):
         self.probe.side_effect = self.failed_probe
         self.assertGreater(health.observe(self.home)["episode_ns"], first)
 
+    def test_new_sign_in_failure_gets_a_new_episode_without_an_observed_healthy_interval(self) -> None:
+        first = health.observe(self.home)["episode_ns"]
+        self.append("reset")
+        self.failure()
+        self.assertGreater(health.observe(self.home)["episode_ns"], first)
+
     def test_old_responses_cannot_overwrite_a_newer_saved_hold(self) -> None:
         health.record_status(self.home, {"blocked": True, "episode_ns": 4, "observed_ns": 5})
         self.assertTrue(health.record_status(self.home, {"blocked": False, "episode_ns": None, "observed_ns": 3})["blocked"])
@@ -308,16 +314,23 @@ class AuthHealthTests(unittest.TestCase):
         self.assertTrue({"reused", "expired"} <= {event["event"] for event in preserved})
         self.assertTrue(health.observe(self.home)["blocked"])
 
-    def test_issuer_rejection_is_kept_without_claiming_a_permanent_failure(self) -> None:
+    def test_issuer_401_and_null_native_account_establish_a_permanent_failure(self) -> None:
         self.append("issuer")
         self.probe.side_effect = None
         self.probe.return_value = health.AuthStatus(self.identity, self.clock + 1, "chatgpt", True, False)
         with patch.object(health, "LOG_DELIVERY_SECONDS", 0):
-            self.assertFalse(health.observe(self.home)["blocked"])
+            self.assertTrue(health.observe(self.home)["blocked"])
         journal = self.home / "skill-data/supervisor-auth/evidence.jsonl"
         rejection = health.read_journal(journal)[0]
         self.assertEqual(rejection["status"], 401)
         self.assertNotIn("DO-NOT-COPY", journal.read_text())
+
+    def test_other_issuer_statuses_do_not_establish_a_permanent_failure(self) -> None:
+        self.append("issuer", body="Failed to refresh token status=400 Bad Request")
+        self.probe.side_effect = None
+        self.probe.return_value = health.AuthStatus(self.identity, self.clock + 1, "chatgpt", True, False)
+        with patch.object(health, "LOG_DELIVERY_SECONDS", 0):
+            self.assertFalse(health.observe(self.home)["blocked"])
 
     def test_one_permanent_error_has_a_stable_episode_without_another_attempt(self) -> None:
         self.failure()
@@ -447,6 +460,36 @@ class AuthHealthTests(unittest.TestCase):
         self.enterContext(patch.object(interactive_accounts.shutil, "which", return_value="/fixture/codex"))
         self.enterContext(patch.object(interactive_accounts, "state_path", return_value=self.root / "last.json"))
 
+    def test_recovery_commands_require_an_explicit_home_before_account_selection(self) -> None:
+        with patch.object(account_choice, "choose") as choose:
+            for arguments in (["login"], ["logout"], ["app-server", "daemon", "start"], ["app-server", "daemon", "restart"]):
+                with self.subTest(arguments=arguments):
+                    with self.assertRaises(ValueError):
+                        interactive_accounts.selection("codex", arguments, env={}, config=self.config, snapshot=self.snapshot)
+                    selected, _, _ = interactive_accounts.selection(
+                        "codex", ["--account", "failed", *arguments], env={}, config=self.config, snapshot=self.snapshot
+                    )
+                    self.assertEqual(selected["env"]["CODEX_HOME"], str(self.home))
+            choose.assert_not_called()
+
+    def test_global_options_cannot_steer_recovery_to_an_automatic_account(self) -> None:
+        with patch.object(account_choice, "choose") as choose:
+            for prefix in (["-c", "model=fixture"], ["--config=model=fixture"], ["-cmodel=fixture"]):
+                with self.subTest(prefix=prefix):
+                    with self.assertRaises(ValueError):
+                        interactive_accounts.selection("codex", [*prefix, "login"], env={}, config=self.config, snapshot=self.snapshot)
+                    selected, _, _ = interactive_accounts.selection(
+                        "codex", ["--account", "failed", *prefix, "login"], env={}, config=self.config, snapshot=self.snapshot
+                    )
+                    self.assertEqual(selected["env"]["CODEX_HOME"], str(self.home))
+            choose.assert_not_called()
+
+    def test_prompts_and_ambiguous_options_cannot_exempt_an_execution_guard(self) -> None:
+        for arguments in (["exec", "login"], ["exec", "--", "--help"], ["--", "login"], ["--unknown-option", "login"], ["-m", "login"]):
+            with self.subTest(arguments=arguments):
+                self.assertFalse(interactive_accounts.is_codex_recovery(arguments))
+        self.assertTrue(interactive_accounts.is_codex_recovery(["-c", "model=fixture", "login", "status"]))
+
     def test_a_held_account_can_start_its_existing_daemon_for_recovery(self) -> None:
         health.observe(self.home)
         self.use_interactive_home()
@@ -454,6 +497,9 @@ class AuthHealthTests(unittest.TestCase):
         with patch.object(os, "execvpe") as execute:
             interactive_accounts.launch("codex", ["app-server", "daemon", "start"])
             execute.assert_called_once()
+            self.assertEqual(execute.call_args.args[2]["CODEX_HOME"], str(self.home))
+            interactive_accounts.launch("codex", ["app-server", "daemon", "restart"])
+            self.assertEqual(execute.call_args.args[1], ["/fixture/codex", "app-server", "daemon", "restart"])
             self.assertEqual(execute.call_args.args[2]["CODEX_HOME"], str(self.home))
             with self.assertRaises(ValueError):
                 interactive_accounts.launch("codex", ["app-server", "--listen", "stdio://"])
