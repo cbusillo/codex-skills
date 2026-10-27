@@ -1360,8 +1360,10 @@ and Return separately. Verify input and prompt
 before `--verified-target`, then read back once; do not replay an uncertain send.
 
 Codex launch output includes `codex_home`, `pid`, `tty`, `launch_pid`,
-`launch_started_at` and `launch_generation` when the native client PID can be
-identified on the exact launch TTY. Preserve those fields when adding the native
+`launch_started_at` and `launch_generation` when the managed proxy can be
+identified on the exact launch TTY. Launch and reattachment share that proxy's
+process and generation identity, including before the native client starts.
+Preserve those fields when adding the native
 thread ID and transcript to the ledger. If capture is unavailable, the launch
 still works and ordinary verified closure/release remains supported; it cannot
 supply idle-admission proof. Resume and queue mutations use the source account's

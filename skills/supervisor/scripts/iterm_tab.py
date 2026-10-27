@@ -1384,17 +1384,22 @@ def source_launch_metadata(result, choice):
             argv = harness_arguments(command)
             if terminal == tty.removeprefix("/dev/") and argv and Path(argv[0]).name.casefold().startswith("codex"):
                 candidates.append((pid, command.split()[0] == argv[0]))
-        # The guarded parent is a Python helper on the same TTY. Prefer the
-        # native executable over the wrapper when both are visible.
-        matches = [pid for pid, direct in candidates if direct]
-        if not matches:
-            proxies = {r.get("launch_pid"): r for r in github_plan_closure.log_rows()
-                       if r.get("record_kind") == "managed_proxy" and r.get("codex_home") == result["codex_home"]}
-            matches = [pid for pid, _ in candidates if pid in proxies and
-                       github_plan_closure.process_started_at(pid).isoformat() == proxies[pid].get("launch_started_at")]
+        registrations = github_plan_closure.log_rows() if github_plan_closure.closed_log().exists() else []
+        proxies = {r.get("launch_pid"): r for r in registrations
+                   if r.get("record_kind") == "managed_proxy" and r.get("codex_home") == result["codex_home"]}
+        matches = [pid for pid, _ in candidates if pid in proxies and
+                   github_plan_closure.process_started_at(pid).isoformat() == proxies[pid].get("launch_started_at")]
+        if matches:
+            if len(matches) != 1 or not proxies[matches[0]].get("launch_generation"):
+                raise ValueError("guarded launch generation is not unique on the launch TTY")
+            result.update({key: proxies[matches[0]][key] for key in (
+                "codex_home", "launch_pid", "launch_generation", "launch_started_at")})
+        else:
+            matches = [pid for pid, direct in candidates if direct]
+            if len(matches) == 1:
+                result.update(github_plan_closure.launch_metadata(matches[0], result["session_id"], home))
         if len(matches) != 1:
             raise ValueError("native client PID is not unique on the launch TTY")
-        result.update(github_plan_closure.launch_metadata(matches[0], result["session_id"], home))
         result["pid"] = matches[0]
     except (OSError, ValueError, ImportError, subprocess.SubprocessError):
         result["launch_identity_unavailable"] = True

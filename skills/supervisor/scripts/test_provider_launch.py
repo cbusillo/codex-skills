@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 from types import SimpleNamespace
+from typing import Any
 import unittest
 import uuid
 from unittest.mock import AsyncMock, Mock, patch
@@ -36,6 +37,10 @@ HARNESS_CHOICES = (
     ("anthropic", "claude", {"CLAUDE_CONFIG_DIR": "/fixture/claude"}),
     ("google", "agy", {}),
 )
+
+
+def patch_attr(target: object, name: str, **kwargs: Any) -> Any:
+    return patch.object(target, name, **kwargs)
 
 
 class ResumeLaunchTests(unittest.TestCase):
@@ -298,7 +303,8 @@ class ProviderLaunchTests(unittest.TestCase):
         choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/account"}}
         with patch.object(session_liveness, "inventory", return_value=[(456, "fixture-tty", "codex --remote unix:///observed"),
                                                               (457, "fixture-tty", "python3 /fixture/codex-session.py launch --codex-home /fixture")]), \
-                patch.object(github_plan_closure, "process_started_at") as started:
+                patch_attr(github_plan_closure, "process_started_at") as started, \
+                patch_attr(github_plan_closure, "log_rows", return_value=[]):
             from datetime import datetime, timezone
             started.return_value = datetime(2026, 10, 1, tzinfo=timezone.utc)
             result = iterm_tab.source_launch_metadata(source, choice)
@@ -335,9 +341,11 @@ class ProviderLaunchTests(unittest.TestCase):
                 (457, "fixture", "python3 /fixture/codex-session.py native --codex-home /fixture/account")]), \
                 patch.object(closure, "process_started_at", return_value=born), \
                 patch.object(closure, "log_rows", return_value=[{"record_kind": "managed_proxy", "launch_pid": 456,
-                    "codex_home": choice["env"]["CODEX_HOME"], "launch_started_at": born.isoformat()}]):
+                    "codex_home": choice["env"]["CODEX_HOME"], "launch_started_at": born.isoformat(),
+                    "launch_generation": "guarded-generation"}]):
             result = iterm_tab.source_launch_metadata(source, choice)
         self.assertEqual(result["pid"], 456)
+        self.assertEqual(result["launch_generation"], "guarded-generation")
         self.assertNotIn("launch_identity_unavailable", result)
 
     def test_wrong_harness_refuses_with_or_without_a_brief(self):
