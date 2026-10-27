@@ -24,11 +24,18 @@ commands. Resolve those separately before a fresh retirement attempt.
 
 On macOS, an unprepared worktree proves there is nothing to clean from local
 preparation records, every standard JetBrains config's SDK and recent-project
-records (plus the explicit `JETBRAINS_INSPECTION_IDE_CONFIG_DIR` override), and
-sealed/finalizing project-cache ownership markers. A `.venv` alone is not a
+records (plus the explicit `JETBRAINS_INSPECTION_IDE_CONFIG_DIR` override),
+sealed/finalizing project-cache ownership markers, and running IDE open files.
+A `.venv` alone is not a
 registration. Matching records, unreadable/malformed records, storage redirects
-in config `idea.properties`, local `.idea` project-model/workspace state, or a
-running supported IDE retain the worktree. Existing desktop state needs separate
+in config `idea.properties`, or local `.idea` project-model/workspace state
+retain the worktree. A running supported IDE retains it only when `lsof` shows
+an open file or working directory at or below the worktree, or process/open-file
+discovery cannot prove complete, stable coverage. Failed commands, warnings,
+missing process records and process changes during proof retain it.
+Native workers receive the same check: their open paths under private snapshots
+prove they are unrelated, without an exemption based on launcher names or a
+guess about their role. Existing desktop state needs separate
 cleanup; retirement never edits global IDE files or removes project caches.
 Other platforms retain the worktree because local proof is unavailable.
 The scan covers standard macOS storage plus the explicit config override;

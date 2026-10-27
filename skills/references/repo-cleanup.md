@@ -91,7 +91,7 @@ does not trigger a global repository scan, cache sweep, or retirement workflow.
    it never discovers or contacts an IDE. Existing `--offline-only` callers
    retain leases without reconciliation. Both modes require the same local
    safety proof ([IDE cleanup](../jetbrains-inspection/references/ide-cleanup.md)).
-   An active IDE, legacy SDK/project/cache state or ambiguous proof retains the
+   An IDE holding this worktree, legacy SDK/project/cache state or ambiguous proof retains the
    worktree; restore its lock if apply fails. Resolve legacy state separately,
    never launch an IDE as a retirement prerequisite or bypass the refusal.
    The helper finishes only a Git removal that Finder raced with `.DS_Store`

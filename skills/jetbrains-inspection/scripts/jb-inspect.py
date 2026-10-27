@@ -2775,11 +2775,10 @@ HELPER_FINALIZING_CACHE_PREFIX = ".inspection-finalizing-"
 
 
 def offline_ide_processes() -> list[int]:
-    """A missing plugin identity does not prove the IDE process has exited."""
     try:
         return ide_launcher_pids(ALL_IDE_LAUNCHER_NAMES)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        raise InspectError("Cannot prove IDE processes have exited; retain the worktree and restore process discovery.", 3) from error
+        raise InspectError("Cannot discover IDE processes; retain the worktree and restore process discovery.", 3) from error
 
 
 def ide_launcher_pids(launcher_names: tuple[str, ...]) -> list[int]:
@@ -2793,13 +2792,42 @@ def ide_launcher_pids(launcher_names: tuple[str, ...]) -> list[int]:
     return pids
 
 
+def offline_ide_open_files(pids: list[int]) -> dict[int, list[str]]:
+    if not pids:
+        return {}
+    try:
+        result = subprocess.run(["lsof", "-nP", "-a", "-p", ",".join(map(str, pids)), "-Fpfn0"],
+                                capture_output=True, text=True, timeout=5, check=True)
+        if result.stderr.strip():
+            raise ValueError("Incomplete open-file discovery")
+        files: dict[int, list[str]] = {}
+        current = None
+        for field in result.stdout.split("\0"):
+            field = field.removeprefix("\n")
+            if not field:
+                continue
+            if field.startswith("p"):
+                current = int(field[1:])
+                if current not in pids or current in files:
+                    raise ValueError("Unexpected process identity")
+                files[current] = []
+            elif current is None or field == "fNOFD" or field[0] not in {"f", "n"}:
+                raise ValueError("Incomplete open-file record")
+            elif field.startswith("n/"):
+                files[current].append(field[1:])
+        if set(files) != set(pids) or any(not paths for paths in files.values()):
+            raise ValueError("Missing process open-file records")
+        return files
+    except (OSError, ValueError, UnicodeError, subprocess.SubprocessError) as error:
+        raise InspectError("Cannot prove IDE open files are unrelated; retain the worktree and restore open-file discovery.", 3,
+                           {"offline_retirement_ide_pids": pids}) from error
+
+
 def offline_retirement_records(root: Path) -> list[str]:
     """Prove the no-cleanup case from disk; never edit an offline IDE's state."""
     if sys.platform != "darwin":
         raise InspectError("Local retirement proof is only supported on macOS; retain the worktree.", 3)
-    if pids := offline_ide_processes():
-        raise InspectError("An IDE is running; retain the worktree until no supported IDE process is running.", 3,
-                           {"offline_retirement_ide_pids": pids})
+    pids = offline_ide_processes()
     checked: list[str] = []
 
     def present(path: Path) -> bool:
@@ -2877,6 +2905,14 @@ def offline_retirement_records(root: Path) -> list[str]:
                     raise InspectError("IDE cache ownership is invalid; retain the worktree.", 3,
                                        {"offline_retirement_record": str(marker)})
                 require_unrelated(marker, [record["worktree_path"]])
+        for pid, paths in offline_ide_open_files(pids).items():
+            if any(refers_to_worktree(path) for path in paths):
+                raise InspectError("A running IDE holds this worktree open; retain it until the IDE releases it.", 3,
+                                   {"offline_retirement_ide_pids": [pid]})
+        current_pids = offline_ide_processes()
+        if set(current_pids) != set(pids):
+            raise InspectError("IDE processes changed during local proof; retain the worktree until discovery is stable.", 3,
+                               {"offline_retirement_ide_pids": current_pids})
         return checked
     except (OSError, ValueError, ElementTree.ParseError) as error:
         raise InspectError("Cannot read offline IDE records; retain the worktree and restore record access.", 3,
