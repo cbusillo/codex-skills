@@ -1210,6 +1210,12 @@ verification in the next handoff so takeover can repeat this check.
 
 ### Opt-in Codex GUI work
 
+On a worker's GUI relaunch request, complete
+[finished-session shutdown](#finished-session-shutdown-stages), then relaunch
+that same item through this route with its handoff and original claim ID for
+[`claim --resume-from`](../../github/references/cli-reference.md#planning-claim).
+Preserve actual permission refusals through the handoff.
+
 For an authorized native-app task, put a single standalone declaration in its
 brief's first nonblank line, using the exact app bundle ID, for example
 `GUI task: com.apple.TestFlight`. Examples quoted later in a source-work brief
