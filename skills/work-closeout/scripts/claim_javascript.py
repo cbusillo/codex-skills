@@ -15,6 +15,7 @@ LITERAL_LOOP_VALUES = 64
 
 NATIVE_NAMES = {"tools", "text", "store", "load", "exit", "Promise", "JSON", "Object", "String", "ALL_TOOLS", "undefined"}
 SHELL_TOOLS = {"exec_command", "shell_command", "shell", "write_stdin"}
+GITHUB_READ_TOOL = re.compile(r"mcp__codex_apps__github_(?:fetch|get|list|search|compare|download)(?:_[a-z0-9_]+)?")
 PROTOTYPE_NAMES = {
     "constructor",
     "prototype",
@@ -95,6 +96,24 @@ def property_name(node: Node) -> str:
     return value
 
 
+def refusal(node: Node, reason: str, *, offset: int | None = None) -> dict:
+    root = node
+    while root.parent is not None:
+        root = root.parent
+    prefix = root.text[:node.start_byte if offset is None else offset]
+    call = node
+    while call.parent is not None and call.type != "call_expression":
+        call = call.parent
+    callee = call.child_by_field_name("function") if call.type == "call_expression" else node
+    return {
+        "line": prefix.count(b"\n") + 1,
+        "column": len(prefix.rsplit(b"\n", 1)[-1].decode()) + 1,
+        "syntax": node.type,
+        "call": source(callee)[:120],
+        "reason": reason,
+    }
+
+
 class JavascriptData:
     def __init__(self) -> None:
         self.environment: dict[str, tuple[str, bool]] = {"ALL_TOOLS": ("data", False), "undefined": ("data", False)}
@@ -114,6 +133,13 @@ class JavascriptData:
             raise ValueError(node.type)
 
     def expression(self, node: Node | None, environment: dict) -> str:
+        try:
+            return self._expression(node, environment)
+        except (KeyError, ValueError) as error:
+            error.__dict__.setdefault("node", node)
+            raise
+
+    def _expression(self, node: Node | None, environment: dict) -> str:
         if node is None:
             raise ValueError("missing expression")
         kind = node.type
@@ -126,8 +152,6 @@ class JavascriptData:
                 or property_name(callee.child_by_field_name("property")) not in {"split", "replace", "replaceAll"}
             ):
                 raise ValueError("regex value")
-            if re.fullmatch(r"/(?:[A-Za-z0-9_ .|+*-]|\\s)+/[gi]*", source(node)) is None:
-                raise ValueError("regex pattern")
             return "data"
         if kind == "arrow_function":
             local = environment.copy()
@@ -223,6 +247,13 @@ class JavascriptData:
         result_kind = "data"
         if any(argument.type == "spread_element" for argument in args):
             raise ValueError("spread arguments")
+        if callee.type == "parenthesized_expression" and len(children(callee)) == 1:
+            function = children(callee)[0]
+            parameters = function.child_by_field_name("parameters")
+            if function.type not in {"arrow_function", "function_expression"} or parameters is None or children(parameters) or args:
+                raise ValueError("immediate callback")
+            self.statement(function.child_by_field_name("body"), environment.copy())
+            return "promise" if any(child.type == "async" for child in function.children) else "data"
         if callee.type == "identifier" and (
             source(callee) in {"text", "store", "load", "exit"}
             or environment.get(source(callee), (None,))[0] == "function"
@@ -234,8 +265,10 @@ class JavascriptData:
             receiver = callee.child_by_field_name("object")
             method = property_name(callee.child_by_field_name("property"))
             native = source(receiver) if receiver.type == "identifier" else ""
-            if native == "tools" and method in SHELL_TOOLS | {"apply_patch", "clock__curr_time", "web__run"}:
-                pass
+            if native == "tools" and (
+                method in SHELL_TOOLS | {"apply_patch", "clock__curr_time", "web__run"} or GITHUB_READ_TOOL.fullmatch(method)
+            ):
+                result_kind = "promise"
             elif native == "Promise" and method in {"all", "allSettled"} and len(args) == 1:
                 result_kind = "array"
             elif native == "JSON" and method in {"parse", "stringify"} and len(args) == 1:
@@ -243,19 +276,16 @@ class JavascriptData:
             elif native == "Object" and method in {"keys", "values", "entries"} and len(args) == 1:
                 result_kind = "array"
             elif receiver.type == "regex":
-                callback = node.parent
                 if (
                     method != "test"
                     or source(callee) != source(receiver) + ".test"
                     or len(args) != 1
-                    or re.fullmatch(r"/[A-Za-z0-9_ .|-]+/i?", source(receiver)) is None
-                    or callback.type != "arrow_function"
-                    or callback.child_by_field_name("body") != node
+                    or source(receiver).rpartition("/")[2] not in {"", "i"}
                 ):
                     raise ValueError("regex predicate")
             else:
                 receiver_kind = self.expression(receiver, environment)
-                if method in CALLBACK_METHODS and len(args) == 1:
+                if (method in CALLBACK_METHODS or method == "then" and receiver_kind == "promise") and len(args) == 1:
                     callback = args[0]
                     if method == "forEach" and callback.type == "identifier" and source(callback) == "text":
                         return "data"
@@ -291,6 +321,13 @@ class JavascriptData:
         return result_kind
 
     def statement(self, node: Node, environment: dict) -> None:
+        try:
+            self._statement(node, environment)
+        except (KeyError, ValueError) as error:
+            error.__dict__.setdefault("node", node)
+            raise
+
+    def _statement(self, node: Node, environment: dict) -> None:
         kind = node.type
         if kind in {"program", "statement_block"}:
             local = environment.copy() if kind == "statement_block" else environment
@@ -488,10 +525,14 @@ class LiteralCommands:
                 if parameter is not None:
                     for row in rows:
                         self.bind(parameter, None, row)
-            if node.type == "arrow_function":
+            if node.type in {"arrow_function", "function_expression"}:
                 pattern = node.child_by_field_name("parameter") or node.child_by_field_name("parameters")
                 if pattern is None:
                     continue
+                if node.parent.type == "parenthesized_expression" and pattern.type == "formal_parameters" and not children(pattern):
+                    call = node.parent.parent
+                    if call.type == "call_expression" and not children(call.child_by_field_name("arguments")):
+                        continue
                 call = node.parent.parent if node.parent.type == "arguments" else None
                 callee = call.child_by_field_name("function") if call is not None else None
                 receiver = None
@@ -642,7 +683,7 @@ def closed_stdin(arguments: Node) -> bool:
         return False
 
 
-def analyse(text: str) -> tuple[bool, list[tuple[Node, bool]]]:
+def analyse(text: str, *, refusals: list[dict] | None = None) -> tuple[bool, list[tuple[Node, bool]]]:
     import tree_sitter_javascript
 
     data = text.replace("\r\n", "\n").replace("\r", "\n").encode()
@@ -650,12 +691,18 @@ def analyse(text: str) -> tuple[bool, list[tuple[Node, bool]]]:
     sites = []
     inert = []
     lexical = True
+    invalid = None
     pending = [root]
     while pending:
         node = pending.pop()
         pending.extend(reversed(node.named_children))
         if node.is_missing:
             lexical = False
+        if invalid is None and (node.is_missing or node.type == "ERROR"):
+            invalid = node
+        if node.type == "regex" and source(node).startswith(("/*", "//")):
+            lexical = False
+            invalid = invalid or node
         if node.type in {"string", "string_fragment", "escape_sequence", "comment", "hash_bang_line", "regex"}:
             if node.type == "comment" and source(node).startswith(("<!--", "-->")):
                 lexical = False
@@ -672,15 +719,23 @@ def analyse(text: str) -> tuple[bool, list[tuple[Node, bool]]]:
         if receiver.type == "identifier" and source(receiver) == "tools" and method in SHELL_TOOLS:
             sites.append((node.child_by_field_name("arguments"), method == "write_stdin"))
     if not lexical or root.has_error or "\u2028" in text or "\u2029" in text:
+        if refusals is not None:
+            boundary = next((data.index(marker) for marker in (b"\xe2\x80\xa8", b"\xe2\x80\xa9") if marker in data), None)
+            refusals.append(refusal(invalid or root, "JavaScript syntax or lexical boundary", offset=boundary))
         return False, sites
     visible = bytearray(data)
     for start, end in inert:
         visible[start:end] = bytes(value if value in {10, 13} else 32 for value in data[start:end])
     if b"\\" in visible or b"<!--" in visible or b"#!" in visible or b"-->" in visible:
+        if refusals is not None:
+            offset = min(visible.index(marker) for marker in (b"\\", b"<!--", b"#!", b"-->") if marker in visible)
+            refusals.append(refusal(root, "JavaScript lexical boundary", offset=offset))
         return False, sites
     try:
         checker = JavascriptData()
         checker.statement(root, checker.environment)
-    except (KeyError, ValueError, SyntaxError, RecursionError):
+    except (KeyError, ValueError, SyntaxError, RecursionError) as error:
+        if refusals is not None:
+            refusals.append(refusal(getattr(error, "node", None) or root, f"{type(error).__name__}: {error}"))
         return False, sites
     return True, sites

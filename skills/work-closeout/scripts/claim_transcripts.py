@@ -845,7 +845,7 @@ class ShellTexts:
     exec_launch: bool = False
 
 
-def shell_texts(text: str, javascript: bool, *, exec_command: bool = False) -> ShellTexts:
+def shell_texts(text: str, javascript: bool, *, exec_command: bool = False, refusals: list[dict] | None = None) -> ShellTexts:
     if not javascript:
         try:
             decoded = json.loads(text)
@@ -856,7 +856,7 @@ def shell_texts(text: str, javascript: bool, *, exec_command: bool = False) -> S
             commands = [ShellCommand(command_text(command), "chars" in decoded)] if command is not None else []
             return ShellTexts(commands, stdin_possible=decoded.get("tty") is True, exec_launch=exec_command)
         return ShellTexts([ShellCommand(text)])
-    bounded, sites = claim_javascript.analyse(text)
+    bounded, sites = claim_javascript.analyse(text, refusals=refusals)
     commands = []
     opaque = not bounded
     interactive_opaque = not bounded
@@ -865,6 +865,9 @@ def shell_texts(text: str, javascript: bool, *, exec_command: bool = False) -> S
         if decoded is None:
             opaque = True
             interactive_opaque = interactive_opaque or interactive
+            if refusals is not None:
+                method = claim_javascript.shell_method(arguments)
+                refusals.append(claim_javascript.refusal(arguments.parent, f"Undecoded {method} command"))
         else:
             commands.extend(ShellCommand(command, interactive) for command in decoded)
     stdin_possible = any(
@@ -2866,6 +2869,8 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         executable_text = without_patch_text(text) if javascript else text
         claim_related_here = "gh-plan" in executable_text or CLAIM_WORD.search(executable_text) is not None
         invocations = []
+        claim_commands = []
+        refusals = []
         ended_invocations = []
         opaque = False
         reason = "missing_output"
@@ -2875,7 +2880,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         source_ended: list[bool] = []
         launched_in_background = False
         try:
-            sources = shell_texts(text, javascript, exec_command=name == "exec_command")
+            sources = shell_texts(text, javascript, exec_command=name == "exec_command", refusals=refusals)
             source_ended = completed_sources(records, inputs, own_outputs, identifier, sources, session, responses, finished, completed_events)
             opaque = sources.opaque
             if not unexecuted and identifier not in finished:
@@ -2906,6 +2911,8 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
             for source, ended in zip(sources.commands, source_ended, strict=True):
                 receipt_pure = receipt_pure and not source.interactive
                 discovery = shell_claims(source.text, claim_related=source.interactive and claim_may_be_interactive)
+                if discovery.arguments or discovery.opaque or discovery.decode_failed:
+                    claim_commands.append(source.text)
                 launched_in_background = launched_in_background or discovery.asynchronous
                 invocations.extend(discovery.arguments)
                 ended_invocations.extend([ended and not discovery.asynchronous] * len(discovery.arguments))
@@ -2967,6 +2974,8 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
                 {
                     "call_id": identifier,
                     "reason": reason,
+                    **({"commands": claim_commands} if javascript and claim_commands else {}),
+                    **({"refusals": refusals} if javascript and refusals else {}),
                     "ended": bool(source_ended) and all(source_ended) and not (launched_in_background or decode_failed),
                     "recovery": (
                         "This code-mode cell is outside the bounded subset after possible interactive claim input. "
