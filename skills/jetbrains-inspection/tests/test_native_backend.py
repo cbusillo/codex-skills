@@ -2759,6 +2759,8 @@ class LiveNativeTests(unittest.TestCase):
             coverage_tree = ast.parse((repo / "native_probe/coverage.py").read_text())
             reference = next(node for node in coverage_tree.body if isinstance(node, ast.FunctionDef))
             self.assertTrue(any(f["rule_id"] == "PyUnresolvedReferencesInspection" and in_function(f, reference, "native_probe/coverage.py") for f in findings))
+            builtins = next(node for node in coverage_tree.body if isinstance(node, ast.FunctionDef) and node.name == "valid_builtins")
+            self.assertFalse(any(in_function(f, builtins, "native_probe/coverage.py") for f in findings))
             for node in (node for node in coverage_tree.body if isinstance(node, ast.Assign)):
                 insecure = isinstance(node.value, ast.Constant) and str(node.value.value).startswith("http:")
                 detected = any(f["rule_id"] == "HttpUrlsUsage" and f["file"] == "native_probe/coverage.py" and node.lineno <= f["line"] <= node.end_lineno for f in findings)
