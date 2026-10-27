@@ -64,7 +64,7 @@ def load_policy(path=None):
 
 
 def default_providers(allowed: list[str], author: str) -> list[str]:
-    return [provider for provider in allowed if provider not in {author, "google"}]
+    return [provider for provider in allowed if provider != author]
 
 
 def select(policy, author, requested=None, supplementary=False, model=None, timeout=None, probe=False):

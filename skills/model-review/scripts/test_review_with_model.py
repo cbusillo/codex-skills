@@ -205,7 +205,7 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertTrue(cwd_file.exists())
         self.assertTrue(Path(result["launch_receipt"]).exists())
 
-    def test_default_never_selects_google_even_when_other_providers_are_unavailable(self) -> None:
+    def test_default_selects_google_in_policy_order_when_other_providers_are_unavailable(self) -> None:
         self.install("claude", FAKE_CLAUDE)
         self.install("agy", FAKE_AGY)
         (self.repo / "probe.txt").write_text("fixture probe line\n")
@@ -214,7 +214,7 @@ class ReviewWithModelTests(unittest.TestCase):
         snapshot["answers"]["useNext"] = [r for r in snapshot["answers"]["useNext"] if r["provider"] != "anthropic"]
         self.snapshot_file.write_text(json.dumps(snapshot))
         for providers in (["google", "anthropic"], ["anthropic", "google"], ["google"]):
-            self.policy.write_text('version = 1\ndecision = "explicit Google only"\nproviders = ' + json.dumps(providers) + '\n')
+            self.policy.write_text('version = 1\ndecision = "normal capacity order"\nproviders = ' + json.dumps(providers) + '\n')
             for command in ("run", "check"):
                 with self.subTest(providers=providers, command=command):
                     args = [command, "--repo", str(self.repo), "--author-provider", "openai"]
@@ -224,13 +224,14 @@ class ReviewWithModelTests(unittest.TestCase):
                         *args, FAKE_AGY_CWD_FILE=str(cwd_file),
                         FAKE_AGY_JSON=json.dumps({"response": completed("fixture probe line")}))
                     if command == "run":
-                        self.assertNotEqual(result.get("provider"), "google")
+                        self.assertEqual(result["provider"], "google")
                     else:
-                        self.assertNotIn("google", [item["provider"] for item in result["providers"]])
-                    self.assertTrue(result.get("error") or result.get("providers"))
-                    self.assertNotEqual(code, 0)
-                    self.assertFalse(cwd_file.exists())
-                    self.assertFalse((self.storage / "Launch Receipts").exists())
+                        self.assertEqual(next(item["state"] for item in result["providers"]
+                                              if item["provider"] == "google"), "ready")
+                    self.assertEqual(code, 0)
+                    self.assertTrue(cwd_file.exists())
+                    self.assertTrue((self.storage / "Launch Receipts").exists())
+                    cwd_file.unlink()
 
     def test_capacity_fallback_uses_only_the_allowed_other_provider_choice(self) -> None:
         self.install("claude", FAKE_CLAUDE)
