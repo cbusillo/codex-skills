@@ -622,10 +622,13 @@ class UnavailableExplanationTests(unittest.TestCase):
     def test_nested_webstorm_in_a_mixed_selection_suggests_a_separate_run(self):
         lanes = [{"id": "frontend", "ide": "WebStorm", "include": ["frontend/**"], "projectPath": "frontend"},
                  {"id": "python", "ide": "PyCharm", "include": ["**/*.py"]}]
-        report, action, _ = self.explain(["backend.py", "frontend/app.ts"], {"lanes": lanes})
-        self.assertIn("--scope files", action)
-        self.assertIn("WebStorm", report)
-        self.assertNotIn("nested_lane", report)
+        gaps = native.coverage_gaps(host, self.repo, {"lanes": lanes}, {"backend.py", "frontend/app.ts"})
+        frontend = [(kind, dict(fields).get("product")) for (kind, fields), suffixes in gaps.items() if ".ts" in suffixes]
+        self.assertEqual(frontend, [("mixed", host.IDE_PRODUCTS[native.WEBSTORM_PRODUCT_KEY].display_name)])
+        lanes[0]["projectPath"] = "elsewhere"
+        gaps = native.coverage_gaps(host, self.repo, {"lanes": lanes}, {"frontend/app.ts"})
+        mismatch = [(kind, dict(fields).get("path")) for kind, fields in gaps]
+        self.assertEqual(mismatch, [("web_project_mismatch", "frontend/app.ts")])
 
     def test_supported_files_in_mixed_selections_get_their_own_run(self):
         nested = [{"id": "root", "ide": "PyCharm", "include": ["backend/**"]},
@@ -2327,6 +2330,15 @@ print('Done.')
         with patch.object(Path, "read_bytes", side_effect=AssertionError("linked source read")):
             with self.assertRaisesRegex(native.Blocked, "native_pnpm_version_required"):
                 native.common.npm_lockfile(self.repo)
+
+    def test_hook_dependent_pnpm_lockfile_is_refused_before_preparation(self):
+        (self.repo / "package.json").write_text('{"packageManager":"pnpm@10.10.0"}')
+        (self.repo / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\npnpmfileChecksum: fixture-hook-digest\n")
+        self.assertEqual(self.select(), ("unavailable", "native_ineligible=native_pnpm_hook_lockfile_unsupported"))
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_pnpm_hook_lockfile_unsupported")
+        self.assertFalse(self.npm_record.exists())
+        self.assertFalse(self.engine_record.exists())
 
     def test_tracked_project_model_is_used_and_a_web_module_is_generated_without_one(self):
         result = self.assess()

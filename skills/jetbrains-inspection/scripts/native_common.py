@@ -317,6 +317,8 @@ def npm_lockfile(root):
         manager = manifest.get("packageManager") if isinstance(manifest, dict) else None
         if not isinstance(manager, str) or not re.fullmatch(r"pnpm@\d+\.\d+\.\d+(?:\+sha(?:1|224|256|512)\.[a-fA-F0-9]+)?", manager):
             raise Blocked("native_pnpm_version_required")
+        if re.search(rb"(?m)^pnpmfileChecksum:", bounded_bytes(root / "pnpm-lock.yaml")):
+            raise Blocked("native_pnpm_hook_lockfile_unsupported")
         return root / "pnpm-lock.yaml"
     if not (root / "package-lock.json").is_file():
         raise Blocked("native_npm_lockfile_required")

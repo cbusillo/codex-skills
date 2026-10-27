@@ -1619,6 +1619,8 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
         action = "Pin an exact pnpm version in the selected project package.json packageManager field for its pnpm-lock.yaml."
     elif reason == "native_corepack_unavailable":
         action = "Install Corepack beside the configured WebStorm node executable; native pnpm preparation uses that executable with the manifest pin."
+    elif reason == "native_pnpm_hook_lockfile_unsupported":
+        action = "The pnpm lockfile depends on a pnpmfile hook. Native preparation disables hooks and cannot reproduce this lockfile; keep native coverage UNKNOWN and run the repository's own lint and type checks. Do not remove the checksum or weaken the frozen install."
     elif reason == "native_web_project_unavailable":
         action = "Set the WebStorm lane projectPath to an existing directory inside this worktree. Inspect one project per assessment."
     elif reason == "native_trusted_root_required":

@@ -66,6 +66,10 @@ repository-relative paths. Python preparation is ignored on a WebStorm run.
 For `pnpm-lock.yaml`, `package.json` must pin an exact pnpm `packageManager`
 version. Corepack must be executable beside the configured `node`. The runner
 uses that pin with `install --frozen-lockfile --ignore-scripts --ignore-pnpmfile`, a private home and empty user/global npm configurations.
+A lockfile with `pnpmfileChecksum` is refused before preparation because its
+hook cannot run under this policy; use the repository's own lint and type checks
+and keep native coverage UNKNOWN. Corepack is an explicit prerequisite,
+including on Node distributions that do not bundle it.
 Corepack and pnpm store caches stay under the worker's cache root. No lifecycle
 scripts or pnpmfile hooks run; the lockfile cannot be updated. See
 [pnpm installation options](https://pnpm.io/10.x/cli/install). The snapshot excludes
