@@ -1501,10 +1501,10 @@ def resolve_repo(explicit: Optional[str]) -> str:
     if explicit:
         return explicit
     remote = run_git(["remote", "get-url", "origin"])
-    match = re.search(r"github[.]com[:/]([^/]+)/([^/.]+)(?:[.]git)?$", remote.strip())
-    if match:
-        return f"{match.group(1)}/{match.group(2)}"
-    data = gh_json(["repo", "view", "--json", "nameWithOwner"])
+    try:
+        return github_read_core.repo_from_remote_url(remote.strip())
+    except ValueError:
+        data = gh_json(["repo", "view", "--json", "nameWithOwner"])
     value = data.get("nameWithOwner") if isinstance(data, dict) else None
     if value:
         return str(value)

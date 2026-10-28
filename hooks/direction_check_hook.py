@@ -246,8 +246,16 @@ def origin_repo(root: Path | None) -> str | None:
         remote = subprocess.run(["git", "remote", "get-url", "origin"], cwd=root, text=True, capture_output=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
         return None
-    match = re.search(r"github\.com[:/]([^/]+)/([^/.]+)(?:\.git)?$", remote.stdout.strip()) if remote.returncode == 0 else None
-    return f"{match.group(1)}/{match.group(2)}" if match else None
+    if remote.returncode != 0:
+        return None
+    try:
+        sys.path.insert(0, str(GH_READER.parents[3]))
+        sys.path.insert(0, str(GH_READER.parent))
+        from skills.github.scripts.github_read import repo_from_remote_url
+
+        return repo_from_remote_url(remote.stdout.strip())
+    except (ImportError, ValueError):
+        return None
 
 
 def loop_summary(text: str) -> str:
