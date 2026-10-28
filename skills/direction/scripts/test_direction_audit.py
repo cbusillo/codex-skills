@@ -3241,8 +3241,10 @@ def test_weekly_output_failure_preserves_every_repository_window() -> None:
         module.direction_mark.mark_audit(marker, "o/direction", window_start)
         before = marker.read_bytes()
 
-        def failed_output(_receipt: dict[str, Any]) -> None:
-            raise OSError("offline fixture output closed")
+        def failed_output(receipt_data: dict[str, Any]) -> None:
+            with tempfile.TemporaryFile(mode="w+") as output:
+                with patch.object(sys, "stdout", output), patch.object(os, "fsync", side_effect=OSError("fixture disk full")):
+                    module.emit_weekly_receipt(receipt_data)
 
         with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
               patch.dict(vars(module), {

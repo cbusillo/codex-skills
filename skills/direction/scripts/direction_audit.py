@@ -17,10 +17,12 @@ import pathlib
 import re
 import runpy
 import shutil
+import stat
 import subprocess
 import sys
 import time
 from typing import Any, Callable
+from io import UnsupportedOperation
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 GITHUB_SCRIPTS = REPO_ROOT / "skills" / "github" / "scripts"
@@ -1735,6 +1737,16 @@ def direction_adoption(repo: str, *, fetch: Callable[[list[str]], Any]) -> tuple
     return "unknown", "the DIRECTION.md response is not a readable file"
 
 
+def emit_weekly_receipt(receipt_data: dict[str, Any]) -> None:
+    print(json.dumps(receipt_data, indent=2, sort_keys=True), flush=True)
+    try:
+        descriptor = sys.stdout.fileno()
+    except UnsupportedOperation:
+        return
+    if stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.fsync(descriptor)
+
+
 def weekly_audit(
     owner: str, *, gh: str, automation: str | None = None, include_archived: bool = False,
     emit: Callable[[dict[str, Any]], None],
@@ -1793,14 +1805,14 @@ def weekly_audit(
     complete = discovery["complete"] and not unread
     if not complete:
         receipt["weekly_skipped"] = "not every adopted repository was read" if unread else "repository listing incomplete"
-    path = direction_mark.marker_path()
-    shown = str(path)
-    receipt["weekly_recorded"] = {"marker": shown, "ran": receipt["started"], "record": direction_repo} if complete else None
     try:
+        path = direction_mark.marker_path()
+        shown = str(path)
+        receipt["weekly_recorded"] = {"marker": shown, "ran": receipt["started"], "record": direction_repo} if complete else None
         emit(receipt)
-    except (BrokenPipeError, OSError, UnicodeError) as exc:
+    except (OSError, RuntimeError, TypeError, ValueError, UnicodeError) as exc:
         receipt["weekly_recorded"] = None
-        receipt["marker_error"] = f"Could not emit the weekly audit receipt: {exc}"
+        receipt["marker_error"] = f"Could not prepare or emit the weekly audit receipt: {exc}"
         print(f"ERROR: {receipt['marker_error']}", file=sys.stderr)
         return 1, receipt
     try:
@@ -2217,11 +2229,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if result["ok"] else 3
 
     if args.weekly:
-        def emit_weekly(receipt_data: dict[str, Any]) -> None:
-            print(json.dumps(receipt_data, indent=2, sort_keys=True), flush=True)
-
         code, result = weekly_audit(args.owner, gh=args.gh, automation=args.automation,
-                                    include_archived=args.include_archived, emit=emit_weekly)
+                                    include_archived=args.include_archived, emit=emit_weekly_receipt)
         return code
     repo = args.repo or default_repo(git_root(pathlib.Path.cwd()))
     if not repo:

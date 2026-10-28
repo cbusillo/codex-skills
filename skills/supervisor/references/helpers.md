@@ -889,6 +889,9 @@ unwritten stays as its own `DATE-*.attempt.json`, never overwritten, with stderr
 beside every attempt. Repository windows are committed together only after the
 complete receipt is flushed, so a stopped collection or output failure leaves
 the original windows for the next scheduled or manual audit. The audit is
+An exit-1 attempt with complete JSON and `weekly_skipped` can advance the read
+repositories' windows; the receiver must use its findings as well as the next
+receipt. The audit is
 bounded to 30 minutes and sends nothing. The plist does not change: add the entry
 to the private configuration, and the next run picks it up.
 

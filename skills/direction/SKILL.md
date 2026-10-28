@@ -369,7 +369,9 @@ limit or an App installed on selected repositories only also stops the record;
 `discovery` names the gap. Exit 1 means the weekly audit was not recorded, or
 `marker_error` reports a local write failure. Exit 3 means
 it was recorded and there are findings or held repositories, and 0 means
-recorded and clean. When
+recorded and clean. A complete exit-1 attempt with `weekly_skipped` can still
+advance the windows it collected; use that attempt's findings because a retry
+will not repeat them. When
 the App sees only selected repositories, run it with `--gh gh` on the
 Director's own login.
 
