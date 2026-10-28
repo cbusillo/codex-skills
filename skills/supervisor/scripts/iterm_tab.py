@@ -43,6 +43,8 @@ CLAUDE_QUESTION_TOOL = "AskUserQuestion"
 # hook-review prompt until the brief's turn runs, within this bound.
 CODEX_PROMPT_WINDOW = 20.0
 LAUNCH_TIMEOUT = 30.0
+EXIT_READBACK_ATTEMPTS = 5
+EXIT_READBACK_INTERVAL = 0.2
 # The catalog's Chrome opt-in; with it, browser tools come only from the pinned server.
 CHROME_OPT_IN = Path(__file__).resolve().parents[3] / ".local" / "chrome.toml"
 # Every brief carries the reviewed rules, by link or as an unchanged copy (Q587).
@@ -467,16 +469,44 @@ def message_sections(readback: dict[str, Any]) -> tuple[str, str]:
     return normalize(lines[:queued]), normalize(lines[queued:])
 
 
+def exit_observer(text: str, tty: str | None) -> Callable[[], bool] | None:
+    import session_liveness
+
+    family = {"/quit": "codex", "/exit": "claude"}.get(text)
+    if not family or not tty:
+        return None
+    try:
+        rows = session_liveness.inventory()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    candidates = []
+    for pid, terminal, command in rows:
+        if terminal != tty.removeprefix("/dev/"):
+            continue
+        argv = session_liveness.harness_arguments(command)
+        if argv:
+            candidates.append((pid, session_liveness.harness_family(argv[0])))
+    if not any(candidate_family == family for _, candidate_family in candidates) or any(
+        candidate_family not in {None, family} for _, candidate_family in candidates
+    ):
+        return None
+    return lambda: all(session_liveness.process_absent(candidate_pid) for candidate_pid, _ in candidates)
+
+
 async def submit_message(
     identity: str, text: str, submit: bool,
     read: Callable[[], Awaitable[dict[str, Any]]],
     press: Callable[[str], Awaitable[None]],
+    ended: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     submission = "not_attempted"
+    pressed = False
+    after = None
+    failure = None
+    key = "\r"
     try:
         await asyncio.sleep(0.4)
         before = await read()
-        key = "\r"
         prompt = before["input_line"]
         if prompt["line_index"] is not None:
             footer = before["screen"][prompt["line_index"] + 1:]
@@ -486,12 +516,23 @@ async def submit_message(
         if submit:
             submission = "unknown"
             await press(key)
+            pressed = True
             await asyncio.sleep(0.4)
         after = await read() if submit else before
     except SendFailure:
         raise
     except Exception as error:
-        raise SendFailure(identity, submission, "message submission or readback failed") from error
+        failure = error
+    if pressed and ended:
+        for attempt in range(EXIT_READBACK_ATTEMPTS if failure else 1):
+            if attempt:
+                await asyncio.sleep(EXIT_READBACK_INTERVAL)
+            if ended():
+                return {"session_id": identity, "sent": True, "delivery": "session_ended",
+                        "submission_key": key, "readback_required": False}
+    if failure is not None:
+        raise SendFailure(identity, submission, "message submission or readback failed") from failure
+    assert after is not None
     delivery = "unknown"
     current = after["input_line"]
     if current["style"] in {"non_dim", "mixed"} and current["text"]:
@@ -1598,6 +1639,8 @@ async def operate(app, args):
                 if args.text_file
                 else args.text
             )
+            ended = exit_observer(text, await session.async_get_variable("tty")) if (
+                not args.no_submit and text in {"/quit", "/exit"}) else None
             await send(session, text, submit=False)
 
             async def read_message() -> dict[str, Any]:
@@ -1608,7 +1651,7 @@ async def operate(app, args):
                     raise SendFailure(args.session_id, "not_attempted", "terminal state changed after text")
                 await session.async_send_text(key, suppress_broadcast=True)
 
-            return await submit_message(args.session_id, text, not args.no_submit, read_message, press_message)
+            return await submit_message(args.session_id, text, not args.no_submit, read_message, press_message, ended)
         return {
             "session_id": session.session_id,
             "sent": True,

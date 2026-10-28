@@ -789,6 +789,16 @@ for line in sys.stdin:
 
 
 class TmuxTests(TmuxFixture):
+    def test_verified_exit_send_reports_ended_when_pane_dies_during_send(self) -> None:
+        row = self.launch()
+        assert isinstance(row, dict)
+        self.wait_screen(row["session_id"], "Working")
+        result = self.operate("send", session_id=row["session_id"], text="/exit",
+                              text_file=None, verified_target=True, no_submit=False)
+        self.assertEqual(result["delivery"], "session_ended")
+        self.assertFalse(result["readback_required"])
+        self.assertTrue(session_liveness.process_absent(row["pid"]))
+
     def test_busy_local_composer_queues_through_verified_send(self) -> None:
         self.agent.write_text(f"#!{sys.executable}\n" + r'''import os, sys, tty
 tty.setraw(sys.stdin.fileno())

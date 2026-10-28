@@ -1659,7 +1659,10 @@ simulated terminal process group and proves that its server and worker remain.
 For shutdown, complete the Supervisor skill's transcript, issue handoff,
 permission and input checks first. Read the exact pane, clear only verified
 input if needed, then read back that the entire agent input is empty. Send
-`/quit` for Codex or `/exit` for Claude with `send --verified-target`. Wait at
+`/quit` for Codex or `/exit` for Claude with `send --verified-target`. An exact
+exit command reports `delivery: session_ended` once the matching harness
+processes observed on that TTY are gone, even if the pane disappears before
+readback. This result does not release claims or close the terminal. Wait at
 most 60 seconds, reading `read` for `dead: true` and checking that the matched
 agent PID and processes belonging to that pane have exited. If its TTY was
 reused, use the native close command's ownership proof below. Preserve a running or
