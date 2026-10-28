@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["aiohttp==3.14.5", "websockets==17.2"]
+# dependencies = ["aiohttp==3.14.5", "websockets==17.3"]
 # ///
 
 import argparse

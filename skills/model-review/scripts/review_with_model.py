@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["websockets==17.2"]
+# dependencies = ["websockets==17.3"]
 # ///
 """Ask another provider's model for a read-only review of a repository.
 
