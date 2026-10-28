@@ -344,8 +344,6 @@ def test_issue_fetch_reads_recent_milestone_additions_including_closed_issues() 
             return [closed_issue]
         if "/issues/11/events" in path:
             return [{"event": "milestoned", "actor": {"login": "bot"}, "created_at": "2026-09-20T00:00:00Z"}]
-        if "/issues/10/comments" in path:
-            return []
         raise AssertionError(path)
     found, truncated = module.fetch_audit_issues(
         "o/r", [milestone(1, "Thin fork decision")],
@@ -2883,7 +2881,7 @@ def test_local_wait_resolution_preserves_authority_and_incomplete_coverage() -> 
     wait = module.github_plan_wait.reviewed(evidence="Reviewed discussion", waiting_for="Director", ends_when="Decision recorded")
     clear = module.github_plan_wait.reviewed(evidence="Decision recorded")
     trusted = {"user": {"login": "owner"}, "body": module.github_plan_wait.marker(wait)}
-    for scenario in ("body", "cleared", "untrusted", "unavailable", "truncated", "malformed"):
+    for scenario in ("body", "cleared", "review", "untrusted", "unavailable", "truncated", "malformed"):
         item: dict[str, Any] = {
             **issue(120, "Pending work", labels=("plan:waiting",), body="## Current Status\nState: Waiting."),
             "user": {"login": "owner"}, "milestone": {"title": "Dogfood week"},
@@ -2894,7 +2892,11 @@ def test_local_wait_resolution_preserves_authority_and_incomplete_coverage() -> 
             comments = []
         elif scenario == "cleared":
             comments.append({**trusted, "body": module.github_plan_wait.marker(clear)})
+        elif scenario == "review":
+            review, _ = module.github_plan_wait.resolve({}, [], {"owner"})
+            comments = [{**trusted, "body": module.github_plan_wait.marker(review)}]
         elif scenario == "untrusted":
+            item["body"] += "\nWaiting for: nothing."
             comments = [{**trusted, "user": {"login": "stranger"}}]
         elif scenario == "truncated":
             comments *= 100
@@ -2908,19 +2910,21 @@ def test_local_wait_resolution_preserves_authority_and_incomplete_coverage() -> 
 
         incomplete = scenario in {"unavailable", "truncated", "malformed"}
         assert module.enrich_milestone_waits([item], "owner/product", ["Dogfood week"], fetch=fetch) is incomplete
-        report = run(module, issues=[item], truncated=["milestone_waits"] if incomplete else [])
+        report = run(module, issues=[item])
         assert ("milestone_wait_invalid" in kinds(report)) is (scenario == "untrusted"), scenario
         assert ("coverage_incomplete" in kinds(report)) is incomplete, scenario
+        if incomplete:
+            coverage = next(finding for finding in report["findings"] if finding["kind"] == "coverage_incomplete")
+            assert any("owner/product#120" in listing for listing in coverage["listings"]), scenario
 
 
-def test_local_wait_findings_need_no_dependency_reads() -> None:
+def test_local_wait_findings_preserve_invalid_legacy_prose() -> None:
     module = load()
     base = {**issue(120, "Inventory", labels=("plan:waiting",),
                     body="## Current Status\nWaiting for: milestone Thin fork decision."),
             "milestone": {"title": "Dogfood week"}}
     zero = {**base, "issue_dependencies_summary": {"blocked_by": 0}}
-    def comments_only(args: list[str]) -> Any:
-        assert args[1].split("?")[0].endswith("/comments"), args
+    def comments_only(_args: list[str]) -> Any:
         return []
     assert not module.enrich_milestone_waits([zero], "owner/product", ["Thin fork decision", "Dogfood week"], fetch=comments_only)
     assert "milestone_wait_invalid" in kinds(run(module, issues=[zero]))
