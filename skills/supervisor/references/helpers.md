@@ -888,7 +888,7 @@ audit records the weekly stamp that ISO week. The receipt is saved as
 unwritten stays as its own `DATE-*.attempt.json`, never overwritten, with stderr
 beside every attempt. Repository windows are committed together only after the
 complete receipt is flushed, so a stopped collection or output failure leaves
-the original windows for the next scheduled or manual audit. The audit is
+the original windows for the next scheduled or manual audit.
 An exit-1 attempt with complete JSON and `weekly_skipped` can advance the read
 repositories' windows; the receiver must use its findings as well as the next
 receipt. The audit is
