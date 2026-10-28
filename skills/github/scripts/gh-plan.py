@@ -3195,7 +3195,8 @@ def claim_once(args: argparse.Namespace) -> None:
                     raise github_plan_claim.ClaimProofError("claim_handoff_pr_required",
                         "Released work requires a qualified source-authored retained-PR handoff")
                 if claim["branch"] == record["branch"]:
-                    raise PlanError("Ended ownership requires a new task branch; preserve the retained source branch and worktree")
+                    raise github_plan_claim.ClaimProofError("claim_resume_branch_reused",
+                        "Ended ownership requires a new task branch; preserve the retained source branch and worktree")
                 return None
             if handoff is None:
                 raise github_plan_claim.ClaimProofError("claim_handoff_pr_required", "Released retained work has no qualified handoff")

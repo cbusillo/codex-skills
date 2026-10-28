@@ -2186,8 +2186,9 @@ source-authored retained-PR handoff from that original ID. Inspect the
 supported route with the helper's help before putting it in a brief:
 
 Without a retained PR, verify the exact authored release, clean local state
-and matching live remote head. Record that verified pushed SHA in the handoff
-and brief. On the same issue, make an ordinary claim for a new task branch
+and matching live remote head. Record that verified pushed SHA in a handoff
+comment and the brief, leaving the original release intact. On the same issue,
+make an ordinary claim for a new task branch
 without `--resume-from`, then create the linked worktree at that SHA:
 
 ```sh

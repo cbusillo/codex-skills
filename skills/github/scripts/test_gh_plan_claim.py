@@ -31,6 +31,7 @@ import github_plan_wait as wait_record
 import github_identity
 import github_comment
 import github_issue
+import dev_worktree
 
 TEST_BOT = "fixture-bot[bot]"
 
@@ -1687,10 +1688,21 @@ class ClaimTests(unittest.TestCase):
                 self.assert_no_writes()
                 self.assertEqual(self.inventory, artifacts)
 
+    def test_no_pr_branch_refusal_preserves_live_holder_coordination(self) -> None:
+        source = self.no_pr_resume_fixture()
+        self.args.branch = source["branch"]
+        rival = {**OTHER, "worker": "rival", "session": "rival-native"}
+        self.compete(rival)
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+        self.assertEqual(caught.exception.payload["coordination"][0]["session"], rival["session"])
+        self.assert_no_writes()
+
     def test_ordinary_no_pr_successor_starts_at_verified_pushed_sha(self) -> None:
         source = self.no_pr_resume_fixture()
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        repository, remote, successor = (root / name for name in ("source", "remote.git", "successor"))
+        repository, remote = (root / name for name in ("source", "remote.git"))
 
         def git(*arguments: str) -> str:
             return subprocess.run(["git", *arguments], check=True, capture_output=True, text=True).stdout.strip()
@@ -1714,7 +1726,8 @@ class ClaimTests(unittest.TestCase):
         output = self.emitted.call_args.args[0]
         self.assertIn("metadata_readback", output["completed_steps"])
         self.assertNotIn("resume_from", output["claim"])
-        git("-C", str(repository), "worktree", "add", "-b", output["claim"]["branch"], str(successor), pushed_sha)
+        successor = dev_worktree.create(str(repository), output["claim"]["branch"].removeprefix("work/"), pushed_sha,
+                                        root / "worktrees")
         self.assertEqual(git("-C", str(successor), "rev-parse", "HEAD"), pushed_sha)
         self.assertEqual((successor / "work.txt").read_text(), (repository / "work.txt").read_text())
         self.assertEqual(git("ls-remote", str(remote), f"refs/heads/{source['branch']}").split()[0], pushed_sha)

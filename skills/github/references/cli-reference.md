@@ -1654,7 +1654,8 @@ verified-handoff and preservation rules before passing it.
 For released, clean, pushed work **without a PR**, verify the source session
 has finished, its exact authored release, and that no PR now retains the work.
 Compare the live remote branch head with the local HEAD and check for unique
-local state. Record the exact verified pushed SHA in the issue handoff. On that
+local state. Record the exact verified pushed SHA in a handoff comment on the
+issue and in the successor's brief; leave the original release intact. On that
 same issue, make an ordinary claim for a new task branch without `--resume-from`,
 then create its linked worktree at that SHA:
 
@@ -1778,7 +1779,7 @@ issue can still support independently authorized work on a new branch, without
 `--resume-from` or retained source assets. Its own ownership,
 waits and blockers must be clear; malformed lineage metadata still refuses.
 
-Unreadable current or historical children (including a 403 or ambiguous 404),
+For retained-PR recovery, unreadable current or historical children (including a 403 or ambiguous 404),
 and malformed child history (`claim_child_history_invalid`), block both
 parent-to-child handoffs and plain same-record `--resume-from` on the source.
 Missing evidence is not proof that a child's source ownership ended. Restore
@@ -1790,6 +1791,11 @@ authorized issue and fresh branch, using an ordinary claim without
 That route still enforces its own ownership, waits and blockers; it does not
 release or transfer the child's source, or provide a way to retain the blocked
 same-record branch.
+Released, clean, pushed no-PR work on the same issue follows the ordinary
+new-branch procedure above. That claim checks its own ownership, waits and
+blockers without reconstructing the no-PR source's child history. It inherits
+no retained-PR custody from a parent or child; recorded inherited lineage still
+undergoes its existing checks.
 
 For an explicitly authorized **conflict-only refresh** of a finished session's
 PR, claim its **canonical open planning issue**, even when the brief names only
