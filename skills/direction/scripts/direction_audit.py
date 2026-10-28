@@ -1737,7 +1737,7 @@ def direction_adoption(repo: str, *, fetch: Callable[[list[str]], Any]) -> tuple
 
 def weekly_audit(
     owner: str, *, gh: str, automation: str | None = None, include_archived: bool = False,
-    emit: Callable[[dict[str, Any]], None] | None = None,
+    emit: Callable[[dict[str, Any]], None],
 ) -> tuple[int, dict[str, Any]]:
     started = dt.datetime.now(dt.timezone.utc)
     fetch = github_work_graph.cached_reads(lambda args: gh_json(args, gh=gh))
@@ -1763,20 +1763,17 @@ def weekly_audit(
     audits: dict[str, dict[str, Any]] = {}
     unread: dict[str, str] = {name: f"adoption unknown: {reason}" for name, reason in discovery["unknown"].items()}
     held: dict[str, str] = {}
-    marker_error = None
+    updates: list[dict[str, Any]] = []
     for repo in repos:
         _code, result = audit_one(repo, gh=gh, owner=owner, automation=automation,
                                   include_archived=include_archived, fetch=fetch, defer_marker=True)
         update = result.pop("_marker_update", None)
         recordable = isinstance(update, dict) and update.get("action") == "record"
         if update is not None:
-            result["_deferred_marker_update"] = update
+            updates.append(update)
         audits[repo] = result
         if "error" in result:
             unread[repo] = f"reads failed: {result['error']}"
-        elif "marker_error" in result:
-            unread[repo] = "marker_error"
-            marker_error = marker_error or result["marker_error"]
         elif not recordable:
             # Archived, unknown archive state or a missing DIRECTION.md: no run was recorded.
             unread[repo] = str(result.get("marked_skipped") or "direction_missing")
@@ -1793,35 +1790,27 @@ def weekly_audit(
                and not unread and not held),
         "weekly_recorded": None,
     }
-    if marker_error:
-        receipt["marker_error"] = marker_error
-    complete = discovery["complete"] and not unread and not marker_error
+    complete = discovery["complete"] and not unread
     if not complete:
-        receipt["weekly_skipped"] = "not every adopted repository was read" if unread or marker_error else "repository listing incomplete"
-    shown = os.environ.get("DIRECTION_MARKER") or "default direction marker"
-    updates = [result.pop("_deferred_marker_update") for result in audits.values()
-               if "_deferred_marker_update" in result]
-    pending = {"marker": shown, "ran": receipt["started"], "record": direction_repo,
-               "pending": True} if complete else None
-    receipt["weekly_recorded"] = pending
-    if emit is not None:
-        try:
-            emit(receipt)
-        except (BrokenPipeError, OSError, UnicodeError) as exc:
-            receipt["weekly_recorded"] = None
-            receipt["marker_error"] = f"Could not emit the weekly audit receipt: {exc}"
-            return 1, receipt
+        receipt["weekly_skipped"] = "not every adopted repository was read" if unread else "repository listing incomplete"
+    path = direction_mark.marker_path()
+    shown = str(path)
+    receipt["weekly_recorded"] = {"marker": shown, "ran": receipt["started"], "record": direction_repo} if complete else None
     try:
-        path = direction_mark.marker_path()
-        shown = str(path)
-        written = direction_mark.mark_weekly_audits(path, owner, started, updates, complete)
+        emit(receipt)
+    except (BrokenPipeError, OSError, UnicodeError) as exc:
+        receipt["weekly_recorded"] = None
+        receipt["marker_error"] = f"Could not emit the weekly audit receipt: {exc}"
+        print(f"ERROR: {receipt['marker_error']}", file=sys.stderr)
+        return 1, receipt
+    try:
+        direction_mark.mark_weekly_audits(path, owner, started, updates, complete)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         receipt["ok"] = False
+        receipt["weekly_recorded"] = None
         receipt["marker_error"] = f"Could not record the weekly audit at {shown}: {exc}"
         print(f"ERROR: {receipt['marker_error']}. The weekly audit was not recorded.", file=sys.stderr)
         return 1, receipt
-    receipt["weekly_recorded"] = ({"marker": shown, **written["weekly_audit"]}
-                                  if complete else None)  # type: ignore[dict-item]
     if not complete:
         return 1, receipt
     return (0 if receipt["ok"] else 3), receipt

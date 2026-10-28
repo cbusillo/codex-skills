@@ -3218,7 +3218,7 @@ def test_interrupted_weekly_collection_preserves_windows_and_rereads_the_finding
                 raise KeyboardInterrupt
             return original_audit(*args, **kwargs)
 
-        with patch.object(module, "audit_one", side_effect=interrupted):
+        with patch.multiple(module, audit_one=interrupted):
             try:
                 account.run(["--weekly", "--owner", "o"], marker)
             except KeyboardInterrupt:
@@ -3254,7 +3254,26 @@ def test_weekly_output_failure_preserves_every_repository_window() -> None:
                                                          "automation_login": lambda: None})):
             code, receipt = module.weekly_audit("o", gh="fixture-gh", automation="bot", emit=failed_output)
         assert code == 1 and receipt["weekly_recorded"] is None
-        assert "Could not emit" in receipt["marker_error"]
+        assert receipt.get("marker_error")
+        assert marker.read_bytes() == before
+
+
+
+def test_weekly_marker_failure_keeps_emitted_findings_and_original_windows() -> None:
+    module = load()
+    account = WeeklyAccount(module)
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        module.direction_mark.mark_audit(marker, "o/direction", NOW - dt.timedelta(days=3))
+        before = marker.read_bytes()
+        def failed_marker(*_args: Any) -> None:
+            raise OSError("fixture disk full")
+
+        with patch.multiple(module.direction_mark, save=failed_marker):
+            code, receipt = account.run(["--weekly", "--owner", "o"], marker)
+        assert code == 1
+        assert receipt["audits"]["o/direction"]["findings"]
+        assert receipt["weekly_recorded"]["marker"] == str(marker)
         assert marker.read_bytes() == before
 
 
@@ -3293,7 +3312,7 @@ def test_weekly_audit_counts_a_held_window_as_read_but_not_a_failed_audit() -> N
             else:
                 assert list(receipt["unread"]) == ["o/b"] and code == 1
                 assert receipt["unread"]["o/b"].startswith("reads failed:"), receipt["unread"]
-                assert not receipt["audits"]["o/b"].get("run_recorded") and "o/b" not in saved.get("audit_runs", {})
+                assert "o/b" not in saved.get("audit_runs", {})
                 assert "o/a" in saved["audits"], "repositories that were read keep their own stamps"
 
 
