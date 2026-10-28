@@ -146,7 +146,7 @@ def preview_instructions(arguments: list[str]) -> dict:
         process.stderr.close()
 
 
-def instruction_warning(root: Path, installation: dict) -> str:
+def instruction_refresh_snapshot(root: Path) -> bytes | None:
     with ExitStack() as stack:
         lock_path = update_lock_path(root)
         if lock_path.exists():
@@ -154,8 +154,17 @@ def instruction_warning(root: Path, installation: dict) -> str:
             try:
                 fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
             except BlockingIOError:
-                return ""
-        return instruction_delivery_warning(root, installation)
+                return None
+        receipt = root / ".local/catalog-update.json"
+        return receipt.read_bytes() if receipt.exists() else b""
+
+
+def instruction_warning(root: Path, installation: dict) -> str:
+    before = instruction_refresh_snapshot(root)
+    if before is None:
+        return ""
+    warning = instruction_delivery_warning(root, installation)
+    return warning if not warning or before == instruction_refresh_snapshot(root) else ""
 
 
 def instruction_delivery_warning(root: Path, installation: dict) -> str:
@@ -194,8 +203,8 @@ def instruction_delivery_warning(root: Path, installation: dict) -> str:
         recovery = [*arguments, "--show-diff"]
     return (f"{DELIVERY_NOTICE} {detail}; run {shlex.join(['uv', 'run', *recovery])}; "
             "when the reported instructions are current, read them and continue your brief in this session. "
-            "A catalog refresh alone does not require a restart. If a tool cannot reload, use native resume "
-            "for this same session and brief; see README.md#runtime-binding-lookup.")
+            "A catalog refresh alone does not require a restart; "
+            f"see {root / 'README.md'}#runtime-binding-lookup for tool-specific recovery.")
 
 
 def status_line(root: Path, *, observe: bool = False) -> str:

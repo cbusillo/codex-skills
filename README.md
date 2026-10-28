@@ -534,9 +534,11 @@ has fallen behind, run its own copy:
 `uv run <runtime-checkout>/skills/github/scripts/reconcile-runtime-checkout.py --repo cbusillo/codex-skills`.
 
 Running sessions follow the recovery notice in [catalog_runtime.py](scripts/catalog_runtime.py).
-If a loaded tool itself requires restarting, use the harness's
-[native session resume](skills/supervisor/references/helpers.md#terminal-launches)
-with the same session and brief, rather than waiting for a new assignment.
+An independently required native-client restart keeps the same session ID and brief.
+Resume a stopped interactive client with `codex resume <session-id>` or
+`claude --resume <session-id>` in the same account. Supervisor-managed Codex
+clients use the [existing resume helper](skills/supervisor/references/helpers.md#terminal-launches).
+Resume reopens a stopped session; it does not restart an active turn.
 
 The registered session-start hook also runs this catch-up for its bound catalog,
 so a landing without a local train driver is picked up on configured startup,

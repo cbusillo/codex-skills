@@ -1455,6 +1455,13 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual(runtime.git(self.checkout, "rev-parse", "HEAD"), runtime.git(self.seed, "rev-parse", "HEAD"))
             self.assertEqual(runtime.status_line(self.checkout, observe=True), "")
 
+            def update_during_preview(_arguments: list[str]) -> dict:
+                self.assertEqual(runtime.update(self.checkout)["state"], "current")
+                return {"outputs": []}
+
+            with mock.patch.object(runtime, "preview_instructions", side_effect=update_during_preview):
+                self.assertEqual(runtime.status_line(self.checkout, observe=True), "")
+
     def test_ignored_files_allow_fast_forward_but_other_untracked_files_block(self):
         ignores = self.seed / ".gitignore"
         ignores.write_text(ignores.read_text() + "/*.log\n")
