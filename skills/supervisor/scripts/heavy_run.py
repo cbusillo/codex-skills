@@ -17,7 +17,7 @@ import subprocess
 import tarfile
 import time
 import uuid
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
@@ -143,14 +143,21 @@ class Settings:
     slots: int = 1
     cpus: float = 4
     memory: int = 8 * 1024**3
+    executor: list[str] | None = None
 
     @classmethod
     def load(cls, home: Path) -> Settings:
         path = home / CONFIG_PATH
         data = json.loads(path.read_text()) if path.exists() else {}
-        if set(data) - {"slots", "cpus", "memory"}:
+        if set(data) - {"slots", "cpus", "memory", "executor"}:
             raise ValueError("Unknown host heavy-run setting")
         result = cls(**data)
+        if result.executor is not None and (
+            not isinstance(result.executor, list)
+            or not result.executor
+            or any(not isinstance(part, str) or not part or "\x00" in part for part in result.executor)
+        ):
+            raise ValueError("Executor must be a nonempty command argv array")
         if (
             type(result.slots) is not int
             or result.slots < 1
@@ -432,33 +439,69 @@ def recover(slot: Slot, custody: Path, log: TextIO, endpoint: str) -> None:
     custody.unlink()
 
 
-def run(manifest: dict, evidence: Path, settings: Settings, home: Path) -> int:
+def run_in_slot(
+    manifest: dict,
+    evidence: Path,
+    settings: Settings,
+    home: Path,
+    slot: Slot,
+    log: TextIO,
+    prepare: Callable[[Docker], dict] | None,
+) -> dict:
+    receipt: dict = {"exit_code": None, "cleanup_complete": True, "slot": slot.index}
+    custody = home / STATE_PATH / f"custody-{slot.index}"
+    try:
+        endpoint = local_endpoint(home, log)
+        recover(slot, custody, log, endpoint)
+        docker = Docker(slot, log, endpoint)
+        Custody(endpoint, evidence).save(custody)
+        receipt["cleanup_complete"] = False
+        try:
+            if prepare is not None:
+                manifest = prepare(docker)
+                validate_manifest(manifest)
+                settings.limits(len(manifest["containers"]))
+            receipt["exit_code"], identifiers = docker.run(manifest, settings, evidence)
+            docker.copy_outputs(manifest, identifiers, evidence)
+        finally:
+            for signum in CANCEL_SIGNALS:
+                signal.signal(signum, signal.SIG_IGN)
+            try:
+                docker.cleanup(log)
+                receipt["cleanup_complete"] = True
+                custody.unlink()
+            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                receipt["cleanup_error"] = str(error)
+                receipt["exit_code"] = receipt["exit_code"] or 1
+    except Canceled as error:
+        receipt["exit_code"] = 128 + error.signum
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        receipt["error"] = str(error)
+        receipt["exit_code"] = receipt["exit_code"] or 1
+    return receipt
+
+
+def run(
+    manifest: dict,
+    evidence: Path,
+    settings: Settings,
+    home: Path,
+    prepare: Callable[[Docker], dict] | None = None,
+    complete: Callable[[dict], None] | None = None,
+) -> int:
     evidence.mkdir(mode=0o700, parents=True)
-    root = home / STATE_PATH
     receipt: dict = {"exit_code": None, "cleanup_complete": True}
     with (evidence / "run.log").open("w") as log:
         try:
-            with RunQueue(root, settings.slots) as queue, queue.acquire() as slot:
-                receipt["slot"] = slot.index
-                custody = root / f"custody-{slot.index}"
-                endpoint = local_endpoint(home, log)
-                recover(slot, custody, log, endpoint)
-                docker = Docker(slot, log, endpoint)
-                Custody(endpoint, evidence).save(custody)
-                receipt["cleanup_complete"] = False
-                try:
-                    receipt["exit_code"], identifiers = docker.run(manifest, settings, evidence)
-                    docker.copy_outputs(manifest, identifiers, evidence)
-                finally:
-                    for signum in CANCEL_SIGNALS:
-                        signal.signal(signum, signal.SIG_IGN)
+            with RunQueue(home / STATE_PATH, settings.slots) as queue, queue.acquire() as slot:
+                receipt = run_in_slot(manifest, evidence, settings, home, slot, log, prepare)
+                (evidence / "result.json").write_text(json.dumps(receipt, indent=2) + "\n")
+                if complete is not None:
                     try:
-                        docker.cleanup(log)
-                        receipt["cleanup_complete"] = True
-                        custody.unlink()
-                    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-                        receipt["cleanup_error"] = str(error)
-                        receipt["exit_code"] = receipt["exit_code"] or 1
+                        complete(receipt)
+                    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+                        (evidence / "delivery-error.json").write_text(json.dumps({"error": str(error)}) + "\n")
+                        return 1
         except Canceled as error:
             receipt["exit_code"] = 128 + error.signum
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
@@ -484,6 +527,11 @@ def main(*, home: Path | None = None) -> int:
         settings = Settings.load(home)
         manifest = json.loads(args.manifest.read_text())
         validate_manifest(manifest)
+        if settings.executor is not None:
+            os.execvp(
+                settings.executor[0],
+                [*settings.executor, "--manifest", str(args.manifest.resolve()), "--evidence", str(args.evidence.resolve())],
+            )
         settings.limits(len(manifest["containers"]))
         result = run(manifest, args.evidence, settings, home)
     except Canceled as error:
