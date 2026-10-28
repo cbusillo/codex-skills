@@ -350,8 +350,9 @@ class Docker:
             container["name"],
         ]
         env_file = evidence / f"{container['name']}.env"
+        environment: dict[str, str] = container.get("environment") or {}
         try:
-            if environment := container.get("environment"):
+            if environment:
                 env_file.write_text("".join(f"{name}={value}\n" for name, value in environment.items()))
                 args.extend(["--env-file", str(env_file)])
             return self.call(*args, container["image"], *container.get("command", []))
