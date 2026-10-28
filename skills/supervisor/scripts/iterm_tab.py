@@ -2,8 +2,8 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "iterm2==2.25",
-#     "websockets==17.2",
+#     "iterm2==2.30",
+#     "websockets==17.3",
 # ]
 # ///
 """Target iTerm or tmux sessions by exact identity; separate text and Return sends."""

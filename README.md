@@ -574,7 +574,7 @@ and the hook never writes the marker or any memory file.
 
 Repository validation uses uv `>=0.11.29,<1`, keeps Python 3.12 as its minimum
 compatibility lane, continuously tests current stable Python 3.14, and pins
-GitHub Actions jobs to the Ubuntu 24.04 runner major. Compatible uv/Python patch
+GitHub Actions jobs to the reviewed Ubuntu LTS runner major. Compatible uv/Python patch
 releases and runner image revisions intentionally float within those bounds and
 must keep passing the canonical gate. See
 [`skills/github/references/execution-environment.md`](skills/github/references/execution-environment.md)

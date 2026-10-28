@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "tomlkit==0.15.1",
+#     "tomlkit==0.15.2",
 # ]
 # ///
 """Render both hosts' global instructions from one catalog source bundle.
