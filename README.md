@@ -533,6 +533,13 @@ behavior or provenance-sensitive evidence. A merge-train landing driven by
 has fallen behind, run its own copy:
 `uv run <runtime-checkout>/skills/github/scripts/reconcile-runtime-checkout.py --repo cbusillo/codex-skills`.
 
+Running sessions follow the recovery notice in [catalog_runtime.py](scripts/catalog_runtime.py).
+An independently required native-client restart keeps the same session ID and brief.
+Resume a stopped interactive client with `codex resume <session-id>` or
+`claude --resume <session-id>` in the same account. Supervisor-managed Codex
+clients use the [existing resume helper](skills/supervisor/references/helpers.md#terminal-launches).
+Resume reopens a stopped session; it does not restart an active turn.
+
 The registered session-start hook also runs this catch-up for its bound catalog,
 so a landing without a local train driver is picked up on configured startup,
 resume, or clear events on either harness. The maintained declarations skip
@@ -758,8 +765,8 @@ surface loaded it; the Explore/Plan exception above still applies.
 For a manual preview, use `scripts/install-catalog.py --refresh-instructions`
 with those same destinations, then add `--write`. The standalone sync remains
 available for initial setup and explicit reconciliation; rerun the installer
-afterward so its receipt follows the written files. A running session keeps its
-loaded snapshot; restart it for updated context.
+afterward so its receipt follows the written files. For running-session recovery,
+see [runtime binding lookup](#runtime-binding-lookup).
 
 The plugin's `SessionStart` hook, `hooks/direction_check_hook.py`, keeps the small
 daily-turn reminder. The [direction skill](skills/direction/SKILL.md) owns its

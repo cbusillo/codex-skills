@@ -15,6 +15,7 @@ import shlex
 import signal
 import subprocess
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -145,7 +146,28 @@ def preview_instructions(arguments: list[str]) -> dict:
         process.stderr.close()
 
 
+def instruction_refresh_snapshot(root: Path) -> bytes | None:
+    with ExitStack() as stack:
+        lock_path = update_lock_path(root)
+        if lock_path.exists():
+            lock = stack.enter_context(lock_path.open())
+            try:
+                fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return None
+        receipt = root / ".local/catalog-update.json"
+        return receipt.read_bytes() if receipt.exists() else b""
+
+
 def instruction_warning(root: Path, installation: dict) -> str:
+    before = instruction_refresh_snapshot(root)
+    if before is None:
+        return ""
+    warning = instruction_delivery_warning(root, installation)
+    return warning if not warning or before == instruction_refresh_snapshot(root) else ""
+
+
+def instruction_delivery_warning(root: Path, installation: dict) -> str:
     if not all(installation.get(key) for key in ("home", "codex", "claude")):
         return ""
     destinations = [Path(installation["claude"]) / "CLAUDE.md", Path(installation["codex"]) / "AGENTS.md"]
@@ -179,7 +201,10 @@ def instruction_warning(root: Path, installation: dict) -> str:
     except (OSError, ValueError, TypeError, KeyError, RuntimeError, subprocess.SubprocessError):
         detail = "unconfirmed: " + ", ".join(str(path) for path in destinations)
         recovery = [*arguments, "--show-diff"]
-    return f"{DELIVERY_NOTICE} {detail}; run {shlex.join(['uv', 'run', *recovery])}; restart the session after refresh."
+    return (f"{DELIVERY_NOTICE} {detail}; run {shlex.join(['uv', 'run', *recovery])}; "
+            "when the reported instructions are current, read them and continue your brief in this session. "
+            "A catalog refresh alone does not require a restart; "
+            f"see {root / 'README.md'}#runtime-binding-lookup for tool-specific recovery.")
 
 
 def status_line(root: Path, *, observe: bool = False) -> str:
