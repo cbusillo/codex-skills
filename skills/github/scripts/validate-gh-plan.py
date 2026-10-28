@@ -1524,6 +1524,40 @@ def test_repo_config_path_skips_missing_home_candidate() -> None:
     assert checked == [], checked
 
 
+def test_plan_and_pr_resolve_git_origins() -> None:
+    plan = load_plan_module()
+    pr = load_pr_module()
+    cases = (
+        ("https://github.com/cbusillo/.github.git", "cbusillo/.github"),
+        ("git@github.com:cbusillo/.github.git", "cbusillo/.github"),
+        ("https://github.com/owner/project.git", "owner/project"),
+        ("https://example.invalid/owner/project.git", None),
+    )
+
+    def run_git_remote(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return REAL_SUBPROCESS_RUN(args, **kwargs)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        checkout = Path(tmp)
+        REAL_SUBPROCESS_RUN(["git", "init", "--quiet", checkout], check=True)
+        REAL_SUBPROCESS_RUN(
+            ["git", "-C", checkout, "remote", "add", "origin", cases[0][0]],
+            check=True,
+        )
+        for remote, expected in cases:
+            REAL_SUBPROCESS_RUN(
+                ["git", "-C", checkout, "remote", "set-url", "origin", remote],
+                check=True,
+            )
+            with patch.object(plan.subprocess, "run", side_effect=run_git_remote):
+                assert plan.repo_from_git(checkout) == expected
+            with (
+                patch.object(pr, "run_git", return_value=remote),
+                patch.object(pr, "gh_json", return_value={"nameWithOwner": "fallback/repo"}),
+            ):
+                assert pr.resolve_repo(None) == (expected or "fallback/repo")
+
+
 def test_explicit_unresolved_person_manager_is_skipped() -> None:
     plan = load_plan_module()
     original_resolver = plan.PEOPLE_RESOLVER
@@ -7136,6 +7170,7 @@ def main() -> None:
         test_plan_rest_command_context_and_limit_validation,
         test_project_commands_are_recoverable,
         test_repo_config_path_skips_missing_home_candidate,
+        test_plan_and_pr_resolve_git_origins,
         test_explicit_unresolved_person_manager_is_skipped,
         test_person_resolution_requires_uv,
         test_raw_manager_values_do_not_resolve_through_people,

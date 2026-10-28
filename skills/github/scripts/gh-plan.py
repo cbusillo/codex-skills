@@ -1164,11 +1164,10 @@ def repo_from_git(start: pathlib.Path | None = None) -> str | None:
     )
     if proc.returncode != 0:
         return None
-    url = proc.stdout.strip()
-    match = re.search(r"github\.com[:/]([^/]+)/([^/.]+)(?:\.git)?$", url)
-    if match:
-        return f"{match.group(1)}/{match.group(2)}"
-    return None
+    try:
+        return github_read.repo_from_remote_url(proc.stdout.strip())
+    except ValueError:
+        return None
 
 
 def default_repo(explicit: str | None = None) -> str:
