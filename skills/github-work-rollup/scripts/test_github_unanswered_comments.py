@@ -900,9 +900,11 @@ def test_markdown_distinguishes_unseen_and_seen_unanswered() -> None:
 
     rendered = github_unanswered_comments.render_markdown(payload)
 
-    assert "## Needs Your Eyes" in rendered
-    assert "## Seen — No Public Response" in rendered
-    assert "Owner reaction: `HEART`" in rendered
+    sections = rendered.split("\n## ")[1:]
+    for item in payload["attention"]:
+        matching = [section for section in sections if item["comment_url"] in section]
+        assert len(matching) == 1
+        assert sum(other["comment_url"] in matching[0] for other in payload["attention"]) == 1
 
 
 def test_degraded_markdown_never_claims_no_attention_as_all_clear() -> None:

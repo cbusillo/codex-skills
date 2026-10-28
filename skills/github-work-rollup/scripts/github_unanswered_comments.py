@@ -1756,7 +1756,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
     sections = (
         ("needs_your_eyes", "Needs Your Eyes"),
         ("seen_unanswered", "Seen — No Public Response"),
-        ("coverage_unknown", "Acknowledgement Coverage Unknown"),
+        ("coverage_unknown", "Reply Coverage Unknown"),
         ("outbound_reply", "Outside Repositories — Replies After Your Last Activity"),
     )
     for state, heading in sections:
