@@ -1272,6 +1272,34 @@ def test_missing_label_requires_pr_create_context() -> None:
         assert failure.retryable is False and failure.fallback_eligible is False, failure
 
 
+def test_pr_edit_missing_label_requires_one_exact_line_and_empty_stdout() -> None:
+    for name in ("owner-review", "Director's call"):
+        exact = _api.classify_legacy_failure(
+            f"'{name}' not found\n",
+            is_write=True,
+            operation="github.pr.edit",
+        )
+        assert exact.cause == "validation_error", exact
+        assert exact.write_outcome == "unknown", exact
+        assert exact.retryable is False and exact.fallback_eligible is False, exact
+
+    for operation, stderr, stdout in (
+        ("github.pr.create", "'owner-review' not found\n", ""),
+        ("github.api.call", "'owner-review' not found\n", ""),
+        (None, "'owner-review' not found\n", ""),
+        ("github.pr.edit", "'owner-review' not found\nconnection reset by peer\n", ""),
+        ("github.pr.edit", "'owner-review' not found\n", "updated\n"),
+    ):
+        failure = _api.classify_legacy_failure(
+            stderr,
+            stdout=stdout,
+            is_write=True,
+            operation=operation,
+        )
+        assert failure.write_outcome == "unknown", failure
+        assert failure.cause != "validation_error", failure
+
+
 def test_legacy_unknown_rate_limit_uses_probe_bucket() -> None:
     probe = _api.ApiResult(
         ok=True,
@@ -3258,6 +3286,7 @@ def main() -> None:
         test_call_gh_preserves_delegated_failure_and_outer_context,
         test_legacy_write_rate_limit_is_rejected_and_retryable,
         test_missing_label_requires_pr_create_context,
+        test_pr_edit_missing_label_requires_one_exact_line_and_empty_stdout,
         test_legacy_unknown_rate_limit_uses_probe_bucket,
         test_legacy_graphql_rate_limit_uses_probe_reset,
         test_legacy_provider_bucket_replaces_requested_bucket,
