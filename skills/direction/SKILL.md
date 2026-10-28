@@ -371,12 +371,6 @@ Director's own login.
 
 The marker is per machine. Its `audits` map holds where each repository's next
 audit window starts, and `audit_runs` holds when an audit last ran. An audit
-collected by `--weekly` also saves its findings under `audit_receipts["OWNER/REPO"]`
-in the same atomic write that advances its window. If collection is interrupted,
-read those receipts from `DIRECTION_MARKER`, or from
-`~/.code/direction-last-check.json` when unset, before running another audit.
-Each repository's next weekly audit replaces its saved receipt.
-An audit
 whose reads were incomplete records its run with a `held` reason and leaves
 the window start in place so the next audit rereads it; report that as "audit
 ran, window held (reason)", never as an overdue audit. An audit that confirms

@@ -471,7 +471,7 @@ def git_root(start: pathlib.Path) -> pathlib.Path:
 
 
 def record_audit(repo: str, started_at: dt.datetime, direction_text: str | None, held: str | None = None,
-                 since: dt.datetime | None = None, receipt: dict[str, Any] | None = None) -> str | None:
+                 since: dt.datetime | None = None) -> str | None:
     """Stamp this repository's audit in the local marker the session-start hook reads.
 
     The stamp is written here, not by hand, so an audit stamp means an audit ran.
@@ -480,16 +480,15 @@ def record_audit(repo: str, started_at: dt.datetime, direction_text: str | None,
     """
     if direction_text is None:
         return None
-    shown = os.environ.get("DIRECTION_MARKER") or "default direction marker"
+    path: pathlib.Path | str = os.environ.get("DIRECTION_MARKER") or "default direction marker"
     try:
         path = direction_mark.marker_path()
-        shown = str(path)
         # Retain closures that happen while listings are being fetched for the
         # next audit instead of skipping ahead to the completion time.
-        direction_mark.mark_audit(path, repo, started_at, held, since, receipt)
+        direction_mark.mark_audit(path, repo, started_at, held, since)
         return str(path)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        raise AuditError(f"Could not record direction audit marker at {shown}: {exc}") from exc
+        raise AuditError(f"Could not record direction audit marker at {path}: {exc}") from exc
 
 
 def drop_archived(repo: str) -> str | None:
@@ -587,9 +586,6 @@ def prune_unadopted(
             for repo in removed:
                 current["audits"].pop(repo, None)
                 runs.pop(repo, None)
-                receipts = current.get("audit_receipts")
-                if isinstance(receipts, dict):
-                    receipts.pop(repo, None)
             direction_mark.save(path, current)
     return {"ok": not unknown, "applied": apply and bool(removed), "removed": removed,
             "removed_reasons": removed_reasons,
@@ -1769,7 +1765,7 @@ def weekly_audit(
     marker_error = None
     for repo in repos:
         _code, result = audit_one(repo, gh=gh, owner=owner, automation=automation,
-                                  include_archived=include_archived, fetch=fetch, persist_receipt=True)
+                                  include_archived=include_archived, fetch=fetch)
         audits[repo] = result
         if "error" in result:
             unread[repo] = f"reads failed: {result['error']}"
@@ -2004,7 +2000,7 @@ def held_reads(truncated: list[str]) -> list[str]:
 
 def audit_one(
     repo: str, *, gh: str, owner: str | None = None, automation: str | None = None, include_archived: bool = False,
-    fetch: Callable[[list[str]], Any] | None = None, persist_receipt: bool = False,
+    fetch: Callable[[list[str]], Any] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Audit one repository and stamp its own window; never the weekly audit.
 
@@ -2093,14 +2089,9 @@ def audit_one(
                                 else "archive_state_unknown" if archived is not False else None)
     result["marked"] = result["run_recorded"] = result["dropped"] = None
     try:
-        receipt = result if persist_receipt else None
-        result["marked"] = (None if result["marked_skipped"]
-                            else record_audit(repo, now, direction_text, receipt=receipt) if receipt is not None
-                            else record_audit(repo, now, direction_text))
+        result["marked"] = None if result["marked_skipped"] else record_audit(repo, now, direction_text)
         # A held window still records that this audit ran, so it is not read as missed.
-        result["run_recorded"] = (record_audit(repo, now, direction_text, ", ".join(held), audit_since, receipt)
-                                  if held and archived is False and receipt is not None
-                                  else record_audit(repo, now, direction_text, ", ".join(held), audit_since)
+        result["run_recorded"] = (record_audit(repo, now, direction_text, ", ".join(held), audit_since)
                                   if held and archived is False else result["marked"])
         result["dropped"] = drop_archived(repo) if archived is True else None
     except AuditError as exc:

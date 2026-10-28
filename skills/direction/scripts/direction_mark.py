@@ -57,8 +57,6 @@ def load(path: Path) -> dict[str, object]:
     current["audits"] = audits if isinstance(audits, dict) else {}
     if not isinstance(current.get("audit_runs"), dict):
         current.pop("audit_runs", None)
-    if not isinstance(current.get("audit_receipts"), dict):
-        current.pop("audit_receipts", None)
     return current
 
 
@@ -130,7 +128,7 @@ def mark_weekly(path: Path, owner: str, now: dt.datetime) -> dict[str, object]:
 
 
 def mark_audit(path: Path, repo: str, now: dt.datetime, held: str | None = None,
-               since: dt.datetime | None = None, receipt: dict[str, object] | None = None) -> dict[str, object]:
+               since: dt.datetime | None = None) -> dict[str, object]:
     """Record this repository's audit without changing daily-turn evidence.
 
     A held audit ran but keeps its window open for a rerun: it records the run
@@ -149,10 +147,6 @@ def mark_audit(path: Path, repo: str, now: dt.datetime, held: str | None = None,
             if since is not None:
                 # A first held run keeps its own window start, so the next audit rereads it.
                 audits.setdefault(repo, utc_stamp(since))
-        if receipt is not None:
-            receipts = current.setdefault("audit_receipts", {})
-            assert isinstance(receipts, dict)
-            receipts[repo] = receipt
         save(path, current)
     return current
 
@@ -162,12 +156,10 @@ def drop_audit(path: Path, repo: str) -> dict[str, object]:
     with marker_lock(path) as path:
         current = load(path)
         audits, runs = current["audits"], current.get("audit_runs", {})
-        receipts = current.get("audit_receipts", {})
-        assert isinstance(audits, dict) and isinstance(runs, dict) and isinstance(receipts, dict)
+        assert isinstance(audits, dict) and isinstance(runs, dict)
         if repo in audits or repo in runs:
             audits.pop(repo, None)
             runs.pop(repo, None)
-            receipts.pop(repo, None)
             save(path, current)
     return current
 
