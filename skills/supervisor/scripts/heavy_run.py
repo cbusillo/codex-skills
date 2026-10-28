@@ -497,7 +497,11 @@ def run(
                 receipt = run_in_slot(manifest, evidence, settings, home, slot, log, prepare)
                 (evidence / "result.json").write_text(json.dumps(receipt, indent=2) + "\n")
                 if complete is not None:
-                    complete(receipt)
+                    try:
+                        complete(receipt)
+                    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+                        (evidence / "delivery-error.json").write_text(json.dumps({"error": str(error)}) + "\n")
+                        return 1
         except Canceled as error:
             receipt["exit_code"] = 128 + error.signum
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:

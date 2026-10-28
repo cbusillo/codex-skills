@@ -121,6 +121,22 @@ class HeavyRunTests(unittest.TestCase):
         self.assertTrue(delivered[0]["cleanup_complete"])
         self.assertFalse(list((self.root / heavy_run.STATE_PATH).glob("custody-*")))
 
+    def test_delivery_failure_preserves_the_completed_job_receipt(self) -> None:
+        evidence = self.root / "evidence"
+        manifest = {"containers": [{"name": "job", "image": "fixture"}], "job": "job"}
+
+        def complete(_receipt: dict) -> None:
+            raise BrokenPipeError("fixture disconnected")
+
+        with patch.object(heavy_run, "local_endpoint", return_value="unix:///fixture.sock"), patch.object(heavy_run, "recover"):
+            with patch.object(heavy_run.Docker, "run", return_value=(0, {})), patch.object(heavy_run.Docker, "cleanup"):
+                result = heavy_run.run(manifest, evidence, heavy_run.Settings(), self.root, complete=complete)
+        self.assertNotEqual(result, 0)
+        receipt = json.loads((evidence / "result.json").read_text())
+        self.assertEqual(receipt["exit_code"], 0)
+        self.assertTrue(receipt["cleanup_complete"])
+        self.assertTrue((evidence / "delivery-error.json").exists())
+
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
