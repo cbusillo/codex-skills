@@ -38,6 +38,45 @@ def take_slot(root: Path, name: str, slots: int) -> None:
 
 
 class HeavyRunTests(unittest.TestCase):
+    def test_configured_executor_replaces_the_process_with_absolute_input_paths(self) -> None:
+        manifest = self.root / "manifest.json"
+        manifest.write_text(json.dumps({"containers": [{"name": "job", "image": "fixture"}], "job": "job"}))
+        config = self.root / heavy_run.CONFIG_PATH
+        config.parent.mkdir(parents=True)
+        arguments = self.root / "adapter-arguments.json"
+        adapter = (
+            f"import json,sys; from pathlib import Path; Path({str(arguments)!r}).write_text(json.dumps(sys.argv[1:])); sys.exit(23)"
+        )
+        executor = [sys.executable, "-c", adapter, "--fixed-option"]
+        config.write_text(json.dumps({"executor": executor}))
+        evidence = self.root / "evidence"
+        entry = (
+            f"import sys; from pathlib import Path; sys.path.insert(0, {str(Path(__file__).parent)!r}); "
+            f"import heavy_run; raise SystemExit(heavy_run.main(home=Path({str(self.root)!r})))"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", entry, "--manifest", str(manifest), "--evidence", str(evidence)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        self.assertEqual(result.returncode, 23, result.stderr)
+        self.assertEqual(
+            json.loads(arguments.read_text()),
+            ["--fixed-option", "--manifest", str(manifest.resolve()), "--evidence", str(evidence.resolve())],
+        )
+        self.assertFalse((self.root / heavy_run.STATE_PATH).exists())
+        self.assertFalse(evidence.exists())
+
+    def test_invalid_executor_settings_cannot_fall_back_to_local_execution(self) -> None:
+        config = self.root / heavy_run.CONFIG_PATH
+        config.parent.mkdir(parents=True)
+        for executor in ([], "adapter", [""], ["adapter", 1], ["adapter", "bad\x00argument"]):
+            with self.subTest(executor=executor):
+                config.write_text(json.dumps({"executor": executor}))
+                with self.assertRaises(ValueError):
+                    heavy_run.Settings.load(self.root)
+
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

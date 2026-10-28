@@ -143,14 +143,21 @@ class Settings:
     slots: int = 1
     cpus: float = 4
     memory: int = 8 * 1024**3
+    executor: list[str] | None = None
 
     @classmethod
     def load(cls, home: Path) -> Settings:
         path = home / CONFIG_PATH
         data = json.loads(path.read_text()) if path.exists() else {}
-        if set(data) - {"slots", "cpus", "memory"}:
+        if set(data) - {"slots", "cpus", "memory", "executor"}:
             raise ValueError("Unknown host heavy-run setting")
         result = cls(**data)
+        if result.executor is not None and (
+            not isinstance(result.executor, list)
+            or not result.executor
+            or any(not isinstance(part, str) or not part or "\x00" in part for part in result.executor)
+        ):
+            raise ValueError("Executor must be a nonempty command argv array")
         if (
             type(result.slots) is not int
             or result.slots < 1
@@ -485,6 +492,11 @@ def main(*, home: Path | None = None) -> int:
         manifest = json.loads(args.manifest.read_text())
         validate_manifest(manifest)
         settings.limits(len(manifest["containers"]))
+        if settings.executor is not None:
+            os.execvp(
+                settings.executor[0],
+                [*settings.executor, "--manifest", str(args.manifest.resolve()), "--evidence", str(args.evidence.resolve())],
+            )
         result = run(manifest, args.evidence, settings, home)
     except Canceled as error:
         return 128 + error.signum
