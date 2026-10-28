@@ -1534,7 +1534,7 @@ def test_plan_and_pr_resolve_git_origins() -> None:
         ("https://example.invalid/owner/project.git", None),
     )
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"GH_HOST": "github.com"}):
         checkout = Path(tmp)
         REAL_SUBPROCESS_RUN(["git", "init", "--quiet", checkout], check=True)
         REAL_SUBPROCESS_RUN(

@@ -300,7 +300,7 @@ class ReminderTests(IsolatedDirectionHookTests):
                              "naive stamps are read as UTC, not a crash")
 
     def test_adopted_repo_needs_a_direction_file_and_an_origin(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"GH_HOST": "github.com"}):
             root = Path(tmp)
             subprocess.run(["git", "init", "-q", str(root)], check=True)
             nested = root / "a"
@@ -311,6 +311,12 @@ class ReminderTests(IsolatedDirectionHookTests):
             self.assertIsNone(hook.origin_repo(root.resolve()), "no origin, no repo key")
             subprocess.run(["git", "-C", str(root), "remote", "add", "origin", "git@github.com:owner/repo.git"], check=True)
             self.assertEqual(hook.origin_repo(root.resolve()), "owner/repo")
+            with mock.patch.dict(os.environ, {"GH_HOST": "github.com"}):
+                for remote in ("https://github.com/owner/.github.git", "git@github.com:owner/.github.git"):
+                    subprocess.run(["git", "-C", str(root), "remote", "set-url", "origin", remote], check=True)
+                    self.assertEqual(hook.origin_repo(root.resolve()), "owner/.github")
+                subprocess.run(["git", "-C", str(root), "remote", "set-url", "origin", "https://notgithub.com/owner/.github.git"], check=True)
+                self.assertIsNone(hook.origin_repo(root.resolve()))
 
     def test_loop_prints_from_reference_only_in_direction_repo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

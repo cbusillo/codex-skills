@@ -461,8 +461,12 @@ def direction_pull_requests(repo: str, pulls: list[dict[str, Any]], *, fetch: Ca
 
 def default_repo(root: pathlib.Path) -> str | None:
     proc = subprocess.run(["git", "remote", "get-url", "origin"], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    match = re.search(r"github\.com[:/]([^/]+)/([^/.]+)(?:\.git)?$", proc.stdout.strip()) if proc.returncode == 0 else None
-    return f"{match.group(1)}/{match.group(2)}" if match else None
+    if proc.returncode != 0:
+        return None
+    try:
+        return github_read.repo_from_remote_url(proc.stdout.strip())
+    except ValueError:
+        return None
 
 
 def git_root(start: pathlib.Path) -> pathlib.Path:
