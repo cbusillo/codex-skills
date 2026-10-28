@@ -597,12 +597,15 @@ Shell behavior tests run through their own executable wrappers. Follow the
 for local coverage and current-head CI requirements. Before pushing, run the
 metadata's lint checks, including the public-safety scan, and `scripts/typecheck.sh`.
 
-For instruction changes, run these helpers through `scripts/run-python-helper.sh`:
-`skills/skill-creator/scripts/validate-skill-repo.py`,
-`skills/skill-creator/scripts/quick_validate.py --self-test`,
-`skills/skill-creator/scripts/validate-skill-behavior.py`, and
-`skills/skill-creator/scripts/validate-command-policy-simulator.py` both with and
-without `--self-test`.
+For instruction changes, run:
+
+```sh
+scripts/run-python-helper.sh skills/skill-creator/scripts/validate-skill-repo.py
+scripts/run-python-helper.sh skills/skill-creator/scripts/quick_validate.py --self-test
+scripts/run-python-helper.sh skills/skill-creator/scripts/validate-skill-behavior.py
+scripts/run-python-helper.sh skills/skill-creator/scripts/validate-command-policy-simulator.py
+scripts/run-python-helper.sh skills/skill-creator/scripts/validate-command-policy-simulator.py --self-test
+```
 
 Select complete safety modules by changed area, then trace callers for any
 additional affected modules:
