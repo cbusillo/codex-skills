@@ -1884,7 +1884,7 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertFalse(report["unresolved_invocations"], report)
 
     def test_modern_saved_receipts_preserve_unmatched_claim_coverage(self) -> None:
-        for mode in ("persisted path", "persisted preview", "background", "orphan"):
+        for mode in ("persisted path", "persisted preview", "background", "orphan", "missing"):
             for journaled in (False, True):
                 with self.subTest(mode=mode, journaled=journaled):
                     self.setUp()
@@ -1892,7 +1892,8 @@ class ClaimCloseoutTests(unittest.TestCase):
                     path = Path(root["transcript"])
                     output = path.with_suffix("") / ("tasks" if mode == "background" else "tool-results") / "result.txt"
                     output.parent.mkdir(parents=True)
-                    output.write_text(json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 2}}))
+                    if mode != "missing":
+                        output.write_text(json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 2}}))
                     rows: list[dict[str, Any]] = [{"uuid": "root", "sessionId": SESSION, "timestamp": JOURNAL_ERA}]
                     if mode != "orphan":
                         rows.extend(bash_call("uv run gh-plan.py claim 2"))
@@ -1916,8 +1917,10 @@ class ClaimCloseoutTests(unittest.TestCase):
                     self.comments.remove(self.release)
                     report = helper.check([root])
                     self.assertFalse(report["claims_clear"], report)
-                    if mode == "orphan":
+                    if mode in {"orphan", "missing"}:
                         self.assertTrue(report["unresolved_invocations"], report)
+                        self.comments.append(self.release)
+                        self.assertFalse(helper.check([root])["claims_clear"])
                     else:
                         self.assertTrue(report["blocked"], report)
                         self.comments.append(self.release)

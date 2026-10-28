@@ -225,13 +225,14 @@ def recorded_targets(
     require_own_transcript(entry)
     native = entry["session_id"]
     rows = entry.get("_transcript_records") or history.read_records(Path(entry["transcript"]))
-    values, artifacts_complete = recorded_receipts(entry, rows)
+    journal_era = began_after_journal(rows, entry)
+    values, artifacts_complete = recorded_receipts(entry, rows) if journal_era else (receipt_values(rows), True)
     receipts = {target for value in values if (target := history.claim_target(value, native)) is not None}
     return {
         "targets": receipts | (claim_log.read(native) if journal is None else journal),
         "receipts": receipts,
         "journal_era": artifacts_complete
-        and began_after_journal(rows, entry)
+        and journal_era
         and not any(unmatched_foreign_receipt(value, native, journals or {}) for value in values),
     }
 
