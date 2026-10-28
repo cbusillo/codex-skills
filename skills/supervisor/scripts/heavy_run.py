@@ -10,6 +10,7 @@ import fcntl
 import json
 import math
 import os
+import pwd
 import re
 import signal
 import subprocess
@@ -18,6 +19,7 @@ import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import BinaryIO, TextIO
 
@@ -147,32 +149,72 @@ class Settings:
             raise ValueError("Slots, CPUs and memory bytes must be positive")
         return result
 
+    def limits(self, count: int) -> tuple[str, str]:
+        nanos = int(Decimal(str(self.cpus)) * 10**9) // count
+        memory = self.memory // count
+        if nanos < 1 or memory < 6 * 1024**2:
+            raise ValueError("Each container needs a positive CPU budget and at least 6 MiB of memory")
+        return f"{nanos // 10**9}.{nanos % 10**9:09d}", str(memory)
 
-def validate_manifest(manifest: dict) -> None:
-    containers = manifest["containers"]
-    names = [container["name"] for container in containers]
-    if not names or len(set(names)) != len(names) or manifest["job"] not in names:
-        raise ValueError("Provide unique containers and a job container")
-    if set(manifest) - {"containers", "job", "outputs"}:
-        raise ValueError("Unknown manifest field")
+
+def validate_manifest(manifest: object) -> None:
+    if not isinstance(manifest, dict) or set(manifest) - {"containers", "job", "outputs"}:
+        raise ValueError("Expected a run manifest with containers, job and optional outputs")
+    containers = manifest.get("containers")
+    if not isinstance(containers, list) or not containers:
+        raise ValueError("Provide containers")
+    names = set()
     for container in containers:
-        if set(container) - {"name", "image", "command", "environment", "copies"}:
-            raise ValueError("Unknown container field; Docker flags and host mounts are unsupported")
-        if not re.fullmatch(r"[a-z][a-z0-9-]*", container["name"]):
-            raise ValueError("Invalid container name")
-        if not isinstance(container["image"], str) or not container["image"] or container["image"].startswith("-"):
-            raise ValueError("Provide a Docker image")
+        if not isinstance(container, dict) or set(container) - {"name", "image", "command", "environment", "copies"}:
+            raise ValueError("Unsupported container fields; Docker flags and host mounts are unsupported")
+        name = container.get("name")
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", name) or name in names:
+            raise ValueError("Provide unique container names")
+        names.add(name)
+        image = container.get("image")
+        if not isinstance(image, str) or not image or image.startswith("-"):
+            raise ValueError("Provide a cached Docker image")
         command = container.get("command", [])
         if not isinstance(command, list) or any(not isinstance(part, str) for part in command):
             raise ValueError("Container command must be an argv array")
-        for copy in container.get("copies", []):
-            if not Path(copy["source"]).exists() or not copy["destination"].startswith("/"):
-                raise ValueError("Copy inputs must exist and container destinations must be absolute")
-    for output in manifest.get("outputs", []):
-        if output["container"] not in names or not re.fullmatch(r"[a-zA-Z0-9_-]+", output["name"]):
-            raise ValueError("Invalid evidence output")
-        if not output["source"].startswith("/"):
-            raise ValueError("Container output sources must be absolute")
+        environment = container.get("environment", {})
+        if not isinstance(environment, dict) or any(
+            not isinstance(key, str)
+            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key)
+            or not isinstance(value, str)
+            or "\n" in value
+            or "\r" in value
+            for key, value in environment.items()
+        ):
+            raise ValueError("Environment must map variable names to single-line strings; copy files for multiline configuration")
+        copies = container.get("copies", [])
+        if not isinstance(copies, list):
+            raise ValueError("Copies must be an array")
+        for copy in copies:
+            if (
+                not isinstance(copy, dict)
+                or not isinstance(copy.get("source"), str)
+                or not isinstance(copy.get("destination"), str)
+                or not copy["destination"].startswith("/")
+                or not Path(copy["source"]).exists()
+            ):
+                raise ValueError("Copy inputs must exist and container destinations must be absolute strings")
+    if not isinstance(manifest.get("job"), str) or manifest["job"] not in names:
+        raise ValueError("Select a job container")
+    outputs = manifest.get("outputs", [])
+    if not isinstance(outputs, list):
+        raise ValueError("Outputs must be an array")
+    for output in outputs:
+        if (
+            not isinstance(output, dict)
+            or not isinstance(output.get("container"), str)
+            or output["container"] not in names
+            or not isinstance(output.get("name"), str)
+            or not re.fullmatch(r"[a-zA-Z0-9_-]+", output["name"])
+            or not isinstance(output.get("source"), str)
+            or not output["source"].startswith("/")
+        ):
+            raise ValueError("Provide a named container output with an absolute source path")
 
 
 class Docker:
@@ -196,7 +238,7 @@ class Docker:
             raise ValueError("Heavy runs require a local Unix Docker socket")
         self.prefix = ["docker", "--host", endpoint]
 
-    def call(self, *args: str, timeout: int = 60) -> str:
+    def call(self, *args: str, timeout: int | None = 60) -> str:
         result = subprocess.run(
             [*self.prefix, *args],
             stdout=subprocess.PIPE,
@@ -213,16 +255,10 @@ class Docker:
     def containers(self) -> list[str]:
         return self.call("ps", "-aq", "--filter", f"label={self.label}").split()
 
-    def cleanup(self) -> None:
+    def cleanup(self, log: TextIO | None) -> None:
         for container in self.containers():
-            subprocess.run(
-                [*self.prefix, "logs", container],
-                stdout=self.log,
-                stderr=self.log,
-                env=self.environment,
-                pass_fds=(self.slot.handle.fileno(),),
-                timeout=60,
-            )
+            if log is not None:
+                self.collect_logs(container, log)
             self.call("rm", "--force", "--volumes", container)
         if self.containers():
             raise RuntimeError("Owned containers remain; slot cannot admit work")
@@ -232,17 +268,30 @@ class Docker:
         if self.call("network", "ls", "-q", "--filter", f"label={self.label}").split():
             raise RuntimeError("Owned networks remain; slot cannot admit work")
 
-    def run(self, manifest: dict, settings: Settings, evidence: Path) -> int:
-        self.cleanup()
+    def collect_logs(self, container: str, log: TextIO) -> None:
+        try:
+            subprocess.run(
+                [*self.prefix, "logs", container],
+                stdout=log,
+                stderr=log,
+                env=self.environment,
+                pass_fds=(self.slot.handle.fileno(),),
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            log.write(f"Log collection failed: {type(error).__name__}\n")
+
+    def run(self, manifest: dict, settings: Settings, evidence: Path) -> tuple[int, dict[str, str]]:
         network = f"heavy-{self.slot.index}-{uuid.uuid4().hex}"
         self.call("network", "create", "--internal", "--label", self.label, network)
         containers = manifest["containers"]
-        cpus = str(settings.cpus / len(containers))
-        memory = str(settings.memory // len(containers))
+        cpus, memory = settings.limits(len(containers))
         identifiers = {}
         for container in containers:
             args = [
                 "create",
+                "--pull",
+                "never",
                 "--name",
                 f"{network}-{container['name']}",
                 "--label",
@@ -261,26 +310,28 @@ class Docker:
                 network,
                 "--network-alias",
                 container["name"],
-                "--workdir",
-                "/workspace",
             ]
-            for name, value in container.get("environment", {}).items():
-                args.extend(["--env", f"{name}={value}"])
+            if environment := container.get("environment"):
+                env_file = evidence / f"{container['name']}.env"
+                env_file.write_text("".join(f"{name}={value}\n" for name, value in environment.items()))
+                args.extend(["--env-file", str(env_file)])
             identifier = self.call(*args, container["image"], *container.get("command", []))
             identifiers[container["name"]] = identifier
             for copy in container.get("copies", []):
                 source = Path(copy["source"]).resolve()
                 source_path = f"{source}/." if source.is_dir() else str(source)
-                self.call("cp", source_path, f"{identifier}:{copy['destination']}", timeout=600)
+                self.call("cp", source_path, f"{identifier}:{copy['destination']}", timeout=None)
         for identifier in identifiers.values():
             self.call("start", identifier)
         job = identifiers[manifest["job"]]
         while self.call("inspect", "--format", "{{.State.Running}}", job) == "true":
             time.sleep(0.2)
         exit_code = int(self.call("inspect", "--format", "{{.State.ExitCode}}", job))
+        return exit_code, identifiers
+
+    def copy_outputs(self, manifest: dict, identifiers: dict[str, str], evidence: Path) -> None:
         for output in manifest.get("outputs", []):
-            self.call("cp", f"{identifiers[output['container']]}:{output['source']}", str(evidence / output["name"]), timeout=600)
-        return exit_code
+            self.call("cp", f"{identifiers[output['container']]}:{output['source']}", str(evidence / output["name"]), timeout=None)
 
 
 class Canceled(Exception):
@@ -292,37 +343,55 @@ def cancel(signum: int, _frame: object) -> None:
     raise Canceled(signum)
 
 
+def recover(docker: Docker, custody: Path) -> None:
+    if not custody.exists():
+        docker.cleanup(None)
+        return
+    previous = Path(custody.read_text()) / "recovered.log"
+    if previous.is_absolute() and previous.parent.is_dir():
+        with previous.open("a") as log:
+            docker.cleanup(log)
+    else:
+        docker.cleanup(None)
+    custody.unlink()
+
+
 def run(manifest: dict, evidence: Path, settings: Settings, root: Path) -> int:
     evidence.mkdir(mode=0o700, parents=True)
-    receipt: dict = {"exit_code": None, "cleanup_complete": False}
-    with (evidence / "run.log").open("w") as log, RunQueue(root, settings.slots) as queue:
-        with queue.acquire() as slot:
-            receipt["slot"] = slot.index
-            custody = root / f"custody-{slot.index}"
-            custody.write_text(str(evidence.resolve()))
-            docker = Docker(slot, log)
-            try:
-                receipt["exit_code"] = docker.run(manifest, settings, evidence)
-            except Canceled as error:
-                receipt["exit_code"] = 128 + error.signum
-            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
-                receipt["error"] = str(error)
-                receipt["exit_code"] = 1
-            finally:
-                signal.signal(signal.SIGTERM, signal.SIG_IGN)
-                signal.signal(signal.SIGINT, signal.SIG_IGN)
+    receipt: dict = {"exit_code": None, "cleanup_complete": True}
+    with (evidence / "run.log").open("w") as log:
+        try:
+            with RunQueue(root, settings.slots) as queue, queue.acquire() as slot:
+                receipt["slot"] = slot.index
+                receipt["cleanup_complete"] = False
+                custody = root / f"custody-{slot.index}"
+                docker = Docker(slot, log)
+                recover(docker, custody)
+                custody.write_text(str(evidence.resolve()))
                 try:
-                    docker.cleanup()
-                    receipt["cleanup_complete"] = True
-                    custody.unlink()
-                except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-                    receipt["cleanup_error"] = str(error)
-                    receipt["exit_code"] = 1
-                (evidence / "result.json").write_text(json.dumps(receipt, indent=2) + "\n")
+                    receipt["exit_code"], identifiers = docker.run(manifest, settings, evidence)
+                    docker.copy_outputs(manifest, identifiers, evidence)
+                finally:
+                    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                    signal.signal(signal.SIGINT, signal.SIG_IGN)
+                    try:
+                        docker.cleanup(log)
+                        receipt["cleanup_complete"] = True
+                        custody.unlink()
+                    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                        receipt["cleanup_error"] = str(error)
+                        receipt["exit_code"] = receipt["exit_code"] or 1
+        except Canceled as error:
+            receipt["exit_code"] = 128 + error.signum
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+            receipt["error"] = str(error)
+            receipt["exit_code"] = receipt["exit_code"] or 1
+        finally:
+            (evidence / "result.json").write_text(json.dumps(receipt, indent=2) + "\n")
     return int(receipt["exit_code"])
 
 
-def main() -> int:
+def main(*, home: Path | None = None) -> int:
     parser = argparse.ArgumentParser(description="Queue an isolated local heavy Docker run; keep all output private.")
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--evidence", required=True, type=Path)
@@ -330,11 +399,13 @@ def main() -> int:
     os.umask(0o077)
     signal.signal(signal.SIGTERM, cancel)
     signal.signal(signal.SIGINT, cancel)
+    home = home if home is not None else Path(pwd.getpwuid(os.getuid()).pw_dir)
     try:
-        settings = Settings.load(Path.home())
+        settings = Settings.load(home)
         manifest = json.loads(args.manifest.read_text())
         validate_manifest(manifest)
-        result = run(manifest, args.evidence, settings, Path.home() / ".local/state/codex-skills/heavy-run")
+        settings.limits(len(manifest["containers"]))
+        result = run(manifest, args.evidence, settings, home / ".local/state/codex-skills/heavy-run")
     except Canceled as error:
         return 128 + error.signum
     except (KeyError, TypeError, OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:

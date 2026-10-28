@@ -17,10 +17,12 @@ outputs beside it. Do not upload these files or derived private data to GitHub
 or Actions. Post only a public-safe conclusion on the worker's child issue.
 
 A manifest names the containers in startup order and the container whose exit
-finishes the run. A service can use its image's default command. Containers share
+finishes the run. A service can use its image's default command and working directory. Containers share
 an invocation-owned internal network and resolve each other's `name`. The job
 command must wait for its services to become ready. Images must already contain
-the tools needed for the run; the internal network has no external route.
+the tools needed for the run and be cached locally; `--pull never` prevents an
+implicit image pull under the slot. Prepare images through the repository's
+supported image path first. The internal network has no external route.
 
 ```json
 {
@@ -43,7 +45,8 @@ the tools needed for the run; the internal network has no external route.
 }
 ```
 
-Commands are argv arrays. Input paths are copied with `docker cp` before any
+Commands are argv arrays. Environment values use private mode-0600 env files,
+not process arguments. For multiline configuration, copy a configuration file. Input paths are copied with `docker cp` before any
 container starts; there are no host bind mounts, published ports, Docker socket
 mounts or arbitrary Docker flags. A run owns every container it creates and
 removes its containers, anonymous volumes and network before returning. Never
@@ -52,7 +55,8 @@ Translate that driver's disposable services and test command into the manifest.
 Existing frozen input and evidence requirements still apply.
 
 Host settings live once at `~/.config/codex-skills/heavy-run.json`, independent
-of `CODEX_HOME` and `CLAUDE_CONFIG_DIR`. Omit it to start with one slot, four CPUs
+of `HOME`, `CODEX_HOME` and `CLAUDE_CONFIG_DIR`: the helper resolves the OS
+account's actual home directory. Omit it to start with one slot, four CPUs
 and 8 GiB of memory per run. For example:
 
 ```json
@@ -60,19 +64,25 @@ and 8 GiB of memory per run. For example:
 ```
 
 Memory is bytes; CPU and memory budgets are divided among a run's containers,
-so their sum stays within the per-run caps. Configure enough memory for each
+so their sum stays within the per-run caps. CPUs round down to whole
+nano-CPUs; every container needs at least 6 MiB. Configure enough memory for each
 service. Change settings only with the queue idle and all owned containers gone.
 The helper requires the selected Docker context to use a local Unix socket and
 pins that endpoint throughout the run. It never targets a remote daemon.
 
 The host-wide queue lives at `~/.local/state/codex-skills/heavy-run`. Kernel
 file locks serialize admission in FIFO ticket order and implement the configured
-slot count. Canceled waiters leave the queue. A killed holder releases its kernel
+slot count. Canceled waiters leave the queue. A suspended waiter still owns its FIFO
+position; resume or cancel that same waiter to advance it. A killed holder releases its kernel
 lock; the next holder inspects and removes any containers and networks left in
 that slot before creating work. Docker CLI children inherit the slot lock, so
 killing their parent cannot admit another run while a create/start is in flight.
-A cleanup failure returns failure and leaves the surviving work discoverable;
-every successor must reconcile it before admission. Never delete queue/slot lock
+Recovery logs go to the predecessor's evidence directory when it still exists,
+never to another run's log. Missing predecessor evidence means logs are dropped.
+A cleanup failure returns failure and leaves custody with the original run;
+every successor to that slot must reconcile it before admission. There is no
+background reaper: an orphan keeps its capped resources until that slot's next
+holder cleans it up. Other slots retain their own capacity. Never delete queue/slot lock
 files to unblock work. Let an already running legacy heavy job finish and verify
 its cleanup before the first switch; the helper cannot adopt unlabeled work.
 

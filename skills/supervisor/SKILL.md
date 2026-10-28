@@ -514,10 +514,11 @@ current default-branch checkout to read its product section.
 3. **A check about every 23 minutes.** Rebuild the goal board first, under
    [Milestone State](#milestone-state). For staffing, poll existing `plan:active`
    child issues, their claims and `gh-plan.py next` across the run's repositories.
-   Read all result pages, including native child and comment pages when those
-   contain the result or decision; a first page or the goal board's bounded
+   Use the maintained readers' pagination and consume all returned results,
+   including child and comment results. Require complete coverage, widening
+   their read bounds when needed; a first page or the goal board's bounded
    window is not complete staffing coverage. Report failed or incomplete reads
-   as unknown. Staff actionable unclaimed children from that state; add no
+   as unknown instead of building a parallel manual inventory. Staff actionable unclaimed children from that state; add no
    staffing label and do not depend on a buried staffing-request comment.
    Workers report on their child issues. Parents hold in-place Current Status
    summaries and decisions, without per-slice comments or acknowledgements.

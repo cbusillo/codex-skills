@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import time
+from decimal import Decimal
 from pathlib import Path
 
 root = Path(os.environ["HEAVY_FIXTURE"])
@@ -17,8 +18,11 @@ with (root / "lock").open("w") as lock:
     with (root / "calls").open("a") as calls:
         calls.write(json.dumps(args) + "\n")
     if args[0] == "context":
-        print("unix:///fixture/docker.sock")
+        print(os.environ["HEAVY_ENDPOINT"])
     elif args[0] == "create":
+        cpus = Decimal(args[args.index("--cpus") + 1]) * 10**9
+        if cpus != int(cpus):
+            sys.exit("value is too precise")
         name = args[args.index("--name") + 1]
         data = {"name": name, "job": args[-1], "label": args[args.index("--label") + 1]}
         (root / f"container-{name}").write_text(json.dumps(data))
@@ -38,14 +42,16 @@ with (root / "lock").open("w") as lock:
             (root / f"started-{job}").touch()
         elif args[0] == "inspect":
             running = not (root / f"release-{job}").exists()
-            print(str(running).lower() if "Running" in args[2] else "0")
+            print(str(running).lower() if "Running" in args[2] else os.environ["HEAVY_EXIT_CODE"])
         elif args[0] == "logs":
-            print("private-test-output")
+            print(f"private-test-output:{job}")
         elif os.environ.get("HEAVY_FAIL_CLEANUP") == "1":
             sys.exit(1)
         else:
             (root / f"running-{job}").unlink(missing_ok=True)
             (root / f"container-{args[-1]}").unlink()
+    elif args[0] == "cp" and ":" in args[1] and os.environ.get("HEAVY_FAIL_OUTPUT") == "1":
+        sys.exit(1)
     elif args[0] == "network":
         if args[1] == "create":
             (root / f"network-{args[-1]}").touch()
@@ -57,5 +63,6 @@ with (root / "lock").open("w") as lock:
 
 if args[0] == "create" and os.environ.get("HEAVY_HOLD_CREATE") == "1":
     (root / f"creating-{args[-1]}").touch()
-    while not (root / "finish-creating").exists():
+    deadline = time.monotonic() + 15
+    while not (root / "finish-creating").exists() and time.monotonic() < deadline:
         time.sleep(0.02)
