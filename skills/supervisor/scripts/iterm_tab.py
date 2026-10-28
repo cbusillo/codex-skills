@@ -1168,8 +1168,14 @@ def read_launch_text(path: Path) -> str:
 
 
 def check_launch_issue(brief: str) -> None:
-    anchors = re.findall(r"(?mi)^\s*(?:[-*] )?(?:\*\*)?(Read-only anchor|Anchor(?: and claim)?):(?:\*\*)?\s*"
-                         r"(https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*)(?=$|[#\s).,;])", brief)
+    labels = re.findall(r"(?mi)^\s*(?:[-*] )?(?:\*\*)?(Read-only anchor|Anchor(?: and claim)?):(?:\*\*)?[^\S\n]*([^\n]*)", brief)
+    anchors = []
+    for mode, value in labels:
+        match = re.search(r"(https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*)/?(?=$|[#\s)>.,;\]])", value)
+        if match:
+            anchors.append((mode, match[1]))
+        elif not re.search(r"https://github\.com/[\w.-]+/[\w.-]+/pull/[1-9]\d*", value):
+            raise ValueError("An explicit issue anchor needs its full https://github.com/OWNER/REPO/issues/N URL")
     if not anchors:
         return
     resume = re.search(r"(?mi)^\s*(?:[-*] )?(?:\*\*)?Resume from:(?:\*\*)?\s*"
@@ -1192,11 +1198,13 @@ def check_launch_issue(brief: str) -> None:
             raise ValueError(f"Launch state unavailable for {anchor}; read its full status before dispatch") from error
         if not check.get("allowed"):
             facts = check.get("ownership") or {}
-            evidence = facts.get("conflicts") or facts.get("artifacts") or check.get("resume_source") or facts.get("error") or check.get("status")
+            evidence = (facts.get("detail") or facts.get("conflicts") or facts.get("artifacts")
+                        or check.get("resume_source") or facts.get("error") or check.get("status"))
             raise ValueError(f"Launch refused for {anchor}: {check.get('status', 'unknown')}, "
                              f"{evidence}; dispatch only after the relevant fact changes. "
                              f"For review/legacy waits, read gh-plan.py --repo {repo} wait {anchor}; "
-                             "record actual waits or verified absence with --clear --evidence before dispatch")
+                             "record actual waits or verified absence with --clear --evidence before dispatch. "
+                             "For another source issue, use its full issue-comment URL in Resume from")
 
 
 def prepare_launches(args: argparse.Namespace) -> tuple[list[str], list[dict | None]]:

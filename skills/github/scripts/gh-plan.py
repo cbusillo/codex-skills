@@ -2115,7 +2115,7 @@ def cmd_show(args: argparse.Namespace) -> None:
             trusted=wait_authors(issue["repo"]), resume_from=resume_id, resume_source=source_item,
             expired_sessions=github_plan_claim.expired_lease_sessions(comments))
         source_clear = (source_facts is None or (source_facts["complete"] and not source_facts.get("error")
-                        and not source_facts["conflicts"] and (args.read_only or source_facts["wait"]["state"] == "clear")))
+                        and not source_facts["conflicts"]))
         result["launch_check"] = {
             "allowed": (derived["relationships_complete"] and facts["complete"] and not facts.get("error")
                         and not facts["conflicts"] and (args.read_only or not facts["artifacts"])

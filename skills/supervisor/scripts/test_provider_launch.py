@@ -93,10 +93,17 @@ class LaunchIssueTests(unittest.TestCase):
             source_url = "https://github.com/fixture/repo/issues/6#issuecomment-123"
             iterm_tab.check_launch_issue(brief + "\nResume from: " + source_url)
             self.assertEqual(calls[-1].resume_from, source_url)
+            for value in ("<https://github.com/fixture/repo/issues/7>", "[#7](https://github.com/fixture/repo/issues/7)",
+                          "https://github.com/fixture/repo/issues/7/"):
+                iterm_tab.check_launch_issue("Anchor: " + value)
+                self.assertEqual(calls[-1].issue, brief.split()[-1])
         for missing in ("Implement export", "Anchor: https://github.com/fixture/repo/pull/7", "Milestone lead for the Track"):
             with self.subTest(missing=missing), patch.object(iterm_tab.subprocess, "run") as reader:
                 iterm_tab.check_launch_issue(missing)
                 reader.assert_not_called()
+        for malformed in ("fixture/repo#7", "", "https://github.com/fixture/repo/issues/7/other"):
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                iterm_tab.check_launch_issue("Anchor: " + malformed)
 
     def test_missing_or_failed_state_read_never_launches(self) -> None:
         for code, output in ((1, "{}"), (0, "{}"), (0, "invalid"), (0, '{"ok": true, "issue": {}}')):

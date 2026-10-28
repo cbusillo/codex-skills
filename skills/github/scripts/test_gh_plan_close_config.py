@@ -68,7 +68,7 @@ class CloseConfigTests(unittest.TestCase):
         elif enrichment is not None:
             relationships.return_value = ("fixture-bot", enrichment)
         output = io.StringIO()
-        parent = {**issue, "number": 6, "body": issue["body"] + "\n" + comments[0]["body"]}
+        parent = {**issue, "number": 6}
         with patch.multiple(PLAN, default_repo=Mock(return_value="fixture/local"),
                 load_config=Mock(side_effect=lambda repo, **_: configs[repo]),
                 get_issue=Mock(return_value=("fixture-bot", issue)),

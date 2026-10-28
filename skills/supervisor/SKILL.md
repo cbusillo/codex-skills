@@ -487,8 +487,9 @@ current default-branch checkout to read its product section.
    clear the other holds. Do not split a child just to redispatch the same held
    work. Read-only work answering a wait can proceed without claiming it;
    its ownership check still runs. Record a resolved wait with `gh-plan.py wait
-   --clear --evidence <resolution>`. For retained delivery, put `Resume from:
-   <source claim comment ID>` on its own line. Require the authored release and
+   <issue> --clear --evidence <resolution>`. For retained delivery, put `Resume from:
+   <same-issue claim comment ID or another source's full issue-comment URL>`
+   on its own line. Require the authored release and
    a qualified handoff to exempt current artifacts; the worker still uses
    `claim --resume-from` for full lineage validation.
    Before a launch batch, compare PRs merged with PRs opened in each
