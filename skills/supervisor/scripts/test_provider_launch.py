@@ -11,6 +11,7 @@ import errno
 import json
 import os
 from pathlib import Path
+import runpy
 import shlex
 import socket
 import subprocess
@@ -41,6 +42,77 @@ HARNESS_CHOICES = (
 
 def patch_attr(target: object, name: str, **kwargs: Any) -> Any:
     return patch.object(target, name, **kwargs)
+
+
+class LaunchIssueTests(unittest.TestCase):
+    def test_stopped_launch_is_refused_on_both_backends_before_any_account_or_terminal_effect(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            command, brief = root / "command", root / "brief"
+            command.write_text("codex")
+            brief.write_text("Anchor and claim: https://github.com/fixture/repo/issues/7\nRules: " + iterm_tab.BRIEF_RULES_URL)
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=[command], brief_file=[brief],
+                                      account_provider="openai", account_config=None, account=None, tmux_socket="fixture")
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            refusal = {"ok": True, "issue": {"launch_check": {
+                "allowed": False, "status": "waiting", "ownership": {"conflicts": [], "artifacts": []}}}}
+            with (patch.dict(sys.modules, {"iterm2": SimpleNamespace()}),
+                  patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(refusal))),
+                  patch.object(account_choice, "select", side_effect=AssertionError("Stopped work reached account selection")) as select,
+                  patch.object(account_choice, "prepare_launch") as prepare,
+                  patch.object(account_choice, "record_launch") as receipt,
+                  patch.object(tmux_terminal, "Terminal") as terminal):
+                for backend in ("iterm", "tmux", "tmux"):
+                    with self.subTest(backend=backend), self.assertRaises(ValueError):
+                        asyncio.run(iterm_tab.operate(app, args) if backend == "iterm" else tmux_terminal.operate(args))
+                select.assert_not_called()
+                prepare.assert_not_called()
+                receipt.assert_not_called()
+                terminal.return_value.run.assert_not_called()
+                window.async_create_tab.assert_not_called()
+
+    def test_changed_prerequisite_allows_a_fresh_check_and_read_only_work_does_not_claim(self) -> None:
+        brief = "Anchor: https://github.com/fixture/repo/issues/7"
+        cleared = {"ok": True, "issue": {"launch_check": {"allowed": True}}}
+        parser = runpy.run_path(str(Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py"))["build_parser"]()
+        calls = []
+        def read(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess:
+            helper = str(Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py")
+            calls.append(parser.parse_args(argv[argv.index(helper) + 1:]))
+            return subprocess.CompletedProcess(argv, 0, json.dumps(cleared))
+        with patch.object(iterm_tab.subprocess, "run", side_effect=read):
+            iterm_tab.check_launch_issue(brief)
+            self.assertEqual(calls[-1].issue, brief.split()[-1])
+            self.assertFalse(calls[-1].read_only)
+            iterm_tab.check_launch_issue(brief.replace("Anchor:", "Read-only anchor:"))
+            self.assertTrue(calls[-1].read_only)
+            for anchor, resume in (("- Anchor:", "- Resume from: 123"), ("**Anchor:**", "**Resume from:** 123")):
+                iterm_tab.check_launch_issue(brief.replace("Anchor:", anchor) + "#issuecomment-123\n" + resume)
+                self.assertEqual(calls[-1].resume_from, "123")
+            source_url = "https://github.com/fixture/repo/issues/6#issuecomment-123"
+            iterm_tab.check_launch_issue(brief + "\nResume from: " + source_url)
+            self.assertEqual(calls[-1].resume_from, source_url)
+            for value in ("<https://github.com/fixture/repo/issues/7>", "[#7](https://github.com/fixture/repo/issues/7)",
+                          "https://github.com/fixture/repo/issues/7/"):
+                iterm_tab.check_launch_issue("Anchor: " + value)
+                self.assertEqual(calls[-1].issue, brief.split()[-1])
+        for missing in ("Implement export", "Anchor: https://github.com/fixture/repo/pull/7", "Milestone lead for the Track"):
+            with self.subTest(missing=missing), patch.object(iterm_tab.subprocess, "run") as reader:
+                iterm_tab.check_launch_issue(missing)
+                reader.assert_not_called()
+        for malformed in ("fixture/repo#7", "", "https://github.com/fixture/repo/issues/7/other"):
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                iterm_tab.check_launch_issue("Anchor: " + malformed)
+
+    def test_missing_or_failed_state_read_never_launches(self) -> None:
+        for code, output in ((1, "{}"), (0, "{}"), (0, "invalid"), (0, '{"ok": true, "issue": {}}')):
+            with self.subTest(code=code, output=output), patch.object(iterm_tab.subprocess, "run", return_value=
+                    subprocess.CompletedProcess([], code, output)), self.assertRaises(ValueError):
+                iterm_tab.check_launch_issue("Anchor: https://github.com/fixture/repo/issues/7")
+        for failure in (FileNotFoundError("fixture uv missing"), subprocess.TimeoutExpired("fixture", 120)):
+            with self.subTest(failure=failure), patch.object(iterm_tab.subprocess, "run", side_effect=failure), self.assertRaises(ValueError):
+                iterm_tab.check_launch_issue("Anchor: https://github.com/fixture/repo/issues/7")
 
 
 class ResumeLaunchTests(unittest.TestCase):
@@ -219,6 +291,7 @@ class ResumeLaunchTests(unittest.TestCase):
 
 class ProviderLaunchTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch.object(iterm_tab, "check_launch_issue"))
         # Generic launch cases must not discover the host's private opt-in.
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)

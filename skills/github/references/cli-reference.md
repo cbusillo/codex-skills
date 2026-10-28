@@ -955,6 +955,22 @@ selection is unchanged.
   cannot override the projection. Missing or malformed wait evidence needs review.
   `labels` is the projected view; `recorded_labels` preserves the observed labels
   for diagnosis without making them status authority.
+  `--launch-check` also reuses `next`'s current ownership and retained-delivery
+  facts, separate from source ranking and source-delivery history.
+  `issue.launch_check.allowed` requires active native status and no
+  observed claim holder or retained-delivery hold; next-action wording does not gate
+  dispatch. `--read-only` permits answering a wait without claiming or changing
+  held work, while still checking live claims; static PR/branch artifacts do
+  not prevent a read-only review. Launch checks honor the existing claim lease
+  expiry. `--resume-from <comment ID or issue-comment URL>` validates the
+  source's authored release and qualifies a handoff to exempt current
+  retained artifacts. With no current artifacts, dispatch can proceed and the
+  worker's claim validates full merged/plain lineage. It never releases a
+  different claim holder. Numeric IDs select the anchor's own claims; another source
+  uses its full issue-comment URL and retains its current ownership checks.
+  Target waits remain authoritative. Unknown coverage refuses dispatch, while
+  the full read remains available. This writes no claim or new state record;
+  a launched worker still claims independently.
 - `deps <issue>`: Page and show validated native `blocked_by`, `blocking`, and
   sub-issue relationships, preserving cross-repository issue references.
 

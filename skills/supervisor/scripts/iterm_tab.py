@@ -1167,6 +1167,46 @@ def read_launch_text(path: Path) -> str:
         return path.read_text(encoding="utf-8")
 
 
+def check_launch_issue(brief: str) -> None:
+    labels = re.findall(r"(?mi)^\s*(?:[-*] )?(?:\*\*)?(Read-only anchor|Anchor(?: and claim)?):(?:\*\*)?[^\S\n]*([^\n]*)", brief)
+    anchors = []
+    for mode, value in labels:
+        match = re.search(r"(https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*)/?(?=$|[#\s)>.,;\]])", value)
+        if match:
+            anchors.append((mode, match[1]))
+        elif not re.search(r"https://github\.com/[\w.-]+/[\w.-]+/pull/[1-9]\d*", value):
+            raise ValueError("An explicit issue anchor needs its full https://github.com/OWNER/REPO/issues/N URL")
+    if not anchors:
+        return
+    resume = re.search(r"(?mi)^\s*(?:[-*] )?(?:\*\*)?Resume from:(?:\*\*)?\s*"
+                       r"([1-9]\d*|https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*#issuecomment-[1-9]\d*)\s*$", brief)
+    if resume and len(set(anchor for _, anchor in anchors)) != 1:
+        raise ValueError("A retained-delivery brief needs one anchor for its source claim")
+    helper = Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py"
+    for mode, anchor in dict.fromkeys(anchors):
+        repo = "/".join(anchor.split("/")[3:5])
+        argv = ["uv", "run", str(helper), "--repo", repo, "show", anchor, "--full", "--launch-check"]
+        if mode.casefold() == "read-only anchor":
+            argv.append("--read-only")
+        if resume:
+            argv.extend(["--resume-from", resume[1]])
+        try:
+            result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+            payload = json.loads(result.stdout)
+            check = payload["issue"]["launch_check"] if not result.returncode and payload.get("ok") else {}
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as error:
+            raise ValueError(f"Launch state unavailable for {anchor}; read its full status before dispatch") from error
+        if not check.get("allowed"):
+            facts = check.get("ownership") or {}
+            evidence = (facts.get("detail") or facts.get("conflicts") or facts.get("artifacts")
+                        or check.get("resume_source") or facts.get("error") or check.get("status"))
+            raise ValueError(f"Launch refused for {anchor}: {check.get('status', 'unknown')}, "
+                             f"{evidence}; dispatch only after the relevant fact changes. "
+                             f"For review/legacy waits, read gh-plan.py --repo {repo} wait {anchor}; "
+                             "record actual waits or verified absence with --clear --evidence before dispatch. "
+                             "For another source issue, use its full issue-comment URL in Resume from")
+
+
 def prepare_launches(args: argparse.Namespace) -> tuple[list[str], list[dict | None]]:
     try:
         return prepare_launch_batch(args)
@@ -1236,6 +1276,8 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
             raise ValueError("brief must be nonempty")
         validate_text(brief, allow_tabs=True)
         validate_brief_rules(brief)
+    for brief in briefs:
+        check_launch_issue(brief)
     validate_computer_use_launch(args, command_texts, briefs)
     apps = [gui_launch.declared_app(brief) for brief in briefs]
     if any(apps):

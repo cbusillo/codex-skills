@@ -2094,6 +2094,35 @@ def cmd_show(args: argparse.Namespace) -> None:
     if not args.full and "Current Status" in result["sections"]:
         result["recorded_current_status"] = result["sections"]["Current Status"]
         result["sections"]["Current Status"] = github_plan_status.render_status(result["sections"]["Current Status"], derived)
+    if getattr(args, "launch_check", False):
+        candidate = {**result, "discussion": github_direction_next.discussion_snapshot(issue, comments, complete=True)}
+        observed = read_queue_ownership(issue["repo"])
+        source_item, source_facts, resume_id = None, None, None
+        if args.resume_from:
+            if args.resume_from.isdecimal():
+                resume_id = int(args.resume_from)
+            else:
+                target = github_plan_claim.admission_link_target(args.resume_from)
+                if target is None or target[2] is None:
+                    raise PlanError("Resume from needs an existing claim comment ID or issue-comment URL")
+                source, _, source_comments, _ = claim_snapshot(str(target[1]), target[0], allow_closed=True)
+                source_item = {**source, "discussion": github_direction_next.discussion_snapshot(source, source_comments, complete=True)}
+                source_facts = github_next_queue.ownership_facts(source_item,
+                    observed if target[0] == issue["repo"] else read_queue_ownership(target[0]), trusted=wait_authors(target[0]),
+                    expired_sessions=github_plan_claim.expired_lease_sessions(source_comments))
+                resume_id = target[2]
+        facts = github_next_queue.ownership_facts(candidate, observed,
+            trusted=wait_authors(issue["repo"]), resume_from=resume_id, resume_source=source_item,
+            expired_sessions=github_plan_claim.expired_lease_sessions(comments))
+        source_clear = (source_facts is None or (source_facts["complete"] and not source_facts.get("error")
+                        and not source_facts["conflicts"]))
+        result["launch_check"] = {
+            "allowed": (derived["relationships_complete"] and facts["complete"] and not facts.get("error")
+                        and not facts["conflicts"] and (args.read_only or not facts["artifacts"])
+                        and source_clear and (args.read_only or derived["status"] == "active")),
+            "status": derived["status"], "ownership": facts,
+            **({"resume_source": source_facts} if source_facts else {}),
+        }
     emit({"ok": True, "actor": actor, "issue": result,
           **({"batch_read": BATCH_READ_CONTEXT} if getattr(args, "batch_read", False) else {})})
 
@@ -4815,6 +4844,25 @@ def next_source_delivery(item: dict[str, Any], trusted: set[str], *, repositorie
             result.setdefault("unavailable", []).append({"repo": repo, "number": number, "reason": next_source_error(exc)})
     return result
 
+def read_queue_ownership(repo: str) -> dict[str, Any]:
+    observed: dict[str, Any] = {"complete": False, "coverage": {}}
+    try:
+        bound = NEXT_PLAN_INVENTORY_LIMIT
+        observed.update(github_work_graph.ownership_inventory(collect_paged_rest_items, repo, limit=bound))
+        target = pathlib.Path.home() / "Developer" / repo.split("/")[1]
+        if target.is_dir() and not (NEXT_READS and NEXT_READS.expired):
+            try:
+                local = github_plan_claim.local_inventory(repo, 0, cwd=target,
+                    **({"deadline_at": NEXT_READS.deadline} if NEXT_READS else {}))
+                observed["inventory"] = local
+                observed["coverage"].update(local_artifacts="read")
+            except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                observed["coverage"]["local_error"] = str(exc)
+    except PlanError as exc:
+        observed["coverage"]["error"] = next_source_error(exc)
+    return observed
+
+
 def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *, parallel: bool = True) -> dict[str, Any]:
     """Read ownership once per repository; project every evaluated current step."""
     if parallel and NEXT_READS is not None and NEXT_READS.workers > 1:
@@ -4846,24 +4894,7 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
         repo = item["repo"]
         trusted = {login.casefold() for login in wait_authors(repo)}
         if repo not in evidence:
-            observed: dict[str, Any] = {"complete": False, "coverage": {}}
-            evidence[repo] = observed
-            try:
-                bound = NEXT_PLAN_INVENTORY_LIMIT
-                observed.update(github_work_graph.ownership_inventory(collect_paged_rest_items, repo, limit=bound))
-                # Local artifacts are supplementary evidence. Do not claim a
-                # complete peer inventory even when the native registry works.
-                target = pathlib.Path.home() / "Developer" / repo.split("/")[1]
-                if target.is_dir() and not (NEXT_READS and NEXT_READS.expired):
-                    try:
-                        local = github_plan_claim.local_inventory(repo, 0, cwd=target,
-                            **({"deadline_at": NEXT_READS.deadline} if NEXT_READS else {}))
-                        observed["inventory"] = local
-                        observed["coverage"].update(local_artifacts="read")
-                    except (ValueError, OSError, subprocess.SubprocessError) as exc:
-                        observed["coverage"]["local_error"] = str(exc)
-            except PlanError as exc:
-                observed["coverage"]["error"] = next_source_error(exc)
+            evidence[repo] = read_queue_ownership(repo)
         preliminary = github_next_queue.classify(item, evidence[repo], trusted=trusted)
         if preliminary.get("state") not in {"underway", "waiting"} and (item.get("discussion") or {}).get("complete") is True:
             item["source_delivery"] = next_source_delivery(item, trusted, repositories=delivery_repositories)
@@ -7154,6 +7185,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--batch-read", action="store_true", help="Explicit cold/changed GraphQL slice; REST remains the unchanged-read route")
     p.add_argument("issue")
     p.add_argument("--full", action="store_true", help="Include the entire body instead of selected sections")
+    p.add_argument("--launch-check", action="store_true", help="Read current ownership and delivery holds for a new execution worker; never claim")
+    p.add_argument("--read-only", action="store_true", help="Allow a launch check to answer waits without claiming or changing held work")
+    p.add_argument("--resume-from", help="Existing source claim comment ID or URL for a retained-delivery launch check")
     p.add_argument("--sections", nargs="+")
     p.set_defaults(func=cmd_show)
 

@@ -644,6 +644,7 @@ class TmuxFixture(unittest.TestCase):
     create_window = True
 
     def setUp(self):
+        self.enterContext(patch.object(iterm_tab, "check_launch_issue"))
         # Short private socket directory; Unix socket paths have a length limit.
         self.folder = tempfile.TemporaryDirectory(dir="/tmp", prefix="svtest-")
         self.addCleanup(self.folder.cleanup)
