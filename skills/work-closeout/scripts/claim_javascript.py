@@ -13,7 +13,7 @@ LITERAL_SHELL_VALUE = re.compile(r"[A-Za-z0-9_./@:+,%-][A-Za-z0-9_./@:+,%#-]*")
 LITERAL_EXPANSION_BYTES = 1 << 20
 LITERAL_LOOP_VALUES = 64
 
-NATIVE_NAMES = {"tools", "text", "store", "load", "exit", "Promise", "JSON", "Object", "String", "ALL_TOOLS", "undefined"}
+NATIVE_NAMES = {"tools", "text", "image", "store", "load", "exit", "Promise", "JSON", "Object", "String", "ALL_TOOLS", "undefined"}
 SHELL_TOOLS = {"exec_command", "shell_command", "shell", "write_stdin"}
 GITHUB_READ_TOOL = re.compile(r"mcp__codex_apps__github_(?:fetch|get|list|search|compare|download)(?:_[a-z0-9_]+)?")
 PROTOTYPE_NAMES = {
@@ -114,6 +114,23 @@ def refusal(node: Node, reason: str, *, offset: int | None = None) -> dict:
     }
 
 
+def native_property_condition(node: Node) -> bool:
+    parent = node.parent
+    while parent is not None and parent.type in {"await_expression", "parenthesized_expression"}:
+        node = parent
+        parent = node.parent
+    if parent is None:
+        return False
+    if parent.type == "unary_expression" and source(parent.child_by_field_name("operator")) in {"!", "typeof"}:
+        return True
+    return parent.type in {
+        "ternary_expression",
+        "if_statement",
+        "while_statement",
+        "for_statement",
+    } and node == parent.child_by_field_name("condition")
+
+
 class JavascriptData:
     def __init__(self) -> None:
         self.environment: dict[str, tuple[str, bool]] = {"ALL_TOOLS": ("data", False), "undefined": ("data", False)}
@@ -183,6 +200,8 @@ class JavascriptData:
             member = node.child_by_field_name("property" if kind == "member_expression" else "index")
             if receiver.type == "identifier" and source(receiver) == "tools" and kind == "member_expression":
                 property_name(member)
+                if not native_property_condition(node):
+                    raise ValueError("native capability value")
                 return "capability"
             receiver_kind = self.expression(receiver, environment)
             if kind == "member_expression" or member.type == "string":
@@ -259,7 +278,7 @@ class JavascriptData:
             self.statement(function.child_by_field_name("body"), environment.copy())
             return "promise" if any(child.type == "async" for child in function.children) else "data"
         if callee.type == "identifier" and (
-            source(callee) in {"text", "store", "load", "exit"}
+            source(callee) in {"text", "image", "store", "load", "exit"}
             or environment.get(source(callee), (None,))[0] == "function"
             or source(callee) == "String"
             and len(args) <= 1
@@ -271,7 +290,8 @@ class JavascriptData:
             native = source(receiver) if receiver.type == "identifier" else ""
             if native == "tools" and (
                 method
-                in SHELL_TOOLS | {"apply_patch", "clock__curr_time", "web__run", "codex_tui__list_threads", "codex_tui__read_thread"}
+                in SHELL_TOOLS
+                | {"apply_patch", "clock__curr_time", "web__run", "view_image", "codex_tui__list_threads", "codex_tui__read_thread"}
                 or GITHUB_READ_TOOL.fullmatch(method)
             ):
                 result_kind = "promise"
@@ -457,7 +477,10 @@ class LiteralCommands:
                 key = self.value(args[0], environment)
                 if type(key) is not str:
                     raise ValueError("load key")
-                return self.stored_values(node)[key]
+                stored = self.stored_values(node)
+                if key not in stored:
+                    raise ValueError("unknown load")
+                return stored[key]
             if function.type != "member_expression":
                 raise ValueError("call")
             receiver = function.child_by_field_name("object")
@@ -514,23 +537,34 @@ class LiteralCommands:
         while root.parent is not None:
             root = root.parent
         pending = [root]
+        stores = []
+        transfers = []
         stored = {}
         while pending:
             candidate = pending.pop()
             pending.extend(reversed(children(candidate)))
             if candidate.type in {"break_statement", "continue_statement"}:
-                raise ValueError("store control flow")
+                transfers.append(candidate)
             if candidate.type != "call_expression":
                 continue
             function = candidate.child_by_field_name("function")
             if function.type != "identifier" or source(function) != "store":
                 continue
-            if candidate.end_byte >= node.start_byte or candidate.parent.type != "expression_statement":
+            stores.append(candidate)
+        for candidate in stores:
+            statement = candidate
+            while statement.parent != root:
+                statement = statement.parent
+            if statement.end_byte >= node.start_byte or candidate.parent.type != "expression_statement":
                 raise ValueError("store order")
             ancestor = candidate.parent
             while ancestor != root:
                 if ancestor.type not in {"expression_statement", "statement_block", "for_in_statement"}:
                     raise ValueError("conditional store")
+                if ancestor.type == "for_in_statement" and any(
+                    ancestor.start_byte <= transfer.start_byte < ancestor.end_byte for transfer in transfers
+                ):
+                    raise ValueError("store control flow")
                 ancestor = ancestor.parent
             arguments = candidate.child_by_field_name("arguments")
             args = children(arguments)

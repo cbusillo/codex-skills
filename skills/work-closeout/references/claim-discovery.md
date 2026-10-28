@@ -72,14 +72,16 @@ that every effect belongs to a bounded data language. It accepts direct native
 shell/output calls, literal arrays, plain loops and conditions, and immutable
 native or JSON data reads. Immediately invoked, parameterless arrow functions
 and function expressions are checked in the same way as inline callbacks.
-Native `codex_tui__list_threads` and `codex_tui__read_thread` calls are data
-reads too; their arguments still undergo the same checks.
-Inspecting a native tool property does not invoke it or permit calling an alias.
+Native `codex_tui__list_threads`, `codex_tui__read_thread` and `view_image` calls
+are data reads too; their arguments and native `image` output undergo the same checks.
+Native property reads are admitted only as conditions or boolean/type tests;
+capability aliases and implicit invocation hooks stay conditional.
 Literal command decoding follows array spreads and scalar-producing inline maps,
 including values stored earlier in the same cell under unique literal keys.
 Every store must be unconditional, directly in the cell or a bounded literal
 `for...of` loop. Unknown or cross-cell loads, overwrites, conditional stores and
-stores after the load stay conditional; no stored program is executed.
+stores whose enclosing top-level statement has not ended before the load stay
+conditional; no stored program is executed.
 GitHub connector operations named with the read verbs `fetch`, `get`, `list`,
 `search`, `compare` and `download` are data reads. Write verbs and unknown tool
 namespaces remain conditional; verbs are matched as prefixes of tool names.

@@ -36,7 +36,8 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             with self.subTest(verb=verb):
                 report = check_claims.history.literal_targets(invocation(source), SESSION)
                 if verb == "show":
-                    self.assertEqual(report, {"targets": set(), "unresolved_invocations": []})
+                    self.assertFalse(report["targets"])
+                    self.assertFalse(report["unresolved_invocations"])
                 else:
                     self.assertEqual(report["targets"], {("test/a", 5), ("test/a", 6), ("test/b", 7)})
                     self.assertTrue(report["unresolved_invocations"])
@@ -47,10 +48,9 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
     def test_native_property_reads_do_not_hide_sibling_claims(self) -> None:
         read = 'text(await tools.exec_command({cmd:"cat review.md"}));\n'
         clock = "text(await tools.wait?tools.clock__curr_time({}):tools.clock__curr_time({}));"
-        self.assertEqual(
-            check_claims.history.literal_targets(invocation(read + clock), SESSION),
-            {"targets": set(), "unresolved_invocations": []},
-        )
+        report = check_claims.history.literal_targets(invocation(read + clock), SESSION)
+        self.assertFalse(report["targets"])
+        self.assertFalse(report["unresolved_invocations"])
         for source in (
             read + clock + f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));",
             read + f"text(await tools.wait?tools.exec_command({{cmd:{json.dumps(COMMAND)}}}):tools.clock__curr_time({{}}));",
@@ -72,14 +72,29 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             'store("c",load("unknown"));' + execute,
             'for(const n of [1]){break;store("c","cat README.md");}' + execute,
             'for(const n of [1]){if(n)continue;store("c","cat README.md");}' + execute,
+            'for(const r of ["a","b"]){store(r+"x","cat README.md");text(await tools.exec_command({cmd:load("bx")}));}',
             'store("c","cat README.md");text(await tools.exec_command({cmd:load([])}));',
             'store("c",["cat README.md"]);const cmds=load("c");cmds.push(' + json.dumps(COMMAND) + ");"
             "await Promise.all(cmds.map(cmd=>tools.exec_command({cmd})));",
             "const run=tools.exec_command;run({cmd:" + json.dumps(COMMAND) + "});",
             "text(tools.wait?tools.unknown__run({}):tools.clock__curr_time({}));",
+            "await {then:tools.unknown__run};",
+            "text({toJSON:tools.unknown__run});",
+            "String({valueOf:tools.unknown__run});",
         ):
             with self.subTest(source=source):
                 self.assertTrue(check_claims.history.literal_targets(invocation(source), SESSION)["unresolved_invocations"])
+
+    def test_unrelated_loaded_data_and_loop_exits_do_not_obscure_literal_commands(self) -> None:
+        for source in (
+            'const prev=load("results");const cmd="cat README.md";text(await tools.exec_command({cmd}));',
+            'for(const n of [1]){break;}store("read","cat README.md");text(await tools.exec_command({cmd:load("read")}));',
+            'store("read","cat README.md");for(const n of [1]){continue;}text(await tools.exec_command({cmd:load("read")}));',
+        ):
+            with self.subTest(source=source):
+                report = check_claims.history.literal_targets(invocation(source), SESSION)
+                self.assertFalse(report["targets"])
+                self.assertFalse(report["unresolved_invocations"])
 
     def test_read_only_discovery_cells_do_not_create_claim_uncertainty(self) -> None:
         reads = [
@@ -123,15 +138,18 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                     {"targets": set(), "unresolved_invocations": []},
                 )
 
-    def test_native_thread_reads_preserve_claim_discovery(self) -> None:
+    def test_native_data_reads_preserve_claim_discovery(self) -> None:
         cells = (
-            'text(await tools.codex_tui__list_threads({limit:40}));'
+            "text(await tools.codex_tui__list_threads({limit:40}));"
             'text(await tools.exec_command({cmd:"git diff --stat origin/main...origin/work/read-coverage"}));'
             'text(await tools.exec_command({cmd:"rg claim cli-reference.md"}));',
             'text(await tools.codex_tui__read_thread({threadId:"fixture-thread",turnLimit:1,'
-            'includeOutputs:false,maxOutputCharsPerItem:5000}));'
+            "includeOutputs:false,maxOutputCharsPerItem:5000}));"
             'text(await tools.exec_command({cmd:"git status --short --branch"}));'
             'text(await tools.exec_command({cmd:"gh-plan.py --repo test/a show 52 --full"}));',
+            'const result=await Promise.allSettled([tools.exec_command({cmd:"cat README.md"}),'
+            'tools.exec_command({cmd:"sed -n 1,5p source.py"})]);result.forEach(r=>text(r));'
+            'const v=await tools.view_image({path:"/fixture/result.png"});image(v.image_url);',
         )
         for source in cells:
             with self.subTest(source=source):
@@ -150,7 +168,10 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                     source + 'text(await tools.exec_command({cmd:load("claim-command")}));',
                     source.replace("codex_tui__", "unknown__"),
                     source.replace("codex_tui__", "codex_tui__write_"),
+                    source.replace("tools.view_image", "tools.view_image_write"),
                 ):
+                    if opaque == source:
+                        continue
                     self.assertTrue(check_claims.history.literal_targets(invocation(opaque), SESSION)["unresolved_invocations"])
 
     def test_immediate_callbacks_still_discover_real_uncertain_claims(self) -> None:
