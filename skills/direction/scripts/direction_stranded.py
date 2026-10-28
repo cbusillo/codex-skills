@@ -301,7 +301,8 @@ def merged_review_due(record: dict, merged_at: dt.datetime | None, now: dt.datet
 def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: set[str],
            owners: set[str], gaps: list[dict] | None = None, director_names: tuple[str, ...] = (),
            delivery_view: dict | None = None, related_comments: list[dict] | None = None,
-           registers: list[dict] | None = None, worktrees: list[dict] | None = None) -> dict:
+           registers: list[dict] | None = None, worktrees: list[dict] | None = None,
+           supervisor_bodies: list[dict] | None = None) -> dict:
     """Interpret retained API facts. A finding requests review, never authorizes a write."""
     findings: list[dict] = []
     gaps = list(gaps or [])
@@ -370,7 +371,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
     director_terms = ["Director", *sorted(owners), *director_names]
     receiver_terms = ("Supervisor", "Director", "Owner", *owners, *director_names)
 
-    for record in records:
+    for record in records + (supervisor_bodies or []):
         item, repo = record["item"], record["repo"]
         url = item.get("html_url") or f"https://github.com/{repo}/issues/{item['number']}"
         if item.get("state") == "open" and "pull_request" not in item:
@@ -378,8 +379,9 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                 add("supervisor_next_action", record, url, record.get("status_body_updated_at"), "Supervisor / triage session",
                     "Current Status routes the next action to the Supervisor. Do the Supervisor-only step, "
                     "or name the next agent and its concrete step.", evidence=[routed])
-        if record.get("inventory_only"):
-            continue
+    for record in records:
+        item, repo = record["item"], record["repo"]
+        url = item.get("html_url") or f"https://github.com/{repo}/issues/{item['number']}"
         trigger = record.get("reopen_trigger")
         if item.get("state") == "closed" and "pull_request" not in item and trigger and record.get("trigger_fired") is True:
             add("reopen_trigger_fired", record, url, None, "Repository agent / Supervisor",
@@ -780,7 +782,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                 for item in issues:
                     if (type(item.get("number")) is int and item.get("state") == "open"
                             and "pull_request" not in item and supervisor_next_action(item.get("body"))):
-                        supervisor_bodies[(repo, item["number"])] = {"repo": repo, "item": item, "comments": [], "inventory_only": True}
+                        supervisor_bodies[(repo, item["number"])] = {"repo": repo, "item": item}
         for repo, metadata, issues in inventories:
             policy = None
             if any("pull_request" in item and item.get("state") == "open" for item in issues):
@@ -873,11 +875,10 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                         status_body_time(record)
                 records.append(record)
                 collected.add((repo, number))
-    records.extend(record for key, record in supervisor_bodies.items() if key not in collected)
     # A Track's children live in other repositories; reuse their collected
     # discussions and read only changed, uncollected ones after Last verified.
-    known = {(r["repo"], r["item"]["number"]): r for r in records if not r.get("trigger_only") and not r.get("inventory_only")}
-    for record in [r for r in records if not r.get("inventory_only") and is_track(r)]:
+    known = {(r["repo"], r["item"]["number"]): r for r in records if not r.get("trigger_only")}
+    for record in [r for r in records if is_track(r)]:
         verified = verified_at(record["item"].get("body"))
         before = len(gaps)
         children = []
@@ -925,6 +926,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                     owners={director} if director else {r.split('/')[0] for r in repos} | ({owner} if owner else set()),
                     gaps=gaps, director_names=director_names, delivery_view=delivery_view,
                     related_comments=related_comments, registers=registers,
+                    supervisor_bodies=[record for key, record in supervisor_bodies.items() if key not in collected],
                     worktrees=finished_worktrees(
                         worktree_root, fetch, gaps,
                         lambda slug: slug.casefold() in repos or (owner or "").casefold() == slug.split("/")[0].casefold(),

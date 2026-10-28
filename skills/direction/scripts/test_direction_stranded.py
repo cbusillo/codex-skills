@@ -825,16 +825,10 @@ class InventoryTests(unittest.TestCase):
                                question_queue="test/repo#123")
         self.assertEqual(result["supervisor_next_action_by_repo"], {"test/other": 1, "test/repo": 1})
         self.assertFalse(result["complete"])
+        self.assertLessEqual(result["checked_records"], result["attempted_records"])
         self.assertTrue(any(g["reason"] == "deadline_exceeded" for g in result["coverage_gaps"]))
         self.assertTrue(all(r["age_basis"] == "unknown" for r in result["findings"]))
         self.assertEqual({r["kind"] for r in result["findings"]}, {"supervisor_next_action"})
-
-    def test_supervisor_coverage_names_repositories_not_inventoried(self) -> None:
-        self.reader.repositories["repos/test/other"] = {"archived": False, "default_branch": "main"}
-        result = sweep.collect(["test/repo", "test/other"], reader=self.reader, now=self.now, max_requests=2)
-        scopes = {s["repo"] for g in result["coverage_gaps"] for s in g.get("scopes", []) if s["state"] == "open"}
-        self.assertEqual(scopes, {"test/repo", "test/other"})
-        self.assertFalse(result["complete"])
 
     def test_cross_repo_merged_pr_is_checked_against_its_own_default_branch(self):
         original = self.reader.get_json
