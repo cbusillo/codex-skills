@@ -3192,6 +3192,34 @@ def test_weekly_audit_records_once_every_adopted_repository_was_read() -> None:
         assert set(saved["audits"]) == {"o/direction", "o/a", "o/b"}, "each repository's own window still advances"
 
 
+def test_interrupted_weekly_audit_retains_the_advanced_repository_receipt() -> None:
+    module = load()
+    account = WeeklyAccount(module)
+    original = module.audit_one
+    calls = 0
+
+    def interrupt_second(*args: Any, **kwargs: Any) -> tuple[int, dict[str, Any]]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise KeyboardInterrupt
+        return original(*args, **kwargs)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        with patch.multiple(module, audit_one=interrupt_second):
+            try:
+                account.run(["--weekly", "--owner", "o"], marker)
+            except KeyboardInterrupt:
+                pass
+            else:
+                raise AssertionError("weekly audit was not interrupted")
+        saved = json.loads(marker.read_text())
+        assert set(saved["audits"]) == {"o/direction"}
+        receipt = saved["audit_receipts"]["o/direction"]
+        assert receipt["repo"] == "o/direction" and receipt["findings"]
+
+
 def test_weekly_discovery_and_repository_audits_share_one_invocation_read() -> None:
     module = load()
     account = WeeklyAccount(module)
