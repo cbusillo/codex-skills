@@ -15,6 +15,7 @@ import shlex
 import signal
 import subprocess
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -146,6 +147,18 @@ def preview_instructions(arguments: list[str]) -> dict:
 
 
 def instruction_warning(root: Path, installation: dict) -> str:
+    with ExitStack() as stack:
+        lock_path = update_lock_path(root)
+        if lock_path.exists():
+            lock = stack.enter_context(lock_path.open())
+            try:
+                fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return ""
+        return instruction_delivery_warning(root, installation)
+
+
+def instruction_delivery_warning(root: Path, installation: dict) -> str:
     if not all(installation.get(key) for key in ("home", "codex", "claude")):
         return ""
     destinations = [Path(installation["claude"]) / "CLAUDE.md", Path(installation["codex"]) / "AGENTS.md"]
@@ -180,9 +193,9 @@ def instruction_warning(root: Path, installation: dict) -> str:
         detail = "unconfirmed: " + ", ".join(str(path) for path in destinations)
         recovery = [*arguments, "--show-diff"]
     return (f"{DELIVERY_NOTICE} {detail}; run {shlex.join(['uv', 'run', *recovery])}; "
-            "after refresh, read the refreshed instructions and continue your brief in this session. "
-            "A newer catalog commit alone does not require a restart. Restart only if a changed instruction or tool "
-            "cannot be applied in this session; preserve and resume your own brief rather than waiting for a relaunch.")
+            "when the reported instructions are current, read them and continue your brief in this session. "
+            "A catalog refresh alone does not require a restart. If a tool cannot reload, use native resume "
+            "for this same session and brief; see README.md#runtime-binding-lookup.")
 
 
 def status_line(root: Path, *, observe: bool = False) -> str:
