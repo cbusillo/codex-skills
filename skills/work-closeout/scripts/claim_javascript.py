@@ -13,7 +13,7 @@ LITERAL_SHELL_VALUE = re.compile(r"[A-Za-z0-9_./@:+,%-][A-Za-z0-9_./@:+,%#-]*")
 LITERAL_EXPANSION_BYTES = 1 << 20
 LITERAL_LOOP_VALUES = 64
 
-NATIVE_NAMES = {"tools", "text", "image", "store", "load", "exit", "Promise", "JSON", "Object", "String", "ALL_TOOLS", "undefined"}
+NATIVE_NAMES = {"tools", "text", "store", "load", "exit", "Promise", "JSON", "Object", "String", "ALL_TOOLS", "undefined"}
 SHELL_TOOLS = {"exec_command", "shell_command", "shell", "write_stdin"}
 GITHUB_READ_TOOL = re.compile(r"mcp__codex_apps__github_(?:fetch|get|list|search|compare|download)(?:_[a-z0-9_]+)?")
 PROTOTYPE_NAMES = {
@@ -127,7 +127,6 @@ def native_property_condition(node: Node) -> bool:
         "ternary_expression",
         "if_statement",
         "while_statement",
-        "for_statement",
     } and node == parent.child_by_field_name("condition")
 
 
@@ -278,7 +277,7 @@ class JavascriptData:
             self.statement(function.child_by_field_name("body"), environment.copy())
             return "promise" if any(child.type == "async" for child in function.children) else "data"
         if callee.type == "identifier" and (
-            source(callee) in {"text", "image", "store", "load", "exit"}
+            source(callee) in {"text", "image", "store", "load", "exit"} and source(callee) not in environment
             or environment.get(source(callee), (None,))[0] == "function"
             or source(callee) == "String"
             and len(args) <= 1
@@ -398,7 +397,7 @@ class JavascriptData:
             self.expression(node, environment)
 
 
-class LiteralCommands:
+class LiteralData:
     def __init__(self, shell_word: re.Pattern, count_limit: int, byte_limit: int) -> None:
         self.shell_word = shell_word
         self.count_limit = count_limit
@@ -470,17 +469,6 @@ class LiteralCommands:
             return result
         if node.type == "call_expression":
             function = node.child_by_field_name("function")
-            if function.type == "identifier" and source(function) == "load":
-                args = children(node.child_by_field_name("arguments"))
-                if len(args) != 1:
-                    raise ValueError("load arguments")
-                key = self.value(args[0], environment)
-                if type(key) is not str:
-                    raise ValueError("load key")
-                stored = self.stored_values(node)
-                if key not in stored:
-                    raise ValueError("unknown load")
-                return stored[key]
             if function.type != "member_expression":
                 raise ValueError("call")
             receiver = function.child_by_field_name("object")
@@ -531,51 +519,6 @@ class LiteralCommands:
                     raise ValueError("template")
             return "".join(parts)
         raise ValueError(node.type)
-
-    def stored_values(self, node: Node) -> dict[str, object]:
-        root = node
-        while root.parent is not None:
-            root = root.parent
-        pending = [root]
-        stores = []
-        transfers = []
-        stored = {}
-        while pending:
-            candidate = pending.pop()
-            pending.extend(reversed(children(candidate)))
-            if candidate.type in {"break_statement", "continue_statement"}:
-                transfers.append(candidate)
-            if candidate.type != "call_expression":
-                continue
-            function = candidate.child_by_field_name("function")
-            if function.type != "identifier" or source(function) != "store":
-                continue
-            stores.append(candidate)
-        for candidate in stores:
-            statement = candidate
-            while statement.parent != root:
-                statement = statement.parent
-            if statement.end_byte >= node.start_byte or candidate.parent.type != "expression_statement":
-                raise ValueError("store order")
-            ancestor = candidate.parent
-            while ancestor != root:
-                if ancestor.type not in {"expression_statement", "statement_block", "for_in_statement"}:
-                    raise ValueError("conditional store")
-                if ancestor.type == "for_in_statement" and any(
-                    ancestor.start_byte <= transfer.start_byte < ancestor.end_byte for transfer in transfers
-                ):
-                    raise ValueError("store control flow")
-                ancestor = ancestor.parent
-            arguments = candidate.child_by_field_name("arguments")
-            args = children(arguments)
-            if len(args) != 2:
-                raise ValueError("store arguments")
-            for row in self.environments(arguments, strict=True):
-                key = self.value(args[0], row)
-                if type(key) is not str or key in stored or len(stored) >= self.count_limit:
-                    raise ValueError("store key")
-                stored[key] = self.value(args[1], row)
-        return stored
 
     def bind(self, pattern: Node | None, value: object, environment: dict) -> None:
         if pattern is None:
@@ -736,11 +679,130 @@ class LiteralCommands:
         return commands
 
 
+class LiteralCommands(LiteralData):
+    def __init__(self, shell_word: re.Pattern, count_limit: int, byte_limit: int) -> None:
+        super().__init__(shell_word, count_limit, byte_limit)
+        self.data = LiteralData(shell_word, count_limit, byte_limit)
+        self.stores: dict[Node, dict[str, list[Node]] | None] = {}
+        self.snapshots: dict[tuple[Node, str], object] = {}
+
+    def store_index(self, root: Node) -> dict[str, list[Node]]:
+        if root not in self.stores:
+            self.stores[root] = None
+            index: dict[str, list[Node]] = {}
+            pending = [root]
+            count = 0
+            while pending:
+                candidate = pending.pop()
+                pending.extend(reversed(children(candidate)))
+                if candidate.type != "call_expression":
+                    continue
+                function = candidate.child_by_field_name("function")
+                if function.type != "identifier" or source(function) != "store":
+                    continue
+                arguments = candidate.child_by_field_name("arguments")
+                args = children(arguments)
+                if len(args) != 2:
+                    raise ValueError("store arguments")
+                try:
+                    keys = [self.data.value(args[0], {})]
+                except (ValueError, SyntaxError):
+                    keys = [self.data.value(args[0], row) for row in self.data.environments(arguments)]
+                for key in keys:
+                    count += 1
+                    if type(key) is not str or count > self.count_limit:
+                        raise ValueError("store key")
+                    index.setdefault(key, []).append(arguments)
+            self.stores[root] = index
+        result = self.stores[root]
+        if result is None:
+            raise ValueError("unknown store keys")
+        return result
+
+    def stored_value(self, node: Node, key: str) -> object:
+        root = node
+        while root.parent is not None:
+            root = root.parent
+        writers = self.store_index(root).get(key, [])
+        if len(writers) != 1:
+            raise ValueError("store writer")
+        arguments = writers[0]
+        statement = arguments.parent
+        ancestor = statement.parent
+        loops = []
+        while ancestor != root:
+            if ancestor.type not in {"expression_statement", "statement_block", "for_in_statement"}:
+                raise ValueError("conditional store")
+            if ancestor.type == "for_in_statement":
+                loops.append(ancestor)
+            statement = ancestor
+            ancestor = ancestor.parent
+        if statement.end_byte >= node.start_byte:
+            raise ValueError("store order")
+        ancestor = node.parent
+        while ancestor != root:
+            if ancestor.type in {
+                "arrow_function",
+                "function_expression",
+                "for_in_statement",
+                "for_statement",
+                "while_statement",
+                "do_statement",
+            }:
+                raise ValueError("deferred load")
+            ancestor = ancestor.parent
+        pending = [root]
+        while pending:
+            candidate = pending.pop()
+            pending.extend(reversed(children(candidate)))
+            if candidate.type == "await_expression" and statement.start_byte <= candidate.start_byte < node.start_byte:
+                if not candidate.start_byte <= node.start_byte < candidate.end_byte:
+                    raise ValueError("suspended store")
+            if candidate.type in {"break_statement", "continue_statement"} and any(
+                loop.start_byte <= candidate.start_byte < loop.end_byte for loop in loops
+            ):
+                raise ValueError("store control flow")
+        snapshot = (arguments, key)
+        if snapshot not in self.snapshots:
+            self.snapshots[snapshot] = None
+            args = children(arguments)
+            values = [
+                self.data.value(args[1], row)
+                for row in self.data.environments(arguments, strict=True)
+                if self.data.value(args[0], row) == key
+            ]
+            if len(values) == 1:
+                self.snapshots[snapshot] = values[0]
+        value = self.snapshots[snapshot]
+        if value is None:
+            raise ValueError("unknown stored value")
+        return value
+
+    def _value(self, node: Node, environment: dict) -> object:
+        if node.type == "call_expression":
+            function = node.child_by_field_name("function")
+            if function.type == "identifier" and source(function) == "load":
+                args = children(node.child_by_field_name("arguments"))
+                if len(args) != 1:
+                    raise ValueError("load arguments")
+                key = self.data.value(args[0], environment)
+                if type(key) is not str:
+                    raise ValueError("load key")
+                return self.stored_value(node, key)
+        return super()._value(node, environment)
+
+
 def literal_commands(
-    arguments: Node, shell_word: re.Pattern, count_limit: int, byte_limit: int, *, occurrences: bool = False
+    arguments: Node,
+    shell_word: re.Pattern,
+    count_limit: int,
+    byte_limit: int,
+    *,
+    occurrences: bool = False,
+    reader: LiteralData | None = None,
 ) -> list[str] | None:
     try:
-        return LiteralCommands(shell_word, count_limit, byte_limit).commands(arguments, occurrences=occurrences)
+        return (reader or LiteralCommands(shell_word, count_limit, byte_limit)).commands(arguments, occurrences=occurrences)
     except (ValueError, KeyError, SyntaxError, RecursionError):
         return None
 

@@ -3449,6 +3449,7 @@ print(root)"""
                         )
                         + "\n"
                     )
+                    stream.write(json.dumps(native_terminal_result("read", javascript=True)) + "\n")
                 with patch.object(helper, "repository_reader") as reader, contextlib.redirect_stdout(io.StringIO()) as output:
                     code = helper.main(["--owner", "test", "--session", SESSION, "--transcript", entry["transcript"]])
                 report = json.loads(output.getvalue())

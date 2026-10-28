@@ -8,8 +8,11 @@ from __future__ import annotations
 import json
 import unittest
 from pathlib import Path
+from typing import Any
+from unittest.mock import patch
 
 import check_claims
+import claim_javascript
 
 SESSION = "native-session"
 COMMAND = "uv run gh-plan.py --repo test/a claim 5 --session native-session"
@@ -31,7 +34,8 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                 f"const cmds=nums.map(n=>`gh-plan.py --repo test/${{repo}} {verb} ${{n}} --session {SESSION}`);"
                 'store(repo+"-commands",cmds);}'
                 'const cmds=[...load("a-commands"),...load("b-commands")];'
-                "await Promise.allSettled(cmds.map(async cmd=>text(await tools.exec_command({cmd}))));"
+                "const results=await Promise.allSettled(cmds.map(async cmd=>text(await tools.exec_command({cmd}))));"
+                'store("results",results);'
             )
             with self.subTest(verb=verb):
                 report = check_claims.history.literal_targets(invocation(source), SESSION)
@@ -96,6 +100,64 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                 self.assertFalse(report["targets"])
                 self.assertFalse(report["unresolved_invocations"])
 
+    def test_unrelated_known_store_keys_do_not_poison_command_provenance(self) -> None:
+        for prefix, suffix in (
+            ('const out=await tools.exec_command({cmd:"cat x"});store("out",out);', ""),
+            ('if(true)store("summary",load("unknown"));', ""),
+            ('const save=()=>store("summary",load("unknown"));', ""),
+            ("", 'store("results",load("unknown"));'),
+        ):
+            with self.subTest(prefix=prefix, suffix=suffix):
+                source = prefix + 'store("c","cat x");text(await tools.exec_command({cmd:load("c")}));' + suffix
+                report = check_claims.history.literal_targets(invocation(source), SESSION)
+                self.assertFalse(report["targets"])
+                self.assertFalse(report["unresolved_invocations"])
+
+    def test_interleaved_unused_loads_have_bounded_work(self) -> None:
+        pairs = 20
+        source = "".join(f'const p{i}=load("x");store("s{i}","cat x");' for i in range(pairs))
+        source += 'text(await tools.exec_command({cmd:load("s0")}));'
+        calls = 0
+        original = claim_javascript.LiteralData.value
+
+        def counted(reader: Any, node: Any, environment: dict) -> object:
+            nonlocal calls
+            calls += 1
+            self.assertLess(calls, (pairs + 1) ** 3)
+            return original(reader, node, environment)
+
+        with patch.object(claim_javascript.LiteralData, "value", counted):
+            report = check_claims.history.literal_targets(invocation(source), SESSION)
+        self.assertFalse(report["targets"])
+        self.assertFalse(report["unresolved_invocations"])
+
+    def test_stored_commands_require_an_eager_exclusive_snapshot(self) -> None:
+        stored = 'store("c","cat x");'
+        execute = 'text(await tools.exec_command({cmd:load("c")}));'
+        for source in (
+            stored + 'text(await tools.exec_command({cmd:"sleep 1"}));' + execute,
+            stored + "for(const n of [1,2]){" + execute + "}",
+            stored + 'const run=()=>tools.exec_command({cmd:load("c")});run();',
+            stored + 'tools.clock__curr_time({}).then(()=>tools.exec_command({cmd:load("c")}));',
+            'for(const k of ["a","c"]){store(k,"cat x");await tools.clock__curr_time({});}' + execute,
+            stored + 'const save=()=>store("c","cat y");' + execute,
+        ):
+            with self.subTest(source=source):
+                self.assertTrue(check_claims.history.literal_targets(invocation(source), SESSION)["unresolved_invocations"])
+        rows = invocation(stored + execute)
+        other = invocation('store("c",' + json.dumps(COMMAND) + ");")
+        other = [{"payload": {**row["payload"], "call_id": "other"}} for row in other]
+        for records in (
+            rows[:1],
+            invocation(stored + execute, "Script running with cell ID 7"),
+            [rows[0], *other, rows[1]],
+        ):
+            with self.subTest(records=records):
+                self.assertTrue(check_claims.history.literal_targets(records, SESSION)["unresolved_invocations"])
+        snapshot = stored + 'const cmd=load("c");text(await tools.exec_command({cmd:"sleep 1"}));'
+        snapshot += "text(await tools.exec_command({cmd}));"
+        self.assertFalse(check_claims.history.literal_targets(invocation(snapshot), SESSION)["unresolved_invocations"])
+
     def test_read_only_discovery_cells_do_not_create_claim_uncertainty(self) -> None:
         reads = [
             'await Promise.allSettled([(async()=>text(await tools.exec_command({cmd:"gh-plan.py claim --help"})))(),'
@@ -140,6 +202,8 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
 
     def test_native_data_reads_preserve_claim_discovery(self) -> None:
         cells = (
+            'for(const image of ["postgres","odoo"])text(await tools.exec_command({cmd:`docker image inspect ${image}`}));',
+            'const image=await tools.view_image({path:"/fixture/result.png"});text(image.image_url);',
             "text(await tools.codex_tui__list_threads({limit:40}));"
             'text(await tools.exec_command({cmd:"git diff --stat origin/main...origin/work/read-coverage"}));'
             'text(await tools.exec_command({cmd:"rg claim cli-reference.md"}));',
@@ -169,6 +233,7 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                     source.replace("codex_tui__", "unknown__"),
                     source.replace("codex_tui__", "codex_tui__write_"),
                     source.replace("tools.view_image", "tools.view_image_write"),
+                    source + 'const image=load("renderer");image({});',
                 ):
                     if opaque == source:
                         continue

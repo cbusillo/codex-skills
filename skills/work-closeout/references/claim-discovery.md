@@ -76,12 +76,18 @@ Native `codex_tui__list_threads`, `codex_tui__read_thread` and `view_image` call
 are data reads too; their arguments and native `image` output undergo the same checks.
 Native property reads are admitted only as conditions or boolean/type tests;
 capability aliases and implicit invocation hooks stay conditional.
-Literal command decoding follows array spreads and scalar-producing inline maps,
-including values stored earlier in the same cell under unique literal keys.
-Every store must be unconditional, directly in the cell or a bounded literal
-`for...of` loop. Unknown or cross-cell loads, overwrites, conditional stores and
-stores whose enclosing top-level statement has not ended before the load stay
-conditional; no stored program is executed.
+Literal command decoding follows array spreads and scalar-producing inline maps.
+A loaded command snapshot needs one possible same-cell writer of its key,
+unconditional and executed exactly once before the eager load, with no intervening
+suspension. Its complete top-level statement must precede the load. Store keys
+and selected values use the existing load-free literal evaluator; store/load
+dependency chains remain conditional. Known different keys do not affect the
+snapshot, even when their values, timing or control flow are unknown. Unknown
+keys, same-key overwrites and deferred loads cannot prove provenance.
+The harness store is session-scoped serializable data. Stored command provenance
+also requires a complete, exclusive native cell window; missing completion,
+yielded or overlapping calls stay conditional. A snapshot captured before an
+await can still be used afterward in that window. No stored program is executed.
 GitHub connector operations named with the read verbs `fetch`, `get`, `list`,
 `search`, `compare` and `download` are data reads. Write verbs and unknown tool
 namespaces remain conditional; verbs are matched as prefixes of tool names.
