@@ -1455,7 +1455,11 @@ def classify_legacy_failure(
         disposition = "stop"
         retryable = False
         fallback_eligible = False
-        write_outcome = not_started
+        write_outcome = unknown
+        message = (
+            f"{stderr.strip()}; read back the PR before repairing the requested metadata "
+            "and issuing a new edit within existing authorization; other fields may already have changed"
+        )
     elif is_write and command_started and not stdout.strip() and _is_pr_create_validation_refusal(stderr):
         cause = "validation_error"
         disposition = "stop"

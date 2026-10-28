@@ -1279,7 +1279,7 @@ def test_pr_edit_missing_label_requires_one_exact_line_and_empty_stdout() -> Non
         operation="github.pr.edit",
     )
     assert exact.cause == "validation_error", exact
-    assert exact.write_outcome == "not_started", exact
+    assert exact.write_outcome == "unknown", exact
     assert exact.retryable is False and exact.fallback_eligible is False, exact
 
     for operation, stderr, stdout in (
@@ -1297,6 +1297,7 @@ def test_pr_edit_missing_label_requires_one_exact_line_and_empty_stdout() -> Non
             operation=operation,
         )
         assert failure.write_outcome == "unknown", failure
+        assert failure.cause != "validation_error", failure
 
 
 def test_legacy_unknown_rate_limit_uses_probe_bucket() -> None:
