@@ -2881,11 +2881,8 @@ def offline_retirement_records(root: Path) -> list[str]:
                                {"offline_retirement_record": str(path)})
 
     try:
-        # Shared inspection profiles/vcs.xml are copied by Git and do not prove
-        # this worktree was prepared. A virtualenv alone is not a registration either.
-        project_state = [path for path in children(root / ".idea")
-                         if path.name in {"misc.xml", "modules.xml", "workspace.xml", ".name"} or path.suffix == ".iml"]
-        for path in [*project_state, repository_preparation_receipt_path({"worktree_root": str(root)})]:
+        for path in [root / ".idea/workspace.xml", root / ".idea/.name",
+                     repository_preparation_receipt_path({"worktree_root": str(root)})]:
             if present(path):
                 raise InspectError("IDE preparation records exist; retain the worktree until separate legacy-state cleanup is proved.", 3,
                                    {"offline_retirement_record": str(path)})
