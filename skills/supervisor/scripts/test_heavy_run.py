@@ -142,6 +142,12 @@ class HeavyRunTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.context = multiprocessing.get_context("spawn")
+        self.binary = self.root / "bin"
+        self.binary.mkdir()
+        docker = self.binary / "docker"
+        fixture = Path(__file__).with_name("fixtures") / "heavy-docker.py"
+        docker.write_text(f"#!{sys.executable}\n" + fixture.read_text())
+        docker.chmod(0o700)
 
     def worker(self, name: str, slots: int = 1) -> BaseProcess:
         process = self.context.Process(target=take_slot, args=(self.root, name, slots))
@@ -223,12 +229,6 @@ class HeavyRunTests(unittest.TestCase):
         config = home / heavy_run.CONFIG_PATH
         config.parent.mkdir(parents=True, exist_ok=True)
         config.write_text(json.dumps({"cpus": 2, "memory": 1024 * 1024 * 1024, "slots": 1}))
-        binary = self.root / "bin"
-        binary.mkdir(exist_ok=True)
-        docker = binary / "docker"
-        fixture = Path(__file__).with_name("fixtures") / "heavy-docker.py"
-        docker.write_text(f"#!{sys.executable}\n" + fixture.read_text())
-        docker.chmod(0o700)
         source = self.root / "source"
         source.mkdir(mode=0o700, exist_ok=True)
         (source / "private.txt").write_text("private-test-output")
@@ -272,7 +272,7 @@ class HeavyRunTests(unittest.TestCase):
             ],
             env={
                 **os.environ,
-                "PATH": f"{binary}{os.pathsep}{os.environ['PATH']}",
+                "PATH": f"{self.binary}{os.pathsep}{os.environ['PATH']}",
                 "HEAVY_FIXTURE": str(self.root / "docker"),
                 "HEAVY_FAIL_CLEANUP": str(int(fail)),
                 "HEAVY_HOLD_CREATE": str(int(hold_create)),
