@@ -301,7 +301,8 @@ def merged_review_due(record: dict, merged_at: dt.datetime | None, now: dt.datet
 def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: set[str],
            owners: set[str], gaps: list[dict] | None = None, director_names: tuple[str, ...] = (),
            delivery_view: dict | None = None, related_comments: list[dict] | None = None,
-           registers: list[dict] | None = None, worktrees: list[dict] | None = None) -> dict:
+           registers: list[dict] | None = None, worktrees: list[dict] | None = None,
+           supervisor_bodies: list[dict] | None = None) -> dict:
     """Interpret retained API facts. A finding requests review, never authorizes a write."""
     findings: list[dict] = []
     gaps = list(gaps or [])
@@ -370,6 +371,14 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
     director_terms = ["Director", *sorted(owners), *director_names]
     receiver_terms = ("Supervisor", "Director", "Owner", *owners, *director_names)
 
+    for record in records + (supervisor_bodies or []):
+        item, repo = record["item"], record["repo"]
+        url = item.get("html_url") or f"https://github.com/{repo}/issues/{item['number']}"
+        if item.get("state") == "open" and "pull_request" not in item:
+            if routed := supervisor_next_action(item.get("body")):
+                add("supervisor_next_action", record, url, record.get("status_body_updated_at"), "Supervisor / triage session",
+                    "Current Status routes the next action to the Supervisor. Do the Supervisor-only step, "
+                    "or name the next agent and its concrete step.", evidence=[routed])
     for record in records:
         item, repo = record["item"], record["repo"]
         url = item.get("html_url") or f"https://github.com/{repo}/issues/{item['number']}"
@@ -477,11 +486,6 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                 add("aged_structured_wait", record, source.get("html_url") or url, since, "; ".join(receivers),
                     "Recorded receiver still has an unresolved wait. Body-only marker age is unknown; issue activity cannot reset the wait clock.",
                     evidence=wait["waits"])
-        if routed := supervisor_next_action(item.get("body")):
-            # Aged from the body edit, never from label or comment activity.
-            add("supervisor_next_action", record, url, record.get("status_body_updated_at"), "Supervisor / triage session",
-                "Current Status routes the next action to the Supervisor. Do the Supervisor-only step, "
-                "or name the next agent and its concrete step.", evidence=[routed])
         for text, due in dated_waits(item, wait):
             if due <= now:
                 add("passed_dated_wait", record, url, due, "Supervisor",
@@ -752,7 +756,9 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
     unread_scopes = []
     attempted_records = 0
     collected = set()
+    supervisor_bodies = {}
     for state in ("reopen_triggers", "open", "closed"):
+        inventories = []
         for repo in ordered_repos:
             if reads >= budget:
                 unread_scopes.append({"repo": repo, "state": state})
@@ -771,6 +777,13 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                 "state=closed&labels=" + quote(github_plan_trigger.INDEX_LABEL, safe="")
                 if state == "reopen_triggers" else f"state=closed&since={history_start.strftime('%Y-%m-%dT%H:%M:%SZ')}")
             issues = listing(f"repos/{repo}/issues?{suffix}")
+            inventories.append((repo, metadata, issues))
+            if state == "open":
+                for item in issues:
+                    if (type(item.get("number")) is int and item.get("state") == "open"
+                            and "pull_request" not in item and supervisor_next_action(item.get("body"))):
+                        supervisor_bodies[(repo, item["number"])] = {"repo": repo, "item": item}
+        for repo, metadata, issues in inventories:
             policy = None
             if any("pull_request" in item and item.get("state") == "open" for item in issues):
                 if policy_reader and reads < budget:
@@ -913,6 +926,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                     owners={director} if director else {r.split('/')[0] for r in repos} | ({owner} if owner else set()),
                     gaps=gaps, director_names=director_names, delivery_view=delivery_view,
                     related_comments=related_comments, registers=registers,
+                    supervisor_bodies=[record for key, record in supervisor_bodies.items() if key not in collected],
                     worktrees=finished_worktrees(
                         worktree_root, fetch, gaps,
                         lambda slug: slug.casefold() in repos or (owner or "").casefold() == slug.split("/")[0].casefold(),

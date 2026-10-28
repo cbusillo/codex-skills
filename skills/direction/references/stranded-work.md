@@ -146,7 +146,11 @@ unknown), next actor and review requirement:
   sweep's budget. An unreadable edit time is a coverage gap and the issue is
   still listed with unknown age. The result's `supervisor_next_action_by_repo`
   and a Markdown line give the count per repository. Status kept only in a
-  comment is not read for this check.
+  comment is not read for this check. Each state's repository inventories are
+  read before its discussions, so a busy repository cannot consume the discussion
+  budget before other repositories' issue bodies are seen. Supervisor routing
+  survives an unread discussion with unknown age; no other finding is inferred
+  from that body alone. Unread inventories still name their repository and state.
 - Existing train blocked views, aged from their label event, plus structured
   waits naming the Supervisor. Body-only waits have unknown age because
   unrelated issue activity must not reset their clock.
