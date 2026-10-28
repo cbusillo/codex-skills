@@ -4,6 +4,12 @@ description: Use to hand implementation work to a separate agent process on any 
 metadata:
   short-description: Brief, watch, nudge, and record agent sessions
 resources:
+  - path: scripts/heavy_run.py
+    kind: script
+    description: Queue capped local Docker runs through cleanup with private evidence.
+  - path: references/heavy-runs.md
+    kind: reference
+    description: Read before the next local heavy run, changing slots, or moving to a dedicated runner.
   - path: scripts/services.py
     kind: script
     description: Render persistent launchd jobs without installing them, and supervise bounded commands.
@@ -68,6 +74,11 @@ resources:
     kind: reference
     description: Rules every Supervisor brief carries by link, and the milestone lead brief template.
 commands:
+  - name: supervisor-heavy-run
+    source: skill
+    resource_path: scripts/heavy_run.py
+    example_argv: ["uv", "run", "scripts/heavy_run.py", "--manifest", "<private-run.json>", "--evidence", "<new-private-evidence>"]
+    purpose: Run one queued Docker job with CPU and memory caps and verified lifetime cleanup.
   - name: supervisor-services-render
     source: skill
     resource_path: scripts/services.py
@@ -501,7 +512,18 @@ current default-branch checkout to read its product section.
    own login. On an escalation, it leaves the `direction` label in place; the
    weekly direction audit judges the decision and removes it.
 3. **A check about every 23 minutes.** Rebuild the goal board first, under
-   [Milestone State](#milestone-state). Keep the session registry under
+   [Milestone State](#milestone-state). For staffing, poll existing `plan:active`
+   child issues, their claims and `gh-plan.py next` across the run's repositories.
+   Use the maintained readers' pagination and consume all returned results,
+   including child and comment results. Require their complete-coverage result;
+   a first page or the goal board's bounded window is not complete staffing
+   coverage. Report failed or incomplete reads
+   as unknown instead of building a parallel manual inventory. Staff actionable unclaimed children from that state; add no
+   staffing label and do not depend on a buried staffing-request comment.
+   Workers report on their child issues. Parents hold in-place Current Status
+   summaries and decisions, without per-slice comments or acknowledgements.
+   Local heavy runs use the [one locked entrypoint](references/heavy-runs.md),
+   replacing comment-based window grants and BEGIN/END handoffs. Keep the session registry under
    [Local State](#local-state). At takeover and each check, catch up any
    unverified catalog landings through
    [catalog landing verification](references/helpers.md#catalog-landing-verification),
