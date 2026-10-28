@@ -490,7 +490,7 @@ def exit_observer(text: str, tty: str | None) -> Callable[[], bool] | None:
         candidate_family not in {None, family} for _, candidate_family in candidates
     ):
         return None
-    return lambda: all(session_liveness.process_absent(pid) for pid, _ in candidates)
+    return lambda: all(session_liveness.process_absent(candidate_pid) for candidate_pid, _ in candidates)
 
 
 async def submit_message(
