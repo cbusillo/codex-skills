@@ -17,6 +17,7 @@ import unittest
 from decimal import Decimal
 from multiprocessing.process import BaseProcess
 from pathlib import Path
+from unittest.mock import patch
 
 import heavy_run
 
@@ -76,6 +77,49 @@ class HeavyRunTests(unittest.TestCase):
                 config.write_text(json.dumps({"executor": executor}))
                 with self.assertRaises(ValueError):
                     heavy_run.Settings.load(self.root)
+
+    def test_preparation_and_evidence_delivery_hold_the_execution_slot(self) -> None:
+        events = []
+        evidence = self.root / "evidence"
+        manifest = {"containers": [{"name": "job", "image": "fixture"}], "job": "job"}
+
+        def require_slot_held() -> None:
+            with heavy_run.locked_file(self.root / heavy_run.STATE_PATH / "slot-0.lock") as handle:
+                self.assertFalse(heavy_run.try_lock(handle))
+
+        def prepare(_docker: heavy_run.Docker) -> dict:
+            require_slot_held()
+            events.append("prepared")
+            return manifest
+
+        def complete(receipt: dict) -> None:
+            require_slot_held()
+            self.assertEqual(json.loads((evidence / "result.json").read_text()), receipt)
+            events.append("delivered")
+
+        with patch.object(heavy_run, "local_endpoint", return_value="unix:///fixture.sock"), patch.object(heavy_run, "recover"):
+            with patch.object(heavy_run.Docker, "run", return_value=(0, {})), patch.object(heavy_run.Docker, "cleanup") as cleanup:
+                self.assertEqual(heavy_run.run({}, evidence, heavy_run.Settings(), self.root, prepare, complete), 0)
+        cleanup.assert_called_once()
+        self.assertEqual(events, ["prepared", "delivered"])
+        with heavy_run.locked_file(self.root / heavy_run.STATE_PATH / "slot-0.lock") as handle:
+            self.assertTrue(heavy_run.try_lock(handle))
+
+    def test_canceled_preparation_cleans_and_delivers_receipt_without_starting_job(self) -> None:
+        evidence = self.root / "evidence"
+        delivered = []
+
+        def prepare(_docker: heavy_run.Docker) -> dict:
+            raise heavy_run.Canceled(signal.SIGTERM)
+
+        with patch.object(heavy_run, "local_endpoint", return_value="unix:///fixture.sock"), patch.object(heavy_run, "recover"):
+            with patch.object(heavy_run.Docker, "run") as execute, patch.object(heavy_run.Docker, "cleanup") as cleanup:
+                result = heavy_run.run({}, evidence, heavy_run.Settings(), self.root, prepare, delivered.append)
+        self.assertEqual(result, 128 + signal.SIGTERM)
+        execute.assert_not_called()
+        cleanup.assert_called_once()
+        self.assertTrue(delivered[0]["cleanup_complete"])
+        self.assertFalse(list((self.root / heavy_run.STATE_PATH).glob("custody-*")))
 
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
