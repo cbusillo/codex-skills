@@ -4255,6 +4255,85 @@ def _protected_artifacts_response() -> dict[str, Any]:
     }
 
 
+def _retained_manifest_provenance() -> dict[str, Any]:
+    image = {"repository": "ghcr.io/example/app", "digest": "sha256:" + "a" * 64, "tags": ["stable"]}
+    return {
+        "schema_version": 2,
+        "source_commit": "a" * 40,
+        "image": image,
+        "build_provenance": {
+            "base_images": [{"role": "runtime", "image": image, "source_repository": "example/base", "source_ref": "main"}],
+            "build_tools": [{"name": "builder", "version": "1.2", "source_repository": "", "source_ref": ""}],
+        },
+        "addon_sources": [{"repository": "example/addons", "ref": "main"}],
+        "addon_selectors": [{"repository": "example/addons", "selector": "stable", "resolved_ref": "b" * 40}],
+        "source_build": {
+            "repository": "example/app", "repository_id": "42", "workflow_path": ".github/workflows/build.yml",
+            "event": "push", "purpose": "release", "pull_request_number": None, "run_id": 123,
+            "run_attempt": 1, "github_artifact_id": 456, "manifest_artifact_id": "retained-manifest",
+        },
+    }
+
+
+def test_retained_manifest_projection_and_omission_coverage() -> None:
+    response = _protected_artifacts_response()
+    entry = response["protected_artifacts"]["entries"][0]
+    provenance = _retained_manifest_provenance()
+    entry["manifest_provenance"] = provenance
+    argv = ["protected-artifacts-read", "--product", "example-product"]
+    status, payload, _ = _run_product_read(argv, response)
+    assert status == 0
+    projected = payload["result"]["entries"][0]
+    assert projected["manifest_provenance"] == provenance
+    assert projected["manifest_provenance_coverage"]["status"] == "complete"
+    assert projected["manifest_provenance_coverage"]["dropped_field_count"] == 0
+    provenance["source_build"] = None
+    provenance["schema_version"] = 1
+    status, payload, _ = _run_product_read(argv, response)
+    assert status == 0 and payload["result"]["entries"][0]["manifest_provenance"] == provenance
+    provenance["build_flags"] = {"values": {"PRIVATE_SETTING": "private-build-value"}}
+    provenance["image"]["private-field-name"] = "private-field-value"
+    provenance["addon_sources"] *= write_action.PROTECTED_ARTIFACTS_MAX_PROVENANCE_ITEMS + 1
+    status, payload, _ = _run_product_read(argv, response)
+    assert status == 0
+    projected = payload["result"]["entries"][0]
+    coverage = projected["manifest_provenance_coverage"]
+    assert coverage["status"] == "partial" and coverage["dropped_field_count"] > 0
+    assert len(projected["manifest_provenance"]["addon_sources"]) == write_action.PROTECTED_ARTIFACTS_MAX_PROVENANCE_ITEMS
+    assert any("addon_sources" in path for path in coverage["dropped_field_paths"])
+    serialized = json.dumps(payload)
+    for withheld in ("PRIVATE_SETTING", "private-build-value", "private-field-name", "private-field-value"):
+        assert withheld not in serialized
+
+
+def test_retained_manifest_unavailable_partial_and_unsafe() -> None:
+    argv = ["protected-artifacts-read", "--product", "example-product"]
+    for provenance in (None, {"schema_version": 99}):
+        response = _protected_artifacts_response()
+        response["protected_artifacts"]["entries"][0]["manifest_provenance"] = provenance
+        status, payload, _ = _run_product_read(argv, response)
+        assert status == 0
+        entry = payload["result"]["entries"][0]
+        assert entry["manifest_provenance"] is None
+        assert entry["manifest_provenance_coverage"]["status"] != "complete"
+    for field, value in (("source_commit", "main"), ("image", {}), ("source_build", {"run_id": True})):
+        response = _protected_artifacts_response()
+        provenance = _retained_manifest_provenance()
+        provenance[field] = value
+        response["protected_artifacts"]["entries"][0]["manifest_provenance"] = provenance
+        status, payload, _ = _run_product_read(argv, response)
+        assert status == 0
+        assert payload["result"]["entries"][0]["manifest_provenance_coverage"]["status"] == "partial"
+    for field, value in (("source_commit", "ghp_synthetic"), ("image", {"repository": "user:pass@host/app", "digest": "sha256:" + "a" * 64})):
+        response = _protected_artifacts_response()
+        provenance = _retained_manifest_provenance()
+        provenance[field] = value
+        response["protected_artifacts"]["entries"][0]["manifest_provenance"] = provenance
+        status, payload, _ = _run_product_read(argv, response)
+        assert status == 1 and not payload["result"]
+        assert str(value) not in json.dumps(payload)
+
+
 def test_protected_artifacts_read_projection_and_query() -> None:
     response = _protected_artifacts_response()
     for context in (None, "example-context"):
@@ -4271,12 +4350,10 @@ def test_protected_artifacts_read_projection_and_query() -> None:
         assert "protected-artifacts-read" in write_action.READ_ONLY_OPERATIONS
         result = payload["result"]
         original = response["protected_artifacts"]["entries"][0]
-        assert result["entries"][0] == {
-            key: original[key] for key in (
-                "reason", "context", "instance", "artifact_id", "source_record_type",
-                "source_record_id", "image_digest",
-            )
-        }
+        fields = ("reason", "context", "instance", "artifact_id", "source_record_type", "source_record_id", "image_digest")
+        assert {key: result["entries"][0][key] for key in fields} == {key: original[key] for key in fields}
+        assert result["entries"][0]["manifest_provenance"] is None
+        assert result["entries"][0]["manifest_provenance_coverage"]["status"] == "unavailable"
         assert result["warnings"] == response["protected_artifacts"]["warnings"]
         assert result["warning_count"] == 1 and result["entry_count"] == 1
         assert not result["entries_truncated"] and not result["warnings_truncated"]
@@ -4325,7 +4402,9 @@ def test_protected_artifacts_read_preserves_digest_bearing_record_ids() -> None:
     assert result["warning_count"] == len(inventory["warnings"])
     assert not result["entries_truncated"] and not result["warnings_truncated"]
     for projected, source in zip(result["entries"], inventory["entries"], strict=True):
-        assert projected == {key: source[key] for key in projected}
+        assert {key: projected[key] for key in source if key in projected} == {key: source[key] for key in projected if key in source}
+        assert projected["manifest_provenance"] is None
+        assert projected["manifest_provenance_coverage"]["status"] == "unavailable"
         assert projected["source_record_id"] == source["source_record_id"]
     assert result["warnings"] == [
         write_action.public_operator_text(warning) for warning in inventory["warnings"]

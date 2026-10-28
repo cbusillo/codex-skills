@@ -536,7 +536,18 @@ installed local helper bindings.
   sanitized by `public_operator_text`. `entry_count` and `warning_count`
   describe the full response; `entries_truncated` and `warnings_truncated`
   disclose omitted rows. Unknown entry fields and image reference lists are
-  dropped. Artifact ids may be registry references with an optional SHA-256
+  dropped. Each entry also returns optional typed `manifest_provenance` (source
+  commit, image, base images/build tools, addon sources/selectors and source-build
+  receipt) and `manifest_provenance_coverage`. Coverage is `unavailable` for an
+  absent/null manifest, `unsupported` for an unrecognized schema/shape, `partial`
+  when fields/items were dropped, or `complete` for the supported projection.
+  `dropped_field_count` and bounded, static `dropped_field_paths` disclose missing,
+  malformed, unlisted and truncated metadata without echoing unknown field names
+  or values. Each nested list is capped at 50 items. Arbitrary build values and
+  package inventories are omitted. Coverage describes representation only:
+  compare manifest and retained/runtime image identity before attribution; floating
+  refs remain unqualified, and addon sources are not an installed-module inventory.
+  Older services need no metadata field. Artifact ids may be registry references with an optional SHA-256
   digest suffix; credential-bearing userinfo is refused in ids and warning text.
   Empty artifact ids remain valid for preview feedback protecting image references
   only. Source record ids are required and can embed a digest-pinned image reference
