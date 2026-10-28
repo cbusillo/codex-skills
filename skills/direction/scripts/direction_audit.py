@@ -2217,8 +2217,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if result["ok"] else 3
 
     if args.weekly:
-        def emit_weekly(result: dict[str, Any]) -> None:
-            print(json.dumps(result, indent=2, sort_keys=True), flush=True)
+        def emit_weekly(receipt_data: dict[str, Any]) -> None:
+            print(json.dumps(receipt_data, indent=2, sort_keys=True), flush=True)
 
         code, result = weekly_audit(args.owner, gh=args.gh, automation=args.automation,
                                     include_archived=args.include_archived, emit=emit_weekly)

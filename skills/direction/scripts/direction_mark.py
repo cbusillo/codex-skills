@@ -17,6 +17,7 @@ import tempfile
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
+from typing import cast
 
 MARKER_NAME = "direction-last-check.json"
 GITHUB_SCRIPTS = Path(__file__).resolve().parents[2] / "github" / "scripts"
@@ -124,14 +125,14 @@ def mark_weekly(path: Path, owner: str, now: dt.datetime) -> dict[str, object]:
 def _apply_audit_update(current: dict[str, object], update: dict[str, object]) -> bool:
     audits, runs = current["audits"], current.get("audit_runs", {})
     assert isinstance(audits, dict) and isinstance(runs, dict)
-    repo = str(update["repo"])
+    repo = cast(str, update["repo"])
     if update["action"] == "drop":
         changed = repo in audits or repo in runs
         audits.pop(repo, None)
         runs.pop(repo, None)
         return changed
     current["audit_runs"] = runs
-    stamp = str(update["stamp"])
+    stamp = cast(str, update["stamp"])
     held = update.get("held")
     if held is None:
         audits[repo] = stamp
@@ -140,7 +141,7 @@ def _apply_audit_update(current: dict[str, object], update: dict[str, object]) -
         runs[repo] = {"ran": stamp, "held": held}
         since = update.get("since")
         if since is not None:
-            audits.setdefault(repo, str(since))
+            audits.setdefault(repo, cast(str, since))
     return True
 
 
