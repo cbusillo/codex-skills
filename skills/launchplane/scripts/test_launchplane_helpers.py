@@ -4330,8 +4330,39 @@ def test_retained_manifest_unavailable_partial_and_unsafe() -> None:
         provenance[field] = value
         response["protected_artifacts"]["entries"][0]["manifest_provenance"] = provenance
         status, payload, _ = _run_product_read(argv, response)
-        assert status == 1 and not payload["result"]
-        assert str(value) not in json.dumps(payload)
+        if field == "source_commit":
+            assert status == 1 and not payload["result"]
+        else:
+            assert status == 0
+            projected = payload["result"]["entries"][0]
+            assert "repository" not in projected["manifest_provenance"]["image"]
+            assert projected["manifest_provenance_coverage"]["status"] == "partial"
+        assert "user:pass" not in json.dumps(payload)
+        assert "ghp_synthetic" not in json.dumps(payload)
+    response = _protected_artifacts_response()
+    provenance = _retained_manifest_provenance()
+    provenance["build_provenance"]["build_tools"][0]["version"] = "uv@0.5.1"
+    provenance["addon_sources"].append("malformed")
+    provenance["image"]["tags"] += ["user:pass@host", "bad tag"]
+    provenance["source_build"]["run_id"] = True
+    entry = response["protected_artifacts"]["entries"][0]
+    entry["manifest_provenance"] = provenance
+    entry["source_git_ref"] = "main"
+    entry["image_references"] *= write_action.PROTECTED_ARTIFACTS_MAX_PROVENANCE_ITEMS + 1
+    status, payload, _ = _run_product_read(argv, response)
+    assert status == 0
+    projected = payload["result"]["entries"][0]
+    assert projected["source_git_ref"] == "main"
+    assert projected["identity_coverage"]["status"] == "partial"
+    assert len(projected["image_references"]) == write_action.PROTECTED_ARTIFACTS_MAX_PROVENANCE_ITEMS
+    manifest = projected["manifest_provenance"]
+    assert "version" not in manifest["build_provenance"]["build_tools"][0]
+    assert "run_id" not in manifest["source_build"]
+    assert manifest["addon_sources"] == provenance["addon_sources"][:-1]
+    assert manifest["image"]["tags"] == provenance["image"]["tags"][:-2]
+    assert projected["manifest_provenance_coverage"]["status"] == "partial"
+    assert payload["result"]["warnings"] == response["protected_artifacts"]["warnings"]
+    assert "user:pass" not in json.dumps(payload)
 
 
 def test_protected_artifacts_read_projection_and_query() -> None:
@@ -4357,7 +4388,8 @@ def test_protected_artifacts_read_projection_and_query() -> None:
         assert result["warnings"] == response["protected_artifacts"]["warnings"]
         assert result["warning_count"] == 1 and result["entry_count"] == 1
         assert not result["entries_truncated"] and not result["warnings_truncated"]
-        assert "private-registry" not in json.dumps(payload)
+        assert result["entries"][0]["image_repository"] == original["image_repository"]
+        assert result["entries"][0]["image_references"] == original["image_references"]
         assert "private-entry-field" not in json.dumps(payload)
 
 
@@ -4410,7 +4442,7 @@ def test_protected_artifacts_read_preserves_digest_bearing_record_ids() -> None:
         write_action.public_operator_text(warning) for warning in inventory["warnings"]
     ]
     assert "private-entry-field" not in json.dumps(payload)
-    assert "private-registry" not in json.dumps(payload)
+    assert result["entries"][0]["image_references"] == original["image_references"]
 
 
 def test_protected_artifacts_read_rejects_unsafe_record_ids() -> None:

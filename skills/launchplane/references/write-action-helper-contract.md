@@ -535,8 +535,10 @@ installed local helper bindings.
   source record type and id, and image digest, plus up to 50 warning texts
   sanitized by `public_operator_text`. `entry_count` and `warning_count`
   describe the full response; `entries_truncated` and `warnings_truncated`
-  disclose omitted rows. Unknown entry fields and image reference lists are
-  dropped. Each entry also returns optional typed `manifest_provenance` (source
+  disclose omitted rows. Unknown entry fields are dropped. Entries also retain
+  `source_git_ref`, `image_repository` and up to 50 `image_references`, with
+  `identity_coverage` disclosing missing, malformed or truncated identity fields.
+  Each entry also returns optional typed `manifest_provenance` (source
   commit, image, base images/build tools, addon sources/selectors and source-build
   receipt) and `manifest_provenance_coverage`. Coverage is `unavailable` for an
   absent/null manifest, `unsupported` for an unrecognized schema/shape, `partial`
@@ -547,14 +549,15 @@ installed local helper bindings.
   package inventories are omitted. Coverage describes representation only:
   compare manifest and retained/runtime image identity before attribution; floating
   refs remain unqualified, and addon sources are not an installed-module inventory.
-  Older services need no metadata field. Artifact ids may be registry references with an optional SHA-256
-  digest suffix; credential-bearing userinfo is refused in ids and warning text.
+  Older services need no metadata field. Invalid optional fields/items are omitted;
+  token-like values still fail the read. Artifact ids may be registry references
+  with an optional SHA-256 digest suffix; credential-bearing userinfo is refused in ids and warning text.
   Empty artifact ids remain valid for preview feedback protecting image references
   only. Source record ids are required and can embed a digest-pinned image reference
   (for example, a release-tuple id); they use the same SHA-256 suffix and userinfo
   checks as artifact ids. Nonempty image digests must be SHA-256, and lane names
-  cannot contain `@`. Malformed retained fields fail the read. This diagnostic projection
-  is not a complete registry-cleanup retention set when truncated.
+  cannot contain `@`. Malformed required retained fields fail the read. This
+  diagnostic projection is not a complete registry-cleanup retention set when truncated.
 - `product-profile-read --product` calls `GET /v1/product-profiles/{product}`
   and returns the product's Client GitHub login and review label, `production_use`,
   `release_on_acceptance`, lifecycle state, display name, driver, repository and
