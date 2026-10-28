@@ -10,10 +10,10 @@ metadata:
 Find current documentation or environment-specific operational context when
 local code alone cannot answer the task. Typical requests involve versioned
 APIs, SDKs, frameworks, CLIs, cloud services, deployment, packaging, integration
-contracts, private DNS/provider access, credential locations, or facts about the
-user's devices, radios, networks, accounts, and installed equipment or software.
-For setup questions, use the source routing below to check the user's docs or
-reachable systems before asking; ask only for facts those sources cannot settle.
+contracts, private DNS/provider access, credential locations, or setup facts.
+For setup questions, check the user's docs through the source routing below;
+when live evidence is needed, use the owning operations skill for a read-only
+check before asking. Ask only for facts those sources cannot settle.
 Stable checked-in code facts do not need this skill. For OpenAI questions, use
 `openai-docs`, which supersedes this workflow.
 
