@@ -1,6 +1,6 @@
 ---
 name: docs-lookup
-description: Use when the answer depends on external docs or environment-specific operational context rather than local repo code alone; includes discovering source-of-truth docs and access paths for private operations such as DNS or Cloudflare records, and finding where a credential, API token, or secret is stored, but not performing infrastructure actions or mutations.
+description: Use when the answer depends on external docs, environment-specific operational context, or facts about the user's own setup, including devices, radios, networks, accounts, or what is installed where. Look up setup facts in the user's docs or reachable systems before asking the user. Includes discovering source-of-truth docs and access paths for private operations such as DNS or Cloudflare records, and finding where a credential, API token, or secret is stored, but not performing infrastructure actions or mutations.
 metadata:
   short-description: Find external docs and ops context
 ---
@@ -10,8 +10,11 @@ metadata:
 Find current documentation or environment-specific operational context when
 local code alone cannot answer the task. Typical requests involve versioned
 APIs, SDKs, frameworks, CLIs, cloud services, deployment, packaging, integration
-contracts, private DNS/provider access, or credential locations. Stable
-checked-in facts do not need this skill. For OpenAI questions, use
+contracts, private DNS/provider access, credential locations, or setup facts.
+For setup questions, check the user's docs through the source routing below;
+when live evidence is needed, use the owning operations skill for a read-only
+check before asking. Ask only for facts those sources cannot settle.
+Stable checked-in code facts do not need this skill. For OpenAI questions, use
 `openai-docs`, which supersedes this workflow.
 
 This skill discovers docs and access paths. Once the request needs live
