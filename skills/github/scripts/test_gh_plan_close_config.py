@@ -22,6 +22,7 @@ from unittest.mock import Mock, patch
 SCRIPT = Path(__file__).with_name("gh-plan.py")
 sys.path.insert(0, str(SCRIPT.parent))
 import github_work_graph
+import github_plan_claim
 SPEC = importlib.util.spec_from_file_location("gh_plan_close_config_under_test", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 PLAN: Any = importlib.util.module_from_spec(SPEC)
@@ -71,7 +72,9 @@ class CloseConfigTests(unittest.TestCase):
                 get_issue=Mock(return_value=("fixture-bot", issue)),
                 collect_paged_rest_items=Mock(return_value=("fixture-bot", comments)),
                 read_issue_relationships=relationships, wait_authors=Mock(return_value={"fixture"}),
-                next_source_delivery=Mock(return_value={"complete": True, "merged_prs": []})), \
+                next_source_delivery=Mock(side_effect=AssertionError("Launch admission must not rank source delivery"))), \
+                patch.object(github_plan_claim, "local_inventory", return_value={
+                    "local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}), \
                 patch.object(github_work_graph, "ownership_inventory", return_value={
                     "complete": True, "pulls": pulls or [], "coverage": {}, "inventory": {}}), contextlib.redirect_stdout(output):
             PLAN.cmd_show(PLAN.build_parser().parse_args(["--repo", "fixture/local", "show", "fixture/target#7", "--full",
@@ -140,6 +143,17 @@ class CloseConfigTests(unittest.TestCase):
             release["user"] = {"login": author}
             result, _, _ = self.show_fixture(launch=True, comments_extra=[claim, release], pulls=[retained], resume=2)
             self.assertEqual(result["issue"]["launch_check"]["allowed"], allowed)
+        for body in ("Released claim 2", "Released claim 2\n\nMerged PR: https://github.com/fixture/target/pull/80"):
+            release["body"] = body
+            result, _, _ = self.show_fixture(launch=True, comments_extra=[claim, release], resume=2)
+            self.assertTrue(result["issue"]["launch_check"]["allowed"])
+        another_owner = {"id": 4, "user": {"login": "fixture"}, "body": PLAN.github_plan_claim.marker({
+            **source, "session": "other", "branch": "work/other"})}
+        result, _, _ = self.show_fixture(launch=True, comments_extra=[claim, release, another_owner], resume=2)
+        self.assertFalse(result["issue"]["launch_check"]["allowed"])
+        for read_only in (False, True):
+            result, _, _ = self.show_fixture(launch=True, read_only=read_only, pulls=[{**retained, "user": {"login": "human"}}])
+            self.assertEqual(result["issue"]["launch_check"]["allowed"], read_only)
         for read_only, extra, allowed in ((False, [], False), (True, [], True), (True, [claim], False)):
             result, _, _ = self.show_fixture(launch=True, read_only=read_only, comments_extra=extra,
                 enrichment={"blocked_by": [{"repo": "fixture/gate", "number": 8, "state": "open"}], "sub_issues": []})

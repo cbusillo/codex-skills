@@ -86,8 +86,8 @@ class LaunchIssueTests(unittest.TestCase):
             self.assertFalse(calls[-1].read_only)
             iterm_tab.check_launch_issue(brief.replace("Anchor:", "Read-only anchor:"))
             self.assertTrue(calls[-1].read_only)
-            for anchor in ("- Anchor:", "**Anchor:**"):
-                iterm_tab.check_launch_issue(brief.replace("Anchor:", anchor) + "#issuecomment-123\nResume from: 123")
+            for anchor, resume in (("- Anchor:", "- Resume from: 123"), ("**Anchor:**", "**Resume from:** 123")):
+                iterm_tab.check_launch_issue(brief.replace("Anchor:", anchor) + "#issuecomment-123\n" + resume)
                 self.assertEqual(calls[-1].resume_from, 123)
         for missing in ("Implement export", "Anchor: https://github.com/fixture/repo/issues/7/other"):
             with self.subTest(missing=missing), self.assertRaises(ValueError):

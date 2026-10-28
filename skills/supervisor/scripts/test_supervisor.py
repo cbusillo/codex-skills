@@ -2240,6 +2240,7 @@ def write_codex_project_fixture(directory, home):
 
 class CodexProjectTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch.object(iterm_tab, "check_launch_issue"))
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(folder.name) / "absent")
@@ -2456,6 +2457,7 @@ class ClaudeTrustTests(unittest.TestCase):
     """Folder trust in every configured Claude home, with fixture homes only (codex-skills#2100)."""
 
     def setUp(self):
+        self.enterContext(patch.object(iterm_tab, "check_launch_issue"))
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.root = Path(folder.name).resolve()
@@ -2626,9 +2628,6 @@ class ClaudeTrustTests(unittest.TestCase):
 
 
 class TerminalTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.enterContext(patch.object(iterm_tab, "check_launch_issue"))
-
     def test_account_launch_label_preserves_exec_and_does_not_escape_a_returning_worker(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -2664,6 +2663,7 @@ class TerminalTests(unittest.TestCase):
                 self.assertEqual(after.stdout, "unlabelled")
 
     def setUp(self):
+        self.enterContext(patch.object(iterm_tab, "check_launch_issue"))
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(folder.name) / "absent")

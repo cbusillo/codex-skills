@@ -157,12 +157,47 @@ def remaining_work(status: str) -> dict[str, Any]:
             "reason": "current_source_action" if engineering else "current_scope_needs_review"}
 
 
+def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[str],
+                    resume_from: int | None = None) -> dict[str, Any]:
+    discussion = item.get("discussion") or {}
+    status = current_status(discussion, trusted, body_recorded_at=(item.get("source_delivery") or {}).get("body_recorded_at"))
+    comments = [{**comment, "user": {"login": comment.get("author") or ""}} for comment in discussion.get("comments", [])]
+    row = {"complete": ownership.get("complete") is True, "coverage": ownership.get("coverage", {})}
+    if discussion.get("complete") is not True:
+        return {**row, "error": "incomplete_discussion"}
+    if not discussion.get("author") or any(not comment.get("author") for comment in discussion.get("comments", [])):
+        return {**row, "error": "discussion_authorship_unknown"}
+    inventory = ownership.get("inventory") or {"local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}
+    retained = None
+    try:
+        ended = github_plan_claim.ended_ownership(comments, inventory)
+        conflicts, _ = github_plan_claim.discussion_evidence(status, comments,
+            {"worker": "", "session": "", "branch": "", "claimed_at": ""},
+            ended_claims={source["claim_id"] for source in ended})
+        wait = github_plan_wait.current(
+            {"body": discussion.get("body") or "", "user": {"login": discussion.get("author") or ""}}, comments, trusted)
+        if resume_from:
+            source = github_plan_claim.released_source(comments, resume_from)
+            retained = github_plan_claim.retained_handoff(
+                source, github_plan_claim.handoff_candidates(comments, source), ownership.get("pulls") or [],
+                issue_repo=item["repo"], issue_number=item["number"], target_repo=item["repo"])
+            if retained and retained["open_conflicts"]:
+                return {**row, "error": "retained_handoff_unavailable"}
+    except (ValueError, KeyError, TypeError) as exc:
+        return {**row, "error": "unreadable_ownership_or_wait", "detail": str(exc)}
+    branches = github_plan_claim.recorded_claim_branches(status, comments)
+    artifacts = github_plan_claim.artifact_evidence(inventory, ownership.get("pulls") or [], item["number"],
+        {"worker": "", "session": "", "branch": ""}, own_record=False, repo=item["repo"], recorded_branches=branches,
+        retained_branches=retained["permitted"] if retained else None, retained_repo=item["repo"] if retained else None,
+        ended_branches=github_plan_claim.ended_artifact_branches(ended, comments, ownership.get("pulls") or []))
+    return {**row, "conflicts": conflicts, "artifacts": artifacts, "wait": wait}
+
+
 def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[str]) -> dict[str, Any]:
     discussion = item.get("discussion") or {}
     delivery = item.get("source_delivery") or {}
     status = current_status(discussion, trusted, body_recorded_at=delivery.get("body_recorded_at"))
     work = remaining_work(status)
-    comments = [{**comment, "user": {"login": comment.get("author") or ""}} for comment in discussion.get("comments", [])]
     row = {**work, "claim_required": True, "ownership_complete": False,
            "ownership_source": "current_reads", "ownership_coverage": ownership.get("coverage", {}),
            "observed_ownership_complete": ownership.get("complete") is True}
@@ -195,36 +230,10 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
         if predates or not distinct_remainder:
             work = {**work, "state": "scope_review", "reason": "source_action_predates_merged_pr" if predates and recorded_times else "merged_source_needs_finish_line_review"}
             row.update(work)
-    complete = discussion.get("complete")
-    if not isinstance(complete, bool) or not complete:
-        return {**row, "state": "review", "reason": "incomplete_discussion"}
-    if not discussion.get("author") or any(not comment.get("author") for comment in discussion.get("comments", [])):
-        return {**row, "state": "review", "reason": "discussion_authorship_unknown"}
-    # Use the claim helper's exact authored-release semantics instead of a
-    # second claim parser. No synthetic owner can renew a real claim.
-    inventory = ownership.get("inventory") or {"local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}
-    retained = None
-    try:
-        ended = github_plan_claim.ended_ownership(comments, inventory)
-        conflicts, _ = github_plan_claim.discussion_evidence(status, comments,
-            {"worker": "", "session": "", "branch": "", "claimed_at": ""},
-            ended_claims={source["claim_id"] for source in ended})
-        wait = github_plan_wait.current(
-            {"body": discussion.get("body") or "", "user": {"login": discussion.get("author") or ""}}, comments, trusted)
-        if item.get("resume_from"):
-            source = github_plan_claim.released_source(comments, item["resume_from"])
-            retained = github_plan_claim.retained_handoff(
-                source, github_plan_claim.handoff_candidates(comments, source), ownership.get("pulls") or [],
-                issue_repo=item["repo"], issue_number=item["number"], target_repo=item["repo"])
-            if retained is None or retained["open_conflicts"]:
-                return {**row, "state": "review", "reason": "retained_handoff_unavailable"}
-    except (ValueError, KeyError, TypeError) as exc:
-        return {**row, "state": "review", "reason": "unreadable_ownership_or_wait", "detail": str(exc)}
-    branches = github_plan_claim.recorded_claim_branches(status, comments)
-    artifacts = github_plan_claim.artifact_evidence(inventory, ownership.get("pulls") or [], item["number"],
-        {"worker": "", "session": "", "branch": ""}, own_record=False, repo=item["repo"], recorded_branches=branches,
-        retained_branches=retained["permitted"] if retained else None, retained_repo=item["repo"] if retained else None,
-        ended_branches=github_plan_claim.ended_artifact_branches(ended, comments, ownership.get("pulls") or []))
+    facts = ownership_facts(item, ownership, trusted=trusted)
+    if facts.get("error"):
+        return {**row, "state": "review", "reason": facts["error"], **({"detail": facts["detail"]} if "detail" in facts else {})}
+    conflicts, artifacts, wait = facts["conflicts"], facts["artifacts"], facts["wait"]
     if conflicts or artifacts:
         return {**row, "state": "underway", "reason": "existing_claim_or_artifact",
                 "ownership_evidence": [*conflicts, *artifacts], "certainty": "current_or_stale"}

@@ -1346,7 +1346,8 @@ no account configuration migration is needed.
 Execution briefs include `Anchor: https://github.com/OWNER/REPO/issues/N`
 (or `Anchor and claim:`) on its own line. Before accounts, daemons or terminals,
 both backends run `gh-plan.py show <anchor> --full --launch-check`, reusing
-`show`'s native status and `next`'s ownership/delivery reads. Active source or
+`show`'s native status and the ownership facts shared with `next`, without its
+source-ranking or delivery-history reads. Active source or
 operational work can launch; a blocker, structured wait, live
 claim, retained delivery or incomplete read refuses. No new launch-state record
 is written. Repeated attempts against the same hold keep refusing; clearing one
@@ -1354,13 +1355,19 @@ hold still leaves the others in force. Read the existing issue and stopped
 worker's handoff, then dispatch only after the relevant fact changes.
 For read-only work that answers a wait, use `Read-only anchor: <issue URL>`;
 that worker must not claim or implement the held work. Its ownership check
-still runs, while the wait itself can be investigated. A retained-delivery
+still runs, while waits and static PR/branch artifacts can be investigated.
+A retained-delivery
 successor adds `Resume from: <source claim comment ID>` on its own line. The
-same issue's authored release and qualified retained-PR handoff must exist;
-neither this line nor a release alone clears other holds or owners. The worker
-still claims with `--resume-from`. Record a resolved wait with `gh-plan.py wait
+same issue's authored release must exist. A qualified retained-PR handoff is
+needed to exempt current delivery artifacts; no current artifacts need no
+exemption. The worker's `claim --resume-from` still validates full lineage.
+Neither this line nor a release alone clears other holds or owners. Record a resolved wait with `gh-plan.py wait
 <issue> --clear --evidence <resolution>`, then launch again. Missing anchor
 lines refuse with both supported forms. Workers claim independently after launch.
+An execution anchor with stale, done or unstatused scope needs its existing
+scope reconciliation before dispatch. Before giving a fresh assignment to an
+idle session through `send` or `queue`, apply the same current anchor check;
+resuming its current work does not create another assignment.
 Use `--account` for an explicit override through the same mapping and receipt
 path. Run one agent invocation, without restart loops or commands that continue
 after it exits. Read the launched screen once for folder trust or another

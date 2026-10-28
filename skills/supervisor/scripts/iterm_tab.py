@@ -1172,7 +1172,9 @@ def check_launch_issue(brief: str) -> None:
                          r"(https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*)(?=$|[#\s).,;])", brief)
     if not anchors:
         raise ValueError("Brief needs Anchor: <issue URL> for execution, or Read-only anchor: <issue URL> for work that will not claim")
-    resume = re.search(r"(?mi)^Resume from:\s*([1-9]\d*)\s*$", brief)
+    resume = re.search(r"(?mi)^\s*(?:[-*] )?(?:\*\*)?Resume from:(?:\*\*)?\s*([1-9]\d*)\s*$", brief)
+    if resume and len(set(anchor for _, anchor in anchors)) != 1:
+        raise ValueError("A retained-delivery brief needs one anchor for its source claim")
     helper = Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py"
     for mode, anchor in dict.fromkeys(anchors):
         repo = "/".join(anchor.split("/")[3:5])
@@ -1188,9 +1190,9 @@ def check_launch_issue(brief: str) -> None:
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as error:
             raise ValueError(f"Launch state unavailable for {anchor}; read its full status before dispatch") from error
         if not check.get("allowed"):
-            queue = check.get("queue") or {}
+            facts = check.get("ownership") or {}
             raise ValueError(f"Launch refused for {anchor}: {check.get('status', 'unknown')}, "
-                             f"{queue.get('reason', 'launch state unavailable')}; "
+                             f"{facts.get('error', 'existing owner, retained delivery or unmet prerequisite')}; "
                              "keep the existing hold or owner; dispatch only after the relevant fact changes")
 
 

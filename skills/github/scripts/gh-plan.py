@@ -2095,17 +2095,14 @@ def cmd_show(args: argparse.Namespace) -> None:
         result["recorded_current_status"] = result["sections"]["Current Status"]
         result["sections"]["Current Status"] = github_plan_status.render_status(result["sections"]["Current Status"], derived)
     if getattr(args, "launch_check", False):
-        candidate = {**result, "discussion": github_direction_next.discussion_snapshot(issue, comments, complete=True),
-                     "resume_from": args.resume_from}
-        annotate_next_queue([candidate], args, parallel=False)
-        queue = candidate["queue"]
+        candidate = {**result, "discussion": github_direction_next.discussion_snapshot(issue, comments, complete=True)}
+        facts = github_next_queue.ownership_facts(candidate, read_queue_ownership(issue["repo"]),
+                                                trusted=wait_authors(issue["repo"]), resume_from=args.resume_from)
         result["launch_check"] = {
-            "allowed": (derived["relationships_complete"] and queue.get("observed_ownership_complete") is True
-                        and queue["state"] != "underway" and queue["reason"] not in {
-                            "incomplete_discussion", "discussion_authorship_unknown", "unreadable_ownership_or_wait",
-                            "source_delivery_reads_incomplete", "retained_handoff_unavailable"}
+            "allowed": (derived["relationships_complete"] and facts["complete"] and not facts.get("error")
+                        and not facts["conflicts"] and (args.read_only or not facts["artifacts"])
                         and (args.read_only or derived["status"] == "active")),
-            "status": derived["status"], "queue": queue,
+            "status": derived["status"], "ownership": facts,
         }
     emit({"ok": True, "actor": actor, "issue": result,
           **({"batch_read": BATCH_READ_CONTEXT} if getattr(args, "batch_read", False) else {})})
@@ -4828,6 +4825,25 @@ def next_source_delivery(item: dict[str, Any], trusted: set[str], *, repositorie
             result.setdefault("unavailable", []).append({"repo": repo, "number": number, "reason": next_source_error(exc)})
     return result
 
+def read_queue_ownership(repo: str) -> dict[str, Any]:
+    observed: dict[str, Any] = {"complete": False, "coverage": {}}
+    try:
+        bound = NEXT_PLAN_INVENTORY_LIMIT
+        observed.update(github_work_graph.ownership_inventory(collect_paged_rest_items, repo, limit=bound))
+        target = pathlib.Path.home() / "Developer" / repo.split("/")[1]
+        if target.is_dir() and not (NEXT_READS and NEXT_READS.expired):
+            try:
+                local = github_plan_claim.local_inventory(repo, 0, cwd=target,
+                    **({"deadline_at": NEXT_READS.deadline} if NEXT_READS else {}))
+                observed["inventory"] = local
+                observed["coverage"].update(local_artifacts="read")
+            except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                observed["coverage"]["local_error"] = str(exc)
+    except PlanError as exc:
+        observed["coverage"]["error"] = next_source_error(exc)
+    return observed
+
+
 def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *, parallel: bool = True) -> dict[str, Any]:
     """Read ownership once per repository; project every evaluated current step."""
     if parallel and NEXT_READS is not None and NEXT_READS.workers > 1:
@@ -4859,24 +4875,7 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
         repo = item["repo"]
         trusted = {login.casefold() for login in wait_authors(repo)}
         if repo not in evidence:
-            observed: dict[str, Any] = {"complete": False, "coverage": {}}
-            evidence[repo] = observed
-            try:
-                bound = NEXT_PLAN_INVENTORY_LIMIT
-                observed.update(github_work_graph.ownership_inventory(collect_paged_rest_items, repo, limit=bound))
-                # Local artifacts are supplementary evidence. Do not claim a
-                # complete peer inventory even when the native registry works.
-                target = pathlib.Path.home() / "Developer" / repo.split("/")[1]
-                if target.is_dir() and not (NEXT_READS and NEXT_READS.expired):
-                    try:
-                        local = github_plan_claim.local_inventory(repo, 0, cwd=target,
-                            **({"deadline_at": NEXT_READS.deadline} if NEXT_READS else {}))
-                        observed["inventory"] = local
-                        observed["coverage"].update(local_artifacts="read")
-                    except (ValueError, OSError, subprocess.SubprocessError) as exc:
-                        observed["coverage"]["local_error"] = str(exc)
-            except PlanError as exc:
-                observed["coverage"]["error"] = next_source_error(exc)
+            evidence[repo] = read_queue_ownership(repo)
         preliminary = github_next_queue.classify(item, evidence[repo], trusted=trusted)
         if preliminary.get("state") not in {"underway", "waiting"} and (item.get("discussion") or {}).get("complete") is True:
             item["source_delivery"] = next_source_delivery(item, trusted, repositories=delivery_repositories)
