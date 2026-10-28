@@ -40,6 +40,7 @@ NEGATED = re.compile(r"\b(nothing|no|not|never)\b[^.!?\n]{0,20}$", re.IGNORECASE
 COST = re.compile(r"\b(costs?|upkeep|maintenance|ongoing effort)\b", re.IGNORECASE)
 DEVELOPER = re.compile(r"\b(experienced|senior|sr\.?)\s+(professional\s+)?(developers?|devs?|engineers?)\b", re.IGNORECASE)
 QUESTION_GUIDANCE = Path(__file__).resolve().parents[2] / "references/talking-with-the-director.md"
+QUESTION_SECTION = "## Director Questions"
 REASON = (
     "Your reply asks Chris to decide something but has no bold Q number. Every question "
     "to him starts with a bold Q### from the shared counter (talking-with-the-director.md): "
@@ -70,9 +71,9 @@ def missing_context(message: str) -> str | None:
 
 def director_question_rule() -> str:
     try:
-        _, section = QUESTION_GUIDANCE.read_text(encoding="utf-8").split("\n## Director Questions\n", 1)
+        _, section = QUESTION_GUIDANCE.read_text(encoding="utf-8").split(f"\n{QUESTION_SECTION}\n", 1)
     except (OSError, ValueError):
-        return f"Follow {QUESTION_GUIDANCE.name}#director-questions."
+        return f"Follow {QUESTION_GUIDANCE}#director-questions."
     return " ".join(section.split("\n## ", 1)[0].split())
 
 
