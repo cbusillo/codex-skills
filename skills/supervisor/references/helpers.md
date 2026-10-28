@@ -454,10 +454,10 @@ decision record. A script's match does not itself establish what was decided.
 
 `scripts/q_number_guard.py hook` is a Claude Code Stop hook. When the final
 reply asks the Director to decide something and has no bold `**Q###`, it blocks
-once with a reason naming the rule. A numbered question also needs cost and
-experienced or senior developer context under the overall `DIRECTION.md` Stop
-Boundaries rule; the reason names whichever is missing. `stop_hook_active`
-lets the retry through.
+once with a reason naming the rule. For numbered questions it checks the
+[shared question guidance](../../references/talking-with-the-director.md#director-questions),
+reading that section into its correction when context is missing.
+`stop_hook_active` lets the retry through.
 Quoted text, code and links are ignored, as is a question the reply answers in
 place ("Merged yet? No, CI is running."), so a status report that quotes an old
 question passes. Any error or unreadable input lets the stop proceed. Each run

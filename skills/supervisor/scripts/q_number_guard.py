@@ -39,6 +39,7 @@ ANSWERED = re.compile(r"\s*[*_]*(yes|no|not yet)[*_]*\s*[,.;—–-]", re.IGNORE
 NEGATED = re.compile(r"\b(nothing|no|not|never)\b[^.!?\n]{0,20}$", re.IGNORECASE)
 COST = re.compile(r"\b(costs?|upkeep|maintenance|ongoing effort)\b", re.IGNORECASE)
 DEVELOPER = re.compile(r"\b(experienced|senior|sr\.?)\s+(professional\s+)?(developers?|devs?|engineers?)\b", re.IGNORECASE)
+QUESTION_GUIDANCE = Path(__file__).resolve().parents[2] / "references/talking-with-the-director.md"
 REASON = (
     "Your reply asks Chris to decide something but has no bold Q number. Every question "
     "to him starts with a bold Q### from the shared counter (talking-with-the-director.md): "
@@ -66,8 +67,13 @@ def missing_context(message: str) -> str | None:
     if not missing:
         return None
     return (f"Your numbered Director question is missing: {' and '.join(missing)}. "
-            "Follow the overall DIRECTION.md Stop Boundaries rule for every question to the Director, "
-            "then repeat the reply. If the reply asks nothing, end the turn again unchanged.")
+            f"{director_question_rule()} "
+            "Repeat the reply. If the reply asks nothing, end the turn again unchanged.")
+
+
+def director_question_rule() -> str:
+    _, section = QUESTION_GUIDANCE.read_text(encoding="utf-8").split("\n## Director Questions\n", 1)
+    return " ".join(section.split("\n## ", 1)[0].split())
 
 
 def last_message(payload: Mapping) -> str | None:
