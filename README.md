@@ -149,10 +149,20 @@ Session catch-up is described under [runtime binding lookup](#runtime-binding-lo
 and logs live in the checkout's ignored `.local/` directory.
 Root-level tool logs (`*.log`, including `error.log`) are also ignored;
 other untracked files still block updates and are preserved.
-Run `uv run scripts/catalog_runtime.py --update` for a manual guarded update on
-macOS or Linux. To stop scheduled updates, run
-`launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.codex-skills.catalog-update.plist`,
-then remove that specific plist; catalog bindings remain available.
+
+For a manual guarded update on macOS or Linux, run:
+
+```sh
+uv run scripts/catalog_runtime.py --update
+```
+
+To stop scheduled updates, run:
+
+```sh
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.codex-skills.catalog-update.plist
+```
+
+Then remove that specific plist. Catalog bindings remain available.
 
 See [Codex skill discovery](https://learn.chatgpt.com/docs/build-skills) for
 current Codex locations and plugin-owned alternatives.
