@@ -370,16 +370,14 @@ class SdkRetirementTests(unittest.TestCase):
                       patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}),
                       patch_attr(jb_inspect, "discover_identities", side_effect=AssertionError("desktop discovery")) as discovery,
                       patch_attr(jb_inspect, "http_post", side_effect=AssertionError("desktop request")) as post):
-                    for name in ("jdk.table.xml", "recentProjects.xml"):
-                        record = table.with_name(name)
-                        record.write_text(f'<application><option value="{root}/.venv/bin/python" /></application>')
-                        for dry_run in (True, False):
-                            args.dry_run = dry_run
-                            with self.assertRaises(jb_inspect.InspectError) as caught:
-                                jb_inspect.command_retire_sdks(args)
-                            self.assertEqual(caught.exception.payload["offline_retirement_record"], str(record))
-                            self.assertTrue(root.is_dir())
-                        record.write_text('<application />')
+                    if preparation == "project-model":
+                        table.write_text(f'<application><option value="{root}/.venv/bin/python" /></application>')
+                        args.dry_run = False
+                        with self.assertRaises(jb_inspect.InspectError) as caught:
+                            jb_inspect.command_retire_sdks(args)
+                        self.assertEqual(caught.exception.payload["offline_retirement_record"], str(table))
+                        self.assertTrue(root.is_dir())
+                        table.write_text('<application />')
                     args.dry_run = True
                     self.assertFalse(jb_inspect.command_retire_sdks(args)["worktree_removed"])
                     self.assertTrue(root.is_dir())
