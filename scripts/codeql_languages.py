@@ -80,7 +80,7 @@ def matrix_for_languages(selected: set[str]) -> dict:
         {
             "language": language,
             "scan": language in selected,
-            "runner": "macos-15" if language == "swift" and language in selected else "ubuntu-24.04",
+            "runner": "macos-15" if language == "swift" and language in selected else "ubuntu-26.04",
             "build_mode": "manual" if language == "swift" else "none",
         }
         for language in LANGUAGES
