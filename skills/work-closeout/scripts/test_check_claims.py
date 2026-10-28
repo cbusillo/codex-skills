@@ -5,21 +5,25 @@
 # ///
 """Exercise native-session closeout against disposable GitHub and transcript records."""
 import contextlib
-from collections.abc import Callable
-import io
 import importlib
+import io
 import json
 import os
-from pathlib import Path
-import tempfile
 import sqlite3
+import tempfile
 import time
 import unittest
-from unittest.mock import Mock, patch
+from collections.abc import Callable
+from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock, patch
 
 import check_claims as helper
+
+claim_logic: Any = importlib.import_module("github_plan_claim")
+claim_journal: Any = importlib.import_module("github_plan_claim_log")
 
 
 def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
@@ -63,7 +67,7 @@ def native_terminal_result(identifier: str, output: str = "", *, javascript: boo
 
 OPAQUE_CLAIM = 'P=gh-plan.py; uv run "$P" claim "$(next_issue)"'
 SETTLED_AT = "2026-01-01T00:00:30Z"
-JOURNAL_ERA = "2026-10-23T00:00:00Z"
+JOURNAL_ERA = (helper.JOURNAL_SHIPPED + timedelta(days=1)).isoformat()
 
 
 def finished_opaque_call(at: str | None = SETTLED_AT, *, result: bool = True) -> list[dict]:
@@ -1809,12 +1813,13 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertRaises(ValueError):
             helper.search_account()
 
-    def journal_era_session(self, *rows: dict, began: str | None = JOURNAL_ERA) -> dict:
+    def journal_era_session(self, *rows: dict, began: str | None = JOURNAL_ERA, journaled: bool = True) -> dict:
         root = self.entry()
         meta = {"type": "session_meta", "payload": {"id": SESSION, **({"timestamp": began} if began else {})}}
         Path(root["transcript"]).write_text(json.dumps(meta) + "\n")
-        helper.claim_log.record(SESSION, REPO, 1)
-        self.age_journal()
+        if journaled:
+            claim_journal.record(SESSION, REPO, 1)
+            self.age_journal()
         self.comments.append(self.release)
         with Path(root["transcript"]).open("a") as stream:
             for row in rows or finished_opaque_call():
@@ -1829,11 +1834,13 @@ class ClaimCloseoutTests(unittest.TestCase):
             os.utime(path, (written, written))
 
     def test_journal_replaces_reconstruction_for_a_session_begun_after_it_shipped(self) -> None:
-        report = helper.check([self.journal_era_session()])
+        root = self.journal_era_session()
+        with patch.object(helper.history, "literal_targets", side_effect=ValueError("reconstruction unavailable")):
+            report = helper.check([root])
         self.assertTrue(report["claims_clear"])
-        self.assertEqual([item["call_id"] for item in report["journal_covered_invocations"]], ["opaque"])
         self.setUp()
-        report = helper.check([self.journal_era_session(began="2026-10-21T00:00:00Z")])
+        began = (helper.JOURNAL_SHIPPED - timedelta(days=1)).isoformat()
+        report = helper.check([self.journal_era_session(began=began)])
         self.assertFalse(report["claims_clear"])
         self.assertEqual([item["call_id"] for item in report["unresolved_invocations"]], ["opaque"])
 
@@ -1862,17 +1869,168 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertFalse(report["claims_clear"])
                 self.assertIn("opaque", {item["call_id"] for item in report["unresolved_invocations"]})
 
-    def test_journal_needs_rows_on_this_host(self) -> None:
-        root = self.journal_era_session()
-        for path in helper.claim_log.log_path(SESSION).glob("*.json"):
-            path.unlink()
+    def test_journal_covers_a_modern_session_with_no_rows_or_receipts(self) -> None:
+        for harness in ("codex", "claude"):
+            with self.subTest(harness=harness):
+                self.setUp()
+                root = self.journal_era_session(journaled=False)
+                if harness == "claude":
+                    rows = [{"uuid": "root", "timestamp": JOURNAL_ERA}, *completed_bash_call(OPAQUE_CLAIM)]
+                    Path(root["transcript"]).write_text("\n".join(json.dumps({**row, "sessionId": SESSION}) for row in rows) + "\n")
+                with patch.object(helper.history, "literal_targets", side_effect=ValueError("reconstruction unavailable")):
+                    report = helper.check([root])
+                self.assertTrue(report["claims_clear"], report)
+                self.assertTrue(report["coverage"]["complete"], report)
+                self.assertFalse(report["unresolved_invocations"], report)
+
+    def test_modern_saved_receipts_preserve_unmatched_claim_coverage(self) -> None:
+        for mode in ("persisted path", "persisted preview", "background", "orphan", "missing"):
+            for journaled in (False, True):
+                with self.subTest(mode=mode, journaled=journaled):
+                    self.setUp()
+                    root = self.journal_era_session(journaled=journaled)
+                    path = Path(root["transcript"])
+                    output = path.with_suffix("") / ("tasks" if mode == "background" else "tool-results") / "result.txt"
+                    output.parent.mkdir(parents=True)
+                    if mode != "missing":
+                        output.write_text(json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 2}}))
+                    rows: list[dict[str, Any]] = [{"uuid": "root", "sessionId": SESSION, "timestamp": JOURNAL_ERA}]
+                    if mode != "orphan":
+                        rows.extend(bash_call("uv run gh-plan.py claim 2"))
+                    rows.append({"message": {"content": [{"type": "tool_result", "tool_use_id": "call", "content": "preview"}]}})
+                    if mode == "persisted preview":
+                        rows[-1]["message"]["content"][0]["content"] = f"<persisted-output>\nFull output saved to: {output}\n"
+                    elif mode == "background":
+                        rows[-1]["toolUseResult"] = {"backgroundTaskId": "task"}
+                        rows.append(
+                            {
+                                "origin": {"kind": "task-notification", "producer": "session-task"},
+                                "message": {
+                                    "content": f"<task-id>task</task-id><tool-use-id>call</tool-use-id>"
+                                    f"<output-file>{output}</output-file>"
+                                },
+                            }
+                        )
+                    else:
+                        rows[-1]["toolUseResult"] = {"persistedOutputPath": str(output)}
+                    path.write_text("\n".join(json.dumps({**row, "sessionId": SESSION}) for row in rows) + "\n")
+                    self.comments.remove(self.release)
+                    report = helper.check([root])
+                    self.assertFalse(report["claims_clear"], report)
+                    if mode in {"orphan", "missing"}:
+                        self.assertTrue(report["unresolved_invocations"], report)
+                        self.comments.append(self.release)
+                        self.assertFalse(helper.check([root])["claims_clear"])
+                    else:
+                        self.assertTrue(report["blocked"], report)
+                        self.comments.append(self.release)
+                        report = helper.check([root])
+                        self.assertIn(2, [r["record"] for r in report["released_claims"]], report)
+
+    def test_zero_claim_recorded_read_shapes_do_not_need_reconstruction(self) -> None:
+        read = 'const r=await tools.exec_command({cmd:"git diff --numstat"});'
+        rows = 'const rows=r.output.trim().split("\\n").map(x=>x.split("\\t"));'
+        sources = (
+            r"await Promise.allSettled([221,488].map(async n=>text(await tools.exec_command({"
+            r"""cmd:`gh-plan.py --repo test/a show ${n} --full | python -c 'import re;print(re.search(r"\\n", ""))'`}))));""",
+            read + rows + "let added=0,removed=0;for(const r of rows){added+=Number(r[0]);removed+=Number(r[1]);}"
+            "text({added,removed,net:added-removed});",
+            read + rows + "text({added:rows.reduce((s,r)=>s+Number(r[0]),0)});",
+        )
+        for source in sources:
+            with self.subTest(source=source):
+                self.setUp()
+                root = self.journal_era_session(
+                    {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "read", "input": source}},
+                    native_terminal_result("read", javascript=True),
+                    journaled=False,
+                )
+                report = helper.check([root])
+                self.assertTrue(report["claims_clear"], report)
+                self.assertFalse(report["unresolved_invocations"], report)
+
+    def test_empty_journal_preserves_legacy_and_unmatched_receipt_coverage(self) -> None:
+        for modern in (False, True):
+            with self.subTest(modern=modern):
+                self.setUp()
+                receipt = {"claim": SOURCE, "issue": {"repo": REPO, "number": 1}}
+                began = JOURNAL_ERA if modern else (helper.JOURNAL_SHIPPED - timedelta(days=1)).isoformat()
+                extra = [receipt] if modern else []
+                root = self.journal_era_session(*finished_opaque_call(), *extra, began=began, journaled=False)
+                report = helper.check([root])
+                self.assertFalse(report["claims_clear"], report)
+                self.assertTrue(report["unresolved_invocations"], report)
+
+    def test_zero_claim_session_still_checks_attempt_lifecycle(self) -> None:
+        def write_during_search(*_args: object, **_kwargs: object) -> SimpleNamespace:
+            claim_journal.record(SESSION, REPO, 1)
+            return SimpleNamespace(body={"total_count": 0, "incomplete_results": False, "items": []})
+
+        for mode in ("running", "started during readback", "journal changed", "process inventory unavailable"):
+            with self.subTest(mode=mode):
+                self.setUp()
+                root = self.journal_era_session(journaled=False)
+                if mode == "running":
+                    self.live_writes.return_value = [f"gh-plan.py claim 1 --session {SESSION}"]
+                elif mode == "started during readback":
+                    self.live_writes.side_effect = [[], [f"gh-plan.py claim 1 --session {SESSION}"]]
+                elif mode == "journal changed":
+                    self.enterContext(patch.object(helper, "search_account", return_value="test"))
+                    self.reader.request.side_effect = write_during_search
+                else:
+                    self.live_writes.side_effect = OSError("ps unavailable")
+                report = helper.check([root])
+                self.assertFalse(report["claims_clear"], report)
+                self.assertTrue(report["blocked"], report)
+
+    def test_empty_journal_search_still_verifies_exact_claim_release(self) -> None:
+        root = self.journal_era_session(journaled=False)
+        self.enterContext(patch.object(helper, "search_account", return_value="test"))
+        self.search_finds(1)
+        self.comments.remove(self.release)
         report = helper.check([root])
         self.assertFalse(report["claims_clear"])
-        self.assertEqual([item["call_id"] for item in report["unresolved_invocations"]], ["opaque"])
+        self.assertTrue(report["blocked"], report)
+        self.comments.append(self.release)
+        report = helper.check([root])
+        self.assertTrue(report["claims_clear"], report)
+        self.assertEqual([r["claim_comment"] for r in report["released_claims"]], [self.source["id"]])
+
+    def test_journaled_child_claim_does_not_force_parent_reconstruction(self) -> None:
+        root = self.journal_era_session(journaled=False)
+        child = self.receipt_entry("child", records=((REPO, 2),))
+        path = Path(child["transcript"])
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        rows[0]["payload"].update(
+            timestamp=JOURNAL_ERA,
+            session_id=SESSION,
+            source={"subagent": {"thread_spawn": {"parent_thread_id": SESSION}}},
+        )
+        path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        self.native_index.execute("INSERT INTO threads VALUES(?,?)", ("child", str(path)))
+        self.native_index.execute("INSERT INTO thread_spawn_edges VALUES(?,?)", (SESSION, "child"))
+        claim_journal.record("child", REPO, 2)
+        for journal in claim_journal.log_path("child").glob("*.json"):
+            at = time.time() - helper.ORPHANED_WRITE_SECONDS * 2
+            os.utime(journal, (at, at))
+        self.comments = [comment(20, claim_logic.marker({**SOURCE, "session": "child"}))]
+        with patch.object(helper.history, "literal_targets", side_effect=ValueError("reconstruction unavailable")):
+            report = helper.check([root])
+            self.assertFalse(report["claims_clear"], report)
+            self.assertTrue(report["blocked"], report)
+            self.comments.append(comment(21, "Released claim 20\n\nSession: child", at=self.release["created_at"]))
+            report = helper.check([root])
+        self.assertTrue(report["claims_clear"], report)
+        self.assertEqual([(r["source_session"], r["record"]) for r in report["released_claims"]], [("child", 2)])
+        for journal in claim_journal.log_path("child").glob("*.json"):
+            journal.unlink()
+        report = helper.check([root])
+        self.assertFalse(report["claims_clear"], report)
+        self.assertTrue(report["unresolved_invocations"], report)
 
     def test_journal_covered_session_waits_for_every_claim_attempt_to_settle(self) -> None:
         helper_command = f"uv run gh-plan.py claim 1 --session {SESSION}"
-        read_transcript = helper.history.literal_targets
+        read_receipts = helper.receipt_values
 
         def write_during_readback(path: str, **kwargs: object) -> list[dict]:
             helper.claim_log.record(SESSION, REPO, 3)
@@ -1884,10 +2042,10 @@ class ClaimCloseoutTests(unittest.TestCase):
             self.live_writes.side_effect = lambda *args: [] if read_back else [helper_command]
             self.reader.paged_json.side_effect = lambda path, **kwargs: read_back.append(path) or self.paged(path, **kwargs)
 
-        def write_while_reading_transcripts(*args: object, **kwargs: object) -> dict:
+        def write_while_reading_transcripts(*args: object, **kwargs: object) -> list[dict]:
             helper.claim_log.record(SESSION, REPO, 3)
             self.age_journal()
-            return read_transcript(*args, **kwargs)
+            return read_receipts(*args, **kwargs)
 
         cases: dict[str, Callable[[], None]] = {
             "write still running": lambda: setattr(self.live_writes, "return_value", [helper_command]),
@@ -1896,7 +2054,8 @@ class ClaimCloseoutTests(unittest.TestCase):
             "attempt began recently": lambda: self.age_journal(seconds=60),
             "attempt began during readback": lambda: setattr(self.reader.paged_json, "side_effect", write_during_readback),
             "attempt began while transcripts were read": lambda: self.enterContext(
-                patch.object(helper.history, "literal_targets", side_effect=write_while_reading_transcripts)),
+                patch.object(helper, "receipt_values", side_effect=write_while_reading_transcripts)
+            ),
         }
         for name, unsettle in cases.items():
             with self.subTest(name):
