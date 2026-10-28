@@ -179,7 +179,10 @@ def instruction_warning(root: Path, installation: dict) -> str:
     except (OSError, ValueError, TypeError, KeyError, RuntimeError, subprocess.SubprocessError):
         detail = "unconfirmed: " + ", ".join(str(path) for path in destinations)
         recovery = [*arguments, "--show-diff"]
-    return f"{DELIVERY_NOTICE} {detail}; run {shlex.join(['uv', 'run', *recovery])}; restart the session after refresh."
+    return (f"{DELIVERY_NOTICE} {detail}; run {shlex.join(['uv', 'run', *recovery])}; "
+            "after refresh, read the refreshed instructions and continue your brief in this session. "
+            "A newer catalog commit alone does not require a restart. Restart only if a changed instruction or tool "
+            "cannot be applied in this session; preserve and resume your own brief rather than waiting for a relaunch.")
 
 
 def status_line(root: Path, *, observe: bool = False) -> str:

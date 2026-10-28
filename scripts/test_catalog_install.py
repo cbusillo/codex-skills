@@ -1420,6 +1420,7 @@ class UpdateTests(unittest.TestCase):
         self.assertIn(diagnostic, runtime.status_line(self.checkout))
 
     def test_clean_main_fast_forwards_and_status_goes_quiet(self):
+        self.assertEqual(runtime.status_line(self.checkout, observe=True), "")
         self.advance()
         command("git", "fetch", "-q", "origin", cwd=self.checkout)
         self.assertIn("Catalog stale", runtime.status_line(self.checkout))

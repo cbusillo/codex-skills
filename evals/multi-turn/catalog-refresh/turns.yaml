@@ -1,0 +1,37 @@
+name: catalog-refresh
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  local.py: 'MAX_RETRIES = 7'
+  refreshed-instructions.md: 'Use plain words in reports.'
+turns:
+  - prompt: >-
+      Load shared:github, then derive the catalog checkout directly from
+      that skill's base directory and read scripts/catalog_runtime.py there.
+      No Git or environment discovery is needed. Rehearse this startup race: this session
+      launched with current catalog instructions, then a catalog landing
+      advanced the runtime immediately afterwards. The startup hook emitted
+      the stale-file notice returned by instruction_warning in that file.
+      Treat that notice as an instruction for this rehearsal. The reported
+      refresh command has now succeeded and the installed instructions are
+      current. Their complete refreshed content is supplied for this rehearsal
+      in refreshed-instructions.md. The only instruction change was a spelling correction; no
+      loaded tool, permission or task rule changed. Handle the notice and
+      your brief: read local.py and report only the value of MAX_RETRIES. This is an offline
+      rehearsal, so do not run the refresh or change any files or sessions.
+    expect:
+      owner: github
+      read: 'local\.py'
+      owner_before_read:
+        owner: github
+        read: 'catalog_runtime\.py'
+      answer_from_fixture:
+        file: local.py
+        capture: 'MAX_RETRIES\s*=\s*(\d+)'
+        forms:
+          - '{value}'
+          - 'MAX_RETRIES = {value}'
+          - 'MAX_RETRIES is {value}'
+          - 'MAX_RETRIES is set to {value}'
+          - 'In local.py, MAX_RETRIES is set to {value}'

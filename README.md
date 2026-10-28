@@ -759,7 +759,10 @@ For a manual preview, use `scripts/install-catalog.py --refresh-instructions`
 with those same destinations, then add `--write`. The standalone sync remains
 available for initial setup and explicit reconciliation; rerun the installer
 afterward so its receipt follows the written files. A running session keeps its
-loaded snapshot; restart it for updated context.
+loaded snapshot: read the refreshed instructions and continue the current brief.
+A newer catalog commit alone does not require a restart. Restart only when a
+changed instruction or tool cannot be applied in the running session; preserve
+and resume that session's brief rather than waiting for the Supervisor to relaunch it.
 
 The plugin's `SessionStart` hook, `hooks/direction_check_hook.py`, keeps the small
 daily-turn reminder. The [direction skill](skills/direction/SKILL.md) owns its
