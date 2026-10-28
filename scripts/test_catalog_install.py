@@ -1428,6 +1428,40 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(runtime.status_line(self.checkout), "")
         self.assertEqual(runtime.update(self.checkout)["state"], "current")
 
+    def test_landing_after_startup_does_not_report_inflight_instruction_refresh_as_stale(self) -> None:
+        home = self.base / "home"
+        installation = {"home": str(home), "codex": str(home / ".codex"), "claude": str(home / ".claude")}
+        local = self.checkout / ".local"
+        local.mkdir()
+        (local / "catalog-install.json").write_text(json.dumps(installation))
+        outputs = [{"path": str(home / directory / filename), "state": "current"}
+                   for directory, filename in ((".codex", "AGENTS.md"), (".claude", "CLAUDE.md"))]
+        run = subprocess.run
+
+        def refresh(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if len(arguments) > 1 and arguments[1] == str(self.checkout / "scripts/install-catalog.py"):
+                with mock.patch.object(runtime, "preview_instructions", return_value={"outputs": []}) as preview:
+                    self.assertEqual(runtime.status_line(self.checkout, observe=True), "")
+                    preview.assert_not_called()
+                return subprocess.CompletedProcess(arguments, 0, json.dumps({"outputs": outputs}), "")
+            return run(arguments, **kwargs)
+
+        with (mock.patch.dict(os.environ, {"PATH": os.environ["PATH"]}, clear=True),
+              mock.patch.object(runtime, "preview_instructions", return_value={"outputs": outputs}),
+              mock.patch.object(runtime.subprocess, "run", side_effect=refresh)):
+            self.assertEqual(runtime.status_line(self.checkout, observe=True), "")
+            self.advance()
+            self.assertEqual(runtime.update(self.checkout)["state"], "current")
+            self.assertEqual(runtime.git(self.checkout, "rev-parse", "HEAD"), runtime.git(self.seed, "rev-parse", "HEAD"))
+            self.assertEqual(runtime.status_line(self.checkout, observe=True), "")
+
+            def update_during_preview(_arguments: list[str]) -> dict:
+                self.assertEqual(runtime.update(self.checkout)["state"], "current")
+                return {"outputs": []}
+
+            with mock.patch.object(runtime, "preview_instructions", side_effect=update_during_preview):
+                self.assertEqual(runtime.status_line(self.checkout, observe=True), "")
+
     def test_ignored_files_allow_fast_forward_but_other_untracked_files_block(self):
         ignores = self.seed / ".gitignore"
         ignores.write_text(ignores.read_text() + "/*.log\n")
