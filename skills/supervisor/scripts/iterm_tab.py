@@ -467,16 +467,39 @@ def message_sections(readback: dict[str, Any]) -> tuple[str, str]:
     return normalize(lines[:queued]), normalize(lines[queued:])
 
 
+def exit_observer(text: str, tty: str | None) -> Callable[[], bool] | None:
+    import session_liveness
+
+    family = {"/quit": "codex", "/exit": "claude"}.get(text)
+    if not family or not tty:
+        return None
+    candidates = []
+    for pid, terminal, command in session_liveness.inventory():
+        if terminal != tty.removeprefix("/dev/"):
+            continue
+        argv = session_liveness.harness_arguments(command)
+        if argv:
+            candidates.append((pid, session_liveness.harness_family(argv[0])))
+    if len(candidates) != 1 or candidates[0][1] != family:
+        return None
+    pid = candidates[0][0]
+    return lambda: session_liveness.process_absent(pid)
+
+
 async def submit_message(
     identity: str, text: str, submit: bool,
     read: Callable[[], Awaitable[dict[str, Any]]],
     press: Callable[[str], Awaitable[None]],
+    ended: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     submission = "not_attempted"
+    pressed = False
+    after = None
+    failure = None
+    key = "\r"
     try:
         await asyncio.sleep(0.4)
         before = await read()
-        key = "\r"
         prompt = before["input_line"]
         if prompt["line_index"] is not None:
             footer = before["screen"][prompt["line_index"] + 1:]
@@ -486,12 +509,19 @@ async def submit_message(
         if submit:
             submission = "unknown"
             await press(key)
+            pressed = True
             await asyncio.sleep(0.4)
         after = await read() if submit else before
     except SendFailure:
         raise
     except Exception as error:
-        raise SendFailure(identity, submission, "message submission or readback failed") from error
+        failure = error
+    if pressed and ended and ended():
+        return {"session_id": identity, "sent": True, "delivery": "session_ended",
+                "submission_key": key, "readback_required": False}
+    if failure is not None:
+        raise SendFailure(identity, submission, "message submission or readback failed") from failure
+    assert after is not None
     delivery = "unknown"
     current = after["input_line"]
     if current["style"] in {"non_dim", "mixed"} and current["text"]:
@@ -1598,6 +1628,8 @@ async def operate(app, args):
                 if args.text_file
                 else args.text
             )
+            ended = exit_observer(text, await session.async_get_variable("tty")) if (
+                not args.no_submit and text in {"/quit", "/exit"}) else None
             await send(session, text, submit=False)
 
             async def read_message() -> dict[str, Any]:
@@ -1608,7 +1640,7 @@ async def operate(app, args):
                     raise SendFailure(args.session_id, "not_attempted", "terminal state changed after text")
                 await session.async_send_text(key, suppress_broadcast=True)
 
-            return await submit_message(args.session_id, text, not args.no_submit, read_message, press_message)
+            return await submit_message(args.session_id, text, not args.no_submit, read_message, press_message, ended)
         return {
             "session_id": session.session_id,
             "sent": True,
