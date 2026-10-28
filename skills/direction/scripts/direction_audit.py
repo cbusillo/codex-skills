@@ -17,10 +17,12 @@ import pathlib
 import re
 import runpy
 import shutil
+import stat
 import subprocess
 import sys
 import time
 from typing import Any, Callable
+from io import UnsupportedOperation
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 GITHUB_SCRIPTS = REPO_ROOT / "skills" / "github" / "scripts"
@@ -1739,8 +1741,19 @@ def direction_adoption(repo: str, *, fetch: Callable[[list[str]], Any]) -> tuple
     return "unknown", "the DIRECTION.md response is not a readable file"
 
 
+def emit_weekly_receipt(receipt_data: dict[str, Any]) -> None:
+    print(json.dumps(receipt_data, indent=2, sort_keys=True), flush=True)
+    try:
+        descriptor = sys.stdout.fileno()
+    except UnsupportedOperation:
+        return
+    if stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.fsync(descriptor)
+
+
 def weekly_audit(
     owner: str, *, gh: str, automation: str | None = None, include_archived: bool = False,
+    emit: Callable[[dict[str, Any]], None],
 ) -> tuple[int, dict[str, Any]]:
     started = dt.datetime.now(dt.timezone.utc)
     fetch = github_work_graph.cached_reads(lambda args: gh_json(args, gh=gh))
@@ -1766,17 +1779,18 @@ def weekly_audit(
     audits: dict[str, dict[str, Any]] = {}
     unread: dict[str, str] = {name: f"adoption unknown: {reason}" for name, reason in discovery["unknown"].items()}
     held: dict[str, str] = {}
-    marker_error = None
+    updates: list[dict[str, Any]] = []
     for repo in repos:
         _code, result = audit_one(repo, gh=gh, owner=owner, automation=automation,
-                                  include_archived=include_archived, fetch=fetch)
+                                  include_archived=include_archived, fetch=fetch, defer_marker=True)
+        update = result.pop("_marker_update", None)
+        recordable = isinstance(update, dict) and update.get("action") == "record"
+        if update is not None:
+            updates.append(update)
         audits[repo] = result
         if "error" in result:
             unread[repo] = f"reads failed: {result['error']}"
-        elif "marker_error" in result:
-            unread[repo] = "marker_error"
-            marker_error = marker_error or result["marker_error"]
-        elif not result.get("run_recorded"):
+        elif not recordable:
             # Archived, unknown archive state or a missing DIRECTION.md: no run was recorded.
             unread[repo] = str(result.get("marked_skipped") or "direction_missing")
         elif result.get("marked_skipped") == "window_open":
@@ -1792,22 +1806,29 @@ def weekly_audit(
                and not unread and not held),
         "weekly_recorded": None,
     }
-    if marker_error:
-        receipt["marker_error"] = marker_error
-    if not discovery["complete"] or unread or marker_error:
-        receipt["weekly_skipped"] = "not every adopted repository was read" if unread or marker_error else "repository listing incomplete"
-        return 1, receipt
-    shown = os.environ.get("DIRECTION_MARKER") or "default direction marker"
+    complete = discovery["complete"] and not unread
+    if not complete:
+        receipt["weekly_skipped"] = "not every adopted repository was read" if unread else "repository listing incomplete"
     try:
         path = direction_mark.marker_path()
         shown = str(path)
-        written = direction_mark.mark_weekly(path, owner, started)
+        receipt["weekly_recorded"] = {"marker": shown, "ran": receipt["started"], "record": direction_repo} if complete else None
+        emit(receipt)
+    except (OSError, RuntimeError, TypeError, ValueError, UnicodeError) as exc:
+        receipt["weekly_recorded"] = None
+        receipt["marker_error"] = f"Could not prepare or emit the weekly audit receipt: {exc}"
+        print(f"ERROR: {receipt['marker_error']}", file=sys.stderr)
+        return 1, receipt
+    try:
+        direction_mark.mark_weekly_audits(path, owner, started, updates, complete)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         receipt["ok"] = False
+        receipt["weekly_recorded"] = None
         receipt["marker_error"] = f"Could not record the weekly audit at {shown}: {exc}"
         print(f"ERROR: {receipt['marker_error']}. The weekly audit was not recorded.", file=sys.stderr)
         return 1, receipt
-    receipt["weekly_recorded"] = {"marker": shown, **written["weekly_audit"]}  # type: ignore[dict-item]
+    if not complete:
+        return 1, receipt
     return (0 if receipt["ok"] else 3), receipt
 
 
@@ -2004,7 +2025,7 @@ def held_reads(truncated: list[str]) -> list[str]:
 
 def audit_one(
     repo: str, *, gh: str, owner: str | None = None, automation: str | None = None, include_archived: bool = False,
-    fetch: Callable[[list[str]], Any] | None = None,
+    fetch: Callable[[list[str]], Any] | None = None, defer_marker: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     """Audit one repository and stamp its own window; never the weekly audit.
 
@@ -2092,6 +2113,15 @@ def audit_one(
     result["marked_skipped"] = ("archived" if archived is True else "window_open" if held
                                 else "archive_state_unknown" if archived is not False else None)
     result["marked"] = result["run_recorded"] = result["dropped"] = None
+    if defer_marker:
+        stamp = direction_mark.utc_stamp(now)
+        if archived is True:
+            result["_marker_update"] = {"repo": repo, "action": "drop"}
+        elif direction_text is not None and archived is False:
+            result["_marker_update"] = {"repo": repo, "action": "record", "stamp": stamp,
+                                        "held": ", ".join(held) if held else None,
+                                        "since": direction_mark.utc_stamp(audit_since) if held else None}
+        return (0 if result["ok"] else 3), result
     try:
         result["marked"] = None if result["marked_skipped"] else record_audit(repo, now, direction_text)
         # A held window still records that this audit ran, so it is not read as missed.
@@ -2203,8 +2233,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if result["ok"] else 3
 
     if args.weekly:
-        code, result = weekly_audit(args.owner, gh=args.gh, automation=args.automation, include_archived=args.include_archived)
-        print(json.dumps(result, indent=2, sort_keys=True))
+        code, result = weekly_audit(args.owner, gh=args.gh, automation=args.automation,
+                                    include_archived=args.include_archived, emit=emit_weekly_receipt)
         return code
     repo = args.repo or default_repo(git_root(pathlib.Path.cwd()))
     if not repo:

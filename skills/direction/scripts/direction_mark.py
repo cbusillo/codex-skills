@@ -17,6 +17,7 @@ import tempfile
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
+from typing import cast
 
 MARKER_NAME = "direction-last-check.json"
 GITHUB_SCRIPTS = Path(__file__).resolve().parents[2] / "github" / "scripts"
@@ -118,48 +119,58 @@ def mark_turn(path: Path, owner: str, now: dt.datetime) -> dict[str, object]:
 
 
 def mark_weekly(path: Path, owner: str, now: dt.datetime) -> dict[str, object]:
-    """Record a complete weekly audit of the account; only `direction_audit.py --weekly` calls this."""
-    record = direction_repo(owner)
+    return mark_weekly_audits(path, owner, now, [], True)
+
+
+def _apply_audit_update(current: dict[str, object], update: dict[str, object]) -> bool:
+    audits, runs = current["audits"], current.get("audit_runs", {})
+    assert isinstance(audits, dict) and isinstance(runs, dict)
+    repo = cast(str, update["repo"])
+    if update["action"] == "drop":
+        changed = repo in audits or repo in runs
+        audits.pop(repo, None)
+        runs.pop(repo, None)
+        return changed
+    current["audit_runs"] = runs
+    stamp = cast(str, update["stamp"])
+    held = update.get("held")
+    if held is None:
+        audits[repo] = stamp
+        runs[repo] = {"ran": stamp}
+    else:
+        runs[repo] = {"ran": stamp, "held": held}
+        since = update.get("since")
+        if since is not None:
+            audits.setdefault(repo, cast(str, since))
+    return True
+
+
+def mark_weekly_audits(path: Path, owner: str, now: dt.datetime,
+                       updates: list[dict[str, object]], complete: bool) -> dict[str, object]:
     with marker_lock(path) as path:
         current = load(path)
-        current["weekly_audit"] = {"ran": utc_stamp(now), "record": record}
+        for update in updates:
+            _apply_audit_update(current, update)
+        if complete:
+            current["weekly_audit"] = {"ran": utc_stamp(now), "record": direction_repo(owner)}
         save(path, current)
     return current
 
 
 def mark_audit(path: Path, repo: str, now: dt.datetime, held: str | None = None,
                since: dt.datetime | None = None) -> dict[str, object]:
-    """Record this repository's audit without changing daily-turn evidence.
-
-    A held audit ran but keeps its window open for a rerun: it records the run
-    and the reason, and leaves the window start in `audits` where it was.
-    """
     with marker_lock(path) as path:
         current = load(path)
-        stamp = utc_stamp(now)
-        audits, runs = current["audits"], current.setdefault("audit_runs", {})
-        assert isinstance(audits, dict) and isinstance(runs, dict)
-        if held is None:
-            audits[repo] = stamp
-            runs[repo] = {"ran": stamp}
-        else:
-            runs[repo] = {"ran": stamp, "held": held}
-            if since is not None:
-                # A first held run keeps its own window start, so the next audit rereads it.
-                audits.setdefault(repo, utc_stamp(since))
+        _apply_audit_update(current, {"repo": repo, "action": "record", "stamp": utc_stamp(now),
+                                      "held": held, "since": utc_stamp(since) if since is not None else None})
         save(path, current)
     return current
 
 
 def drop_audit(path: Path, repo: str) -> dict[str, object]:
-    """Remove a repository an audit confirmed archived from the weekly maps."""
     with marker_lock(path) as path:
         current = load(path)
-        audits, runs = current["audits"], current.get("audit_runs", {})
-        assert isinstance(audits, dict) and isinstance(runs, dict)
-        if repo in audits or repo in runs:
-            audits.pop(repo, None)
-            runs.pop(repo, None)
+        if _apply_audit_update(current, {"repo": repo, "action": "drop"}):
             save(path, current)
     return current
 

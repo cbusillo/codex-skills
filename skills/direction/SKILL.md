@@ -335,8 +335,9 @@ updates the daily turn or its coverage.
 
 Before calling a daily turn complete, check the command's exit status and JSON
 receipt for its marker path, timestamp, and covered repository. For a
-`--weekly` audit, the weekly audit is recorded only when `weekly_recorded` is
-non-null; its receipt and exit codes are described below. For one
+`--weekly` audit, recording requires a complete JSON receipt with non-null
+`weekly_recorded` and a terminal exit of 0 or 3. The receipt is flushed before
+marker persistence, so that field alone never proves recording. For one
 repository's audit, completion is recorded only when `run_recorded` is non-null. An archived
 repository instead needs `marked_skipped: "archived"` with a non-null `dropped`
 receipt confirming removal. Any other result means no completion was recorded,
@@ -355,7 +356,10 @@ do not stamp a turn just because direction was discussed.
 
 A `--weekly` receipt lists `repos` audited, `unread` (each with its reason),
 `held` and `weekly_recorded`, with every repository's own audit under
-`audits`. A repository counts as audited when its run was recorded. A held
+`audits`. These per-repository entries describe collection; their `marked`,
+`run_recorded` and `dropped` fields remain null. The weekly receipt and terminal
+exit establish persistence, while the single-repository CLI retains its field
+semantics above. A held
 repository counts as audited too. Its window stays open, so the next audit
 rereads what failed or was capped. `held` lists each held repository and its
 reasons. A repository is unread when its audit failed before its run was
@@ -365,7 +369,9 @@ limit or an App installed on selected repositories only also stops the record;
 `discovery` names the gap. Exit 1 means the weekly audit was not recorded, or
 `marker_error` reports a local write failure. Exit 3 means
 it was recorded and there are findings or held repositories, and 0 means
-recorded and clean. When
+recorded and clean. A complete exit-1 attempt with `weekly_skipped` can still
+advance the windows it collected; use that attempt's findings because a retry
+will not repeat them. When
 the App sees only selected repositories, run it with `--gh gh` on the
 Director's own login.
 
@@ -425,11 +431,13 @@ It reads audited repositories and records completion in the local marker.
 Record registration and receiver evidence before calling it active. The receiving
 direction session reads the newest `weekly/DATE.receipt.json` under that
 service's `state_dir`, plus every `*.attempt.json` there modified after the
-previous receipt, whose read repositories' findings the receipt does not
-repeat. Report an empty attempt as lost coverage. It then performs per-repository
+previous receipt. An empty or truncated attempt leaves the original windows
+for the retry. It then performs per-repository
 steps 1–4, the account-wide `direction`-label and friction searches with their
-design procedure, and the [weekly finding judgments](#weekly-audit). Use that
-receipt's findings because collection has already advanced the audit windows.
+design procedure, and the [weekly finding judgments](#weekly-audit). Weekly
+collection emits and flushes its receipt before one locked marker update advances
+the successful repository windows and weekly stamp. An interrupted collection or
+receipt write leaves every original window in place for the retry.
 
 ## Weekly Audit
 

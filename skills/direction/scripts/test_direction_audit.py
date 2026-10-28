@@ -3192,6 +3192,93 @@ def test_weekly_audit_records_once_every_adopted_repository_was_read() -> None:
         assert set(saved["audits"]) == {"o/direction", "o/a", "o/b"}, "each repository's own window still advances"
 
 
+def test_interrupted_weekly_collection_preserves_windows_and_rereads_the_finding() -> None:
+    module = load()
+    account = WeeklyAccount(module)
+    original_fetch = account.fetch
+
+    def finding_fetch(args: list[str], **kwargs: Any) -> Any:
+        if "repos/o/direction/issues?" in args[1] and "labels=audit" in args[1] and "state=closed" in args[1]:
+            return [account.closed]
+        return original_fetch(args, **kwargs)
+
+    account.fetch = finding_fetch
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        window_start = NOW - dt.timedelta(days=3)
+        module.direction_mark.mark_audit(marker, "o/direction", window_start)
+        before = marker.read_bytes()
+        original_audit = module.audit_one
+        calls = 0
+
+        def interrupted(*args: Any, **kwargs: Any) -> Any:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise KeyboardInterrupt
+            return original_audit(*args, **kwargs)
+
+        with patch.multiple(module, audit_one=interrupted):
+            try:
+                account.run(["--weekly", "--owner", "o"], marker)
+            except KeyboardInterrupt:
+                pass
+            else:
+                raise AssertionError("fixture interruption did not stop collection")
+        assert marker.read_bytes() == before
+        _code, receipt = account.run(["--weekly", "--owner", "o"], marker)
+        findings = receipt["audits"]["o/direction"]["findings"]
+        assert any(item["kind"] == "audit_judge" and item["number"] == account.closed["number"] for item in findings)
+        assert receipt["audits"]["o/direction"]["audit_since"] == stamp(window_start)
+
+
+def test_weekly_output_failure_preserves_every_repository_window() -> None:
+    module = load()
+    account = WeeklyAccount(module)
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        window_start = NOW - dt.timedelta(days=3)
+        module.direction_mark.mark_audit(marker, "o/direction", window_start)
+        before = marker.read_bytes()
+
+        def failed_output(receipt_data: dict[str, Any]) -> None:
+            with tempfile.TemporaryFile(mode="w+") as output:
+                with patch.object(sys, "stdout", output), patch.object(os, "fsync", side_effect=OSError("fixture disk full")):
+                    module.emit_weekly_receipt(receipt_data)
+
+        with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+              patch.dict(vars(module), {
+                  "gh_json": account.fetch,
+                  "fetch_capacity": lambda *_args, **_kwargs: (summary(module), []),
+                  "active_unadopted_report": lambda *_args, **_kwargs: {"complete": True, "repositories": [], "unavailable": []},
+              }),
+              patch.dict(vars(module.github_identity), {"configured_bot_logins": lambda: ("bot",),
+                                                         "automation_login": lambda: None})):
+            code, receipt = module.weekly_audit("o", gh="fixture-gh", automation="bot", emit=failed_output)
+        assert code == 1 and receipt["weekly_recorded"] is None
+        assert receipt.get("marker_error")
+        assert marker.read_bytes() == before
+
+
+
+def test_weekly_marker_failure_keeps_emitted_findings_and_original_windows() -> None:
+    module = load()
+    account = WeeklyAccount(module)
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        module.direction_mark.mark_audit(marker, "o/direction", NOW - dt.timedelta(days=3))
+        before = marker.read_bytes()
+        def failed_marker(*_args: Any) -> None:
+            raise OSError("fixture disk full")
+
+        with patch.multiple(module.direction_mark, save=failed_marker):
+            code, receipt = account.run(["--weekly", "--owner", "o"], marker)
+        assert code == 1
+        assert receipt["audits"]["o/direction"]["findings"]
+        assert receipt["weekly_recorded"]["marker"] == str(marker)
+        assert marker.read_bytes() == before
+
+
 def test_weekly_discovery_and_repository_audits_share_one_invocation_read() -> None:
     module = load()
     account = WeeklyAccount(module)
@@ -3227,7 +3314,7 @@ def test_weekly_audit_counts_a_held_window_as_read_but_not_a_failed_audit() -> N
             else:
                 assert list(receipt["unread"]) == ["o/b"] and code == 1
                 assert receipt["unread"]["o/b"].startswith("reads failed:"), receipt["unread"]
-                assert not receipt["audits"]["o/b"].get("run_recorded") and "o/b" not in saved.get("audit_runs", {})
+                assert "o/b" not in saved.get("audit_runs", {})
                 assert "o/a" in saved["audits"], "repositories that were read keep their own stamps"
 
 
