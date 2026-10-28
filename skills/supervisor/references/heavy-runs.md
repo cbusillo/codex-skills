@@ -51,7 +51,14 @@ not process arguments, and are removed after create. For multiline configuration
 copy a configuration file. Inputs stream through `docker cp` before any container
 starts. The archive makes container-local copies readable and writable by image
 users, including services that drop privileges; files retain executable intent.
-Original host bytes and private permissions stay unchanged. There are no host
+Copied directories are mode 0777, regular files 0666 and executable files 0777;
+use a dedicated workspace destination, not `/` or a system directory such as
+`/tmp`. For strict-mode files or data directories, prepare new files under the
+image user's ownership and required modes inside the job before using them.
+Non-root outputs belong inside the copied workspace; automatically created
+parents of nested destinations remain root-owned. Original host bytes and
+private permissions stay unchanged. Keep exported outputs inside the private
+evidence directory; their container modes are preserved. There are no host
 bind mounts, published ports, Docker socket mounts or arbitrary Docker flags. A run owns every container it creates and
 removes its containers, anonymous volumes and network before returning. Never
 start a nested host Docker driver outside this interface to claim its slot.
@@ -78,7 +85,8 @@ selected local context has since changed. It never targets a remote daemon.
 
 The host-wide queue lives at `~/.local/state/codex-skills/heavy-run`. Kernel
 file locks serialize admission in FIFO ticket order and implement the configured
-slot count. Canceled waiters leave the queue. A suspended waiter still owns its FIFO
+slot count. Resource labels also bind the queue identity, isolating other state
+roots on the same daemon. Canceled waiters leave the queue. A suspended waiter still owns its FIFO
 position; resume or cancel that same waiter to advance it. A killed holder releases its kernel
 lock; the next holder inspects and removes any containers and networks left in
 that slot before creating work. Docker CLI children inherit the slot lock, so
@@ -92,7 +100,10 @@ holder cleans it up. Admission tries the lowest free slot first; its failed
 recovery can keep later requests from using other free slots until recovery
 succeeds. Never delete queue/slot lock files to unblock work. Use `lsof` on the
 exact ticket or slot lock file to identify its holder, then resume/cancel that
-worker through its harness. For a verified orphaned CLI, stop that exact PID under
+worker through its harness. If the stored endpoint is unavailable, restore that
+same local daemon through the host's supported service path, then retry the
+entrypoint. Unreachability alone never proves its containers are gone; preserve
+custody and report the unknown state while restoration is blocked. For a verified orphaned CLI, stop that exact PID under
 [process cleanup](../../work-closeout/SKILL.md#git-and-worktree-hygiene). Let an
 already running legacy heavy job finish and verify its cleanup before the first switch; the helper cannot adopt unlabeled work.
 

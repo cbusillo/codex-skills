@@ -118,8 +118,9 @@ class HeavyRunTests(unittest.TestCase):
         endpoint: str = "unix:///fixture/docker.sock",
         job_exit: int = 0,
         fail_output: bool = False,
+        home_name: str = "home",
     ) -> subprocess.Popen[str]:
-        home = self.root / "home"
+        home = self.root / home_name
         config = home / heavy_run.CONFIG_PATH
         config.parent.mkdir(parents=True, exist_ok=True)
         config.write_text(json.dumps({"cpus": 2, "memory": 1024 * 1024 * 1024, "slots": 1}))
@@ -220,6 +221,11 @@ class HeavyRunTests(unittest.TestCase):
         copied = [entry for path in (self.root / "docker").glob("copy-*") for entry in json.loads(path.read_text())]
         private = next(entry for entry in copied if entry["name"].endswith("private.txt"))
         script = next(entry for entry in copied if entry["name"].endswith("run.sh"))
+        manifest = json.loads((self.root / "normal.json").read_text())
+        destination = manifest["containers"][-1]["copies"][0]["destination"].lstrip("/")
+        directory = next(entry for entry in copied if entry["name"] == destination)
+        self.assertEqual(directory["mode"] & 0o007, 0o007)
+        self.assertTrue(all(entry["name"] == destination or entry["name"].startswith(f"{destination}/") for entry in copied))
         self.assertEqual(private["mode"] & 0o006, 0o006)
         self.assertEqual(script["mode"] & 0o001, 0o001)
         self.assertEqual((self.root / "source/private.txt").stat().st_mode & 0o777, 0o600)
@@ -259,6 +265,21 @@ class HeavyRunTests(unittest.TestCase):
         (self.root / "docker/release-successor").touch()
         successor.communicate(timeout=15)
         self.assertEqual(successor.returncode, 0)
+        self.assertFalse(list((self.root / "docker").glob("container-*")))
+        self.assertFalse((self.root / "creating/job.env").exists())
+
+    def test_distinct_queues_do_not_remove_each_others_work(self) -> None:
+        first = self.launch("first")
+        wait_for(self.root / "docker/started-first")
+        second = self.launch("second", home_name="second-home")
+        wait_for(self.root / "docker/started-second")
+        (self.root / "docker/release-second").touch()
+        second.communicate(timeout=15)
+        self.assertEqual(second.returncode, 0)
+        self.assertTrue((self.root / "docker/running-first").exists())
+        (self.root / "docker/release-first").touch()
+        first.communicate(timeout=15)
+        self.assertEqual(first.returncode, 0)
         self.assertFalse(list((self.root / "docker").glob("container-*")))
 
     def test_cancel_cleans_up_and_failed_cleanup_prevents_successor(self) -> None:

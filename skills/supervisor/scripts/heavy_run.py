@@ -48,6 +48,7 @@ def try_lock(handle: BinaryIO) -> bool:
 class Slot:
     index: int
     handle: BinaryIO
+    queue_id: str
 
 
 class RunQueue:
@@ -56,6 +57,7 @@ class RunQueue:
         self.slots = slots
         self.ticket: Path | None = None
         self.handle: BinaryIO | None = None
+        self.queue_id = ""
 
     @contextmanager
     def control(self) -> Generator[None, None, None]:
@@ -66,6 +68,12 @@ class RunQueue:
     def __enter__(self) -> RunQueue:
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         with self.control():
+            identity = self.root / "identity"
+            if not identity.exists():
+                pending = self.root / "identity.next"
+                pending.write_text(uuid.uuid4().hex)
+                pending.replace(identity)
+            self.queue_id = identity.read_text()
             configured = self.root / "slots"
             if configured.exists() and int(configured.read_text()) != self.slots:
                 for path in self.root.glob("slot-*.lock"):
@@ -73,7 +81,7 @@ class RunQueue:
                         if not try_lock(handle):
                             raise ValueError("Change slot count only after running work is cleaned up")
                 self.first_live_ticket()
-                if list(self.root.glob("ticket-*")) or list(self.root.glob("custody-*")):
+                if list(self.root.glob("ticket-*")) or [path for path in self.root.glob("custody-*") if path.suffix != ".next"]:
                     raise ValueError("Change slot count only after all queued and owned work is cleaned up")
             if not configured.exists() or int(configured.read_text()) != self.slots:
                 pending = self.root / "slots.next"
@@ -121,7 +129,7 @@ class RunQueue:
                 break
             time.sleep(0.05)
         with handle:
-            yield Slot(index, handle)
+            yield Slot(index, handle, self.queue_id)
 
     def __exit__(self, *_: object) -> None:
         if self.ticket is not None:
@@ -261,7 +269,7 @@ class Docker:
         self.slot = slot
         self.log = log
         self.endpoint = endpoint
-        self.label = f"{LABEL}={slot.index}"
+        self.label = f"{LABEL}={slot.queue_id}:{slot.index}"
         self.environment = docker_environment()
         self.prefix = ["docker", "--host", endpoint]
 
@@ -418,6 +426,9 @@ def recover(slot: Slot, custody: Path, log: TextIO, endpoint: str) -> None:
             Docker(slot, previous_log, previous.endpoint).cleanup(previous_log)
     else:
         Docker(slot, log, previous.endpoint).cleanup(None)
+    if previous.evidence.is_absolute() and previous.evidence.is_dir():
+        for env_file in previous.evidence.glob("*.env"):
+            env_file.unlink()
     custody.unlink()
 
 

@@ -73,6 +73,7 @@ with (root / "lock").open("w") as lock:
                     p.name.removeprefix("network-")
                     for p in root.glob("network-*")
                     if json.loads(p.read_text())["endpoint"] == endpoint
+                    and json.loads(p.read_text())["label"] == args[-1].removeprefix("label=")
                 )
             )
         elif args[1] == "rm":
