@@ -43,6 +43,54 @@ def patch_attr(target: object, name: str, **kwargs: Any) -> Any:
     return patch.object(target, name, **kwargs)
 
 
+class LaunchIssueTests(unittest.TestCase):
+    def test_stopped_launch_is_refused_on_both_backends_before_any_account_or_terminal_effect(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            command, brief = root / "command", root / "brief"
+            command.write_text("codex")
+            brief.write_text("Anchor and claim: https://github.com/fixture/repo/issues/7\nRules: " + iterm_tab.BRIEF_RULES_URL)
+            args = argparse.Namespace(command="new", window_id="chosen", command_file=[command], brief_file=[brief],
+                                      account_provider="openai", account_config=None, account=None, tmux_socket="fixture")
+            window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
+            app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
+            refusal = {"ok": True, "issue": {"launch_check": {
+                "allowed": False, "status": "waiting", "queue": {"reason": "recorded_wait"}}}}
+            with (patch.dict(sys.modules, {"iterm2": SimpleNamespace()}),
+                  patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(refusal))),
+                  patch.object(account_choice, "select", side_effect=AssertionError("Stopped work reached account selection")) as select,
+                  patch.object(account_choice, "prepare_launch") as prepare,
+                  patch.object(account_choice, "record_launch") as receipt,
+                  patch.object(tmux_terminal, "Terminal") as terminal):
+                for backend in ("iterm", "tmux", "tmux"):
+                    with self.subTest(backend=backend), self.assertRaisesRegex(ValueError, "Launch refused"):
+                        asyncio.run(iterm_tab.operate(app, args) if backend == "iterm" else tmux_terminal.operate(args))
+                select.assert_not_called()
+                prepare.assert_not_called()
+                receipt.assert_not_called()
+                terminal.return_value.run.assert_not_called()
+                window.async_create_tab.assert_not_called()
+
+    def test_changed_prerequisite_allows_a_fresh_check_and_read_only_work_does_not_claim(self) -> None:
+        brief = "Anchor: https://github.com/fixture/repo/issues/7"
+        cleared = {"ok": True, "issue": {"launch_check": {"allowed": True}}}
+        with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(cleared))) as read:
+            iterm_tab.check_launch_issue(brief)
+            self.assertIn("--launch-check", read.call_args.args[0])
+            read.reset_mock()
+            iterm_tab.check_launch_issue(brief.replace("Anchor:", "Read-only anchor:"))
+            read.assert_not_called()
+        for missing in ("Implement export", "Anchor: https://github.com/fixture/repo/issues/7/other"):
+            with self.subTest(missing=missing), self.assertRaises(ValueError):
+                iterm_tab.check_launch_issue(missing)
+
+    def test_missing_or_failed_state_read_never_launches(self) -> None:
+        for code, output in ((1, "{}"), (0, "{}"), (0, "invalid"), (0, '{"ok": true, "issue": {}}')):
+            with self.subTest(code=code, output=output), patch.object(iterm_tab.subprocess, "run", return_value=
+                    subprocess.CompletedProcess([], code, output)), self.assertRaises(ValueError):
+                iterm_tab.check_launch_issue("Anchor: https://github.com/fixture/repo/issues/7")
+
+
 class ResumeLaunchTests(unittest.TestCase):
     def test_preparation_read_deadline_leaves_account_probes_and_writes_their_own_bounds(self) -> None:
         def select(*args: object) -> dict:

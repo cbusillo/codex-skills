@@ -1167,6 +1167,29 @@ def read_launch_text(path: Path) -> str:
         return path.read_text(encoding="utf-8")
 
 
+def check_launch_issue(brief: str) -> None:
+    anchors = re.findall(r"(?mi)^Anchor(?: and claim)?:\s*(https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*)(?=$|[\s).,;])", brief)
+    if not anchors:
+        if re.search(r"(?mi)^Read-only anchor:\s*https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*(?=$|[\s).,;])", brief):
+            return
+        raise ValueError("Brief needs Anchor: <issue URL> for execution, or Read-only anchor: <issue URL> for work that will not claim")
+    helper = Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py"
+    for anchor in dict.fromkeys(anchors):
+        repo = "/".join(anchor.split("/")[3:5])
+        result = subprocess.run(["uv", "run", str(helper), "--repo", repo, "show", anchor, "--full", "--launch-check"],
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+        try:
+            payload = json.loads(result.stdout)
+            check = payload["issue"]["launch_check"] if not result.returncode and payload.get("ok") else {}
+        except (ValueError, KeyError, TypeError) as error:
+            raise ValueError(f"Launch state unavailable for {anchor}; read its full status before dispatch") from error
+        if check.get("allowed") is not True:
+            queue = check.get("queue") or {}
+            raise ValueError(f"Launch refused for {anchor}: {check.get('status', 'unknown')}, "
+                             f"{queue.get('reason', 'launch state unavailable')}; "
+                             "keep the existing hold or owner; dispatch only after the relevant fact changes")
+
+
 def prepare_launches(args: argparse.Namespace) -> tuple[list[str], list[dict | None]]:
     try:
         return prepare_launch_batch(args)
@@ -1236,6 +1259,8 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
             raise ValueError("brief must be nonempty")
         validate_text(brief, allow_tabs=True)
         validate_brief_rules(brief)
+    for brief in briefs:
+        check_launch_issue(brief)
     validate_computer_use_launch(args, command_texts, briefs)
     apps = [gui_launch.declared_app(brief) for brief in briefs]
     if any(apps):

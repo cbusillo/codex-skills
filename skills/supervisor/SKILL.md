@@ -478,12 +478,14 @@ current default-branch checkout to read its product section.
    trust set before launch, in every Claude home including the default one; other folders must already be trusted
    ([#2100](https://github.com/cbusillo/codex-skills/issues/2100)).
    Give each running session its own anchor issue in the same repository,
-   sweeps and checks included; split concurrent work on one issue into child
-   issues before launch. Tell read-only checks not to claim their anchors.
-   A worker that will claim its anchor needs a claimable one: for a
-   `plan:waiting` issue, split out a small active child issue, or,
-   when the wait is already resolved, give that evidence to
-   `claim --wait-resolved`. Never resolve a wait that still holds.
+   sweeps and checks included. Put `Anchor: <issue URL>` (or `Anchor and claim:`)
+   on its own line in execution briefs, and `Read-only anchor: <issue URL>`
+   in briefs that will not claim. The shared launcher reuses full status and
+   ownership reads before dispatch. After a stopped launch, keep the issue with
+   its blocker, wait, owner or retained delivery until that fact changes;
+   another launch, an exact claim release or a newer timestamp alone does not
+   clear the other holds. Do not split a child just to redispatch the same held
+   work. Read-only work answering a wait can proceed without claiming it.
    Before a launch batch, compare PRs merged with PRs opened in each
    repository over the last few hours. If merges are behind and no merge-path
    fix is available, launch only finishing work. Apply the

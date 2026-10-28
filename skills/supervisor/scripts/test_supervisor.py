@@ -1541,7 +1541,7 @@ class AccountChoiceTests(unittest.TestCase):
 
 
 # Launch fixtures carry the rules link every Supervisor brief needs.
-BRIEF = f"brief under {iterm_tab.BRIEF_RULES_URL}"
+BRIEF = f"Read-only anchor: https://github.com/fixture/repo/issues/1\nbrief under {iterm_tab.BRIEF_RULES_URL}"
 
 
 def fixture_briefs(command_files):
@@ -3441,7 +3441,7 @@ class TerminalTests(unittest.TestCase):
             if sent.startswith("\x1b[200~"):
                 sent = sent.removeprefix("\x1b[200~").removesuffix("\x1b[201~")
             launched = subprocess.run(["/bin/sh", "-c", sent], capture_output=True, text=True, check=True)
-            self.assertEqual(launched.stdout.splitlines(), [choice["env"]["CLAUDE_CONFIG_DIR"], "1", BRIEF])
+            self.assertEqual(launched.stdout, f"{choice['env']['CLAUDE_CONFIG_DIR']}\n1\n{BRIEF}\n")
         window.async_create_tab.assert_awaited_once_with(select=False)
         receipt.assert_called_once_with(choice)
         self.assertEqual(result["account"]["env_keys"], ["CLAUDE_CONFIG_DIR"])

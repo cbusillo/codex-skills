@@ -955,6 +955,11 @@ selection is unchanged.
   cannot override the projection. Missing or malformed wait evidence needs review.
   `labels` is the projected view; `recorded_labels` preserves the observed labels
   for diagnosis without making them status authority.
+  `--launch-check` also reuses `next`'s current ownership and retained-delivery
+  reads. `issue.launch_check.allowed` requires active native status and an
+  available source-work queue row. Unknown coverage refuses dispatch, while
+  the full read remains available. This writes no claim or new state record;
+  a launched worker still claims independently.
 - `deps <issue>`: Page and show validated native `blocked_by`, `blocking`, and
   sub-issue relationships, preserving cross-repository issue references.
 

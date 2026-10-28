@@ -2094,6 +2094,14 @@ def cmd_show(args: argparse.Namespace) -> None:
     if not args.full and "Current Status" in result["sections"]:
         result["recorded_current_status"] = result["sections"]["Current Status"]
         result["sections"]["Current Status"] = github_plan_status.render_status(result["sections"]["Current Status"], derived)
+    if getattr(args, "launch_check", False):
+        candidate = {**result, "discussion": github_direction_next.discussion_snapshot(issue, comments, complete=True)}
+        annotate_next_queue([candidate], args, parallel=False)
+        queue = candidate["queue"]
+        result["launch_check"] = {
+            "allowed": derived["status"] == "active" and derived["relationships_complete"] and queue["state"] == "available",
+            "status": derived["status"], "queue": queue,
+        }
     emit({"ok": True, "actor": actor, "issue": result,
           **({"batch_read": BATCH_READ_CONTEXT} if getattr(args, "batch_read", False) else {})})
 
@@ -7154,6 +7162,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--batch-read", action="store_true", help="Explicit cold/changed GraphQL slice; REST remains the unchanged-read route")
     p.add_argument("issue")
     p.add_argument("--full", action="store_true", help="Include the entire body instead of selected sections")
+    p.add_argument("--launch-check", action="store_true", help="Read current ownership and delivery holds for a new execution worker; never claim")
     p.add_argument("--sections", nargs="+")
     p.set_defaults(func=cmd_show)
 

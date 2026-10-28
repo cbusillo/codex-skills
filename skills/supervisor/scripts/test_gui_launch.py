@@ -30,7 +30,7 @@ from codex_session_proxy import MEMORY_SETTING
 import tmux_terminal
 
 # Launch fixtures carry the rules link every Supervisor brief needs.
-RULES = "\nRules for this brief: " + iterm_tab.BRIEF_RULES_URL
+RULES = "\nRead-only anchor: https://github.com/fixture/repo/issues/1\nRules for this brief: " + iterm_tab.BRIEF_RULES_URL
 
 
 class GuiLaunchTests(unittest.TestCase):
@@ -96,7 +96,7 @@ class GuiLaunchTests(unittest.TestCase):
 
     def test_shared_rules_copy_does_not_require_computer_use_for_source_work(self) -> None:
         self.args.computer_use = None
-        self.brief.write_text("Fix the launcher.\n" + iterm_tab.brief_rules_block())
+        self.brief.write_text("Read-only anchor: https://github.com/fixture/repo/issues/1\nFix the launcher.\n" + iterm_tab.brief_rules_block())
         _, choices = iterm_tab.prepare_launches(self.args)
         self.assertNotIn("gui", choices[0])
         self.assertFalse(self.state.exists())
