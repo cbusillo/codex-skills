@@ -1183,7 +1183,7 @@ def check_launch_issue(brief: str) -> None:
             check = payload["issue"]["launch_check"] if not result.returncode and payload.get("ok") else {}
         except (ValueError, KeyError, TypeError) as error:
             raise ValueError(f"Launch state unavailable for {anchor}; read its full status before dispatch") from error
-        if check.get("allowed") is not True:
+        if not check.get("allowed"):
             queue = check.get("queue") or {}
             raise ValueError(f"Launch refused for {anchor}: {check.get('status', 'unknown')}, "
                              f"{queue.get('reason', 'launch state unavailable')}; "
