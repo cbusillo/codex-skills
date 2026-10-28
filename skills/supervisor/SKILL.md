@@ -482,7 +482,7 @@ current default-branch checkout to read its product section.
    on its own line in single-issue execution briefs, and `Read-only anchor: <issue URL>`
    in briefs that will not claim. The shared launcher reuses full status and
    ownership reads before dispatch. After a stopped launch, keep the issue with
-   its blocker, wait, owner or retained delivery until that fact changes;
+   its blocker, wait, claim holder or retained delivery until that fact changes;
    another launch, an exact claim release or a newer timestamp alone does not
    clear the other holds. Do not split a child just to redispatch the same held
    work. Read-only work answering a wait can proceed without claiming it;

@@ -1362,7 +1362,7 @@ successor adds `Resume from: <source claim comment ID or URL>` on its own line. 
 source's authored release must exist. A qualified retained-PR handoff is
 needed to exempt current delivery artifacts; no current artifacts need no
 exemption. The worker's `claim --resume-from` still validates full lineage.
-Neither this line nor a release alone clears other holds or owners, including
+Neither this line nor a release alone clears other holds or claim holders, including
 the cross-record source's current claims. Numeric IDs select claims on the
 anchor itself; use the full issue-comment URL for another source record.
 Target waits remain authoritative; a source's missing legacy wait record
