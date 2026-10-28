@@ -909,7 +909,6 @@ def is_director_record(comment: Comment) -> bool:
 
 
 def is_bookkeeping(comment: Comment) -> bool:
-    """Director questions, decisions and planning records are awareness or state, not replies."""
     return is_director_record(comment) or PLAN_RECORD_MARKER in comment.body
 
 
@@ -1104,21 +1103,15 @@ def comment_states_for_thread(
         public_response = owner_response or bot_response
         publicly_addressed = public_response is not None
         public_response_actor = "owner" if owner_response is not None else "bot" if bot_response is not None else None
-        closed_at = rollup.parse_timestamp(str(thread.get("closed_at") or ""))
-        closed_after = closed_at is not None and comment_activity_through(comment, effective_until) < closed_at <= effective_until
-        handled_closed = thread.get("state") == "closed" and (publicly_addressed or closed_after)
-        if handled_closed:
+        handled_closed = thread.get("state") == "closed" and publicly_addressed
+        if publicly_addressed:
             attention_state = "handled"
         elif owner_seen is None:
             attention_state = "coverage_unknown"
-        elif not owner_seen and public_response_actor == "bot":
-            attention_state = "bot_answered_needs_your_eyes"
-        elif not owner_seen:
-            attention_state = "needs_your_eyes"
-        elif not publicly_addressed:
+        elif owner_seen:
             attention_state = "seen_unanswered"
         else:
-            attention_state = "handled"
+            attention_state = "needs_your_eyes"
         author_kind, automation_for = author_class(comment.author, automation_logins or {})
 
         results.append(
@@ -1145,7 +1138,7 @@ def comment_states_for_thread(
                 "public_response_url": public_response.url if public_response is not None else None,
                 "later_reply_url": later_reply.url if later_reply is not None else None,
                 "attention_state": attention_state,
-                "handled_reason": "closed_after_comment" if handled_closed and closed_after else "closed_with_response" if handled_closed else None,
+                "handled_reason": "closed_with_response" if handled_closed else None,
             }
         )
     return results
@@ -1669,7 +1662,6 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
         state: sum(1 for item in comment_states if item["attention_state"] == state)
         for state in (
             "needs_your_eyes",
-            "bot_answered_needs_your_eyes",
             "seen_unanswered",
             "coverage_unknown",
             "handled",
@@ -1732,9 +1724,8 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             "An edit to an issue or PR description is caught only by a full-history --thread scan or when the thread is opened in the window.",
             "Only configured automation is excluded; people-index automation accounts (contacts.github.bot_usernames) are labeled with who they act for, and unlisted logins ending in bot or automation are marked possible_automation.",
             "Waits on the Director are open plan:waiting issues, and open issues whose comments GitHub search finds with a structured wait, whose current wait (the trusted structured record when one is readable, otherwise the Current Status prose marked for review) names the Director's login, a people-index name, or the Director role, with no Director or Owner question still open; an unreadable trusted record is listed as an unresolved wait for review, whether or not a question is open; negated mentions are left out, and waits worded as the Director's own hold (resume, park, hold, select, revisit) are listed as director_hold without raising attention; repository scans only.",
-            "Any owner reaction after the current comment version proves personal acknowledgement; owner replies require an exact permalink or an inline-review thread with one eligible external comment.",
-            "A targeted automation reply may also use an unambiguous single-author mention. Trusted Director question: or Director decision: records prove awareness of linked comments, or, when they say 'above' without a comment link, external comments preceding them since the previous such record in the thread; awareness alone is not a public response.",
-            "Closed threads are handled when a comment has a targeted public response or closure followed its latest version by the scan end; this does not imply personal acknowledgement. Open threads retain separate awareness and response rules.",
+            "A targeted public reply from the Director or configured automation handles a comment after its latest edit. Exact comment links or an inline-review thread with one eligible external comment target a reply; automation may also use an unambiguous single-author mention.",
+            "Director reactions and question/decision records are diagnostic awareness evidence, not public replies or requirements for clearing attention. Unanswered comments remain flagged even on closed threads; edits and new comments reopen attention.",
             "Opt-in --outbound searches involvement in repositories not owned by the configured human logins, verifies authorship or comment participation, and lists external messages in the window after their latest human activity, including review bodies and inline comments. Only edits with a verified human editor advance that cutoff; automation and maintainer edits do not. Explicit thread and portfolio scopes retain their normal rules when outbound discovery overlaps them. GitHub search indexing, visibility and its 1,000-result cap limit discovery; detected partial results degrade coverage.",
             "With --outbound, threads outside the scanned repositories that mention the Director and were updated in the window are listed as untrusted links. That search runs read-only under the Director gh login and only with the standing approval linked by --mention-approval; without it, the gap is reported as degraded coverage.",
             "External comments outside the configured lookback window are not included.",
@@ -1764,7 +1755,6 @@ def render_markdown(payload: dict[str, Any]) -> str:
         lines.append(f"- Archived repositories excluded: {', '.join(excluded_archived)}; use --include-archived to include them.")
     sections = (
         ("needs_your_eyes", "Needs Your Eyes"),
-        ("bot_answered_needs_your_eyes", "Bot Answered — Needs Your Eyes"),
         ("seen_unanswered", "Seen — No Public Response"),
         ("coverage_unknown", "Acknowledgement Coverage Unknown"),
         ("outbound_reply", "Outside Repositories — Replies After Your Last Activity"),
@@ -1787,8 +1777,6 @@ def render_markdown(payload: dict[str, Any]) -> str:
             lines.append(f"- [{label}: {title}]({item['thread_url']}) — {author} {'opened it' if opened else 'commented'} at `{item['created_at']}`")
             if not opened:
                 lines.append(f"  - [Open comment]({item['comment_url']})")
-            if item["public_response_actor"] == "bot":
-                lines.append(f"  - [Bot response]({item['public_response_url']})")
             evidence = item.get("owner_seen_evidence")
             if isinstance(evidence, dict) and evidence.get("kind") == "reaction":
                 lines.append(f"  - Owner reaction: `{evidence.get('content') or 'reaction'}`")

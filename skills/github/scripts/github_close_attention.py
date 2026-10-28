@@ -141,7 +141,6 @@ def run_radar(threads: list[str], gh_cmd: str | None = None,
 
 
 def unanswered_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    # The radar counts a comment on a closed thread as handled; closing over it still needs a reply.
     # Only later_reply_url counts: the radar's targeted response follows edit time, so it is not used here.
     return [
         {key: row.get(key) for key in ("repo", "number", "author", "comment_url", "created_at",

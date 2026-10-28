@@ -2057,7 +2057,8 @@ malformed rather than ignoring its additional field.
   pages native `blocked_by` dependencies and sub-issues; `--reason completed`
   rejects open entries with compact references and `write_outcome=not_started`.
   Issues blocked by the plan do not prevent closure. Closing an open issue
-  also runs the comment radar on it, its native blockers, dependents,
+  also runs the [comment radar](../../github-work-rollup/SKILL.md#external-comment-radar)
+  on it, its native blockers, dependents,
   sub-issues and parent in any account, and issues and PRs in the same account
   that its body references. The repository owner, and no configured or
   authenticated login, is the Director on every one of those threads, so
