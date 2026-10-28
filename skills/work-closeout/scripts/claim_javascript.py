@@ -133,15 +133,15 @@ class JavascriptData:
             raise ValueError(node.type)
 
     def expression(self, node: Node | None, environment: dict) -> str:
+        if node is None:
+            raise ValueError("missing expression")
         try:
             return self._expression(node, environment)
         except (KeyError, ValueError) as error:
             error.__dict__.setdefault("node", node)
             raise
 
-    def _expression(self, node: Node | None, environment: dict) -> str:
-        if node is None:
-            raise ValueError("missing expression")
+    def _expression(self, node: Node, environment: dict) -> str:
         kind = node.type
         if kind == "regex":
             call = node.parent.parent if node.parent.type == "arguments" else None
@@ -179,8 +179,12 @@ class JavascriptData:
         if kind in {"string", "true", "false", "null", "undefined"}:
             return "data"
         if kind in {"member_expression", "subscript_expression"}:
-            receiver_kind = self.expression(node.child_by_field_name("object"), environment)
+            receiver = node.child_by_field_name("object")
             member = node.child_by_field_name("property" if kind == "member_expression" else "index")
+            if receiver.type == "identifier" and source(receiver) == "tools" and kind == "member_expression":
+                property_name(member)
+                return "capability"
+            receiver_kind = self.expression(receiver, environment)
             if kind == "member_expression" or member.type == "string":
                 name = property_name(member)
                 if receiver_kind == "array" and name == "length":
@@ -383,6 +387,9 @@ class LiteralCommands:
     def value(self, node: Node | None, environment: dict) -> object:
         if node is None:
             raise ValueError("missing value")
+        return self._value(node, environment)
+
+    def _value(self, node: Node, environment: dict) -> object:
         if node.type in {"identifier", "shorthand_property_identifier"}:
             value = environment.get(property_name(node))
             if value is None:
@@ -409,10 +416,18 @@ class LiteralCommands:
                 raise ValueError("number")
             return left + right
         if node.type == "array":
-            elements = array_elements(node)
-            if len(elements) > self.count_limit:
-                raise ValueError("array limit")
-            return [self.value(child, environment) for child in elements]
+            result = []
+            for child in array_elements(node):
+                if child.type == "spread_element":
+                    value = self.value(children(child)[0], environment)
+                    if type(value) is not list:
+                        raise ValueError("array spread")
+                    result.extend(value)
+                else:
+                    result.append(self.value(child, environment))
+                if len(result) > self.count_limit:
+                    raise ValueError("array limit")
+            return result
         if node.type == "subscript_expression":
             receiver = self.value(node.child_by_field_name("object"), environment)
             index = self.value(node.child_by_field_name("index"), environment)
@@ -435,11 +450,34 @@ class LiteralCommands:
             return result
         if node.type == "call_expression":
             function = node.child_by_field_name("function")
+            if function.type == "identifier" and source(function) == "load":
+                args = children(node.child_by_field_name("arguments"))
+                if len(args) != 1:
+                    raise ValueError("load arguments")
+                key = self.value(args[0], environment)
+                if type(key) is not str:
+                    raise ValueError("load key")
+                return self.stored_values(node)[key]
             if function.type != "member_expression":
                 raise ValueError("call")
             receiver = function.child_by_field_name("object")
             method = property_name(function.child_by_field_name("property"))
-            arguments = [self.value(child, environment) for child in children(node.child_by_field_name("arguments"))]
+            args = children(node.child_by_field_name("arguments"))
+            if method == "map" and len(args) == 1 and args[0].type == "arrow_function":
+                values = self.value(receiver, environment)
+                if type(values) is not list or any(child.type == "async" for child in args[0].children):
+                    raise ValueError("literal map")
+                pattern = args[0].child_by_field_name("parameter") or args[0].child_by_field_name("parameters")
+                result = []
+                for index, value in enumerate(values):
+                    local = environment.copy()
+                    self.bind(pattern, [value, index, values] if pattern.type == "formal_parameters" else value, local)
+                    mapped = self.value(args[0].child_by_field_name("body"), local)
+                    if type(mapped) not in {str, int}:
+                        raise ValueError("literal map result")
+                    result.append(mapped)
+                return result
+            arguments = [self.value(child, environment) for child in args]
             if source(receiver) == "Object" and method == "entries" and len(arguments) == 1 and type(arguments[0]) is dict:
                 return [[key, value] for key, value in arguments[0].items()]
             value = self.value(receiver, environment)
@@ -470,6 +508,40 @@ class LiteralCommands:
                     raise ValueError("template")
             return "".join(parts)
         raise ValueError(node.type)
+
+    def stored_values(self, node: Node) -> dict[str, object]:
+        root = node
+        while root.parent is not None:
+            root = root.parent
+        pending = [root]
+        stored = {}
+        while pending:
+            candidate = pending.pop()
+            pending.extend(reversed(children(candidate)))
+            if candidate.type in {"break_statement", "continue_statement"}:
+                raise ValueError("store control flow")
+            if candidate.type != "call_expression":
+                continue
+            function = candidate.child_by_field_name("function")
+            if function.type != "identifier" or source(function) != "store":
+                continue
+            if candidate.end_byte >= node.start_byte or candidate.parent.type != "expression_statement":
+                raise ValueError("store order")
+            ancestor = candidate.parent
+            while ancestor != root:
+                if ancestor.type not in {"expression_statement", "statement_block", "for_in_statement"}:
+                    raise ValueError("conditional store")
+                ancestor = ancestor.parent
+            arguments = candidate.child_by_field_name("arguments")
+            args = children(arguments)
+            if len(args) != 2:
+                raise ValueError("store arguments")
+            for row in self.environments(arguments, strict=True):
+                key = self.value(args[0], row)
+                if type(key) is not str or key in stored or len(stored) >= self.count_limit:
+                    raise ValueError("store key")
+                stored[key] = self.value(args[1], row)
+        return stored
 
     def bind(self, pattern: Node | None, value: object, environment: dict) -> None:
         if pattern is None:

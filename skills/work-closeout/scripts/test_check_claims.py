@@ -3375,6 +3375,38 @@ print(root)"""
         self.assertEqual(code, 0, output.getvalue())
         reader.assert_not_called()
 
+    def test_cli_read_only_data_composition_has_complete_claim_coverage(self) -> None:
+        for source in (
+            'store("commands",["gh-plan.py claim --help"]);const cmds=[...load("commands")];'
+            "await Promise.allSettled(cmds.map(async cmd=>text(await tools.exec_command({cmd}))));",
+            'text(await tools.exec_command({cmd:"cat review.md"}));'
+            "text(await tools.wait?tools.clock__curr_time({}):tools.clock__curr_time({}));",
+        ):
+            with self.subTest(source=source):
+                entry = self.entry()
+                with Path(entry["transcript"]).open("a") as stream:
+                    stream.write(
+                        json.dumps(
+                            {
+                                "payload": {
+                                    "type": "custom_tool_call",
+                                    "name": "exec",
+                                    "call_id": "read",
+                                    "input": source,
+                                }
+                            }
+                        )
+                        + "\n"
+                    )
+                with patch.object(helper, "repository_reader") as reader, contextlib.redirect_stdout(io.StringIO()) as output:
+                    code = helper.main(["--owner", "test", "--session", SESSION, "--transcript", entry["transcript"]])
+                report = json.loads(output.getvalue())
+                self.assertEqual(code, 0, report)
+                self.assertTrue(report["claims_clear"], report)
+                self.assertTrue(report["coverage"]["complete"], report)
+                self.assertEqual(report["unresolved_invocations"], [], report)
+                reader.assert_not_called()
+
     def test_cli_refuses_a_transcript_of_another_session_before_reading_github(self):
         other = self.entry("newer-session", "2026-03-01T00:00:00Z")
         for transcript in (other["transcript"], str(self.folder / "missing.jsonl")):

@@ -23,6 +23,64 @@ def invocation(source: str, output: object = "") -> list[dict]:
 
 
 class RecordedClaimOutcomeTests(unittest.TestCase):
+    def test_same_cell_stored_commands_preserve_every_claim_effect(self) -> None:
+        for verb in ("show", "claim"):
+            source = (
+                'const groups={"a":[5,6],"b":[7]};'
+                "for(const [repo,nums] of Object.entries(groups)){"
+                f"const cmds=nums.map(n=>`gh-plan.py --repo test/${{repo}} {verb} ${{n}} --session {SESSION}`);"
+                'store(repo+"-commands",cmds);}'
+                'const cmds=[...load("a-commands"),...load("b-commands")];'
+                "await Promise.allSettled(cmds.map(async cmd=>text(await tools.exec_command({cmd}))));"
+            )
+            with self.subTest(verb=verb):
+                report = check_claims.history.literal_targets(invocation(source), SESSION)
+                if verb == "show":
+                    self.assertEqual(report, {"targets": set(), "unresolved_invocations": []})
+                else:
+                    self.assertEqual(report["targets"], {("test/a", 5), ("test/a", 6), ("test/b", 7)})
+                    self.assertTrue(report["unresolved_invocations"])
+                    self.assertTrue(
+                        all(item["reason"] == check_claims.history.UNFINISHED_CLAIM for item in report["unresolved_invocations"])
+                    )
+
+    def test_native_property_reads_do_not_hide_sibling_claims(self) -> None:
+        read = 'text(await tools.exec_command({cmd:"cat review.md"}));\n'
+        clock = "text(await tools.wait?tools.clock__curr_time({}):tools.clock__curr_time({}));"
+        self.assertEqual(
+            check_claims.history.literal_targets(invocation(read + clock), SESSION),
+            {"targets": set(), "unresolved_invocations": []},
+        )
+        for source in (
+            read + clock + f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));",
+            read + f"text(await tools.wait?tools.exec_command({{cmd:{json.dumps(COMMAND)}}}):tools.clock__curr_time({{}}));",
+        ):
+            with self.subTest(source=source):
+                report = check_claims.history.literal_targets(invocation(source), SESSION)
+                self.assertEqual(report["targets"], {("test/a", 5)})
+                self.assertTrue(report["unresolved_invocations"])
+
+    def test_unknown_store_provenance_and_capability_calls_remain_conditional(self) -> None:
+        execute = 'text(await tools.exec_command({cmd:load("c")}));'
+        for source in (
+            execute,
+            'if(true){store("c","cat README.md");}' + execute,
+            'store("c","cat README.md");store("c",' + json.dumps(COMMAND) + ");" + execute,
+            execute + 'store("c","cat README.md");',
+            'const save=()=>store("c","cat README.md");save();' + execute,
+            'store(load("key"),"cat README.md");' + execute,
+            'store("c",load("unknown"));' + execute,
+            'for(const n of [1]){break;store("c","cat README.md");}' + execute,
+            'for(const n of [1]){if(n)continue;store("c","cat README.md");}' + execute,
+            'store("c","cat README.md");text(await tools.exec_command({cmd:load([])}));',
+            'store("c",["cat README.md"]);const cmds=load("c");cmds.push(' + json.dumps(COMMAND) + ");"
+            "await Promise.all(cmds.map(cmd=>tools.exec_command({cmd})));",
+            "const run=tools.exec_command;run({cmd:" + json.dumps(COMMAND) + "});",
+            "text(tools.wait?tools.unknown__run({}):tools.clock__curr_time({}));",
+        ):
+            with self.subTest(source=source):
+                self.assertTrue(check_claims.history.literal_targets(invocation(source), SESSION)["unresolved_invocations"])
+
     def test_read_only_discovery_cells_do_not_create_claim_uncertainty(self) -> None:
         reads = [
             'await Promise.allSettled([(async()=>text(await tools.exec_command({cmd:"gh-plan.py claim --help"})))(),'
