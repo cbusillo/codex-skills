@@ -1275,12 +1275,20 @@ def check_launch_issue(brief: str) -> None:
                        r"([1-9]\d*|https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*#issuecomment-[1-9]\d*)\s*$", brief)
     if resume and len(set(anchor for _, anchor in anchors)) != 1:
         raise ValueError("A retained-delivery brief needs one anchor for its source claim")
+    declarations = re.findall(r"(?mi)^[^\S\n]*(?:[-*] )?(?:\*\*)?Admission(?: for [^:\n]+)?:(?:\*\*)?[^\S\n]*([^\n]*)", brief)
+    if len(declarations) > 1:
+        raise ValueError("An execution brief needs one Admission line naming the claim kind and its evidence links")
+    admission = re.match(r"([\w-]*)(.*)", declarations[0]) if declarations else None
     helper = Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py"
     for mode, anchor in dict.fromkeys(anchors):
         repo = "/".join(anchor.split("/")[3:5])
         argv = ["uv", "run", str(helper), "--repo", repo, "show", anchor, "--full", "--launch-check"]
         if mode.casefold() == "read-only anchor":
             argv.append("--read-only")
+        if admission and mode.casefold() != "read-only anchor":
+            argv.extend(["--admission", admission[1].casefold()])
+            for link in re.findall(r"https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/[1-9]\d*(?:#issuecomment-[1-9]\d*)?", admission[2]):
+                argv.extend(["--admission-link", link])
         if resume:
             argv.extend(["--resume-from", resume[1]])
         try:
@@ -1290,6 +1298,10 @@ def check_launch_issue(brief: str) -> None:
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as error:
             raise ValueError(f"Launch state unavailable for {anchor}; read its full status before dispatch") from error
         if not check.get("allowed"):
+            error = check.get("error") or payload.get("error") or {}
+            if error:
+                raise ValueError(f"Launch refused for {anchor}: {error.get('code', 'claim_preflight')}: "
+                                 f"{error.get('message', error)}")
             facts = check.get("ownership") or {}
             evidence = (facts.get("detail") or facts.get("conflicts") or facts.get("artifacts")
                         or check.get("resume_source") or facts.get("error") or check.get("status"))

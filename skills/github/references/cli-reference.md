@@ -962,6 +962,11 @@ selection is unchanged.
   for diagnosis without making them status authority.
   `--launch-check` also reuses `next`'s current ownership and retained-delivery
   facts, separate from source ranking and source-delivery history.
+  For execution workers, pass their `--admission <kind>` and repeated
+  `--admission-link <URL>` values: the claim's admission-argument validation, milestone
+  admission and wait checks run without writes. A refusal returns
+  `issue.launch_check.error` with the claim reason and evidence, and makes
+  `allowed` false. `--read-only` skips claim admission and waits.
   `issue.launch_check.allowed` requires active native status and no
   observed claim holder or retained-delivery hold; next-action wording does not gate
   dispatch. `--read-only` permits answering a wait without claiming or changing

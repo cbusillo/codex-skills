@@ -50,23 +50,26 @@ class LaunchIssueTests(unittest.TestCase):
             root = Path(folder)
             command, brief = root / "command", root / "brief"
             command.write_text("codex")
-            brief.write_text("Anchor and claim: https://github.com/fixture/repo/issues/7\nRules: " + iterm_tab.BRIEF_RULES_URL)
+            brief.write_text("Admission: milestone\nAnchor and claim: https://github.com/fixture/repo/issues/7\nRules: " + iterm_tab.BRIEF_RULES_URL)
             args = argparse.Namespace(command="new", window_id="chosen", command_file=[command], brief_file=[brief],
                                       account_provider="openai", account_config=None, account=None, tmux_socket="fixture")
             window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
             app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
             refusal = {"ok": True, "issue": {"launch_check": {
-                "allowed": False, "status": "waiting", "ownership": {"conflicts": [], "artifacts": []}}}}
+                "allowed": False, "status": "active", "ownership": {"conflicts": [], "artifacts": []},
+                "error": {"code": "claim_admission_unlinked", "message": "Track evidence missing"}}}}
             with (patch.dict(sys.modules, {"iterm2": SimpleNamespace()}),
                   patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(refusal))),
                   patch.object(account_choice, "select", side_effect=AssertionError("Stopped work reached account selection")) as select,
+                  patch.object(iterm_tab, "preflight_codex_daemon") as daemon,
                   patch.object(account_choice, "prepare_launch") as prepare,
                   patch.object(account_choice, "record_launch") as receipt,
                   patch.object(tmux_terminal, "Terminal") as terminal):
                 for backend in ("iterm", "tmux", "tmux"):
-                    with self.subTest(backend=backend), self.assertRaises(ValueError):
+                    with self.subTest(backend=backend), self.assertRaisesRegex(ValueError, "claim_admission_unlinked"):
                         asyncio.run(iterm_tab.operate(app, args) if backend == "iterm" else tmux_terminal.operate(args))
                 select.assert_not_called()
+                daemon.assert_not_called()
                 prepare.assert_not_called()
                 receipt.assert_not_called()
                 terminal.return_value.run.assert_not_called()
@@ -97,6 +100,20 @@ class LaunchIssueTests(unittest.TestCase):
                           "https://github.com/fixture/repo/issues/7/"):
                 iterm_tab.check_launch_issue("Anchor: " + value)
                 self.assertEqual(calls[-1].issue, brief.split()[-1])
+        link = "https://github.com/fixture/direction/issues/9#issuecomment-123"
+        with patch.object(iterm_tab.subprocess, "run", side_effect=read):
+            for declaration, kind in (("Admission for this item: milestone (" + link + ")", "milestone"),
+                                      ("Admission: milestone (" + link + ")", "milestone"),
+                                      ("**Admission:** spare-capacity; " + link, "spare-capacity"),
+                                      ("- Admission: repeat-stop; " + link + " https://github.com/fixture/repo/issues/8", "repeat-stop")):
+                iterm_tab.check_launch_issue(brief + "\n" + declaration)
+                self.assertEqual(calls[-1].admission, kind)
+                self.assertEqual(calls[-1].admission_link[0], link)
+            iterm_tab.check_launch_issue(brief.replace("Anchor:", "Read-only anchor:") + "\nAdmission: milestone")
+            self.assertIsNone(calls[-1].admission)
+            iterm_tab.check_launch_issue(brief + "\nAdmission: repeat-stop; " + link +
+                                        "\n  Context: https://github.com/fixture/repo/issues/88")
+            self.assertEqual(calls[-1].admission_link, [link])
         for missing in ("Implement export", "Anchor: https://github.com/fixture/repo/pull/7", "Milestone lead for the Track"):
             with self.subTest(missing=missing), patch.object(iterm_tab.subprocess, "run") as reader:
                 iterm_tab.check_launch_issue(missing)
@@ -104,6 +121,24 @@ class LaunchIssueTests(unittest.TestCase):
         for malformed in ("fixture/repo#7", "", "https://github.com/fixture/repo/issues/7/other"):
             with self.subTest(malformed=malformed), self.assertRaises(ValueError):
                 iterm_tab.check_launch_issue("Anchor: " + malformed)
+
+    def test_multiple_admission_declarations_refuse_before_reading_launch_state(self) -> None:
+        brief = "Anchor: https://github.com/fixture/repo/issues/7\nAdmission: milestone\nAdmission: spare-capacity"
+        with patch.object(iterm_tab.subprocess, "run") as reader, self.assertRaises(ValueError):
+            iterm_tab.check_launch_issue(brief)
+        reader.assert_not_called()
+
+    def test_claim_refusal_code_and_details_reach_the_launcher(self) -> None:
+        anchor = "Anchor: https://github.com/fixture/repo/issues/7"
+        for code in ("claim_wait_unresolved", "claim_milestone_graph_incomplete", "claim_preflight_unavailable"):
+            detail = "Fixture specific recovery step"
+            payload = {"ok": True, "issue": {"launch_check": {
+                "allowed": False, "error": {"code": code, "message": detail}}}}
+            with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))):
+                with self.assertRaises(ValueError) as caught:
+                    iterm_tab.check_launch_issue(anchor)
+                self.assertIn(code, str(caught.exception))
+                self.assertIn(detail, str(caught.exception))
 
     def test_missing_or_failed_state_read_never_launches(self) -> None:
         for code, output in ((1, "{}"), (0, "{}"), (0, "invalid"), (0, '{"ok": true, "issue": {}}')):
