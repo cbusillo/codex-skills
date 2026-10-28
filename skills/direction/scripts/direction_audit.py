@@ -140,8 +140,9 @@ def audit(
     limits: list[dict[str, Any]] = []
     milestone_additions: list[dict[str, Any]] = []
     audit_since = audit_since or now - dt.timedelta(days=7)
-    if truncated:
-        findings.append({"kind": "coverage_incomplete", "detail": "a bounded read was truncated or unavailable; drift beyond verified coverage is unreported", "listings": sorted(truncated)})
+    unread_waits = [f"milestone_waits:{item['repo']}#{item['number']}" for item in issues if item.get("_milestone_wait_unread")]
+    if truncated or unread_waits:
+        findings.append({"kind": "coverage_incomplete", "detail": "a bounded read was truncated or unavailable; drift beyond verified coverage is unreported", "listings": sorted((truncated or []) + unread_waits)})
     if direction_text is None:
         findings.append({"kind": "direction_missing", "detail": "DIRECTION.md not found at the repository root"})
         listed: list[str] = []
@@ -253,11 +254,17 @@ def audit(
         for finding in issue.get("_milestone_wait_findings", []):
             wait_findings[(finding["repo"].casefold(), finding["number"])] = finding
         if (state == "open" and milestone_title in listed
-                and not str(issue.get("title", "")).startswith("Track:")):
+                and not str(issue.get("title", "")).startswith("Track:")
+                and not issue.get("_milestone_wait_unread")):
             compact = github_direction_next.compact_list_issue(str(issue.get("repo") or owner), issue)
             compact["plan_status"] = issue.get("_plan_status")
             if compact["plan_status"] == "waiting":
                 compact["exclusion"] = "waiting"
+            if issue.get("structured_wait") is not None:
+                if issue["structured_wait"]["state"] == "review":
+                    compact["exclusion"] = "wait_review_required"
+                else:
+                    compact["structured_wait"] = issue["structured_wait"]
             status = github_direction_next.section_map(issue.get("body") or "").get("Current Status", "")
             checked = github_direction_next.check_milestone_wait(compact, status, listed)
             if checked.get("wait_finding"):
@@ -1158,6 +1165,23 @@ def enrich_milestone_waits(
 
     for item in issues:
         item["_plan_status"] = github_direction_next.next_plan_status(item, config(repo))
+        if ("pull_request" in item
+                or item.get("state", "open") != "open" or str(item.get("title", "")).startswith("Track:")
+                or (item.get("milestone") or {}).get("title") not in titles
+                or item["_plan_status"] in {"blocked", "stale", "done"}):
+            continue
+        compact = {**github_direction_next.compact_list_issue(repo, item), "plan_status": item["_plan_status"]}
+        status = github_direction_next.section_map(item.get("body") or "").get("Current Status", "")
+        if not github_direction_next.check_milestone_wait(compact, status, titles).get("wait_finding"):
+            continue
+        try:
+            comments, cut = fetch_paginated(f"repos/{repo}/issues/{item['number']}/comments", fetch=fetch, max_pages=2)
+            if cut:
+                raise AuditError("Milestone wait discussion is incomplete")
+            item["structured_wait"] = wait_helpers["current_wait"](item, comments, repo)
+        except (AuditError, ValueError, wait_helpers["PlanError"]):
+            item["_milestone_wait_unread"] = True
+            incomplete = True
 
     def read_node(target_repo: str, number: int) -> dict[str, Any]:
         nonlocal incomplete
