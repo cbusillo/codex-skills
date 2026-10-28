@@ -489,12 +489,20 @@ current default-branch checkout to read its product section.
    trust set before launch, in every Claude home including the default one; other folders must already be trusted
    ([#2100](https://github.com/cbusillo/codex-skills/issues/2100)).
    Give each running session its own anchor issue in the same repository,
-   sweeps and checks included; split concurrent work on one issue into child
-   issues before launch. Tell read-only checks not to claim their anchors.
-   A worker that will claim its anchor needs a claimable one: for a
-   `plan:waiting` issue, split out a small active child issue, or,
-   when the wait is already resolved, give that evidence to
-   `claim --wait-resolved`. Never resolve a wait that still holds.
+   sweeps and checks included. Put `Anchor: <issue URL>` (or `Anchor and claim:`)
+   on its own line in single-issue execution briefs, and `Read-only anchor: <issue URL>`
+   in briefs that will not claim. The shared launcher reuses full status and
+   ownership reads before dispatch. After a stopped launch, keep the issue with
+   its blocker, wait, claim holder or retained delivery until that fact changes;
+   another launch, an exact claim release or a newer timestamp alone does not
+   clear the other holds. Do not split a child just to redispatch the same held
+   work. Read-only work answering a wait can proceed without claiming it;
+   its ownership check still runs. Record a resolved wait with `gh-plan.py wait
+   <issue> --clear --evidence <resolution>`. For retained delivery, put `Resume from:
+   <same-issue claim comment ID or another source's full issue-comment URL>`
+   on its own line. Require the authored release and
+   a qualified handoff to exempt current artifacts; the worker still uses
+   `claim --resume-from` for full lineage validation.
    Before a launch batch, compare PRs merged with PRs opened in each
    repository over the last few hours. If merges are behind and no merge-path
    fix is available, launch only finishing work. Apply the
@@ -539,8 +547,9 @@ current default-branch checkout to read its product section.
    those instructions only at a verified idle prompt. Codex keeps working
    through automatic compaction, carrying its brief's Keep instructions; never
    queue a request for it to compact itself. If a worker's compaction fails or its account needs it gone,
-   request a durable handoff and relaunch the same brief after verified safe
-   closeout. If it cannot hand off, preserve it and bring the failure to the
+   request a durable handoff, recheck prerequisites and ownership, and relaunch
+   the same goal after verified safe closeout with its existing retained-work
+   source when needed. If it cannot hand off, preserve it and bring the failure to the
    Director. Gather the
    open Director questions: read the existing foreign watcher's new
    `director_question` notices on every check, open each full comment, and

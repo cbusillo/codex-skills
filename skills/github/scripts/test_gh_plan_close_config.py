@@ -21,6 +21,8 @@ from unittest.mock import Mock, patch
 
 SCRIPT = Path(__file__).with_name("gh-plan.py")
 sys.path.insert(0, str(SCRIPT.parent))
+import github_work_graph
+import github_plan_claim
 SPEC = importlib.util.spec_from_file_location("gh_plan_close_config_under_test", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 PLAN: Any = importlib.util.module_from_spec(SPEC)
@@ -44,29 +46,45 @@ class CloseConfigTests(unittest.TestCase):
         context.start()
         self.addCleanup(context.stop)
 
-    def show_fixture(self, *, enrichment: Any = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    @staticmethod
+    def show_fixture(*, enrichment: Any = None, launch: bool = False, comments_extra: list[dict] | None = None,
+                     pulls: list[dict] | None = None, action: str = "Implement export.", resume: int | str | None = None,
+                     read_only: bool = False, expired_sessions: set[str] | None = None,
+                     source_comments: list[dict] | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         target = "fixture/target"
         configs = {repo: copy.deepcopy(PLAN.DEFAULT_CONFIG) for repo in ("fixture/local", target)}
         configs[target]["labels"] = {key: f"target:{key}" for key in configs[target]["labels"]}
         names = configs[target]["labels"]
-        issue = {"repo": target, "number": 7, "state": "open", "title": "Target request",
+        issue: dict[str, Any] = {"repo": target, "number": 7, "state": "open", "title": "Target request",
                  "html_url": f"https://github.com/{target}/issues/7", "user": {"login": "fixture"},
-                 "body": "Original human request.\n## Current Status\nState: Blocked.\nNext action: Implement export.",
+                 "body": f"Original human request.\n## Current Status\nState: Blocked.\nNext action: {action}",
                  "labels": [{"name": names[key]} for key in ("plan", "blocked")]}
-        comments = [{"id": 1, "user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker(
+        comments: list[dict[str, Any]] = [{"id": 1, "user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker(
             PLAN.github_plan_wait.reviewed(evidence="Target discussion reviewed; no person wait"))}]
+        comments.extend(comments_extra or [])
         relationships = Mock(return_value=("fixture-bot", {"blocked_by": [], "sub_issues": []}))
         if isinstance(enrichment, Exception):
             relationships.side_effect = enrichment
         elif enrichment is not None:
             relationships.return_value = ("fixture-bot", enrichment)
         output = io.StringIO()
+        parent = {**issue, "number": 6}
         with patch.multiple(PLAN, default_repo=Mock(return_value="fixture/local"),
                 load_config=Mock(side_effect=lambda repo, **_: configs[repo]),
                 get_issue=Mock(return_value=("fixture-bot", issue)),
                 collect_paged_rest_items=Mock(return_value=("fixture-bot", comments)),
-                read_issue_relationships=relationships), contextlib.redirect_stdout(output):
-            PLAN.cmd_show(PLAN.build_parser().parse_args(["--repo", "fixture/local", "show", "fixture/target#7", "--full"]))
+                read_issue_relationships=relationships, wait_authors=Mock(return_value={"fixture"}),
+                claim_snapshot=Mock(return_value=(parent, "", source_comments or [], False)),
+                next_source_delivery=Mock(side_effect=AssertionError("Launch admission must not rank source delivery"))), \
+                patch.object(github_plan_claim, "expired_lease_sessions", return_value=expired_sessions or set()), \
+                patch.object(github_plan_claim, "local_inventory", return_value={
+                    "local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}), \
+                patch.object(github_work_graph, "ownership_inventory", return_value={
+                    "complete": True, "pulls": pulls or [], "coverage": {}, "inventory": {}}), contextlib.redirect_stdout(output):
+            PLAN.cmd_show(PLAN.build_parser().parse_args(["--repo", "fixture/local", "show", "fixture/target#7", "--full",
+                                                        *(["--launch-check"] if launch else []),
+                                                        *(["--resume-from", str(resume)] if resume else []),
+                                                        *(["--read-only"] if read_only else [])]))
         return json.loads(output.getvalue()), issue, configs[target]
 
     def test_qualified_show_projects_with_the_target_custom_label_configuration(self) -> None:
@@ -91,6 +109,68 @@ class CloseConfigTests(unittest.TestCase):
                 self.assertEqual(result["issue"]["body"], issue["body"])
                 self.assertEqual(result["issue"]["number"], issue["number"])
                 self.assertEqual(len(result["issue"]["comments"]), 1)
+
+    def test_launch_stays_refused_until_the_native_blocker_closes(self) -> None:
+        blocker = {"repo": "fixture/gate", "number": 8, "state": "open"}
+        for state in ("open", "open", "closed"):
+            with self.subTest(state=state):
+                blocker["state"] = state
+                result, _, _ = self.show_fixture(launch=True, enrichment={"blocked_by": [blocker], "sub_issues": []})
+                self.assertEqual(result["issue"]["launch_check"]["allowed"], state == "closed")
+
+    def test_launch_requires_wait_resolution_and_exact_claim_release_without_retained_pr(self) -> None:
+        source = {"worker": "codex", "session": "source", "branch": "work/export", "claimed_at": "2026-10-01T00:00:00Z"}
+        claim = {"id": 2, "user": {"login": "fixture"}, "body": PLAN.github_plan_claim.marker(source)}
+        release = {"id": 3, "user": {"login": "fixture"}, "body": "Released claim 2"}
+        waiting = {"id": 4, "user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker({
+            "version": 1, "state": "waiting", "evidence": "Director holds the export", "waits": [
+                {"waiting_for": "Director", "ends_when": "Director resumes export"}]})}
+        retained = {"number": 80, "state": "open", "title": "Export", "body": "Closes #7", "head": {"ref": source["branch"]}}
+        for comments, pulls, allowed in (([claim], [], False), ([claim], [], False),
+                                          ([claim, release], [retained], False), ([claim, release, waiting], [], False),
+                                          ([claim, release], [], True)):
+            with self.subTest(comments=comments, pulls=pulls):
+                result, _, _ = self.show_fixture(launch=True, comments_extra=comments, pulls=pulls)
+                self.assertEqual(result["issue"]["launch_check"]["allowed"], allowed)
+
+    def test_launch_allows_operational_work_and_only_authored_retained_handoffs(self) -> None:
+        for action in ("Audit the helper.", "Run the testing migration.", "Qualify the release."):
+            result, _, _ = self.show_fixture(launch=True, action=action)
+            self.assertTrue(result["issue"]["launch_check"]["allowed"])
+        source = {"worker": "codex", "session": "source", "branch": "work/export", "claimed_at": "2026-10-01T00:00:00Z"}
+        claim = {"id": 2, "user": {"login": "fixture"}, "body": PLAN.github_plan_claim.marker(source)}
+        release = {"id": 3, "user": {"login": "fixture"}, "body": "Released claim 2\n\nRetained PR: https://github.com/fixture/target/pull/80"}
+        retained: dict[str, Any] = {"number": 80, "state": "open", "user": {"login": "fixture"}, "body": "Closes #7",
+                    "head": {"ref": source["branch"], "repo": {"full_name": "fixture/target"}},
+                    "base": {"repo": {"full_name": "fixture/target"}}}
+        for author, allowed in (("foreign", False), ("fixture", True)):
+            release["user"] = {"login": author}
+            result, _, _ = self.show_fixture(launch=True, comments_extra=[claim, release], pulls=[retained], resume=2)
+            self.assertEqual(result["issue"]["launch_check"]["allowed"], allowed)
+        for body in ("Released claim 2", "Released claim 2\n\nMerged PR: https://github.com/fixture/target/pull/80"):
+            release["body"] = body
+            result, _, _ = self.show_fixture(launch=True, comments_extra=[claim, release], resume=2)
+            self.assertTrue(result["issue"]["launch_check"]["allowed"])
+        another_owner = {"id": 4, "user": {"login": "fixture"}, "body": PLAN.github_plan_claim.marker({
+            **source, "session": "other", "branch": "work/other"})}
+        result, _, _ = self.show_fixture(launch=True, comments_extra=[claim, release, another_owner], resume=2)
+        self.assertFalse(result["issue"]["launch_check"]["allowed"])
+        for read_only in (False, True):
+            result, _, _ = self.show_fixture(launch=True, read_only=read_only, pulls=[{**retained, "user": {"login": "human"}}])
+            self.assertEqual(result["issue"]["launch_check"]["allowed"], read_only)
+        for read_only, extra, allowed in ((False, [], False), (True, [], True), (True, [claim], False)):
+            result, _, _ = self.show_fixture(launch=True, read_only=read_only, comments_extra=extra,
+                enrichment={"blocked_by": [{"repo": "fixture/gate", "number": 8, "state": "open"}], "sub_issues": []})
+            self.assertEqual(result["issue"]["launch_check"]["allowed"], allowed)
+        for expired, allowed in ((set(), False), ({source["session"]}, True)):
+            result, _, _ = self.show_fixture(launch=True, comments_extra=[claim], expired_sessions=expired)
+            self.assertEqual(result["issue"]["launch_check"]["allowed"], allowed)
+        release["body"] = "Released claim 2\n\nRetained PR: https://github.com/fixture/target/pull/80"
+        retained["body"] += "\nCloses #6"
+        for owner_comments, allowed in (([claim, release], True), ([claim, release, another_owner], False)):
+            result, _, _ = self.show_fixture(launch=True, pulls=[retained], source_comments=owner_comments,
+                resume="https://github.com/fixture/target/issues/6#issuecomment-2")
+            self.assertEqual(result["issue"]["launch_check"]["allowed"], allowed)
 
     def test_public_close_uses_resolved_target_config_and_keeps_overrides(self) -> None:
         for ref, caller in (("fixture/target#7", "fixture/local"),

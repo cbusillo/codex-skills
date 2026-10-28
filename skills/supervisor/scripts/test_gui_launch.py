@@ -35,6 +35,7 @@ RULES = "\nRules for this brief: " + iterm_tab.BRIEF_RULES_URL
 
 class GuiLaunchTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch.object(iterm_tab, "check_launch_issue"))
         self.temp = tempfile.TemporaryDirectory(prefix="gui-", dir="/tmp")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
