@@ -62,7 +62,7 @@ Rules for this brief (every Supervisor brief carries them):
   [executing loop](../../references/executing-loop.md), opening each step's
   owning SKILL.md before the step.
 - Recheck ownership, then claim with `gh-plan.py --repo OWNER/REPO claim` (admission: the kind
-  named at the top of the brief) before any worktree. The installed
+  named in the brief's [admission line](../SKILL.md#the-pattern)) before any worktree. The installed
   `gh-plan.py claim --help` and
   [Planning: Claim](../../github/references/cli-reference.md#planning-claim)
   decide the flags; flags a brief suggests are hints. If the item is claimed,
@@ -188,7 +188,9 @@ Supervisor spreads work so one lead does not take the whole PR cap.
 ```text
 Brief from the Supervisor (__HANDOFF_RECORD__), __DATE__. Trial token: __TOKEN__. Milestone lead brief (Milestone lead trial, https://github.com/cbusillo/codex-skills/issues/2277; Director decision Q515).
 
-You are the long-running lead for: __TRACK__. Admission for every item you take: milestone (__MILESTONE__), linked into that Track's graph.
+You are the long-running lead for: __TRACK__.
+Admission: milestone (__MILESTONE__); __TRACK_URL__
+Every item you take is linked into that Track's graph.
 
 How a lead works:
 1. Own the Track's progress, not one item. Read the Track issue in full, its native children and their Current Status, and the overall and repository DIRECTION.md. Do not claim the Track issue itself.

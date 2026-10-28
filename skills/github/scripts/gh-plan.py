@@ -2115,11 +2115,22 @@ def cmd_show(args: argparse.Namespace) -> None:
             expired_sessions=github_plan_claim.expired_lease_sessions(comments))
         source_clear = (source_facts is None or (source_facts["complete"] and not source_facts.get("error")
                         and not source_facts["conflicts"]))
+        claim_error = None
+        if not args.read_only:
+            try:
+                check_claim_wait({**issue, "claim_wait": wait}, claim_current_status(issue, read_plan_sections(issue)[0], comments), config)
+                admission, admission_links, _ = claim_admission_options(args)
+                if admission == "milestone":
+                    milestone_claim_track(issue, admission_links)
+            except PlanError as error:
+                claim_error = {"code": getattr(error, "code", "claim_preflight_unavailable"),
+                               "message": str(error), **(error.payload if isinstance(error.payload, dict) else {})}
         result["launch_check"] = {
-            "allowed": (derived["relationships_complete"] and facts["complete"] and not facts.get("error")
+            "allowed": (claim_error is None and derived["relationships_complete"] and facts["complete"] and not facts.get("error")
                         and not facts["conflicts"] and (args.read_only or not facts["artifacts"])
                         and source_clear and (args.read_only or derived["status"] == "active")),
             "status": derived["status"], "ownership": facts,
+            **({"error": claim_error} if claim_error else {}),
             **({"resume_source": source_facts} if source_facts else {}),
         }
     emit({"ok": True, "actor": actor, "issue": result,
@@ -2727,7 +2738,8 @@ def milestone_claim_track(issue: dict[str, Any], links: list[str]) -> dict[str, 
         f"Milestone admission needs an open Track in {direction_repo} under a listed milestone, "
         f"or an open repository milestone listed in {issue['repo']}'s merged DIRECTION.md and absent from overall direction. "
         "A citation to the direction repository must name a valid Track; use --admission-link URL for that Track. "
-        "Admission records the citation without changing the Track graph.")
+        "Admission records the citation without changing the Track graph. Link the right milestone Track, "
+        "or name another --admission kind with its decision link.")
 
 
 def link_native_dependency(
@@ -2739,27 +2751,36 @@ def link_native_dependency(
     return actor, refresh_planning_targets([(source["repo"], int(source["number"]))])
 
 
-def claim_once(args: argparse.Namespace) -> None:
-    repo = default_repo(args.repo)
-    issue_repo, number = issue_ref(args.issue, repo)
-    validate_plan_references([args.next_action, getattr(args, "wait_resolved", None)], issue_repo)
-    claim = {key: getattr(args, key) for key in ("worker", "session", "branch")}
-    for key, value in claim.items():
-        if not value or re.search(r"\s|[<>]", value):
-            raise PlanError(f"Claim {key} must be a nonempty single-line token")
-    if not args.next_action.strip() or any(c in args.next_action for c in "\n\r"):
-        raise PlanError("Claim next action must be a nonempty single line")
-    if args.wait_resolved is not None and (not args.wait_resolved.strip() or any(c in args.wait_resolved for c in "\n\r")):
-        raise PlanError("Wait resolution must record existing evidence on one line")
-    override_input = getattr(args, "agent_override", None)
-    if override_input is not None and (not override_input.strip() or any(c in override_input for c in "\n\r")):
-        raise PlanError("Agent override must record the Director decision on one nonempty line")
-    if subprocess.run(["git", "check-ref-format", "--branch", args.branch],
-                      capture_output=True).returncode:
-        raise PlanError("Claim branch is not a valid Git branch")
+def check_claim_wait(waiting_issue: dict[str, Any], waiting_status: str, config: dict[str, Any], *,
+                     wait_resolved: str | None = None, record_status: str | None = None) -> bool:
+    wait = waiting_issue["claim_wait"]
+    status_state = next_plan_status(waiting_issue, config)
+    has_wait = bool(wait["state"] != "clear" or status_state in {"stale", "done"})
+    if has_wait and not wait_resolved:
+        waiting_repo, waiting_number = waiting_issue["repo"], waiting_issue["number"]
+        waiting_record = {
+            "repo": waiting_repo, "number": waiting_number,
+            "record_kind": "pr" if "pull_request" in waiting_issue else "issue",
+            "url": waiting_issue.get("html_url"), "plan_status": status_state,
+            "current_status": record_status if record_status is not None else waiting_status,
+        }
+        raise ClassifiedPlanError("claim_wait_unresolved",
+            f"Review claim admission on {waiting_repo}#{waiting_number} "
+            f"(plan status: {status_state}, structured wait: {wait['state']}) with "
+            f"gh-plan.py --repo {waiting_repo} wait {waiting_number}. For a missing legacy record, read the full "
+            "issue/discussion once and record its waits or verified absence; --wait-resolved records existing resolution evidence.",
+            payload={"structured_wait": wait, "previous_current_status": waiting_status,
+                     "review_required": wait["state"] == "review", "waiting_record": waiting_record})
+    return has_wait
+
+
+def claim_admission_options(args: argparse.Namespace) -> tuple[str | None, list[str], str | None]:
     admission = getattr(args, "admission", None)
     admission_links = list(dict.fromkeys(getattr(args, "admission_link", None) or []))
     admission_unlinked = getattr(args, "admission_unlinked", None)
+    if admission is not None and admission not in github_plan_claim.ADMISSIONS:
+        raise PlanError("Unknown claim admission; use --admission " + ", ".join(github_plan_claim.ADMISSIONS)
+                        + " with its --admission-link evidence")
     if (admission_links or admission_unlinked is not None) and not admission:
         raise PlanError("--admission-link and --admission-unlinked require --admission")
     admission_targets = {link: github_plan_claim.admission_link_target(link) for link in admission_links}
@@ -2777,6 +2798,28 @@ def claim_once(args: argparse.Namespace) -> None:
     admission_links = list(first_spellings.values())
     if admission == "repeat-stop" and len(admission_links) < 2:
         raise PlanError("Repeat-stop admission needs both occurrences: pass --admission-link once for each")
+    return admission, admission_links, admission_unlinked
+
+
+def claim_once(args: argparse.Namespace) -> None:
+    repo = default_repo(args.repo)
+    issue_repo, number = issue_ref(args.issue, repo)
+    validate_plan_references([args.next_action, getattr(args, "wait_resolved", None)], issue_repo)
+    claim = {key: getattr(args, key) for key in ("worker", "session", "branch")}
+    for key, value in claim.items():
+        if not value or re.search(r"\s|[<>]", value):
+            raise PlanError(f"Claim {key} must be a nonempty single-line token")
+    if not args.next_action.strip() or any(c in args.next_action for c in "\n\r"):
+        raise PlanError("Claim next action must be a nonempty single line")
+    if args.wait_resolved is not None and (not args.wait_resolved.strip() or any(c in args.wait_resolved for c in "\n\r")):
+        raise PlanError("Wait resolution must record existing evidence on one line")
+    override_input: str | None = getattr(args, "agent_override", None)
+    if override_input is not None and (not override_input.strip() or any(c in override_input for c in "\n\r")):
+        raise PlanError("Agent override must record the Director decision on one nonempty line")
+    if subprocess.run(["git", "check-ref-format", "--branch", args.branch],
+                      capture_output=True).returncode:
+        raise PlanError("Claim branch is not a valid Git branch")
+    admission, admission_links, admission_unlinked = claim_admission_options(args)
     target_repo = issue_repo
     handoff_id = None
     retained_mode = False
@@ -2833,25 +2876,8 @@ def claim_once(args: argparse.Namespace) -> None:
 
     def check_wait(waiting_issue: dict[str, Any], waiting_status: str, *, target: bool = False,
                    record_status: str | None = None) -> bool:
-        wait = waiting_issue["claim_wait"]
-        status_state = next_plan_status(waiting_issue, phase["target_config"] if target else config)
-        has_wait = bool(wait["state"] != "clear" or status_state in {"stale", "done"})
-        if has_wait and not args.wait_resolved:
-            waiting_repo, waiting_number = waiting_issue["repo"], waiting_issue["number"]
-            waiting_record = {
-                "repo": waiting_repo, "number": waiting_number,
-                "record_kind": "pr" if "pull_request" in waiting_issue else "issue",
-                "url": waiting_issue.get("html_url"), "plan_status": status_state,
-                "current_status": record_status if record_status is not None else waiting_status,
-            }
-            raise ClassifiedPlanError("claim_wait_unresolved",
-                f"Review claim admission on {waiting_repo}#{waiting_number} "
-                f"(plan status: {status_state}, structured wait: {wait['state']}) with "
-                f"gh-plan.py --repo {waiting_repo} wait {waiting_number}. For a missing legacy record, read the full "
-                "issue/discussion once and record its waits or verified absence; --wait-resolved records existing resolution evidence.",
-                payload={"structured_wait": wait, "previous_current_status": waiting_status,
-                         "review_required": wait["state"] == "review", "waiting_record": waiting_record})
-        return has_wait
+        return check_claim_wait(waiting_issue, waiting_status, phase["target_config"] if target else config,
+                                wait_resolved=args.wait_resolved, record_status=record_status)
 
     def check_issue_holds(checked_issue: dict[str, Any]) -> None:
         expected = previous_wait
@@ -7178,6 +7204,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("issue")
     p.add_argument("--full", action="store_true", help="Include the entire body instead of selected sections")
     p.add_argument("--launch-check", action="store_true", help="Read current ownership and delivery holds for a new execution worker; never claim")
+    p.add_argument("--admission", help="Admission the execution worker will claim")
+    p.add_argument("--admission-link", action="append", default=[], metavar="URL", help="Exact claim admission evidence; repeat for each occurrence")
     p.add_argument("--read-only", action="store_true", help="Allow a launch check to answer waits without claiming or changing held work")
     p.add_argument("--resume-from", help="Existing source claim comment ID or URL for a retained-delivery launch check")
     p.add_argument("--sections", nargs="+")
