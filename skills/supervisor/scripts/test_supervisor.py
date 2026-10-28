@@ -2629,19 +2629,24 @@ class ClaudeTrustTests(unittest.TestCase):
 
 class TerminalTests(unittest.TestCase):
     def test_exit_send_reports_ended_only_for_matching_process_absence(self) -> None:
-        for text, command, absent, submit, ended in (
-            ("/quit", "codex", True, True, True),
-            ("/exit", "claude", True, True, True),
-            ("/quit", "codex", False, True, False),
-            ("/quit", "claude", True, True, False),
-            ("/exit", "codex", True, True, False),
-            ("message", "codex", True, True, False),
-            ("/quit", "codex", True, False, False),
+        for text, commands, absent, submit, ended in (
+            ("/quit", ("codex",), True, True, True),
+            ("/exit", ("claude",), True, True, True),
+            ("/quit", ("node /opt/codex.js", "codex"), True, True, True),
+            ("/quit", ("node /opt/codex.js", "codex"), (True, False), True, False),
+            ("/quit", ("python codex_session_proxy.py", "codex"), True, True, True),
+            ("/quit", ("codex",), False, True, False),
+            ("/quit", ("claude",), True, True, False),
+            ("/exit", ("codex", "claude"), True, True, False),
+            ("message", ("codex",), True, True, False),
+            ("/quit", ("codex",), True, False, False),
         ):
-            with self.subTest(text=text, command=command, absent=absent, submit=submit), \
-                    patch.object(session_liveness, "inventory", return_value=[(123, "ttys001", command)]), \
-                    patch.object(session_liveness, "process_absent", return_value=absent), \
-                    patch.object(asyncio, "sleep", new=AsyncMock()):
+            processes = [(pid, "ttys001", command) for pid, command in enumerate(commands, 123)]
+            with self.subTest(text=text, commands=commands, absent=absent, submit=submit), \
+                    patch.object(session_liveness, "inventory", return_value=processes), \
+                    patch.object(session_liveness, "process_absent", side_effect=lambda pid, observed=absent:
+                                 observed[pid - 123] if isinstance(observed, tuple) else observed), \
+                    patch("asyncio.sleep", new=AsyncMock()):
                 observer = iterm_tab.exit_observer(text, "/dev/ttys001")
                 before = {"screen": [f"› {text}"], "input_line": {
                     "line_index": 0, "style": "non_dim", "text": text}}
@@ -2656,6 +2661,20 @@ class TerminalTests(unittest.TestCase):
                     self.assertEqual(result["delivery"], "session_ended" if ended else "typed")
                     self.assertEqual(result["readback_required"], not ended)
                     self.assertEqual(press.await_count, int(submit))
+
+    def test_exit_readback_allows_delayed_process_reaping(self) -> None:
+        before = {"screen": [], "input_line": {"line_index": None}}
+        observer = Mock(side_effect=[False, True])
+        with patch("asyncio.sleep", new=AsyncMock()):
+            result = asyncio.run(iterm_tab.submit_message("exact", "/quit", True,
+                AsyncMock(side_effect=[before, ValueError("pane disappeared")]), AsyncMock(), observer))
+        self.assertEqual(result["delivery"], "session_ended")
+        self.assertFalse(result["readback_required"])
+
+    def test_exit_inventory_failure_preserves_normal_send(self) -> None:
+        for error in (OSError(), ValueError(), subprocess.TimeoutExpired("ps", 10)):
+            with self.subTest(error=type(error)), patch.object(session_liveness, "inventory", side_effect=error):
+                self.assertIsNone(iterm_tab.exit_observer("/quit", "/dev/ttys001"))
 
     def test_verified_send_queues_busy_codex_and_reports_observed_delivery(self) -> None:
         message = "Check the new scope"

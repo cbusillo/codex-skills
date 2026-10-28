@@ -43,6 +43,8 @@ CLAUDE_QUESTION_TOOL = "AskUserQuestion"
 # hook-review prompt until the brief's turn runs, within this bound.
 CODEX_PROMPT_WINDOW = 20.0
 LAUNCH_TIMEOUT = 30.0
+EXIT_READBACK_ATTEMPTS = 5
+EXIT_READBACK_INTERVAL = 0.2
 # The catalog's Chrome opt-in; with it, browser tools come only from the pinned server.
 CHROME_OPT_IN = Path(__file__).resolve().parents[3] / ".local" / "chrome.toml"
 # Every brief carries the reviewed rules, by link or as an unchanged copy (Q587).
@@ -473,17 +475,22 @@ def exit_observer(text: str, tty: str | None) -> Callable[[], bool] | None:
     family = {"/quit": "codex", "/exit": "claude"}.get(text)
     if not family or not tty:
         return None
+    try:
+        rows = session_liveness.inventory()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
     candidates = []
-    for pid, terminal, command in session_liveness.inventory():
+    for pid, terminal, command in rows:
         if terminal != tty.removeprefix("/dev/"):
             continue
         argv = session_liveness.harness_arguments(command)
         if argv:
             candidates.append((pid, session_liveness.harness_family(argv[0])))
-    if len(candidates) != 1 or candidates[0][1] != family:
+    if not any(candidate_family == family for _, candidate_family in candidates) or any(
+        candidate_family not in {None, family} for _, candidate_family in candidates
+    ):
         return None
-    pid = candidates[0][0]
-    return lambda: session_liveness.process_absent(pid)
+    return lambda: all(session_liveness.process_absent(pid) for pid, _ in candidates)
 
 
 async def submit_message(
@@ -516,9 +523,13 @@ async def submit_message(
         raise
     except Exception as error:
         failure = error
-    if pressed and ended and ended():
-        return {"session_id": identity, "sent": True, "delivery": "session_ended",
-                "submission_key": key, "readback_required": False}
+    if pressed and ended:
+        for attempt in range(EXIT_READBACK_ATTEMPTS if failure else 1):
+            if attempt:
+                await asyncio.sleep(EXIT_READBACK_INTERVAL)
+            if ended():
+                return {"session_id": identity, "sent": True, "delivery": "session_ended",
+                        "submission_key": key, "readback_required": False}
     if failure is not None:
         raise SendFailure(identity, submission, "message submission or readback failed") from failure
     assert after is not None
