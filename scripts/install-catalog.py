@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "tomlkit==0.15.1",
+#     "tomlkit==0.15.2",
 # ]
 # ///
 """Install whole-catalog bindings, preserved global instructions and existing hooks."""

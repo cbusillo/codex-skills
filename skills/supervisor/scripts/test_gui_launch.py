@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["websockets==17.2"]
+# dependencies = ["websockets==17.3"]
 # ///
 """GUI launch behavior using temporary account homes and fake console/agents."""
 
