@@ -307,11 +307,12 @@ readback accounts for them. Children claiming under the root session ID enter
 the same journal even when their output is absent from the root transcript.
 
 For a session that began after the journal shipped (`JOURNAL_SHIPPED` in
-`check_claims.py`), the journal replaces the reconstruction below when this host
-holds the session's journal rows, every claim result in its transcripts has a
-row, and no claim result names another session. Invocations the reader cannot
-decode are then listed under `journal_covered_invocations` and leave coverage
-complete. Every claim attempt must also have settled: before and after the
+`check_claims.py`), the check decides journal coverage before running the
+reconstruction below. Every recorded claim result must have a matching row;
+a result naming another expanded session must match that session's own journal,
+which is checked independently. A modern session or native child with no claim
+rows and no unmatched result needs no reconstruction. Every claim attempt must
+also have settled: before and after the
 GitHub reads, no process outside the check's own callers is a `gh-plan` command
 naming the session or a comment POST to one of its journal targets; no journal
 row was written in the last 10 minutes; and the journal is unchanged from the
@@ -390,7 +391,7 @@ is not.
 `--repository OWNER/REPO` and `--owner OWNER` are compatibility context flags;
 they cannot narrow the recorded targets or request a fleet scan. Only exit 0
 with `claims_clear: true` and complete coverage permits an all-clear. The result
-reports its GitHub reader `request_count`; an empty session needs no requests.
+reports its GitHub reader `request_count`, including session searches.
 Keep the verdict conditional/no on a held claim, unverified retained PR or
 incomplete read. A later-deleted record or removed App access remains unreadable
 evidence, never a release. Preserve the journal and owning issue; restore the

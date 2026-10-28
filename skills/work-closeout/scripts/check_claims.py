@@ -179,8 +179,12 @@ def receipt_values(rows: list[dict]) -> list[dict]:
     return [value for block in blocks for value in transcript_values(block)]
 
 
-def names_another_session(value: dict, native: str) -> bool:
-    return isinstance(source := value.get("claim"), dict) and source.get("session") != native
+def unmatched_foreign_receipt(value: dict, native: str, journals: dict[str, dict[tuple[str, int], float]]) -> bool:
+    source = value.get("claim")
+    if not isinstance(source, dict) or source.get("session") == native:
+        return False
+    session = source.get("session")
+    return not isinstance(session, str) or session not in journals or history.claim_target(value, session) not in journals[session]
 
 
 def began_after_journal(rows: list[dict], entry: dict) -> bool:
@@ -197,18 +201,30 @@ def began_after_journal(rows: list[dict], entry: dict) -> bool:
     return identity and began.tzinfo is not None and began > JOURNAL_SHIPPED
 
 
-def recorded_targets(entry: dict, journal: AbstractSet[tuple[str, int]] | None = None) -> dict:
+def recorded_targets(
+    entry: dict,
+    journal: AbstractSet[tuple[str, int]] | None = None,
+    *,
+    journals: dict[str, dict[tuple[str, int], float]] | None = None,
+) -> dict:
     require_own_transcript(entry)
     native = entry["session_id"]
     rows = entry.get("_transcript_records") or history.read_records(Path(entry["transcript"]))
     values = receipt_values(rows)
     receipts = {target for value in values if (target := history.claim_target(value, native)) is not None}
+    return {
+        "targets": receipts | (claim_log.read(native) if journal is None else journal),
+        "receipts": receipts,
+        "journal_era": began_after_journal(rows, entry)
+        and not any(unmatched_foreign_receipt(value, native, journals or {}) for value in values),
+    }
+
+
+def reconstructed_targets(entry: dict) -> dict:
+    rows = entry.get("_transcript_records") or history.read_records(Path(entry["transcript"]))
     discovery = history.literal_targets(
-        rows, native, directory=Path(entry["native_output_directory"]) if entry.get("native_output_directory") else None
+        rows, entry["session_id"], directory=Path(entry["native_output_directory"]) if entry.get("native_output_directory") else None
     )
-    discovery["targets"].update(receipts | (claim_log.read(native) if journal is None else journal))
-    discovery["receipts"] = receipts
-    discovery["journal_era"] = began_after_journal(rows, entry) and not any(names_another_session(value, native) for value in values)
     unresolved = discovery["unresolved_invocations"]
     if unresolved:
         inputs = {call.identifier: (call.text, call.javascript, call.name, call.index) for call in history.tool_details(rows)}
@@ -312,7 +328,7 @@ def settle_from_search(
 
 
 def covered_by_journal(discoveries: list[dict], written: dict[tuple[str, int], float]) -> bool:
-    return bool(written) and all(found["journal_era"] and found["receipts"] <= written.keys() for found in discoveries)
+    return all(found["journal_era"] and found["receipts"] <= written.keys() for found in discoveries)
 
 
 def reboot_bounds(entries: list[dict], expanded: list[dict], record: dict | None, *, deadline: float | None = None) -> dict[str, float]:
@@ -385,9 +401,15 @@ def check(
     bounds = reboot_bounds(entries, expanded, termination_record, deadline=source_deadline)
     written = {native: claim_log.written_at(native) for native in {entry["session_id"] for entry in expanded}}
     for entry in expanded:
-        discovery = recorded_targets(entry, written[entry["session_id"]].keys())
+        discovery = recorded_targets(entry, written[entry["session_id"]].keys(), journals=written)
         discoveries.setdefault(entry["session_id"], []).append(discovery)
         targets.setdefault(entry["session_id"], set()).update(discovery["targets"])
+    journal_covered = {native for native, found in discoveries.items() if covered_by_journal(found, written[native])}
+    for entry in expanded:
+        if entry["session_id"] in journal_covered:
+            continue
+        discovery = reconstructed_targets(entry)
+        targets[entry["session_id"]].update(discovery["targets"])
         unresolved.extend(
             {**item, "session": entry["session_id"], "transcript": entry["transcript"]}
             for item in discovery["unresolved_invocations"]
@@ -395,7 +417,6 @@ def check(
     for item in unresolved:
         if item["transcript"] in bounds:
             item["finished_at"] = bounds[item["transcript"]]
-    journal_covered = {native for native, found in discoveries.items() if covered_by_journal(found, written[native])}
     running_before = {native: running_writes(native, written[native]) for native in journal_covered}
     released, blocked, readers, pulls_cache, data_cache = [], [], {}, {}, {}
 
@@ -419,8 +440,6 @@ def check(
     for native_session, records in sorted(targets.items()):
         for target in sorted(records):
             check_target(native_session, *target)
-    covered = [item for item in unresolved if item["session"] in journal_covered]
-    unresolved = [item for item in unresolved if item["session"] not in journal_covered]
     settled, search_errors = settle_from_search(unresolved, targets, released, check_target, search_reader, journal_covered)
     unresolved = [item for item in unresolved if item not in settled]
     checked_at = time.time()
@@ -448,7 +467,6 @@ def check(
         "blocked": blocked,
         "unresolved_invocations": unresolved,
         "settled_invocations": settled,
-        "journal_covered_invocations": covered,
     }
 
 
