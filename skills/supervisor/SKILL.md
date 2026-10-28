@@ -516,7 +516,8 @@ current default-branch checkout to read its product section.
    answers in chat, Discord, or on GitHub. The
    Supervisor records the answer as a `Director decision:` comment on that issue
    under those shared rules. Before dispatching work, reconcile each structured
-   wait the decision ends through [wait records](../github/references/cli-reference.md#planning-claim),
+   wait the decision ends under [wait records](../github/references/cli-reference.md#planning-claim)
+   and [Status Labels](../github-plan/SKILL.md#status-labels),
    linking that decision as evidence and preserving every unresolved wait.
    Then point the session at it. Briefs accept a decision recorded by the
    Supervisor or a direction session, not only one posted from the Director's
@@ -561,8 +562,9 @@ current default-branch checkout to read its product section.
    with `oq.py OWNER/REPO#ISSUE --owner OWNER --decision-author TRUSTED_BOT`
    at each check and register new questions
    under the same rules; report an unreadable anchor as a coverage gap.
-   Recheck each held question's observable trigger at every check; when it is
-   met, bring the question through the existing queue without inventing a deadline.
+   For queued questions deferred until a stated event, recheck the condition in
+   the question or wait record at each check; when met, present the existing
+   question under the shared queue rules.
    Read the latest stranded-work digest's
    `supervisor_next_action` list, oldest first: do the Supervisor-only steps,
    rewrite the rest to name the next agent and its step, or hand a batch to a

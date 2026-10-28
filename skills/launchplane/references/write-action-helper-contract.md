@@ -515,14 +515,17 @@ installed local helper bindings.
   TLS and product warnings.
   Route-diagnostic warning codes remain route-change evidence and are excluded
   by the sidebar's `healthWarnings` rule; their severity alone is not a color.
-  A healthy deployment does not establish a qualified release candidate. Before
-  reporting release readiness, read the existing qualification evidence for
-  that exact candidate and environment. This adds no per-issue return check or
-  hold on ordinary engineering merges.
   Preserve unknown and truncated results.
   Incident summaries, warning detail, certificate contents, URLs and other
   topology fields are omitted. The helper reports evidence, not a second color
   algorithm or authority to clear an incident.
+- A healthy deployment does not establish a qualified release candidate. Before
+  reporting release readiness, match testing's `target.artifact` and observed
+  runtime identity from `product-environment-read` to the exact candidate, and
+  read its existing qualification and
+  [release-review evidence](https://github.com/cbusillo/launchplane/blob/main/docs/release-review.md).
+  Report UNKNOWN when the candidate cannot be matched. Ordinary engineering
+  merges do not wait for release qualification or a per-issue return check.
 - `product-activity-read --product` returns up to 50 events, newest first, each
   with type, lane, action, status, time, title, summary and up to 10 record
   links; `events_truncated` says when more were returned.

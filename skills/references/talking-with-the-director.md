@@ -63,9 +63,10 @@ Never end on a bare "say yes" or a context-free list.
 When asking, follow [Director Questions](#director-questions).
 
 - Record a `Director decision:` as the link to the question it answers, when
-  one exists, and the Director's exact operative answer, with nothing after
-  the quote. Keep private commentary out of audience-visible records; retain
-  it only in an authorized private destination when needed.
+  one exists, and the Director's exact operative answer, including every
+  condition, limit and scope, with nothing after the quote. Omit only private
+  commentary that does not change the answer from audience-visible records;
+  retain it only in an authorized private destination when needed.
   When acting on a decision, quote it with its link, not its Q ID alone.
 - Every new question has a shared-counter Q ID in chat and on GitHub.
   GitHub's `gh-comment`, `gh-pr.py comment`, and `gh-issue` comment paths number
