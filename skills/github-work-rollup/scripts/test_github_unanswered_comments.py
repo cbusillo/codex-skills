@@ -124,6 +124,10 @@ def classify(
     )
 
 
+def patch_radar(monkeypatch: pytest.MonkeyPatch, name: str, value: Any) -> None:
+    monkeypatch.setattr(github_unanswered_comments, name, value)
+
+
 @pytest.mark.parametrize("state", ["open", "closed"])
 @pytest.mark.parametrize("reply_author", ["cbusillo", "fixture-automation"])
 def test_radar_flags_only_comments_without_a_targeted_reply(
@@ -133,12 +137,12 @@ def test_radar_flags_only_comments_without_a_targeted_reply(
     unanswered = comment(comment_id=2, author="outside-user", body="Which format?", created_at="2026-07-25T10:30:00Z")
     reply = comment(comment_id=3, author=reply_author, body=f"Yes, please: {answered.url}",
                     created_at="2026-07-25T11:00:00Z")
-    monkeypatch.setattr("github_unanswered_comments.authenticated_login", lambda: "fixture-automation")
-    monkeypatch.setattr("github_unanswered_comments.collect_thread", lambda repo, number: (
+    patch_radar(monkeypatch, "authenticated_login", lambda: "fixture-automation")
+    patch_radar(monkeypatch, "collect_thread", lambda repo, number: (
         {**thread(), "state": state, "closed_at": "2026-07-25T12:00:00Z" if state == "closed" else None},
         [answered, unanswered, reply], [],
     ))
-    monkeypatch.setattr("github_unanswered_comments.collect_candidate_reactions", lambda comments, deadline: (
+    patch_radar(monkeypatch, "collect_candidate_reactions", lambda comments, deadline: (
         {answered.global_key: [], unanswered.global_key: []}, {}, [],
     ))
     settings = github_unanswered_comments.resolve_settings(
@@ -1411,7 +1415,7 @@ def test_include_handled_lists_closed_thread_comments_apart_from_attention(monke
     monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
     reply = comment(comment_id=2, author="example", body=f"Thanks: {external.url}",
                     created_at="2026-07-25T11:00:00Z")
-    monkeypatch.setattr("github_unanswered_comments.collect_thread", lambda repo, number: (closed, [external, reply], []))
+    patch_radar(monkeypatch, "collect_thread", lambda repo, number: (closed, [external, reply], []))
     monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
                         lambda comments, deadline: ({external.global_key: []}, {}, []))
 
