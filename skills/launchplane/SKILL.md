@@ -1304,11 +1304,10 @@ reviewed-inspect procedure and verify the situation.
 - `GET /v1/products/{product}/environments/{environment}` and
   `GET /v1/products/{product}/activity`: Bounded helper reads
   (`product-environment-read --product --environment` and
-  `product-activity-read --product`) for confirming what a lane actually runs:
-  the current artifact id, source commit, image digest, expected and observed
-  runtime identity with its deployment record id, health status, and recent
-  deployment, promotion and backup-gate events with their record ids. Settings,
-  secrets, actions, URLs and provider target names are dropped.
+  `product-activity-read --product`) for confirming what a lane actually runs
+  and its recent activity. Read the
+  [read contract](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads)
+  before interpreting product health or release readiness.
 - `GET /v1/artifacts/protected`: Bounded helper read
   (`protected-artifacts-read --product P [--context C]`) of protected artifacts:
   per-entry reason, context, instance, artifact id, source record type and id,

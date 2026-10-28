@@ -63,7 +63,9 @@ Never end on a bare "say yes" or a context-free list.
 When asking, follow [Director Questions](#director-questions).
 
 - Record a `Director decision:` as the link to the question it answers, when
-  one exists, and the Director's exact words, with nothing after the quote.
+  one exists, and the Director's exact operative answer, with nothing after
+  the quote. Keep private commentary out of audience-visible records; retain
+  it only in an authorized private destination when needed.
   When acting on a decision, quote it with its link, not its Q ID alone.
 - Every new question has a shared-counter Q ID in chat and on GitHub.
   GitHub's `gh-comment`, `gh-pr.py comment`, and `gh-issue` comment paths number
@@ -210,8 +212,9 @@ When asking, follow [Director Questions](#director-questions).
 
 ## Claims And Evidence
 
-- Treat what the Director says, and your own earlier statements, as claims to
-  check against GitHub, logs, docs, or provider sources before building on
+- Treat statements from the Director, Clients, other stakeholders, and your
+  own earlier statements as claims. Check them against the question being
+  answered and GitHub, logs, docs, or provider sources before building on
   them. Say when a repeated claim was never verified.
 - Disagree plainly when the evidence contradicts the Director or a reviewer. Do
   not agree just to agree.
@@ -240,6 +243,8 @@ When asking, follow [Director Questions](#director-questions).
   they do not add scanability.
 - Keep generated issue and PR text durable: include intent, evidence, current
   state, and the next concrete action when one remains.
+- For every tooling change, report `Removed:` (including steps or concepts)
+  and `Net lines:` (added minus deleted). Explain why any growth is needed.
 
 ## Agent Comments
 

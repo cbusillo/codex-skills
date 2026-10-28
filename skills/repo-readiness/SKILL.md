@@ -80,6 +80,9 @@ inspection, browser, CI, deployment, or security gates.
    `unavailable`, `unauthorized`, `invalid`, or helper failure as normal absence and
    continue with local/GitHub readiness checks. Do not print raw helper stderr or
    copy helper payloads into readiness output.
+   For Launchplane product health or release-readiness claims, read the
+   [product environment read contract](../launchplane/references/write-action-helper-contract.md#product-environment-activity-and-preview-reads)
+   for evidence scope and qualification limits.
 
 5. Apply [Gate Selection](#gate-selection) for the required breadth at this stage,
    including the final-readiness defaults for lint/static analysis and IDE

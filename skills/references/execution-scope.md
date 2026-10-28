@@ -77,6 +77,10 @@ For chat and durable reports, read [talking with the Director](talking-with-the-
   the same need. Build on what exists: reopen, extend, or adopt it, and say
   which issue you found. Propose something new only when the search finds
   nothing that covers it, and say what you searched.
+- Before automating friction, adding rules, or fixing an incident, ask what
+  steps or stored state can be removed while preserving useful tests and
+  protections. Report tooling changes under the shared
+  [reporting contract](talking-with-the-director.md#shape).
 - When a workflow step is awkward, record it instead of patching it in the
   moment. In the Director-controlled repository that owns the step, add to the
   open `friction` issue for the same step, or file one with that label
