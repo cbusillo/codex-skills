@@ -310,7 +310,9 @@ For a session that began after the journal shipped (`JOURNAL_SHIPPED` in
 `check_claims.py`), the check decides journal coverage before running the
 reconstruction below. Every recorded claim result must have a matching row;
 a result naming another expanded session must match that session's own journal,
-which is checked independently. A modern session or native child with no claim
+which is checked independently. Recorded results include advertised native saved
+and background output. Missing artifacts or invocations retain reconstruction.
+A modern session or native child with no claim
 rows and no unmatched result needs no reconstruction. Every claim attempt must
 also have settled: before and after the
 GitHub reads, no process outside the check's own callers is a `gh-plan` command

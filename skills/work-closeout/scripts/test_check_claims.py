@@ -1869,7 +1869,7 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertFalse(report["claims_clear"])
                 self.assertIn("opaque", {item["call_id"] for item in report["unresolved_invocations"]})
 
-    def test_journal_covers_a_modern_session_that_attempted_no_claim(self) -> None:
+    def test_journal_covers_a_modern_session_with_no_rows_or_receipts(self) -> None:
         for harness in ("codex", "claude"):
             with self.subTest(harness=harness):
                 self.setUp()
@@ -1882,6 +1882,47 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertTrue(report["claims_clear"], report)
                 self.assertTrue(report["coverage"]["complete"], report)
                 self.assertFalse(report["unresolved_invocations"], report)
+
+    def test_modern_saved_receipts_preserve_unmatched_claim_coverage(self) -> None:
+        for mode in ("persisted path", "persisted preview", "background", "orphan"):
+            for journaled in (False, True):
+                with self.subTest(mode=mode, journaled=journaled):
+                    self.setUp()
+                    root = self.journal_era_session(journaled=journaled)
+                    path = Path(root["transcript"])
+                    output = path.with_suffix("") / ("tasks" if mode == "background" else "tool-results") / "result.txt"
+                    output.parent.mkdir(parents=True)
+                    output.write_text(json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 2}}))
+                    rows: list[dict[str, Any]] = [{"uuid": "root", "sessionId": SESSION, "timestamp": JOURNAL_ERA}]
+                    if mode != "orphan":
+                        rows.extend(bash_call("uv run gh-plan.py claim 2"))
+                    rows.append({"message": {"content": [{"type": "tool_result", "tool_use_id": "call", "content": "preview"}]}})
+                    if mode == "persisted preview":
+                        rows[-1]["message"]["content"][0]["content"] = f"<persisted-output>\nFull output saved to: {output}\n"
+                    elif mode == "background":
+                        rows[-1]["toolUseResult"] = {"backgroundTaskId": "task"}
+                        rows.append(
+                            {
+                                "origin": {"kind": "task-notification", "producer": "session-task"},
+                                "message": {
+                                    "content": f"<task-id>task</task-id><tool-use-id>call</tool-use-id>"
+                                    f"<output-file>{output}</output-file>"
+                                },
+                            }
+                        )
+                    else:
+                        rows[-1]["toolUseResult"] = {"persistedOutputPath": str(output)}
+                    path.write_text("\n".join(json.dumps({**row, "sessionId": SESSION}) for row in rows) + "\n")
+                    self.comments.remove(self.release)
+                    report = helper.check([root])
+                    self.assertFalse(report["claims_clear"], report)
+                    if mode == "orphan":
+                        self.assertTrue(report["unresolved_invocations"], report)
+                    else:
+                        self.assertTrue(report["blocked"], report)
+                        self.comments.append(self.release)
+                        report = helper.check([root])
+                        self.assertIn(2, [r["record"] for r in report["released_claims"]], report)
 
     def test_zero_claim_recorded_read_shapes_do_not_need_reconstruction(self) -> None:
         read = 'const r=await tools.exec_command({cmd:"git diff --numstat"});'

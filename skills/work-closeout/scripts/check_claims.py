@@ -187,6 +187,21 @@ def unmatched_foreign_receipt(value: dict, native: str, journals: dict[str, dict
     return not isinstance(session, str) or session not in journals or history.claim_target(value, session) not in journals[session]
 
 
+def recorded_receipts(entry: dict, rows: list[dict]) -> tuple[list[dict], bool]:
+    values = receipt_values(rows)
+    if not entry.get("native_output_directory"):
+        return values, True
+    directory = Path(entry["native_output_directory"])
+    complete = not history.orphan_artifacts(rows, entry["session_id"], directory)
+    for identifier in history.tool_outputs(rows, followups=False):
+        try:
+            saved = history.persisted_output(rows, directory, entry["session_id"], identifier)
+            values.extend(receipt_values(saved))
+        except (OSError, ValueError):
+            complete = False
+    return values, complete
+
+
 def began_after_journal(rows: list[dict], entry: dict) -> bool:
     meta = history.metadata(rows)
     if meta:
@@ -210,12 +225,13 @@ def recorded_targets(
     require_own_transcript(entry)
     native = entry["session_id"]
     rows = entry.get("_transcript_records") or history.read_records(Path(entry["transcript"]))
-    values = receipt_values(rows)
+    values, artifacts_complete = recorded_receipts(entry, rows)
     receipts = {target for value in values if (target := history.claim_target(value, native)) is not None}
     return {
         "targets": receipts | (claim_log.read(native) if journal is None else journal),
         "receipts": receipts,
-        "journal_era": began_after_journal(rows, entry)
+        "journal_era": artifacts_complete
+        and began_after_journal(rows, entry)
         and not any(unmatched_foreign_receipt(value, native, journals or {}) for value in values),
     }
 
