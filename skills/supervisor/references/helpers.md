@@ -1212,8 +1212,10 @@ verification in the next handoff so takeover can repeat this check.
 
 On a worker's GUI relaunch request, complete
 [finished-session shutdown](#finished-session-shutdown-stages), then relaunch
-that same item through this route with its handoff and original claim ID for
-[`claim --resume-from`](../../github/references/cli-reference.md#planning-claim).
+that same item through this route with its handoff. Follow
+[Planning: Claim](../../github/references/cli-reference.md#planning-claim): use
+a new task branch at the verified pushed SHA for no-PR work, or the original
+claim ID with `--resume-from` for retained PRs.
 Preserve actual permission refusals through the handoff.
 
 For an authorized native-app task, put a single standalone declaration in its
@@ -2183,12 +2185,25 @@ distinct from the release comment's ID. The claim derives its qualified
 source-authored retained-PR handoff from that original ID. Inspect the
 supported route with the helper's help before putting it in a brief:
 
-Without a retained PR, continue the verified preserved branch using only the
-released original claim ID:
+Without a retained PR, verify the exact authored release, clean local state
+and matching live remote head. Record that verified pushed SHA in a handoff
+comment and the brief, leaving the original release intact. On the same issue,
+make an ordinary claim for a new task branch
+without `--resume-from`, then create the linked worktree at that SHA:
 
 ```sh
-uv run skills/github/scripts/gh-plan.py --repo OWNER/REPO claim <canonical-issue> --worker <new-token> --session <successor-native-id> --branch <verified-preserved-branch> --resume-from <original-claim-comment-id> --next-action "Resume the preserved branch after checking its current state"
+uv run skills/github/scripts/gh-plan.py --repo OWNER/REPO claim <canonical-issue> --worker <new-token> --session <successor-native-id> --branch work/<new-task-slug> --next-action "Continue the verified pushed work"
+<catalog>/skills/github/scripts/dev-worktree /absolute/repository <new-task-slug> <verified-pushed-sha>
 ```
+
+Create the worktree only after confirmed claim success. Check for unique local
+state before retiring the old worktree under the existing preservation rules;
+never delete the remote branch automatically. Use no `Resume from:` line in
+this no-PR brief.
+For dirty or unpushed crash state, follow
+[Planning: Claim's preservation step](../../github/references/cli-reference.md#planning-claim)
+before choosing the successor's pushed SHA; retain the original worktree until
+that step is complete.
 
 For a different native session with a retained-PR handoff, claim a **new task
 branch**, separate from every retained PR/source branch. The existing retained-handoff route preserves the
