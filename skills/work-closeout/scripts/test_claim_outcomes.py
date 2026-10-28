@@ -8,8 +8,11 @@ from __future__ import annotations
 import json
 import unittest
 from pathlib import Path
+from typing import Any
+from unittest.mock import patch
 
 import check_claims
+import claim_javascript
 
 SESSION = "native-session"
 COMMAND = "uv run gh-plan.py --repo test/a claim 5 --session native-session"
@@ -23,6 +26,153 @@ def invocation(source: str, output: object = "") -> list[dict]:
 
 
 class RecordedClaimOutcomeTests(unittest.TestCase):
+    def test_same_cell_stored_commands_preserve_every_claim_effect(self) -> None:
+        for verb in ("show", "claim"):
+            source = (
+                'const groups={"a":[5,6],"b":[7]};'
+                "for(const [repo,nums] of Object.entries(groups)){"
+                f"const cmds=nums.map(n=>`gh-plan.py --repo test/${{repo}} {verb} ${{n}} --session {SESSION}`);"
+                'store(repo+"-commands",cmds);}'
+                'const cmds=[...load("a-commands"),...load("b-commands")];'
+                "const results=await Promise.allSettled(cmds.map(async cmd=>text(await tools.exec_command({cmd}))));"
+                'store("results",results);'
+            )
+            with self.subTest(verb=verb):
+                report = check_claims.history.literal_targets(invocation(source), SESSION)
+                if verb == "show":
+                    self.assertFalse(report["targets"])
+                    self.assertFalse(report["unresolved_invocations"])
+                else:
+                    self.assertEqual(report["targets"], {("test/a", 5), ("test/a", 6), ("test/b", 7)})
+                    self.assertTrue(report["unresolved_invocations"])
+                    self.assertTrue(
+                        all(item["reason"] == check_claims.history.UNFINISHED_CLAIM for item in report["unresolved_invocations"])
+                    )
+
+    def test_native_property_reads_do_not_hide_sibling_claims(self) -> None:
+        read = 'text(await tools.exec_command({cmd:"cat review.md"}));\n'
+        clock = "text(await tools.wait?tools.clock__curr_time({}):tools.clock__curr_time({}));"
+        report = check_claims.history.literal_targets(invocation(read + clock), SESSION)
+        self.assertFalse(report["targets"])
+        self.assertFalse(report["unresolved_invocations"])
+        for source in (
+            read + clock + f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));",
+            read + f"text(await tools.wait?tools.exec_command({{cmd:{json.dumps(COMMAND)}}}):tools.clock__curr_time({{}}));",
+        ):
+            with self.subTest(source=source):
+                report = check_claims.history.literal_targets(invocation(source), SESSION)
+                self.assertEqual(report["targets"], {("test/a", 5)})
+                self.assertTrue(report["unresolved_invocations"])
+
+    def test_unknown_store_provenance_and_capability_calls_remain_conditional(self) -> None:
+        execute = 'text(await tools.exec_command({cmd:load("c")}));'
+        for source in (
+            execute,
+            'if(true){store("c","cat README.md");}' + execute,
+            'store("c","cat README.md");store("c",' + json.dumps(COMMAND) + ");" + execute,
+            execute + 'store("c","cat README.md");',
+            'const save=()=>store("c","cat README.md");save();' + execute,
+            'store(load("key"),"cat README.md");' + execute,
+            'store("c",load("unknown"));' + execute,
+            'for(const n of [1]){break;store("c","cat README.md");}' + execute,
+            'for(const n of [1]){if(n)continue;store("c","cat README.md");}' + execute,
+            'for(const r of ["a","b"]){store(r+"x","cat README.md");text(await tools.exec_command({cmd:load("bx")}));}',
+            'store("c","cat README.md");text(await tools.exec_command({cmd:load([])}));',
+            'store("c",["cat README.md"]);const cmds=load("c");cmds.push(' + json.dumps(COMMAND) + ");"
+            "await Promise.all(cmds.map(cmd=>tools.exec_command({cmd})));",
+            "const run=tools.exec_command;run({cmd:" + json.dumps(COMMAND) + "});",
+            "text(tools.wait?tools.unknown__run({}):tools.clock__curr_time({}));",
+            "await {then:tools.unknown__run};",
+            "text({toJSON:tools.unknown__run});",
+            "String({valueOf:tools.unknown__run});",
+        ):
+            with self.subTest(source=source):
+                self.assertTrue(check_claims.history.literal_targets(invocation(source), SESSION)["unresolved_invocations"])
+
+    def test_unrelated_loaded_data_and_loop_exits_do_not_obscure_literal_commands(self) -> None:
+        for source in (
+            'const prev=load("results");const cmd="cat README.md";text(await tools.exec_command({cmd}));',
+            'for(const n of [1]){break;}store("read","cat README.md");text(await tools.exec_command({cmd:load("read")}));',
+            'store("read","cat README.md");for(const n of [1]){continue;}text(await tools.exec_command({cmd:load("read")}));',
+        ):
+            with self.subTest(source=source):
+                report = check_claims.history.literal_targets(invocation(source), SESSION)
+                self.assertFalse(report["targets"])
+                self.assertFalse(report["unresolved_invocations"])
+
+    def test_unrelated_known_store_keys_do_not_poison_command_provenance(self) -> None:
+        for prefix, suffix in (
+            ('const out=await tools.exec_command({cmd:"cat x"});store("out",out);', ""),
+            ('if(true)store("summary",load("unknown"));', ""),
+            ('const save=()=>store("summary",load("unknown"));', ""),
+            ("", 'store("results",load("unknown"));'),
+        ):
+            with self.subTest(prefix=prefix, suffix=suffix):
+                source = prefix + 'store("c","cat x");text(await tools.exec_command({cmd:load("c")}));' + suffix
+                report = check_claims.history.literal_targets(invocation(source), SESSION)
+                self.assertFalse(report["targets"])
+                self.assertFalse(report["unresolved_invocations"])
+
+    def test_interleaved_unused_loads_have_bounded_work(self) -> None:
+        pairs = 20
+        source = "".join(f'const p{i}=load("x");store("s{i}","cat x");' for i in range(pairs))
+        source += 'text(await tools.exec_command({cmd:load("s0")}));'
+        calls = 0
+        original = claim_javascript.LiteralData.value
+
+        def counted(reader: Any, node: Any, environment: dict) -> object:
+            nonlocal calls
+            calls += 1
+            self.assertLess(calls, (pairs + 1) ** 3)
+            return original(reader, node, environment)
+
+        with patch.object(claim_javascript.LiteralData, "value", counted):
+            report = check_claims.history.literal_targets(invocation(source), SESSION)
+        self.assertFalse(report["targets"])
+        self.assertFalse(report["unresolved_invocations"])
+
+    def test_empty_literal_iterations_have_no_claim_effect(self) -> None:
+        for source in (
+            'const cmds=[];await Promise.allSettled(cmds.map(cmd=>tools.exec_command({cmd})));',
+            'store("cmds",[]);const cmds=load("cmds");for(const cmd of cmds){text(await tools.exec_command({cmd}));}',
+        ):
+            with self.subTest(source=source):
+                report = check_claims.history.literal_targets(invocation(source), SESSION)
+                self.assertFalse(report["targets"])
+                self.assertFalse(report["unresolved_invocations"])
+
+    def test_stored_commands_require_an_eager_exclusive_snapshot(self) -> None:
+        stored = 'store("c","cat x");'
+        execute = 'text(await tools.exec_command({cmd:load("c")}));'
+        for source in (
+            stored + 'text(await tools.exec_command({cmd:"sleep 1"}));' + execute,
+            stored + "for(const n of [1,2]){" + execute + "}",
+            stored + 'const run=()=>tools.exec_command({cmd:load("c")});run();',
+            stored + 'tools.clock__curr_time({}).then(()=>tools.exec_command({cmd:load("c")}));',
+            'for(const k of ["a","c"]){store(k,"cat x");await tools.clock__curr_time({});}' + execute,
+            stored + 'const save=()=>store("c","cat y");' + execute,
+            stored + 'for await(const n of [1]){}' + execute,
+            'for await(const k of ["c"]){store(k,"cat x");}' + execute,
+            'for(const k of ["c","c"]){store(k,"cat x");}' + execute,
+            'store("😀","cat x");store("\\ud83d\\ude00",' + json.dumps(COMMAND) + ');'
+            'text(await tools.exec_command({cmd:load("😀")}));',
+        ):
+            with self.subTest(source=source):
+                self.assertTrue(check_claims.history.literal_targets(invocation(source), SESSION)["unresolved_invocations"])
+        rows = invocation(stored + execute)
+        other = invocation('store("c",' + json.dumps(COMMAND) + ");")
+        other = [{"payload": {**row["payload"], "call_id": "other"}} for row in other]
+        for records in (
+            rows[:1],
+            invocation(stored + execute, "Script running with cell ID 7"),
+            [rows[0], *other, rows[1]],
+        ):
+            with self.subTest(records=records):
+                self.assertTrue(check_claims.history.literal_targets(records, SESSION)["unresolved_invocations"])
+        snapshot = stored + 'const cmd=load("c");text(await tools.exec_command({cmd:"sleep 1"}));'
+        snapshot += "text(await tools.exec_command({cmd}));"
+        self.assertFalse(check_claims.history.literal_targets(invocation(snapshot), SESSION)["unresolved_invocations"])
+
     def test_read_only_discovery_cells_do_not_create_claim_uncertainty(self) -> None:
         reads = [
             'await Promise.allSettled([(async()=>text(await tools.exec_command({cmd:"gh-plan.py claim --help"})))(),'
@@ -65,15 +215,20 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                     {"targets": set(), "unresolved_invocations": []},
                 )
 
-    def test_native_thread_reads_preserve_claim_discovery(self) -> None:
+    def test_native_data_reads_preserve_claim_discovery(self) -> None:
         cells = (
-            'text(await tools.codex_tui__list_threads({limit:40}));'
+            'for(const image of ["postgres","odoo"])text(await tools.exec_command({cmd:`docker image inspect ${image}`}));',
+            'const image=await tools.view_image({path:"/fixture/result.png"});text(image.image_url);',
+            "text(await tools.codex_tui__list_threads({limit:40}));"
             'text(await tools.exec_command({cmd:"git diff --stat origin/main...origin/work/read-coverage"}));'
             'text(await tools.exec_command({cmd:"rg claim cli-reference.md"}));',
             'text(await tools.codex_tui__read_thread({threadId:"fixture-thread",turnLimit:1,'
-            'includeOutputs:false,maxOutputCharsPerItem:5000}));'
+            "includeOutputs:false,maxOutputCharsPerItem:5000}));"
             'text(await tools.exec_command({cmd:"git status --short --branch"}));'
             'text(await tools.exec_command({cmd:"gh-plan.py --repo test/a show 52 --full"}));',
+            'const result=await Promise.allSettled([tools.exec_command({cmd:"cat README.md"}),'
+            'tools.exec_command({cmd:"sed -n 1,5p source.py"})]);result.forEach(r=>text(r));'
+            'const v=await tools.view_image({path:"/fixture/result.png"});image(v.image_url);',
         )
         for source in cells:
             with self.subTest(source=source):
@@ -92,7 +247,11 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                     source + 'text(await tools.exec_command({cmd:load("claim-command")}));',
                     source.replace("codex_tui__", "unknown__"),
                     source.replace("codex_tui__", "codex_tui__write_"),
+                    source.replace("tools.view_image", "tools.view_image_write"),
+                    source + 'const image=load("renderer");image({});',
                 ):
+                    if opaque == source:
+                        continue
                     self.assertTrue(check_claims.history.literal_targets(invocation(opaque), SESSION)["unresolved_invocations"])
 
     def test_immediate_callbacks_still_discover_real_uncertain_claims(self) -> None:

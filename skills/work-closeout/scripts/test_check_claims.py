@@ -3243,6 +3243,57 @@ print(root)"""
         self.comments.append(self.release)
         self.assertTrue(helper.check([root])["claims_clear"])
 
+    def test_completed_stored_command_still_needs_its_exact_release(self) -> None:
+        root = self.entry(cli_version=SUPPORTED_CLI_VERSION)
+        command = f"uv run gh-plan.py --repo {REPO} claim 1 --session {SESSION}"
+        source = f'store("command",{json.dumps(command)});text(await tools.exec_command({{cmd:load("command")}}));'
+        source += "text(await tools.wait?tools.clock__curr_time({}):tools.clock__curr_time({}));"
+        rows = [
+            {
+                "timestamp": "2026-01-01T00:00:00Z",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "name": "exec",
+                    "call_id": "claim",
+                    "input": source,
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "item_completed",
+                    "thread_id": SESSION,
+                    "started_at_ms": 1767225601000,
+                    "item": {
+                        "type": "CommandExecution",
+                        "id": "stored-command",
+                        "source": "unified_exec_startup",
+                        "command": ["sh", "-c", command],
+                        "status": "completed",
+                        "exit_code": 0,
+                    },
+                },
+            },
+            {
+                "timestamp": "2026-01-01T00:00:02Z",
+                "payload": {
+                    "type": "custom_tool_call_output",
+                    "call_id": "claim",
+                    "output": "",
+                },
+            },
+        ]
+        with Path(root["transcript"]).open("a") as stream:
+            stream.write("\n".join(json.dumps(row) for row in rows) + "\n")
+        report = helper.check([root])
+        self.assertFalse(report["claims_clear"], report)
+        self.assertTrue(report["blocked"], report)
+        self.assertEqual(report["unresolved_invocations"], [], report)
+        self.comments.append(self.release)
+        report = helper.check([root])
+        self.assertTrue(report["claims_clear"], report)
+        self.assertTrue(report["coverage"]["complete"], report)
+
     def test_recorded_claim_uses_the_target_repositories_writer(self) -> None:
         client_actor = "client-fixture[bot]"
         self.reader.expected_actor = client_actor
@@ -3374,6 +3425,39 @@ print(root)"""
             code = helper.main(["--owner", "test", "--session", SESSION, "--transcript", entry["transcript"]])
         self.assertEqual(code, 0, output.getvalue())
         reader.assert_not_called()
+
+    def test_cli_read_only_data_composition_has_complete_claim_coverage(self) -> None:
+        for source in (
+            'store("commands",["gh-plan.py claim --help"]);const cmds=[...load("commands")];'
+            "await Promise.allSettled(cmds.map(async cmd=>text(await tools.exec_command({cmd}))));",
+            'text(await tools.exec_command({cmd:"cat review.md"}));'
+            "text(await tools.wait?tools.clock__curr_time({}):tools.clock__curr_time({}));",
+        ):
+            with self.subTest(source=source):
+                entry = self.entry()
+                with Path(entry["transcript"]).open("a") as stream:
+                    stream.write(
+                        json.dumps(
+                            {
+                                "payload": {
+                                    "type": "custom_tool_call",
+                                    "name": "exec",
+                                    "call_id": "read",
+                                    "input": source,
+                                }
+                            }
+                        )
+                        + "\n"
+                    )
+                    stream.write(json.dumps(native_terminal_result("read", javascript=True)) + "\n")
+                with patch.object(helper, "repository_reader") as reader, contextlib.redirect_stdout(io.StringIO()) as output:
+                    code = helper.main(["--owner", "test", "--session", SESSION, "--transcript", entry["transcript"]])
+                report = json.loads(output.getvalue())
+                self.assertEqual(code, 0, report)
+                self.assertTrue(report["claims_clear"], report)
+                self.assertTrue(report["coverage"]["complete"], report)
+                self.assertEqual(report["unresolved_invocations"], [], report)
+                reader.assert_not_called()
 
     def test_cli_refuses_a_transcript_of_another_session_before_reading_github(self):
         other = self.entry("newer-session", "2026-03-01T00:00:00Z")
