@@ -127,6 +127,34 @@ def mark_weekly(path: Path, owner: str, now: dt.datetime) -> dict[str, object]:
     return current
 
 
+def mark_weekly_audits(path: Path, owner: str, now: dt.datetime,
+                       updates: list[dict[str, object]], complete: bool) -> dict[str, object]:
+    with marker_lock(path) as path:
+        current = load(path)
+        audits, runs = current["audits"], current.setdefault("audit_runs", {})
+        assert isinstance(audits, dict) and isinstance(runs, dict)
+        for update in updates:
+            repo = str(update["repo"])
+            if update["action"] == "drop":
+                audits.pop(repo, None)
+                runs.pop(repo, None)
+                continue
+            stamp = str(update["stamp"])
+            held = update.get("held")
+            if held is None:
+                audits[repo] = stamp
+                runs[repo] = {"ran": stamp}
+            else:
+                runs[repo] = {"ran": stamp, "held": held}
+                since = update.get("since")
+                if since is not None:
+                    audits.setdefault(repo, str(since))
+        if complete:
+            current["weekly_audit"] = {"ran": utc_stamp(now), "record": direction_repo(owner)}
+        save(path, current)
+    return current
+
+
 def mark_audit(path: Path, repo: str, now: dt.datetime, held: str | None = None,
                since: dt.datetime | None = None) -> dict[str, object]:
     """Record this repository's audit without changing daily-turn evidence.
