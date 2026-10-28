@@ -2823,21 +2823,13 @@ def claim_once(args: argparse.Namespace) -> None:
         inventory = phase["inventory"]
         ended_owners = ended_ownership(current_comments, inventory)
         branches = set(inventory["local_branches"]) | set(inventory["remote_branches"]) | {t["branch"] for t in inventory["worktrees"]}
-        custody = set()
-        prior_custody = claim["branch"] in branches and any(
-            entry["branch"] == claim["branch"] and entry["claim_id"] != args.resume_from for entry in ended_owners)
-        if (prior_custody and record_kind == "issue" and args.resume_from
-                and (selection or {}).get("mode") == "plain" and phase.get("source", {}).get("record", {}).get("branch") == claim["branch"]):
-            custody = github_plan_claim.resumed_branch_claim_ids(current_comments, args.resume_from, claim)
-            if args.resume_from not in custody:
-                raise ClassifiedPlanError("claim_resume_custody_unqualified",
-                    "Preserved branch custody requires sequential exact authored releases and matching source history")
-        if any(entry["branch"] == claim["branch"] and entry["branch"] in branches
-               and entry["claim_id"] != args.resume_from and entry["claim_id"] not in custody for entry in ended_owners):
-            raise PlanError("Ended ownership requires a new task branch; preserve the retained source branch and worktree")
         conflicts, owned = github_plan_claim.discussion_evidence(
             current_status, current_comments, claim, resume_from=args.resume_from,
             ended_claims={entry["claim_id"] for entry in ended_owners})
+        phase["branch_error"] = (ClassifiedPlanError("claim_ended_branch_reused",
+            "Ended ownership requires a new task branch; preserve the retained source branch and worktree")
+            if any(entry["branch"] == claim["branch"] and entry["branch"] in branches
+                   and entry["claim_id"] != args.resume_from for entry in ended_owners) else None)
         return conflicts, owned
 
     def check_wait(waiting_issue: dict[str, Any], waiting_status: str, *, target: bool = False,
@@ -3204,9 +3196,8 @@ def claim_once(args: argparse.Namespace) -> None:
                     raise github_plan_claim.ClaimProofError("claim_handoff_pr_required",
                         "Released work requires a qualified source-authored retained-PR handoff")
                 if claim["branch"] == record["branch"]:
-                    _, own = github_plan_claim.discussion_evidence("", current_comments, claim)
-                    if not any(existing.get("_legacy") != "yes" for existing in own):
-                        claim["resume_from"] = str(args.resume_from)
+                    raise github_plan_claim.ClaimProofError("claim_ended_branch_reused",
+                        "Ended ownership requires a new task branch; preserve the retained source branch and worktree")
                 return None
             if handoff is None:
                 raise github_plan_claim.ClaimProofError("claim_handoff_pr_required", "Released retained work has no qualified handoff")
@@ -3334,6 +3325,8 @@ def claim_once(args: argparse.Namespace) -> None:
 
     def handoff_preflight(current_comments: list[dict[str, Any]], current_status: str, prepared) -> set[str]:
         nonlocal retained_waits
+        if phase["branch_error"] is not None:
+            raise phase["branch_error"]
         if prepared is None:
             check_phase_peers(inventory)
             return set()

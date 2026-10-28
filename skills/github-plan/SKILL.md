@@ -309,7 +309,7 @@ active issue labels and continuing background jobs do not lift a hold.
    [Planning: Claim](../github/references/cli-reference.md#planning-claim).
    Active ownership still refuses.
    For verified pushed WIP without a PR on this same issue, follow
-   [Planning: Claim's existing resume-only procedure](../github/references/cli-reference.md#planning-claim).
+   [Planning: Claim's ordinary new-branch procedure](../github/references/cli-reference.md#planning-claim).
    For ordinary successor work before a retained PR can be refreshed, use
    `--resume-from <original-claim-id>`. Read
    Planning: Claim for the exact released multi-branch handoff proof; all
