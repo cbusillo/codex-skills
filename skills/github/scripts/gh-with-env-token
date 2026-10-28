@@ -526,6 +526,8 @@ classify_failure() {
 	classification_operation=github.gh_with_env_token
 	if [ "${1:-}" = pr ] && [ "${2:-}" = create ]; then
 		classification_operation=github.pr.create
+	elif [ "${1:-}" = pr ] && [ "${2:-}" = edit ]; then
+		classification_operation=github.pr.edit
 	fi
 	if is_write_command "$@"; then
 		write_flag=--write

@@ -400,6 +400,14 @@ preflight and absence of a matching PR. No automatic replay or identity fallback
 is offered. Mixed diagnostics, partial/create-stage output, and the same text
 without a PR-create operation retain conservative failure handling.
 
+For `github.pr.edit`, the exact single stderr line `'LABEL' not found` with its
+terminating newline and empty stdout is a confirmed `validation_error` /
+`not_started`: the CLI rejected the label before applying the edit. Correct the
+label only within existing authorization, then invoke the intended edit again.
+No automatic replay or identity fallback is offered. Unknown write handling is
+retained for any other operation, nonempty stdout, missing newline, or additional
+diagnostic line.
+
 Schema version 2 of `references/operation-matrix.toml` is the machine-readable source of truth for
 each public helper operation's live and selected transport, quota bucket, actor
 policy, idempotency/retry posture, reconciliation strategy, and retained
