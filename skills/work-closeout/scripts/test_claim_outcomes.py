@@ -131,6 +131,16 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
         self.assertFalse(report["targets"])
         self.assertFalse(report["unresolved_invocations"])
 
+    def test_empty_literal_iterations_have_no_claim_effect(self) -> None:
+        for source in (
+            'const cmds=[];await Promise.allSettled(cmds.map(cmd=>tools.exec_command({cmd})));',
+            'store("cmds",[]);const cmds=load("cmds");for(const cmd of cmds){text(await tools.exec_command({cmd}));}',
+        ):
+            with self.subTest(source=source):
+                report = check_claims.history.literal_targets(invocation(source), SESSION)
+                self.assertFalse(report["targets"])
+                self.assertFalse(report["unresolved_invocations"])
+
     def test_stored_commands_require_an_eager_exclusive_snapshot(self) -> None:
         stored = 'store("c","cat x");'
         execute = 'text(await tools.exec_command({cmd:load("c")}));'
@@ -141,6 +151,11 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             stored + 'tools.clock__curr_time({}).then(()=>tools.exec_command({cmd:load("c")}));',
             'for(const k of ["a","c"]){store(k,"cat x");await tools.clock__curr_time({});}' + execute,
             stored + 'const save=()=>store("c","cat y");' + execute,
+            stored + 'for await(const n of [1]){}' + execute,
+            'for await(const k of ["c"]){store(k,"cat x");}' + execute,
+            'for(const k of ["c","c"]){store(k,"cat x");}' + execute,
+            'store("😀","cat x");store("\\ud83d\\ude00",' + json.dumps(COMMAND) + ');'
+            'text(await tools.exec_command({cmd:load("😀")}));',
         ):
             with self.subTest(source=source):
                 self.assertTrue(check_claims.history.literal_targets(invocation(source), SESSION)["unresolved_invocations"])

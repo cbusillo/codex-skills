@@ -600,9 +600,9 @@ class LiteralData:
                     except (ValueError, SyntaxError):
                         values = None
                     if not isinstance(values, list) or not values:
+                        if values == []:
+                            continue
                         if strict:
-                            if values == []:
-                                continue
                             raise ValueError("execution count")
                         local = row.copy()
                         self.bind(pattern, None, local)
@@ -627,9 +627,9 @@ class LiteralData:
                         or not isinstance(values, list)
                         or not values
                     ):
+                        if values == []:
+                            continue
                         if strict:
-                            if values == []:
-                                continue
                             raise ValueError("execution count")
                         local = row.copy()
                         self.bind(node.child_by_field_name("left"), None, local)
@@ -712,6 +712,7 @@ class LiteralCommands(LiteralData):
                     count += 1
                     if type(key) is not str or count > self.count_limit:
                         raise ValueError("store key")
+                    key.encode()
                     index.setdefault(key, []).append(arguments)
             self.stores[root] = index
         result = self.stores[root]
@@ -755,7 +756,10 @@ class LiteralCommands(LiteralData):
         while pending:
             candidate = pending.pop()
             pending.extend(reversed(children(candidate)))
-            if candidate.type == "await_expression" and statement.start_byte <= candidate.start_byte < node.start_byte:
+            suspends = candidate.type == "await_expression" or (
+                candidate.type == "for_in_statement" and any(child.type == "await" for child in candidate.children)
+            )
+            if suspends and statement.start_byte <= candidate.start_byte < node.start_byte:
                 if not candidate.start_byte <= node.start_byte < candidate.end_byte:
                     raise ValueError("suspended store")
             if candidate.type in {"break_statement", "continue_statement"} and any(
@@ -788,6 +792,7 @@ class LiteralCommands(LiteralData):
                 key = self.data.value(args[0], environment)
                 if type(key) is not str:
                     raise ValueError("load key")
+                key.encode()
                 return self.stored_value(node, key)
         return super()._value(node, environment)
 

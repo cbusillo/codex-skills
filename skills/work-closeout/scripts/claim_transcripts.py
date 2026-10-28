@@ -853,7 +853,7 @@ class ShellTexts:
 
 
 def shell_texts(
-    text: str, javascript: bool, *, exec_command: bool = False, refusals: list[dict] | None = None, stored_provenance: bool = True
+    text: str, javascript: bool, *, exec_command: bool = False, refusals: list[dict] | None = None, stored_provenance: bool = False
 ) -> ShellTexts:
     if not javascript:
         try:
