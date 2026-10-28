@@ -158,7 +158,8 @@ def remaining_work(status: str) -> dict[str, Any]:
 
 
 def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[str],
-                    resume_from: int | None = None) -> dict[str, Any]:
+                    resume_from: int | None = None, resume_source: dict[str, Any] | None = None,
+                    expired_sessions: set[str] | frozenset[str] = frozenset()) -> dict[str, Any]:
     discussion = item.get("discussion") or {}
     status = current_status(discussion, trusted, body_recorded_at=(item.get("source_delivery") or {}).get("body_recorded_at"))
     comments = [{**comment, "user": {"login": comment.get("author") or ""}} for comment in discussion.get("comments", [])]
@@ -171,17 +172,20 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
     inventory = ownership.get("inventory") or {"local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}
     retained = None
     try:
-        ended = github_plan_claim.ended_ownership(comments, inventory)
+        ended = github_plan_claim.ended_ownership(comments, inventory, expired_sessions)
         conflicts, _ = github_plan_claim.discussion_evidence(status, comments,
             {"worker": "", "session": "", "branch": "", "claimed_at": ""},
             ended_claims={source["claim_id"] for source in ended})
         wait = github_plan_wait.current(
             {"body": discussion.get("body") or "", "user": {"login": discussion.get("author") or ""}}, comments, trusted)
         if resume_from:
-            source = github_plan_claim.released_source(comments, resume_from)
+            source_item = resume_source or item
+            source_comments = ([{**comment, "user": {"login": comment.get("author") or ""}}
+                                for comment in source_item["discussion"]["comments"]] if resume_source else comments)
+            source = github_plan_claim.released_source(source_comments, resume_from)
             retained = github_plan_claim.retained_handoff(
-                source, github_plan_claim.handoff_candidates(comments, source), ownership.get("pulls") or [],
-                issue_repo=item["repo"], issue_number=item["number"], target_repo=item["repo"])
+                source, github_plan_claim.handoff_candidates(source_comments, source), ownership.get("pulls") or [],
+                issue_repo=source_item["repo"], issue_number=source_item["number"], target_repo=item["repo"])
             if retained and retained["open_conflicts"]:
                 return {**row, "error": "retained_handoff_unavailable"}
     except (ValueError, KeyError, TypeError) as exc:

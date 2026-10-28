@@ -479,7 +479,7 @@ current default-branch checkout to read its product section.
    ([#2100](https://github.com/cbusillo/codex-skills/issues/2100)).
    Give each running session its own anchor issue in the same repository,
    sweeps and checks included. Put `Anchor: <issue URL>` (or `Anchor and claim:`)
-   on its own line in execution briefs, and `Read-only anchor: <issue URL>`
+   on its own line in single-issue execution briefs, and `Read-only anchor: <issue URL>`
    in briefs that will not claim. The shared launcher reuses full status and
    ownership reads before dispatch. After a stopped launch, keep the issue with
    its blocker, wait, owner or retained delivery until that fact changes;
@@ -524,8 +524,9 @@ current default-branch checkout to read its product section.
    those instructions only at a verified idle prompt. Codex keeps working
    through automatic compaction, carrying its brief's Keep instructions; never
    queue a request for it to compact itself. If a worker's compaction fails or its account needs it gone,
-   request a durable handoff and relaunch the same brief after verified safe
-   closeout. If it cannot hand off, preserve it and bring the failure to the
+   request a durable handoff, recheck prerequisites and ownership, and relaunch
+   the same goal after verified safe closeout with its existing retained-work
+   source when needed. If it cannot hand off, preserve it and bring the failure to the
    Director. Gather the
    open Director questions: read the existing foreign watcher's new
    `director_question` notices on every check, open each full comment, and

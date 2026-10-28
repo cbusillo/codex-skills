@@ -56,7 +56,7 @@ class LaunchIssueTests(unittest.TestCase):
             window = SimpleNamespace(window_id="chosen", async_create_tab=AsyncMock())
             app = SimpleNamespace(terminal_windows=[window], current_terminal_window=None)
             refusal = {"ok": True, "issue": {"launch_check": {
-                "allowed": False, "status": "waiting", "queue": {"reason": "recorded_wait"}}}}
+                "allowed": False, "status": "waiting", "ownership": {"conflicts": [], "artifacts": []}}}}
             with (patch.dict(sys.modules, {"iterm2": SimpleNamespace()}),
                   patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(refusal))),
                   patch.object(account_choice, "select", side_effect=AssertionError("Stopped work reached account selection")) as select,
@@ -78,7 +78,8 @@ class LaunchIssueTests(unittest.TestCase):
         parser = runpy.run_path(str(Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py"))["build_parser"]()
         calls = []
         def read(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess:
-            calls.append(parser.parse_args(argv[3:]))
+            helper = str(Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py")
+            calls.append(parser.parse_args(argv[argv.index(helper) + 1:]))
             return subprocess.CompletedProcess(argv, 0, json.dumps(cleared))
         with patch.object(iterm_tab.subprocess, "run", side_effect=read):
             iterm_tab.check_launch_issue(brief)
@@ -88,10 +89,14 @@ class LaunchIssueTests(unittest.TestCase):
             self.assertTrue(calls[-1].read_only)
             for anchor, resume in (("- Anchor:", "- Resume from: 123"), ("**Anchor:**", "**Resume from:** 123")):
                 iterm_tab.check_launch_issue(brief.replace("Anchor:", anchor) + "#issuecomment-123\n" + resume)
-                self.assertEqual(calls[-1].resume_from, 123)
-        for missing in ("Implement export", "Anchor: https://github.com/fixture/repo/issues/7/other"):
-            with self.subTest(missing=missing), self.assertRaises(ValueError):
+                self.assertEqual(calls[-1].resume_from, "123")
+            source_url = "https://github.com/fixture/repo/issues/6#issuecomment-123"
+            iterm_tab.check_launch_issue(brief + "\nResume from: " + source_url)
+            self.assertEqual(calls[-1].resume_from, source_url)
+        for missing in ("Implement export", "Anchor: https://github.com/fixture/repo/pull/7", "Milestone lead for the Track"):
+            with self.subTest(missing=missing), patch.object(iterm_tab.subprocess, "run") as reader:
                 iterm_tab.check_launch_issue(missing)
+                reader.assert_not_called()
 
     def test_missing_or_failed_state_read_never_launches(self) -> None:
         for code, output in ((1, "{}"), (0, "{}"), (0, "invalid"), (0, '{"ok": true, "issue": {}}')):

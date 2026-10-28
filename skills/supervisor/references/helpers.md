@@ -1343,13 +1343,14 @@ The direct invocation must match the selected provider: `openai` runs `codex`,
 batch refuses before daemon startup, receipt preparation, terminal creation or
 receipt writing on either backend. Correct the invocation or provider and retry;
 no account configuration migration is needed.
-Execution briefs include `Anchor: https://github.com/OWNER/REPO/issues/N`
+Single-issue execution briefs include `Anchor: https://github.com/OWNER/REPO/issues/N`
 (or `Anchor and claim:`) on its own line. Before accounts, daemons or terminals,
 both backends run `gh-plan.py show <anchor> --full --launch-check`, reusing
 `show`'s native status and the ownership facts shared with `next`, without its
 source-ranking or delivery-history reads. Active source or
 operational work can launch; a blocker, structured wait, live
-claim, retained delivery or incomplete read refuses. No new launch-state record
+claim, retained delivery or incomplete read refuses. The existing claim lease
+reader recognizes expiry as a changed ownership fact. No new launch-state record
 is written. Repeated attempts against the same hold keep refusing; clearing one
 hold still leaves the others in force. Read the existing issue and stopped
 worker's handoff, then dispatch only after the relevant fact changes.
@@ -1357,13 +1358,16 @@ For read-only work that answers a wait, use `Read-only anchor: <issue URL>`;
 that worker must not claim or implement the held work. Its ownership check
 still runs, while waits and static PR/branch artifacts can be investigated.
 A retained-delivery
-successor adds `Resume from: <source claim comment ID>` on its own line. The
-same issue's authored release must exist. A qualified retained-PR handoff is
+successor adds `Resume from: <source claim comment ID or URL>` on its own line. The
+source's authored release must exist. A qualified retained-PR handoff is
 needed to exempt current delivery artifacts; no current artifacts need no
 exemption. The worker's `claim --resume-from` still validates full lineage.
-Neither this line nor a release alone clears other holds or owners. Record a resolved wait with `gh-plan.py wait
+Neither this line nor a release alone clears other holds or owners, including
+the cross-record source's current claims and waits. Record a resolved wait or
+verified absence on a legacy record with `gh-plan.py wait
 <issue> --clear --evidence <resolution>`, then launch again. Missing anchor
-lines refuse with both supported forms. Workers claim independently after launch.
+lines keep existing PR-only, lead and other launch routes; the automatic check
+covers explicit issue anchors. Workers claim independently after launch.
 An execution anchor with stale, done or unstatused scope needs its existing
 scope reconciliation before dispatch. Before giving a fresh assignment to an
 idle session through `send` or `queue`, apply the same current anchor check;

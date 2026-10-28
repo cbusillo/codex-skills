@@ -961,11 +961,13 @@ selection is unchanged.
   observed owner or retained-delivery hold; next-action wording does not gate
   dispatch. `--read-only` permits answering a wait without claiming or changing
   held work, while still checking live claims; static PR/branch artifacts do
-  not prevent a read-only review. `--resume-from <comment ID>` validates the
-  same issue's authored release and qualifies a handoff to exempt current
+  not prevent a read-only review. Launch checks honor the existing claim lease
+  expiry. `--resume-from <comment ID or issue-comment URL>` validates the
+  source's authored release and qualifies a handoff to exempt current
   retained artifacts. With no current artifacts, dispatch can proceed and the
   worker's claim validates full merged/plain lineage. It never releases a
-  different owner. Unknown coverage refuses dispatch, while
+  different owner, and a cross-record source's current claims and waits still
+  apply. Unknown coverage refuses dispatch, while
   the full read remains available. This writes no claim or new state record;
   a launched worker still claims independently.
 - `deps <issue>`: Page and show validated native `blocked_by`, `blocking`, and

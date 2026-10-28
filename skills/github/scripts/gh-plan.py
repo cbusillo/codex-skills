@@ -2096,13 +2096,32 @@ def cmd_show(args: argparse.Namespace) -> None:
         result["sections"]["Current Status"] = github_plan_status.render_status(result["sections"]["Current Status"], derived)
     if getattr(args, "launch_check", False):
         candidate = {**result, "discussion": github_direction_next.discussion_snapshot(issue, comments, complete=True)}
-        facts = github_next_queue.ownership_facts(candidate, read_queue_ownership(issue["repo"]),
-                                                trusted=wait_authors(issue["repo"]), resume_from=args.resume_from)
+        observed = read_queue_ownership(issue["repo"])
+        source_item, source_facts, resume_id = None, None, None
+        if args.resume_from:
+            if args.resume_from.isdecimal():
+                resume_id = int(args.resume_from)
+            else:
+                target = github_plan_claim.admission_link_target(args.resume_from)
+                if target is None or target[2] is None:
+                    raise PlanError("Resume from needs an existing claim comment ID or issue-comment URL")
+                source, _, source_comments, _ = claim_snapshot(str(target[1]), target[0], allow_closed=True)
+                source_item = {**source, "discussion": github_direction_next.discussion_snapshot(source, source_comments, complete=True)}
+                source_facts = github_next_queue.ownership_facts(source_item,
+                    observed if target[0] == issue["repo"] else read_queue_ownership(target[0]), trusted=wait_authors(target[0]),
+                    expired_sessions=github_plan_claim.expired_lease_sessions(source_comments))
+                resume_id = target[2]
+        facts = github_next_queue.ownership_facts(candidate, observed,
+            trusted=wait_authors(issue["repo"]), resume_from=resume_id, resume_source=source_item,
+            expired_sessions=github_plan_claim.expired_lease_sessions(comments))
+        source_clear = (source_facts is None or (source_facts["complete"] and not source_facts.get("error")
+                        and not source_facts["conflicts"] and (args.read_only or source_facts["wait"]["state"] == "clear")))
         result["launch_check"] = {
             "allowed": (derived["relationships_complete"] and facts["complete"] and not facts.get("error")
                         and not facts["conflicts"] and (args.read_only or not facts["artifacts"])
-                        and (args.read_only or derived["status"] == "active")),
+                        and source_clear and (args.read_only or derived["status"] == "active")),
             "status": derived["status"], "ownership": facts,
+            **({"resume_source": source_facts} if source_facts else {}),
         }
     emit({"ok": True, "actor": actor, "issue": result,
           **({"batch_read": BATCH_READ_CONTEXT} if getattr(args, "batch_read", False) else {})})
@@ -7168,7 +7187,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--full", action="store_true", help="Include the entire body instead of selected sections")
     p.add_argument("--launch-check", action="store_true", help="Read current ownership and delivery holds for a new execution worker; never claim")
     p.add_argument("--read-only", action="store_true", help="Allow a launch check to answer waits without claiming or changing held work")
-    p.add_argument("--resume-from", type=int, help="Existing source claim comment ID for a retained-delivery launch check")
+    p.add_argument("--resume-from", help="Existing source claim comment ID or URL for a retained-delivery launch check")
     p.add_argument("--sections", nargs="+")
     p.set_defaults(func=cmd_show)
 
