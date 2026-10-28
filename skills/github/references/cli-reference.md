@@ -400,13 +400,10 @@ preflight and absence of a matching PR. No automatic replay or identity fallback
 is offered. Mixed diagnostics, partial/create-stage output, and the same text
 without a PR-create operation retain conservative failure handling.
 
-For `github.pr.edit`, the exact single stderr line `'NAME' not found` with its
-terminating newline and empty stdout is a nonretryable `validation_error`.
-Its write outcome remains `unknown`: the CLI can apply other requested fields
-concurrently with resolving a missing label or other metadata. Read back the PR,
-repair the requested metadata only within existing authorization, and issue a
-new intended edit. No automatic replay or identity fallback is offered. Other
-diagnostics retain conservative failure handling.
+For `github.pr.edit`, a single stderr line `'NAME' not found` with empty stdout
+is a nonretryable `validation_error` with an `unknown` write outcome: other
+fields can change concurrently. The diagnostic supplies readback and repair
+guidance. Other diagnostics retain conservative failure handling.
 
 Schema version 2 of `references/operation-matrix.toml` is the machine-readable source of truth for
 each public helper operation's live and selected transport, quota bucket, actor

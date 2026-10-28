@@ -1273,20 +1273,20 @@ def test_missing_label_requires_pr_create_context() -> None:
 
 
 def test_pr_edit_missing_label_requires_one_exact_line_and_empty_stdout() -> None:
-    exact = _api.classify_legacy_failure(
-        "'owner-review' not found\n",
-        is_write=True,
-        operation="github.pr.edit",
-    )
-    assert exact.cause == "validation_error", exact
-    assert exact.write_outcome == "unknown", exact
-    assert exact.retryable is False and exact.fallback_eligible is False, exact
+    for name in ("owner-review", "Director's call"):
+        exact = _api.classify_legacy_failure(
+            f"'{name}' not found\n",
+            is_write=True,
+            operation="github.pr.edit",
+        )
+        assert exact.cause == "validation_error", exact
+        assert exact.write_outcome == "unknown", exact
+        assert exact.retryable is False and exact.fallback_eligible is False, exact
 
     for operation, stderr, stdout in (
         ("github.pr.create", "'owner-review' not found\n", ""),
         ("github.api.call", "'owner-review' not found\n", ""),
         (None, "'owner-review' not found\n", ""),
-        ("github.pr.edit", "'owner-review' not found", ""),
         ("github.pr.edit", "'owner-review' not found\nconnection reset by peer\n", ""),
         ("github.pr.edit", "'owner-review' not found\n", "updated\n"),
     ):

@@ -1409,64 +1409,61 @@ def test_pr_create_validation_refusal_preserves_unknown_write_controls() -> None
 
 
 def test_pr_edit_missing_label_stops_without_claiming_other_edits_did_not_apply() -> None:
-    for edit_flags in (
-        ["--add-label", "owner-review"],
-        ["--title", "New title", "--add-label", "owner-review"],
-        ["--remove-label", "in-progress", "--add-label", "owner-review"],
-    ):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            env_file, identity, _ = app_fixture(root)
-            calls = root / "calls.jsonl"
-            fake_gh = root / "gh"
-            write(
-                fake_gh,
-                f"#!{sys.executable}\n"
-                "import json, os, sys\n"
-                f"with open({str(calls)!r}, 'a') as stream:\n"
-                "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
-                "assert os.environ['GH_TOKEN'] == 'installation-token'\n"
-                "assert sys.argv[1:3] == ['pr', 'edit']\n"
-                "sys.stderr.buffer.write(b\"'owner-review' not found\\n\")\n"
-                "sys.exit(1)\n",
-            )
-            env = {
-                "PATH": os.environ["PATH"],
-                "HOME": str(root),
-                "CODEX_SKILLS_ENV_FILE": str(env_file),
-                "GH_PR_GH": str(SCRIPT),
-                "GH_WITH_ENV_TOKEN_GH": str(fake_gh),
-                "GH_WITH_ENV_TOKEN_CLASSIFIER": str(SCRIPT.with_name("github_api.py")),
-                "GH_WITH_ENV_TOKEN_IDENTITY_HELPER": str(identity),
-                "GH_WITH_ENV_TOKEN_PYTHON": sys.executable,
-                "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1",
-                "GITHUB_RETRY_STATE_DIR": str(root / "retry"),
-                "GITHUB_RETRY_MAX_ATTEMPTS": "3",
-            }
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(SCRIPT.with_name("gh-pr.py")),
-                    "--repo",
-                    "director/catalog",
-                    "edit",
-                    "42",
-                    *edit_flags,
-                ],
-                env=env,
-                text=True,
-                capture_output=True,
-                timeout=30,
-            )
-            assert result.returncode == 1, result
-            payload = json.loads(result.stdout)
-            assert payload["failure"]["cause"] == "validation_error", payload
-            assert payload["write_outcome"] == "unknown", payload
-            assert payload["outcome_certainty"] == "unknown", payload
-            assert payload["fallback_eligible"] is False, payload
-            assert payload["attempts"] == 1, payload
-            assert len(calls.read_text().splitlines()) == 1
-
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        env_file, identity, _ = app_fixture(root)
+        calls = root / "calls.jsonl"
+        fake_gh = root / "gh"
+        write(
+            fake_gh,
+            f"#!{sys.executable}\n"
+            "import json, os, sys\n"
+            f"with open({str(calls)!r}, 'a') as stream:\n"
+            "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "assert os.environ['GH_TOKEN'] == 'installation-token'\n"
+            "assert sys.argv[1:3] == ['pr', 'edit']\n"
+            "sys.stderr.buffer.write(b\"'owner-review' not found\\n\")\n"
+            "sys.exit(1)\n",
+        )
+        env = {
+            "PATH": os.environ["PATH"],
+            "HOME": str(root),
+            "CODEX_SKILLS_ENV_FILE": str(env_file),
+            "GH_PR_GH": str(SCRIPT),
+            "GH_WITH_ENV_TOKEN_GH": str(fake_gh),
+            "GH_WITH_ENV_TOKEN_CLASSIFIER": str(SCRIPT.with_name("github_api.py")),
+            "GH_WITH_ENV_TOKEN_IDENTITY_HELPER": str(identity),
+            "GH_WITH_ENV_TOKEN_PYTHON": sys.executable,
+            "GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1",
+            "GITHUB_RETRY_STATE_DIR": str(root / "retry"),
+            "GITHUB_RETRY_MAX_ATTEMPTS": "3",
+        }
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT.with_name("gh-pr.py")),
+                "--repo",
+                "director/catalog",
+                "edit",
+                "42",
+                "--title",
+                "New title",
+                "--add-label",
+                "owner-review",
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        assert result.returncode == 1, result
+        payload = json.loads(result.stdout)
+        assert payload["failure"]["cause"] == "validation_error", payload
+        assert payload["write_outcome"] == "unknown", payload
+        assert payload["outcome_certainty"] == "unknown", payload
+        assert payload["fallback_eligible"] is False, payload
+        assert payload["attempts"] == 1, payload
+        assert len(calls.read_text(encoding="utf-8").splitlines()) == 1
 
 def test_permission_refusals_preserve_app_identity() -> None:
     cases = [

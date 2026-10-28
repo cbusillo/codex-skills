@@ -1449,7 +1449,7 @@ def classify_legacy_failure(
     elif (
         is_write and command_started and operation == "github.pr.edit"
         and not stdout
-        and re.fullmatch(r"'[^'\r\n]+' not found\n", stderr)
+        and re.fullmatch(r"'[^\r\n]+' not found\n?", stderr)
     ):
         cause = "validation_error"
         disposition = "stop"
