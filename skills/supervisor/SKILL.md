@@ -491,7 +491,11 @@ current default-branch checkout to read its product section.
    Give each running session its own anchor issue in the same repository,
    sweeps and checks included. Put `Anchor: <issue URL>` (or `Anchor and claim:`)
    on its own line in single-issue execution briefs, and `Read-only anchor: <issue URL>`
-   in briefs that will not claim. The shared launcher reuses full status and
+   in briefs that will not claim. Execution briefs put `Admission: <kind>; <evidence URLs>`
+   on one line, naming the kind the worker will claim and each exact admission
+   issue or decision-comment URL. The launcher also recognizes the older
+   `Admission for this item:` form; indented context is not admission evidence.
+   The shared launcher reuses the claim's admission and wait checks, full status and
    ownership reads before dispatch. After a stopped launch, keep the issue with
    its blocker, wait, claim holder or retained delivery until that fact changes;
    another launch, an exact claim release or a newer timestamp alone does not

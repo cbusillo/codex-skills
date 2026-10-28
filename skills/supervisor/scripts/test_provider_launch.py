@@ -66,7 +66,7 @@ class LaunchIssueTests(unittest.TestCase):
                   patch.object(account_choice, "record_launch") as receipt,
                   patch.object(tmux_terminal, "Terminal") as terminal):
                 for backend in ("iterm", "tmux", "tmux"):
-                    with self.subTest(backend=backend), self.assertRaisesRegex(ValueError, "claim_admission_unlinked.*milestone Track.*decision link"):
+                    with self.subTest(backend=backend), self.assertRaisesRegex(ValueError, "claim_admission_unlinked"):
                         asyncio.run(iterm_tab.operate(app, args) if backend == "iterm" else tmux_terminal.operate(args))
                 select.assert_not_called()
                 daemon.assert_not_called()
@@ -102,13 +102,17 @@ class LaunchIssueTests(unittest.TestCase):
                 self.assertEqual(calls[-1].issue, brief.split()[-1])
         link = "https://github.com/fixture/direction/issues/9#issuecomment-123"
         with patch.object(iterm_tab.subprocess, "run", side_effect=read):
-            for declaration in ("Admission: milestone (" + link + ")", "**Admission:** spare-capacity; " + link,
+            for declaration in ("Admission for this item: milestone (" + link + ")",
+                                "Admission: milestone (" + link + ")", "**Admission:** spare-capacity; " + link,
                                 "- Admission: repeat-stop; " + link + " https://github.com/fixture/repo/issues/8"):
                 iterm_tab.check_launch_issue(brief + "\n" + declaration)
                 self.assertEqual(calls[-1].admission, declaration.split(":", 1)[1].strip(" *").split()[0].rstrip(";"))
                 self.assertEqual(calls[-1].admission_link[0], link)
             iterm_tab.check_launch_issue(brief.replace("Anchor:", "Read-only anchor:") + "\nAdmission: milestone")
             self.assertIsNone(calls[-1].admission)
+            iterm_tab.check_launch_issue(brief + "\nAdmission: repeat-stop; " + link +
+                                        "\n  Context: https://github.com/fixture/repo/issues/88")
+            self.assertEqual(calls[-1].admission_link, [link])
         for missing in ("Implement export", "Anchor: https://github.com/fixture/repo/pull/7", "Milestone lead for the Track"):
             with self.subTest(missing=missing), patch.object(iterm_tab.subprocess, "run") as reader:
                 iterm_tab.check_launch_issue(missing)
@@ -116,6 +120,23 @@ class LaunchIssueTests(unittest.TestCase):
         for malformed in ("fixture/repo#7", "", "https://github.com/fixture/repo/issues/7/other"):
             with self.subTest(malformed=malformed), self.assertRaises(ValueError):
                 iterm_tab.check_launch_issue("Anchor: " + malformed)
+
+    def test_multiple_admission_declarations_refuse_before_reading_launch_state(self) -> None:
+        brief = "Anchor: https://github.com/fixture/repo/issues/7\nAdmission: milestone\nAdmission: spare-capacity"
+        with patch.object(iterm_tab.subprocess, "run") as reader, self.assertRaises(ValueError):
+            iterm_tab.check_launch_issue(brief)
+        reader.assert_not_called()
+
+    def test_claim_refusal_details_survive_without_extra_launcher_advice(self) -> None:
+        anchor = "Anchor: https://github.com/fixture/repo/issues/7"
+        for code in ("claim_wait_unresolved", "claim_milestone_graph_incomplete", "claim_preflight_unavailable"):
+            detail = "Fixture specific recovery step"
+            payload = {"ok": True, "issue": {"launch_check": {
+                "allowed": False, "error": {"code": code, "message": detail}}}}
+            with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))):
+                with self.assertRaises(ValueError) as caught:
+                    iterm_tab.check_launch_issue(anchor)
+                self.assertEqual(str(caught.exception), "Launch refused for " + anchor.split()[-1] + ": " + code + ": " + detail)
 
     def test_missing_or_failed_state_read_never_launches(self) -> None:
         for code, output in ((1, "{}"), (0, "{}"), (0, "invalid"), (0, '{"ok": true, "issue": {}}')):

@@ -203,6 +203,15 @@ class CloseConfigTests(unittest.TestCase):
         result, _, _ = self.show_fixture(launch=True, read_only=True, admission="milestone")
         self.assertTrue(result["issue"]["launch_check"]["allowed"])
 
+    def test_launch_returns_actionable_admission_argument_errors(self) -> None:
+        for kind, links in (("own project", []), ("TBD", []), ("repeat-stop", []),
+                            ("milestone", ["not-a-link"])):
+            with self.subTest(kind=kind, links=links):
+                result, _, _ = self.show_fixture(launch=True, admission=kind, admission_links=links)
+                check = result["issue"]["launch_check"]
+                self.assertFalse(check["allowed"])
+                self.assertTrue(check["error"]["message"])
+
     def test_launch_reports_the_claim_wait_refusal_even_with_valid_admission(self) -> None:
         waiting = {"id": 2, "user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker({
             "version": 1, "state": "waiting", "evidence": "Decision pending", "waits": [

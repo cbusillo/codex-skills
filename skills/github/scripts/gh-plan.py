@@ -2738,7 +2738,8 @@ def milestone_claim_track(issue: dict[str, Any], links: list[str]) -> dict[str, 
         f"Milestone admission needs an open Track in {direction_repo} under a listed milestone, "
         f"or an open repository milestone listed in {issue['repo']}'s merged DIRECTION.md and absent from overall direction. "
         "A citation to the direction repository must name a valid Track; use --admission-link URL for that Track. "
-        "Admission records the citation without changing the Track graph.")
+        "Admission records the citation without changing the Track graph. Link the right milestone Track, "
+        "or name another --admission kind with its decision link.")
 
 
 def link_native_dependency(
@@ -2777,6 +2778,9 @@ def claim_admission_options(args: argparse.Namespace) -> tuple[str | None, list[
     admission = getattr(args, "admission", None)
     admission_links = list(dict.fromkeys(getattr(args, "admission_link", None) or []))
     admission_unlinked = getattr(args, "admission_unlinked", None)
+    if admission is not None and admission not in github_plan_claim.ADMISSIONS:
+        raise PlanError("Unknown claim admission; use --admission " + ", ".join(github_plan_claim.ADMISSIONS)
+                        + " with its --admission-link evidence")
     if (admission_links or admission_unlinked is not None) and not admission:
         raise PlanError("--admission-link and --admission-unlinked require --admission")
     admission_targets = {link: github_plan_claim.admission_link_target(link) for link in admission_links}
@@ -7200,7 +7204,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("issue")
     p.add_argument("--full", action="store_true", help="Include the entire body instead of selected sections")
     p.add_argument("--launch-check", action="store_true", help="Read current ownership and delivery holds for a new execution worker; never claim")
-    p.add_argument("--admission", choices=github_plan_claim.ADMISSIONS, help="Admission the execution worker will claim")
+    p.add_argument("--admission", help="Admission the execution worker will claim")
     p.add_argument("--admission-link", action="append", default=[], metavar="URL", help="Exact claim admission evidence; repeat for each occurrence")
     p.add_argument("--read-only", action="store_true", help="Allow a launch check to answer waits without claiming or changing held work")
     p.add_argument("--resume-from", help="Existing source claim comment ID or URL for a retained-delivery launch check")
