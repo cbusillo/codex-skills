@@ -1090,7 +1090,8 @@ the landing route:
 - **Human comments**: Before a merge or close settles an issue or PR, run
   `uv run ../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
   An attention result or degraded coverage needs a response or explicit
-  handoff first; a bot response never proves Director acknowledgement.
+  handoff first; targeted public replies clear comments under the
+  [radar rule](../github-work-rollup/SKILL.md#external-comment-radar).
   `gh-plan.py close` and `gh-issue close` refuse over an unanswered outside
   comment on the issue or a thread it links; see
   [Planning: Management](references/cli-reference.md#planning-management).

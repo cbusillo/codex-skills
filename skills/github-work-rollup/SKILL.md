@@ -193,20 +193,16 @@ not require local files.
 ## External Comment Radar
 
 Run `uv run scripts/github_unanswered_comments.py` for missed external comments;
-use `--thread OWNER/REPO#NUMBER` for a full-history merge/closeout gate. Director
-acknowledgement and public response are separate: awareness requires a Director
-reaction after the latest edit, a Director reply with the exact comment
-permalink, or a Director inline-review reply when only one eligible external
-comment exists. A trusted `Director question:` or `Director decision:` record
-also counts as awareness of the external comments it links. When it says
-"above" without a comment link, it covers external comments before it since the
-previous such record in that thread. A targeted Director or bot reply is a
-public response; ordinary bot activity does not prove awareness. Open threads
-require both awareness and a public response to clear attention. Closed threads
-with a public response, or closed after the comment's latest version, appear
-only in the handled count; closure does not prove personal acknowledgement.
-Unrelated later comments, generic closeout posts, labels, and notifications
-prove neither awareness nor response. Edits/new comments reopen attention;
+use `--thread OWNER/REPO#NUMBER` for a full-history merge/closeout gate.
+A targeted public reply from the Director or configured automation clears a
+comment after its latest edit. A reply targets an exact comment link or an
+inline-review thread with one eligible external comment; automation may also
+use an unambiguous single-author mention. Comments without a targeted reply
+stay flagged, including on closed threads. Director reactions, question or
+decision records, unrelated later comments, generic closeout posts, labels and
+notifications do not answer a comment. Director awareness is diagnostic only;
+it is not required to clear attention. Decisions needing the Director still go
+through numbered Director questions. Edits/new comments reopen attention;
 incomplete coverage is never an all-clear. Each `gh` call has a timeout, and
 all thread and reaction reads share one deadline; a read that misses either
 bound is reported as degraded coverage rather than stalling the report.

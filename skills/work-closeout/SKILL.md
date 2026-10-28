@@ -232,7 +232,7 @@ preserved, or intentionally left in place.
    `uv run ../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
    Any attention result
    or degraded coverage requires a response or explicit handoff before an
-   all-clear; a bot response never proves Director acknowledgement.
+   all-clear under the [radar rule](../github-work-rollup/SKILL.md#external-comment-radar).
    When an open PR still needs ongoing CI, review, mergeability, or
    merged/closed follow-through, transfer that loop to `babysit-pr` before
    declaring the work parked or safe to exit. For an already merged or closed PR,
