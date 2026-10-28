@@ -117,3 +117,30 @@ exists that can retain these inputs, logs and evidence without publishing them,
 move execution off this host behind this same `--manifest` / `--evidence`
 interface. Preserve queueing, resource limits and lifetime cleanup. The runner's
 availability is the trigger, not a new staffing label or another comment protocol.
+
+An agent can set `executor` to a command argv array in the existing host
+settings file. The same entrypoint validates the manifest, then replaces its
+process with that adapter and absolute `--manifest` / `--evidence` paths.
+It creates no local queue or Docker resources and has no local fallback if the
+adapter fails. Process replacement preserves signal delivery and exit status.
+Omit `executor` for local execution. Configure it only after existing local
+running, queued and unreconciled work has drained.
+
+The private adapter owns transport, runner identity, architecture/provenance,
+remote cancellation, private evidence retrieval and the runner's single queue.
+Its reviewed operations runbook lives in the configured private infrastructure
+repository. Do not put private endpoints or credentials in catalog settings
+examples. Inspect the original remote job after a connection loss before retrying;
+an adapter failure never proves remote cleanup.
+
+The executor setting routes every heavy run from that OS account on the host,
+including non-Odoo repositories; verify its consumers before a cut-over.
+Execution limits come from the destination host's settings. Workstation limits
+are used only for workstation execution.
+
+Private adapters can use `run(..., prepare=..., complete=...)` from the same
+helper. Preparation runs after admission and predecessor reconciliation;
+evidence delivery runs after cleanup and receipt creation, while the same slot
+is still held. Keep all transfer children within that process and preserve the
+slot descriptor for Docker operations. This keeps staging and collection from
+overlapping another execution without adding a scheduler.
