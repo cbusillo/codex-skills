@@ -27,10 +27,6 @@ TURN_STALE = dt.timedelta(hours=24)
 LOOP_PATH = Path(__file__).resolve().parents[1] / "skills" / "references" / "executing-loop.md"
 SKILLS_PROTOCOL_PATH = LOOP_PATH.with_name("using-skills.md")
 GH_READER = Path(__file__).resolve().parents[1] / "skills" / "github" / "scripts" / "gh-with-env-token"
-sys.path.insert(0, str(GH_READER.parents[3]))
-sys.path.insert(0, str(GH_READER.parent))
-from skills.github.scripts.github_read import repo_from_remote_url
-
 OVERALL_REPO = "direction"
 OVERALL_READ_TIMEOUT = 6
 RUNTIME_CATCHUP_TIMEOUT = 5
@@ -253,8 +249,12 @@ def origin_repo(root: Path | None) -> str | None:
     if remote.returncode != 0:
         return None
     try:
+        sys.path.insert(0, str(GH_READER.parents[3]))
+        sys.path.insert(0, str(GH_READER.parent))
+        from skills.github.scripts.github_read import repo_from_remote_url
+
         return repo_from_remote_url(remote.stdout.strip())
-    except ValueError:
+    except (ImportError, ValueError):
         return None
 
 
@@ -494,6 +494,7 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
         tools_line = agent_tools_warning(catalog, Path.cwd(), os.environ)
         if tools_line:
             print(tools_line, flush=True)
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         try:
             from scripts.catalog_runtime import status_line
             catalog_line = status_line(catalog, observe=True) if (catalog / ".local" / "catalog-install.json").is_file() else ""

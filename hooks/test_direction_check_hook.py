@@ -311,12 +311,11 @@ class ReminderTests(IsolatedDirectionHookTests):
             self.assertIsNone(hook.origin_repo(root.resolve()), "no origin, no repo key")
             subprocess.run(["git", "-C", str(root), "remote", "add", "origin", "git@github.com:owner/repo.git"], check=True)
             self.assertEqual(hook.origin_repo(root.resolve()), "owner/repo")
-            with mock.patch.dict(os.environ, {"GH_HOST": "github.com"}):
-                for remote in ("https://github.com/owner/.github.git", "git@github.com:owner/.github.git"):
-                    subprocess.run(["git", "-C", str(root), "remote", "set-url", "origin", remote], check=True)
-                    self.assertEqual(hook.origin_repo(root.resolve()), "owner/.github")
-                subprocess.run(["git", "-C", str(root), "remote", "set-url", "origin", "https://notgithub.com/owner/.github.git"], check=True)
-                self.assertIsNone(hook.origin_repo(root.resolve()))
+            for remote in ("https://github.com/owner/.github.git", "git@github.com:owner/.github.git"):
+                subprocess.run(["git", "-C", str(root), "remote", "set-url", "origin", remote], check=True)
+                self.assertEqual(hook.origin_repo(root.resolve()), "owner/.github")
+            subprocess.run(["git", "-C", str(root), "remote", "set-url", "origin", "https://notgithub.com/owner/.github.git"], check=True)
+            self.assertIsNone(hook.origin_repo(root.resolve()))
 
     def test_loop_prints_from_reference_only_in_direction_repo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
