@@ -110,8 +110,6 @@ class GuardTests(unittest.TestCase):
             with self.subTest(quote=quote):
                 decision = json.loads(self.run_hook(stop(last_assistant_message=f"**Q855** Should I proceed?\n{quote}")))
                 self.assertEqual(decision["decision"], "block")
-                self.assertIn("cost", decision["reason"])
-                self.assertIn("developer", decision["reason"])
 
     def test_numbered_status_and_quoted_questions_pass(self):
         for message in ("**Q855** was approved and implemented. Nothing is needed from you.",
@@ -178,12 +176,16 @@ class GuardTests(unittest.TestCase):
                         stop(last_assistant_message=None), {"hook_event_name": "SubagentStop",
                                                            "last_assistant_message": UNNUMBERED_ASK}):
             self.assertEqual(self.run_hook(payload), "")
+    def test_unavailable_guidance_still_blocks_and_logs(self) -> None:
         guidance = Path(self.home.name, "missing-guidance.md")
         for contents in (None, "# Guidance without a question section\n"):
             if contents is not None:
                 guidance.write_text(contents)
             with mock.patch.object(guard, "QUESTION_GUIDANCE", guidance):
-                self.assertEqual(self.run_hook(stop(last_assistant_message="**Q855** Should I proceed?")), "")
+                decision = json.loads(self.run_hook(stop(last_assistant_message="**Q855** Should I proceed?")))
+            self.assertEqual(decision["decision"], "block")
+            self.assertTrue(decision["reason"])
+        self.assertEqual([record["verdict"] for record in self.logged()], ["caught", "caught"])
 
     def test_unwritable_log_still_blocks(self):
         Path(self.home.name, "skill-data").write_text("a file where the directory should be")

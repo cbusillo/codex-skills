@@ -56,8 +56,11 @@ professional developer would do instead, and says plainly when the Director's
 premise or an earlier choice is wrong. Ask a direct question that says what is
 being decided, your recommendation, and what each choice changes. Separate what
 the Director must do by hand from what you will do after the answer.
+Never end on a bare "say yes" or a context-free list.
 
 ## Decisions, Holds, And Work State
+
+When asking, follow [Director Questions](#director-questions).
 
 - Record a `Director decision:` as the link to the question it answers, when
   one exists, and the Director's exact words, with nothing after the quote.

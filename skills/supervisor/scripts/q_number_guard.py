@@ -62,17 +62,17 @@ def missing_context(message: str) -> str | None:
         return None
     if not NUMBERED.search(text):
         return REASON
-    missing = [name for pattern, name in ((COST, "ongoing cost"), (DEVELOPER, "experienced developer view"))
-               if not pattern.search(text)]
-    if not missing:
+    if COST.search(text) and DEVELOPER.search(text):
         return None
-    return (f"Your numbered Director question is missing: {' and '.join(missing)}. "
-            f"{director_question_rule()} "
+    return (f"{director_question_rule()} "
             "Repeat the reply. If the reply asks nothing, end the turn again unchanged.")
 
 
 def director_question_rule() -> str:
-    _, section = QUESTION_GUIDANCE.read_text(encoding="utf-8").split("\n## Director Questions\n", 1)
+    try:
+        _, section = QUESTION_GUIDANCE.read_text(encoding="utf-8").split("\n## Director Questions\n", 1)
+    except (OSError, ValueError):
+        return f"Follow {QUESTION_GUIDANCE.name}#director-questions."
     return " ".join(section.split("\n## ", 1)[0].split())
 
 
