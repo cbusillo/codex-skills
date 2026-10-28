@@ -120,7 +120,7 @@ class HeavyRunTests(unittest.TestCase):
         fail_output: bool = False,
     ) -> subprocess.Popen[str]:
         home = self.root / "home"
-        config = home / ".config/codex-skills/heavy-run.json"
+        config = home / heavy_run.CONFIG_PATH
         config.parent.mkdir(parents=True, exist_ok=True)
         config.write_text(json.dumps({"cpus": 2, "memory": 1024 * 1024 * 1024, "slots": 1}))
         binary = self.root / "bin"
@@ -130,8 +130,11 @@ class HeavyRunTests(unittest.TestCase):
         docker.write_text(f"#!{sys.executable}\n" + fixture.read_text())
         docker.chmod(0o700)
         source = self.root / "source"
-        source.mkdir(exist_ok=True)
+        source.mkdir(mode=0o700, exist_ok=True)
         (source / "private.txt").write_text("private-test-output")
+        (source / "private.txt").chmod(0o600)
+        (source / "run.sh").write_text("exit 0\n")
+        (source / "run.sh").chmod(0o700)
         manifest = self.root / f"{name}.json"
         containers = [
             {
@@ -212,8 +215,15 @@ class HeavyRunTests(unittest.TestCase):
         self.assertNotIn("--volume", create)
         self.assertNotIn("--workdir", create)
         self.assertNotIn("private-env-value", json.dumps(calls))
-        self.assertEqual((self.root / "normal/job.env").stat().st_mode & 0o777, 0o600)
-        self.assertTrue(any(call[0] == "cp" for call in calls))
+        self.assertFalse((self.root / "normal/job.env").exists())
+        self.assertEqual(int((self.root / "docker/env-mode-normal").read_text()), 0o600)
+        copied = [entry for path in (self.root / "docker").glob("copy-*") for entry in json.loads(path.read_text())]
+        private = next(entry for entry in copied if entry["name"].endswith("private.txt"))
+        script = next(entry for entry in copied if entry["name"].endswith("run.sh"))
+        self.assertEqual(private["mode"] & 0o006, 0o006)
+        self.assertEqual(script["mode"] & 0o001, 0o001)
+        self.assertEqual((self.root / "source/private.txt").stat().st_mode & 0o777, 0o600)
+        self.assertEqual((self.root / "source/run.sh").stat().st_mode & 0o777, 0o700)
         self.assertEqual((self.root / "normal/run.log").stat().st_mode & 0o777, 0o600)
         self.assertEqual((self.root / "normal").stat().st_mode & 0o777, 0o700)
         self.assertFalse(list((self.root / "docker").glob("container-*")))
@@ -223,7 +233,7 @@ class HeavyRunTests(unittest.TestCase):
         wait_for(self.root / "docker/started-crashed")
         crashed.kill()
         crashed.communicate(timeout=10)
-        successor = self.launch("successor")
+        successor = self.launch("successor", endpoint="unix:///other-fixture.sock")
         wait_for(self.root / "docker/started-successor")
         self.assertFalse((self.root / "docker/running-crashed").exists())
         (self.root / "docker/release-successor").touch()
@@ -239,7 +249,7 @@ class HeavyRunTests(unittest.TestCase):
         crashed.kill()
         crashed.communicate(timeout=10)
         try:
-            with heavy_run.locked_file(self.root / "home/.local/state/codex-skills/heavy-run/slot-0.lock") as handle:
+            with heavy_run.locked_file(self.root / "home" / heavy_run.STATE_PATH / "slot-0.lock") as handle:
                 self.assertFalse(heavy_run.try_lock(handle))
             successor = self.launch("successor")
             wait_for(self.root / "successor/run.log")
@@ -254,9 +264,9 @@ class HeavyRunTests(unittest.TestCase):
     def test_cancel_cleans_up_and_failed_cleanup_prevents_successor(self) -> None:
         canceled = self.launch("canceled")
         wait_for(self.root / "docker/started-canceled")
-        canceled.send_signal(signal.SIGTERM)
+        canceled.send_signal(signal.SIGHUP)
         canceled.communicate(timeout=15)
-        self.assertEqual(canceled.returncode, 128 + signal.SIGTERM)
+        self.assertEqual(canceled.returncode, 128 + signal.SIGHUP)
         self.assertFalse(list((self.root / "docker").glob("container-*")))
         failed = self.launch("failed", fail=True)
         wait_for(self.root / "docker/started-failed")
@@ -267,8 +277,8 @@ class HeavyRunTests(unittest.TestCase):
         successor.communicate(timeout=15)
         self.assertNotEqual(successor.returncode, 0)
         self.assertFalse((self.root / "docker/started-blocked").exists())
-        custody = self.root / "home/.local/state/codex-skills/heavy-run/custody-0"
-        self.assertEqual(Path(custody.read_text()), (self.root / "failed").resolve())
+        custody = self.root / "home" / heavy_run.STATE_PATH / "custody-0"
+        self.assertEqual(heavy_run.Custody.load(custody).evidence, (self.root / "failed").resolve())
 
     def test_queued_cancel_and_startup_failure_leave_receipts_without_custody(self) -> None:
         holder = self.launch("holder")
@@ -286,8 +296,8 @@ class HeavyRunTests(unittest.TestCase):
         self.assertNotEqual(remote.returncode, 0)
         self.assertEqual(stderr, "")
         self.assertFalse(json.loads(stdout)["ok"])
-        self.assertTrue((self.root / "remote/result.json").exists())
-        self.assertFalse(list((self.root / "home/.local/state/codex-skills/heavy-run").glob("custody-*")))
+        self.assertTrue(json.loads((self.root / "remote/result.json").read_text())["cleanup_complete"])
+        self.assertFalse(list((self.root / "home" / heavy_run.STATE_PATH).glob("custody-*")))
 
     def test_nonzero_job_exit_survives_missing_output_and_cleanup(self) -> None:
         expected = 23
@@ -309,8 +319,12 @@ class HeavyRunTests(unittest.TestCase):
         for manifest in invalid:
             with self.subTest(manifest=manifest), self.assertRaises(ValueError):
                 heavy_run.validate_manifest(manifest)
+        duplicate = {"container": "job", "name": "same", "source": "/result"}
         with self.assertRaises(ValueError):
-            heavy_run.Settings(memory=6 * 1024**2).limits(2)
+            heavy_run.validate_manifest({"containers": [container], "job": "job", "outputs": [duplicate, duplicate]})
+        for settings in (heavy_run.Settings(memory=heavy_run.MIN_MEMORY), heavy_run.Settings(cpus=heavy_run.MIN_NANO_CPUS / 10**9)):
+            with self.subTest(settings=settings), self.assertRaises(ValueError):
+                settings.limits(2)
 
 
 if __name__ == "__main__":

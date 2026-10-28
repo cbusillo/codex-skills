@@ -17,7 +17,8 @@ outputs beside it. Do not upload these files or derived private data to GitHub
 or Actions. Post only a public-safe conclusion on the worker's child issue.
 
 A manifest names the containers in startup order and the container whose exit
-finishes the run. A service can use its image's default command and working directory. Containers share
+finishes the run. Services keep their image's default command and working
+directory. Containers share
 an invocation-owned internal network and resolve each other's `name`. The job
 command must wait for its services to become ready. Images must already contain
 the tools needed for the run and be cached locally; `--pull never` prevents an
@@ -46,9 +47,12 @@ supported image path first. The internal network has no external route.
 ```
 
 Commands are argv arrays. Environment values use private mode-0600 env files,
-not process arguments. For multiline configuration, copy a configuration file. Input paths are copied with `docker cp` before any
-container starts; there are no host bind mounts, published ports, Docker socket
-mounts or arbitrary Docker flags. A run owns every container it creates and
+not process arguments, and are removed after create. For multiline configuration,
+copy a configuration file. Inputs stream through `docker cp` before any container
+starts. The archive makes container-local copies readable and writable by image
+users, including services that drop privileges; files retain executable intent.
+Original host bytes and private permissions stay unchanged. There are no host
+bind mounts, published ports, Docker socket mounts or arbitrary Docker flags. A run owns every container it creates and
 removes its containers, anonymous volumes and network before returning. Never
 start a nested host Docker driver outside this interface to claim its slot.
 Translate that driver's disposable services and test command into the manifest.
@@ -65,10 +69,12 @@ and 8 GiB of memory per run. For example:
 
 Memory is bytes; CPU and memory budgets are divided among a run's containers,
 so their sum stays within the per-run caps. CPUs round down to whole
-nano-CPUs; every container needs at least 6 MiB. Configure enough memory for each
-service. Change settings only with the queue idle and all owned containers gone.
-The helper requires the selected Docker context to use a local Unix socket and
-pins that endpoint throughout the run. It never targets a remote daemon.
+nano-CPUs; every container needs at least 0.01 CPUs and 6 MiB. Configure enough
+memory for each service. Change settings only with the queue idle and all owned containers gone.
+The helper reads Docker's context from the OS account's Docker configuration,
+ignoring `DOCKER_*` overrides. It requires a local Unix socket and stores that
+endpoint with custody. Recovery uses the predecessor's endpoint even if the
+selected local context has since changed. It never targets a remote daemon.
 
 The host-wide queue lives at `~/.local/state/codex-skills/heavy-run`. Kernel
 file locks serialize admission in FIFO ticket order and implement the configured
@@ -82,16 +88,16 @@ never to another run's log. Missing predecessor evidence means logs are dropped.
 A cleanup failure returns failure and leaves custody with the original run;
 every successor to that slot must reconcile it before admission. There is no
 background reaper: an orphan keeps its capped resources until that slot's next
-holder cleans it up. Other slots retain their own capacity. Never delete queue/slot lock
-files to unblock work. Let an already running legacy heavy job finish and verify
-its cleanup before the first switch; the helper cannot adopt unlabeled work.
+holder cleans it up. Admission tries the lowest free slot first; its failed
+recovery can keep later requests from using other free slots until recovery
+succeeds. Never delete queue/slot lock files to unblock work. Use `lsof` on the
+exact ticket or slot lock file to identify its holder, then resume/cancel that
+worker through its harness. For a verified orphaned CLI, stop that exact PID under
+[process cleanup](../../work-closeout/SKILL.md#git-and-worktree-hygiene). Let an
+already running legacy heavy job finish and verify its cleanup before the first switch; the helper cannot adopt unlabeled work.
 
-Workers no longer ask for heavy windows or post BEGIN/END and window-return
-comments on the parent. Their own child holds progress and public-safe results;
-the lead updates only the parent's in-place Current Status and decisions.
-Staffing uses existing `plan:active` children, claims and `gh-plan.py next`.
-The Supervisor reads every result page at each staffing poll, reporting incomplete
-coverage instead of inferring no work from the first page.
+Follow the [worker reporting rules](brief-rules.md#rules-every-brief-carries)
+and [Supervisor staffing procedure](../SKILL.md#the-pattern).
 
 ## Convergence trigger
 

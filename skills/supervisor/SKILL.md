@@ -515,9 +515,9 @@ current default-branch checkout to read its product section.
    [Milestone State](#milestone-state). For staffing, poll existing `plan:active`
    child issues, their claims and `gh-plan.py next` across the run's repositories.
    Use the maintained readers' pagination and consume all returned results,
-   including child and comment results. Require complete coverage, widening
-   their read bounds when needed; a first page or the goal board's bounded
-   window is not complete staffing coverage. Report failed or incomplete reads
+   including child and comment results. Require their complete-coverage result;
+   a first page or the goal board's bounded window is not complete staffing
+   coverage. Report failed or incomplete reads
    as unknown instead of building a parallel manual inventory. Staff actionable unclaimed children from that state; add no
    staffing label and do not depend on a buried staffing-request comment.
    Workers report on their child issues. Parents hold in-place Current Status
