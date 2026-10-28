@@ -10,7 +10,7 @@
 
 import argparse
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 import errno
 import json
@@ -25,7 +25,7 @@ import tempfile
 import time
 import tomllib
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import account_choice
 import claude_trust
@@ -455,6 +455,56 @@ async def send(session, text, submit=True, allow_tabs=False):
             await session.async_send_text("\r", suppress_broadcast=True)
         except Exception as error:
             raise SendFailure(session.session_id, "unknown", "Return send failed") from error
+
+
+def message_sections(readback: dict[str, Any]) -> tuple[str, str]:
+    lines = readback["screen"][:readback["input_line"]["line_index"]]
+    queued = next((i for i, line in enumerate(lines)
+                   if line.strip() in {"• Queued follow-up inputs", "• Queued messages"}), len(lines))
+    def normalize(rows: list[str]) -> str:
+        return "\n".join(" ".join(line.split()) for line in rows)
+
+    return normalize(lines[:queued]), normalize(lines[queued:])
+
+
+async def submit_message(
+    identity: str, text: str, submit: bool,
+    read: Callable[[], Awaitable[dict[str, Any]]],
+    press: Callable[[str], Awaitable[None]],
+) -> dict[str, Any]:
+    try:
+        await asyncio.sleep(0.4)
+        before = await read()
+        key = "\r"
+        prompt = before["input_line"]
+        if prompt["line_index"] is not None:
+            footer = before["screen"][prompt["line_index"] + 1:]
+            if (before["screen"][prompt["line_index"]].lstrip().startswith("›")
+                    and any(re.search(r"\btab to queue(?: message)?\b", line) for line in footer)):
+                key = "\t"
+        if submit:
+            await press(key)
+            await asyncio.sleep(0.4)
+        after = await read() if submit else before
+    except SendFailure:
+        raise
+    except Exception as error:
+        raise SendFailure(identity, "unknown", "message submission or readback failed") from error
+    delivery = "unknown"
+    current = after["input_line"]
+    if current["style"] in {"non_dim", "mixed"} and current["text"]:
+        delivery = "typed"
+    elif current["style"] in {"empty", "dim"}:
+        normalized = " ".join(text.split())
+        previous_sections = message_sections(before)
+        for index, section in enumerate(message_sections(after)):
+            prefix = r"[›❯>]" if index == 0 else "↳"
+            pattern = rf"(?m)^{prefix} {re.escape(normalized)}$"
+            if len(re.findall(pattern, section)) > len(re.findall(pattern, previous_sections[index])):
+                delivery = "submitted" if index == 0 else "queued"
+    return {"session_id": identity, "sent": True, "delivery": delivery,
+            "submission_key": key if submit else None, "readback": after,
+            "readback_required": delivery in {"typed", "unknown"}}
 
 
 async def wait_for_session(app, tab, timeout=10.0):
@@ -1505,6 +1555,13 @@ async def close_session(app, session_id, ledger):
     return {"session_id": session_id, "close_requested": True, "readback_required": True}
 
 
+async def read_session(session: Any) -> dict[str, Any]:
+    screen = await session.async_get_screen_contents()
+    return {"session_id": session.session_id,
+            "screen": [screen.line(i).string for i in range(screen.number_of_lines)],
+            "input_line": iterm_input_line(screen)}
+
+
 async def operate(app, args):
     if args.command == "close":
         return await close_session(app, args.session_id, args.ledger)
@@ -1526,14 +1583,7 @@ async def operate(app, args):
     if args.command in {"send", "read", "clear"}:
         session = select_session(app, args.session_id)
         if args.command == "read":
-            screen = await session.async_get_screen_contents()
-            return {
-                "session_id": session.session_id,
-                "screen": [
-                    screen.line(i).string for i in range(screen.number_of_lines)
-                ],
-                "input_line": iterm_input_line(screen),
-            }
+            return await read_session(session)
         if not args.verified_target:
             raise ValueError(
                 "verify the target, input line and prompt before --verified-target"
@@ -1546,7 +1596,17 @@ async def operate(app, args):
                 if args.text_file
                 else args.text
             )
-            await send(session, text, not args.no_submit)
+            await send(session, text, submit=False)
+
+            async def read_message() -> dict[str, Any]:
+                return await read_session(select_session(app, args.session_id))
+
+            async def press_message(key: str) -> None:
+                if select_session(app, args.session_id) is not session:
+                    raise SendFailure(args.session_id, "not_attempted", "terminal state changed after text")
+                await session.async_send_text(key, suppress_broadcast=True)
+
+            return await submit_message(args.session_id, text, not args.no_submit, read_message, press_message)
         return {
             "session_id": session.session_id,
             "sent": True,

@@ -1302,6 +1302,17 @@ uv run skills/supervisor/scripts/iterm_tab.py read --session-id <iterm-session-i
 uv run skills/supervisor/scripts/iterm_tab.py send --session-id <iterm-session-id> --text-file <private-message-file> --verified-target
 ```
 
+For existing sessions, `send` types the message, reads the exact target, and
+uses Tab when the Codex composer visibly offers `tab to queue message` (or
+the compact `tab to queue`). Otherwise it uses Return. This applies to both
+terminal backends. `--no-submit` leaves the text typed. The returned `delivery`
+is `queued` or `submitted` only when readback shows new message text in the
+queue or transcript with an empty composer; `typed` means input remains, and
+`unknown` means the screen does not prove delivery. Inspect the included
+`readback` before any retry when `readback_required` is true. Long or truncated
+messages can remain `unknown` even after acceptance. No raw terminal keys are
+needed to queue a busy local Codex session.
+
 Use one dedicated Supervisor window, never the window with the most tabs. The
 `new` creates the tab in the background without selecting it or moving keyboard
 focus. It waits up to 10 seconds for that exact tab's session, refreshing the
@@ -1540,7 +1551,7 @@ the receipt is written. It then executes the selected invocation in zsh,
 without sourcing a personal profile, and retains the pane when it ends. A
 receipt or submit failure preserves that exact terminal for inspection; never
 replay an uncertain launch. Messages use literal targeted input, bracketed
-paste for multiline text, and a separate Return. Recheck and read back as for
+paste for multiline text, and the shared submission/readback route above. Recheck and read back as for
 iTerm; `--verified-target` still attests prompt/input inspection.
 
 When adapting a private trial launcher, retain its token checks, command and

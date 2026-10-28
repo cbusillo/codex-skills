@@ -388,7 +388,20 @@ async def operate(args):
             terminal.send_keys(row["pane_id"], "C-u")
         else:
             text = args.text_file.read_text(encoding="utf-8") if args.text_file else args.text
-            await terminal.send(args.session_id, text, not args.no_submit)
+            row = terminal.select(args.session_id)
+            await terminal.send(args.session_id, text, submit=False)
+
+            async def read_message() -> dict:
+                if terminal.select(args.session_id) != row:
+                    raise iterm_tab.SendFailure(args.session_id, "unknown", "terminal state changed after text")
+                return terminal.read(args.session_id)
+
+            async def press_message(key: str) -> None:
+                if terminal.select(args.session_id) != row:
+                    raise iterm_tab.SendFailure(args.session_id, "not_attempted", "terminal state changed after text")
+                terminal.send_keys(row["pane_id"], "Tab" if key == "\t" else "Enter")
+
+            return await iterm_tab.submit_message(args.session_id, text, not args.no_submit, read_message, press_message)
         return {"session_id": args.session_id, "sent": True, "readback_required": True}
     if args.command == "window":
         # One tmux session is the dedicated Supervisor container; each task is a window.

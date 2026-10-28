@@ -2628,6 +2628,67 @@ class ClaudeTrustTests(unittest.TestCase):
 
 
 class TerminalTests(unittest.TestCase):
+    def test_verified_send_queues_busy_codex_and_reports_observed_delivery(self) -> None:
+        message = "Check the new scope"
+
+        def readback(lines: list[str]) -> dict[str, Any]:
+            screen, styles = iterm_tab.ansi_screen("\n".join(lines))
+            return {"screen": screen, "input_line": iterm_tab.input_line(screen, styles)}
+
+        busy = readback(["• Working", f"› {message}", "  tab to queue message"])
+        queued = readback(["• Working", "• Queued follow-up inputs", f"  ↳ {message}", "› "])
+        submitted = readback([f"› {message}", "• Working", "› "])
+        idle = readback([f"› {message}", "? for shortcuts"])
+        for before, after, submit, delivery, key in (
+            (busy, queued, True, "queued", "\t"),
+            (busy, submitted, True, "submitted", "\t"),
+            (idle, submitted, True, "submitted", "\r"),
+            (busy, busy, True, "typed", "\t"),
+            (busy, busy, False, "typed", None),
+            (busy, readback(["no visible prompt"]), True, "unknown", "\t"),
+            (readback(["• Queued follow-up inputs", f"  ↳ {message}",
+                       f"› {message}", "tab to queue message"]), queued, True, "unknown", "\t"),
+        ):
+            with self.subTest(delivery=delivery, key=key):
+                read = AsyncMock(side_effect=[before, after])
+                press = AsyncMock()
+                result = asyncio.run(iterm_tab.submit_message("exact", message, submit, read, press))
+                self.assertEqual(result["delivery"], delivery)
+                self.assertEqual(result["readback_required"], delivery in {"typed", "unknown"})
+                if key is None:
+                    press.assert_not_awaited()
+                else:
+                    press.assert_awaited_once_with(key)
+
+    def test_verified_iterm_send_reads_and_queues_through_same_target(self) -> None:
+        message = "Check the new scope"
+        terminal = SimpleNamespace(session_id="exact", async_send_text=AsyncMock())
+        app = SimpleNamespace(terminal_windows=[SimpleNamespace(tabs=[SimpleNamespace(sessions=[terminal])])])
+        args = argparse.Namespace(command="send", session_id="exact", text=message, text_file=None,
+                                  verified_target=True, no_submit=False)
+        snapshots = iter(([f"› {message}", "tab to queue message"],
+                          ["• Queued follow-up inputs", f"  ↳ {message}", "› "]))
+
+        async def screen() -> SimpleNamespace:
+            lines = next(snapshots)
+            return SimpleNamespace(number_of_lines=len(lines), line=lambda i: SimpleNamespace(
+                string=lines[i], string_at=lambda x: lines[i][x],
+                style_at=lambda _x: SimpleNamespace(faint=False, inverse=False)))
+
+        terminal.async_get_screen_contents = screen
+        result = asyncio.run(iterm_tab.operate(app, args))
+        self.assertEqual(result["delivery"], "queued")
+        self.assertEqual([call.args[0] for call in terminal.async_send_text.await_args_list], [message, "\t"])
+
+    def test_verified_send_read_failure_preserves_partial_delivery(self) -> None:
+        press = AsyncMock()
+        with self.assertRaises(iterm_tab.SendFailure) as caught:
+            asyncio.run(iterm_tab.submit_message("exact", "message", True,
+                AsyncMock(side_effect=RuntimeError("read failed")), press))
+        press.assert_not_awaited()
+        self.assertTrue(caught.exception.detail["text_sent"])
+        self.assertTrue(caught.exception.detail["readback_required"])
+
     def test_account_launch_label_preserves_exec_and_does_not_escape_a_returning_worker(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
