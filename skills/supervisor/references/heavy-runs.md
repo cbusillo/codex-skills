@@ -118,7 +118,7 @@ move execution off this host behind this same `--manifest` / `--evidence`
 interface. Preserve queueing, resource limits and lifetime cleanup. The runner's
 availability is the trigger, not a new staffing label or another comment protocol.
 
-An operator can set `executor` to a command argv array in the existing host
+An agent can set `executor` to a command argv array in the existing host
 settings file. The same entrypoint validates the manifest, then replaces its
 process with that adapter and absolute `--manifest` / `--evidence` paths.
 It creates no local queue or Docker resources and has no local fallback if the
@@ -141,6 +141,6 @@ are used only for workstation execution.
 Private adapters can use `run(..., prepare=..., complete=...)` from the same
 helper. Preparation runs after admission and predecessor reconciliation;
 evidence delivery runs after cleanup and receipt creation, while the same slot
-is still held. Keep all transfer children within that owner and preserve the
+is still held. Keep all transfer children within that process and preserve the
 slot descriptor for Docker operations. This keeps staging and collection from
 overlapping another execution without adding a scheduler.
