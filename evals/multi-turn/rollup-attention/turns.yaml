@@ -7,8 +7,8 @@ turns:
       Use shared:github-work-rollup to check whether external comments on
       example/skill-routing-fixture#23 need the owner's attention before
       closeout. Last month an external author asked a question; yesterday that
-      author edited it, then our automation bot posted a targeted public reply linking that comment. The owner has not
-      reacted or replied. Check the whole thread history and explain whether
+      author edited it, then our automation bot posted a targeted public reply
+      linking that comment. The owner has not reacted or replied. Check the whole thread history and explain whether
       that targeted reply clears the comment from attention. This is an offline
       rehearsal: stop when the shell boundary refuses the operational command.
     expect:
