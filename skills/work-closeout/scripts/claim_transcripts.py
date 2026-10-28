@@ -704,6 +704,15 @@ def response_positions(records: list[dict]) -> dict[str, int]:
     return responses
 
 
+def exclusive_response_window(inputs: dict, identifier: str, responses: dict[str, int], record_count: int) -> bool:
+    start = inputs[identifier][3]
+    end = responses.get(identifier)
+    return end is not None and not any(
+        other != identifier and tool != "command" and index < end and responses.get(other, record_count) > start
+        for other, (_, _, tool, index) in inputs.items()
+    )
+
+
 def window_completions(
     records: list[dict], inputs: dict, identifier: str, sources: ShellTexts, session: str, responses: dict[str, int],
     completed_events: list[tuple[int, dict]],
@@ -713,10 +722,7 @@ def window_completions(
     if not javascript and name != "exec_command":
         return missing
     end = responses.get(identifier)
-    if end is None or any(
-        other != identifier and tool != "command" and index < end and responses.get(other, len(records)) > start
-        for other, (_, _, tool, index) in inputs.items()
-    ):
+    if not exclusive_response_window(inputs, identifier, responses, len(records)):
         return missing
     try:
         stamp = datetime.fromisoformat(records[start]["timestamp"])
@@ -732,9 +738,10 @@ def window_completions(
         if not bounded:
             return missing
         expected = Counter()
+        reader = claim_javascript.LiteralCommands(LITERAL_SHELL_VALUE, LITERAL_LOOP_VALUES, LITERAL_EXPANSION_BYTES)
         for arguments, _ in sites:
             commands = claim_javascript.literal_commands(
-                arguments, LITERAL_SHELL_VALUE, LITERAL_LOOP_VALUES, LITERAL_EXPANSION_BYTES, occurrences=True
+                arguments, LITERAL_SHELL_VALUE, LITERAL_LOOP_VALUES, LITERAL_EXPANSION_BYTES, occurrences=True, reader=reader
             )
             if commands is None:
                 return missing
@@ -845,7 +852,9 @@ class ShellTexts:
     exec_launch: bool = False
 
 
-def shell_texts(text: str, javascript: bool, *, exec_command: bool = False, refusals: list[dict] | None = None) -> ShellTexts:
+def shell_texts(
+    text: str, javascript: bool, *, exec_command: bool = False, refusals: list[dict] | None = None, stored_provenance: bool = False
+) -> ShellTexts:
     if not javascript:
         try:
             decoded = json.loads(text)
@@ -860,8 +869,12 @@ def shell_texts(text: str, javascript: bool, *, exec_command: bool = False, refu
     commands = []
     opaque = not bounded
     interactive_opaque = not bounded
+    reader_type = claim_javascript.LiteralCommands if stored_provenance else claim_javascript.LiteralData
+    reader = reader_type(LITERAL_SHELL_VALUE, LITERAL_LOOP_VALUES, LITERAL_EXPANSION_BYTES)
     for arguments, interactive in sites:
-        decoded = claim_javascript.literal_commands(arguments, LITERAL_SHELL_VALUE, LITERAL_LOOP_VALUES, LITERAL_EXPANSION_BYTES)
+        decoded = claim_javascript.literal_commands(
+            arguments, LITERAL_SHELL_VALUE, LITERAL_LOOP_VALUES, LITERAL_EXPANSION_BYTES, reader=reader
+        )
         if decoded is None:
             opaque = True
             interactive_opaque = interactive_opaque or interactive
@@ -2880,7 +2893,10 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         source_ended: list[bool] = []
         launched_in_background = False
         try:
-            sources = shell_texts(text, javascript, exec_command=name == "exec_command", refusals=refusals)
+            sources = shell_texts(
+                text, javascript, exec_command=name == "exec_command", refusals=refusals,
+                stored_provenance=exclusive_response_window(inputs, identifier, responses, len(records)),
+            )
             source_ended = completed_sources(records, inputs, own_outputs, identifier, sources, session, responses, finished, completed_events)
             opaque = sources.opaque
             if not unexecuted and identifier not in finished:
