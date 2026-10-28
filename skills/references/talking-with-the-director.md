@@ -64,8 +64,8 @@ When asking, follow [Director Questions](#director-questions).
 
 - Record a `Director decision:` as the link to the question it answers, when
   one exists, and the Director's exact operative answer, including every
-  condition, limit and scope, with nothing after the quote. Omit only private
-  commentary that does not change the answer from audience-visible records;
+  condition, limit and scope, with nothing after the quote. In audience-visible
+  records, omit only private commentary that does not change the answer;
   retain it only in an authorized private destination when needed.
   When acting on a decision, quote it with its link, not its Q ID alone.
 - Every new question has a shared-counter Q ID in chat and on GitHub.

@@ -522,7 +522,7 @@ installed local helper bindings.
 - A healthy deployment does not establish a qualified release candidate. Before
   reporting release readiness, match testing's `target.artifact` and observed
   runtime identity from `product-environment-read` to the exact candidate, and
-  read its existing qualification and
+  read its existing qualification evidence through `product-promotion-status-read` and
   [release-review evidence](https://github.com/cbusillo/launchplane/blob/main/docs/release-review.md).
   Report UNKNOWN when the candidate cannot be matched. Ordinary engineering
   merges do not wait for release qualification or a per-issue return check.
