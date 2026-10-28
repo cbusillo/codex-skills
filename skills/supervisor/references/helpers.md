@@ -1382,11 +1382,11 @@ Neither this line nor a release alone clears other holds or claim holders, inclu
 the cross-record source's current claims. Numeric IDs select claims on the
 anchor itself; use the full issue-comment URL for another source record.
 Target waits remain authoritative; a source's missing legacy wait record
-does not add a launch hold beyond the worker's existing claim route. Record a resolved wait or
-verified absence on a legacy record with `gh-plan.py wait
-<issue> --clear --evidence <resolution>`, then launch again. Missing anchor
-lines keep existing PR-only, lead and other launch routes; the automatic check
-covers explicit issue anchors. Workers claim independently after launch.
+does not add a launch hold beyond the worker's existing claim route. Follow
+the [decision and wait reconciliation step](../SKILL.md#the-pattern) and
+[wait-record contract](../../github/references/cli-reference.md#planning-claim).
+Missing anchor lines keep existing PR-only, lead and other launch routes; the
+automatic check covers explicit issue anchors. Workers claim independently after launch.
 An execution anchor with stale, done or unstatused scope needs its existing
 scope reconciliation before dispatch. Before giving a fresh assignment to an
 idle session through `send` or `queue`, review its current anchor state under

@@ -497,8 +497,9 @@ current default-branch checkout to read its product section.
    another launch, an exact claim release or a newer timestamp alone does not
    clear the other holds. Do not split a child just to redispatch the same held
    work. Read-only work answering a wait can proceed without claiming it;
-   its ownership check still runs. Record a resolved wait with `gh-plan.py wait
-   <issue> --clear --evidence <resolution>`. For retained delivery, put `Resume from:
+   its ownership check still runs. Reconcile waits through
+   [wait records](../github/references/cli-reference.md#planning-claim).
+   For retained delivery, put `Resume from:
    <same-issue claim comment ID or another source's full issue-comment URL>`
    on its own line. Require the authored release and
    a qualified handoff to exempt current artifacts; the worker still uses
@@ -514,8 +515,11 @@ current default-branch checkout to read its product section.
    for deciding what reaches the Director and presenting the queue. The Director
    answers in chat, Discord, or on GitHub. The
    Supervisor records the answer as a `Director decision:` comment on that issue
-   under those shared rules and points
-   the session at it. It records only what the Director said. Briefs accept a decision recorded by the
+   under those shared rules. Before dispatching work, reconcile each structured
+   wait the decision ends under [wait records](../github/references/cli-reference.md#planning-claim)
+   and [Status Labels](../github-plan/SKILL.md#status-labels),
+   linking that decision as evidence and preserving every unresolved wait.
+   Then point the session at it. Briefs accept a decision recorded by the
    Supervisor or a direction session, not only one posted from the Director's
    own login. On an escalation, it leaves the `direction` label in place; the
    weekly direction audit judges the decision and removes it.
@@ -558,6 +562,9 @@ current default-branch checkout to read its product section.
    with `oq.py OWNER/REPO#ISSUE --owner OWNER --decision-author TRUSTED_BOT`
    at each check and register new questions
    under the same rules; report an unreadable anchor as a coverage gap.
+   For queued questions deferred until a stated event, recheck the condition in
+   the question or wait record at each check; when met, present the existing
+   question under the shared queue rules.
    Read the latest stranded-work digest's
    `supervisor_next_action` list, oldest first: do the Supervisor-only steps,
    rewrite the rest to name the next agent and its step, or hand a batch to a
@@ -671,6 +678,9 @@ Use each Track's `closure_review` at this same check under the
 [milestone contract](../github-plan/references/milestones.md).
 
 ## Local State
+
+Resolve scratch and recovery destinations to absolute, task-owned paths before
+writing, so a working-directory change cannot redirect them.
 
 Keep locally only what GitHub cannot rebuild:
 

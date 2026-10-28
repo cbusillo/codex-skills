@@ -508,16 +508,24 @@ installed local helper bindings.
   `null`, never an empty all-clear. `other_warning_count` counts lane warnings
   whose detail is absent from topology warnings, matching the sidebar's separate
   warning branch without exposing prose. Missing warning inputs remain unknown.
-  This read exposes red evidence; it cannot settle the complete amber/green
-  state, which also needs the sidebar's placement, public-observation and
-  applicability inputs. Verify green with complete canonical sidebar data.
+  Passing health checks and verified runtime identity alone do not establish a
+  green product. This bounded read exposes red evidence; complete amber/green
+  state also needs the sidebar's placement, public-observation and applicability
+  inputs. Verify green with complete canonical sidebar data, including incidents,
+  TLS and product warnings.
   Route-diagnostic warning codes remain route-change evidence and are excluded
   by the sidebar's `healthWarnings` rule; their severity alone is not a color.
-  Passing checks and identity alone never establish green. Preserve unknown
-  and truncated results.
+  Preserve unknown and truncated results.
   Incident summaries, warning detail, certificate contents, URLs and other
   topology fields are omitted. The helper reports evidence, not a second color
   algorithm or authority to clear an incident.
+- A healthy deployment does not establish a qualified release candidate. Before
+  reporting release readiness, match testing's `target.artifact` and observed
+  runtime identity from `product-environment-read` to the exact candidate, and
+  read its existing qualification evidence through `product-promotion-status-read` and
+  [release-review evidence](https://github.com/cbusillo/launchplane/blob/main/docs/release-review.md).
+  Report UNKNOWN when the candidate cannot be matched. Ordinary engineering
+  merges do not wait for release qualification or a per-issue return check.
 - `product-activity-read --product` returns up to 50 events, newest first, each
   with type, lane, action, status, time, title, summary and up to 10 record
   links; `events_truncated` says when more were returned.

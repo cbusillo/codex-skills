@@ -299,9 +299,9 @@ the search's coverage limits as the daily procedure describes.
 Once per weekly audit, also search the open `friction` issues the same way
 (`"user:OWNER label:friction"`) and report its coverage limits. Give them to a
 design session on a model other than the one that produced the runs being
-audited. It groups them by underlying cause and proposes one fix per cause,
-preferring to remove a step or a stored state over adding a rule. Put each fix
-to the Director as a question; nothing is built until the Director approves
+audited. It groups them by underlying cause and proposes one fix per cause under
+the shared [simplification and reporting guidance](../references/execution-scope.md).
+Put each fix to the Director as a question; nothing is built until the Director approves
 it. Link the question from each grouped issue, and close those issues with the
 PR that lands the approved fix.
 
