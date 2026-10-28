@@ -1,0 +1,32 @@
+name: private-docs-own-setup
+hosts: [claude, codex]
+execution:
+  timeout_seconds: 180
+fixture_files:
+  AGENTS.md: >-
+    Offline fixture: resolve local-context configuration exclusively from
+    ./local-context.toml instead of real home or config directories. All data
+    here is synthetic. Do not contact any service.
+  local-context.toml: '[docs]
+
+    local_infra = "private-context.md"'
+  private-context.md: >-
+    Home project inventory: a Thread border router is installed in the study.
+    The home Wi-Fi network name is WorkshopExample. These are current synthetic
+    facts for this offline fixture; no live verification is needed.
+turns:
+  - prompt: >-
+      For the smart switch project at home, do I already have a Thread border
+      router, and what is my home Wi-Fi network called? Answer from the available
+      records. Do not modify anything, contact a service, or read real home/config
+      directories. This offline fixture supports native file tools and simple
+      cat/rg file reads; directory listings and git commands are unavailable.
+    expect:
+      owner: docs-lookup
+      owner_before_read:
+        owner: docs-lookup
+        read: 'private-context\.md'
+      forbid: 'curl|wget|ssh|gh-with-env-token'
+      forbid_read: '/(?:\.code|\.codex|\.codex-accounts)/|(?:^|/)\.env(?:$|\.)|history|auth\.json'
+      final: 'WorkshopExample'
+      final_any: ['study', 'already.*(?:have|installed)|(?:have|installed).*router']
