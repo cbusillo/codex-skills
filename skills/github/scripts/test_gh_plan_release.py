@@ -975,13 +975,16 @@ class ReleaseTests(ReleaseHarness):
         self.assertEqual(subprocess.run([*prefix, "branch", "--list", artifact["branch"]],
                                        capture_output=True, text=True, check=True).stdout.strip(), artifact["branch"])
 
-    def test_termination_successor_can_continue_the_preserved_branch(self):
+    def test_termination_successor_uses_a_new_branch_and_preserves_unpublished_work(self) -> None:
         self.termination_setup()
         self.run_release()
         artifact = self.termination_record["retained_artifacts"][0]
-        self.f.args.branch = artifact["branch"]
         self.f.inventory["worktrees"] = [{"branch": artifact["branch"], "path": artifact["worktree"]}]
-        self.successor()
+        with patch.object(self.f, "read_api", side_effect=self.api):
+            self.f.run_claim()
+        result: dict[str, Any] = self.f.emitted.call_args.args[0]
+        self.assertTrue(result["ok"])
+        self.assertNotEqual(result["claim"]["branch"], artifact["branch"])
         self.assertEqual((Path(artifact["worktree"]) / "unfinished.txt").read_text(), self.uncommitted_source)
 
     def test_unrelated_detached_worktree_cannot_borrow_the_source_branch(self):

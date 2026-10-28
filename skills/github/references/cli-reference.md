@@ -1272,8 +1272,8 @@ Search claim comments for `Lease takeover:` to count crash takeovers.
 An exact authored release also establishes ended claim ownership. Its retained
 branches, worktrees and closed-PR artifacts no longer block an independent claim;
 the result names them in `retained_artifacts` and leaves them intact. Automatic reconciliation grants no
-artifact adoption: use a new task branch, or the existing explicit `--resume-from`
-source-recovery route. Open PRs keep their separate handoff
+artifact adoption: use a new task branch. For retained PRs, use the explicit
+`--resume-from` source-recovery route. Open PRs keep their separate handoff
 and wait checks. Unreleased or uncertain holders refuse with `coordination`
 entries identifying the worker, native session, branch and work-record contact
 route. No attestation, release command or artifact retirement is required for
@@ -1651,31 +1651,24 @@ cannot select a source record.
 This flag supplies no cleanup or takeover authority: apply Choose Work's
 verified-handoff and preservation rules before passing it.
 
-For pushed WIP **without a PR**, use that existing same-record resume-only
-route. Native-parent and cross-repository handoffs still require retained-PR
-proof; they cannot adopt no-PR WIP through that route.
-Verify the source session has finished, its exact authored release, that the
-handoff retains no PR at all, and the preserved branch's live remote head and
-local state before claiming.
-Keep unpublished changes intact. Pass the source claim's exact branch as
-`--branch` and its released claim ID as `--resume-from`. After confirmed success,
-continue the preserved linked worktree under the host's worktree policy. Do not create a
-fresh task branch or fabricate a PR to meet the retained-PR contract.
-This uses the existing source-recovery exception, not a second adoption path.
-Historical PR references alone leave this same-record recovery route available;
-current PR ownership, artifacts and peers still determine admission.
-New same-branch successor claims record `resume_from` even without retained PRs.
-When several released claims name that preserved branch, the helper checks their
-custody together on each readback: exact same-author releases, strictly
-non-overlapping claim periods, no retained-PR or refresh lineage, and any recorded
-source must name an earlier claim in that branch's history. This includes older
-claims without source lineage and later released partial attempts, so the next
-native session can use the existing selector after a failed claim is released.
-Foreign authors, unreleased or lease-only history, overlapping periods and
-unrelated source lineage still refuse. A legacy partial claim from the current
-worker/session renews without rewriting its record.
-Ownership, live peers, issue waits, native blockers and other retained artifacts
-keep their checks; a refusal stops the action for reconciliation.
+For released, clean, pushed work **without a PR**, verify the source session
+has finished, its exact authored release, and that no PR now retains the work.
+Compare the live remote branch head with the local HEAD and check for unique
+local state. Record the exact verified pushed SHA in the issue handoff. On that
+same issue, make an ordinary claim for a new task branch without `--resume-from`,
+then create its linked worktree at that SHA:
+
+```bash
+uv run <skill-dir>/scripts/gh-plan.py --repo OWNER/REPO claim <issue> \
+  --worker <worker-token> --session <native-session-id> \
+  --branch work/<new-task-slug> --next-action "Continue the pushed work"
+<catalog>/skills/github/scripts/dev-worktree /absolute/repository <new-task-slug> <verified-pushed-sha>
+```
+
+Create the worktree only after confirmed claim success. Keep the old worktree
+until the existing preservation checks permit retirement; preserve unpublished
+or unique local state. Never delete its remote branch automatically. Native-parent
+and cross-repository handoffs still require retained-PR proof.
 
 For an authorized **ordinary successor** whose next step precedes PR refresh,
 use the canonical open planning issue in the PRs' repository:
@@ -1889,8 +1882,7 @@ continuation: the same worker in the same exact native session may select the
 unique open PR head attested by its release, different from the original source
 branch. All exposed native bindings must agree with that session, and the same
 attested PR must stay open with that head through both readbacks. A different
-native session still uses a fresh branch. This exception does not replace the
-same-record no-PR original-branch recovery above. From the new task branch,
+native session still uses a fresh branch. From the new task branch,
 push explicitly to the verified existing PR head
 with a normal fast-forward refspec (`task-branch:pr-head-branch`) under the
 brief's authority; never check out the PR branch in two worktrees or force-push.
