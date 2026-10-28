@@ -2200,6 +2200,10 @@ Create the worktree only after confirmed claim success. Check for unique local
 state before retiring the old worktree under the existing preservation rules;
 never delete the remote branch automatically. Use no `Resume from:` line in
 this no-PR brief.
+For dirty or unpushed crash state, follow
+[Planning: Claim's preservation step](../../github/references/cli-reference.md#planning-claim)
+before choosing the successor's pushed SHA; retain the original worktree until
+that step is complete.
 
 For a different native session with a retained-PR handoff, claim a **new task
 branch**, separate from every retained PR/source branch. The existing retained-handoff route preserves the

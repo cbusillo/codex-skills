@@ -1670,6 +1670,15 @@ Create the worktree only after confirmed claim success. Keep the old worktree
 until the existing preservation checks permit retirement; preserve unpublished
 or unique local state. Never delete its remote branch automatically. Native-parent
 and cross-repository handoffs still require retained-PR proof.
+For unpublished work left by a crash, first use the existing
+[pushed-branch parking procedure](../../work-closeout/references/parking-and-handoff.md#cleanup-preservation-routes)
+to checkpoint publishable source under the repository's normal commit/push
+authority, verify its remote SHA and record the handoff. If publication is not
+authorized or appropriate, preserve the original worktree under that reference's
+local-only rules and record the remaining preservation step. Do not substitute
+an older pushed head for the unpublished work. A legacy same-branch claim still
+active at upgrade may checkpoint under its existing claim, then release that
+exact claim and continue through the ordinary new-branch procedure.
 
 For an authorized **ordinary successor** whose next step precedes PR refresh,
 use the canonical open planning issue in the PRs' repository:
@@ -1779,9 +1788,9 @@ issue can still support independently authorized work on a new branch, without
 `--resume-from` or retained source assets. Its own ownership,
 waits and blockers must be clear; malformed lineage metadata still refuses.
 
-For retained-PR recovery, unreadable current or historical children (including a 403 or ambiguous 404),
-and malformed child history (`claim_child_history_invalid`), block both
-parent-to-child handoffs and plain same-record `--resume-from` on the source.
+Unreadable current or historical children (including a 403 or ambiguous 404),
+and malformed child history (`claim_child_history_invalid`), block parent-to-child
+handoffs and any `--resume-from` on the source, including retained-PR recovery.
 Missing evidence is not proof that a child's source ownership ended. Restore
 visibility or valid native history through the existing administrative process
 before retrying resume; do not grant access or skip the record to pass the gate.

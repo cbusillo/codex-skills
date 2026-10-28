@@ -1683,32 +1683,48 @@ class ClaimTests(unittest.TestCase):
                 if not resume:
                     self.args.resume_from = None
                 artifacts = copy.deepcopy(self.inventory)
-                with self.assertRaises(PLAN.PlanError):
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_ended_branch_reused")
                 self.assert_no_writes()
                 self.assertEqual(self.inventory, artifacts)
 
     def test_no_pr_branch_refusal_preserves_live_holder_coordination(self) -> None:
-        source = self.no_pr_resume_fixture()
-        self.args.branch = source["branch"]
-        rival = {**OTHER, "worker": "rival", "session": "rival-native"}
-        self.compete(rival)
-        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-            self.run_claim()
-        self.assertEqual(caught.exception.code, "claim_conflict")
-        self.assertEqual(caught.exception.payload["coordination"][0]["session"], rival["session"])
-        self.assert_no_writes()
+        for resume, prior in product((False, True), (False, True)):
+            with self.subTest(resume=resume, prior=prior):
+                self.setUp()
+                source = self.no_pr_resume_fixture()
+                self.args.branch = source["branch"]
+                if not resume:
+                    self.args.resume_from = None
+                if prior:
+                    earlier = {**source, "worker": "earlier", "session": "earlier-native", "claimed_at": "2026-09-30T00:00:00Z"}
+                    self.comments[:0] = [
+                        {"id": 88, "body": CLAIM.marker(earlier), "user": {"login": TEST_BOT}, "created_at": earlier["claimed_at"]},
+                        {"id": 89, "body": "Released claim 88", "user": {"login": TEST_BOT}, "created_at": "2026-09-30T01:00:00Z"},
+                    ]
+                rival = {**OTHER, "worker": "rival", "session": "rival-native"}
+                self.compete(rival)
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assertEqual(caught.exception.payload["coordination"][0]["session"], rival["session"])
+                self.assert_no_writes()
 
     def test_ordinary_no_pr_successor_starts_at_verified_pushed_sha(self) -> None:
         source = self.no_pr_resume_fixture()
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         repository, remote = (root / name for name in ("source", "remote.git"))
+        environment = {key: value for key, value in os.environ.items() if not key.startswith(("GIT_", "DEV_WORKTREE_"))}
+        environment.update(HOME=str(root), XDG_CONFIG_HOME=str(root / "config"),
+                           GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
 
         def git(*arguments: str) -> str:
-            return subprocess.run(["git", *arguments], check=True, capture_output=True, text=True).stdout.strip()
+            return subprocess.run(["git", *arguments], env=environment, check=True, capture_output=True, text=True).stdout.strip()
 
         git("init", "--bare", str(remote))
         git("init", "-b", source["branch"], str(repository))
+        git("-C", str(repository), "config", "core.hooksPath", os.devnull)
         (repository / "work.txt").write_text("Preserved implementation\n")
         git("-C", str(repository), "add", "work.txt")
         git("-C", str(repository), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
@@ -1718,7 +1734,6 @@ class ClaimTests(unittest.TestCase):
         pushed_sha = git("-C", str(repository), "rev-parse", "HEAD")
         self.assertEqual(git("ls-remote", str(remote), f"refs/heads/{source['branch']}").split()[0], pushed_sha)
         self.assertFalse(git("-C", str(repository), "status", "--porcelain"))
-        self.comments[-1]["body"] += f"\nVerified pushed source SHA: {pushed_sha}"
         self.inventory["worktrees"][0]["path"] = str(repository)
         artifacts = copy.deepcopy(self.inventory)
         self.args.resume_from = None
@@ -1726,8 +1741,10 @@ class ClaimTests(unittest.TestCase):
         output = self.emitted.call_args.args[0]
         self.assertIn("metadata_readback", output["completed_steps"])
         self.assertNotIn("resume_from", output["claim"])
-        successor = dev_worktree.create(str(repository), output["claim"]["branch"].removeprefix("work/"), pushed_sha,
-                                        root / "worktrees")
+        with patch.dict(os.environ, environment, clear=True):
+            successor = dev_worktree.create(str(repository), output["claim"]["branch"].removeprefix("work/"), pushed_sha,
+                                            root / "worktrees")
+        self.assertEqual(git("-C", str(successor), "branch", "--show-current"), output["claim"]["branch"])
         self.assertEqual(git("-C", str(successor), "rev-parse", "HEAD"), pushed_sha)
         self.assertEqual((successor / "work.txt").read_text(), (repository / "work.txt").read_text())
         self.assertEqual(git("ls-remote", str(remote), f"refs/heads/{source['branch']}").split()[0], pushed_sha)

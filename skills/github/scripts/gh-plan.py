@@ -2823,12 +2823,13 @@ def claim_once(args: argparse.Namespace) -> None:
         inventory = phase["inventory"]
         ended_owners = ended_ownership(current_comments, inventory)
         branches = set(inventory["local_branches"]) | set(inventory["remote_branches"]) | {t["branch"] for t in inventory["worktrees"]}
-        if any(entry["branch"] == claim["branch"] and entry["branch"] in branches
-               and entry["claim_id"] != args.resume_from for entry in ended_owners):
-            raise PlanError("Ended ownership requires a new task branch; preserve the retained source branch and worktree")
         conflicts, owned = github_plan_claim.discussion_evidence(
             current_status, current_comments, claim, resume_from=args.resume_from,
             ended_claims={entry["claim_id"] for entry in ended_owners})
+        phase["branch_error"] = (ClassifiedPlanError("claim_ended_branch_reused",
+            "Ended ownership requires a new task branch; preserve the retained source branch and worktree")
+            if any(entry["branch"] == claim["branch"] and entry["branch"] in branches
+                   and entry["claim_id"] != args.resume_from for entry in ended_owners) else None)
         return conflicts, owned
 
     def check_wait(waiting_issue: dict[str, Any], waiting_status: str, *, target: bool = False,
@@ -3195,7 +3196,7 @@ def claim_once(args: argparse.Namespace) -> None:
                     raise github_plan_claim.ClaimProofError("claim_handoff_pr_required",
                         "Released work requires a qualified source-authored retained-PR handoff")
                 if claim["branch"] == record["branch"]:
-                    raise github_plan_claim.ClaimProofError("claim_resume_branch_reused",
+                    raise github_plan_claim.ClaimProofError("claim_ended_branch_reused",
                         "Ended ownership requires a new task branch; preserve the retained source branch and worktree")
                 return None
             if handoff is None:
@@ -3324,6 +3325,8 @@ def claim_once(args: argparse.Namespace) -> None:
 
     def handoff_preflight(current_comments: list[dict[str, Any]], current_status: str, prepared) -> set[str]:
         nonlocal retained_waits
+        if phase["branch_error"] is not None:
+            raise phase["branch_error"]
         if prepared is None:
             check_phase_peers(inventory)
             return set()

@@ -527,7 +527,7 @@ class ReleaseTests(ReleaseHarness):
                   "message": {"content": [{"type": "text", "text": "Still working"}]}}])
         transcript.write_text("".join(json.dumps(row) + "\n" for row in rows))
         os.utime(transcript, (release.stamp(at).timestamp(),) * 2)
-        self.termination_record = {
+        self.termination_record: dict[str, Any] = {
             "session_id": "session-b", "harness": harness, "pid": 12345, "tty": "ttys123",
             "host": "source-host", "transcript": str(transcript), "transcript_roots": [str(root)],
             "tmux_socket": "supervisor", "tmux_session_id": "tmux:supervisor:" + "a" * 32,
