@@ -69,7 +69,7 @@ class SendFailure(ValueError):
                        "next_action": "Read the exact session before any next send. If unsubmitted, "
                                       "clear with verified-target clear (Ctrl-U) and verify empty input."}
         text_outcome = "text was sent" if text_sent else "text send outcome unknown"
-        super().__init__(text_outcome + "; Return " + submission + "; input may still contain text")
+        super().__init__(text_outcome + "; submission " + submission + "; input may still contain text")
 
 
 def input_line(lines, styles):
@@ -472,6 +472,7 @@ async def submit_message(
     read: Callable[[], Awaitable[dict[str, Any]]],
     press: Callable[[str], Awaitable[None]],
 ) -> dict[str, Any]:
+    submission = "not_attempted"
     try:
         await asyncio.sleep(0.4)
         before = await read()
@@ -483,23 +484,24 @@ async def submit_message(
                     and any(re.search(r"\btab to queue(?: message)?\b", line) for line in footer)):
                 key = "\t"
         if submit:
+            submission = "unknown"
             await press(key)
             await asyncio.sleep(0.4)
         after = await read() if submit else before
     except SendFailure:
         raise
     except Exception as error:
-        raise SendFailure(identity, "unknown", "message submission or readback failed") from error
+        raise SendFailure(identity, submission, "message submission or readback failed") from error
     delivery = "unknown"
     current = after["input_line"]
     if current["style"] in {"non_dim", "mixed"} and current["text"]:
         delivery = "typed"
     elif current["style"] in {"empty", "dim"}:
-        normalized = " ".join(text.split())
+        normalized = r"\s+".join(re.escape(word) for word in text.split())
         previous_sections = message_sections(before)
         for index, section in enumerate(message_sections(after)):
             prefix = r"[›❯>]" if index == 0 else "↳"
-            pattern = rf"(?m)^{prefix} {re.escape(normalized)}$"
+            pattern = rf"(?m)^{prefix} {normalized}(?=\n|$)"
             if len(re.findall(pattern, section)) > len(re.findall(pattern, previous_sections[index])):
                 delivery = "submitted" if index == 0 else "queued"
     return {"session_id": identity, "sent": True, "delivery": delivery,

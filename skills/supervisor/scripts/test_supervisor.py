@@ -2646,6 +2646,9 @@ class TerminalTests(unittest.TestCase):
             (busy, busy, True, "typed", "\t"),
             (busy, busy, False, "typed", None),
             (busy, readback(["no visible prompt"]), True, "unknown", "\t"),
+            (busy, readback(["• Queued follow-up inputs", "  ↳ Check the", "    new scope", "› "]),
+             True, "queued", "\t"),
+            (busy, readback(["› Check the", "  new scope", "• Working", "› "]), True, "submitted", "\t"),
             (readback(["• Queued follow-up inputs", f"  ↳ {message}",
                        f"› {message}", "tab to queue message"]), queued, True, "unknown", "\t"),
         ):
@@ -2688,6 +2691,7 @@ class TerminalTests(unittest.TestCase):
         press.assert_not_awaited()
         self.assertTrue(caught.exception.detail["text_sent"])
         self.assertTrue(caught.exception.detail["readback_required"])
+        self.assertEqual(caught.exception.detail["submission"], "not_attempted")
 
     def test_account_launch_label_preserves_exec_and_does_not_escape_a_returning_worker(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

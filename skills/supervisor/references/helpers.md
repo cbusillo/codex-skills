@@ -1551,8 +1551,10 @@ the receipt is written. It then executes the selected invocation in zsh,
 without sourcing a personal profile, and retains the pane when it ends. A
 receipt or submit failure preserves that exact terminal for inspection; never
 replay an uncertain launch. Messages use literal targeted input, bracketed
-paste for multiline text, and the shared submission/readback route above. Recheck and read back as for
-iTerm; `--verified-target` still attests prompt/input inspection.
+paste for multiline text, and the shared submission/readback route above.
+Recheck and read back as for iTerm; `--verified-target` still attests prompt/input
+inspection. Target checks ignore animated titles while preserving pane, process,
+TTY and exit-state checks.
 
 When adapting a private trial launcher, retain its token checks, command and
 brief generation, account options and launch logging. Select this backend on

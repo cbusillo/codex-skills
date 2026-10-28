@@ -408,9 +408,9 @@ class PaneParserTests(unittest.TestCase):
                         self.terminal.close(self.identity, ledger)
                     self.assertTrue(all(call.args[0] == "list-panes" for call in calls.call_args_list))
 
-    def test_redraw_refusal_reports_typed_text_without_sending_return(self):
+    def test_replaced_pane_refusal_reports_typed_text_without_sending_return(self):
         row = {"pane_id": "%2", "dead": False, "title": "before"}
-        with patch.object(self.terminal, "select", side_effect=[row, {**row, "title": "redrawn"}]), \
+        with patch.object(self.terminal, "select", side_effect=[row, {**row, "pane_id": "%3"}]), \
                 patch.object(self.terminal, "run") as keys:
             with self.assertRaises(iterm_tab.SendFailure) as caught:
                 asyncio.run(self.terminal.send("exact", "message"))
@@ -799,7 +799,7 @@ while True:
     if queued:
         screen += "• Queued follow-up inputs\r\n  ↳ " + queued + "\r\n"
     screen += "› " + message + "\r\n  tab to queue message"
-    os.write(sys.stdout.fileno(), screen.encode())
+    os.write(sys.stdout.fileno(), ("\x1b]2;busy-" + str(len(message)) + "\x07" + screen).encode())
     key = os.read(sys.stdin.fileno(), 1).decode()
     if key == "\t":
         queued, message = message, ""
