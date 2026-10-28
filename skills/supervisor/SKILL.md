@@ -494,7 +494,7 @@ current default-branch checkout to read its product section.
    in briefs that will not claim. Execution briefs put `Admission: <kind>; <evidence URLs>`
    on one line, naming the kind the worker will claim and each exact admission
    issue or decision-comment URL. The launcher also recognizes the older
-   `Admission for this item:` form; indented context is not admission evidence.
+   `Admission for this item:` form; only the Admission line's own URLs are evidence.
    The shared launcher reuses the claim's admission and wait checks, full status and
    ownership reads before dispatch. After a stopped launch, keep the issue with
    its blocker, wait, claim holder or retained delivery until that fact changes;

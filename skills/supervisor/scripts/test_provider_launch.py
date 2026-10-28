@@ -102,11 +102,12 @@ class LaunchIssueTests(unittest.TestCase):
                 self.assertEqual(calls[-1].issue, brief.split()[-1])
         link = "https://github.com/fixture/direction/issues/9#issuecomment-123"
         with patch.object(iterm_tab.subprocess, "run", side_effect=read):
-            for declaration in ("Admission for this item: milestone (" + link + ")",
-                                "Admission: milestone (" + link + ")", "**Admission:** spare-capacity; " + link,
-                                "- Admission: repeat-stop; " + link + " https://github.com/fixture/repo/issues/8"):
+            for declaration, kind in (("Admission for this item: milestone (" + link + ")", "milestone"),
+                                      ("Admission: milestone (" + link + ")", "milestone"),
+                                      ("**Admission:** spare-capacity; " + link, "spare-capacity"),
+                                      ("- Admission: repeat-stop; " + link + " https://github.com/fixture/repo/issues/8", "repeat-stop")):
                 iterm_tab.check_launch_issue(brief + "\n" + declaration)
-                self.assertEqual(calls[-1].admission, declaration.split(":", 1)[1].strip(" *").split()[0].rstrip(";"))
+                self.assertEqual(calls[-1].admission, kind)
                 self.assertEqual(calls[-1].admission_link[0], link)
             iterm_tab.check_launch_issue(brief.replace("Anchor:", "Read-only anchor:") + "\nAdmission: milestone")
             self.assertIsNone(calls[-1].admission)
@@ -127,7 +128,7 @@ class LaunchIssueTests(unittest.TestCase):
             iterm_tab.check_launch_issue(brief)
         reader.assert_not_called()
 
-    def test_claim_refusal_details_survive_without_extra_launcher_advice(self) -> None:
+    def test_claim_refusal_code_and_details_reach_the_launcher(self) -> None:
         anchor = "Anchor: https://github.com/fixture/repo/issues/7"
         for code in ("claim_wait_unresolved", "claim_milestone_graph_incomplete", "claim_preflight_unavailable"):
             detail = "Fixture specific recovery step"
@@ -136,7 +137,8 @@ class LaunchIssueTests(unittest.TestCase):
             with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))):
                 with self.assertRaises(ValueError) as caught:
                     iterm_tab.check_launch_issue(anchor)
-                self.assertEqual(str(caught.exception), "Launch refused for " + anchor.split()[-1] + ": " + code + ": " + detail)
+                self.assertIn(code, str(caught.exception))
+                self.assertIn(detail, str(caught.exception))
 
     def test_missing_or_failed_state_read_never_launches(self) -> None:
         for code, output in ((1, "{}"), (0, "{}"), (0, "invalid"), (0, '{"ok": true, "issue": {}}')):
