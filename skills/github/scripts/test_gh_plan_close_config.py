@@ -50,7 +50,9 @@ class CloseConfigTests(unittest.TestCase):
     def show_fixture(*, enrichment: Any = None, launch: bool = False, comments_extra: list[dict] | None = None,
                      pulls: list[dict] | None = None, action: str = "Implement export.", resume: int | str | None = None,
                      read_only: bool = False, expired_sessions: set[str] | None = None,
-                     source_comments: list[dict] | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+                     source_comments: list[dict] | None = None, admission: str | None = None,
+                     admission_links: list[str] | None = None, milestone: dict | None = None,
+                     track: dict | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         target = "fixture/target"
         configs = {repo: copy.deepcopy(PLAN.DEFAULT_CONFIG) for repo in ("fixture/local", target)}
         configs[target]["labels"] = {key: f"target:{key}" for key in configs[target]["labels"]}
@@ -59,6 +61,7 @@ class CloseConfigTests(unittest.TestCase):
                  "html_url": f"https://github.com/{target}/issues/7", "user": {"login": "fixture"},
                  "body": f"Original human request.\n## Current Status\nState: Blocked.\nNext action: {action}",
                  "labels": [{"name": names[key]} for key in ("plan", "blocked")]}
+        issue["milestone"] = milestone
         comments: list[dict[str, Any]] = [{"id": 1, "user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker(
             PLAN.github_plan_wait.reviewed(evidence="Target discussion reviewed; no person wait"))}]
         comments.extend(comments_extra or [])
@@ -71,7 +74,11 @@ class CloseConfigTests(unittest.TestCase):
         parent = {**issue, "number": 6}
         with patch.multiple(PLAN, default_repo=Mock(return_value="fixture/local"),
                 load_config=Mock(side_effect=lambda repo, **_: configs[repo]),
-                get_issue=Mock(return_value=("fixture-bot", issue)),
+                api_json=Mock(side_effect=AssertionError("Unexpected API call in read-only show")),
+                get_issue=Mock(side_effect=lambda ref, repo: ("fixture-bot", track if repo == "fixture/direction" else issue)),
+                milestone_direction_repo=Mock(return_value="fixture/direction"),
+                load_direction=Mock(side_effect=lambda repo: "## Milestones\n- `" + ("Launch product" if repo == "fixture/direction" else "Catalog adoption") + "` proves delivery.\n"),
+                milestone_claim_ancestry=Mock(return_value=Mock(nodes=set(), complete=True)),
                 collect_paged_rest_items=Mock(return_value=("fixture-bot", comments)),
                 read_issue_relationships=relationships, wait_authors=Mock(return_value={"fixture"}),
                 claim_snapshot=Mock(return_value=(parent, "", source_comments or [], False)),
@@ -84,7 +91,9 @@ class CloseConfigTests(unittest.TestCase):
             PLAN.cmd_show(PLAN.build_parser().parse_args(["--repo", "fixture/local", "show", "fixture/target#7", "--full",
                                                         *(["--launch-check"] if launch else []),
                                                         *(["--resume-from", str(resume)] if resume else []),
-                                                        *(["--read-only"] if read_only else [])]))
+                                                        *(["--read-only"] if read_only else []),
+                                                        *(["--admission", admission] if admission else []),
+                                                        *[word for link in admission_links or [] for word in ("--admission-link", link)]]))
         return json.loads(output.getvalue()), issue, configs[target]
 
     def test_qualified_show_projects_with_the_target_custom_label_configuration(self) -> None:
@@ -171,6 +180,38 @@ class CloseConfigTests(unittest.TestCase):
             result, _, _ = self.show_fixture(launch=True, pulls=[retained], source_comments=owner_comments,
                 resume="https://github.com/fixture/target/issues/6#issuecomment-2")
             self.assertEqual(result["issue"]["launch_check"]["allowed"], allowed)
+
+    def test_launch_checks_the_claims_milestone_admission_without_writes(self) -> None:
+        for milestone, allowed in ((None, False), ({"title": "Catalog adoption", "state": "open"}, True),
+                                   ({"title": "Catalog adoption", "state": "closed"}, False),
+                                   ({"title": "Unlisted", "state": "open"}, False)):
+            with self.subTest(milestone=milestone):
+                result, _, _ = self.show_fixture(launch=True, admission="milestone", milestone=milestone)
+                check = result["issue"]["launch_check"]
+                self.assertEqual(check["allowed"], allowed)
+                if not allowed:
+                    self.assertEqual(check["error"]["code"], "claim_admission_unlinked")
+        track = {"title": "Track: Launch", "state": "open",
+                 "milestone": {"title": "Launch product", "state": "open"}}
+        link = "https://github.com/fixture/direction/issues/9#issuecomment-123"
+        for state in ("open", "closed"):
+            track["state"] = state
+            result, _, _ = self.show_fixture(launch=True, admission="milestone", admission_links=[link], track=track)
+            self.assertEqual(result["issue"]["launch_check"]["allowed"], state == "open")
+        result, _, _ = self.show_fixture(launch=True, admission="spare-capacity", admission_links=[link])
+        self.assertTrue(result["issue"]["launch_check"]["allowed"])
+        result, _, _ = self.show_fixture(launch=True, read_only=True, admission="milestone")
+        self.assertTrue(result["issue"]["launch_check"]["allowed"])
+
+    def test_launch_reports_the_claim_wait_refusal_even_with_valid_admission(self) -> None:
+        waiting = {"id": 2, "user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker({
+            "version": 1, "state": "waiting", "evidence": "Decision pending", "waits": [
+                {"waiting_for": "Director", "ends_when": "Director decides"}]})}
+        result, _, _ = self.show_fixture(launch=True, admission="spare-capacity", comments_extra=[waiting])
+        check = result["issue"]["launch_check"]
+        self.assertFalse(check["allowed"])
+        self.assertEqual(check["error"]["code"], "claim_wait_unresolved")
+        self.assertEqual(check["error"]["structured_wait"]["state"], "waiting")
 
     def test_public_close_uses_resolved_target_config_and_keeps_overrides(self) -> None:
         for ref, caller in (("fixture/target#7", "fixture/local"),

@@ -1363,7 +1363,18 @@ Single-issue execution briefs include `Anchor: https://github.com/OWNER/REPO/iss
 (or `Anchor and claim:`) on its own line. Before accounts, daemons or terminals,
 both backends run `gh-plan.py show <anchor> --full --launch-check`, reusing
 `show`'s native status and the ownership facts shared with `next`, without its
-source-ranking or delivery-history reads. Active source or
+source-ranking or delivery-history reads. An execution brief's `Admission: <kind>`
+line, with any issue or decision-comment URLs on that line or its indented
+continuation, is passed as `--admission` and repeated `--admission-link` arguments.
+The launch check calls the claim's own admission and wait checks. For example:
+
+```text
+Admission: milestone; https://github.com/OWNER/direction/issues/N
+```
+
+An unlinked milestone refuses with the claim's reason: link the right milestone
+Track or name another admission kind with its decision link. This does not link
+or claim anything on the worker's behalf. Active source or
 operational work can launch; a blocker, structured wait, live
 claim, retained delivery or incomplete read refuses. The existing claim lease
 reader recognizes expiry as a changed ownership fact. No new launch-state record
