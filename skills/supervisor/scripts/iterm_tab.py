@@ -1168,20 +1168,24 @@ def read_launch_text(path: Path) -> str:
 
 
 def check_launch_issue(brief: str) -> None:
-    anchors = re.findall(r"(?mi)^Anchor(?: and claim)?:\s*(https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*)(?=$|[\s).,;])", brief)
+    anchors = re.findall(r"(?mi)^\s*(?:[-*] )?(?:\*\*)?(Read-only anchor|Anchor(?: and claim)?):(?:\*\*)?\s*"
+                         r"(https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*)(?=$|[#\s).,;])", brief)
     if not anchors:
-        if re.search(r"(?mi)^Read-only anchor:\s*https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*(?=$|[\s).,;])", brief):
-            return
         raise ValueError("Brief needs Anchor: <issue URL> for execution, or Read-only anchor: <issue URL> for work that will not claim")
+    resume = re.search(r"(?mi)^Resume from:\s*([1-9]\d*)\s*$", brief)
     helper = Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py"
-    for anchor in dict.fromkeys(anchors):
+    for mode, anchor in dict.fromkeys(anchors):
         repo = "/".join(anchor.split("/")[3:5])
-        result = subprocess.run(["uv", "run", str(helper), "--repo", repo, "show", anchor, "--full", "--launch-check"],
-                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+        argv = ["uv", "run", str(helper), "--repo", repo, "show", anchor, "--full", "--launch-check"]
+        if mode.casefold() == "read-only anchor":
+            argv.append("--read-only")
+        if resume:
+            argv.extend(["--resume-from", resume[1]])
         try:
+            result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
             payload = json.loads(result.stdout)
             check = payload["issue"]["launch_check"] if not result.returncode and payload.get("ok") else {}
-        except (ValueError, KeyError, TypeError) as error:
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as error:
             raise ValueError(f"Launch state unavailable for {anchor}; read its full status before dispatch") from error
         if not check.get("allowed"):
             queue = check.get("queue") or {}

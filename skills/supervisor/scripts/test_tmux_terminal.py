@@ -644,6 +644,7 @@ class TmuxFixture(unittest.TestCase):
     create_window = True
 
     def setUp(self):
+        self.enterContext(patch.object(iterm_tab, "check_launch_issue"))
         # Short private socket directory; Unix socket paths have a length limit.
         self.folder = tempfile.TemporaryDirectory(dir="/tmp", prefix="svtest-")
         self.addCleanup(self.folder.cleanup)
@@ -688,7 +689,7 @@ for line in sys.stdin:
         self.command = self.root / "command"
         self.command.write_text(f"cd {shlex.quote(str(self.root))} && exec {shlex.quote(str(self.agent))}")
         self.brief = self.root / "brief"
-        self.brief_text = "Read-only anchor: https://github.com/fixture/repo/issues/1\ntask's literal $(touch NEVER) `touch NEVER`\nnext\tline" + "\nRules: " + iterm_tab.BRIEF_RULES_URL
+        self.brief_text = "task's literal $(touch NEVER) `touch NEVER`\nnext\tline" + "\nRules: " + iterm_tab.BRIEF_RULES_URL
         self.brief.write_text(self.brief_text)
         self.choice = {"provider": "anthropic", "account_id": "anthropic-ab12",
                        "env": {"CLAUDE_CONFIG_DIR": str(self.root / "account")},

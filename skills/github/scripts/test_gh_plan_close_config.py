@@ -47,14 +47,15 @@ class CloseConfigTests(unittest.TestCase):
 
     @staticmethod
     def show_fixture(*, enrichment: Any = None, launch: bool = False, comments_extra: list[dict] | None = None,
-                     pulls: list[dict] | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+                     pulls: list[dict] | None = None, action: str = "Implement export.", resume: int | None = None,
+                     read_only: bool = False) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         target = "fixture/target"
         configs = {repo: copy.deepcopy(PLAN.DEFAULT_CONFIG) for repo in ("fixture/local", target)}
         configs[target]["labels"] = {key: f"target:{key}" for key in configs[target]["labels"]}
         names = configs[target]["labels"]
         issue = {"repo": target, "number": 7, "state": "open", "title": "Target request",
                  "html_url": f"https://github.com/{target}/issues/7", "user": {"login": "fixture"},
-                 "body": "Original human request.\n## Current Status\nState: Blocked.\nNext action: Implement export.",
+                 "body": f"Original human request.\n## Current Status\nState: Blocked.\nNext action: {action}",
                  "labels": [{"name": names[key]} for key in ("plan", "blocked")]}
         comments = [{"id": 1, "user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker(
             PLAN.github_plan_wait.reviewed(evidence="Target discussion reviewed; no person wait"))}]
@@ -74,7 +75,9 @@ class CloseConfigTests(unittest.TestCase):
                 patch.object(github_work_graph, "ownership_inventory", return_value={
                     "complete": True, "pulls": pulls or [], "coverage": {}, "inventory": {}}), contextlib.redirect_stdout(output):
             PLAN.cmd_show(PLAN.build_parser().parse_args(["--repo", "fixture/local", "show", "fixture/target#7", "--full",
-                                                        *(["--launch-check"] if launch else [])]))
+                                                        *(["--launch-check"] if launch else []),
+                                                        *(["--resume-from", str(resume)] if resume else []),
+                                                        *(["--read-only"] if read_only else [])]))
         return json.loads(output.getvalue()), issue, configs[target]
 
     def test_qualified_show_projects_with_the_target_custom_label_configuration(self) -> None:
@@ -122,6 +125,25 @@ class CloseConfigTests(unittest.TestCase):
             with self.subTest(comments=comments, pulls=pulls):
                 result, _, _ = self.show_fixture(launch=True, comments_extra=comments, pulls=pulls)
                 self.assertEqual(result["issue"]["launch_check"]["allowed"], allowed)
+
+    def test_launch_allows_operational_work_and_only_authored_retained_handoffs(self) -> None:
+        for action in ("Audit the helper.", "Run the testing migration.", "Qualify the release."):
+            result, _, _ = self.show_fixture(launch=True, action=action)
+            self.assertTrue(result["issue"]["launch_check"]["allowed"])
+        source = {"worker": "codex", "session": "source", "branch": "work/export", "claimed_at": "2026-10-01T00:00:00Z"}
+        claim = {"id": 2, "user": {"login": "fixture"}, "body": PLAN.github_plan_claim.marker(source)}
+        release = {"id": 3, "user": {"login": "fixture"}, "body": "Released claim 2\n\nRetained PR: https://github.com/fixture/target/pull/80"}
+        retained = {"number": 80, "state": "open", "user": {"login": "fixture"}, "body": "Closes #7",
+                    "head": {"ref": source["branch"], "repo": {"full_name": "fixture/target"}},
+                    "base": {"repo": {"full_name": "fixture/target"}}}
+        for author, allowed in (("foreign", False), ("fixture", True)):
+            release["user"] = {"login": author}
+            result, _, _ = self.show_fixture(launch=True, comments_extra=[claim, release], pulls=[retained], resume=2)
+            self.assertEqual(result["issue"]["launch_check"]["allowed"], allowed)
+        for read_only, extra, allowed in ((False, [], False), (True, [], True), (True, [claim], False)):
+            result, _, _ = self.show_fixture(launch=True, read_only=read_only, comments_extra=extra,
+                enrichment={"blocked_by": [{"repo": "fixture/gate", "number": 8, "state": "open"}], "sub_issues": []})
+            self.assertEqual(result["issue"]["launch_check"]["allowed"], allowed)
 
     def test_public_close_uses_resolved_target_config_and_keeps_overrides(self) -> None:
         for ref, caller in (("fixture/target#7", "fixture/local"),

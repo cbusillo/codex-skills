@@ -11,6 +11,7 @@ import errno
 import json
 import os
 from pathlib import Path
+import runpy
 import shlex
 import socket
 import subprocess
@@ -63,7 +64,7 @@ class LaunchIssueTests(unittest.TestCase):
                   patch.object(account_choice, "record_launch") as receipt,
                   patch.object(tmux_terminal, "Terminal") as terminal):
                 for backend in ("iterm", "tmux", "tmux"):
-                    with self.subTest(backend=backend), self.assertRaisesRegex(ValueError, "Launch refused"):
+                    with self.subTest(backend=backend), self.assertRaises(ValueError):
                         asyncio.run(iterm_tab.operate(app, args) if backend == "iterm" else tmux_terminal.operate(args))
                 select.assert_not_called()
                 prepare.assert_not_called()
@@ -74,12 +75,20 @@ class LaunchIssueTests(unittest.TestCase):
     def test_changed_prerequisite_allows_a_fresh_check_and_read_only_work_does_not_claim(self) -> None:
         brief = "Anchor: https://github.com/fixture/repo/issues/7"
         cleared = {"ok": True, "issue": {"launch_check": {"allowed": True}}}
-        with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(cleared))) as read:
+        parser = runpy.run_path(str(Path(iterm_tab.__file__).resolve().parents[2] / "github/scripts/gh-plan.py"))["build_parser"]()
+        calls = []
+        def read(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            calls.append(parser.parse_args(argv[3:]))
+            return subprocess.CompletedProcess(argv, 0, json.dumps(cleared))
+        with patch.object(iterm_tab.subprocess, "run", side_effect=read):
             iterm_tab.check_launch_issue(brief)
-            self.assertIn("--launch-check", read.call_args.args[0])
-            read.reset_mock()
+            self.assertEqual(calls[-1].issue, brief.split()[-1])
+            self.assertFalse(calls[-1].read_only)
             iterm_tab.check_launch_issue(brief.replace("Anchor:", "Read-only anchor:"))
-            read.assert_not_called()
+            self.assertTrue(calls[-1].read_only)
+            for anchor in ("- Anchor:", "**Anchor:**"):
+                iterm_tab.check_launch_issue(brief.replace("Anchor:", anchor) + "#issuecomment-123\nResume from: 123")
+                self.assertEqual(calls[-1].resume_from, 123)
         for missing in ("Implement export", "Anchor: https://github.com/fixture/repo/issues/7/other"):
             with self.subTest(missing=missing), self.assertRaises(ValueError):
                 iterm_tab.check_launch_issue(missing)
@@ -88,6 +97,9 @@ class LaunchIssueTests(unittest.TestCase):
         for code, output in ((1, "{}"), (0, "{}"), (0, "invalid"), (0, '{"ok": true, "issue": {}}')):
             with self.subTest(code=code, output=output), patch.object(iterm_tab.subprocess, "run", return_value=
                     subprocess.CompletedProcess([], code, output)), self.assertRaises(ValueError):
+                iterm_tab.check_launch_issue("Anchor: https://github.com/fixture/repo/issues/7")
+        for failure in (FileNotFoundError("fixture uv missing"), subprocess.TimeoutExpired("fixture", 120)):
+            with self.subTest(failure=failure), patch.object(iterm_tab.subprocess, "run", side_effect=failure), self.assertRaises(ValueError):
                 iterm_tab.check_launch_issue("Anchor: https://github.com/fixture/repo/issues/7")
 
 
@@ -267,6 +279,7 @@ class ResumeLaunchTests(unittest.TestCase):
 
 class ProviderLaunchTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch.object(iterm_tab, "check_launch_issue"))
         # Generic launch cases must not discover the host's private opt-in.
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)

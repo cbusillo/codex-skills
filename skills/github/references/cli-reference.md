@@ -956,8 +956,12 @@ selection is unchanged.
   `labels` is the projected view; `recorded_labels` preserves the observed labels
   for diagnosis without making them status authority.
   `--launch-check` also reuses `next`'s current ownership and retained-delivery
-  reads. `issue.launch_check.allowed` requires active native status and an
-  available source-work queue row. Unknown coverage refuses dispatch, while
+  reads. `issue.launch_check.allowed` requires active native status and no
+  observed owner or retained-delivery hold; next-action wording does not gate
+  dispatch. `--read-only` permits answering a wait without claiming or changing
+  held work, while still checking ownership. `--resume-from <comment ID>`
+  validates the same issue's existing authored release and retained-PR handoff
+  through the claim helper; it never releases a different owner. Unknown coverage refuses dispatch, while
   the full read remains available. This writes no claim or new state record;
   a launched worker still claims independently.
 - `deps <issue>`: Page and show validated native `blocked_by`, `blocking`, and

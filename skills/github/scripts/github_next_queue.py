@@ -203,6 +203,7 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
     # Use the claim helper's exact authored-release semantics instead of a
     # second claim parser. No synthetic owner can renew a real claim.
     inventory = ownership.get("inventory") or {"local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}
+    retained = None
     try:
         ended = github_plan_claim.ended_ownership(comments, inventory)
         conflicts, _ = github_plan_claim.discussion_evidence(status, comments,
@@ -210,11 +211,19 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
             ended_claims={source["claim_id"] for source in ended})
         wait = github_plan_wait.current(
             {"body": discussion.get("body") or "", "user": {"login": discussion.get("author") or ""}}, comments, trusted)
+        if item.get("resume_from"):
+            source = github_plan_claim.released_source(comments, item["resume_from"])
+            retained = github_plan_claim.retained_handoff(
+                source, github_plan_claim.handoff_candidates(comments, source), ownership.get("pulls") or [],
+                issue_repo=item["repo"], issue_number=item["number"], target_repo=item["repo"])
+            if retained is None or retained["open_conflicts"]:
+                return {**row, "state": "review", "reason": "retained_handoff_unavailable"}
     except (ValueError, KeyError, TypeError) as exc:
         return {**row, "state": "review", "reason": "unreadable_ownership_or_wait", "detail": str(exc)}
     branches = github_plan_claim.recorded_claim_branches(status, comments)
     artifacts = github_plan_claim.artifact_evidence(inventory, ownership.get("pulls") or [], item["number"],
         {"worker": "", "session": "", "branch": ""}, own_record=False, repo=item["repo"], recorded_branches=branches,
+        retained_branches=retained["permitted"] if retained else None, retained_repo=item["repo"] if retained else None,
         ended_branches=github_plan_claim.ended_artifact_branches(ended, comments, ownership.get("pulls") or []))
     if conflicts or artifacts:
         return {**row, "state": "underway", "reason": "existing_claim_or_artifact",

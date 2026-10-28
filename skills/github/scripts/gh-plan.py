@@ -2095,11 +2095,16 @@ def cmd_show(args: argparse.Namespace) -> None:
         result["recorded_current_status"] = result["sections"]["Current Status"]
         result["sections"]["Current Status"] = github_plan_status.render_status(result["sections"]["Current Status"], derived)
     if getattr(args, "launch_check", False):
-        candidate = {**result, "discussion": github_direction_next.discussion_snapshot(issue, comments, complete=True)}
+        candidate = {**result, "discussion": github_direction_next.discussion_snapshot(issue, comments, complete=True),
+                     "resume_from": args.resume_from}
         annotate_next_queue([candidate], args, parallel=False)
         queue = candidate["queue"]
         result["launch_check"] = {
-            "allowed": derived["status"] == "active" and derived["relationships_complete"] and queue["state"] == "available",
+            "allowed": (derived["relationships_complete"] and queue.get("observed_ownership_complete") is True
+                        and queue["state"] != "underway" and queue["reason"] not in {
+                            "incomplete_discussion", "discussion_authorship_unknown", "unreadable_ownership_or_wait",
+                            "source_delivery_reads_incomplete", "retained_handoff_unavailable"}
+                        and (args.read_only or derived["status"] == "active")),
             "status": derived["status"], "queue": queue,
         }
     emit({"ok": True, "actor": actor, "issue": result,
@@ -7163,6 +7168,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("issue")
     p.add_argument("--full", action="store_true", help="Include the entire body instead of selected sections")
     p.add_argument("--launch-check", action="store_true", help="Read current ownership and delivery holds for a new execution worker; never claim")
+    p.add_argument("--read-only", action="store_true", help="Allow a launch check to answer waits without claiming or changing held work")
+    p.add_argument("--resume-from", type=int, help="Existing source claim comment ID for a retained-delivery launch check")
     p.add_argument("--sections", nargs="+")
     p.set_defaults(func=cmd_show)
 
