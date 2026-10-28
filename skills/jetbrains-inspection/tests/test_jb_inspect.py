@@ -338,9 +338,10 @@ class SdkRetirementTests(unittest.TestCase):
                 discover.assert_not_called()
                 removal.assert_not_called()
 
-    def test_unprepared_worktree_retires_without_live_ide_even_with_a_virtualenv(self):
-        for virtualenv, offline_only in ((False, False), (True, False), (False, True), (True, True)):
-            with self.subTest(virtualenv=virtualenv, offline_only=offline_only), tempfile.TemporaryDirectory() as tmp:
+    def test_worktree_with_only_preparation_retires_unless_ide_records_reference_it(self) -> None:
+        for preparation, offline_only in (("none", False), ("virtualenv", False), ("project-model", False),
+                                          ("none", True), ("virtualenv", True), ("project-model", True)):
+            with self.subTest(preparation=preparation, offline_only=offline_only), tempfile.TemporaryDirectory() as tmp:
                 home = Path(tmp).resolve()
                 primary, root = home / "primary", home / "task"
                 subprocess.run(["git", "init", "-q", str(primary)], check=True)
@@ -352,10 +353,13 @@ class SdkRetirementTests(unittest.TestCase):
                 subprocess.run(["git", "-C", str(primary), "add", ".idea"], check=True)
                 subprocess.run(["git", "-C", str(primary), "-c", "user.name=Fixture", "-c",
                                 "user.email=fixture@example.invalid", "commit", "-q", "-m", "shared inspection policy"], check=True)
-                (primary / ".git" / "info" / "exclude").write_text(".venv/\n")
+                (primary / ".git" / "info" / "exclude").write_text(".venv/\n.idea/*.xml\n.idea/*.iml\n")
                 subprocess.run(["git", "-C", str(primary), "worktree", "add", "-q", "-b", "task", str(root)], check=True)
-                if virtualenv:
+                if preparation != "none":
                     (root / ".venv").mkdir()
+                if preparation == "project-model":
+                    for name in ("misc.xml", "modules.xml", "fixture.iml"):
+                        (root / ".idea" / name).write_text("<project />")
                 table = home / "Library/Application Support/JetBrains/PyCharm2026.2/options/jdk.table.xml"
                 table.parent.mkdir(parents=True)
                 table.write_text('<application />')
@@ -366,6 +370,15 @@ class SdkRetirementTests(unittest.TestCase):
                       patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}),
                       patch_attr(jb_inspect, "discover_identities", side_effect=AssertionError("desktop discovery")) as discovery,
                       patch_attr(jb_inspect, "http_post", side_effect=AssertionError("desktop request")) as post):
+                    if preparation == "project-model":
+                        table.write_text(f'<application><option value="{root}/.venv/bin/python" /></application>')
+                        args.dry_run = False
+                        with self.assertRaises(jb_inspect.InspectError) as caught:
+                            jb_inspect.command_retire_sdks(args)
+                        self.assertEqual(caught.exception.payload["offline_retirement_record"], str(table))
+                        self.assertTrue(root.is_dir())
+                        table.write_text('<application />')
+                    args.dry_run = True
                     self.assertFalse(jb_inspect.command_retire_sdks(args)["worktree_removed"])
                     self.assertTrue(root.is_dir())
                     args.dry_run = False

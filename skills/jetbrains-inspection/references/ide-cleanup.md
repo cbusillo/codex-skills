@@ -22,14 +22,15 @@ records prove no project needs closing. Leases that need live ownership proof
 retain the worktree; the refusal names the blocking lease IDs and scoped cleanup
 commands. Resolve those separately before a fresh retirement attempt.
 
-On macOS, an unprepared worktree proves there is nothing to clean from local
-preparation records, every standard JetBrains config's SDK and recent-project
+On macOS, a worktree proves there is nothing to clean from local workspace and
+legacy preparation records, every standard JetBrains config's SDK and recent-project
 records (plus the explicit `JETBRAINS_INSPECTION_IDE_CONFIG_DIR` override),
 sealed/finalizing project-cache ownership markers, and running IDE open files.
-A `.venv` alone is not a registration. Matching records, unreadable/malformed records, storage redirects
-in config `idea.properties`, or local `.idea` project-model/workspace state
-retain the worktree. A running supported IDE retains it only when `lsof` shows
-an open file or working directory at or below the worktree in the launcher or
+A `.venv` or repository-generated `.idea` project model (`misc.xml`,
+`modules.xml`, `*.iml`) alone is not an IDE registration. Matching records,
+unreadable/malformed records, storage redirects in config `idea.properties`,
+or local `.idea/workspace.xml` or `.idea/.name` retain the worktree. A running
+supported IDE retains it only when `lsof` shows an open file or working directory at or below the worktree in the launcher or
 any descendant, or process/open-file
 discovery cannot prove complete, stable coverage. Failed commands, warnings,
 missing process records and process changes during proof retain it.
