@@ -526,6 +526,8 @@ classify_failure() {
 	classification_operation=github.gh_with_env_token
 	if [ "${1:-}" = pr ] && [ "${2:-}" = create ]; then
 		classification_operation=github.pr.create
+	elif [ "${1:-}" = pr ] && [ "${2:-}" = edit ]; then
+		classification_operation=github.pr.edit
 	fi
 	if is_write_command "$@"; then
 		write_flag=--write
@@ -1209,7 +1211,11 @@ fi
 write_outcome=$(classified_value write_outcome "" 2>/dev/null) || write_outcome=
 
 if is_write_command "$@" && [ "$write_outcome" = "unknown" ]; then
-	cat "$stdout_file"
+	if [ "$cause" = validation_error ] && [ ! -s "$stdout_file" ]; then
+		cat "$classification_file"
+	else
+		cat "$stdout_file"
+	fi
 	print_classified_message
 	echo "error: automation GitHub write outcome is unknown; refusing active-auth replay" >&2
 	exit "$status"
