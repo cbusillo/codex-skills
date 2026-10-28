@@ -1211,7 +1211,11 @@ fi
 write_outcome=$(classified_value write_outcome "" 2>/dev/null) || write_outcome=
 
 if is_write_command "$@" && [ "$write_outcome" = "unknown" ]; then
-	cat "$stdout_file"
+	if [ "$cause" = validation_error ] && [ ! -s "$stdout_file" ]; then
+		cat "$classification_file"
+	else
+		cat "$stdout_file"
+	fi
 	print_classified_message
 	echo "error: automation GitHub write outcome is unknown; refusing active-auth replay" >&2
 	exit "$status"
