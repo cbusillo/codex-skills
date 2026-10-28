@@ -344,6 +344,8 @@ def test_issue_fetch_reads_recent_milestone_additions_including_closed_issues() 
             return [closed_issue]
         if "/issues/11/events" in path:
             return [{"event": "milestoned", "actor": {"login": "bot"}, "created_at": "2026-09-20T00:00:00Z"}]
+        if "/issues/10/comments" in path:
+            return []
         raise AssertionError(path)
     found, truncated = module.fetch_audit_issues(
         "o/r", [milestone(1, "Thin fork decision")],
@@ -2831,26 +2833,107 @@ def test_overall_audit_reads_current_structured_wait_before_prose() -> None:
     assert root['_milestone_wait_findings'] == []
 
 
+def test_local_audit_resolves_six_structured_waits_without_status_prose() -> None:
+    module = load()
+    waits = [
+        ("Director's decision", "Director records the decision"),
+        ("Client's acceptance", "Client accepts the candidate"),
+        ("Staff testing", "Staff report their test results"),
+        ("Beta release", "The beta is published"),
+        ("Backup verification", "The backup check completes"),
+        ("Provider response", "The provider replies"),
+    ]
+    issues = [
+        {**issue(number, "Pending work", labels=("plan:waiting",),
+                 body="## Current Status\nState: Waiting.\nNext action: Continue after the recorded event."),
+         "state": "open", "milestone": {"title": "Dogfood week"}}
+        for number in range(1, len(waits) + 1)
+    ]
+    comments = {
+        f"repos/owner/product/issues/{item['number']}/comments": [
+            {"user": {"login": "owner"}, "body": module.github_plan_wait.marker(
+                module.github_plan_wait.reviewed(evidence="Reviewed the discussion", waiting_for=actor, ends_when=ending))}
+        ]
+        for item, (actor, ending) in zip(issues, waits)
+    }
+
+    def fetch(args: list[str]) -> Any:
+        return comments[args[1].split("?")[0]]
+
+    direction_issues = [dict(item) for item in issues]
+    assert not module.enrich_milestone_waits(issues, "owner/product", ["Dogfood week"], fetch=fetch)
+    findings = [finding for finding in run(module, issues=issues)["findings"]
+                if finding["kind"] == "milestone_wait_invalid"]
+    assert findings == [], findings
+    track = {**issue(10, "Track: Dogfood week"), "milestone": {"title": "Dogfood week", "state": "open"}}
+    direction_comments = {path.replace("owner/product", "owner/direction"): rows for path, rows in comments.items()}
+
+    def direction_fetch(args: list[str]) -> Any:
+        path = args[1].split("?")[0]
+        if path.endswith("/10/sub_issues"):
+            return direction_issues
+        return direction_comments.get(path, [])
+
+    assert not module.enrich_milestone_waits([track, *direction_issues], "owner/direction", ["Dogfood week"], fetch=direction_fetch)
+    assert "milestone_wait_invalid" not in kinds(run(module, issues=[track, *direction_issues]))
+
+
+def test_local_wait_resolution_preserves_authority_and_incomplete_coverage() -> None:
+    module = load()
+    wait = module.github_plan_wait.reviewed(evidence="Reviewed discussion", waiting_for="Director", ends_when="Decision recorded")
+    clear = module.github_plan_wait.reviewed(evidence="Decision recorded")
+    trusted = {"user": {"login": "owner"}, "body": module.github_plan_wait.marker(wait)}
+    for scenario in ("body", "cleared", "untrusted", "unavailable", "truncated", "malformed"):
+        item: dict[str, Any] = {
+            **issue(120, "Pending work", labels=("plan:waiting",), body="## Current Status\nState: Waiting."),
+            "user": {"login": "owner"}, "milestone": {"title": "Dogfood week"},
+        }
+        comments = [trusted]
+        if scenario == "body":
+            item["body"] += "\n" + module.github_plan_wait.marker(wait)
+            comments = []
+        elif scenario == "cleared":
+            comments.append({**trusted, "body": module.github_plan_wait.marker(clear)})
+        elif scenario == "untrusted":
+            comments = [{**trusted, "user": {"login": "stranger"}}]
+        elif scenario == "truncated":
+            comments *= 100
+        elif scenario == "malformed":
+            comments = [{**trusted, "body": module.github_plan_wait.PREFIX + "invalid -->"}]
+
+        def fetch(_args: list[str]) -> Any:
+            if scenario == "unavailable":
+                raise module.AuditError("Discussion unavailable")
+            return comments
+
+        incomplete = scenario in {"unavailable", "truncated", "malformed"}
+        assert module.enrich_milestone_waits([item], "owner/product", ["Dogfood week"], fetch=fetch) is incomplete
+        report = run(module, issues=[item], truncated=["milestone_waits"] if incomplete else [])
+        assert ("milestone_wait_invalid" in kinds(report)) is (scenario == "untrusted"), scenario
+        assert ("coverage_incomplete" in kinds(report)) is incomplete, scenario
+
+
 def test_local_wait_findings_need_no_dependency_reads() -> None:
     module = load()
     base = {**issue(120, "Inventory", labels=("plan:waiting",),
                     body="## Current Status\nWaiting for: milestone Thin fork decision."),
             "milestone": {"title": "Dogfood week"}}
     zero = {**base, "issue_dependencies_summary": {"blocked_by": 0}}
-    def denied(_args: list[str]) -> Any:
-        raise module.AuditError("unavailable")
-    assert not module.enrich_milestone_waits([zero], "owner/product", ["Thin fork decision", "Dogfood week"], fetch=denied)
+    def comments_only(args: list[str]) -> Any:
+        assert args[1].split("?")[0].endswith("/comments"), args
+        return []
+    assert not module.enrich_milestone_waits([zero], "owner/product", ["Thin fork decision", "Dogfood week"], fetch=comments_only)
     assert "milestone_wait_invalid" in kinds(run(module, issues=[zero]))
     unknown = {**base}
-    assert not module.enrich_milestone_waits([unknown], "owner/product", ["Thin fork decision", "Dogfood week"], fetch=denied)
+    assert not module.enrich_milestone_waits([unknown], "owner/product", ["Thin fork decision", "Dogfood week"], fetch=comments_only)
     assert "milestone_wait_invalid" in kinds(run(module, issues=[unknown]))
     blocked = {**base, "body": "## Current Status\nState: Waiting.\nWaiting for: TBD.",
                "labels": [{"name": "plan:blocked"}]}
-    assert not module.enrich_milestone_waits([blocked], "owner/product", ["Dogfood week"], fetch=denied)
+    assert not module.enrich_milestone_waits([blocked], "owner/product", ["Dogfood week"], fetch=comments_only)
     assert "milestone_wait_invalid" not in kinds(run(module, issues=[blocked]))
     module.planning_config = lambda _: {"labels": {"waiting": "paused"}}
     custom = {**base, "body": "## Current Status\nWaiting for: nothing.", "labels": [{"name": "paused"}]}
-    assert not module.enrich_milestone_waits([custom], "owner/product", ["Dogfood week"], fetch=denied)
+    assert not module.enrich_milestone_waits([custom], "owner/product", ["Dogfood week"], fetch=comments_only)
     assert "milestone_wait_invalid" in kinds(run(module, issues=[custom]))
 
 

@@ -253,9 +253,12 @@ def audit(
         for finding in issue.get("_milestone_wait_findings", []):
             wait_findings[(finding["repo"].casefold(), finding["number"])] = finding
         if (state == "open" and milestone_title in listed
-                and not str(issue.get("title", "")).startswith("Track:")):
+                and not str(issue.get("title", "")).startswith("Track:")
+                and not issue.get("_milestone_wait_unread")):
             compact = github_direction_next.compact_list_issue(str(issue.get("repo") or owner), issue)
             compact["plan_status"] = issue.get("_plan_status")
+            if issue.get("structured_wait") is not None:
+                compact["structured_wait"] = issue["structured_wait"]
             if compact["plan_status"] == "waiting":
                 compact["exclusion"] = "waiting"
             status = github_direction_next.section_map(issue.get("body") or "").get("Current Status", "")
@@ -1158,6 +1161,21 @@ def enrich_milestone_waits(
 
     for item in issues:
         item["_plan_status"] = github_direction_next.next_plan_status(item, config(repo))
+        if ("pull_request" in item
+                or item.get("state", "open") != "open" or str(item.get("title", "")).startswith("Track:")
+                or (item.get("milestone") or {}).get("title") not in titles
+                or item["_plan_status"] in {"blocked", "stale", "done"}):
+            continue
+        try:
+            comments, cut = fetch_paginated(f"repos/{repo}/issues/{item['number']}/comments", fetch=fetch, max_pages=2)
+            if cut:
+                raise AuditError("Milestone wait discussion is incomplete")
+            wait = wait_helpers["current_wait"](item, comments, repo)
+            if wait["state"] != "review":
+                item["structured_wait"] = wait
+        except (AuditError, ValueError, wait_helpers["PlanError"]):
+            item["_milestone_wait_unread"] = True
+            incomplete = True
 
     def read_node(target_repo: str, number: int) -> dict[str, Any]:
         nonlocal incomplete

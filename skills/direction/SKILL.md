@@ -475,7 +475,9 @@ For each finding:
 
 - `milestone_wait_invalid`: verify the reported condition and follow the
   [supported wait correction procedure](../github-plan/references/global-next.md#correct-an-invalid-wait-before-claiming)
-  before correcting or claiming the reported issue.
+  before correcting or claiming the reported issue. The audit resolves structured
+  waits from the complete discussion with the planning helper before checking
+  Current Status prose. An unread or truncated discussion leaves coverage incomplete.
 
 - `coverage_incomplete`: a bounded read was truncated or unavailable, or
   actor classification was unavailable. Name the affected listings and the
