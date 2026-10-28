@@ -550,7 +550,7 @@ installed local helper bindings.
   compare manifest and retained/runtime image identity before attribution; floating
   refs remain unqualified, and addon sources are not an installed-module inventory.
   Older services need no metadata field. Invalid optional fields/items are omitted;
-  token-like values still fail the read. Artifact ids may be registry references
+  token-like values in listed scalar fields still fail the read. Artifact ids may be registry references
   with an optional SHA-256 digest suffix; credential-bearing userinfo is refused in ids and warning text.
   Empty artifact ids remain valid for preview feedback protecting image references
   only. Source record ids are required and can embed a digest-pinned image reference

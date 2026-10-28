@@ -4243,6 +4243,7 @@ def _protected_artifacts_response() -> dict[str, Any]:
                 "reason": "previous-good-deployment", "context": "example-context",
                 "instance": "prod", "artifact_id": "ghcr.io/example/app:sha-old",
                 "source_record_type": "deployment", "source_record_id": "deployment-old",
+                "source_git_ref": "main",
                 "image_digest": "sha256:" + "a" * 64,
                 "image_repository": "private-registry.example.invalid/app",
                 "image_references": ["private-registry.example.invalid/app:tag"],
@@ -4316,6 +4317,20 @@ def test_retained_manifest_unavailable_partial_and_unsafe() -> None:
         entry = payload["result"]["entries"][0]
         assert entry["manifest_provenance"] is None
         assert entry["manifest_provenance_coverage"]["status"] != "complete"
+    for identity_field, malformed in (("image_repository", "user:pass@host"), ("image_references", "bad-shape"), ("source_git_ref", None)):
+        response = _protected_artifacts_response()
+        source = response["protected_artifacts"]["entries"][0]
+        if malformed is None:
+            del source[identity_field]
+        else:
+            source[identity_field] = malformed
+        status, payload, _ = _run_product_read(argv, response)
+        assert status == 0
+        projected = payload["result"]["entries"][0]
+        assert projected["identity_coverage"]["status"] == "partial"
+        assert identity_field not in projected
+        assert payload["result"]["warnings"] == response["protected_artifacts"]["warnings"]
+        assert "user:pass" not in json.dumps(payload)
     for field, value in (("source_commit", "main"), ("image", {}), ("source_build", {"run_id": True})):
         response = _protected_artifacts_response()
         provenance = _retained_manifest_provenance()
@@ -4341,7 +4356,7 @@ def test_retained_manifest_unavailable_partial_and_unsafe() -> None:
         assert "ghp_synthetic" not in json.dumps(payload)
     response = _protected_artifacts_response()
     provenance = _retained_manifest_provenance()
-    provenance["build_provenance"]["build_tools"][0]["version"] = "uv@0.5.1"
+    provenance["build_provenance"]["build_tools"][0]["version"] = "task-runner@2"
     provenance["addon_sources"].append("malformed")
     provenance["image"]["tags"] += ["user:pass@host", "bad tag"]
     provenance["source_build"]["run_id"] = True
@@ -4383,6 +4398,8 @@ def test_protected_artifacts_read_projection_and_query() -> None:
         original = response["protected_artifacts"]["entries"][0]
         fields = ("reason", "context", "instance", "artifact_id", "source_record_type", "source_record_id", "image_digest")
         assert {key: result["entries"][0][key] for key in fields} == {key: original[key] for key in fields}
+        assert result["entries"][0]["source_git_ref"] == original["source_git_ref"]
+        assert result["entries"][0]["identity_coverage"]["status"] == "complete"
         assert result["entries"][0]["manifest_provenance"] is None
         assert result["entries"][0]["manifest_provenance_coverage"]["status"] == "unavailable"
         assert result["warnings"] == response["protected_artifacts"]["warnings"]
@@ -12661,5 +12678,8 @@ def test_tolerant_projection_scans_validated_identifier_without_dropping_it() ->
     name = "  owner/helpdesk-app  "
     assert drops.keep("repository", write_action.public_identifier, name) == name.strip()
     assert drops.count == 0
-    with pytest.raises(safety.LaunchplaneSafetyError):
-        drops.keep("repository", write_action.public_identifier, "sk-synthetic")
+    assert drops.keep("repository", write_action.public_identifier, "owner/task-runner?") == ""
+    assert drops.count == 1
+    for token in ("sk-synthetic", "ghp_synthetic?", "Bearer synthetic-token"):
+        with pytest.raises(safety.LaunchplaneSafetyError):
+            drops.keep("repository", write_action.public_identifier, token)

@@ -3090,7 +3090,7 @@ class _FieldDrops:
         try:
             projected = validate(value)
         except LaunchplaneSafetyError:
-            assert_public_safe_shape(value)
+            assert_public_safe_shape(PublicIdentifier(value) if isinstance(value, str) else value)
             self.drop(path)
             return ""
         assert_public_safe_shape(projected if isinstance(projected, PublicIdentifier) else value)
