@@ -75,9 +75,9 @@ class LaunchIssueTests(unittest.TestCase):
     def test_changed_prerequisite_allows_a_fresh_check_and_read_only_work_does_not_claim(self) -> None:
         brief = "Anchor: https://github.com/fixture/repo/issues/7"
         cleared = {"ok": True, "issue": {"launch_check": {"allowed": True}}}
-        parser = runpy.run_path(str(Path(iterm_tab.__file__).resolve().parents[2] / "github/scripts/gh-plan.py"))["build_parser"]()
+        parser = runpy.run_path(str(Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py"))["build_parser"]()
         calls = []
-        def read(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        def read(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess:
             calls.append(parser.parse_args(argv[3:]))
             return subprocess.CompletedProcess(argv, 0, json.dumps(cleared))
         with patch.object(iterm_tab.subprocess, "run", side_effect=read):

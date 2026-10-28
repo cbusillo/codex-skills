@@ -163,7 +163,8 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
     status = current_status(discussion, trusted, body_recorded_at=(item.get("source_delivery") or {}).get("body_recorded_at"))
     comments = [{**comment, "user": {"login": comment.get("author") or ""}} for comment in discussion.get("comments", [])]
     row = {"complete": ownership.get("complete") is True, "coverage": ownership.get("coverage", {})}
-    if discussion.get("complete") is not True:
+    complete = discussion.get("complete")
+    if not isinstance(complete, bool) or not complete:
         return {**row, "error": "incomplete_discussion"}
     if not discussion.get("author") or any(not comment.get("author") for comment in discussion.get("comments", [])):
         return {**row, "error": "discussion_authorship_unknown"}
