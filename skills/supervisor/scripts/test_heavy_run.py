@@ -84,8 +84,8 @@ class HeavyRunTests(unittest.TestCase):
         manifest = {"containers": [{"name": "job", "image": "fixture"}], "job": "job"}
 
         def require_slot_held() -> None:
-            with heavy_run.locked_file(self.root / heavy_run.STATE_PATH / "slot-0.lock") as handle:
-                self.assertFalse(heavy_run.try_lock(handle))
+            with heavy_run.locked_file(self.root / heavy_run.STATE_PATH / "slot-0.lock") as held_slot:
+                self.assertFalse(heavy_run.try_lock(held_slot))
 
         def prepare(_docker: heavy_run.Docker) -> dict:
             require_slot_held()
