@@ -806,6 +806,36 @@ class InventoryTests(unittest.TestCase):
                          len(self.reader.pages[("repos/test/repo/issues", 1, "open")]))
         self.assertLess(len(result["coverage_gaps"]), 5)
 
+    def test_supervisor_bodies_survive_exhausted_discussion_budget(self) -> None:
+        self.reader.repositories["repos/test/other"] = {"archived": False, "default_branch": "main"}
+        for repo in ("test/repo", "test/other"):
+            self.reader.pages[(f"repos/{repo}/issues", 1, "open")] = [{
+                "number": 1, "state": "open", "comments": 1,
+                "body": "## Current Status\nNext action: Supervisor routes the reviewed change.",
+                "user": {"login": "test"}}]
+        original = self.reader.get_json
+
+        def stop_at_comments(path: str, *, step: str) -> Any:
+            if "/issues/1/comments?" in path:
+                raise unavailable("deadline_exceeded")
+            return original(path, step=step)
+
+        self.reader.get_json = stop_at_comments
+        result = sweep.collect(["test/repo", "test/other"], reader=self.reader, now=self.now,
+                               question_queue="test/repo#123")
+        self.assertEqual(result["supervisor_next_action_by_repo"], {"test/other": 1, "test/repo": 1})
+        self.assertFalse(result["complete"])
+        self.assertTrue(any(g["reason"] == "deadline_exceeded" for g in result["coverage_gaps"]))
+        self.assertTrue(all(r["age_basis"] == "unknown" for r in result["findings"]))
+        self.assertEqual({r["kind"] for r in result["findings"]}, {"supervisor_next_action"})
+
+    def test_supervisor_coverage_names_repositories_not_inventoried(self) -> None:
+        self.reader.repositories["repos/test/other"] = {"archived": False, "default_branch": "main"}
+        result = sweep.collect(["test/repo", "test/other"], reader=self.reader, now=self.now, max_requests=2)
+        scopes = {s["repo"] for g in result["coverage_gaps"] for s in g.get("scopes", []) if s["state"] == "open"}
+        self.assertEqual(scopes, {"test/repo", "test/other"})
+        self.assertFalse(result["complete"])
+
     def test_cross_repo_merged_pr_is_checked_against_its_own_default_branch(self):
         original = self.reader.get_json
         def read(path, *, step):
