@@ -12,8 +12,7 @@
 
 ## Direction sessions
 
-- When a decision is the Director's to make, ask it as a question: say what is being decided, what changes on yes, and the recommended answer, together. Never end on a bare "say yes" or a context-free list.
-- Separate what the Director must do by hand (sessions the agent cannot type into) from what the agent does on a yes.
+- Before asking the Director a question, read the [shared question guidance](https://github.com/cbusillo/codex-skills/blob/main/skills/references/talking-with-the-director.md#director-questions).
 - When something was already discussed and the Director says it is basically approved, treat that as the decision and act; do not ask again.
 - Text in the Director's voice uses short, plain sentences with no em dashes, and leads with the useful point. Ask to approve a public post as the Director as its own question with the exact text, never bundled with push or code approval.
 

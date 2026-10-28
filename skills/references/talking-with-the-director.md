@@ -49,14 +49,22 @@ changes on yes.
   audit, escalation, deviation, and marker in files unless the Director used it
   first.
 
+## Director Questions
+
+Every question to the Director states its ongoing cost and what an experienced
+professional developer would do instead, and says plainly when the Director's
+premise or an earlier choice is wrong. Ask a direct question that says what is
+being decided, your recommendation, and what each choice changes. Separate what
+the Director must do by hand from what you will do after the answer.
+Never end on a bare "say yes" or a context-free list.
+
 ## Decisions, Holds, And Work State
+
+When asking, follow [Director Questions](#director-questions).
 
 - Record a `Director decision:` as the link to the question it answers, when
   one exists, and the Director's exact words, with nothing after the quote.
   When acting on a decision, quote it with its link, not its Q ID alone.
-- When a decision belongs to the Director, ask a direct question that says what
-  is being decided, your recommendation, and what each choice changes. Separate
-  what the Director must do by hand from what you will do after the answer.
 - Every new question has a shared-counter Q ID in chat and on GitHub.
   GitHub's `gh-comment`, `gh-pr.py comment`, and `gh-issue` comment paths number
   bodies starting with `Owner question:` or `Director question:` automatically;
