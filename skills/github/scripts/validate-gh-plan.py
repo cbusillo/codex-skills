@@ -1534,9 +1534,6 @@ def test_plan_and_pr_resolve_git_origins() -> None:
         ("https://example.invalid/owner/project.git", None),
     )
 
-    def run_git_remote(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        return REAL_SUBPROCESS_RUN(args, **kwargs)
-
     with tempfile.TemporaryDirectory() as tmp:
         checkout = Path(tmp)
         REAL_SUBPROCESS_RUN(["git", "init", "--quiet", checkout], check=True)
@@ -1549,11 +1546,12 @@ def test_plan_and_pr_resolve_git_origins() -> None:
                 ["git", "-C", checkout, "remote", "set-url", "origin", remote],
                 check=True,
             )
-            with patch.object(plan.subprocess, "run", side_effect=run_git_remote):
+            with patch.object(subprocess, "run", side_effect=REAL_SUBPROCESS_RUN):
                 assert plan.repo_from_git(checkout) == expected
-            with (
-                patch.object(pr, "run_git", return_value=remote),
-                patch.object(pr, "gh_json", return_value={"nameWithOwner": "fallback/repo"}),
+            with patch.multiple(
+                pr,
+                run_git=lambda _args: remote,
+                gh_json=lambda _args: {"nameWithOwner": "fallback/repo"},
             ):
                 assert pr.resolve_repo(None) == (expected or "fallback/repo")
 
