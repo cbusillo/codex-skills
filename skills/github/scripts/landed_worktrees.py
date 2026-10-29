@@ -11,6 +11,7 @@ import datetime as dt
 import json
 import importlib.util
 import math
+import random
 from pathlib import Path
 import subprocess
 import sys
@@ -226,58 +227,60 @@ def default_tracking_tip(checkout: Path) -> str | None:
 
 
 def finished(root: Path, pulls_for, include=lambda slug: True) -> tuple[list[dict], list[dict]]:
-    """Worktrees under root that the landing step should have retired, and unread scopes.
-
-    pulls_for(slug, branch) returns that branch's PRs, or raises LookupError when
-    they cannot be read. A branch already in the default branch's tracking ref
-    needs no GitHub read. include(slug) limits the scan to the caller's scope.
-    """
     found: list[dict] = []
     gaps: list[dict] = []
     seen: set[Path] = set()
     for folder in sorted(p for p in root.iterdir() if p.is_dir() and not p.is_symlink()):
         commons = {}
         for task in sorted(p for p in folder.iterdir() if p.is_dir() and not p.is_symlink()):
-            common = git(task, "rev-parse", "--path-format=absolute", "--git-common-dir")
+            try:
+                common = git(task, "rev-parse", "--path-format=absolute", "--git-common-dir")
+            except subprocess.TimeoutExpired:
+                gaps.append({"source": f"{folder.name}/{task.name}", "reason": "git_probe_timed_out"})
+                continue
             if common.returncode == 0:
                 commons.setdefault(Path(common.stdout.strip()), task)
         for common, task in commons.items():
             if common in seen:
                 continue
             seen.add(common)
-            slug = github_slug(task)
-            if slug is None or not include(slug):
-                continue
-            tip = default_tracking_tip(task)
             try:
+                slug = github_slug(task)
+                if slug is None or not include(slug):
+                    continue
+                tip = default_tracking_tip(task)
                 trees = registered(task)
             except ValueError:
                 gaps.append({"source": folder.name, "reason": "worktree_list_unreadable"})
                 continue
+            except subprocess.TimeoutExpired:
+                gaps.append({"source": folder.name, "reason": "git_metadata_timed_out"})
+                continue
             for tree in trees:
-                if not tree.names_retire_command or not tree.branch or not is_under(tree.path, folder):
-                    continue
-                row = {"repo": slug, "task": tree.path.name, "branch": tree.branch,
-                       "dirty": bool(git(tree.path, "status", "--porcelain").stdout.strip()), "pull": None}
-                if tip and contained(task, tree.head, tip):
-                    # No commits of its own: date it from creation or last checkout, so a
-                    # session that has only just started is inside the age threshold.
-                    since = last_checkout(tree.path)
-                    found.append({**row, "basis": "in default branch", "since": since.isoformat() if since else None})
-                    continue
                 try:
-                    pulls = pulls_for(slug, tree.branch)
-                except LookupError as exc:
-                    gaps.append({"source": f"{slug}:{tree.branch}", "reason": str(exc) or "pull_read_unavailable"})
-                    continue
-                if not pulls or any(p.get("state") != "closed" for p in pulls):
-                    continue
-                covering = [p for p in pulls if contained(task, tree.head, (p.get("head") or {}).get("sha", ""))]
-                if covering:
-                    pull = max(covering, key=lambda p: p.get("closed_at") or "")
-                    found.append({**row, "basis": "PR merged" if pull.get("merged_at") else "PR closed",
-                                  "since": pull.get("closed_at"),
-                                  "pull": {"url": pull.get("html_url"), "number": pull.get("number")}})
+                    if not tree.names_retire_command or not tree.branch or not is_under(tree.path, folder):
+                        continue
+                    row = {"repo": slug, "task": tree.path.name, "branch": tree.branch,
+                           "dirty": bool(git(tree.path, "status", "--porcelain").stdout.strip()), "pull": None}
+                    if tip and contained(task, tree.head, tip):
+                        since = last_checkout(tree.path)
+                        found.append({**row, "basis": "in default branch", "since": since.isoformat() if since else None})
+                        continue
+                    try:
+                        pulls = pulls_for(slug, tree.branch)
+                    except LookupError as exc:
+                        gaps.append({"source": f"{slug}:{tree.branch}", "reason": str(exc) or "pull_read_unavailable"})
+                        continue
+                    if not pulls or any(p.get("state") != "closed" for p in pulls):
+                        continue
+                    covering = [p for p in pulls if contained(task, tree.head, (p.get("head") or {}).get("sha", ""))]
+                    if covering:
+                        pull = max(covering, key=lambda p: p.get("closed_at") or "")
+                        found.append({**row, "basis": "PR merged" if pull.get("merged_at") else "PR closed",
+                                      "since": pull.get("closed_at"),
+                                      "pull": {"url": pull.get("html_url"), "number": pull.get("number")}})
+                except subprocess.TimeoutExpired:
+                    gaps.append({"source": f"{slug}:{tree.branch}", "reason": "git_read_timed_out"})
     return found, gaps
 
 
@@ -398,7 +401,10 @@ def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, ro
                     preserve: set[Path] | frozenset[Path] = frozenset(),
                     deadline: float | None = None) -> Iterator[dict]:
     trees = registered(checkout)
+    if deadline is not None:
+        random.shuffle(trees)
     tip = default_tracking_tip(checkout)
+    default_starts = first_parent_history(checkout)
     closed_pulls = {}
 
     def decisions_for_trees() -> Iterator[dict]:
@@ -413,6 +419,10 @@ def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, ro
                     row["reason"] = "no supported retirement lock; follow work-closeout"
                 elif deadline is not None and time.monotonic() >= deadline:
                     row["reason"] = "creation cleanup time budget exhausted; checked on the next start"
+                elif (fresh := keep_fresh_starts([{**row, "decision": "candidate"}], dt.datetime.now(dt.timezone.utc))[0])["decision"] == "kept":
+                    row = fresh
+                elif tree.branch is None and tree.head in default_starts:
+                    row["reason"] = "detached HEAD may be a fresh start on the default branch"
                 else:
                     pulls = reader.paged_json(f"repos/{repo}/pulls", step_prefix="retirement_repository_pulls",
                                               params={"state": "all", "head": f"{repo.split('/')[0]}:{tree.branch}"}) if tree.branch else []
@@ -421,9 +431,6 @@ def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, ro
                                                   step_prefix="retirement_commit_pulls")
                     if any(pull.get("state") != "closed" for pull in pulls):
                         row["reason"] = "branch or commit has an open PR"
-                    elif pulls and tree.branch and tree.branch in claims_on(reader, github_read,
-                            issues_naming(reader, repo.split("/")[0], tree.branch)):
-                        row["reason"] = "an open claim names this branch"
                     else:
                         if pulls:
                             pull = max(pulls, key=lambda item: item.get("closed_at") or "")
@@ -437,6 +444,9 @@ def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, ro
                         row = next((dict(decision) for decision in decisions if decision["path"] == str(tree.path)),
                                    {**row, "reason": "no covered worktree found; use --branch or --pr with exact provenance"})
                         row = keep_fresh_starts([row], dt.datetime.now(dt.timezone.utc))[0]
+                        if pulls and row["decision"] == "candidate" and tree.branch and tree.branch in claims_on(
+                                reader, github_read, issues_naming(reader, repo.split("/")[0], tree.branch)):
+                            row.update(decision="kept", reason="an open claim names this branch")
             except Exception as exc:
                 row.update(decision="kept", reason=f"retirement evidence unavailable: {type(exc).__name__}: {exc}")
             yield row
@@ -465,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
         return refuse(f"worktree configuration: {exc}")
     checkout_slug = github_slug(args.checkout)
     if not checkout_slug or (args.repo and not same_repository(checkout_slug, args.repo)):
-        return refuse(f"checkout origin is {checkout_slug or 'not GitHub'}, not {args.repo}")
+        return refuse(f"checkout origin is {checkout_slug or 'not GitHub'}; expected {args.repo or 'a GitHub repository'}")
     repo = checkout_slug
     import github_read
 

@@ -137,7 +137,8 @@ unknown), next actor and review requirement:
   creation, so a session that has only just started stays under the age
   threshold. The root comes from `--worktree-root`, or else from the host's
   configured `hostHelper` root; without one the check is skipped. Each worktree
-  is retired with its lock's command, never from the report.
+  is checked by the next catalog worktree creation and retired with its lock's
+  command when eligible, never from the report.
 - Open issues whose body Current Status `Next action:` routes the work to the
   Supervisor: the action opens with the capitalized role, makes it the subject
   of a verb, or waits on or hands off to it. A path, skill name or description

@@ -15,7 +15,10 @@ commit and prints the new path. Before creation it runs the guarded
 kept trees with reasons on stderr. Unavailable cleanup evidence keeps trees and
 creation continues; it never weakens a retirement guard. A per-start
 read budget stops new checks, while any guarded retirement already in progress
-finishes without a timeout interrupting its lock restoration. It accepts a main checkout or a linked worktree;
+finishes without a timeout interrupting its lock restoration. Give creation
+a command timeout of at least three minutes where the harness sets one.
+Budgeted checks vary their order so held trees do not always consume the first
+checks. It accepts a main checkout or a linked worktree;
 both use the main repository's directory name. The default destination is
 `~/Developer/worktrees/<repo>/task-slug`. Existing destinations (including empty
 directories and dangling symlinks), branches and registered worktrees are never
@@ -99,8 +102,8 @@ with this configuration:
 ```
 
 Verify this per-host setting before creation; the catalog entry delegates to
-the configured host helper. If it is absent, provision the setting for the
-host's existing helper first. Do not use the portable default on Chris-Studio. The existing helper verifies the volume identity before creating anything,
+the configured host helper. If it is absent, report the missing host configuration; the JSON above is
+the supported configuration route. Do not use the portable default on Chris-Studio. The existing helper verifies the volume identity before creating anything,
 locks registrations against unmounted-volume pruning, and names its guarded
 retirement command in the lock reason. Use the catalog entry above with this host configuration, so creation also
 runs repository retirement. Keep the host helper unchanged; never make a

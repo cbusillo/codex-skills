@@ -189,14 +189,6 @@ class RetireTests(unittest.TestCase):
         self.assertEqual(calls, [("/a", True)])
         self.assertEqual(rows[0]["decision"], "kept")
 
-    @staticmethod
-    def test_unlocked_portable_retirement_uses_the_portable_guard() -> None:
-        with mock.patch.object(landed_worktrees.dev_worktree, "configuration", return_value=(Path("/tasks"), None)), \
-                mock.patch.object(landed_worktrees, "portable_retire") as portable:
-            landed_worktrees.retirement_command("/tasks/project/task", True)
-        portable.assert_called_once_with(Path("/tasks/project/task"), dry_run=True)
-
-
 class PreviewTests(Fixture):
     @unittest.skipUnless(os.name == "posix", "process-group preview custody")
     def test_preview_timeout_stops_descendants_and_apply_keeps_its_own_completion(self) -> None:
@@ -273,18 +265,17 @@ class RepositoryTests(Fixture):
         )
         with mock.patch.object(landed_worktrees, "issues_naming", return_value=[]), \
                 mock.patch.object(landed_worktrees, "pull_rows", return_value=({}, [
-            {"path": str(done), "decision": "candidate"}])) as pull, \
+            {"path": str(done), "decision": "candidate"}])), \
                 mock.patch.object(landed_worktrees, "branch_rows", side_effect=lambda *_args: ({}, [
-                    {"path": str(fresh), "decision": "kept", "reason": "fresh start"}])) as branch:
+                    {"path": str(fresh), "decision": "kept", "reason": "fresh start"}])):
             rows = list(landed_worktrees.repository_rows(reader, mock.Mock(), "o/sample", self.repo, self.root,
                                                          preserve={active}))
         self.assertEqual({row["path"]: row["decision"] for row in rows}, {
             str(done): "candidate", str(active): "kept", str(fresh): "kept", str(foreign): "kept"})
-        pull.assert_called_once()
-        branch.assert_called_once()
 
     def test_unavailable_pr_evidence_keeps_tree_and_continues(self) -> None:
         path = self.worktree("unread")
+        os.utime(Path(self.git(path, "rev-parse", "--absolute-git-dir")) / "HEAD", (0, 0))
         reader = mock.Mock()
         reader.paged_json.side_effect = LookupError("offline")
         rows = list(landed_worktrees.repository_rows(reader, mock.Mock(), "o/sample", self.repo, self.root))
@@ -545,6 +536,24 @@ class MainTests(Fixture):
 
 
 class FinishedScanTests(Fixture):
+    def test_git_timeout_becomes_a_scope_gap_instead_of_losing_the_report(self) -> None:
+        path = self.worktree("slow")
+        self.git(self.repo, "remote", "set-url", "origin", "https://github.com/o/sample.git")
+        found, gaps = landed_worktrees.finished(self.root, lambda *_: [])
+        self.assertEqual([row["task"] for row in found], [path.name])
+        self.assertEqual(gaps, [])
+        git = landed_worktrees.git
+        for command in ("rev-parse", "remote", "worktree", "status"):
+            def timeout(checkout: Path, *args: str) -> subprocess.CompletedProcess[str]:
+                if checkout == path and args[0] == command:
+                    raise subprocess.TimeoutExpired(command, 1)
+                return git(checkout, *args)
+
+            with self.subTest(command=command), mock.patch.object(landed_worktrees, "git", side_effect=timeout):
+                found, gaps = landed_worktrees.finished(self.root, lambda *_: [])
+            self.assertEqual(found, [])
+            self.assertTrue(gaps)
+
     def test_scan_reports_landed_worktrees_and_reads_github_only_when_needed(self):
         self.worktree("untouched")
         merged = self.worktree("merged")

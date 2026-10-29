@@ -70,7 +70,8 @@ Rules for this brief (every Supervisor brief carries them):
   does not block read-only work that answers it.
 - Work in your own linked worktree from
   `<catalog>/skills/github/scripts/dev-worktree /absolute/repository <slug> origin/main`
-  ([task worktrees](../../github/references/worktrees.md)). Never edit a
+  ([task worktrees](../../github/references/worktrees.md)), allowing at least
+  the documented command time where the harness sets a timeout. Never edit a
   primary checkout. Commit and push with
   `<catalog>/skills/github/scripts/git-commit-as-bot`
   and `git-push-as-bot`, with `--worktree /absolute/task/path` first on both.
