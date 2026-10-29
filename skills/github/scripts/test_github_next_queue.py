@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from unittest.mock import Mock, patch
 
+import github_client
 import github_direction_next as direction
 import github_next_queue as queue
 import github_plan_claim as claim
@@ -566,12 +567,49 @@ def test_milestone_flag_follows_open_dependencies_without_assuming_their_status(
             elif state in ['underway', 'waiting']:
                 assert result[flag] is True, (relation, state, result)
             elif state in ['available', 'transitive']:
-                assert result[flag] in [False, None], (relation, state, result)
+                assert result[flag] is False, (relation, state, result)
                 blocker = next(row for row in result['candidates'] if row['number'] == raws[1 if state == 'available' else 2]['number'])
-                if relation == 'blocked_by' and state == 'available':
-                    assert blocker['overall_milestone_context']['state'] == 'unknown'
+                assert blocker['overall_milestone_context']['titles'] == [raws[0]['milestone']['title']]
+                assert blocker['category'] == 'milestone'
+                assert blocker['milestone'] is None
             else:
                 assert result[flag] is None, (relation, state, result)
+
+
+def test_discovered_prerequisites_rank_with_listed_or_client_milestone_through_the_cli() -> None:
+    for seed in ['listed', 'client']:
+        for relation in ['blocked_by', 'sub_issues']:
+            rows = [cli.global_issue('someone/product', number,
+                body='## Current Status\nNext actor: agent\nNext action: Complete the item.') for number in [1, 2, 3, 4]]
+            for raw in rows:
+                raw['user'] = {'login': 'bot'}
+            rows[0]['milestone'] = cli.milestone_data(1, 'First', created_at='2026-01-01T00:00:00Z')
+            rows[3]['milestone'] = cli.milestone_data(2, 'Second', created_at='2026-01-01T00:00:00Z')
+            if seed == 'client':
+                rows[0].update(milestone=None, user={'login': 'client'})
+            edges = {(rows[index]['repo'], rows[index]['number']): cli.relationships(**{relation: [rows[index + 1]]})
+                     for index in [0, 1]}
+            roots = [cli.track('someone/direction', 90 + index, title) for index, title in enumerate(['First', 'Second'])]
+            with cli.global_fixture(roots, rows, edges, discovered=list(reversed(rows)), clear_waits=rows) as (module, result, _reads):
+                module.load_direction = lambda *_: '# Direction\n## Milestones\n- `First`\n- `Second`\n'
+                module.discover_direction_work = lambda *_args, **_kwargs: (list(reversed(rows)), {
+                    'complete': True, 'repositories': [{'repo': rows[0]['repo'], 'direction': module.load_direction()}]})
+
+                def annotate(items: list[dict], _args: object) -> dict:
+                    for row in items:
+                        row['queue'] = queue.classify(row, evidence(), trusted={'someone', 'client', 'bot'})
+                    return {'repositories': {}}
+
+                module.annotate_next_queue = annotate
+                with patch.object(github_client, 'recorded_client', return_value={
+                    'status': 'recorded', 'source': 'repo_people_overlay', 'login': 'client'}):
+                    module.cmd_next(cli.next_args())
+                available = result['available_candidates']
+                assert [row['number'] for row in available] == [rows[2]['number'], rows[3]['number']], (seed, relation, result)
+                assert available[0]['category'] == 'milestone'
+                assert available[0]['overall_milestone_context']['titles'] == ['First']
+                assert available[0]['milestone'] is None
+                assert result['all_listed_milestones_have_no_available_item'] is False
 
 
 if __name__ == '__main__':

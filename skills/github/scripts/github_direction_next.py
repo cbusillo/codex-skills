@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import github_plan_graph
@@ -529,53 +530,72 @@ def overall_milestone_context(
     return {"state": "none_found" if complete else "unknown", "titles": [], "source": "checked_native_ancestry_and_repository_direction" if complete else "incomplete_context"}
 
 
-def no_available_milestone_item(
-    graph: dict[str, Any], entries: list[dict[str, Any]], available: list[dict[str, Any]], *,
+def issue_key(item: dict[str, Any]) -> tuple[str, int]:
+    return item["repo"].casefold(), item["number"]
+
+
+@dataclass
+class MilestoneScope:
+    contexts: dict[tuple[str, int], dict[str, Any]]
+    edges: dict[tuple[str, int], set[tuple[str, int]]]
+    missing: bool
+
+
+def resolve_milestone_scope(
+    graph: dict[str, Any], entries: list[dict[str, Any]], *,
     milestone_titles: list[str], repository_waypoints: dict[str, list[str] | None],
-    coverage_complete: bool,
-) -> bool | None:
-    def matched(candidate: dict[str, Any]) -> bool:
-        return overall_milestone_context(candidate, graph, milestone_titles, repository_waypoints)["state"] == "matched"
-
-    def key(candidate: dict[str, Any]) -> tuple[str, int]:
-        return candidate["repo"].casefold(), candidate["number"]
-
+) -> MilestoneScope:
     indexed: dict[tuple[str, int], dict[str, Any]] = {}
     for item in entries:
-        indexed.setdefault(key(item), item)
-    edges = {ident: {key(dependency) for dependency in [*item.get("blocked_by", []), *item.get("open_sub_issues", [])]}
+        indexed.setdefault(issue_key(item), item)
+    edges = {ident: {issue_key(dependency) for dependency in [*item.get("blocked_by", []), *item.get("open_sub_issues", [])]}
              for ident, item in indexed.items()}
-    pending = [ident for ident, item in indexed.items() if matched(item)]
-    scope: set[tuple[str, int]] = set()
+    contexts = {ident: overall_milestone_context(item, graph, milestone_titles, repository_waypoints)
+                for ident, item in indexed.items()}
+    pending = [ident for ident, context in contexts.items() if context["state"] == "matched"]
     missing = False
     while pending:
         ident = pending.pop()
-        if ident in scope:
-            continue
-        if ident not in indexed:
-            missing = True
-            continue
-        scope.add(ident)
-        pending.extend(edges[ident] - scope)
-    if any(key(item) in scope for item in available):
+        for dependency in edges[ident]:
+            if dependency not in indexed:
+                missing = True
+                continue
+            context = contexts[dependency]
+            titles = set(context["titles"]) | set(contexts[ident]["titles"])
+            if titles == set(context["titles"]):
+                continue
+            contexts[dependency] = {"state": "matched", "titles": [title for title in milestone_titles if title in titles],
+                                    "source": "native_milestone_scope"}
+            pending.append(dependency)
+    return MilestoneScope(contexts, edges, missing)
+
+
+def no_available_milestone_item(
+    graph: dict[str, Any], entries: list[dict[str, Any]], available: list[dict[str, Any]], *,
+    scope: MilestoneScope, milestone_titles: list[str], repository_waypoints: dict[str, list[str] | None],
+    coverage_complete: bool,
+) -> bool | None:
+    indexed = {issue_key(item): item for item in reversed(entries)}
+    matched = {ident for ident, context in scope.contexts.items() if context["state"] == "matched"}
+    if any(issue_key(item) in matched for item in available):
         return False
-    if missing or not coverage_complete or not graph.get("dependency_context", {}).get("complete"):
+    if scope.missing or not coverage_complete or not graph.get("dependency_context", {}).get("complete"):
         return None
-    remaining = set(scope)
+    remaining = set(matched)
     while remaining:
-        leaves = {ident for ident in remaining if not edges[ident].intersection(remaining)}
+        leaves = {ident for ident in remaining if not scope.edges[ident].intersection(remaining)}
         if not leaves:
             return None
         remaining.difference_update(leaves)
     for item in indexed.values():
         if item.get("exclusion") in {"completed", "outside_direction_tracks"}:
             continue
-        context = overall_milestone_context(item, graph, milestone_titles, repository_waypoints)
+        context = scope.contexts[issue_key(item)]
         if context["state"] == "unknown":
             ancestry = overall_milestone_context({**item, "blocking": []}, graph, milestone_titles, repository_waypoints)
             if ancestry["state"] != "none_found":
                 return None
-    for ident in scope:
+    for ident in matched:
         item = indexed[ident]
         discussion = item.get("discussion") or {}
         if not discussion.get("complete") or discussion.get("ancestry_complete") is False:
@@ -682,9 +702,15 @@ def rank_portfolio_work(
              "excluded": [client_milestone(item) for item in graph.get("excluded", [])]}
     discoveries = [client_milestone(item) for item in discoveries]
     findings = list(graph.get("findings", []))
+    scope = resolve_milestone_scope(graph, [*graph.get("candidates", []), *discoveries, *graph.get("excluded", [])],
+                                   milestone_titles=milestone_titles, repository_waypoints=repository_waypoints or {})
+
+    def milestone_context(item: dict[str, Any]) -> dict[str, Any]:
+        scoped_context = scope.contexts.get(issue_key(item))
+        return scoped_context if scoped_context is not None else overall_milestone_context(item, graph, milestone_titles, repository_waypoints or {})
 
     def checked_wait(item: dict[str, Any]) -> dict[str, Any]:
-        if overall_milestone_context(item, graph, milestone_titles, repository_waypoints or {})["state"] != "matched":
+        if milestone_context(item)["state"] != "matched":
             return {key: value for key, value in item.items() if key != "_own_exclusion"}
         if item.get("exclusion") == "parent_waiting":
             valid_parent = None
@@ -735,10 +761,7 @@ def rank_portfolio_work(
             continue
         seen.add(key)
         item: dict[str, Any] = {**raw, "availability": "needs_review"}
-        item["overall_milestone_context"] = overall_milestone_context(
-            item, graph, milestone_titles,
-            repository_waypoints or {},
-        )
+        item["overall_milestone_context"] = milestone_context(item)
         if item.get("exclusion"):
             excluded.append(item)
             continue
@@ -800,7 +823,7 @@ def rank_portfolio_work(
             entry = {**entry, "wait_finding": invalid_waits[entry["url"]]}
         if entry.get("exclusion") in {"completed", "stale_needs_review", "outside_direction_tracks"} or (entry.get("queue") or {}).get("reason") == "recorded_next_actor":
             continue
-        milestone_context = overall_milestone_context(entry, graph, milestone_titles, repository_waypoints or {})
+        context = milestone_context(entry)
         body = (entry.get("discussion") or {}).get("body", "")
         status = section_map(body).get("Current Status", "")
         rows = waiting_records(entry, status, reference_repositories=reference_repositories)
@@ -811,7 +834,7 @@ def rank_portfolio_work(
                      "references": [], "non_external": True,
                      **({"source": "legacy_wait_review"} if entry.get("wait_review_required") or (entry.get("queue") or {}).get("wait_review_required") else {})}]
         for row in rows:
-            row = {**row, "milestone": entry.get("milestone"), "overall_milestone_context": milestone_context}
+            row = {**row, "milestone": entry.get("milestone"), "overall_milestone_context": context}
             key = (row["repo"].casefold(), row["number"], row["waiting_for"])
             if key in seen_waits:
                 continue
@@ -842,7 +865,7 @@ def rank_portfolio_work(
         "recorded_waits": recorded_waits, "stale_waits": stale_waits, "excluded": excluded,
         "tooling_capacity_context": {},
         "all_listed_milestones_have_no_available_item": no_available_milestone_item(
-            graph, entries, available, milestone_titles=milestone_titles,
+            graph, entries, available, scope=scope, milestone_titles=milestone_titles,
             repository_waypoints=repository_waypoints or {}, coverage_complete=coverage_complete,
         ),
         "findings": findings,
