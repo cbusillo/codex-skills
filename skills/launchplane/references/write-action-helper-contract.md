@@ -324,6 +324,18 @@ Confirmed local absence skips this helper; the GitHub skill's
 direction and instruction precedence when choosing a landing route.
 A read grants no merge authority.
 
+Add `--include-config-authority` to include each target's
+`configAuthorityEventsEnabled` and `configAuthorityPublisher` metadata. The
+event flag follows the service policy contract: an omitted optional flag is
+disabled. This option also reads the existing service-context runtime-settings
+endpoint and projects only its nonsecret checks App selector and that read's
+trace id. It does not resolve credentials or verify an installation, parser,
+subscription or event execution. Missing, withheld or invalid selector evidence
+stays `unknown`; an inherited global selector alone also stays unknown. A
+denied settings read remains denied. Other setting values and repositories
+are withheld. The two reads have separate traces and are not an atomic snapshot;
+refresh them before binding a transition to current policy.
+
 ## Odoo addon settings
 
 `odoo-addon-settings-dry-run` and `odoo-addon-settings-apply` call

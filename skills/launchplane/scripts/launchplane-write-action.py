@@ -6417,7 +6417,7 @@ def summarize_merge_train_policy_read(
     if provider_payload.get("status") != "ok" or record.get("status") != "active" or not isinstance(policies, list) or not policies:
         raise LaunchplaneSafetyError("invalid_response")
     repository = public_identifier(request.get("repository"))
-    targets: list[dict[str, str]] = []
+    targets: list[dict[str, object]] = []
     seen: set[tuple[str, str]] = set()
     for value in policies:
         target = _require_dict(value)
@@ -6440,11 +6440,16 @@ def summarize_merge_train_policy_read(
                 "baseBranch": public_identifier(branch),
                 "readyLabel": raw_label,
             })
+            if request.get("include_config_authority"):
+                enabled = target.get("config_authority_events_enabled", False)
+                if not isinstance(enabled, bool):
+                    raise LaunchplaneSafetyError("invalid_response")
+                targets[-1]["configAuthorityEventsEnabled"] = enabled
     summary = {
         "source": "launchplane",
         "status": "enrolled" if targets else "not_enrolled",
         "enabled": bool(targets),
-        "targets": sorted(targets, key=lambda entry: entry["baseBranch"]),
+        "targets": sorted(targets, key=lambda entry: cast(str, entry["baseBranch"])),
         "policy": {
             "record_id": public_identifier(record.get("record_id")),
             "updated_at": public_timestamp(record.get("updated_at")),
@@ -6603,6 +6608,35 @@ def summarize_names_only_read(
     return payload
 
 
+def summarize_config_authority_publisher(provider_payload: dict[str, Any]) -> dict[str, object]:
+    metadata = summarize_names_only_read(
+        request={"operation": "context-runtime-settings-read", "context": "launchplane", "instance": ""},
+        provider_payload=provider_payload,
+    )
+    result = _require_dict(metadata["result"])
+    if result["records_truncated"] or result["names_truncated"]:
+        raise LaunchplaneSafetyError("invalid_response")
+    contexts = [
+        record for record in provider_payload["settings"]
+        if record.get("scope") == "context"
+        and record.get("context") == "launchplane"
+        and record.get("instance") == ""
+    ]
+    if len(contexts) > 1:
+        raise LaunchplaneSafetyError("invalid_response")
+    selector_key = "LAUNCHPLANE_ADVISORY_GITHUB_APP_ID"
+    app_id: int | None = None
+    if contexts and selector_key in contexts[0]["keys"] and selector_key not in contexts[0]["withheld_keys"]:
+        values = _require_dict(contexts[0].get("values"))
+        value = values.get(selector_key)
+        if isinstance(value, str) and value.strip().isdecimal() and int(value) > 0:
+            app_id = int(value)
+    return {
+        "status": "configured" if app_id is not None else "unknown", "app_id": app_id,
+        "trace_id": public_trace_id(provider_payload.get("trace_id")),
+    }
+
+
 PRODUCT_READ_SUMMARIZERS.update({command: summarize_names_only_read for command in NAMES_ONLY_READS})
 
 
@@ -6627,7 +6661,15 @@ def execute_product_read(
             query=query or {},
             timeout=args.timeout,
         )
-        emit(summarize(request=request, provider_payload=provider_payload))
+        payload = summarize(request=request, provider_payload=provider_payload)
+        if operation == "merge-train-policy-read" and request.get("include_config_authority"):
+            publisher = request_launchplane_read(
+                service_url=settings["service_url"],
+                path=helper_command_path("context-runtime-settings-read").format(context="launchplane"),
+                settings=settings, query={}, timeout=args.timeout,
+            )
+            _require_dict(payload["result"])["configAuthorityPublisher"] = summarize_config_authority_publisher(publisher)
+        emit(payload)
         return 0
     except urllib.error.HTTPError as exc:
         emit_http_error_payload(operation=operation, request=request, exc=exc)
@@ -11586,6 +11628,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     policy_read.add_argument("--repo", help="GitHub OWNER/REPO; otherwise resolve origin.")
     policy_read.add_argument("--repo-root", default=".")
+    policy_read.add_argument("--include-config-authority", action="store_true")
 
     preflight = subparsers.add_parser(
         "product-config-preflight", help="Preflight product-config intent without plaintext."
@@ -12546,9 +12589,11 @@ def main(argv: list[str]) -> int:
                     raise ValueError("repository_unresolved")
             except (ValueError, ImportError) as exc:
                 raise ValueError("repository_unresolved") from exc
-            request = {"repository": public_identifier(repository)}
+            policy_request: dict[str, object] = {"repository": public_identifier(repository)}
+            if args.include_config_authority:
+                policy_request["include_config_authority"] = True
             return execute_product_read(
-                args=args, operation=args.command, request=request,
+                args=args, operation=args.command, request=policy_request,
                 path=helper_command_path(args.command),
             )
         if args.command == "operator-config-diagnostic":
