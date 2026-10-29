@@ -3293,12 +3293,12 @@ def claim_once(args: argparse.Namespace) -> None:
             # handoff qualification. Unqualified PRs supply no source context.
             prepared["error"] = error
             return prepared
-        qualified_ids = {pull["number"] for pull in handoff["qualified"]}
         phase["retained_pr_numbers"] = {pull["number"] for pull in handoff["qualified"]
                                         if pull.get("state") == "open"}
         for pull in target_pulls:
-            if pull["number"] not in qualified_ids and (
-                    pull["number"] not in handoff["named"] or pull.get("state") != "closed"):
+            if pull["number"] not in handoff["named"] or not github_plan_claim.is_retained_work(
+                    pull, author=source["author"], issue_repo=issue_repo, issue_number=source_number,
+                    target_repo=target_repo, include_closed_unmerged=True):
                 continue
             target, sections, target_comments = handoff_record(pull)
             if "claim_wait" not in target:

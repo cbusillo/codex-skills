@@ -3055,6 +3055,50 @@ class ClaimTests(unittest.TestCase):
                     self.assertIn(f"https://github.com/owner/repo/pull/{place}", self.comments[-1]["body"])
                     self.assertIn(wait_record.marker(wait), self.issue["body"])
 
+    def test_dk273_handoff_context_does_not_gate_retained_successor(self) -> None:
+        for cross_repo, held in product((False, True), (None, "99", "100")):
+            with self.subTest(cross_repo=cross_repo, held=held):
+                self.setUp()
+                self.ordinary_handoff_fixture()
+                source_repo = "other/plans" if cross_repo else self.args.repo
+                if cross_repo:
+                    self.args.issue = f"{source_repo}#42"
+                    self.args.planning_checkout = "/verified/plans"
+                    self.planning_inventory = {"worktrees": [], "local_branches": [], "remote_branches": []}
+                    for pull in [*self.pulls, *self.closed_pulls.values()]:
+                        pull["body"] = f"Refs {source_repo}#42"
+                self.comments[-1]["body"] = (
+                    f"Released claim 1\n\nRetained PR handoff: https://github.com/{self.args.repo}/pull/99, "
+                    f"https://github.com/{self.args.repo}/pull/100\n\n"
+                    "Policy card Q881 is registered on direction#98. Current Status preserves #42, with #274 as a child.\n"
+                    "Next actors: devkit agent fixes #274 and readies #273; then verify CM #245 and CM Website #212.\n"
+                    "These bot PRs are context, not retained implementation branches.\n"
+                    "Native blocker: https://github.com/other/devkit/issues/274.\n"
+                    "Context: other/devkit#273, https://github.com/other/website/pull/212.\n"
+                    f"Consumer proof: {self.args.repo}#245, https://github.com/{self.args.repo}/pull/212."
+                )
+                for number in (212, 245, 273, 274):
+                    self.closed_pulls[number] = {
+                        **copy.deepcopy(self.closed_pulls[100]), "number": number,
+                        "body": "Refs #7", "head": {"ref": "work/unrelated", "repo": {"full_name": self.args.repo}},
+                    }
+                    self.targets[str(number)] = {
+                        **copy.deepcopy(self.targets["100"]), "number": number, "body": "Refs #7",
+                    }
+                    self.target_comments[f"/repos/{self.args.repo}/issues/{number}/comments"] = []
+                    self.record_wait(target=str(number))
+                if held:
+                    self.record_wait(target=held)
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                        self.run_claim()
+                    self.assertEqual(caught.exception.code, "claim_wait_unresolved")
+                    waiting = caught.exception.payload["waiting_record"]
+                    self.assertEqual((waiting["repo"], waiting["number"]), (self.args.repo, int(held)))
+                    self.assert_no_writes()
+                else:
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
     def test_ordinary_recovery_records_newly_verified_pr_wait_in_current_status(self):
         self.ordinary_handoff_fixture()
         self.run_claim()
