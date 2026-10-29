@@ -25,6 +25,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import uuid
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -1440,8 +1441,7 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
                 raise ValueError("fresh --ledger registration needs the managed remote route")
             args.ledger.parent.mkdir(parents=True, exist_ok=True)
             for choice in choices:
-                with tempfile.NamedTemporaryFile(dir=args.ledger.parent, prefix=".native-launch-", delete=False) as stream:
-                    choice["native_receipt"] = stream.name
+                choice["native_receipt"] = str(args.ledger.parent / f".native-launch-{uuid.uuid4()}.json")
         command_texts = [with_account(text, choice, brief,
                                      coordinate=not app and choice.get("tools", {}).get("route") != "local")
                          for text, choice, brief, app in zip(command_texts, choices, briefs, apps)]
@@ -1606,6 +1606,8 @@ async def register_fresh_launch(args: argparse.Namespace, result: dict, choice: 
     if not isinstance(path, Path) or getattr(args, "resume_session_id", None):
         return
     from codex_session_proxy import read_launch_receipt
+    if choice is None:
+        choice = {"provider": "openai", "env": {"CODEX_HOME": result["codex_home"]}}
     receipt_path = result.get("native_receipt") or (choice or {}).get("native_receipt")
     if not isinstance(receipt_path, str) or not receipt_path:
         raise ValueError("registration needs the retained native launch receipt")
@@ -1974,7 +1976,7 @@ def main():
         try:
             if args.entry_file:
                 import session_record
-                result = json.loads(args.entry_file.read_text())
+                result = session_record.normalize_ledger_entry(args.ledger, json.loads(args.entry_file.read_text()))
                 session_record.session_status(result)
                 append_launch_ledger(args.ledger, result)
                 print(json.dumps({"session_id": result["session_id"], "ledger_recorded": True}))

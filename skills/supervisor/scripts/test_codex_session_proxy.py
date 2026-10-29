@@ -57,9 +57,8 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             choice = {"provider": "openai", "env": {"CODEX_HOME": str(f.home)}, "native_receipt": str(native_receipt)}
             transcript_text = f.transcript.read_text()
             f.transcript.unlink()
-            async def publish_transcript(_delay: float) -> None:
-                f.transcript.write_text(transcript_text + '{"type":')
-            with patch.object(asyncio, "sleep", side_effect=publish_transcript), patch.object(session_liveness, "inventory", return_value=processes):
+            asyncio.get_running_loop().call_soon(f.transcript.write_text, transcript_text + '{"type":')
+            with patch.object(session_liveness, "inventory", return_value=processes):
                 await iterm_tab.register_fresh_launch(Namespace(ledger=ledger), receipt, choice)
             entry = json.loads(ledger.read_text())[0]
             self.assertEqual(entry["session_id"], f.session)
@@ -69,6 +68,11 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 iterm_tab.append_launch_ledger(ledger, entry)
             self.assertEqual(len(json.loads(ledger.read_text())), 1)
+            recovered = {key: receipt[key] for key in ("session_id", "tty", "window_id", "tab_id", "codex_home", "native_receipt")}
+            recovery_ledger = f.root / "recovery-ledger.json"
+            with patch.object(session_liveness, "inventory", return_value=processes):
+                await iterm_tab.register_fresh_launch(Namespace(ledger=recovery_ledger), recovered, None)
+            self.assertEqual(json.loads(recovery_ledger.read_text())[0]["session_id"], f.session)
         finally:
             (f.root / "stop").touch()
             await asyncio.wait_for(task, 8)
@@ -102,6 +106,21 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
         recorded = json.loads(ledger.read_text())
         self.assertEqual({row.get("session_id") for row in recorded}, {None, f.session, OTHER_THREAD})
         self.assertIn(unbound, recorded)
+
+    def test_invalid_native_launch_path_reports_once_without_retrying_publication(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            receipt = home / "receipt.json"
+            ingress = proxy.Ingress(home)
+            ingress.launch_metadata = {"launch_pid": 123}
+            for path in (None, str(home / "outside.jsonl")):
+                ingress.launch_receipt = receipt
+                ingress.publish_launch({"id": OTHER_THREAD, "path": path})
+                with self.assertRaises(ValueError) as caught:
+                    proxy.read_launch_receipt(receipt)
+                self.assertEqual(str(caught.exception), json.loads(receipt.read_text())["error"])
+                self.assertIsNone(ingress.launch_receipt)
 
     async def test_tmux_launch_reattachment_finishes_with_or_without_a_queue_nudge(self) -> None:
         import iterm_tab

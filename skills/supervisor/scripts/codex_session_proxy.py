@@ -347,11 +347,13 @@ class Ingress:
             raise ValueError("native launch receipt was not requested")
         path = Path(thread.get("path") or "/").resolve()
         if not path.is_relative_to((self.home / "sessions").resolve()):
-            raise ValueError("started native transcript is outside the selected home")
+            payload = {"error": "started native transcript is outside the selected home or unavailable"}
+        else:
+            payload = {**self.launch_metadata, "session_id": thread["id"], "transcript": str(path),
+                       "pid": self.launch_metadata["launch_pid"], "tty": self.child_tty}
         with tempfile.NamedTemporaryFile("w", dir=destination.parent, delete=False) as stream:
             temporary = Path(stream.name)
-            json.dump({**self.launch_metadata, "session_id": thread["id"], "transcript": str(path),
-                       "pid": self.launch_metadata["launch_pid"], "tty": self.child_tty}, stream)
+            json.dump(payload, stream)
         try:
             os.replace(temporary, destination)
             self.launch_receipt = None
@@ -363,6 +365,8 @@ def read_launch_receipt(path: Path) -> dict:
     receipt = json.loads(path.expanduser().read_text())
     if not isinstance(receipt, dict):
         raise ValueError("native launch receipt must be an object")
+    if receipt.get("error"):
+        raise ValueError(str(receipt["error"]))
     if (any(not isinstance(receipt.get(key), str) or not receipt[key] for key in (
             "session_id", "codex_home", "transcript", "launch_generation", "launch_started_at", "tty"))
             or type(receipt.get("launch_pid")) is not int or receipt["launch_pid"] <= 0
@@ -421,10 +425,7 @@ async def run_client(home: Path, native: list[str], *, session: str | None = Non
                         ingress.launch_metadata = {key: proxy[key] for key in (
                             "codex_home", "launch_pid", "launch_generation", "launch_started_at")}
                         ingress.child_tty = os.ttyname(0).removeprefix("/dev/") if os.isatty(0) else "?"
-                        exit_code = await asyncio.to_thread(child.wait)
-                        if exit_code is None:
-                            raise ValueError("native client did not report an exit code")
-                        return exit_code
+                        return int(await asyncio.to_thread(child.wait))
                     finally:
                         if child.poll() is None:
                             child.terminate()
