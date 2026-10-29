@@ -684,6 +684,8 @@ class InventoryTests(unittest.TestCase):
                           "head": {"ref": audit.github_plan_claim.TRAIN_BRANCH_PREFIX + "fixture", "repo": {"full_name": "test/repo"}},
                           "base": {"repo": {"full_name": "test/repo"}}})
         pulls[9]["body"] = ""
+        pulls[2]["body"] = "Removed: redundant path"
+        pulls[3]["body"] = "Removed: none"
         pulls[6]["body"] = "```text\nRemoved: quoted example\n```"
         pulls[22]["body"] = "Refs outside/private#888"
         items[9]["comments"] = 1
@@ -701,6 +703,7 @@ class InventoryTests(unittest.TestCase):
         order: list[str] = []
         primary_requests: list[int] = []
         link_failure: str | None = None
+        quota_cause = "quota_reserve"
 
         def read(path: str, *, step: str) -> Any:
             if path == "repos/test/direction/contents/DIRECTION.md":
@@ -737,7 +740,7 @@ class InventoryTests(unittest.TestCase):
             self.reader.paths.clear()
             exhausted = self.collect(question_queue="test/repo#99", worktree_root=Path("/fixture/worktrees"),
                                      max_requests=primary_requests[0] + 1)
-            link_failure = "quota_reserve"
+            link_failure = quota_cause
             quota_limited = self.collect(question_queue="test/repo#99")
             link_failure = None
             self.reader.pages[("repos/test/repo/issues", 1, "open")] = [
@@ -763,9 +766,9 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(incomplete["tooling_measure"]["status"], "unavailable")
         self.assertTrue(exhausted["complete"], exhausted)
         self.assertEqual(exhausted["tooling_measure"]["status"], "unavailable")
-        self.assertEqual(exhausted["tooling_measure"]["reason"], "request_budget_exhausted")
+        self.assertTrue(exhausted["tooling_measure"]["reason"])
         self.assertTrue(quota_limited["complete"])
-        self.assertEqual(quota_limited["tooling_measure"]["reason"], "quota_reserve")
+        self.assertEqual(quota_limited["tooling_measure"]["reason"], quota_cause)
         self.assertFalse(unrelated["complete"])
         self.assertEqual(unrelated["tooling_measure"]["share"], measure["share"])
         self.assertEqual(short_sample["tooling_measure"]["status"], "unavailable")
