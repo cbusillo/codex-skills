@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import runpy
 import shlex
 import subprocess
 import tempfile
@@ -213,13 +214,25 @@ def _reconcile_runtime_checkout(
     runtime_path, runtime_root, receipt["runtime_home_source"] = next(
         (item for item in matches if current_branch(item[1]) == default_branch), matches[0]
     )
-    runtime_common_dir = source_common_dir  # a matching binding shares it by definition
 
     receipt["binding"] = "shared_git_common_dir"
     receipt["applicable"] = True
 
+    return reconcile_checkout(source_root, runtime_root, runtime_path, receipt, helper_relative_path)
+
+
+def reconcile_checkout(
+    source_root: Path,
+    runtime_root: Path,
+    runtime_path: Path | None,
+    receipt: dict[str, Any],
+    helper_relative_path: Path = HELPER_IN_CATALOG,
+) -> dict[str, Any]:
+    default_branch = receipt["base_branch"]
+    expected_repo = receipt["expected_repo"]
+    landing_sha = receipt["landing_sha"]
     try:
-        with reconciliation_lock(runtime_common_dir):
+        with reconciliation_lock(git_common_dir(runtime_root)):
             blockers = runtime_blockers(runtime_root, default_branch)
             if blockers:
                 receipt["blockers"] = blockers
@@ -248,6 +261,15 @@ def _reconcile_runtime_checkout(
             before_sha = git_text(runtime_root, "rev-parse", "HEAD")
             receipt["before_sha"] = before_sha
             remote_ref = f"refs/remotes/origin/{default_branch}"
+            if runtime_path is None:
+                upstream = git_text(runtime_root, "for-each-ref",
+                                    "--format=%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream)",
+                                    f"refs/heads/{default_branch}").split("\0")
+                if (len(upstream) != 3 or not all(upstream) or upstream[0] == "."
+                        or upstream[1] != f"refs/heads/{default_branch}"
+                        or git_text(runtime_root, "config", "--get", f"remote.{upstream[0]}.url") != origin_url):
+                    return finish(receipt, "blocked", "primary_upstream_mismatch")
+                remote_ref = upstream[2]
             try:
                 git_text(
                     runtime_root,
@@ -261,7 +283,7 @@ def _reconcile_runtime_checkout(
                 return finish(receipt, "retryable", "fetch_failed")
 
             blockers = runtime_blockers(runtime_root, default_branch)
-            if blockers:
+            if blockers or git_text(runtime_root, "rev-parse", "HEAD") != before_sha:
                 receipt["blockers"] = blockers
                 receipt["after_sha"] = safe_git_text(runtime_root, "rev-parse", "HEAD")
                 return finish(receipt, "blocked", "runtime_changed_during_reconciliation")
@@ -269,71 +291,71 @@ def _reconcile_runtime_checkout(
             fetched_sha = git_text(runtime_root, "rev-parse", remote_ref)
             current_sha = git_text(runtime_root, "rev-parse", "HEAD")
             receipt["fetched_sha"] = fetched_sha
-            if landing_sha is None:
-                landing_sha = receipt["landing_sha"] = fetched_sha
+            if runtime_path is not None:
+                if landing_sha is None:
+                    landing_sha = receipt["landing_sha"] = fetched_sha
 
-            if not git_object_exists(runtime_root, landing_sha):
-                receipt["after_sha"] = current_sha
-                return finish(receipt, "retryable", "landing_sha_unavailable")
-            if not git_is_ancestor(runtime_root, landing_sha, fetched_sha):
-                receipt["after_sha"] = current_sha
-                return finish(receipt, "failed", "landing_not_on_default_tip")
-            if not git_is_first_parent(runtime_root, landing_sha, fetched_sha):
-                receipt["after_sha"] = current_sha
-                return finish(receipt, "failed", "landing_not_on_first_parent")
-            receipt["landing_relation"] = "first_parent_ancestor"
-            landing_default_branch = default_branch_at_revision(source_root, landing_sha)
-            if landing_default_branch and landing_default_branch != default_branch:
-                receipt["after_sha"] = current_sha
-                return finish(receipt, "failed", "landing_default_branch_mismatch")
+                if not git_object_exists(runtime_root, landing_sha):
+                    receipt["after_sha"] = current_sha
+                    return finish(receipt, "retryable", "landing_sha_unavailable")
+                if not git_is_ancestor(runtime_root, landing_sha, fetched_sha):
+                    receipt["after_sha"] = current_sha
+                    return finish(receipt, "failed", "landing_not_on_default_tip")
+                if not git_is_first_parent(runtime_root, landing_sha, fetched_sha):
+                    receipt["after_sha"] = current_sha
+                    return finish(receipt, "failed", "landing_not_on_first_parent")
+                receipt["landing_relation"] = "first_parent_ancestor"
+                landing_default_branch = default_branch_at_revision(source_root, landing_sha)
+                if landing_default_branch and landing_default_branch != default_branch:
+                    receipt["after_sha"] = current_sha
+                    return finish(receipt, "failed", "landing_default_branch_mismatch")
 
-            executing_helper = Path(__file__).read_bytes()
-            receipt["helper_sha256"] = hashlib.sha256(executing_helper).hexdigest()
-            try:
-                landing_helper = git_blob_bytes(
-                    source_root,
-                    landing_sha,
-                    helper_relative_path,
-                )
-                tip_helper = git_blob_bytes(
-                    source_root,
-                    fetched_sha,
-                    helper_relative_path,
-                )
-                landing_helper_oid = git_text(
-                    source_root,
-                    "rev-parse",
-                    f"{landing_sha}:{helper_relative_path.as_posix()}",
-                )
-                tip_helper_oid = git_text(
-                    source_root,
-                    "rev-parse",
-                    f"{fetched_sha}:{helper_relative_path.as_posix()}",
-                )
-            except GitCommandError:
-                receipt["after_sha"] = current_sha
-                return finish(receipt, "failed", "landed_helper_missing")
+                executing_helper = Path(__file__).read_bytes()
+                receipt["helper_sha256"] = hashlib.sha256(executing_helper).hexdigest()
+                try:
+                    landing_helper = git_blob_bytes(
+                        source_root,
+                        landing_sha,
+                        helper_relative_path,
+                    )
+                    tip_helper = git_blob_bytes(
+                        source_root,
+                        fetched_sha,
+                        helper_relative_path,
+                    )
+                    landing_helper_oid = git_text(
+                        source_root,
+                        "rev-parse",
+                        f"{landing_sha}:{helper_relative_path.as_posix()}",
+                    )
+                    tip_helper_oid = git_text(
+                        source_root,
+                        "rev-parse",
+                        f"{fetched_sha}:{helper_relative_path.as_posix()}",
+                    )
+                except GitCommandError:
+                    receipt["after_sha"] = current_sha
+                    return finish(receipt, "failed", "landed_helper_missing")
 
-            receipt["helper_blob_oid"] = landing_helper_oid
-            receipt["helper_tip_blob_oid"] = tip_helper_oid
-            canonical_executing_helper = canonical_script_bytes(executing_helper)
-            receipt["helper_landing_verified"] = (
-                canonical_executing_helper == canonical_script_bytes(landing_helper)
-            )
-            receipt["helper_tip_verified"] = (
-                canonical_executing_helper == canonical_script_bytes(tip_helper)
-            )
-            if not (receipt["helper_landing_verified"] and receipt["helper_tip_verified"]):
-                receipt["after_sha"] = current_sha
-                receipt["detail"] = (
-                    "This copy of the helper differs from the landed one. Run the copy in a worktree "
-                    f"checked out at {fetched_sha}."
+                receipt["helper_blob_oid"] = landing_helper_oid
+                receipt["helper_tip_blob_oid"] = tip_helper_oid
+                canonical_executing_helper = canonical_script_bytes(executing_helper)
+                receipt["helper_landing_verified"] = (
+                    canonical_executing_helper == canonical_script_bytes(landing_helper)
                 )
-                if not receipt["helper_landing_verified"]:
-                    return finish(receipt, "failed", "helper_landing_source_mismatch")
-                return finish(receipt, "failed", "helper_tip_source_mismatch")
-            receipt["helper_source_verified"] = True
-
+                receipt["helper_tip_verified"] = (
+                    canonical_executing_helper == canonical_script_bytes(tip_helper)
+                )
+                if not (receipt["helper_landing_verified"] and receipt["helper_tip_verified"]):
+                    receipt["after_sha"] = current_sha
+                    receipt["detail"] = (
+                        "This copy of the helper differs from the landed one. Run the copy in a worktree "
+                        f"checked out at {fetched_sha}."
+                    )
+                    if not receipt["helper_landing_verified"]:
+                        return finish(receipt, "failed", "helper_landing_source_mismatch")
+                    return finish(receipt, "failed", "helper_tip_source_mismatch")
+                receipt["helper_source_verified"] = True
             if not git_is_ancestor(runtime_root, current_sha, fetched_sha):
                 receipt["after_sha"] = current_sha
                 if git_is_ancestor(runtime_root, fetched_sha, current_sha):
@@ -342,7 +364,7 @@ def _reconcile_runtime_checkout(
 
             if current_sha == fetched_sha:
                 receipt["after_sha"] = current_sha
-                if not runtime_binding_matches(runtime_path, runtime_common_dir):
+                if runtime_path is not None and not runtime_binding_matches(runtime_path, git_common_dir(runtime_root)):
                     return finish(receipt, "failed", "postcondition_runtime_binding_changed")
                 return finish(receipt, "already_current", "runtime_current")
 
@@ -384,9 +406,9 @@ def _reconcile_runtime_checkout(
             if post_blockers:
                 receipt["blockers"] = post_blockers
                 return finish(receipt, "failed", "postcondition_runtime_not_clean")
-            if not runtime_binding_matches(runtime_path, runtime_common_dir):
+            if runtime_path is not None and not runtime_binding_matches(runtime_path, git_common_dir(runtime_root)):
                 return finish(receipt, "failed", "postcondition_runtime_binding_changed")
-            if not git_is_first_parent(runtime_root, landing_sha, after_sha):
+            if landing_sha is not None and not git_is_first_parent(runtime_root, landing_sha, after_sha):
                 return finish(receipt, "failed", "postcondition_landing_missing")
             return finish(receipt, "synchronized", "runtime_fast_forwarded")
     except GitCommandError as exc:
@@ -399,6 +421,34 @@ def _reconcile_runtime_checkout(
         receipt["after_sha"] = safe_git_text(runtime_root, "rev-parse", "HEAD")
         receipt["runtime_mutated"] = receipt["after_sha"] != receipt["before_sha"]
         return finish(receipt, "failed", "unexpected_os_error")
+
+
+def reconcile_primary_checkout(checkout: Path, *, timeout_seconds: float = 30) -> dict[str, Any]:
+    token = RECONCILIATION_DEADLINE.set(time.monotonic() + timeout_seconds)
+    try:
+        common = git_common_dir(checkout)
+        if common.name != ".git":
+            raise ValueError("Unsupported primary checkout layout")
+        primary = common.parent
+        failures = []
+        for binding, _, authoritative in runtime_skills_paths():
+            status, reason, root = inspect_binding(binding, common)
+            if root == primary:
+                namespace = runpy.run_path(str(primary / HELPER_IN_CATALOG))
+                expected_repo = repository_from_remote_url(git_text(checkout, "config", "--get", "remote.origin.url"))
+                remaining = max(0, RECONCILIATION_DEADLINE.get() - time.monotonic())
+                return namespace["reconcile_runtime_checkout"](primary, expected_repo, None, timeout_seconds=remaining)
+            if status == "failed" and authoritative:
+                failures.append(reason)
+        if failures:
+            raise ValueError(f"Cannot rule out a runtime binding: {', '.join(failures)}")
+        receipt = base_receipt(None)
+        receipt.update(kind="primary_checkout_refresh", applicable=True,
+                       base_branch=resolve_default_branch(checkout),
+                       expected_repo=repository_from_remote_url(git_text(checkout, "config", "--get", "remote.origin.url")))
+        return reconcile_checkout(checkout, primary, None, receipt)
+    finally:
+        RECONCILIATION_DEADLINE.reset(token)
 
 
 def base_receipt(landing_sha: str | None) -> dict[str, Any]:
@@ -583,6 +633,11 @@ def runtime_blockers(runtime_root: Path, default_branch: str) -> list[str]:
         blockers.append("runtime_hidden_index_state")
     if git_text(runtime_root, "status", "--porcelain=v1", "--untracked-files=all"):
         blockers.append("runtime_dirty")
+    for operation in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "rebase-merge",
+                      "rebase-apply", "sequencer", "BISECT_LOG", "BISECT_START"):
+        if Path(git_text(runtime_root, "rev-parse", "--path-format=absolute", "--git-path", operation)).exists():
+            blockers.append("runtime_git_operation")
+            break
     return blockers
 
 

@@ -273,6 +273,17 @@ def test_reconcile_ignores_inherited_git_worktree_environment(tmp_path: Path) ->
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
 
 
+def test_reconcile_preserves_a_clean_runtime_with_a_paused_git_operation(tmp_path: Path) -> None:
+    fixture = build_runtime_fixture(tmp_path)
+    operation = Path(git(fixture.runtime, "rev-parse", "--path-format=absolute", "--git-path", "CHERRY_PICK_HEAD"))
+    operation.write_text(fixture.head_sha)
+    proc, receipt = fixture.run()
+    assert proc.returncode == 2
+    assert receipt["fetched_sha"] is None
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
+    assert operation.read_text() == fixture.head_sha
+
+
 def test_reconcile_blocks_dirty_runtime_without_fetching_or_mutating(tmp_path: Path) -> None:
     fixture = build_runtime_fixture(tmp_path)
     (fixture.runtime / "dirty.txt").write_text("dirty\n")

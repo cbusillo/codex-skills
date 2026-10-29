@@ -59,8 +59,8 @@ harness. Runtime bindings go through that checkout's own reconciler, without
 a landing SHA. Otherwise it requires a clean primary checkout already on the
 configured default branch, an upstream on the source origin and no active Git
 operation, then uses the pinned fast-forward above. Dirty, other-branch, ahead,
-diverged or ambiguous checkouts stay untouched; the helper reports the stale
-checkout and continues task creation. Lock and read checks have a 30-second
+diverged or ambiguous checkouts stay untouched; the helper reports the receipt
+or unavailable reason and continues task creation. Lock and read checks have a 30-second
 budget; an already-started fast-forward finishes its postconditions. A runtime
 reconciler source mismatch stays stale with its existing recovery instructions.
 The explicit task start remains unchanged.

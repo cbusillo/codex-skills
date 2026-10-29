@@ -188,7 +188,8 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual(self.git("rev-parse", "HEAD", repo=Path(result.stdout.strip())), self.initial)
 
     def test_unavailable_checkout_rules_do_not_prevent_creation(self) -> None:
-        for failure in (FileNotFoundError("partial sync"), SyntaxError("invalid helper")):
+        for failure in (FileNotFoundError("partial sync"), SyntaxError("invalid helper"), ImportError("missing helper name"),
+                        TypeError("older runtime API"), AttributeError("renamed runtime API")):
             with mock.patch.object(dev_worktree, "checkout_rules", side_effect=failure), \
                     mock.patch.object(dev_worktree, "configuration", return_value=(self.base, None)), \
                     mock.patch.object(dev_worktree, "retire_finished"), \
