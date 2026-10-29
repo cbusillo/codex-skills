@@ -170,7 +170,7 @@ from prose or merged PRs.
   cannot replace the missing field.
 
 `underway` includes observed claims and issue-linked artifacts. For a PR, an
-old branch or worktree alone does not establish an active owner: its recorded
+old branch or worktree alone does not establish an active worker: its recorded
 actor decides, or it enters `needs_status`. Artifacts remain custody evidence
 for mandatory claim preflight. `verification_only` and `scope_review`, with their count
 keys, stay present and empty for one release for caller compatibility.

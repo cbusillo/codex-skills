@@ -2360,7 +2360,7 @@ Current claims, named agents and current-head Ready remain underway; drafts,
 Client-wait handoffs remain held until Launchplane records acceptance for that
 head; other structured waits still hold. The PR and remote head are its work
 record. Retained local artifacts require custody checks at claim time; by
-themselves they do not establish an active owner or replace a missing actor.
+themselves they do not establish an active worker or replace a missing actor.
 `pr_followthrough` preserves the non-dependency compatibility view. A stale
 canonical issue wait never hides that PR; fresh claim/readiness and Client
 authority checks still apply. Repository-local PR projections retain their
@@ -2435,7 +2435,7 @@ beyond ordinary repository list bounds, pass their inventory through
 beside the ranked list; ranking alone cannot find omitted issues.
 
 `graph_context` covers native traversal; `discovery_context` covers repository
-inventory and record reads; neither proves active ownership. Global reads are
+inventory and record reads; neither proves active workership. Global reads are
 complete by default. `--repo-limit`, `--repository-issue-limit`, `--comment-limit`
 and `--scan-limit` opt into partial evidence, with no family or held-repository
 allowances. `candidate_coverage` reports incomplete source, traversal or ownership
