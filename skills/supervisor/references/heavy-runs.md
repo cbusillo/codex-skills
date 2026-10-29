@@ -102,7 +102,10 @@ with `docker image save --output images.tar REVIEWED_IMAGE`. Keep the original
 index and its content when the fixture uses a repository@index-digest reference:
 do not pass `--platform`, which replaces that index with a platform manifest.
 All content needed by the export must be cached; an incomplete cache refuses
-export. A platform-filtered archive instead retains the platform-manifest
+export. Prepare that original image again through its supported image path
+before exporting; do not change the host's storage settings. This preparation
+requires a host that already uses the containerd store. A platform-filtered
+archive instead retains the platform-manifest
 reference, not the original index. Classic-store archives cannot supply missing
 original manifests. Do not recreate digest aliases or substitute a mutable tag.
 
@@ -147,8 +150,9 @@ state or volume survives outer-job removal. `HEAVY_VM_DISK_GIB` and
 `HEAVY_VM_TIMEOUT_SECONDS` in the container environment select scratch capacity
 and the bounded run deadline; defaults live in the image's [runner](../assets/native-docker/run.py).
 Account for archives, source, filesystem caches, VM memory and output growth
-before intake. CPU emulation is slower than a bare host and proves no production
-timing or capacity. The existing executor's headroom checks still apply.
+before intake. The containerd store keeps both compressed image content and
+unpacked snapshots on that disk. CPU emulation is slower than a bare host and
+proves no production timing or capacity. The existing executor's headroom checks still apply.
 Keep result files and verbose logs in `/workspace/results` before the command exits.
 VM controls and the raw disk stay outside that copied/exported workspace. The image
 returns the guest command's status and fails on missing completion evidence,
@@ -168,10 +172,11 @@ the reviewed archives and an `images.json` array. Each entry supplies `tag`,
 addresses expected after import), and `missing_references` (original addresses
 omitted by that export). Run `python3 /workspace/native-image-import.py` as the
 manifest command. Use small AMD64 images that provide `true`. Cover a cached
-registry platform export, a complete local-build index export and a filtered
-local-build export separately. The test checks real execution, `RepoDigests`,
+registry index and platform export, a complete local-build index export and a
+filtered local-build export separately. The test checks real execution, `RepoDigests`,
 `Config.Image` and refusal of missing content, without asserting daemon flags,
 versions or configuration text.
+This native workload is manual qualification, not an offline CI test.
 
 ## Host settings and queue
 
