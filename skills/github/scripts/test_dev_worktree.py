@@ -160,7 +160,8 @@ class WorktreeTests(unittest.TestCase):
                 marker.unlink()
         with mock.patch.dict(os.environ, self.env, clear=True):
             receipt = dev_worktree.checkout_rules().reconcile_primary_checkout(self.repo)
-        self.assertFalse(receipt["ok"])
+        self.assertEqual(receipt["status"], "failed")
+        self.assertEqual(receipt["failed_operation"], ValueError.__name__)
         self.assertFalse(receipt["runtime_mutated"])
         self.assertEqual(self.git("rev-parse", "HEAD"), self.initial)
 
@@ -209,7 +210,8 @@ class WorktreeTests(unittest.TestCase):
             fcntl.flock(lock, fcntl.LOCK_EX)
             with mock.patch.dict(os.environ, self.env, clear=True):
                 receipt = dev_worktree.checkout_rules().reconcile_primary_checkout(self.repo)
-            self.assertFalse(receipt["ok"])
+            self.assertEqual(receipt["status"], "blocked")
+            self.assertEqual(receipt["reason_code"], "runtime_reconciliation_busy")
             self.assertFalse(receipt["runtime_mutated"])
             result = subprocess.run([sys.executable, str(SCRIPT), str(self.repo), "busy", self.initial],
                                     env=self.env, capture_output=True, text=True, timeout=10)
@@ -242,6 +244,16 @@ class WorktreeTests(unittest.TestCase):
             receipt = rules.reconcile_primary_checkout(self.repo)
         self.assertFalse(receipt["runtime_mutated"])
         self.assertEqual(self.git("rev-parse", "HEAD"), self.initial)
+
+    def test_primary_preflight_errors_do_not_report_a_mutation(self) -> None:
+        self.prepare_upstream()
+        rules = dev_worktree.checkout_rules()
+        for failure in (rules.GitCommandError("status"), OSError("unreadable index")):
+            with mock.patch.dict(os.environ, self.env, clear=True), patch_attr(rules, "runtime_blockers", side_effect=failure):
+                receipt = rules.reconcile_primary_checkout(self.repo)
+            self.assertFalse(receipt["runtime_mutated"])
+            self.assertIsNone(receipt["before_sha"])
+            self.assertEqual(self.git("rev-parse", "HEAD"), self.initial)
 
     def test_creation_preserves_unsafe_primary_checkouts(self) -> None:
         self.prepare_upstream()

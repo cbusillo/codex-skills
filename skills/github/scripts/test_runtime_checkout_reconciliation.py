@@ -281,7 +281,7 @@ def test_reconcile_keeps_the_original_git_identity_for_binding_postconditions(tm
     def replace_git_directory(repo: Path, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
         result = run_git(repo, *args, **kwargs)
         if args[0] == "merge":
-            (fixture.runtime / ".git").rename(fixture.runtime / "original-git")
+            (fixture.runtime / ".git").rename(tmp_path / "original-git")
             (fixture.runtime / ".git").write_text(f"gitdir: {fixture.landing / '.git'}\n")
         return result
 
@@ -290,7 +290,7 @@ def test_reconcile_keeps_the_original_git_identity_for_binding_postconditions(tm
     with mock.patch.dict(os.environ, environment), \
             mock.patch.dict(namespace["reconcile_checkout"].__globals__, {"run_git": replace_git_directory}):
         receipt = namespace["reconcile_runtime_checkout"](fixture.merged, fixture.repo, fixture.landing_sha)
-    assert not receipt["ok"]
+    assert receipt["reason_code"] == "postcondition_runtime_binding_changed"
     assert receipt["runtime_mutated"]
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
 

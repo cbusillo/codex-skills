@@ -427,12 +427,12 @@ def reconcile_checkout(
     except GitCommandError as exc:
         receipt["failed_operation"] = exc.operation
         receipt["after_sha"] = safe_git_text(runtime_root, "rev-parse", "HEAD")
-        receipt["runtime_mutated"] = receipt["after_sha"] != receipt["before_sha"]
+        receipt["runtime_mutated"] = receipt["before_sha"] is not None and receipt["after_sha"] != receipt["before_sha"]
         return finish(receipt, "failed", "unexpected_git_error")
     except OSError as exc:
         receipt["failed_operation"] = type(exc).__name__
         receipt["after_sha"] = safe_git_text(runtime_root, "rev-parse", "HEAD")
-        receipt["runtime_mutated"] = receipt["after_sha"] != receipt["before_sha"]
+        receipt["runtime_mutated"] = receipt["before_sha"] is not None and receipt["after_sha"] != receipt["before_sha"]
         return finish(receipt, "failed", "unexpected_os_error")
 
 
