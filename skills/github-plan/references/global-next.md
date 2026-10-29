@@ -173,8 +173,7 @@ every retained artifact has a running session. `verification_only` reports a
 recorded qualification frontier after delivered source or before a conditionally
 gated later source step. `scope_review` reports delivered slices whose remaining
 scope is routed separately or unclear. Role descriptions do not count as action
-predicates; delivered GUI attachment diagnosis stays follow-through unless the
-action names source work. These reports do not close an issue,
+predicates; an action assigned to the Supervisor stays a scoped handoff. These reports do not close an issue,
 clear a hold, or prove its whole finish line complete. Reconcile qualification-only
 come-back steps under GitHub's
 [issue closing guidance](../../github/references/repo-workflow.md#issue-closing-and-post-merge-proof)

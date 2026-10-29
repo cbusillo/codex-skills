@@ -63,6 +63,21 @@ def test_october_16_delivered_and_unstarted_status_shapes() -> None:
         assert classify(item(action, 'Active; first slice merged'))['state'] == 'available'
 
 
+def test_role_descriptions_preserve_actions_and_supervisor_followthrough() -> None:
+    for action in [
+        'Supervisor diagnoses the continuing app-selection timeout.',
+        'Supervisor investigates why exact-path selection of /Applications/Mediaforce.app times out.',
+        'Supervisor diagnoses the Computer Use timeout (error code -10005).',
+        'Supervisor repairs the Computer Use attachment, then retries captures.',
+        'Supervisor fixes the GUI route.',
+    ]:
+        assert classify(item(action, 'Active; source merged'))['state'] == 'scope_review'
+    for action in ['An observation worker captures light/dark screenshots of the delivered build.',
+                   'Test worker runs the smoke on the deployed image.']:
+        assert classify(item(action, 'Active; source merged'))['state'] == 'verification'
+    assert classify(item('Implement the canonical parser.', 'Source delivery remains blocked; design review is complete'))['state'] == 'available'
+
+
 def test_source_work_is_visible_without_caller_snapshot_but_requires_claim() -> None:
     result = classify(item())
     assert result['state'] == 'available'
