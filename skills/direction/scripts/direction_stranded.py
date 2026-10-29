@@ -561,6 +561,74 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                             "GitHub enqueue/blocked labels are existing helper views, not train custody authority; service-only holds are outside coverage."]}
 
 
+def tooling_measure(
+    records: list[dict], *, owner: str | None, since: dt.datetime, now: dt.datetime,
+    fetch: Any, incomplete: bool,
+) -> dict:
+    result: dict = {"status": "unavailable", "rows": [], "reason": "inventory incomplete"}
+    if incomplete or not owner:
+        return result
+    try:
+        direction_repo = f"{owner}/direction"
+        text = audit.merged_direction(direction_repo, fetch=fetch)
+        if not text:
+            raise audit.AuditError("merged overall direction unavailable")
+        own_label = audit.own_project_label(direction_repo)
+        own_projects = audit.own_project_patterns(text, own_label=own_label)
+        tracked, errors = audit.tracked_capacity_issues(direction_repo, text, since, fetch=fetch)
+        if errors:
+            raise audit.AuditError("milestone classification incomplete")
+        candidates = []
+        for record in records:
+            item = record["item"]
+            if record.get("trigger_only") or item.get("state") != "closed" or "pull_request" not in item:
+                continue
+            if audit.github_plan_claim.is_train_batch(item):
+                continue
+            reference = item["pull_request"]
+            if "merged_at" not in reference:
+                reference = fetch(["api", f"repos/{record['repo']}/pulls/{item['number']}"])
+            merged = stamp(reference.get("merged_at"))
+            if "merged_at" not in reference or (reference["merged_at"] is not None and merged is None):
+                raise audit.AuditError("PR merge time unavailable")
+            if merged and since <= merged <= now:
+                candidates.append((merged, record))
+        candidates.sort(key=lambda pair: (pair[0], pair[1]["repo"], pair[1]["item"]["number"]), reverse=True)
+        for merged, record in candidates:
+            repo, item = record["repo"], record["item"]
+            pull = fetch(["api", f"repos/{repo}/pulls/{item['number']}"])
+            if not isinstance(pull.get("labels"), list):
+                raise audit.AuditError("PR labels unavailable")
+            pull["_native_issue_refs"] = audit.native_pull_issue_refs(repo, item["number"], fetch=fetch)
+            own_issues = set()
+            for ref in audit.pull_issue_refs(repo, pull):
+                linked = fetch(["api", f"repos/{ref[0]}/issues/{ref[1]}"])
+                if not isinstance(linked.get("labels"), list):
+                    raise audit.AuditError("linked issue labels unavailable")
+                if own_label.casefold() in labels(linked):
+                    own_issues.add(ref)
+            if audit.capacity_rank(repo, pull, own_projects=own_projects, tracked_issues=tracked,
+                                   own_label=own_label, own_issues=own_issues) != "tooling":
+                continue
+            if any(type(pull.get(key)) is not int or pull[key] < 0 for key in ("additions", "deletions")):
+                raise audit.AuditError("PR line counts unavailable")
+            url = f"https://github.com/{repo}/pull/{item['number']}"
+            statements = [(url, pull.get("body") or ""),
+                          *((comment["html_url"], comment.get("body") or "") for comment in record["comments"])]
+            removed = [source for source, body in statements
+                       if re.search(r"(?im)^[ \t]*(?:[-*][ \t]+)?Removed:[ \t]*\S", body.replace("**", ""))]
+            result["rows"].append({"url": url, "merged_at": merged.isoformat(),
+                                   "net_lines": pull["additions"] - pull["deletions"], "removed": removed})
+            if len(result["rows"]) == 20:
+                qualifying = sum(row["net_lines"] <= 0 and bool(row["removed"]) for row in result["rows"])
+                return {**result, "status": "complete", "reason": None, "qualifying": qualifying,
+                        "share": qualifying / len(result["rows"]), "classification_source": direction_repo}
+        result["reason"] = "fewer than 20 tooling merges in selected history"
+    except (audit.AuditError, KeyError, TypeError, ValueError, AttributeError):
+        result["reason"] = "PR evidence or classification unavailable"
+    return result
+
+
 def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
             history_days: int = 30, max_requests: int = 800, max_pages: int = 20,
             quota_reserve: int = 250, owner: str | None = None, director_names: tuple[str, ...] = (),
@@ -581,18 +649,29 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
     def fetch(args):
         nonlocal reads, budget
         path = args[1]
-        if path not in cache:
+        cache_key = json.dumps(args) if path == "graphql" else path
+        if cache_key not in cache:
             if reads >= budget:
                 raise audit.AuditError("request_budget_exhausted")
             reads += 1
             try:
-                cache[path] = reader.get_json(path, step="stranded_inventory")
+                if path == "graphql":
+                    parameters = dict(argument.split("=", 1) for argument in args[3::2])
+                    query = parameters.pop("query")
+                    if "number" in parameters:
+                        parameters["number"] = int(parameters["number"])
+                    response = reader.graphql_json(query, parameters, step="stranded_tooling_links")
+                    if not response.ok:
+                        raise audit.AuditError("native PR links unavailable")
+                    cache[cache_key] = response.body
+                else:
+                    cache[cache_key] = reader.get_json(path, step="stranded_inventory")
             except (github_read.GitHubReadError, github_read.GitHubReadShapeError, TimeoutError) as exc:
                 cause = getattr(getattr(getattr(exc, "result", None), "failure", None), "cause", None)
                 if cause in {"quota_reserve", "deadline_exceeded", "cancelled"} or isinstance(exc, TimeoutError):
                     budget = reads
                 raise audit.AuditError(cause or type(exc).__name__) from exc
-        return cache[path]
+        return cache[cache_key]
 
     def listing(path, *, stop=None):
         try:
@@ -921,6 +1000,9 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                 delivery_view["complete"] = True
         except (ValueError, TypeError, KeyError, AttributeError) as error:
             gaps.append({"source": question_queue, "reason": "question_delivery_contract_error", "error_type": type(error).__name__})
+    selected_owners = {repo.split('/')[0] for repo in repos}
+    measure = tooling_measure(records, owner=owner or director or (next(iter(selected_owners)) if len(selected_owners) == 1 else None),
+                              since=history_start, now=now, fetch=fetch, incomplete=bool(gaps))
     result = report(records, now=now, age_hours=age_hours,
                     trusted=bots,
                     owners={director} if director else {r.split('/')[0] for r in repos} | ({owner} if owner else set()),
@@ -931,7 +1013,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                         worktree_root, fetch, gaps,
                         lambda slug: slug.casefold() in repos or (owner or "").casefold() == slug.split("/")[0].casefold(),
                     ) if worktree_root else None)
-    result.update({"repositories": repos, "operational_registers": [f"{r['repo']}:{r['path']}" for r in registers], "checked_records": len(records), "attempted_records": attempted_records, "requests": reads,
+    result.update({"tooling_measure": measure, "repositories": repos, "operational_registers": [f"{r['repo']}:{r['path']}" for r in registers], "checked_records": len(records), "attempted_records": attempted_records, "requests": reads,
                    "history_days": history_days, "closed_trigger_history": "all", "quota_reserve": quota_reserve, "policy_reads": policy_reads})
     return result
 
@@ -985,6 +1067,15 @@ def train_policy(repo: str, *, deadline_at: float) -> dict | None:
 def markdown(result: dict) -> str:
     lines = ["Daily stranded-work sweep", f"Observed: {result['sampled_at']}",
              f"Coverage: {'complete within selected scope' if result['complete'] else 'INCOMPLETE'}; {len(result['findings'])} candidates."]
+    measure: dict = result.get("tooling_measure") or {}
+    if measure:
+        if measure["status"] == "complete":
+            lines.append(f"Tooling PRs: {measure['qualifying']}/{len(measure['rows'])} ({measure['share']:.0%}); net lines <= 0 and Removed:.")
+        else:
+            lines.append(f"Tooling PRs: unavailable; {measure['reason']}.")
+        lines.append(f"Tooling scope: non-archived among {', '.join(result['repositories'])}; history {result['history_days']} days; weekly capacity rank.")
+        for row in measure["rows"]:
+            lines.append(f"  Tooling PR: {row['url']} net lines {row['net_lines']:+d}; Removed: {', '.join(row['removed']) or 'absent'}")
     for row in result["findings"]:
         age = f"{row['age_hours']:g}h" if row["age_hours"] is not None else "age unknown"
         lines.append(f"- {row['kind']} ({age}): {row['url']} — {row['next_actor']}. {row['detail']}")

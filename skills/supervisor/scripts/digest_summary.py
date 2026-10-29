@@ -12,10 +12,6 @@ from dataclasses import dataclass
 
 FINDING = re.compile(r"^- (\w+) \((age unknown|[0-9.]+h)\): (https://github\.com/\S+) — (.*)$")
 PERSON = re.compile(r"\b(?:Chris|cbusillo|Director|Owner)\b", re.IGNORECASE)
-TOOLING_PR = re.compile(
-    r"Tooling PR: (https://github\.com/[\w.-]+/[\w.-]+/pull/[1-9][0-9]*) additions=([0-9]+) deletions=([0-9]+) removed=(yes|no)"
-)
-TOOLING_SAMPLE_SIZE = 20
 
 
 class DigestError(ValueError):
@@ -66,20 +62,9 @@ def label(text: str, length: int) -> str:
     return text if len(text) <= length else text[:length - 1] + "…"
 
 
-def tooling_measure(report: str) -> str:
-    unavailable = next((line for line in report.splitlines() if line.startswith("Tooling PRs: unavailable;")), None)
-    if unavailable:
-        return unavailable
-    evidence = [TOOLING_PR.fullmatch(line) for line in report.splitlines() if line.startswith("Tooling PR:")]
-    if (len(evidence) != TOOLING_SAMPLE_SIZE or not all(evidence)
-            or len({row[1].casefold() for row in evidence if row}) != TOOLING_SAMPLE_SIZE):
-        return "Tooling PRs: unavailable; need 20 distinct tooling PR evidence rows."
-    qualifying = sum(int(row[2]) <= int(row[3]) and row[4] == "yes" for row in evidence if row)
-    return f"Tooling PRs: {qualifying}/{len(evidence)} ({qualifying / len(evidence):.0%}); net lines <= 0 and Removed:."
-
-
 def header(report: str, date: str, coverage: str) -> list[str]:
-    return [f"Daily digest · {date} · {coverage}", tooling_measure(report)]
+    measure = next((line for line in report.splitlines() if line.startswith("Tooling PRs: ")), None)
+    return [f"Daily digest · {date} · {coverage}", *([measure[:240]] if measure else [])]
 
 
 def summary(report: str, full_list_url: str) -> str:

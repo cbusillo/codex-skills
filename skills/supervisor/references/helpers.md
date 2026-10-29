@@ -559,17 +559,15 @@ unavailable in the digest. Never interpret a failed read as zero work.
 
 For the digest, also use `github-work-rollup` for human comments, `github` for
 Dependabot/security signals and `infra-ops` for authorized live-site checks.
-Report the share of the last 20 merged tooling PRs, newest merge first,
-whose GitHub additions minus deletions are at or below zero and whose PR body
-or discussion states `Removed:`. Reuse the direction audit's tooling
-classification and existing GitHub reads; exclude train batch PRs. Keep the
-20 PR links and `Removed:` evidence in the full report. For each selected PR,
-include a line shaped `Tooling PR: https://github.com/OWNER/REPO/pull/N additions=A deletions=D removed=yes`
-(use `removed=no` when absent). The existing digest sender computes and includes
-the share in both short-summary paths. The target is 70%, never a delivery gate.
-If the selection or reads are incomplete, write `Tooling PRs: unavailable;`
-with the reason instead of a percentage; do not substitute zero or a smaller
-denominator. This uses the existing digest, with no separate collector or job.
+The scheduled stranded-work report also computes the share of the last 20
+merged tooling PRs whose net lines are at or below zero and which state
+`Removed:`. It reuses the weekly capacity rank, excluding train batches,
+within the report's selected non-archived repositories and history window. Its full report
+keeps the PR links, line counts and statement evidence; its short summary keeps
+the measure. Reuse that result in the Supervisor's morning digest, including
+its scope or unavailable reason. Incomplete reads or fewer than 20 tooling
+merges report unavailable. The target is 70%, never a delivery gate. No
+separate collector, job or manually supplied evidence rows are required.
 Include the run's privately recorded capacity deadlines. Post the Director's
 question queue under the shared
 [queue rules](../../references/talking-with-the-director.md#decisions-holds-and-work-state);
