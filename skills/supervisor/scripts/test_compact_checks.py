@@ -294,7 +294,7 @@ class OperationTests(unittest.TestCase):
                 read = AsyncMock(return_value={"screen": ["› " + (draft or ""), *footer],
                                                "input_line": {"line_index": 0, "style": "non_dim", "text": draft}})
                 press = AsyncMock()
-                with patch.object(iterm_tab.asyncio, "sleep", new=AsyncMock()), self.assertRaises(iterm_tab.SendFailure):
+                with patch_attr(iterm_tab.asyncio, "sleep", new=AsyncMock()), self.assertRaises(iterm_tab.SendFailure):
                     asyncio.run(iterm_tab.submit_message("exact", text, True, read, press))
                 press.assert_not_awaited()
         class Terminal:
