@@ -379,7 +379,7 @@ Page checks are headless; explicit GUI tasks use the linked GUI/browser route.
 Desktop IDE closure does not establish that headless inspection is unavailable.
 Before batches, compare recent opened/merged PRs; when merges lag without an
 available merge-path repair, launch finishing work only. Workers report on child
-issues; parents hold in-place Current Status and decisions. Local heavy Docker
+issues; Track parents hold proof, decisions and their finish line. Local heavy Docker
 runs use [one locked entrypoint](references/heavy-runs.md).
 
 Director questions live on their item's issue and the shared queue. Write from

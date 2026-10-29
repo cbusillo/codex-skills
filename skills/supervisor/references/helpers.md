@@ -247,7 +247,8 @@ Use `--format json` for full rows/diagnostics, `markdown` for titles and actions
 or `links` to omit those Client details. Closed children remain closed despite
 stale labels. Child Current Status and decisions use shared planning authority;
 missing child status/action is explicit, never guessed. Track state comes only
-from native descendants: running claims, structured waits with their end
+from native descendants: unreleased claims (including verified release receipts
+and locally observed lease expiry), structured waits with their end
 conditions, open PRs and unanswered Director questions. Descendants are grouped
 as running, waiting or available; closed, held and unknown records stay explicit.
 Track Current Status is neither read nor maintained. Assess each Track's own

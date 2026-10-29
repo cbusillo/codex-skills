@@ -2111,8 +2111,7 @@ def test_milestone_outcomes_report_closures_links_and_checked_finish_line_items(
     assert thin["milestone"] == "Thin fork decision" and thin["complete"], thin
     assert thin["tracks"] == ["https://github.com/o/direction/issues/1"]
     assert thin["closure_reviews"][0]["track_proof"] == "Ship the spike."
-    assert thin["closure_reviews"][0]["recorded_status"] == module.github_direction_next.section_map(
-        completion["body"])["Current Status"]
+    assert thin["closure_reviews"][0]["recorded_status"] is None
     assert [item["url"] for item in thin["issues_closed"]] == ["https://github.com/x/product/issues/9"]
     assert thin["links_added"] == [{"to": "https://github.com/o/direction/issues/1", "kind": "sub_issue",
                                     "issue": "https://github.com/x/product/issues/9", "added_at": inside}]
@@ -2158,7 +2157,7 @@ def test_milestone_outcomes_report_closures_links_and_checked_finish_line_items(
         return fetch(args)
 
     unordered = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=unread_body_time)[0]
-    assert not unordered["complete"]
+    assert unordered["complete"]
     assert unordered["closure_reviews"][0]["recorded_status"] is None
 
     for response in (None, {}):

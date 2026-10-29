@@ -128,6 +128,66 @@ class GoalBoardTests(unittest.TestCase):
         self.assertFalse(row["children"][1]["claims"])
         self.assertEqual(row["children"][0]["open_prs"][0]["url"], parent["closedByPullRequestsReferences"]["nodes"][0]["url"])
 
+    def test_grandchildren_cannot_mask_missing_direct_children(self) -> None:
+        parent = child(10)
+        parent["subIssuesSummary"]["total"] = 1
+        expanded = {**parent, "subIssues": {"totalCount": 1, "nodes": [child(11)]}}
+        self.reader.graphql_json.side_effect = [ApiResult(ok=True, status=200, body=body) for body in (
+            listing([{"number": 1, "title": "Track: One"}]),
+            details(t1=track(1, children=[parent], total_children=2)), details(t10=expanded))]
+        board = goal_board.goal_board(self.reader, "owner", trusted=TRUSTED, wait_trusted=TRUSTED)
+        self.assertFalse(board["coverage"]["complete"], board)
+        self.assertEqual(board["tracks"][0]["status"], goal_board.UNKNOWN)
+        self.assertEqual([row["number"] for row in board["tracks"][0]["children"]], [10, 11])
+
+    def test_unread_track_does_not_change_a_readable_tracks_state(self) -> None:
+        parent = child(10)
+        parent["subIssuesSummary"]["total"] = 1
+        self.reader.graphql_json.side_effect = [ApiResult(ok=True, status=200, body=body) for body in (
+            listing([{"number": 1, "title": "Track: One"}, {"number": 2, "title": "Track: Two"}]),
+            details(t1=track(1, children=[parent])), details(t2=track(2, children=[child(12)])))] + [
+            ApiResult(ok=False, status=502, body=None)]
+        board = goal_board.goal_board(self.reader, "owner", trusted=TRUSTED, wait_trusted=TRUSTED)
+        self.assertFalse(board["coverage"]["complete"])
+        self.assertEqual(board["tracks"][0]["status"], goal_board.UNKNOWN)
+        self.assertNotEqual(board["tracks"][1]["status"], goal_board.UNKNOWN)
+        self.assertEqual([row["number"] for row in board["tracks"][1]["groups"]["available"]], [12])
+
+    def test_invalid_queue_configuration_preserves_tracks_with_incomplete_coverage(self) -> None:
+        self.reader.graphql_json.side_effect = [ApiResult(ok=True, status=200, body=body) for body in (
+            listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[child(12)])))]
+        with patch.object(goal_board.question_id, "configured_queue", side_effect=ValueError("invalid queue")):
+            board = goal_board.goal_board(self.reader, "owner", trusted=TRUSTED, wait_trusted=TRUSTED)
+        self.assertFalse(board["coverage"]["complete"])
+        self.assertEqual(board["coverage"]["read"], 1)
+        self.assertTrue(board["errors"])
+
+    def test_changed_supervisor_release_evidence_preserves_claim_ownership(self) -> None:
+        from skills.github.scripts import test_gh_plan_release as release_fixtures
+        fixture = release_fixtures.ReleaseHarness()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        self.addCleanup(fixture.f.doCleanups)
+        fixture.args.dry_run = True
+        fixture.run_release()
+        release_body = fixture.f.emitted.call_args.args[0]["release_body"]
+        released = fixture.comment(10, release_body, "2026-10-03T00:00:00Z")
+        discussion = [*fixture.f.comments, released]
+        comments = [comment(source["body"], author={"__typename": "User", "login": source["user"]["login"]},
+                            at=source["created_at"], ident=source["id"]) for source in discussion]
+        row = child(10, comments=comments)
+        row["url"] = "https://github.com/owner/repo/issues/42"
+        row["repository"] = {"nameWithOwner": "owner/repo"}
+        for valid in (True, False):
+            with self.subTest(valid=valid):
+                evidence = fixture.evidence if valid else {**fixture.evidence, "updated_at": "2026-10-03T00:00:00Z"}
+                self.reader.get_json.return_value = evidence
+                board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[row])))
+                self.assertTrue(board["coverage"]["complete"], board)
+                observed = board["tracks"][0]["children"][0]
+                self.assertEqual(bool(observed["claims"]), not valid)
+                self.assertEqual(observed["group"], "available" if valid else "running")
+
     def test_recursive_failure_preserves_siblings_and_reports_unknown(self) -> None:
         parent = child(10)
         parent["subIssuesSummary"]["total"] = 1
@@ -163,6 +223,10 @@ class GoalBoardTests(unittest.TestCase):
                 self.assertEqual(goal_board.latest_decision({"nodes": [decision], "totalCount": 1}, trusted, []),
                                  decision["url"])
                 self.assertEqual(goal_board.handoff(pr(1, comments=[ready]), trusted, []), "ready")
+
+    def setUp(self) -> None:
+        self.enterContext(patch.object(goal_board.question_id, "configured_queue", return_value=None))
+        self.enterContext(patch.object(goal_board.github_plan_claim, "expired_lease_sessions", return_value=set()))
 
     def __init__(self, *args, **kwargs):
         # unittest builds one instance per test method, so each test gets its own reader.

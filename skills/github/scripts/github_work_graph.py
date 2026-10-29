@@ -84,7 +84,7 @@ TRACK_FIELDS = f"""number title url state stateReason body createdAt lastEditedA
       subIssues(first: {CHILD_LIMIT}) {{
         totalCount
         nodes {{
-          number title url state stateReason body createdAt lastEditedAt
+          number title url state stateReason body createdAt lastEditedAt updatedAt
           author {{ __typename login }}
           {BLOCKERS}
           repository {{ nameWithOwner }}

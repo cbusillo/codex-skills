@@ -26,7 +26,7 @@ from skills.github.scripts import github_direction_next, github_next_queue, gith
 import github_read
 import oq
 from skills.direction.scripts import question_id
-from skills.github.scripts import github_plan_claim, github_plan_graph
+from skills.github.scripts import github_plan_claim, github_plan_graph, github_plan_release
 from skills.github.scripts.github_identity import automation_login
 from skills.github.scripts.ready_handoff import HEAD, READY, WAITING, handoff_line, timestamp
 
@@ -198,7 +198,8 @@ def issue_row(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | 
         **read_part("status", unread,
             lambda: derived_status(node, wait_trusted if wait_trusted is not None else trusted, unread),
             {"status": UNKNOWN, "blocked_by": [], "waits": [], "structured_wait": None}),
-        "next_action": read_part("next action", unread, lambda: next_action(node, trusted, unread)),
+        "next_action": ("computed from child records" if node["title"].startswith("Track:") else
+                        read_part("next action", unread, lambda: next_action(node, trusted, unread))),
         "latest_decision": read_part("latest decision", unread,
             lambda: latest_decision(node["comments"], trusted, unread), None)}
 
@@ -222,7 +223,7 @@ def child_activity(node: dict[str, Any], trusted: set[str], unread: list[str]) -
     if truncated(node["comments"]):
         unread.append("claims and questions")
         return {"claims": [], "open_questions": [], "group": "unknown"}
-    comments = [github_work_graph.graphql_comment(comment) for comment in node["comments"]["nodes"]]
+    comments = node.get("_claim_comments") or [github_work_graph.graphql_comment(comment) for comment in node["comments"]["nodes"]]
     ended = github_plan_claim.ended_ownership(comments, {"worktrees": []}, github_plan_claim.expired_lease_sessions(comments))
     conflicts, _ = github_plan_claim.discussion_evidence("", comments,
         {"worker": "", "session": "", "branch": "", "claimed_at": ""},
@@ -295,51 +296,74 @@ def complete_comments(reader: github_read.GitHubReader, node: dict[str, Any]) ->
     node["comments"] = {"totalCount": len(completed["comments"]), "nodes": completed["comments"]}
 
 
+def claim_evidence(reader: github_read.GitHubReader, repo: str, identifier: int) -> dict[str, Any] | None:
+    try:
+        return reader.get_json(f"/repos/{repo}/issues/comments/{identifier}", step="board_claim_evidence")
+    except github_read.GitHubReadError as error:
+        if error.result is not None and error.result.status in {403, 404}:
+            return None
+        raise
+
+
 def descendants(reader: github_read.GitHubReader, node: dict[str, Any], errors: list[str],
                 answers: list[dict[str, Any]], director: str) -> None:
     if not isinstance(node.get("subIssues"), dict):
         return
-    pending = [(child, node["url"]) for child in node["subIssues"]["nodes"]]
-    rows: dict[str, dict[str, Any]] = {}
-    while pending:
-        child, parent = pending.pop(0)
-        if not isinstance(child, dict):
-            rows[f"unread-{len(rows)}"] = child
-            continue
-        url = child["url"]
-        if url == node["url"]:
-            errors.append(f"Track descendant cycle at {url}")
-            continue
-        if url in rows:
-            continue
-        if len(rows) >= 2000:
-            errors.append("Track descendants exceeded 2000 issue bound")
-            break
-        child = dict(child)
-        child.update(parent_url=parent, _question_answers=answers, _director=director)
-        rows[url] = child
+    rows: dict[tuple[str, int], dict[str, Any]] = {}
+    malformed: list[Any] = []
+
+    def register(source: dict[str, Any]) -> list[tuple[str, int]]:
+        children = source["subIssues"]
+        if truncated(children):
+            errors.append(f"{source['url']} direct children incomplete")
+        refs = []
+        for child in children["nodes"]:
+            if not isinstance(child, dict):
+                malformed.append(child)
+                continue
+            key = github_plan_graph.native_issue_key({"html_url": child["url"]})
+            if child["url"] == node["url"]:
+                errors.append(f"Track descendant cycle at {node['url']}")
+                continue
+            if key not in rows:
+                child = dict(child)
+                child.update(parent_url=source["url"], _question_answers=answers, _director=director)
+                rows[key] = child
+            refs.append(key)
+        return refs
+
+    def read_edges(repo: str, number: int) -> list[tuple[str, int]]:
+        child = rows[repo, number]
         try:
-            summary = child["subIssuesSummary"]
-            if summary["total"]:
-                owner, name = child["repository"]["nameWithOwner"].split("/", 1)
-                result = reader.graphql_json(github_work_graph.detail_query([child["number"]]),
+            refs = []
+            if child["subIssuesSummary"]["total"]:
+                owner, name = repo.split("/", 1)
+                result = reader.graphql_json(github_work_graph.detail_query([number]),
                     {"owner": owner, "name": name}, step="board_descendants")
                 if not result.ok or not isinstance(result.body, dict) or result.body.get("errors"):
                     raise ValueError("descendant issue read failed")
-                expanded = result.body["data"]["repository"][f"t{child['number']}"]
-                if expanded["url"] != url:
+                expanded = result.body["data"]["repository"][f"t{number}"]
+                if expanded["url"] != child["url"]:
                     raise ValueError("descendant identity changed")
                 child.update(expanded)
-                children = child["subIssues"]
-                if truncated(children):
-                    raise ValueError("descendant children incomplete")
-                pending.extend((item, url) for item in children["nodes"])
+                refs = register(child)
             complete_comments(reader, child)
+            comments = [github_work_graph.graphql_comment(comment) for comment in child["comments"]["nodes"]]
+            child["_claim_comments"] = github_plan_release.verified_comments(comments,
+                lambda evidence_repo, _number, identifier: claim_evidence(reader, evidence_repo, identifier))
+            return refs
         except (github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError, KeyError, TypeError, AttributeError) as error:
             reason = f"descendants or discussion unread: {error}"
             child.setdefault("_unread", []).append(reason)
-            errors.append(f"{url} {reason}")
-    node["subIssues"] = {"totalCount": max(node["subIssues"]["totalCount"], len(rows)), "nodes": list(rows.values())}
+            errors.append(f"{child['url']} {reason}")
+            return []
+
+    graph = github_plan_graph.walk_native_issues(register(node), read_edges=read_edges, max_nodes=2000)
+    if not graph.complete:
+        errors.append("Track descendants exceeded 2000 issue bound")
+        for unread_key in rows.keys() - graph.nodes:
+            rows[unread_key].setdefault("_unread", []).append("descendant issue bound")
+    node["subIssues"] = {"totalCount": len(rows) + len(malformed), "nodes": [*rows.values(), *malformed]}
 
 
 def goal_board(reader, owner, *, repo="direction", trusted, wait_trusted=None, max_pages=10):
@@ -349,8 +373,15 @@ def goal_board(reader, owner, *, repo="direction", trusted, wait_trusted=None, m
     graph = github_work_graph.read_tracks(reader, owner, repo, max_pages=max_pages)
     tracks, errors = graph["tracks"], graph["errors"]
     answers: list[dict[str, Any]] = []
-    queue = question_id.configured_queue()
-    if queue and queue.split("/", 1)[0].casefold() == owner.casefold():
+    queue = None
+    try:
+        queue = question_id.configured_queue()
+    except ValueError as error:
+        errors.append(f"Question queue configuration unread: {error}")
+    if queue and queue.split("/", 1)[0].casefold() != owner.casefold():
+        errors.append("Configured question queue belongs to a different Director")
+        queue = None
+    if queue:
         queue_repo, number = queue.rsplit("#", 1)
         queue_node: dict[str, Any] = {"number": int(number), "repository": {"nameWithOwner": queue_repo},
                       "comments": {"totalCount": 1, "nodes": []}}
@@ -365,9 +396,10 @@ def goal_board(reader, owner, *, repo="direction", trusted, wait_trusted=None, m
     for track in tracks:
         try:
             node = graph["nodes"][track["number"]]
+            before = len(errors)
             descendants(reader, node, errors, answers, owner)
             row = track_row(node, trusted, wait_trusted)
-            if errors:
+            if len(errors) > before:
                 row["status"] = UNKNOWN
             rows.append({**row, "read": True})
         except (KeyError, TypeError) as error:

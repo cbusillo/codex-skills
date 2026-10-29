@@ -164,8 +164,8 @@ Rules for this brief (every Supervisor brief carries them):
   and keep any number already there. Only a reply from
   cbusillo or a recorded "Director decision" counts
   ([talking with the Director](../../references/talking-with-the-director.md)).
-- Post progress and run results only on your own child issue. The parent holds
-  an in-place Current Status and decisions; do not copy per-slice progress,
+- Post progress and run results only on your own child issue. Track parents hold
+  proof, decisions and their finish line; do not copy per-slice progress,
   acknowledgements or heavy-window requests there. Keep private logs and data
   in local evidence, linking only a public-safe result on the child.
 - For a local heavy Docker run, use the single

@@ -29,7 +29,6 @@ import landed_worktrees
 import github_unanswered_comments as attention
 
 UTC = dt.timezone.utc
-# The Director writes status times in US Eastern ("2:20 PM ET").
 QUESTION = re.compile(r"\bQ[1-9][0-9]*\b")
 PREFIXES = oq.QUESTION_PREFIXES
 COMMENT_LINK = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/\d+#issuecomment-\d+(?!\d)")
