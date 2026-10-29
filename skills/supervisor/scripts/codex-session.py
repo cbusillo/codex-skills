@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,11 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import github_plan_closure as closure
-from github_plan_native import queue_input, cancel_queue
+native_operations = importlib.import_module("github_plan_native")
+queue_input = native_operations.queue_input
+cancel_queue = native_operations.cancel_queue
+QueueNotSent = native_operations.QueueNotSent
+NativeRequestRejected = native_operations.NativeRequestRejected
 from codex_session_proxy import run_client, managed_argv, source_endpoint
 
 
@@ -101,6 +106,10 @@ def main() -> int:
         parser.error("cleanup arguments belong to queue-cancel")
     try:
         return run(args)
+    except QueueNotSent as error:
+        refused = isinstance(error.__cause__, (PermissionError, NativeRequestRejected))
+        print(json.dumps({"ok": False, "error": str(error), "not_sent": not refused}))
+        return 1
     except (KeyError, TypeError):
         if args.command != "queue-cancel":
             raise

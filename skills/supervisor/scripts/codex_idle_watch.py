@@ -9,8 +9,10 @@ from contextlib import ExitStack
 import json
 import math
 import shlex
+import signal
 import subprocess
 import time
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -139,18 +141,28 @@ def reconcile_notification(args: Any) -> int:
     return 0
 
 
-def notify_requests(args: Any, notices: list[dict], delivered: set[str]) -> bool:
+def notification_recipient(args: Any) -> dict:
+    recipients = [entry for entry in load_ledger(args.notify_ledger)
+                  if entry["session_id"] == args.notify_session_id]
+    if len(recipients) != 1 or recipients[0].get("supervisor_owned") is not True:
+        raise ValueError("notification must name exactly one owned native recipient in its existing ledger")
+    if any(entry["session_id"] == args.notify_session_id for entry in load_ledger(args.ledger)):
+        raise ValueError("the Supervisor recipient must not be in the watched worker ledger")
+    return recipients[0]
+
+
+def notify_requests(args: Any, notices: list[dict], delivered: set[str], seen: dict,
+                    stopped: threading.Event | None = None) -> None:
     for notice in notices:
+        if stopped is not None and stopped.is_set():
+            return
         request = notice.get("closeout_request") or notice.get("auth_failure")
         if not isinstance(request, dict) or not request:
             continue
         identity = json.dumps(request, sort_keys=True)
         if identity in delivered:
             continue
-        recipients = [entry for entry in load_ledger(getattr(args, "notify_ledger", None) or args.ledger)
-                      if entry["session_id"] == args.notify_session_id]
-        if len(recipients) != 1:
-            raise ValueError("notification must name exactly one native ledger session")
+        recipient = notification_recipient(args)
         message = json.dumps(notice)
         if notice.get("closeout_request"):
             candidate = finished_map.candidates(args.ledger, request["session_id"])[0]
@@ -163,21 +175,24 @@ def notify_requests(args: Any, notices: list[dict], delivered: set[str]) -> bool
             message = ("Closeout request: " + json.dumps({"closeout_request": candidate["closeout_request"],
                        "needs_verification": candidate["needs_verification"]}) + "\nRead the exact candidate with: " + command
                        + "\nImmediately follow the existing finished-session verification. This notice is not exit authority.")
-        pending = PENDING_NOTIFICATION + json.dumps({"notice": request, "recipient": recipients[0]}, sort_keys=True)
+        pending = PENDING_NOTIFICATION + json.dumps({"notice": request, "recipient": recipient}, sort_keys=True)
         save_delivered(args.delivered_state, delivered | {pending})
         try:
-            review_notifications.send(recipients[0], message)
+            review_notifications.send(recipient, message)
         except review_notifications.NotSent as error:
             save_delivered(args.delivered_state, delivered)
             if error.needs_attention:
                 raise ValueError(str(error)) from error
-            return False
+            if notice.get("session_id"):
+                seen.pop(notice["session_id"], None)
+            else:
+                seen.pop(json.dumps(notice, sort_keys=True), None)
+            continue
         delivered.add(identity)
         save_delivered(args.delivered_state, delivered)
-    return True
 
 
-def watch(args, state: dict | None) -> int:
+def watch(args, state: dict | None, stopped: threading.Event | None = None) -> int:
     deadline = time.monotonic() + args.deadline_seconds
     seen = {}
     delivered = load_delivered(args.delivered_state) if args.delivered_state else set()
@@ -194,12 +209,12 @@ def watch(args, state: dict | None) -> int:
         default = Path.home() / ".codex"
         if (default / "logs_2.sqlite").is_file() and default.resolve() not in {home.expanduser().resolve() for home in homes.values()}:
             homes["default home"] = default
-    while True:
+    while stopped is None or not stopped.is_set():
         try:
             notices = poll(args.ledger, seen, args.idle_seconds, time.time(),
                            state, args.capacity_state, args.resume_capacity, args.harness, homes)
-            if getattr(args, "persistent", False) and not notify_requests(args, notices, delivered):
-                seen.clear()
+            if getattr(args, "persistent", False):
+                notify_requests(args, notices, delivered, seen, stopped)
             for notice in notices:
                 auth = notice.get("auth_failure") or notice.get("auth_diagnostic")
                 if not auth or json.dumps(auth, sort_keys=True) not in delivered:
@@ -221,7 +236,12 @@ def watch(args, state: dict | None) -> int:
             return 0
         if args.once or time.monotonic() >= deadline:
             return 0
-        time.sleep(min(args.interval, max(0, deadline - time.monotonic())))
+        delay = min(args.interval, max(0, deadline - time.monotonic()))
+        if stopped is not None:
+            stopped.wait(delay)
+        else:
+            time.sleep(delay)
+    return 0
 
 
 def main() -> int:
@@ -235,7 +255,7 @@ def main() -> int:
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--persistent", action="store_true", help="deliver notices immediately and keep watching within the deadline")
     parser.add_argument("--notify-session-id", help="exact native Supervisor recipient in the existing ledger")
-    parser.add_argument("--notify-ledger", type=Path, help="existing recipient ledger, if different from --ledger")
+    parser.add_argument("--notify-ledger", type=Path, help="existing recipient ledger, separate from watched workers")
     parser.add_argument("--reconcile-notification", action="store_true", help="inspect the retained attempt; record an outcome only with readback evidence")
     parser.add_argument("--delivery-outcome", choices=("delivered", "not-sent"))
     parser.add_argument("--evidence", help="exact-recipient readback evidence for an explicit reconciliation")
@@ -248,8 +268,8 @@ def main() -> int:
     args = parser.parse_args()
     if any(not math.isfinite(value) or value <= 0 for value in (args.idle_seconds, args.interval, args.deadline_seconds)):
         parser.error("timings must be finite and positive")
-    if args.persistent and (not args.notify_session_id or not args.delivered_state or args.once):
-        parser.error("--persistent needs --notify-session-id and --delivered-state, without --once")
+    if args.persistent and (not args.notify_session_id or not args.notify_ledger or not args.delivered_state or args.once):
+        parser.error("--persistent needs --notify-session-id, --notify-ledger and --delivered-state, without --once")
     if not args.persistent and (args.notify_session_id or args.notify_ledger):
         parser.error("notification targets require --persistent")
     if (args.delivery_outcome or args.evidence) and not args.reconcile_notification:
@@ -260,17 +280,28 @@ def main() -> int:
         parser.error("a continuous watch requires --delivered-state PATH, one private file per harness")
     if args.resume_capacity and not args.capacity_state:
         parser.error("--resume-capacity requires --capacity-state")
+    stopped = threading.Event() if args.persistent else None
+    previous = {}
     try:
+        if stopped is not None:
+            stop = stopped.set
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                previous[sig] = signal.signal(sig, lambda _sig, _frame: stop())
         with ExitStack() as stack:
             if args.delivered_state:
                 stack.enter_context(watch_lock(args.delivered_state))
             if args.reconcile_notification:
                 return reconcile_notification(args)
+            if args.persistent:
+                notification_recipient(args)
             state = stack.enter_context(locked_state(args.capacity_state)) if args.capacity_state else None
-            return watch(args, state)
+            return watch(args, state, stopped)
     except (OSError, ValueError, TypeError) as error:
         print(json.dumps({"error": str(error)}), flush=True)
         return 1
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 if __name__ == "__main__":

@@ -1078,10 +1078,15 @@ re-arming, add an optional entry to that same `services` object:
 
 `idle-claude` uses the same watcher with `--harness claude` and its own
 `--delivered-state`. Reuse existing ledgers and delivered-state files. The
-recipient must be one exact Supervisor-owned native entry in the existing
-ledger; omit `--notify-ledger` when it is already in `--ledger`. Codex delivery
+recipient must be one exact Supervisor-owned native entry in an existing
+recipient ledger supplied with `--notify-ledger`. It must not be in the watched
+worker ledger, including mixed-harness ledgers; the service refuses that setup
+so it cannot watch or wake itself. Reuse the existing ledger format and helpers. Codex delivery
 uses the existing native queue helper. Claude delivery uses the existing guarded
 tmux notification route, including idle, empty-composer and identity checks.
+Claude notifications share a per-recipient lock across both watches and review
+notifications, covering validation and typing through submission. Native queue
+results distinguish a certainly unsent attempt from a permission or RPC refusal.
 Unsupported routes and identity errors stop for reconciliation. A certainly
 unsent busy recipient is rechecked on the next poll; uncertain or denied sends
 are never automatically replayed.
@@ -1093,6 +1098,9 @@ failure at the next poll, then keeps watching. It rechecks closeout requests wit
 parsers. Notice delivery grants no exit authority: every existing handoff, input,
 task, process-exit and claim verification still applies. The watcher keeps its
 existing deadline; the service restarts clean deadline exits automatically.
+Normal SIGTERM/SIGINT stops let an idle watch exit cleanly. A stop during a
+notification still finishes or retains its pending attempt; the existing runner
+keeps its bounded child-exit and reconciliation checks.
 Keep the idle service restart delay short, as in the example. Logging notices
 until the next scheduled check does not meet the immediate-handling rule.
 

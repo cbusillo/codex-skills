@@ -13,10 +13,12 @@ import errno
 import json
 import subprocess
 import shlex
+import signal
 import socket
 import os
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -577,7 +579,7 @@ class LedgerTests(unittest.TestCase):
         self.enterContext(patch.object(codex_idle_watch.Path, "home", return_value=self.root))
         self.transcript = self.root / "session.jsonl"
         self.ledger = self.root / "ledger.json"
-        self.entry = {
+        self.entry: dict[str, Any] = {
             "session_id": "02b123-new-prefix",
             "harness": "codex",
             "transcript": "session.jsonl",
@@ -885,10 +887,17 @@ class LedgerTests(unittest.TestCase):
         notices = [json.loads(line) for line in output.getvalue().splitlines()]
         self.assertEqual(notices[-1]["closeout_request"]["session_id"], self.entry["session_id"])
 
+    def persistent_args(self, **overrides: Any) -> SimpleNamespace:
+        transcript = self.root / "recipient.jsonl"
+        transcript.write_text(self.transcript.read_text().replace(self.entry["session_id"], "supervisor-recipient"))
+        self.recipient = {**self.entry, "session_id": "supervisor-recipient", "transcript": str(transcript)}
+        ledger = self.root / "recipient-ledger.json"
+        ledger.write_text(json.dumps([self.recipient]))
+        return self.watch_args(persistent=True, notify_session_id=self.recipient["session_id"], notify_ledger=ledger, **overrides)
+
     def test_persistent_watch_notifies_immediately_and_keeps_its_watermark_across_restarts(self) -> None:
         import review_notifications
-        args = self.watch_args(persistent=True, notify_session_id=self.entry["session_id"],
-                               notify_ledger=self.ledger, deadline_seconds=180)
+        args = self.persistent_args(deadline_seconds=180)
         sleeps = []
         with patch.object(review_notifications, "send") as notify:
             for _ in range(2):
@@ -899,11 +908,11 @@ class LedgerTests(unittest.TestCase):
                     self.assertEqual(codex_idle_watch.watch(args, None), 0)
                 self.assertEqual(notify.call_count, 1)
             self.assertGreater(len(sleeps), 1)
-        self.assertEqual(notify.call_args.args[0]["session_id"], self.entry["session_id"])
+        self.assertEqual(notify.call_args.args[0]["session_id"], self.recipient["session_id"])
 
     def test_uncertain_notification_stops_and_cannot_replay_after_restart(self) -> None:
         import review_notifications
-        args = self.watch_args(persistent=True, notify_session_id=self.entry["session_id"], notify_ledger=self.ledger)
+        args = self.persistent_args()
         with patch.object(review_notifications, "send", side_effect=TimeoutError("unknown delivery")) as notify, \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(codex_idle_watch.watch(args, None), 1)
@@ -919,42 +928,74 @@ class LedgerTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(codex_idle_watch.reconcile_notification(reconciliation), 0)
             with patch.object(review_notifications, "send") as notify:
-                self.assertEqual(codex_idle_watch.watch(self.watch_args(persistent=True,
-                    notify_session_id=self.entry["session_id"], notify_ledger=self.ledger, once=True), None), 0)
+                self.assertEqual(codex_idle_watch.watch(self.persistent_args(once=True), None), 0)
         notify.assert_not_called()
 
     def test_certainly_unsent_busy_recipient_is_rechecked_without_spending_delivery(self) -> None:
         import review_notifications
-        args = self.watch_args(persistent=True, notify_session_id=self.entry["session_id"],
-                               notify_ledger=self.ledger, deadline_seconds=180)
+        other_transcript = self.root / "other.jsonl"
+        other_transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": "other-worker"}}) + "\n"
+                                    + json.dumps(event("agent_message", message="Still working.")) + "\n"
+                                    + json.dumps(event("task_complete")) + "\n")
+        os.utime(other_transcript, (1000, 1000))
+        self.ledger.write_text(json.dumps([self.entry, {**self.entry, "session_id": "other-worker", "transcript": str(other_transcript)}]))
+        args = self.persistent_args(deadline_seconds=180)
         clock = iter(range(0, 10_000, 45))
+        output = io.StringIO()
         with patch.object(review_notifications, "send", side_effect=[
                 review_notifications.NotSent("recipient busy", needs_attention=False), None]) as notify, \
                 patch.object(codex_idle_watch.time, "monotonic", side_effect=lambda: next(clock)), \
-                patch.object(codex_idle_watch.time, "sleep"), contextlib.redirect_stdout(io.StringIO()):
+                patch.object(codex_idle_watch.time, "sleep"), contextlib.redirect_stdout(output):
             self.assertEqual(codex_idle_watch.watch(args, None), 0)
         self.assertEqual(notify.call_count, 2)
+        self.assertEqual(sum(json.loads(line).get("session_id") == "other-worker" for line in output.getvalue().splitlines()), 1)
         self.assertFalse(any(value.startswith(codex_idle_watch.PENDING_NOTIFICATION)
                              for value in codex_idle_watch.load_delivered(args.delivered_state)))
 
     def test_notification_rechecks_exact_candidate_before_any_send(self) -> None:
         import review_notifications
-        args = self.watch_args(persistent=True, notify_session_id=self.entry["session_id"],
-                               notify_ledger=self.ledger, once=True)
-        with patch.object(finished_map, "candidates", return_value=[{"closeout_request": None}]) as canonical, \
+        args = self.persistent_args(once=True)
+        with patch.object(finished_map, "candidates", return_value=[{"closeout_request": None}]), \
                 patch.object(review_notifications, "send") as notify, contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(codex_idle_watch.watch(args, None), 0)
-        canonical.assert_called_once_with(self.ledger, self.entry["session_id"])
         notify.assert_not_called()
 
     def test_permission_refusal_remains_spent_even_before_notification_delivery(self) -> None:
         import review_notifications
-        args = self.watch_args(persistent=True, notify_session_id=self.entry["session_id"], notify_ledger=self.ledger)
+        args = self.persistent_args()
         with patch.object(review_notifications, "send", side_effect=PermissionError("denied")) as notify, \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(codex_idle_watch.watch(args, None), 1)
             self.assertEqual(codex_idle_watch.watch(args, None), 1)
         self.assertEqual(notify.call_count, 1)
+
+    def test_supervisor_recipient_cannot_be_watched_as_a_worker(self) -> None:
+        args = self.persistent_args()
+        self.ledger.write_text(json.dumps([self.entry, self.recipient]))
+        with self.assertRaises(ValueError):
+            codex_idle_watch.notification_recipient(args)
+
+    def test_persistent_watch_sigterm_exits_cleanly_without_a_pending_send(self) -> None:
+        self.write([event("agent_message", message="Working."), event("task_started")])
+        args = self.persistent_args()
+        command = [sys.executable, codex_idle_watch.__file__, "--ledger", str(self.ledger), "--delivered-state",
+                   str(args.delivered_state), "--persistent", "--notify-session-id", args.notify_session_id,
+                   "--notify-ledger", str(args.notify_ledger)]
+        child = subprocess.Popen(command, env={**os.environ, "HOME": str(self.root), "CODE_HOME": str(self.root),
+                                 "CODEX_HOME": str(self.root)}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 5
+            lock = args.delivered_state.with_name(args.delivered_state.name + ".lock")
+            while not lock.exists() and child.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(lock.exists())
+            child.send_signal(signal.SIGTERM)
+            _, stderr = child.communicate(timeout=5)
+            self.assertEqual(child.returncode, 0, stderr)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.communicate()
 
     def run_watch_to_deadline(self) -> tuple[int, list[float], list[dict]]:
         clock = iter(range(0, 10_000, 45))

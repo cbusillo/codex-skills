@@ -7,6 +7,7 @@
 
 import copy
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import errno
 from io import StringIO
 import json
@@ -14,6 +15,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from typing import Any
@@ -1485,6 +1487,7 @@ class NotificationTests(unittest.TestCase):
     def setUp(self):
         self.temp = self.enterContext(tempfile.TemporaryDirectory())
         self.home = Path(self.temp).resolve()
+        self.enterContext(patch.dict(os.environ, {"CODE_HOME": str(self.home)}))
         self.native = "11111111-2222-4333-8444-555555555555"
         self.transcript = self.home / "sessions" / "native.jsonl"
         self.transcript.parent.mkdir()
@@ -1539,6 +1542,33 @@ class NotificationTests(unittest.TestCase):
         notifications.send(self.entry, "Read review")
         self.assertEqual(self.read.call_count, 2)
         self.send.assert_awaited_once_with(self.entry["tmux_session_id"], "Read review")
+
+    def test_native_queue_certainly_unsent_result_remains_distinct_from_uncertainty(self) -> None:
+        for certain in (False, True):
+            result = subprocess.CompletedProcess([], 1, json.dumps({"ok": False, "not_sent": certain, "error": "queue unavailable"}), "")
+            with self.subTest(certain=certain), patch.object(notifications.subprocess, "run", return_value=result):
+                with self.assertRaises(ValueError) as failure:
+                    notifications.send(self.entry, "Read review")
+                self.assertEqual(isinstance(failure.exception, notifications.NotSent), certain)
+
+    def test_claude_recipient_is_locked_across_validation_and_delivery(self) -> None:
+        self.claude()
+        entered, release = threading.Event(), threading.Event()
+        def deliver() -> None:
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("fixture delivery not released")
+        with ThreadPoolExecutor(max_workers=1) as pool, patch.object(notifications, "prepare", return_value=deliver) as prepare:
+            first = pool.submit(notifications.send, self.entry, "first")
+            try:
+                self.assertTrue(entered.wait(2))
+                with self.assertRaises(notifications.NotSent) as failure:
+                    notifications.send(self.entry, "second")
+                self.assertFalse(failure.exception.needs_attention)
+                self.assertEqual(prepare.call_count, 1)
+            finally:
+                release.set()
+                first.result(timeout=2)
 
     def test_idle_scheduled_wakeup_does_not_suppress_review_but_firing_turn_does(self):
         self.claude()

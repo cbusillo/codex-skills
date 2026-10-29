@@ -5,6 +5,9 @@
 """Deliver review notices using the existing exact-session send routes."""
 
 import asyncio
+from contextlib import ExitStack
+import hashlib
+import json
 import os
 import re
 import subprocess
@@ -61,6 +64,12 @@ def prepare(entry, message):
                 env={**os.environ, "CODEX_HOME": str(home)}, stdin=subprocess.DEVNULL,
                 capture_output=True, text=True, timeout=30, check=False)
             if result.returncode:
+                try:
+                    outcome = json.loads(result.stdout)
+                except ValueError:
+                    outcome = None
+                if isinstance(outcome, dict) and outcome.get("ok") is False and outcome.get("not_sent") is True:
+                    raise NotSent(str(outcome.get("error") or "native queue was certainly not sent"))
                 raise ValueError(f"Codex review notification failed: {result.stdout.strip()} {result.stderr.strip()}".strip())
         return queue
     if entry.get("harness") != "claude" or entry.get("backend") != "tmux":
@@ -104,7 +113,22 @@ def prepare(entry, message):
     return lambda: asyncio.run(terminal.send(identity, message))
 
 
-def send(entry, message):
+def send(entry: dict, message: str) -> None:
+    if entry.get("harness") != "claude":
+        send_locked(entry, message)
+        return
+    from foreign_watch import watch_lock
+    identity = hashlib.sha256((entry.get("harness", "") + ":" + entry.get("session_id", "")).encode()).hexdigest()
+    path = Path(os.environ.get("CODE_HOME", Path.home() / ".code")) / "skill-data/session-notification-locks" / identity
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(watch_lock(path))
+        except ValueError as error:
+            raise NotSent("another notification owns this recipient", needs_attention=False) from error
+        send_locked(entry, message)
+
+
+def send_locked(entry: dict, message: str) -> None:
     from iterm_tab import SendFailure
 
     try:
