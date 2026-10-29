@@ -148,7 +148,7 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
     discussion = item.get("discussion") or {}
     scoping = is_scoping_track(item)
     status = current_status(discussion, trusted, body_recorded_at=discussion.get("body_recorded_at")) if status_known and not scoping else ""
-    row = {"next_action": "Scope the first work issue for this Track." if scoping else status_field(status, "Next action"),
+    row = {"next_action": "Assess this Track's proof; close it if met, or scope the remaining work." if scoping else status_field(status, "Next action"),
            "recorded_state": status_field(status, "State"),
            "claim_required": True, "ownership_complete": False,
            "ownership_source": "current_reads", "ownership_coverage": ownership.get("coverage", {}),
