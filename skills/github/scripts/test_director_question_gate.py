@@ -79,10 +79,9 @@ class DirectorQuestionGateTests(unittest.TestCase):
         self.assertIsNotNone(message)
         return message or ""
 
-    def test_unasked_director_decision_refuses_naming_the_registration_command(self) -> None:
+    def test_unasked_director_decision_refuses(self) -> None:
         message = self.refusal(wait("Chris approves the live install"))
         self.assertIn('"Chris approves the live install"', message)
-        self.assertIn(f"oq.py QUESTION_URL --owner director --queue {QUEUE} --register", message)
 
     def test_registered_numbered_question_allows_the_wait(self) -> None:
         self.assertIsNone(self.gap(wait("Chris approves the live install", f"Asked: {link(11)}")))

@@ -189,12 +189,12 @@ class QuestionRecordTests(unittest.TestCase):
             self.assertIsNone(guard.missing_context(first["text"]))
             state = Path(self.temporary.name) / "questions-state.json"
 
-            def routine_check() -> dict:
+            def routine_check(*options: str) -> dict:
                 output = StringIO()
                 with (
                     patch.object(record.delivery.oq, "fetch", side_effect=fetch),
                     patch.object(sys, "argv", ["oq.py", "--owner", self.args.owner, "--queue", self.args.queue,
-                                               "--changes-state", str(state)]),
+                                               "--changes-state", str(state), *options]),
                     redirect_stdout(output),
                 ):
                     self.assertEqual(record.delivery.oq.main(), 0)
@@ -211,7 +211,7 @@ class QuestionRecordTests(unittest.TestCase):
                 "body": f"Director decision {first['question_id']}: reuse the runner, combined with Q299's testing decision.",
                 "created_at": "2026-10-29T17:00:00Z",
             })
-            decided = routine_check()
+            decided = routine_check("--decision-author", AUTHOR.upper())
             self.assertEqual(decided["queue_length"], 0)
             self.assertEqual([row["url"] for row in decided["questions"] if row.get("removed")], [first["url"]])
 

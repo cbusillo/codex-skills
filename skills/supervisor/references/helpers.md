@@ -374,9 +374,7 @@ do not count. No label is delivery state.
 
 The view reports `queue_length`, position, original age, registration link,
 delivery receipt and `resurface`. An unacknowledged question is emitted every
-check, even after successful registration. A delivery receipt leaves it queued
-until an explicit linked Owner/Director decision from the Director or trusted
-recorder; `candidate_answers` preserves plain replies for Supervisor reconciliation and
+check, even after successful registration. `candidate_answers` preserves plain replies for Supervisor reconciliation and
 "later" never erases it. Read acknowledged unanswered rows too: `resurface`
 means missing delivery acknowledgement, not the only questions to present. Source reads
 also reconcile decisions on another supplied discussion or the queue. A failed

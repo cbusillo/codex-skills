@@ -21,7 +21,8 @@ from skills.supervisor.scripts.check_changes import changes, fingerprint
 ITEM = re.compile(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)")
 QUESTION_PREFIXES = ("Director question:", "Owner question:")
 DECISION_HEADING = re.compile(
-    r"^(?:Director|Owner) decision(?: (?P<number>Q[1-9][0-9]*)\s*:|[:,]|\s\(|\*\*| (?=https://))"
+    r"^(?:Director|Owner) decision(?: (?P<number>Q[1-9][0-9]*)\s*:"
+    r"| \((?P<parenthetical_number>Q[1-9][0-9]*)\)\s*:|[:,]| \([^\n)]*\)[:,]|\*\*| (?=https://))"
 )
 
 
@@ -41,7 +42,8 @@ def questions(comments, owner, decision_authors, related_comments=(), *, recorde
             text = answer.get("body", "").lstrip().lstrip("*")
             decision = DECISION_HEADING.match(text)
             recorded = decision is not None
-            if decision is not None and decision["number"] and number and decision["number"] != number:
+            heading_number = (decision["number"] or decision["parenthetical_number"]) if decision else None
+            if heading_number and number and heading_number != number:
                 continue
             authorized = author == owner or (
                 author in decision_authors and recorded
@@ -52,16 +54,16 @@ def questions(comments, owner, decision_authors, related_comments=(), *, recorde
                 continue
             content = re.sub(r"^(?:Director|Owner) decision(?:\s*\([^)]*\))?[, :*]*", "", text)
             content = content.replace("*", "").strip()
-            decision_number = QUESTION.match(content)
+            number_match = QUESTION.match(content)
+            decision_number = heading_number or (number_match[0] if number_match else None)
             content = re.sub(r"^Q[1-9][0-9]*\s*[:=,.—-]?\s*", "", content)
             content = re.sub(r"https://\S+", "", content).strip()
             if recorded_decisions_only and re.fullmatch(r"(?i)(?:later|not now|not yet|waiting|pending)[\s.;!—-]*", content):
                 continue
             numbered = (
-                recorded and number is not None and numbers[number] == 1 and decision_number is not None
-                and decision_number[0] == number and bool(content.strip(".,:;= -"))
-                and ((decision is not None and decision["number"] == number)
-                     or {match[0] for match in QUESTION.finditer(text)} == {number})
+                recorded and number is not None and numbers[number] == 1
+                and decision_number == number and bool(content.strip(".,:;= -"))
+                and (heading_number is not None or {match[0] for match in QUESTION.finditer(text)} == {number})
             )
             linked = question["url"] in text or re.search(
                 rf"(?<!\d){question['id']}(?!\d)", text
@@ -105,8 +107,11 @@ def fetch(item):
 
 
 def default_decision_authors() -> list[str]:
-    authors = (github_identity.automation_login(), *github_identity.configured_bot_logins())
-    return sorted({author for author in authors if isinstance(author, str) and author})
+    authors: set[str] = set(github_identity.configured_bot_logins())
+    author = github_identity.automation_login()
+    if author is not None:
+        authors.add(author)
+    return sorted(authors)
 
 
 def main() -> int:
@@ -123,6 +128,7 @@ def main() -> int:
     parser.add_argument("--delivery-url", help="Durable receipt for the presentation, not just queue registration")
     parser.add_argument("--changes-state", type=Path, help="print changed question pointers; save only fingerprints")
     args = parser.parse_args()
+    args.decision_author = sorted({author.casefold() for author in args.decision_author})
     if args.changes_state and (args.register or args.ack):
         parser.error("changes mode is read-only; use a separate registration or presentation acknowledgement")
     if args.queue:
