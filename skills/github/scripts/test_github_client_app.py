@@ -212,7 +212,7 @@ class ClientAppTests(unittest.TestCase):
         key.write_text(test_private_key())
         key.chmod(0o600)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), app_handler)
-        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         thread.start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(thread.join)
