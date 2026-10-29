@@ -18,6 +18,7 @@ import tempfile
 import time
 import unittest
 from argparse import Namespace
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from itertools import product
@@ -1260,10 +1261,21 @@ class ClaimTests(unittest.TestCase):
         import github_plan_closure as closure
         import github_plan_claim_log as claim_log
         import github_plan_native as native
+        import github_read
         proxy = importlib.import_module("codex_session_proxy")
 
         claim_log.record(OTHER["session"], "owner/repo", 42)
         claim_log.record(OTHER["session"], "owner/other", 43)
+        claim_log.record(OTHER["session"], "owner/finished", 41)
+        remaining = [{"id": 71, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]}]
+
+        def reader(**options: Any) -> Mock:
+            return Mock(expected_actor=TEST_BOT, get_json=Mock(return_value={"state": "closed" if options["repository"] == "owner/finished" else "open"}),
+                        paged_json=Mock(side_effect=lambda *_args, **_kwargs: copy.deepcopy(
+                            remaining if options["repository"] == "owner/other" else self.comments
+                            if options["repository"] == "owner/repo" else [])))
+
+        self.enterContext(patch.object(github_read, "GitHubReader", side_effect=reader))
         self.ended_holder_fixture()
         self.args.resume_from = 71
         self.run_claim()
@@ -1271,7 +1283,7 @@ class ClaimTests(unittest.TestCase):
         sent = []
 
         @asynccontextmanager
-        async def connection(*_args: object, **_kwargs: object):
+        async def connection(*_args: object, **_kwargs: object) -> AsyncIterator[Any]:
             async def request(method: str, params: dict[str, Any]) -> dict[str, Any]:
                 if method == "thread/read":
                     return {"thread": {"id": OTHER["session"], "path": str(Path.home() / "source.jsonl"), "status": {"type": "idle"}}}
@@ -1297,10 +1309,30 @@ class ClaimTests(unittest.TestCase):
         self.issue["body"] = PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n\n## Current Status\n\nUnclaimed.\n"
         self.ended_holder_fixture()
         self.run_claim()
+        remaining[:] = self.comments
         claim_log.record(OTHER["session"], "owner/unclaimed", 44)
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError) as refused:
             with closure.resume_guard(OTHER["session"]):
                 self.fail("fully transferred source resumed")
+        self.assertIsNone(refused.exception.__cause__)
+
+        self.comments[:] = []
+        remaining[:] = [{"id": 90, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]}]
+        with closure.resume_guard(OTHER["session"]):
+            pass
+
+        self.lease_fixture("expired")
+        with self.assertRaises(ValueError) as expired:
+            with closure.resume_guard(OTHER["session"]):
+                self.fail("expired source resumed before successor publication")
+        self.assertIsNone(expired.exception.__cause__)
+        LEASE.renew(OTHER["session"])
+
+        with patch.object(github_read, "GitHubReader", side_effect=github_read.GitHubReadShapeError("unavailable")):
+            with self.assertRaises(ValueError) as unavailable:
+                with closure.resume_guard(OTHER["session"]):
+                    self.fail("unknown ownership resumed")
+        self.assertIsInstance(unavailable.exception.__cause__, github_read.GitHubReadShapeError)
 
     def test_live_or_unknown_holder_returns_coordination_before_any_write(self):
         for state in ("unknown", "live"):

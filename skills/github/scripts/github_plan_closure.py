@@ -333,20 +333,39 @@ def replace_rows(rows: list[dict]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def successor_claims(session: str, state: dict) -> set[tuple[str, int]] | None:
-    from github_plan_claim_log import target
-    if "successor_claims" not in state:
-        return None
-    claims = state["successor_claims"]
-    if not isinstance(claims, list) or not claims:
-        raise ValueError("successor claim coverage is unavailable")
-    targets = set()
-    for claim in claims:
-        if not isinstance(claim, (list, tuple)) or len(claim) != 2:
-            raise ValueError("successor claim coverage is unavailable")
-        repo, number = target({"session": session, "repository": claim[0], "record": claim[1]}, session)
-        targets.add((repo.casefold(), number))
-    return targets
+def has_current_claim(session: str) -> bool:
+    from github_plan_claim import discussion_evidence
+    from github_plan_claim_log import read
+    from github_plan_release import verified_comments
+    from github_plan_lease import EXPIRED, state
+    from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError
+    import github_identity
+
+    if state(session) == EXPIRED:
+        return False
+    deadline = time.time() + 30
+    for repo, number in sorted(read(session)):
+        try:
+            reader = GitHubReader(repository=repo, expected_actor=github_identity.automation_login(),
+                                  gh_prefix_args=["--require-automation-auth"], deadline_at=deadline, include_archived=True)
+            issue = reader.get_json(f"/repos/{repo}/issues/{number}", step="resume_claim_record")
+            if issue.get("state") == "closed":
+                continue
+            if issue.get("state") != "open":
+                raise ValueError("source work record state is unavailable")
+            def read_release_evidence(source_repo: str, _number: int, identifier: int) -> dict:
+                return reader.get_json(f"/repos/{source_repo}/issues/comments/{identifier}", step="resume_release_evidence")
+
+            comments = verified_comments(reader.paged_json(
+                f"/repos/{repo}/issues/{number}/comments", step_prefix="resume_claim_history"), read_release_evidence)
+            conflicts, _ = discussion_evidence("", comments, {"session": "", "worker": "", "branch": "", "claimed_at": ""})
+            authors = {comment["id"]: (comment.get("user") or {}).get("login") for comment in comments}
+            if reader.expected_actor and conflicts and all(record.get("record", {}).get("session") == session
+                                 and authors.get(record.get("id")) == reader.expected_actor for record in conflicts):
+                return True
+        except (GitHubReadError, GitHubReadShapeError, OSError) as error:
+            raise ValueError("source claim coverage is unavailable; preserve the session and retry the read") from error
+    return False
 
 
 def resume_record(session: str, rows: list[dict]) -> dict | None:
@@ -356,12 +375,13 @@ def resume_record(session: str, rows: list[dict]) -> dict | None:
     if len(matches) > 1:
         raise ValueError("duplicate closed generations; preserve the source")
     row = matches[0] if matches else None
-    state = lease_state(session)
-    transferred = successor_claims(session, state)
-    from github_plan_claim_log import read
-    partial = transferred is not None and bool({(repo.casefold(), number) for repo, number in read(session)} - transferred)
-    if (row is not None and (row.get("successor_admitted") or state.get("successor_admitted") and row.get("closure_evidence") is not None)
-            or state.get("successor_admitted") and not partial):
+    handed_off = lease_state(session).get("successor_admitted") or row is not None and row.get("successor_admitted")
+    if not handed_off:
+        return row
+    from github_plan_release import stamp
+    closed = row is not None and row.get("ended_at") and (
+        not row.get("resumed_at") or stamp(row["resumed_at"]) <= stamp(row["ended_at"]))
+    if row is not None and row.get("successor_admitted") or closed or not has_current_claim(session):
         raise ValueError("this generation handed off its work; start a new thread and claim through gh-plan.py")
     return row
 
@@ -370,7 +390,6 @@ def resume_record(session: str, rows: list[dict]) -> dict | None:
 def resume_guard(session: str, *, method: str | None = None, home: str | Path | None = None):
     """Invalidate the closed generation before an exact native resume/queue."""
     with ownership(session, create=True):
-        resume_record(session, [])
         path = closed_log()
         # The source lease also serializes closure publication for this ID.
         # A new thread has no receipt to invalidate and need not wait behind
@@ -383,26 +402,18 @@ def resume_guard(session: str, *, method: str | None = None, home: str | Path | 
                     row["closure_evidence"] = None
                     row["resumed_at"] = datetime.now(timezone.utc).isoformat()
                     replace_rows(rows)
+        else:
+            resume_record(session, [])
         # Native acknowledgement may precede deferred execution or transcript
         # persistence. Authored releases must not bypass this invalidation.
         set_action_pending(session, True, method=method, home=home)
         yield
 
 
-def admit_sources(sessions: set[str] | dict[str, set[tuple[str, int]]]) -> None:
-    from github_plan_claim_log import read
+def admit_sources(sessions: set[str]) -> None:
     for session in sorted(sessions):
         with ownership(session, create=True):
-            state = lease_state(session)
-            if isinstance(sessions, dict) and (not state.get("successor_admitted") or "successor_claims" in state):
-                transferred = (successor_claims(session, state) or set()) | {(repo.casefold(), number) for repo, number in sessions[session]}
-                if {(repo.casefold(), number) for repo, number in read(session)} - transferred:
-                    state["successor_claims"] = sorted(transferred)
-                else:
-                    state.pop("successor_claims", None)
-            else:
-                state.pop("successor_claims", None)
-            write_lease_state(session, {**state, "successor_admitted": True})
+            write_lease_state(session, {**lease_state(session), "successor_admitted": True})
 
 
 def closed_log() -> Path:

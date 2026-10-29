@@ -2877,7 +2877,7 @@ def claim_once(args: argparse.Namespace) -> None:
     planned_wait = ""
     ended_owners: list[dict[str, Any]] = []
     resume_source_number: int | None = None
-    retained_ended_sources: dict[str, set[tuple[str, int]]] = {}
+    retained_ended_sources: set[str] = set()
     planning_checkout = getattr(args, "planning_checkout", None)
     config = load_config(issue_repo, checkout=planning_checkout) if planning_checkout else load_config(issue_repo)
     phase_records = {}
@@ -2925,19 +2925,16 @@ def claim_once(args: argparse.Namespace) -> None:
             raise PlanError("Claim requires an open issue or pull request")
         return snapshot
 
-    def ended_ownership(owner_comments: list[dict[str, Any]], owner_inventory: dict[str, Any],
-                        owner_repo: str, owner_number: int) -> list[dict[str, Any]]:
+    def ended_ownership(owner_comments: list[dict[str, Any]], owner_inventory: dict[str, Any]) -> list[dict[str, Any]]:
         ended = github_plan_claim.ended_ownership(owner_comments, owner_inventory,
                                                   github_plan_claim.expired_lease_sessions(owner_comments) - {claim["session"]})
-        for entry in ended:
-            if entry["session"] != claim["session"]:
-                retained_ended_sources.setdefault(entry["session"], set()).add((owner_repo, owner_number))
+        retained_ended_sources.update(entry["session"] for entry in ended if entry["session"] != claim["session"])
         return ended
 
     def ownership_snapshot(current_status: str, current_comments: list[dict[str, Any]]):
         nonlocal inventory, ended_owners
         inventory = phase["inventory"]
-        ended_owners = ended_ownership(current_comments, inventory, issue_repo, number)
+        ended_owners = ended_ownership(current_comments, inventory)
         branches = set(inventory["local_branches"]) | set(inventory["remote_branches"]) | {t["branch"] for t in inventory["worktrees"]}
         conflicts, owned = github_plan_claim.discussion_evidence(
             current_status, current_comments, claim, resume_from=args.resume_from,
@@ -2997,7 +2994,7 @@ def claim_once(args: argparse.Namespace) -> None:
         peer_repo: str, peer_number: int, peer_status: str, peer_comments: list[dict[str, Any]],
         source_inventory: dict[str, Any],
     ) -> None:
-        ended = ended_ownership(peer_comments, source_inventory, peer_repo, peer_number)
+        ended = ended_ownership(peer_comments, source_inventory)
         peer_conflicts, peer_owned = github_plan_claim.discussion_evidence(
             peer_status, peer_comments, claim, ended_claims={entry["claim_id"] for entry in ended})
         competing = list(peer_conflicts)
@@ -3463,6 +3460,7 @@ def claim_once(args: argparse.Namespace) -> None:
         if prepared["open_conflicts"]:
             refuse(prepared["open_conflicts"], owner_comments=source_comments, owner_number=source_number)
         observed_waits = {}
+        released_target_sessions = set()
         for pull in target_pulls:
             if pull["number"] not in prepared["targets"]:
                 continue
@@ -3472,7 +3470,8 @@ def claim_once(args: argparse.Namespace) -> None:
             competing, _ = github_plan_claim.discussion_evidence(sections.get("Current Status", ""), target_comments, claim)
             if competing:
                 refuse(competing, owner_comments=target_comments, owner_repo=target_repo, owner_number=pull["number"])
-            ended_ownership(target_comments, inventory, target_repo, pull["number"])
+            released_target_sessions.update(record["session"] for _, record, _ in
+                                            github_plan_claim.exact_released_sources(target_comments))
             target_wait = target["claim_wait"]
             has_wait, wait_error = evaluated_waits[pull["number"]]
             if wait_error is not None:
@@ -3486,7 +3485,7 @@ def claim_once(args: argparse.Namespace) -> None:
             raise PlanError("Retained PR waits changed during claim readback; verify the new evidence before recovery")
         retained_waits = observed_waits
         target_inventory = inventory
-        source_ended = ended_ownership(source_comments, target_inventory, issue_repo, source_number)
+        source_ended = ended_ownership(source_comments, target_inventory)
         if source_number != number:
             # The parent's wait remains there; only its ownership is inherited.
             # Check its full discussion/status, not just the selected release.
@@ -3495,6 +3494,9 @@ def claim_once(args: argparse.Namespace) -> None:
                 ended_claims={entry["claim_id"] for entry in source_ended})
             if competing:
                 refuse(competing, owner_comments=source_comments, owner_number=source_number)
+        released_target_sessions.update(record["session"] for _, record, _ in
+                                         github_plan_claim.exact_released_sources(source_comments))
+        retained_ended_sources.update(released_target_sessions - {claim["session"]})
         check_phase_peers(target_inventory)
         _, own_comments = github_plan_claim.discussion_evidence("", current_comments, claim)
         for checked_number, checked_repo in dict.fromkeys(((number, issue_repo), (source_number, issue_repo))):

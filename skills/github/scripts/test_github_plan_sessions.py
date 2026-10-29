@@ -849,18 +849,24 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
 class IdleReceiptIntegrationTests(unittest.TestCase):
     def test_full_closure_and_legacy_handoff_override_partial_claims(self) -> None:
         from github_plan_claim_log import record
-        for legacy in (False, True):
-            with self.subTest(legacy=legacy), ReceiptFixture() as f:
+        for kind in ("closed", "legacy", "proof_unavailable"):
+            with self.subTest(kind=kind), ReceiptFixture() as f:
                 record(f.session, "owner/repo", 1)
                 record(f.session, "owner/other", 2)
-                if legacy:
+                if kind == "legacy":
                     CLOSURE.replace_rows([{"session_id": f.session, "successor_admitted": True}])
-                CLOSURE.admit_sources({f.session: {("owner/repo", 1)}})
-                with self.assertRaises(ValueError):
-                    CLOSURE.resume_record(f.session, CLOSURE.log_rows())
-                with self.assertRaises(ValueError):
-                    with CLOSURE.resume_guard(f.session):
-                        self.fail("full closure resumed after a partial transfer")
+                elif kind == "proof_unavailable":
+                    row = CLOSURE.log_rows()[0]
+                    row.pop("closure_evidence", None)
+                    CLOSURE.replace_rows([{**row, "closure_proof_unavailable": True}])
+                CLOSURE.admit_sources({f.session})
+                with patch.object(CLOSURE, "has_current_claim", return_value=True) as current:
+                    with self.assertRaises(ValueError):
+                        CLOSURE.resume_record(f.session, CLOSURE.log_rows())
+                    with self.assertRaises(ValueError):
+                        with CLOSURE.resume_guard(f.session):
+                            self.fail("full closure resumed after a partial transfer")
+                    current.assert_not_called()
 
     def test_source_without_closed_row_is_frozen_and_action_clear_preserves_freeze(self):
         with ReceiptFixture() as f:
