@@ -1194,8 +1194,9 @@ def attachment_write_outcome(stderr: str, nonce: str) -> str:
             receipt = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if receipt == {"schema_version": 1, "nonce": nonce, "write_outcome": "not_started"}:
-            return "not_started"
+        for outcome in ("not_started", "applied"):
+            if receipt == {"schema_version": 1, "nonce": nonce, "write_outcome": outcome}:
+                return outcome
     return "unknown"
 
 
@@ -1254,6 +1255,13 @@ def attached_comment(
     match = re.fullmatch(
         rf"https://github\.com/{re.escape(resolved_repo)}/(?:issues|pull)/{number}#issuecomment-(\d+)", url, re.IGNORECASE,
     )
+    if result.returncode and match and attachment_write_outcome(result.stderr, receipt_nonce) == "applied":
+        raise _local_error(
+            "Attachment saved, but source-number binding failed; read the saved question before repairing it",
+            operation=operation, cause="question_numbering_failed", actor=actor, expected_actor=actor,
+            completed_steps=["attach_comment"], failed_step="bind_question_source", write_outcome="applied",
+            payload={"url": url},
+        )
     if result.returncode or not match:
         raise _local_error(
             "GitHub CLI attachment comment failed using the opted-in personal account; no replay or identity fallback. "

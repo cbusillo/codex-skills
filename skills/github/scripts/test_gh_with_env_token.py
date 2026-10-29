@@ -971,6 +971,9 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
               "    assert body.splitlines()[0] == github_comment.AGENT_POSTED_LINE\n"
               "    assert any(value == '--attach' for value in args)\n"
               "    print(f'https://github.com/{owner}/catalog/issues/42#issuecomment-20')\n"
+              "    if os.environ.get('FIXTURE_LOSE_COUNTER'):\n"
+              "        github_comment.question_id.counter_path().unlink()\n"
+              "    raise SystemExit(int(os.environ.get('FIXTURE_ATTACH_EXIT', '0')))\n"
               "else:\n"
               "    assert os.environ.get('GH_TOKEN') == 'installation-token'\n"
               "    path = next(arg for arg in args if arg.startswith('/'))\n"
@@ -997,6 +1000,11 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
             )
             assert result.returncode == 0, (result.stdout, result.stderr)
             assert json.loads(result.stdout)["actor"] == owner
+        nonce = os.urandom(16).hex()
+        failed = subprocess.run([str(SCRIPT), *args], env={**env, "FIXTURE_ATTACH_EXIT": "1", "GH_WITH_ENV_TOKEN_RECEIPT_NONCE": nonce},
+                                input=body, text=True, capture_output=True, timeout=15)
+        assert failed.returncode != 0
+        assert github_comment.attachment_write_outcome(failed.stderr, nonce) == "unknown", failed.stderr
         refused = subprocess.run(
             [sys.executable, str(SCRIPT.with_name("github_comment.py")), "issue", "42", "--repo", repo,
              "--body-file", "-", "--attach", str(image)], env={**env, "FIXTURE_LOGIN": "another-person"},
@@ -1024,8 +1032,8 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
             calls = [json.loads(line)[0] for line in calls_file.read_text().splitlines()]
             assert not any(call[:2] == ["issue", "comment"] for call in calls), calls
         from skills.direction.scripts import question_id
-        counter_file = root / ".code/director-question-counter.json"
-        with patch.object(question_id, "configured_queue", return_value=None):
+        with patch.dict(os.environ, env, clear=True), patch.object(question_id, "configured_queue", return_value=None):
+            counter_file = question_id.counter_path()
             question_id.update(counter_file, seed=(10, ["fixture"]), allocate=False)
             reserved = question_id.update(counter_file)
         numbered = github_comment.AGENT_POSTED_LINE + f"\n\nDirector question: Q{reserved}. Continue?"
@@ -1039,6 +1047,13 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
             assert result.returncode != 0
             calls = [json.loads(line)[0] for line in calls_file.read_text().splitlines()]
             assert not any(call[:2] == ["issue", "comment"] for call in calls), calls
+        with patch.dict(os.environ, env, clear=True), patch.object(question_id, "configured_queue", return_value=None):
+            reserved = question_id.update(question_id.counter_path())
+        numbered = github_comment.AGENT_POSTED_LINE + f"\n\nDirector question: Q{reserved}. Continue?"
+        partial = subprocess.run([str(SCRIPT), *args], env={**env, "FIXTURE_LOSE_COUNTER": "1", "GH_WITH_ENV_TOKEN_RECEIPT_NONCE": nonce},
+                                 input=numbered, text=True, capture_output=True, timeout=15)
+        assert partial.returncode != 0
+        assert github_comment.attachment_write_outcome(partial.stderr, nonce) == "applied", partial.stderr
         original_env = env_file.read_text()
         env_file.write_text(original_env.replace(f"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN={owner}",
                                                 "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN=another-person"))

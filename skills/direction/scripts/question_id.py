@@ -184,6 +184,16 @@ def require_number(state: dict[str, Any], number: int, source: str | None = None
                      "before exact-text approval for a new question; reconcile historical ownership from its trusted source")
 
 
+def reservation_key(state: dict[str, Any], number: int | None) -> str | None:
+    return next((key for key, value in state.get("reservations", {}).items() if value == number), None)
+
+
+def require_receipt(state: dict[str, Any], number: int, receipt: str | None) -> None:
+    key = hashlib.sha256(receipt.encode()).hexdigest() if receipt else None
+    if key is None or state.get("reservations", {}).get(key) != number:
+        raise ValueError("This machine has no allocation receipt for that unbound number; use question_id.py next for a new question")
+
+
 def verify_number(path: Path, number: int, source: str | None = None) -> None:
     with path.with_name(path.name + ".lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -195,8 +205,11 @@ def verify_number(path: Path, number: int, source: str | None = None) -> None:
                            or state.get("counter_seed_pending") or not state.get("counter_commit")):
             raise ValueError("Restore and reconcile the recorded shared counter before checking a question number")
         if repository:
+            receipt = reservation_key(state, number)
             state = read_counter(repository, state["last_id"]).state
             source = hashlib.sha256(source.encode()).hexdigest() if source else None
+            if source is None or state["questions"].get(source) != number:
+                require_receipt(state, number, receipt)
         require_number(state, number, source)
 
 
@@ -260,7 +273,8 @@ def write_counter(repo: str, sha: str, state: dict[str, Any]) -> str | None:
 
 def reserve_question(minimum: int, key: str | None, repo: str | None, *, create: bool = False,
                      assignments: dict[str, int] | None = None, restore_from: str | None = None,
-                     number: int | None = None, reservation: bool = False) -> Allocation:
+                     number: int | None = None, reservation: bool = False, receipt: str | None = None,
+                     reservations: dict[str, int] | None = None) -> Allocation:
     if repo is None:
         return Allocation(minimum + int(key is not None))
     request_key = hashlib.sha256(key.encode()).hexdigest() if key is not None else None
@@ -273,9 +287,23 @@ def reserve_question(minimum: int, key: str | None, repo: str | None, *, create:
                 if prior in state["questions"] and state["questions"][prior] != imported_number:
                     raise ValueError("Prior counters disagree on a question ID; preserve both assignments for reconciliation")
                 state["questions"][prior] = imported_number
+            for prior, imported_number in (reservations or {}).items():
+                if prior in state["questions"] and state["questions"][prior] != imported_number:
+                    raise ValueError("Prior counters disagree on a reservation; preserve them for reconciliation")
+                owners = {k for k, value in state["questions"].items()
+                          if value == imported_number and k not in state.get("reservations", {})}
+                if owners - {prior}:
+                    continue
+                state["questions"][prior] = imported_number
+                state.setdefault("reservations", {})[prior] = imported_number
             if request_key in state["questions"]:
                 if number is not None and state["questions"][request_key] != number:
                     raise ValueError("Source already owns a different question number")
+                if reservation and request_key not in state.get("reservations", {}):
+                    state.setdefault("reservations", {})[request_key] = state["questions"][request_key]
+                    if commit := write_counter(repo, snapshot.file_sha, state):
+                        return Allocation(state["questions"][request_key], commit)
+                    continue
                 return Allocation(state["questions"][request_key], snapshot.commit_sha)
             state["last_id"] = max(state["last_id"], minimum)
             if request_key is not None:
@@ -284,6 +312,7 @@ def reserve_question(minimum: int, key: str | None, repo: str | None, *, create:
                     number_to_assign = state["last_id"]
                 else:
                     require_number(state, number, request_key)
+                    require_receipt(state, number, receipt)
                     number_to_assign = number
                     for prior in [k for k, value in state.get("reservations", {}).items() if value == number]:
                         state["reservations"].pop(prior)
@@ -298,13 +327,14 @@ def reserve_question(minimum: int, key: str | None, repo: str | None, *, create:
     raise ValueError("Shared counter changed concurrently; preserve the pending request and retry allocation")
 
 
-def prior_assignments(states: list[dict[str, Any]]) -> dict[str, int]:
+def prior_assignments(states: list[dict[str, Any]], field: str = "questions") -> dict[str, int]:
     assignments: dict[str, int] = {}
     for state in states:
         validate_counter(state)
-        for url, number in state.get("questions", {}).items():
+        for url, number in state.get(field, {}).items():
             key = hashlib.sha256(url.encode()).hexdigest()
-            if key in assignments and assignments[key] != number:
+            if ((key in assignments and assignments[key] != number)
+                    or (key not in assignments and number in assignments.values())):
                 raise ValueError("Prior counters disagree on a question ID; preserve both assignments for reconciliation")
             assignments[key] = number
     return assignments
@@ -380,7 +410,7 @@ def update(path: Path, *, seed: tuple[int, list[str]] | None = None, allocate: b
                 require_number(state, question_number, question_url)
             save_state(path, state)
             allocation = reserve_question(state["last_id"], key, repository, number=question_number,
-                                          reservation=question_url is None)
+                                          reservation=question_url is None, receipt=reservation_key(state, question_number))
             number = question_number if question_number is not None and not repository else allocation.number
             state["last_id"] = max(state["last_id"], number)
             if allocation.commit_sha:
@@ -398,7 +428,8 @@ def update(path: Path, *, seed: tuple[int, list[str]] | None = None, allocate: b
             state["counter_seed_pending"] = True
             save_state(path, state)
             allocation = reserve_question(state["last_id"], None, repository,
-                create=confirm_prior_counters_complete and not known_history, assignments=imported, restore_from=restore_from)
+                create=confirm_prior_counters_complete and not known_history, assignments=imported, restore_from=restore_from,
+                reservations=prior_assignments(snapshots, "reservations"))
             number = allocation.number
             state.update(last_id=max(state["last_id"], number), counter_repository=repository, counter_commit=allocation.commit_sha)
             state.pop("counter_seed_pending", None)

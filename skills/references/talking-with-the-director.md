@@ -66,7 +66,8 @@ numbered terminal text and the original link. `--queue OWNER/REPO#NUMBER` must
 agree with configured `[questions].queue`; without either, the result names the
 recipient and says `not_configured`, never queued or delivered. `--dry-run`
 validates and renders without writes or allocation. Read the same source with
-`oq.py show-question ORIGINAL_URL`; it returns the validated record and text.
+`oq.py show-question ORIGINAL_URL`; it returns the validated record, text and
+source author without local counter state.
 Keep the number hook until the Discord card adopts this source too. Existing
 prose comment, queue and acknowledgement commands remain available.
 

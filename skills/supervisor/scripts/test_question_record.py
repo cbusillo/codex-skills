@@ -15,6 +15,7 @@ AUTHOR = "fixture-automation"
 os.environ["CODEX_AUTOMATION_LOGIN"] = AUTHOR
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/missing/fixture.env"
 
+import q_number_guard as guard
 import question_record as record
 
 from skills.github.scripts.github_fixture_support import api_success, with_call_stub
@@ -75,7 +76,8 @@ class QuestionRecordTests(unittest.TestCase):
         }
         invalid["options"] = [{"answer": "Same"}, {"answer": "same", "cost": False}]
         errors = record.validation_errors(invalid)
-        self.assertGreaterEqual(len(errors), 10)
+        for field in ("decision", "basis", "manual", "issue", "recommendation", "options", "number"):
+            self.assertTrue(any(field in error for error in errors), field)
         with self.assertRaises(ValueError) as failure:
             self.create(invalid)
         self.assertTrue(all(error in str(failure.exception) for error in errors))
@@ -95,19 +97,6 @@ class QuestionRecordTests(unittest.TestCase):
         self.source["body"] = self.source["body"].replace(value["decision"], "A different decision?", 1)
         with self.assertRaises(ValueError):
             record.read_record(self.source)
-
-    def test_create_numbers_posts_registers_and_returns_original_text(self) -> None:
-        self.args.queue = "example/direction#9"
-        report: dict[str, Any] = {"complete": True, "questions": [{"url": self.source["url"], "registration_url": "receipt"}]}
-        with patch.object(record.delivery, "run_queue", return_value=report) as register:
-            result = self.create(question())
-        self.storage.create.assert_called_once_with(question()["issue"], record.render(question()))
-        self.assertIn("Q5.", result["text"])
-        self.assertNotIn("director-question:record", result["text"])
-        self.assertEqual(result["registration"], report["questions"][0]["registration_url"])
-        self.assertEqual(register.call_args.args[0].items, [self.source["url"]])
-        with record.delivery.queue_lock():
-            self.assertEqual(result["url"], self.source["url"])
 
     def test_dry_run_and_no_queue_preserve_truthful_registration(self) -> None:
         self.args.dry_run = True
@@ -139,7 +128,7 @@ class QuestionRecordTests(unittest.TestCase):
     def test_real_storage_numbers_and_registers_once_with_readback(self) -> None:
         self.args.queue = "example/direction#9"
         counter = record.question_id.counter_path()
-        record.question_id.update(counter, seed=(10, ["fixture"]), allocate=False)
+        record.question_id.update(counter, seed=(300, ["fixture"]), allocate=False)
         threads = {record.delivery.source_item(self.source["url"]): [], self.args.queue: []}
 
         def fetch(item: str) -> list[dict]:
@@ -184,12 +173,22 @@ class QuestionRecordTests(unittest.TestCase):
             self.assertEqual(sum(c["method"] == "POST" for c in calls), 2)
             record.question_id.verify_number(counter, int(first["question_id"][1:]), first["url"])
             self.assertEqual(record.read_record(storage.read(first["url"]))["text"], first["text"])
-            self.assertNotIn("director-question:record", first["text"])
+            self.assertIsNone(record.RECORD.search(first["text"]))
+            self.assertIsNone(guard.missing_context(first["text"]))
 
         with patch.dict(os.environ, {"CODEX_SKILLS_ENV_FILE": "/missing/fixture.env"}):
             with_call_stub(api, run)
 
-    def test_partial_readback_or_registration_failure_keeps_saved_source(self) -> None:
+    def test_source_reads_need_no_local_counter_or_lock(self) -> None:
+        storage = record.GitHubComments(lambda _item: [self.source])
+        view = record.read_record(storage.read(self.source["url"]))
+        self.assertEqual(view["record"], question())
+        self.assertEqual(view["author"], self.source["author"])
+        counter = record.question_id.counter_path()
+        self.assertFalse(counter.exists())
+        self.assertFalse(counter.with_name(counter.name + ".lock").exists())
+
+    def test_registration_failure_keeps_saved_source(self) -> None:
         self.args.queue = "example/direction#9"
         for failure in (ValueError("readback unavailable"), {"complete": False}):
             with patch.object(

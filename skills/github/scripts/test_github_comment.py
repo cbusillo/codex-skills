@@ -1478,7 +1478,7 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
         modes = (
             "success", "old_cli", "failed_upload", "bad_readback", "wrong_author", "missing_author",
             "canonical_case", "prewrite_refusal", "forged_receipt", "help_failure", "crlf_body", "readback_failure",
-            "attributed_question",
+            "attributed_question", "bind_failure",
         )
         successful_modes = {"success", "canonical_case", "crlf_body", "attributed_question"}
         for kind in ("issue", "pr"):
@@ -1494,10 +1494,10 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                     assert command[command.index("--repo") + 1].casefold() == f"{github_comment.ATTACHMENT_OWNER}/repo"
                     assert [command[index + 1] for index, value in enumerate(command) if value == "--attach"] == attachments
                     assert kwargs["input"].splitlines()[0] == github_comment.AGENT_POSTED_LINE
-                    if mode in ("prewrite_refusal", "forged_receipt"):
-                        nonce = kwargs["env"]["GH_WITH_ENV_TOKEN_RECEIPT_NONCE"] if mode == "prewrite_refusal" else "forged"
-                        receipt = {"schema_version": 1, "nonce": nonce, "write_outcome": "not_started"}
-                        return subprocess.CompletedProcess(command, 1, "", json.dumps(receipt))
+                    if mode in ("prewrite_refusal", "forged_receipt", "bind_failure"):
+                        nonce = kwargs["env"]["GH_WITH_ENV_TOKEN_RECEIPT_NONCE"] if mode != "forged_receipt" else "forged"
+                        receipt = {"schema_version": 1, "nonce": nonce, "write_outcome": "applied" if mode == "bind_failure" else "not_started"}
+                        return subprocess.CompletedProcess(command, 1, url if mode == "bind_failure" else "", json.dumps(receipt))
                     return subprocess.CompletedProcess(command, 1 if mode == "failed_upload" else 0, url, "upload failed")
 
                 readback: dict[str, Any] = dict(saved)

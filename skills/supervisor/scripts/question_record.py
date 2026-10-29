@@ -74,7 +74,7 @@ def render(record: dict[str, Any]) -> str:
     def text(value: Any) -> str:
         return str(value).replace("<!--", "&lt;!--")
 
-    lines = [f"Director question: {text(record['decision'])}", "", text(record["basis"]), ""]
+    lines = [f"Director question: **{text(record['decision'])}**", "", text(record["basis"]), ""]
     for option in record["options"]:
         recommended = option["answer"].strip().casefold() == record["recommendation"].strip().casefold()
         lines.extend(
@@ -111,6 +111,7 @@ def read_record(source: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("record issue disagrees with its source")
     return {
         "record": record,
+        "author": source["author"],
         "question_id": number,
         "url": source["url"],
         "text": body.split("<!-- director-question:record ", 1)[0].strip(),
@@ -139,7 +140,6 @@ class GitHubComments:
         source = next((c for c in self.fetch(delivery.source_item(url)) if c["url"] == url), None)
         if source is None:
             raise ValueError(f"source question is unavailable: {url}")
-        github_comment.verify_question_number(source["body"], url)
         match = delivery.COMMENT_URL.fullmatch(url)
         assert match is not None
         return {**source, "issue": f"https://github.com/{match[1]}/issues/{match[2]}"}
