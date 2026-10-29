@@ -233,7 +233,7 @@ def repository_inventory(
     read: Callable[..., tuple[str, list[dict[str, Any]]]],
     *,
     installed: bool,
-    limit: int,
+    limit: int | None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     path = "/installation/repositories" if installed else "/user/repos"
     _, rows = read(
@@ -242,15 +242,15 @@ def repository_inventory(
         collection_key="repositories" if installed else None,
         bucket="rest_core",
         step_prefix="next_repository_inventory",
-        limit=limit + 1,
+        limit=limit + 1 if limit is not None else None,
     )
     return rows[:limit], {
         "source": path,
         "repository_limit": limit,
         "inventory_observed_count": len(rows),
-        "inventory_count": min(len(rows), limit),
-        "inventory_truncated": len(rows) > limit,
-        "complete": len(rows) <= limit,
+        "inventory_count": min(len(rows), limit) if limit is not None else len(rows),
+        "inventory_truncated": limit is not None and len(rows) > limit,
+        "complete": limit is None or len(rows) <= limit,
     }
 
 
@@ -506,12 +506,7 @@ def complete_issue_pages(row: dict[str, Any]) -> dict[str, list[dict[str, Any]]]
 
 def publish_issue_pages(reads: github_next_reads.NextReads, row: dict[str, Any], actor: str | None) -> None:
     for path, body in complete_issue_pages(row).items():
-        with reads.lock:
-            if path in reads.observations:
-                continue
-            future: Future[Any] = Future()
-            reads.observations[path] = future
-        future.set_result((actor, body))
+        reads.publish(path, (actor, body))
 
 
 def prefetch_issues(
@@ -580,18 +575,18 @@ def prefetch_issues(
 
 def read_discussion(
     issue: dict[str, Any],
-    read_comments: Callable[[int], tuple[list[dict[str, Any]], bool]],
+    read_comments: Callable[[int | None], tuple[list[dict[str, Any]], bool]],
     *,
-    limit: int,
+    limit: int | None,
 ) -> tuple[list[dict[str, Any]], bool]:
-    comments = issue.get("_graph_comments")
+    comments: list[dict[str, Any]] = issue.get("_graph_comments") or []
     complete = issue.get("_graph_comments_complete", True)
-    if comments is None or (not complete and limit > len(comments)):
+    if "_graph_comments" not in issue or (not complete and (limit is None or limit > len(comments))):
         if type(issue.get("comments")) is int and issue["comments"] == 0:
             comments, complete = [], True
         else:
-            comments, complete = read_comments(limit + 1)
-    return copy.deepcopy(comments[:limit]), complete and len(comments) <= limit
+            comments, complete = read_comments(limit + 1 if limit is not None else None)
+    return copy.deepcopy(comments[:limit]), complete and (limit is None or len(comments) <= limit)
 
 
 def read_direction_node(
@@ -599,8 +594,8 @@ def read_direction_node(
     *,
     config: dict[str, Any],
     focus: str | None,
-    comment_limit: int,
-    read_comments: Callable[[int], tuple[list[dict[str, Any]], bool]],
+    comment_limit: int | None,
+    read_comments: Callable[[int | None], tuple[list[dict[str, Any]], bool]],
     read_relationships: Callable[[], tuple[dict[str, Any], list[str]]],
     resolve_wait: Callable[[list[dict[str, Any]]], dict[str, Any] | None],
     resolve_body_time: Callable[[dict[str, Any]], str | None] | None = None,
@@ -801,23 +796,23 @@ def cached_reads(fetch: Callable[[list[str]], Any]) -> Callable[[list[str]], Any
     return read
 
 
-def ownership_inventory(read: Callable[..., Any], repo: str, *, limit: int) -> dict[str, Any]:
+def ownership_inventory(read: Callable[..., Any], repo: str, *, limit: int | None) -> dict[str, Any]:
     _, pulls = read(
         f"/repos/{repo}/pulls",
         query={"state": "open", "sort": "created", "direction": "asc"},
         bucket="rest_core",
         step_prefix="next_queue_pulls",
-        limit=limit + 1,
+        limit=limit + 1 if limit is not None else None,
     )
-    _, branches = read(f"/repos/{repo}/branches", query={}, bucket="rest_core", step_prefix="next_queue_branches", limit=limit + 1)
-    complete = len(pulls) <= limit and len(branches) <= limit
+    _, branches = read(f"/repos/{repo}/branches", query={}, bucket="rest_core", step_prefix="next_queue_branches", limit=limit + 1 if limit is not None else None)
+    complete = limit is None or (len(pulls) <= limit and len(branches) <= limit)
     return {
         "pulls": pulls[:limit],
         "complete": complete,
         "inventory": {"remote_branches": [branch["name"] for branch in branches[:limit]], "local_branches": [], "worktrees": []},
         "coverage": {
-            "pull_count": min(len(pulls), limit),
-            "branch_count": min(len(branches), limit),
+            "pull_count": min(len(pulls), limit) if limit is not None else len(pulls),
+            "branch_count": min(len(branches), limit) if limit is not None else len(branches),
             "truncated": not complete,
             "local_artifacts": "not_read",
         },

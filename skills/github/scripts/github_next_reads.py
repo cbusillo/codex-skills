@@ -42,6 +42,7 @@ class NextReads:
         self.lock = threading.Lock()
         self.observations: dict[str, Future[Any]] = {}
         self.tasks: dict[Any, Future[Any]] = {}
+        self.inventory: dict[str, list[dict[str, Any]]] = {}
         self.reused = 0
         self.requests = 0
         self.reused_failures = 0
@@ -126,6 +127,14 @@ class NextReads:
     def observation(self, path: str) -> Future[Any] | None:
         with self.lock:
             return self.observations.get(observation_key(path))
+
+    def publish(self, path: str, value: Any) -> None:
+        with self.lock:
+            path = observation_key(path)
+            if path not in self.observations:
+                future: Future[Any] = Future()
+                future.set_result(copy.deepcopy(value))
+                self.observations[path] = future
 
     def request(self, read: Callable[[], T]) -> T:
         if self.expired:

@@ -129,14 +129,14 @@ class AgentTests(unittest.TestCase):
             self.assertTrue(any(item.get("number") == 2 and item["exclusion"] == "assigned_elsewhere"
                                 for item in result["excluded"]))
 
-    def test_global_graph_budget_preserves_both_family_leaves(self):
+    def test_complete_global_graph_preserves_both_family_leaves(self):
         for family, other in (("codex", "claude"), ("claude", "codex")):
             root = next_tests.track("someone/direction", 1, "First")
             leaves = [next_tests.global_issue("someone/product", 2, labels=[f"agent:{other}"]),
                       next_tests.global_issue("someone/product", 3, labels=[f"agent:{family}"])]
             edges = {(root["repo"], 1): next_tests.relationships(sub_issues=leaves)}
             with next_tests.global_fixture([root], leaves, edges) as (module, result, _):
-                args = next_tests.next_args(scan_limit=2)
+                args = next_tests.next_args(scan_limit=None)
                 args.agent = family
                 module.cmd_next(args)
             self.assertEqual([item["number"] for item in result["candidates"]], [3])
@@ -144,12 +144,12 @@ class AgentTests(unittest.TestCase):
             self.assertTrue(any(item.get("number") == 2 and item["exclusion"] == "assigned_elsewhere"
                                 for item in result["excluded"]))
 
-    def test_discovery_budget_preserves_both_family_leaves(self):
+    def test_complete_discovery_preserves_both_family_leaves(self):
         for family, other in (("codex", "claude"), ("claude", "codex")):
             leaves = [next_tests.global_issue("someone/product", 2, labels=[f"agent:{other}"]),
                       next_tests.global_issue("someone/product", 3, labels=[f"agent:{family}"])]
             with next_tests.global_fixture([], [], {}, discovered=leaves) as (module, result, _):
-                args = next_tests.next_args(scan_limit=1)
+                args = next_tests.next_args(scan_limit=None)
                 args.agent = family
                 module.cmd_next(args)
             self.assertEqual([item["number"] for item in result["candidates"]], [3])
@@ -157,7 +157,7 @@ class AgentTests(unittest.TestCase):
             self.assertTrue(any(item.get("number") == 2 and item["exclusion"] == "assigned_elsewhere"
                                 for item in result["excluded"]))
 
-    def test_family_graph_allowance_is_bounded_and_traverses_dependencies(self):
+    def test_complete_family_graph_traverses_dependencies_with_optional_bound(self):
         for family, other in (("codex", "claude"), ("claude", "codex")):
             root = next_tests.track("someone/direction", 1, "First")
             parent = next_tests.global_issue("someone/product", 2, labels=[f"agent:{other}"])
@@ -165,7 +165,7 @@ class AgentTests(unittest.TestCase):
             edges = {(root["repo"], 1): next_tests.relationships(sub_issues=[parent]),
                      (parent["repo"], 2): next_tests.relationships(blocked_by=[blocker])}
             with next_tests.global_fixture([root], [parent, blocker], edges) as (module, result, _):
-                args = next_tests.next_args(scan_limit=2)
+                args = next_tests.next_args(scan_limit=None)
                 args.agent = family
                 module.cmd_next(args)
             self.assertEqual([item["number"] for item in result["candidates"]], [3])
@@ -180,7 +180,7 @@ class AgentTests(unittest.TestCase):
                 args.agent = family
                 module.cmd_next(args)
             self.assertFalse(result["candidates"])
-            self.assertEqual(result["evaluated"], 2 * args.scan_limit)
+            self.assertEqual(result["evaluated"], args.scan_limit)
             self.assertTrue(result["graph_context"]["truncated"])
             self.assertFalse(result["graph_context"]["complete"])
 
@@ -198,11 +198,15 @@ class AgentTests(unittest.TestCase):
                 args.agent = family
                 module.cmd_next(args)
             self.assertFalse(result["candidates"])
-            self.assertTrue(any(item.get("number") == 4 and item["exclusion"] == "parent_waiting"
-                                for item in result["excluded"]))
             self.assertEqual([item["number"] for item in result["discovery_context"]["unevaluated_milestone_issues"]], [3])
             self.assertFalse(result["candidate_coverage"]["complete"])
             self.assertFalse(result["tooling_capacity_context"]["admitted"])
+            with next_tests.global_fixture([], [parent], edges, discovered=[*leaves, child]) as (module, result, _):
+                args.scan_limit = None
+                module.cmd_next(args)
+            self.assertTrue(any(row.get("number") == 4 and row["exclusion"] == "parent_waiting" for row in result["excluded"]))
+            self.assertFalse(result["discovery_context"]["unevaluated_count"])
+
 
     def test_other_family_frontier_still_controls_capacity_admission(self):
         for family, other in (("codex", "claude"), ("claude", "codex")):
@@ -215,7 +219,7 @@ class AgentTests(unittest.TestCase):
             edges = {(root["repo"], root["number"]): next_tests.relationships(sub_issues=[leaf])
                      for root, leaf in zip(roots, leaves)}
             with next_tests.global_fixture(roots, leaves, edges, discovered=[tool], clear_waits=[tool]) as (module, result, _):
-                args = next_tests.next_args(scan_limit=3)
+                args = next_tests.next_args(scan_limit=None)
                 args.agent = family
                 module.cmd_next(args)
                 items = {item["number"]: item for item in [*result["candidates"], *result["excluded"]]}

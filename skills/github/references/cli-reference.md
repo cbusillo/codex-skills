@@ -2223,17 +2223,16 @@ within the invocation. The `work_graph_context` reports observed and unread
 nodes and batch request count; those counts do not prove complete portfolio
 coverage. Per-repository planning calls retain their existing read routes.
 
-The default account-wide scan first reads current live-breakage labels across
-accessible repositories belonging to the account, then evaluates their native paths before
-milestone ranking. Unread or partial priority evidence returns
-`live_breakage_unread`. Track discovery uses the same open-issue inventory as
-the goal board, including Tracks without a planning label. An unread Track
-inventory returns `work_graph_unread`, unknown milestone summaries and a nonzero
-exit; a fully read empty inventory can report `no_linked_work`.
-`milestone_ranking_complete` describes the milestone graph independently of
-optional discovery. Overall candidate coverage also requires availability and
-ownership evidence. Successful partial scans recommend `review_partial_coverage`
-unless transport evidence supplies a more specific action.
+The default account-wide read inventories open issues and PRs together in
+complete paged GraphQL reads per accessible repository belonging to the account. It includes full
+discussions, labels, milestones, assignees, native relationships, parent and PR
+head identity. Track, incident, queue and dependency views reuse that inventory.
+An explicitly configured non-GraphQL route uses the same authenticated REST
+reader. Failed or inaccessible portfolio sources remain incomplete coverage
+with an unknown-priority warning. Unread known incident paths or Track evidence
+still returns `live_breakage_unread` or `work_graph_unread`; successful partial
+answers recommend `review_partial_coverage`. Explicit milestone selection reads
+its Track graph without inventorying unrelated repositories or PRs.
 
 The goal board and direction audit consume the same native graph and discussion
 reading functions. The board keeps its bounded view of recent
@@ -2243,11 +2242,10 @@ projections, including unread responses. Audit attribution retains full native
 relationship metadata and reads the canonical issue when a minimal projection
 lacks it. None of this cache is a persisted record of work or offline authority.
 
-Global `next` bounds network work with `--time-budget SECONDS`
-and `--read-workers COUNT`; `--help` reports the current defaults and bounds.
-Increase the budget for broader evidence;
-one worker is the supported serial route. Native graph ownership runs before
-optional discovery, which reserves part of the effective budget for final evidence reads.
+Global `next` has no default time or inventory budget. `--read-workers` bounds
+concurrency; `--time-budget SECONDS` opts into a deadline. Optional explicit
+inventory/evaluation bounds retain partial-coverage receipts. `--limit` caps only
+returned results. One worker remains the supported serial route.
 Invocation-local observations coalesce duplicate GETs;
 the first read still contacts the existing authenticated reader, including
 conditional validation, quota reserve and inherited retry deadline. No body
@@ -2356,15 +2354,15 @@ than one day, oldest first, targeting a base branch enrolled in Launchplane's ac
 policy. The PR itself is the record; each entry includes its URL, age, and head
 SHA. These are possible work needing an agent's review, not proof of a train
 hold or available ownership. Issue ranking and claim behavior are unchanged.
-`pr_followthrough` separately exposes other open PRs, without the dependency
-age threshold, using that same inventory and bounded discussion reads. Rows
-include current-head identity, structured waits and bounded discussion excerpts
-with source links, including Client projections. They remain review work, held, underway or
-unknown, never automatically available source assignments. A stale canonical
-issue wait does not erase the PR record. Current claims and current-head Ready
-handoffs remain underway; drafts and Client-wait handoffs remain held. Legacy conditions require
-reconciliation, and unknown evidence remains explicit. Claims and the existing
-Ready path still check source custody, Client authority and readiness afresh.
+Global PRs enter the same queue and ranking as issues. `Next actor: agent` can
+be available after direction and ownership checks; absent actors need status.
+Current claims, named agents and current-head Ready remain underway; drafts,
+Client-wait handoffs and structured waits remain held. The PR and remote head
+are its work record, while local source artifacts remain competing ownership.
+`pr_followthrough` preserves the non-dependency compatibility view. A stale
+canonical issue wait never hides that PR; fresh claim/readiness and Client
+authority checks still apply. Repository-local PR projections retain their
+bounded discussion/review behavior.
 `pr_followthrough_context` reports its independent completeness and truncation;
 `pr_followthrough_count` is the full observed count before `--limit`.
 `dependabot_context` reports per-repository enrollment and bounded GitHub read
@@ -2373,7 +2371,7 @@ coverage. Unknown enrollment retains observed old PRs in
 unenrolled repositories. After the first unavailable enrollment read, further
 repositories in that run remain unknown without repeating the failed service
 read; GitHub PR observation continues with unverified results.
-`--scan-limit` independently bounds the open PR read per repository;
+Repository-local `--scan-limit` independently bounds the open PR read per repository; global PR projections reuse the complete inventory;
 `--limit` bounds each returned PR list with full counts and
 `result_truncated`. A repository-wide PR read also runs with a local
 `--milestone`; global milestone scope reports `explicit_milestone_scope` instead
@@ -2409,9 +2407,8 @@ review decision. Missing people/conditions remain unknown. Whole-plan waiting
 states stop that branch, while a partial wait in an active parent does not hide
 its independent work. Read the selected issue's full discussion before acting.
 
-The global `--scan-limit` bounds unique graph nodes, not just roots, with a
-separate allowance of the same size for other-family evidence when the running
-family is known (at most twice the limit in total). Cycles,
+The optional global `--scan-limit` bounds unique graph nodes without
+agent-family allowances. With no flag, traversal is complete. Cycles,
 missing tracking issues, inaccessible nodes, and truncated reads are explicit;
 `dependency_context.complete=false` means the answer is partial. Missing or
 unreadable direction never silently falls back to product-repository ranking.
@@ -2425,8 +2422,8 @@ judgment: unlinked live incidents and repeat-stop tooling exceptions need their
 own evidence, and the weekly own-project share remains an audit, not a per-call
 quota. With no `--milestone`, the query also inventories the repository owner's
 accessible repositories and their open issues, including non-plan issues, and returns their
-merged direction. Other repository owners, archived/disabled repos, disabled issue trackers,
-and empty repos without open issues have explicit exclusions. Forks remain
+merged direction. Other repository owners and archived/disabled repositories
+have explicit exclusions. Repositories with disabled issue trackers still supply PRs. Forks remain
 eligible for discovery. An App uses `/installation/repositories`; a configured
 non-App actor uses `/user/repos`, without switching identities on failure.
 
@@ -2436,26 +2433,12 @@ beyond ordinary repository list bounds, pass their inventory through
 beside the ranked list; `rank_portfolio_work` alone cannot find omitted issues.
 
 `graph_context` covers native traversal; `discovery_context` covers repository
-inventory and issue reads; neither proves active ownership. `--repo-limit`
-(default 100), `--repository-issue-limit` (100), and `--comment-limit` (100) bound
-the new sources. `--scan-limit` separately bounds graph nodes and discovered issue
-evaluations of ordinary issues. Other-family discoveries use a separate allowance
-of the same size; they retain dependency, parent-wait and capacity evidence before
-the final family filter. Unknown and conflicting assignments use the ordinary
-allowance. See [global selection](../../github-plan/references/global-next.md)
-for the graph stopping rule and the existing held-repository allowance. Issues labeled `live-breakage` after a Director
-incident decision are evaluated outside that discovery allowance and ranked
-first among possible work, while normal holds, blockers, waits, and ownership
-review still apply. When an ordinary repository issue list is truncated, a
-separate label inventory reads up to the plan inventory limit and reports its
-coverage. `candidate_coverage` accompanies the ranked list with a warning when
-graph or discovery coverage is incomplete; its counts are not an availability
-claim. Its `scope` distinguishes a portfolio scan from an explicit milestone
-scan; complete milestone coverage says nothing about incidents outside it.
-`candidate_coverage.unevaluated_repositories` lists named repositories and counts
-of inventoried issues omitted by the evaluation allowance, after graph overlap
-and marked-incident reads. Source truncation/access failures remain explicit in
-`discovery_context.repositories`, so these counts do not claim full inventory.
+inventory and record reads; neither proves active ownership. Global reads are
+complete by default. `--repo-limit`, `--repository-issue-limit`, `--comment-limit`
+and `--scan-limit` opt into partial evidence, with no family or held-repository
+allowances. `candidate_coverage` reports incomplete source, traversal or ownership
+coverage and known omitted repositories/counts. An explicit milestone scope
+remains a ranking filter and cannot establish portfolio capacity admission.
 Every candidate has `overall_milestone_context` with `matched`, `none_found` or
 `unknown`, titles and its evidence source. Matches require a native Track
 path/ancestry/blocking target or an open issue milestone title listed in both repository and
@@ -2467,14 +2450,10 @@ summary explicitly reports an integer-zero total for that relationship; missing,
 malformed or nonzero totals keep the bounded reads, including closed history.
 Zero totals reflect the issue inventory's read-time snapshot; a relationship
 added afterward appears on a fresh read, not retroactively in this result.
-Mark only current incidents: every marked issue gets normal relationship,
-discussion and ancestry reads outside the ordinary scan allowance, so API cost
-increases with the marked inventory. Explicit milestone scope remains narrow.
-Discovery visits repositories round-robin after local milestone
-ordering, so one large backlog does not consume the entire evaluation budget.
-`--limit` caps displayed candidates, not coverage. Unevaluated issues, truncated
-comments/inventories, and inaccessible sources remain explicit. `--milestone`
-retains its narrow graph scope and reports portfolio discovery as excluded.
+The complete inventory includes current incident roots and the normal
+relationship, discussion and ancestry evidence. There is no second label scan
+or round-robin budget allocation. `--limit` caps displayed candidates only.
+Explicit scan/deadline bounds and unavailable sources stay visible in coverage.
 When a scan allowance leaves issues unchecked, `graph_context.evaluation_note`
 or `discovery_context.evaluation_note` says evaluation stopped early and names
 `--scan-limit` as the way to check more. The discovery note counts inventoried
@@ -2528,7 +2507,7 @@ repository milestone order and bounded parent evidence through those shared
 functions, and report their discovery coverage separately. Capacity callers also
 read bounded ancestry for excluded discoveries, preserving their original wait
 reports while marking capacity ancestry/discussion evidence incomplete. Held
-repositories use a separate bounded read allowance and remain unselectable;
+repositories use the same complete inventory and remain unselectable;
 `discovery_context.capacity_complete` reports discovery evidence completeness
 separately from admission. For capacity admission, pass `coverage_complete=True`
 to `rank_portfolio_work` only for complete milestone graph coverage with no known
@@ -2546,8 +2525,8 @@ filters work in that repository without cutting native paths to independent
 work in another. Calling only `rank_direction_work` proves
 graph coverage, not portfolio discovery.
 
-Incident descendants use a separate `--scan-limit` allowance beyond ordinary
-discovery. `incident_via` records a path from a freshly marked root over native
+Incident traversal is complete by default; an explicit `--scan-limit` bounds
+descendants. `incident_via` records a path from a freshly marked root over native
 `blocked_by` or `sub_issue` steps. `discovery_context.incident_context` reports
 unique descendant evaluations, bounds, cycles and unavailable paths. Eligible
 nodes reuse the ten-parent ancestry bound. This is priority evidence only;
