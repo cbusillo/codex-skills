@@ -45,7 +45,7 @@ def current_status(discussion: dict[str, Any], trusted: set[str], *, body_record
 
 
 def status_field(status: str, field: str) -> str:
-    match = re.search(rf"(?mi)^\s*(?:[-*]\s+)?(?:[*]{{2}})?{re.escape(field)}(?:[*]{{2}})?:(?:[*]{{2}})?\s*(.*)$", status)
+    match = re.search(rf"(?mi)^\s*(?:[-*]\s+)?(?:[*]{{2}})?{re.escape(field)}(?:[*]{{2}})?:(?:[*]{{2}})?[ \t]*(.*)$", status)
     return match[1].strip() if match else ""
 
 
@@ -71,6 +71,7 @@ def remaining_work(status: str) -> dict[str, Any]:
     result = {"next_action": action, "recorded_state": state}
     if re.match(r"(?:[\w.-]+/[\w.-]+)?#[1-9]\d*\b|https://github[.]com/[\w.-]+/[\w.-]+/issues/[1-9]\d*\b", action):
         return {**result, "state": "scope_review", "reason": "current_action_belongs_to_linked_record"}
+    action = re.sub(r"\b[\w/-]*(?:qualification|verification|observation|test)[\w/-]*\s+(?:agent|worker|lead)\b", "agent", action, flags=re.I)
     source_action = re.split(r"\b(?:do not|don't|never)\b", action, maxsplit=1, flags=re.I)[0]
     # A next independent source slice remains work after an earlier slice lands.
     def next_source_slice(text: str) -> bool:
@@ -85,6 +86,7 @@ def remaining_work(status: str) -> dict[str, Any]:
     delivery_state = ";".join(re.split(r"\bprerequisites?\b", clause, maxsplit=1, flags=re.I)[0]
                               for clause in clauses(state))
     delivered = bool(re.search(r"\b(?:landed|merged|delivered|source landing confirmed|source engineering is complete|completed .*slices)\b", delivery_state, re.I))
+    delivered |= bool(re.search(r"\b(?:source|supported) delivery\b.*\bis complete\b", delivery_state, re.I))
     if re.search(r"\b(?:not|never|yet to be|needs to be|must be|will be|to be|awaiting|pending)\s+(?:\w+\s+){0,2}(?:merged|landed|delivered)\b", state, re.I):
         delivered = False
     # Work explicitly routed to a separate canonical issue is no fresh source
@@ -109,6 +111,11 @@ def remaining_work(status: str) -> dict[str, Any]:
         return following[1] if following else ""
     def source_step(text: str) -> bool:
         for match in re.finditer(source_verbs, text, re.I):
+            if re.fullmatch(r"(?:diagnose|investigate)(?:s|es|ing)?", match[0], re.I):
+                target = re.split(r";|[.]\s+", text[match.end():], maxsplit=1)[0]
+                if re.search(r"\b(?:Computer Use|GUI (?:attachment|route))\b", target, re.I) and not re.search(
+                        r"\b(?:source|code|implementation)\b", target, re.I):
+                    continue
             if re.fullmatch(r"(?:diagnose|investigate)(?:s|es|ing)?", match[0], re.I) and re.search(
                     r"\b(?:retained|historical)\b.*\b(?:evidence|logs?|trace\w*)\b", re.split(r";|[.]\s+", text[match.end():], maxsplit=1)[0], re.I):
                 continue

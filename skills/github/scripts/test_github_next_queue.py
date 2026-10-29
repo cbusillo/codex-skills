@@ -132,6 +132,8 @@ def test_current_qualification_does_not_hide_a_mixed_engineering_remainder() -> 
     assert classify(mixed)['state'] == 'available'
     assert classify(item('An executing agent repairs the controller response projection.', 'Active; first source PR landed'))['state'] == 'available'
     assert classify(item('Implement a feature that verifies TLS certificates.'))['state'] == 'available'
+    assert classify(item('Diagnose the source bug in Computer Use attachment.'))['state'] == 'available'
+    assert queue.status_field('State: \nNext action: Implement export.', 'State') == ''
     assert classify(item('Verify export and fix the reproduced fault.', 'Active; earlier source merged'))['state'] == 'available'
     assert classify(item('Verify the next deployed candidate update preserves the request.'))['state'] == 'review'
     assert classify(item('Supervisor verifies deployed web drill support.'))['state'] == 'review'
