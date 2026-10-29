@@ -564,10 +564,10 @@ merged tooling PRs whose net lines are at or below zero and which state
 `Removed:`. It reuses the weekly capacity rank, excluding train batches,
 within the report's selected non-archived repositories and history window. Its full report
 keeps the PR links, line counts and statement evidence; its short summary keeps
-the measure. Reuse that result in the Supervisor's morning digest, including
-its scope or unavailable reason. Incomplete reads or fewer than 20 tooling
-merges report unavailable. The target is 70%, never a delivery gate. No
-separate collector, job or manually supplied evidence rows are required.
+the measure with its scope or unavailable reason. Incomplete closed-PR reads
+or fewer than 20 tooling merges report unavailable. The measure runs after
+the primary sweep under its remaining read budget. The target is 70%, never
+a delivery gate.
 Include the run's privately recorded capacity deadlines. Post the Director's
 question queue under the shared
 [queue rules](../../references/talking-with-the-director.md#decisions-holds-and-work-state);
