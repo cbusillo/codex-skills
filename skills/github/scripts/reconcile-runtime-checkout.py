@@ -22,7 +22,7 @@ import tempfile
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 
 SCHEMA_VERSION = 1
@@ -116,31 +116,41 @@ def reconcile_runtime_checkout(
     timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Use a bounded, nonblocking reconciliation for automatic session startup."""
-    token = RECONCILIATION_DEADLINE.set(
-        time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+    return reconcile_bounded(
+        lambda: _reconcile_runtime_checkout(merged_worktree, expected_repo, landing_sha),
+        expected_repo, landing_sha, timeout_seconds,
     )
+
+
+def reconcile_bounded(
+    operation: Callable[[], dict[str, Any]],
+    expected_repo: str | None,
+    landing_sha: str | None,
+    timeout_seconds: float | None,
+    *,
+    kind: str = "runtime_checkout_reconciliation",
+) -> dict[str, Any]:
+    token = RECONCILIATION_DEADLINE.set(time.monotonic() + timeout_seconds if timeout_seconds is not None else None)
+    receipt = base_receipt(landing_sha)
+    receipt.update(expected_repo=expected_repo, kind=kind)
     try:
-        receipt = _reconcile_runtime_checkout(merged_worktree, expected_repo, landing_sha)
+        receipt = operation()
         deadline = RECONCILIATION_DEADLINE.get()
         if deadline is not None and time.monotonic() >= deadline:
-            # A deadline still in force proves no fast-forward was started.
             receipt["runtime_mutated"] = False
             receipt["detail"] = None
             return finish(receipt, "retryable", "runtime_catchup_timeout")
         return receipt
     except ReconciliationBusy:
-        receipt = base_receipt(landing_sha)
-        receipt["expected_repo"] = expected_repo
         return finish(receipt, "blocked", "runtime_reconciliation_busy", applicable=True)
-    except GitCommandError as exc:
+    except (GitCommandError, OSError, ValueError) as exc:
         if timeout_seconds is None:
-            raise  # Preserve the manual/train caller's existing error handling.
-        receipt = base_receipt(landing_sha)
-        receipt["expected_repo"] = expected_repo
-        receipt["failed_operation"] = exc.operation
+            raise
+        receipt["failed_operation"] = exc.operation if isinstance(exc, GitCommandError) else type(exc).__name__
         deadline = RECONCILIATION_DEADLINE.get()
         if deadline is not None and time.monotonic() >= deadline:
             return finish(receipt, "retryable", "runtime_catchup_timeout")
+        receipt["detail"] = str(exc)
         return finish(receipt, "failed", "unexpected_git_error")
     finally:
         RECONCILIATION_DEADLINE.reset(token)
@@ -218,7 +228,7 @@ def _reconcile_runtime_checkout(
     receipt["binding"] = "shared_git_common_dir"
     receipt["applicable"] = True
 
-    return reconcile_checkout(source_root, runtime_root, runtime_path, receipt, helper_relative_path)
+    return reconcile_checkout(source_root, runtime_root, runtime_path, receipt, helper_relative_path, source_common_dir)
 
 
 def reconcile_checkout(
@@ -227,12 +237,14 @@ def reconcile_checkout(
     runtime_path: Path | None,
     receipt: dict[str, Any],
     helper_relative_path: Path = HELPER_IN_CATALOG,
+    common_dir: Path | None = None,
 ) -> dict[str, Any]:
+    common_dir = common_dir or git_common_dir(runtime_root)
     default_branch = receipt["base_branch"]
     expected_repo = receipt["expected_repo"]
     landing_sha = receipt["landing_sha"]
     try:
-        with reconciliation_lock(git_common_dir(runtime_root)):
+        with reconciliation_lock(common_dir):
             blockers = runtime_blockers(runtime_root, default_branch)
             if blockers:
                 receipt["blockers"] = blockers
@@ -248,11 +260,11 @@ def reconcile_checkout(
 
             try:
                 origin_url = git_text(runtime_root, "config", "--get", "remote.origin.url")
-                origin_repo = repository_from_remote_url(origin_url)
+                origin_repo = repository_from_remote_url(origin_url) if runtime_path is not None else None
             except (GitCommandError, ValueError):
                 return finish(receipt, "failed", "runtime_origin_unavailable")
             receipt["origin_repo"] = origin_repo
-            if origin_repo.casefold() != expected_repo.casefold():
+            if origin_repo is not None and origin_repo.casefold() != expected_repo.casefold():
                 receipt["blockers"] = ["runtime_origin_repo_mismatch"]
                 receipt["before_sha"] = safe_git_text(runtime_root, "rev-parse", "HEAD")
                 receipt["after_sha"] = receipt["before_sha"]
@@ -364,13 +376,14 @@ def reconcile_checkout(
 
             if current_sha == fetched_sha:
                 receipt["after_sha"] = current_sha
-                if runtime_path is not None and not runtime_binding_matches(runtime_path, git_common_dir(runtime_root)):
+                if not runtime_binding_matches(runtime_path or runtime_root, common_dir):
                     return finish(receipt, "failed", "postcondition_runtime_binding_changed")
                 return finish(receipt, "already_current", "runtime_current")
 
             pre_merge_blockers = runtime_blockers(runtime_root, default_branch)
             pre_merge_sha = git_text(runtime_root, "rev-parse", "HEAD")
-            if pre_merge_blockers or pre_merge_sha != current_sha:
+            if (pre_merge_blockers or pre_merge_sha != current_sha
+                    or not runtime_binding_matches(runtime_path or runtime_root, common_dir)):
                 receipt["blockers"] = pre_merge_blockers or ["runtime_head_changed"]
                 receipt["after_sha"] = pre_merge_sha
                 return finish(receipt, "blocked", "runtime_changed_before_fast_forward")
@@ -406,7 +419,7 @@ def reconcile_checkout(
             if post_blockers:
                 receipt["blockers"] = post_blockers
                 return finish(receipt, "failed", "postcondition_runtime_not_clean")
-            if runtime_path is not None and not runtime_binding_matches(runtime_path, git_common_dir(runtime_root)):
+            if not runtime_binding_matches(runtime_path or runtime_root, common_dir):
                 return finish(receipt, "failed", "postcondition_runtime_binding_changed")
             if landing_sha is not None and not git_is_first_parent(runtime_root, landing_sha, after_sha):
                 return finish(receipt, "failed", "postcondition_landing_missing")
@@ -424,31 +437,31 @@ def reconcile_checkout(
 
 
 def reconcile_primary_checkout(checkout: Path, *, timeout_seconds: float = 30) -> dict[str, Any]:
-    token = RECONCILIATION_DEADLINE.set(time.monotonic() + timeout_seconds)
-    try:
-        common = git_common_dir(checkout)
-        if common.name != ".git":
-            raise ValueError("Unsupported primary checkout layout")
-        primary = common.parent
-        failures = []
-        for binding, _, authoritative in runtime_skills_paths():
-            status, reason, root = inspect_binding(binding, common)
-            if root == primary:
-                namespace = runpy.run_path(str(primary / HELPER_IN_CATALOG))
-                expected_repo = repository_from_remote_url(git_text(checkout, "config", "--get", "remote.origin.url"))
-                remaining = max(0, RECONCILIATION_DEADLINE.get() - time.monotonic())
-                return namespace["reconcile_runtime_checkout"](primary, expected_repo, None, timeout_seconds=remaining)
-            if status == "failed" and authoritative:
-                failures.append(reason)
-        if failures:
-            raise ValueError(f"Cannot rule out a runtime binding: {', '.join(failures)}")
-        receipt = base_receipt(None)
-        receipt.update(kind="primary_checkout_refresh", applicable=True,
-                       base_branch=resolve_default_branch(checkout),
-                       expected_repo=repository_from_remote_url(git_text(checkout, "config", "--get", "remote.origin.url")))
-        return reconcile_checkout(checkout, primary, None, receipt)
-    finally:
-        RECONCILIATION_DEADLINE.reset(token)
+    return reconcile_bounded(lambda: _reconcile_primary_checkout(checkout), None, None, timeout_seconds,
+                             kind="primary_checkout_refresh")
+
+
+def _reconcile_primary_checkout(checkout: Path) -> dict[str, Any]:
+    common = git_common_dir(checkout)
+    if common.name != ".git":
+        raise ValueError("Unsupported primary checkout layout")
+    primary = common.parent
+    failures = []
+    for binding, _, authoritative in runtime_skills_paths():
+        status, reason, root = inspect_binding(binding, common)
+        if root == primary:
+            namespace = runpy.run_path(str(primary / HELPER_IN_CATALOG))
+            expected_repo = repository_from_remote_url(git_text(checkout, "config", "--get", "remote.origin.url"))
+            remaining = max(0, RECONCILIATION_DEADLINE.get() - time.monotonic())
+            RECONCILIATION_DEADLINE.set(None)
+            return namespace["reconcile_runtime_checkout"](primary, expected_repo, None, timeout_seconds=remaining)
+        if status == "failed" and authoritative:
+            failures.append(reason)
+    if failures:
+        raise ValueError(f"Cannot rule out a runtime binding: {', '.join(failures)}")
+    receipt = base_receipt(None)
+    receipt.update(kind="primary_checkout_refresh", applicable=True, base_branch=resolve_default_branch(checkout))
+    return reconcile_checkout(checkout, primary, None, receipt, common_dir=common)
 
 
 def base_receipt(landing_sha: str | None) -> dict[str, Any]:
@@ -633,11 +646,14 @@ def runtime_blockers(runtime_root: Path, default_branch: str) -> list[str]:
         blockers.append("runtime_hidden_index_state")
     if git_text(runtime_root, "status", "--porcelain=v1", "--untracked-files=all"):
         blockers.append("runtime_dirty")
-    for operation in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "rebase-merge",
-                      "rebase-apply", "sequencer", "BISECT_LOG", "BISECT_START"):
-        if Path(git_text(runtime_root, "rev-parse", "--path-format=absolute", "--git-path", operation)).exists():
-            blockers.append("runtime_git_operation")
-            break
+    operations = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "rebase-merge",
+                  "rebase-apply", "sequencer", "BISECT_LOG", "BISECT_START")
+    paths = git_text(runtime_root, "rev-parse", "--path-format=absolute",
+                     *(argument for name in operations for argument in ("--git-path", name))).splitlines()
+    if len(paths) != len(operations):
+        raise GitCommandError("rev-parse", "Ambiguous Git operation paths")
+    if any(Path(path).exists() for path in paths):
+        blockers.append("runtime_git_operation")
     return blockers
 
 

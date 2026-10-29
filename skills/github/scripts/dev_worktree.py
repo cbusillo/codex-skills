@@ -165,7 +165,7 @@ def refresh_primary(checkout: Path) -> None:
         receipt = checkout_rules().reconcile_primary_checkout(checkout)
         print(f"dev-worktree: primary checkout refresh: {json.dumps(receipt)}", file=sys.stderr)
     except Exception as exc:
-        print(f"dev-worktree: primary checkout refresh unavailable; checkout kept: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"dev-worktree: primary checkout refresh unavailable; inspect checkout: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
 def retire_finished(checkout: Path) -> None:

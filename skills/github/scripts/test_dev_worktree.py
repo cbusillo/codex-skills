@@ -140,6 +140,10 @@ class WorktreeTests(unittest.TestCase):
                           "def reconcile_runtime_checkout(source, expected_repo, landing, *, timeout_seconds):\n"
                           f"    Path({str(marker)!r}).write_text(json.dumps([str(source), landing, timeout_seconds]))\n"
                           "    return {'status': 'already_current'}\n")
+        broken = self.home / "broken-codex/skills"
+        broken.mkdir(parents=True)
+        (broken / ".git").write_text("invalid metadata")
+        self.env["CODEX_HOME"] = str(broken.parent)
         bindings = (self.home / ".agents/skills/shared", self.home / ".claude/skills/shared")
         for binding in bindings:
             with self.subTest(binding=binding):
@@ -154,6 +158,28 @@ class WorktreeTests(unittest.TestCase):
                 self.assertEqual(self.git("rev-parse", "HEAD"), self.initial)
                 binding.unlink()
                 marker.unlink()
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            receipt = dev_worktree.checkout_rules().reconcile_primary_checkout(self.repo)
+        self.assertFalse(receipt["ok"])
+        self.assertFalse(receipt["runtime_mutated"])
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.initial)
+
+    def test_runtime_mutation_receipt_survives_the_outer_read_deadline(self) -> None:
+        self.prepare_upstream()
+        binding = self.home / ".agents/skills/shared"
+        binding.parent.mkdir(parents=True)
+        binding.symlink_to(self.repo)
+        rules = dev_worktree.checkout_rules()
+        now = time.monotonic()
+        with mock.patch.dict(os.environ, self.env, clear=True), mock.patch.object(time, "monotonic", return_value=now) as clock:
+            def completed_runtime(*_args: object, **_kwargs: object) -> dict[str, object]:
+                clock.return_value = now + 100
+                return {"ok": True, "runtime_mutated": True}
+
+            with patch_attr(rules.runpy, "run_path", return_value={"reconcile_runtime_checkout": completed_runtime}):
+                receipt = rules.reconcile_primary_checkout(self.repo)
+        self.assertTrue(receipt["ok"])
+        self.assertTrue(receipt["runtime_mutated"])
 
     def test_primary_change_during_fetch_is_preserved(self) -> None:
         self.prepare_upstream()
@@ -181,6 +207,10 @@ class WorktreeTests(unittest.TestCase):
         lock_path = self.repo / ".git/every-code-runtime-reconciliation.lock"
         with lock_path.open("a+b") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
+            with mock.patch.dict(os.environ, self.env, clear=True):
+                receipt = dev_worktree.checkout_rules().reconcile_primary_checkout(self.repo)
+            self.assertFalse(receipt["ok"])
+            self.assertFalse(receipt["runtime_mutated"])
             result = subprocess.run([sys.executable, str(SCRIPT), str(self.repo), "busy", self.initial],
                                     env=self.env, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -196,6 +226,22 @@ class WorktreeTests(unittest.TestCase):
                     mock.patch.object(dev_worktree, "create", return_value=self.base / "created") as create:
                 self.assertEqual(dev_worktree.main([str(self.repo), "task", self.initial]), 0)
             create.assert_called_once()
+
+    def test_expired_primary_read_budget_does_not_report_a_mutation(self) -> None:
+        self.prepare_upstream()
+        rules = dev_worktree.checkout_rules()
+        run_git = rules.run_git
+
+        def expire_after_fetch(repo: Path, *args: str, **kwargs: object) -> object:
+            result = run_git(repo, *args, **kwargs)
+            if args[0] == "fetch":
+                rules.RECONCILIATION_DEADLINE.set(time.monotonic() - 1)
+            return result
+
+        with mock.patch.dict(os.environ, self.env, clear=True), patch_attr(rules, "run_git", side_effect=expire_after_fetch):
+            receipt = rules.reconcile_primary_checkout(self.repo)
+        self.assertFalse(receipt["runtime_mutated"])
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.initial)
 
     def test_creation_preserves_unsafe_primary_checkouts(self) -> None:
         self.prepare_upstream()
