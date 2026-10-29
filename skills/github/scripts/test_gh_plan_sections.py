@@ -62,8 +62,23 @@ class SectionTests(unittest.TestCase):
             edit.assert_not_called()
         self.issue["body"] = "## Current Status\n\nLegacy status.\n"
         code, _result, edit, _errors = self.run_update("--body", "New action.", section="Current Status")
-        self.assertNotEqual(code, 0)
-        edit.assert_not_called()
+        self.assertEqual(code, 0)
+        self.assertIsNone(PLAN.github_plan_next_actor.read(PLAN.section_map(edit.call_args.kwargs["body"])["Current Status"]))
+
+    def test_actor_only_update_preserves_old_prose_references_and_records(self) -> None:
+        original = "Next actor: Supervisor routes #17.\nNext action: Verify #17.\n" + PLAN.github_plan_claim.marker(CLAIM)
+        self.issue["body"] += "\n## Current Status\n\n" + original
+        code, _result, edit, errors = self.run_update("--next-actor", "agent:supervisor", section="Current Status")
+        self.assertEqual(code, 0, errors)
+        status = PLAN.section_map(edit.call_args.kwargs["body"])["Current Status"]
+        self.assertEqual(PLAN.github_plan_next_actor.read(status), "agent:supervisor")
+        self.assertIn("Supervisor routes #17.", status)
+        self.assertIn("Next action: Verify #17.", status)
+        self.assertEqual(PLAN.github_plan_claim.records(status), [CLAIM])
+
+    def test_default_template_has_an_actionable_actor(self) -> None:
+        status = PLAN.section_map(PLAN.template_body("New work"))["Current Status"]
+        self.assertEqual(PLAN.github_plan_next_actor.read(status), "agent")
 
     def setUp(self) -> None:
         self.issue: dict[str, Any] = {

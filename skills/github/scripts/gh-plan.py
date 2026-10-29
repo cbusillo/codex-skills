@@ -1744,6 +1744,7 @@ point is captured.
 ## Current Status
 
 State: Active
+Next actor: agent
 Next action: Decide the first concrete implementation step.
 Last verified: Not yet verified.
 
@@ -2562,10 +2563,6 @@ def cmd_release(args: argparse.Namespace) -> None:
             f"--session {args.session} is not this session's native ID ({found}); release only your own claim.",
             payload={"native_sessions": native, "running_agent": agent})
     handoff = read_body(argparse.Namespace(body_file=args.handoff_file)).strip() if args.handoff_file else ""
-    try:
-        next_actor = github_plan_next_actor.resolve(handoff, getattr(args, "next_actor", None))
-    except ValueError as exc:
-        raise PlanError(str(exc)) from exc
     validate_plan_references(handoff, repo)
     body = f"Released claim {args.claim_comment}" + (f"\n\n{handoff}" if handoff else "")
     # The handoff is narrative only: it can neither restate nor forge release authority.
@@ -2607,6 +2604,14 @@ def cmd_release(args: argparse.Namespace) -> None:
         emit({"ok": True, "release_state": "already_released", "source_claim": args.claim_comment,
               "release_comment": {"id": existing["id"], "url": existing.get("html_url")}, "completed_steps": completed})
         return
+    next_actor = None
+    if existing is None:
+        try:
+            next_actor = github_plan_next_actor.resolve(handoff, getattr(args, "next_actor", None))
+        except ValueError as exc:
+            raise PlanError(str(exc)) from exc
+        if not preflight["can_update"]:
+            body = f"Released claim {args.claim_comment}\n\n## Current Status\n\n" + github_plan_next_actor.write(handoff, next_actor)
     if {url.casefold() for url in declared} & {url.casefold() for url in excluded} or any(not re.fullmatch(r"https://github\.com/[\w.-]+/[\w.-]+/pull/[1-9]\d*", url)
                                   for url in declared | excluded):
         raise PlanError("Retained and excluded PRs require distinct exact GitHub PR URLs")
@@ -2643,8 +2648,6 @@ def cmd_release(args: argparse.Namespace) -> None:
             if current["can_update"]:
                 status_text = github_plan_next_actor.write(current["status"], next_actor)
                 status_body = replace_issue_plan_section(current["issue"], "Current Status", status_text)
-            else:
-                body += "\n\n## Current Status\n\n" + github_plan_next_actor.write(handoff, next_actor)
         except ValueError as exc:
             raise PlanError(str(exc)) from exc
     if args.dry_run:
@@ -3685,8 +3688,9 @@ def claim_once(args: argparse.Namespace) -> None:
             f"PR #{pr}:\n" + "\n".join("> " + line for line in wait.splitlines())
             for pr, wait in sorted(retained_waits.items())) if retained_waits else "")
         text = (
-            f"Claimed by {claim['worker']}\n\n## Current Status\n\nNext actor: agent:{claim['session']}\n"
-            f"Session: {claim['session']}\nBranch: {claim['branch']}\n"
+            f"Claimed by {claim['worker']}\n\n"
+            + (f"## Current Status\n\nNext actor: agent:{claim['session']}\n" if not can_update else "")
+            + f"Session: {claim['session']}\nBranch: {claim['branch']}\n"
             f"Claimed at: {claim['claimed_at']}\nNext action: {args.next_action}\n\n"
             + (f"Agent override (Director-authorized): {override}\n\n" if override else "")
             + admission_record
@@ -3701,6 +3705,8 @@ def claim_once(args: argparse.Namespace) -> None:
             + f"\n\n[Work record](https://github.com/{issue_repo}/"
               f"{'pull' if record_kind == 'pr' else 'issues'}/{number})"
         )
+        if not can_update and status:
+            text += "\n\n### Previous Current Status\n\n" + "\n".join("> " + line for line in status.splitlines())
         # Freeze the source before any external claim write. If publication
         # fails, the closed source stays frozen for supported claim recovery.
         github_plan_claim_log.record(claim["session"], issue_repo, number)
@@ -4258,20 +4264,30 @@ def cmd_update_section(args: argparse.Namespace) -> None:
         raise PlanError(message, failure=failure)
     preparation_step = "read_body"
     try:
-        if args.body is None and not args.body_file:
+        actor_only = (args.section.casefold() == "current status" and getattr(args, "next_actor", None) is not None
+                      and args.body is None and not args.body_file)
+        if actor_only:
+            new_text = issue_plan_sections(issue).get("Current Status", "")
+        elif args.body is None and not args.body_file:
             raise ValueError(
                 "Section text requires --body TEXT or --body-file FILE; use --body-file - for stdin. "
                 "To intentionally clear the section, pass --body ''."
             )
-        new_text = read_body(args)
+        else:
+            new_text = read_body(args)
         preparation_step = "input_validation"
         if args.section.casefold() == "current status":
-            next_actor = github_plan_next_actor.resolve(
-                new_text, getattr(args, "next_actor", None), issue_plan_sections(issue).get("Current Status", ""))
-            new_text = github_plan_next_actor.write(new_text, next_actor)
+            if actor_only:
+                next_actor = github_plan_next_actor.validate(args.next_actor)
+            elif getattr(args, "next_actor", None) is not None or github_plan_next_actor.read(new_text) is not None:
+                next_actor = github_plan_next_actor.resolve(new_text, getattr(args, "next_actor", None))
+            else:
+                next_actor = github_plan_next_actor.read(issue_plan_sections(issue).get("Current Status", ""))
+            if next_actor is not None:
+                new_text = github_plan_next_actor.write(new_text, next_actor)
         elif getattr(args, "next_actor", None) is not None:
             raise ValueError("--next-actor applies only to Current Status")
-        github_comment_core.validate_planning_references(new_text, issue_repo)
+        github_comment_core.validate_planning_references(args.next_actor if actor_only else new_text, issue_repo)
         preparation_step = "section_replacement"
         updated = replace_issue_plan_section(issue, args.section, new_text)
         before, after = (

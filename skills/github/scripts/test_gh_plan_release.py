@@ -1809,9 +1809,18 @@ class OwnReleaseTests(ReleaseHarness):
         self.assertEqual(result["release_comment"]["id"], posted["id"])
         # A second run finds the confirmed release and writes nothing.
         posts = self.f.events.count("post")
+        self.args.next_actor = None
+        self.handoff.write_text("No new handoff.")
         self.run_own_release()
         self.assertEqual(self.f.events.count("post"), posts)
         self.assertEqual(self.f.emitted.call_args.args[0]["release_state"], "already_released")
+
+    def test_release_keeps_legacy_actor_narrative(self) -> None:
+        self.f.issue["body"] += "\nNext actor: Supervisor routes the remaining source.\n"
+        self.run_own_release()
+        status = PLAN.section_map(self.f.issue["body"])["Current Status"]
+        self.assertEqual(PLAN.github_plan_next_actor.read(status), self.args.next_actor)
+        self.assertIn("Supervisor routes the remaining source.", status)
 
     def test_release_requires_actor_and_updates_status_before_releasing(self) -> None:
         self.args.next_actor = None
@@ -1843,6 +1852,7 @@ class OwnReleaseTests(ReleaseHarness):
         status = PLAN.section_map(self.f.comments[-1]["body"])["Current Status"]
         self.assertEqual(PLAN.github_plan_next_actor.read(status), "agent:integrator")
         self.assertEqual(CLAIM.records(self.f.comments[-1]["body"]), [])
+        self.assertEqual(self.f.comments[-1]["body"].count("LP4214-C1 Finish Line met"), 1)
 
     def test_release_dry_run_previews_status_without_writing(self) -> None:
         self.args.dry_run = True

@@ -43,7 +43,12 @@ def write(text: str, actor: str) -> str:
     if not found:
         return f"Next actor: {actor}\n" + text
     index = found[0][0]
-    lines[index] = f"Next actor: {actor}" + ("\n" if lines[index].endswith("\n") else "")
+    previous = ""
+    try:
+        validate(found[0][1])
+    except ValueError:
+        previous = f"\nPrevious actor note: {found[0][1]}"
+    lines[index] = f"Next actor: {actor}{previous}" + ("\n" if lines[index].endswith("\n") else "")
     return "".join(lines)
 
 

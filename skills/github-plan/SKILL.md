@@ -433,8 +433,10 @@ Last verified:
 `claim` writes `agent:<session>`. `release` requires `--next-actor` or a
 `Next actor:` line in its handoff; name the receiving agent on a source
 handoff. `update-section ... "Current Status"` accepts the same flag or line,
-preserving the existing actor when omitted. A legacy status without the field
-needs an explicit value. Other sections keep their existing behavior.
+preserving the existing actor when omitted. Use only `--next-actor` to change
+that field while preserving old text and records. Legacy updates without a
+value remain supported and leave the field absent for later status review.
+Generated new-plan templates start with `agent`. Other sections keep their existing behavior.
 This field records the next step's actor; it changes no ownership, wait,
 admission or queue-selection rules.
 

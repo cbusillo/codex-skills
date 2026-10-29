@@ -1349,9 +1349,13 @@ updates only that field in the issue's existing Current Status before releasing,
 and reads it back; failure leaves the claim owned. For PRs and issues without
 an editable managed status, the release comment carries Current Status instead.
 An already-released claim's supplemental handoff preserves any successor status.
-Claim writes `agent:<session>` automatically in its status and claim comment.
+Claim writes `agent:<session>` automatically in its status; uneditable records
+use the claim comment, which retains the prior status as quoted context.
 For `update-section ... "Current Status"`, supply the actor flag or line;
-omitting both preserves an existing actor, and a legacy status needs a value.
+omitting both preserves an existing actor. Legacy calls without a value still
+work and leave a missing field for status review. Use `--next-actor` without
+body input to update just the field, preserving existing references, text and
+machine records. Old narrative actor lines are retained as `Previous actor note`.
 Other sections do not accept the flag. No actor field changes claim or wait
 authority, or queue selection.
 Release affects that exact comment, not another worker's record.
