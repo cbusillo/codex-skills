@@ -245,7 +245,7 @@ def test_repository_inventory_bound_can_be_widened_without_losing_held_work() ->
         assert path == '/repos/someone/product/issues'
         if kwargs['query'].get('labels'):
             return 'bot', []
-        return 'bot', raw[:kwargs['limit']]
+        return 'bot', raw[:kwargs.get('limit')]
     args = cli.next_args()
     with patch.multiple(module, collect_paged_rest_items=read, load_direction=lambda *_: cli.DIRECTION), patch.multiple(module.github_identity, github_app_config=lambda: {}):
         complete, context = module.real_discover_direction_work('someone/direction', args, selection_context={})

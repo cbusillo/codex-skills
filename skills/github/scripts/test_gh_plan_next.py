@@ -807,7 +807,7 @@ def next_failure(module: Any, args: Any, *, code: str) -> dict[str, Any]:
     raise AssertionError("Unread required evidence returned success")
 
 
-def next_args(*, repo: str | None = "someone/direction", scan_limit: int = 50, milestone: str | None = None) -> Any:
+def next_args(*, repo: str | None = "someone/direction", scan_limit: int | None = 50, milestone: str | None = None) -> Any:
     return type("Args", (), {"repo": repo, "milestone": milestone, "limit": 10, "scan_limit": scan_limit})()
 
 
@@ -1612,86 +1612,10 @@ def test_portfolio_capacity_includes_discovered_milestone_dependencies() -> None
                     assert next(item for item in result["excluded"] if item["number"] == 31)["structured_wait"]["state"] == "waiting"
 
 
-def test_portfolio_held_reads_do_not_consume_ordinary_scan_allowance() -> None:
-    shared = load_module().github_direction_next
-    held = [global_issue("someone/held", number) for number in range(1, 41)]
-    ordinary = [global_issue("someone/product", number) for number in range(1, 61)]
-    context = {"repository_holds": {"someone/held": {"reason": "Owner hold", "evidence": ["owner instruction"]}}}
-    selected = shared.discovery_scan([*held, *ordinary], 50, context)
-    assert [item["number"] for item in selected if item["repo"] == "someone/product"] == list(range(1, 51))
-    assert len([item for item in selected if item["repo"] == "someone/held"]) == 40
-    module = load_module()
-    with patch.multiple(module.github_identity, github_app_config=lambda: {}), patch.multiple(
-        module, load_direction=lambda *_: None,
-        collect_paged_rest_items=lambda path, **_kw: ("automation-gh", [{"full_name": "someone/held"}]) if path == "/installation/repositories" else (_ for _ in ()).throw(module.PlanError("held inventory unavailable")),
-    ):
-        found, coverage = module.discover_direction_work("someone/direction", next_args(), selection_context=context, capacity_evidence=True)
-        assert found == [] and coverage["complete"] is True
-        assert coverage["capacity_complete"] is False
-        assert coverage["repositories"][0]["exclusion"] == "repository_held"
 
 
-def test_portfolio_available_milestone_skips_capacity_only_reads() -> None:
-    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
-    leaf = global_issue("someone/business", 10)
-    waiting = global_issue("someone/product", 30, labels=["plan", "plan:waiting"], body="## Current Status\nWaiting for: Customer testing.", waiting_for='Customer testing.')
-    edges = {(roots[0]["repo"], 1): relationships(sub_issues=[leaf])}
-    with global_fixture(roots, [leaf], edges, discovered=[waiting], clear_waits=[leaf]) as (module, result, _reads):
-        modes = []
-        def discover(_repo: str, _args: Any, **kwargs: Any) -> Any:
-            modes.append(kwargs["capacity_evidence"])
-            return [waiting], {"complete": True, "repositories": [{"repo": "someone/product", "direction": None}]}
-        with patch.multiple(module, discover_direction_work=discover, read_next_parent=Mock(side_effect=AssertionError("excluded ancestry must not be read"))):
-            module.cmd_next(next_args())
-            candidate = next(item for item in result["candidates"] if item["number"] == 10)
-            context = {"issues": {"someone/business#10": reviewed(candidate, category="milestone")}}
-            with patch.multiple(module, next_selection_context=lambda _args: context):
-                module.cmd_next(next_args())
-        assert modes == [False, False]
-        assert [item["number"] for item in result["available_candidates"]] == [10]
-        assert result["waiting"][0]["number"] == 30
 
 
-def test_portfolio_inventory_sources_exclusions_round_robin_and_read_bounds() -> None:
-    module = load_module()
-    repositories = [{"full_name": name, **extra} for name, extra in [
-        ("someone/direction", {}), ("other/foreign", {}), ("someone/archived", {"archived": True}),
-        ("someone/empty", {"size": 0, "open_issues_count": 0}), ("someone/disabled", {"has_issues": False}),
-        ("someone/a", {}), ("someone/b", {}), ("someone/held", {}), ("someone/private", {}),
-    ]]
-    calls: list[str] = []
-
-    def collect(path: str, **kwargs: Any) -> Any:
-        calls.append(path)
-        if path in {"/installation/repositories", "/user/repos"}:
-            assert kwargs["limit"] == 101
-            return "automation-gh", repositories
-        if kwargs["query"].get("labels") == module.github_direction_next.LIVE_BREAKAGE_LABEL:
-            assert kwargs["limit"] == module.NEXT_PLAN_INVENTORY_LIMIT + 1
-            return "automation-gh", []
-        assert kwargs["query"]["state"] == "open" and "labels" not in kwargs["query"]
-        assert kwargs["issue_only"] is True and kwargs["limit"] == 3
-        if path == "/repos/someone/direction/issues":
-            return "automation-gh", []
-        if path == "/repos/someone/private/issues":
-            raise module.PlanError("not accessible")
-        name = "/".join(path.split("/")[2:4])
-        return "automation-gh", [global_issue(name, number) for number in range(1, 4)]
-
-    context = {"repository_holds": {"someone/held": {"reason": "owner parked", "evidence": ["current owner instruction"]}}}
-    args = next_args()
-    args.repository_issue_limit = 2
-    with patch.multiple(module, collect_paged_rest_items=collect, load_direction=lambda *_: DIRECTION):
-        for configured in ({"app": "configured"}, None):
-            calls.clear()
-            with patch.multiple(module.github_identity, github_app_config=lambda: configured):
-                found, coverage = module.discover_direction_work("someone/direction", args, selection_context=context, capacity_evidence=True)
-            assert calls[0] == ("/installation/repositories" if configured else "/user/repos")
-            assert [(item["repo"], item["number"]) for item in found] == [("someone/a", 1), ("someone/b", 1), ("someone/held", 1), ("someone/a", 2), ("someone/b", 2), ("someone/held", 2)]
-            assert coverage["complete"] is False
-            assert len(calls) == 9
-            reasons = {source.get("exclusion") for source in coverage["repositories"]}
-            assert reasons >= {"repository_held", "source_unavailable", "other_owner", "archived_or_disabled", "empty_without_open_issues", "issues_disabled"}
 
 
 def test_portfolio_inventory_failure_and_scan_bound_never_claim_full_coverage() -> None:
@@ -2004,73 +1928,19 @@ def test_live_breakage_inventory_finds_incident_beyond_repository_issue_bound() 
         if kwargs["query"].get("labels") == marker:
             assert kwargs["limit"] == module.NEXT_PLAN_INVENTORY_LIMIT + 1
             return "automation-gh", [incident]
-        return "automation-gh", [global_issue("someone/quiet", 1), global_issue("someone/quiet", 2)]
+        return "automation-gh", [global_issue("someone/quiet", 1), global_issue("someone/quiet", 2), incident]
 
     args = next_args()
     args.repository_issue_limit = 1
     with patch.multiple(module.github_identity, github_app_config=lambda: {}), patch.multiple(module, collect_paged_rest_items=collect, load_direction=lambda *_: DIRECTION):
         inventory, coverage = module.discover_direction_work("someone/direction", args, selection_context={})
     assert {item["number"] for item in inventory} == {1, 243}
-    assert coverage["repositories"][0]["live_breakage_inventory"]["complete"]
     assert not coverage["complete"]  # Ordinary issue inventory remains bounded.
-    assert len(calls) == 3
+    assert len(calls) == 2
 
 
-def test_live_breakage_label_inventory_failure_preserves_ordinary_work_and_reports_bounds() -> None:
-    module = load_module()
-    marker = module.github_direction_next.LIVE_BREAKAGE_LABEL
-    incidents = [global_issue("someone/quiet", n, labels=[marker]) for n in (243, 244)]
-
-    def collect(path: str, **kwargs: Any) -> Any:
-        if path == "/installation/repositories":
-            return "automation-gh", [{"full_name": "someone/quiet"}]
-        if kwargs["query"].get("labels") == marker:
-            raise module.PlanError("label inventory unavailable")
-        return "automation-gh", [global_issue("someone/quiet", n) for n in (1, 2)]
-
-    args = next_args()
-    args.repository_issue_limit = 1
-    with patch.multiple(module.github_identity, github_app_config=lambda: {}), patch.multiple(module, collect_paged_rest_items=collect, load_direction=lambda *_: DIRECTION):
-        inventory, coverage = module.discover_direction_work("someone/direction", args, selection_context={})
-        assert [item["number"] for item in inventory] == [1]
-        assert coverage["repositories"][0]["live_breakage_inventory"]["error"]
-        assert not coverage["complete"]
-
-        original_collect = collect
-        with patch.multiple(module, NEXT_PLAN_INVENTORY_LIMIT=1,
-                            collect_paged_rest_items=lambda path, **kw: ("automation-gh", incidents) if kw["query"].get("labels") == marker else original_collect(path, **kw)):
-            inventory, coverage = module.discover_direction_work("someone/direction", args, selection_context={})
-        assert {item["number"] for item in inventory} == {1, 243}
-        assert not coverage["repositories"][0]["live_breakage_inventory"]["complete"]
 
 
-def test_live_breakage_label_query_to_direction_ranking_end_to_end() -> None:
-    with global_fixture([], [], {}) as (module, result, _reads):
-        marker = module.github_direction_next.LIVE_BREAKAGE_LABEL
-        incident = global_issue("someone/quiet", 243, labels=[marker])
-
-        def collect(path: str, **kwargs: Any) -> Any:
-            if path.endswith("/comments"):
-                return "automation-gh", [{"user": {"login": "someone"}, "body": module.github_plan_wait.marker(
-                    module.github_plan_wait.reviewed(evidence="Incident inventory fixture reviewed; no hold"))}]
-            if path == "/repos/someone/direction/issues":
-                return "automation-gh", []
-            if path == "/installation/repositories":
-                return "automation-gh", [{"full_name": "someone/quiet"}]
-            if kwargs["query"].get("labels") == marker:
-                return "automation-gh", [incident]
-            return "automation-gh", [global_issue("someone/quiet", n) for n in (1, 2)]
-
-        args = next_args(scan_limit=1)
-        args.repository_issue_limit = 1
-        with patch.multiple(module.github_identity, github_app_config=lambda: {}), patch.multiple(module,
-                            discover_direction_work=module.real_discover_direction_work,
-                            collect_paged_rest_items=collect,
-                            load_direction=lambda *_: "# Direction\n## Milestones\n"):
-            module.cmd_next(args)
-        assert [item["number"] for item in result["candidates"]] == [243, 1]
-        assert result["discovery_context"]["live_breakage_evaluated"] == 1
-        assert not result["candidate_coverage"]["complete"]
 
 
 def test_milestone_candidate_coverage_is_scoped_to_graph() -> None:
@@ -2268,7 +2138,7 @@ def test_global_scan_diagnostic_counts_all_allowances_and_limit_only_caps_result
         args.limit = 1
         module.cmd_next(args)
         bounded = result["discovery_context"].copy()
-        assert bounded["evaluated"] == 4  # Three allowances plus a marked incident.
+        assert bounded["evaluated"] == 2
         assert bounded["capacity_unevaluated_count"] == len(inventory) - bounded["evaluated"]
         assert "--scan-limit" in bounded["evaluation_note"]
         assert str(bounded["evaluated"]) in bounded["evaluation_note"]
@@ -2795,8 +2665,6 @@ TESTS = [
     test_native_zero_totals_skip_reads_but_closed_history_and_unknowns_do_not,
     test_overall_waypoint_context_requires_native_or_listed_direction_evidence,
     test_skipped_repository_counts_exclude_graph_overlap_and_marked_incidents,
-    test_live_breakage_label_inventory_failure_preserves_ordinary_work_and_reports_bounds,
-    test_live_breakage_label_query_to_direction_ranking_end_to_end,
     test_milestone_candidate_coverage_is_scoped_to_graph,
     test_live_breakage_beyond_scan_window_ranks_first_without_granting_availability,
     test_live_breakage_marker_preserves_holds_dependencies_waits_and_review,
@@ -2828,9 +2696,6 @@ TESTS = [
     test_portfolio_capacity_ignores_unrelated_waits_and_blocking_tooling,
     test_portfolio_capacity_preserves_wait_reports_when_ancestry_is_unavailable,
     test_portfolio_capacity_includes_discovered_milestone_dependencies,
-    test_portfolio_held_reads_do_not_consume_ordinary_scan_allowance,
-    test_portfolio_available_milestone_skips_capacity_only_reads,
-    test_portfolio_inventory_sources_exclusions_round_robin_and_read_bounds,
     test_portfolio_inventory_failure_and_scan_bound_never_claim_full_coverage,
     test_next_beta_rc_stable_chain_respects_native_blockers,
     test_next_excludes_non_actionable_states_with_reasons,
@@ -3541,29 +3406,6 @@ def test_parallel_global_graph_preserves_selection_waits_and_coverage() -> None:
         assert module.NEXT_READS is None
 
 
-def test_global_deadline_preserves_native_frontier_and_names_unread_discoveries() -> None:
-    import time
-    roots = [track("someone/direction", 1, "First"), track("someone/direction", 2, "Second")]
-    leaf = global_issue("someone/project", 10)
-    optional = global_issue("someone/optional", 20, milestone=roots[0]["milestone"])
-    edges = {("someone/direction", 1): relationships(sub_issues=[leaf])}
-    with global_fixture(roots, [leaf], edges, clear_waits=[leaf]) as (module, result, _reads):
-        def stalled_inventory(*_args, **_kwargs):
-            module.NEXT_READS.deadline = time.time() - 1
-            return [optional], {"complete": True, "inventory_count": 1, "repositories": [
-                {"repo": optional["repo"], "direction": DIRECTION, "issue_count": 1}]}
-        module.discover_direction_work = stalled_inventory
-        module.cmd_next(next_args())
-        assert result["graph_context"]["complete"]
-        assert any(row["number"] == leaf["number"] for row in result["candidates"])
-        assert result["performance"]["deadline_exhausted"]
-        assert not result["candidate_coverage"]["complete"]
-        assert not result["candidate_coverage"]["milestone_ranking_complete"]
-        assert result["discovery_context"]["evaluated"] == 0
-        assert result["discovery_context"]["unevaluated_count"] == 1
-        assert result["candidate_coverage"]["unevaluated_repositories"] == [
-            {"repo": optional["repo"], "issue_count": 1}]
-        assert result["selection_coverage"]["active_unevaluated_count"] == 1
 
 
 def test_global_zero_comment_summary_avoids_only_proven_empty_discussion_read() -> None:
@@ -3799,8 +3641,7 @@ TESTS.extend([test_required_proof_root_preserves_provider_and_credential_stop_po
               test_parallel_wait_reports_preserve_stale_frozen_and_unavailable_evidence,
               test_global_reserves_final_evidence_time_without_claiming_a_complete_scan,
               test_global_zero_comment_summary_avoids_only_proven_empty_discussion_read,
-              test_parallel_global_graph_preserves_selection_waits_and_coverage,
-              test_global_deadline_preserves_native_frontier_and_names_unread_discoveries])
+              test_parallel_global_graph_preserves_selection_waits_and_coverage])
 
 
 

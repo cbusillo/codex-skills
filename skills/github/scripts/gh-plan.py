@@ -57,6 +57,7 @@ import github_direction_next
 import github_next_queue
 import github_next_pr
 import github_next_reads
+import github_next_inventory
 import github_plan_claim
 import github_plan_closure
 import github_plan_lease
@@ -4576,8 +4577,9 @@ def read_next_train_enrollment(repo: str) -> dict[str, Any]:
 
 
 def next_dependabot_work(
-    sources: list[dict[str, Any]], *, scan_limit: int, limit: int,
-    now: datetime | None = None, inventory_complete: bool = True, comment_limit: int = 100,
+    sources: list[dict[str, Any]], *, scan_limit: int | None, limit: int,
+    now: datetime | None = None, inventory_complete: bool = True, comment_limit: int | None = 100,
+    pull_inventory: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """List old PR facts separately from ranked issues and ownership judgments."""
     observed_at = now or datetime.now(timezone.utc)
@@ -4592,19 +4594,6 @@ def next_dependabot_work(
     }
     seen: set[str] = set()
     enrollment_unavailable = False
-    if NEXT_READS is not None:
-        def prefetch_pulls(source: dict[str, Any]) -> None:
-            name = source.get("repo")
-            if (not isinstance(name, str) or source.get("hold") or source.get("exclusion") in
-                    {"other_owner", "archived_or_disabled", "invalid_repository_inventory_entry", "empty_without_open_issues"}):
-                return
-            try:
-                collect_paged_rest_items(f"/repos/{name}/pulls",
-                    query={"state": "open", "sort": "created", "direction": "asc"},
-                    bucket="rest_core", step_prefix="next_dependabot_pulls", limit=scan_limit + 1)
-            except PlanError as exc:
-                next_source_error(exc)  # The projection records degraded sources.
-        NEXT_READS.map(prefetch_pulls, sources)
     for source in sources:
         repo = source.get("repo")
         if not isinstance(repo, str) or repo.casefold() in seen:
@@ -4618,18 +4607,21 @@ def next_dependabot_work(
             context.update(exclusion="repository_held", hold=source["hold"])
             continue
         try:
-            _, pulls = collect_paged_rest_items(
-                f"/repos/{repo}/pulls",
-                query={"state": "open", "sort": "created", "direction": "asc"},
-                bucket="rest_core", step_prefix="next_dependabot_pulls", limit=scan_limit + 1,
-            )
+            if pull_inventory is not None:
+                if repo.casefold() not in pull_inventory:
+                    raise PlanError("Repository PR inventory unavailable")
+                pulls = [row for row in pull_inventory[repo.casefold()] if row.get("pull_request")]
+            else:
+                _, pulls = collect_paged_rest_items(
+                    f"/repos/{repo}/pulls", query={"state": "open", "sort": "created", "direction": "asc"},
+                    bucket="rest_core", step_prefix="next_dependabot_pulls", limit=scan_limit + 1 if scan_limit is not None else None)
         except PlanError as exc:
             context.update(complete=False, error=next_source_error(exc))
             coverage["complete"] = False
             pull_inventory_complete = False
             continue
-        context.update(complete=len(pulls) <= scan_limit,
-                       truncated=len(pulls) > scan_limit, pull_request_count=min(len(pulls), scan_limit))
+        context.update(complete=scan_limit is None or len(pulls) <= scan_limit,
+                       truncated=scan_limit is not None and len(pulls) > scan_limit, pull_request_count=len(pulls[:scan_limit]))
         coverage["complete"] &= context["complete"]
         pull_inventory_complete &= context["complete"]
         ordinary = [pull for pull in pulls[:scan_limit] if pull.get("state") == "open"
@@ -4641,10 +4633,13 @@ def next_dependabot_work(
             if pull.get("draft") or github_plan_claim.is_train_batch(pull):
                 return github_next_pr.project(repository_name, pull, [], trusted=trusted, complete=True)
             try:
-                _, comments = collect_paged_rest_items(f"/repos/{repo}/issues/{pull['number']}/comments",
-                    query={}, bucket="rest_core", step_prefix="next_pr_comments", limit=comment_limit + 1)
+                if "_graph_comments" in pull:
+                    comments = pull["_graph_comments"]
+                else:
+                    _, comments = collect_paged_rest_items(f"/repos/{repo}/issues/{pull['number']}/comments",
+                        query={}, bucket="rest_core", step_prefix="next_pr_comments", limit=comment_limit + 1 if comment_limit is not None else None)
                 return github_next_pr.project(repository_name, pull, comments[:comment_limit],
-                    trusted=trusted, complete=len(comments) <= comment_limit)
+                    trusted=trusted, complete=comment_limit is None or len(comments) <= comment_limit)
             except PlanError as read_error:
                 return {"repo": repo, "number": pull["number"], "url": pull["html_url"],
                     "head_sha": (pull.get("head") or {}).get("sha"), "state": "unknown",
@@ -4711,6 +4706,7 @@ def next_dependabot_work(
     }
 
 
+
 def cmd_next(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     if github_direction_next.is_direction_repository(repo):
@@ -4720,6 +4716,7 @@ def cmd_next(args: argparse.Namespace) -> None:
         return
     if any(getattr(args, name, None) is not None for name in ("repo_limit", "repository_issue_limit")):
         raise PlanError("Global discovery options require an OWNER/direction repository")
+    args.scan_limit = getattr(args, "scan_limit", None) or NEXT_DEFAULT_SCAN_LIMIT
     config = load_config(repo)
     actor: str | None = None
     milestone_scope: dict[str, Any] | None = None
@@ -4973,8 +4970,10 @@ def next_status_body_time(item: dict[str, Any], trusted: set[str]) -> str | None
 def read_queue_ownership(repo: str) -> dict[str, Any]:
     observed: dict[str, Any] = {"complete": False, "coverage": {}}
     try:
-        bound = NEXT_PLAN_INVENTORY_LIMIT
+        bound = None if NEXT_READS is not None else NEXT_PLAN_INVENTORY_LIMIT
         observed.update(github_work_graph.ownership_inventory(collect_paged_rest_items, repo, limit=bound))
+        if NEXT_READS is not None:
+            observed["records"] = NEXT_READS.inventory.get(repo.casefold(), [])
         target = pathlib.Path.home() / "Developer" / repo.split("/")[1]
         if target.is_dir() and not (NEXT_READS and NEXT_READS.expired):
             try:
@@ -5000,7 +4999,9 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
                 "all_active_sessions_searched": False,
                 "repositories": {repo: value for result in results for repo, value in result["repositories"].items()}}
     evidence: dict[str, dict[str, Any]] = {}
-    comment_limit = getattr(args, "comment_limit", None) or 100
+    comment_limit = getattr(args, "comment_limit", None)
+    if comment_limit is None and NEXT_READS is None:
+        comment_limit = 100
     # Prepare canonical discussions before batching one native observation per
     # repository. Only this invocation shares it; the next read starts afresh.
     for item in items:
@@ -5009,8 +5010,8 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
         try:
             _, raw = get_issue(str(item["number"]), item["repo"])
             _, comments = collect_paged_rest_items(f"/repos/{item['repo']}/issues/{item['number']}/comments",
-                query={}, bucket="rest_core", step_prefix="next_queue_comments", limit=comment_limit + 1)
-            item["discussion"] = github_direction_next.discussion_snapshot(raw, comments[:comment_limit], complete=len(comments) <= comment_limit)
+                query={}, bucket="rest_core", step_prefix="next_queue_comments", limit=comment_limit + 1 if comment_limit is not None else None)
+            item["discussion"] = github_direction_next.discussion_snapshot(raw, comments[:comment_limit], complete=comment_limit is None or len(comments) <= comment_limit)
         except PlanError as exc:
             item["queue"] = {"state": "review", "reason": "incomplete_discussion", "detail": next_source_error(exc)}
     for item in items:
@@ -5115,112 +5116,81 @@ def discover_direction_work(
     No name/label heuristic can decide product vs tooling or override an owner
     hold. Return merged direction and explicit source coverage for that review.
     """
-    repo_limit = getattr(args, "repo_limit", None) or 100
-    issue_limit = getattr(args, "repository_issue_limit", None) or NEXT_DEFAULT_SCAN_LIMIT
-    app_configured = github_identity.github_app_config() is not None
+    repo_limit = getattr(args, "repo_limit", None)
+    issue_limit = getattr(args, "repository_issue_limit", None)
     coverage: dict[str, Any] = {
         "owner": repo.split("/")[0], "repository_limit": repo_limit,
         "issue_limit_per_repository": issue_limit, "repositories": [],
         "complete": True, "capacity_complete": True, "inventory_truncated": False,
         "scope": "repositories accessible to the configured actor; owner repositories only",
-        "outside_scope": ["repositories not accessible to this actor", "closed issues", "pull requests", "active session inventory"],
+        "outside_scope": ["repositories not accessible to this actor", "closed records", "active session inventory"],
     }
     try:
         repositories, repository_coverage = github_work_graph.repository_inventory(collect_paged_rest_items,
-            installed=app_configured, limit=repo_limit)
-    except PlanError as exc:
-        coverage.update(complete=False, error=next_source_error(exc), inventory_count=None)
+            installed=github_identity.github_app_config() is not None, limit=repo_limit)
+    except PlanError as inventory_error:
+        coverage.update(complete=False, error=next_source_error(inventory_error), inventory_count=None)
         return [], coverage
     coverage.update(repository_coverage)
-    queues: list[list[dict[str, Any]]] = []
-    def read_repository(repository: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]], bool, bool]:
+
+    def read_repository(repository: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         name = repository.get("full_name")
-        source: dict[str, Any] = {"repo": name}
-        source_complete = source_capacity = True
+        source: dict[str, Any] = {"repo": name, "complete": True}
         if not isinstance(name, str) or not re.fullmatch(r"[\w.-]+/[\w.-]+", name):
-            source.update(exclusion="invalid_repository_inventory_entry")
-            source_complete = False
-            return source, [], source_complete, source_capacity
-        reason = None
+            return {**source, "complete": False, "exclusion": "invalid_repository_inventory_entry"}, []
         if name.split("/")[0].casefold() != coverage["owner"].casefold():
-            reason = "other_owner"
-        elif not repository_scope.includes_repository(repository, include_archived=getattr(args, "include_archived", False)) or repository.get("disabled"):
-            reason = "archived_or_disabled"
-        elif repository.get("has_issues") is False:
-            reason = "issues_disabled"
-        elif repository.get("size") == 0 and repository.get("open_issues_count") == 0:
-            reason = "empty_without_open_issues"
+            return {**source, "exclusion": "other_owner"}, []
+        if not repository_scope.includes_repository(repository, include_archived=getattr(args, "include_archived", False)) or repository.get("disabled"):
+            return {**source, "exclusion": "archived_or_disabled"}, []
         hold = github_direction_next.repository_hold(selection_context, name)
         if hold:
-            source["hold"] = hold
-        if hold and reason is None:
-            reason = "repository_held"
-        if reason:
-            source["exclusion"] = reason
-            if reason != "repository_held" or not capacity_evidence:
-                if reason == "repository_held":
-                    source_capacity = False
-                return source, [], source_complete, source_capacity
-        # A hold forbids selection, not the read-only inventory needed to prove
-        # portfolio-wide milestone waits. rank_portfolio_work still excludes it.
+            source.update(hold=hold, exclusion="repository_held")
         try:
             source["direction"] = load_direction(name)
-            _, issues = collect_paged_rest_items(
-                f"/repos/{name}/issues", query={"state": "open", "sort": "updated", "direction": "desc"},
-                bucket="rest_core", step_prefix="next_repository_issues", limit=issue_limit + 1, issue_only=True,
-            )
-            source.update(issue_count=min(len(issues), issue_limit), truncated=len(issues) > issue_limit)
-            source_capacity &= not source["truncated"]
-            if not hold:
-                source_complete &= not source["truncated"]
-            listed: list[dict[str, Any]] = [{**issue, "repo": name} for issue in issues[:issue_limit]]
-            if source["truncated"]:
-                # A quiet incident can lie beyond even the per-repository list.
-                # Keep a separate bounded label inventory, independent of scan_limit.
-                try:
-                    _, incidents = collect_paged_rest_items(
-                        f"/repos/{name}/issues",
-                        query={"state": "open", "labels": github_direction_next.LIVE_BREAKAGE_LABEL},
-                        bucket="rest_core", step_prefix="next_live_breakage_issues",
-                        limit=NEXT_PLAN_INVENTORY_LIMIT + 1, issue_only=True,
-                    )
-                    source["live_breakage_inventory"] = {
-                        "count": min(len(incidents), NEXT_PLAN_INVENTORY_LIMIT),
-                        "limit": NEXT_PLAN_INVENTORY_LIMIT,
-                        "complete": len(incidents) <= NEXT_PLAN_INVENTORY_LIMIT,
-                    }
-                    listed_by_number = {issue["number"]: issue for issue in listed}
-                    listed_by_number.update({issue["number"]: {**issue, "repo": name} for issue in incidents[:NEXT_PLAN_INVENTORY_LIMIT]})
-                    listed = list(listed_by_number.values())
-                except PlanError as exc:
-                    source["live_breakage_inventory"] = {"complete": False, "error": next_source_error(exc)}
-                    source_capacity = False
-                    if not hold:
-                        source_complete = False
-            prioritized: list[dict[str, Any]] = [{**compact_list_issue(name, issue), "milestone": next_milestone_context(issue)} for issue in listed]
-            rank_next_candidates(prioritized, direction_milestones=direction_milestone_titles(source["direction"]) if source["direction"] else None)
-            ranks: dict[int, int] = {int(item["number"]): int(item["rank"]) for item in prioritized}
-            listed.sort(key=lambda issue: ranks[issue["number"]])
-            # Round-robin sources so a large tooling backlog cannot consume the
-            # whole evaluation budget before smaller own projects are inspected.
-            return source, listed, source_complete, source_capacity
-        except PlanError as exc:
-            source.update(error=next_source_error(exc), exclusion="repository_held" if hold else "source_unavailable")
-            source_capacity = False
-            if not hold:
-                source_complete = False
-        return source, [], source_complete, source_capacity
-    ordered_repositories = sorted(repositories[:repo_limit], key=lambda item: str(item.get("full_name", "")).casefold())
-    results = NEXT_READS.map(read_repository, ordered_repositories) if NEXT_READS else [read_repository(row) for row in ordered_repositories]
-    for source, listed, complete, capacity_complete in results:
-        coverage["repositories"].append(source)
-        coverage["complete"] &= complete
-        coverage["capacity_complete"] &= capacity_complete
-        if listed:
-            queues.append(listed)
-    coverage["capacity_complete"] &= coverage["complete"]
-    ordered = [queue[index] for index in range(max((len(queue) for queue in queues), default=0)) for queue in queues if index < len(queue)]
-    coverage["issue_inventory_count"] = len(ordered)
+            reader = next_graph_reader(name)
+            if reader is not None:
+                listed = github_next_inventory.read_repository(reader, name)
+            else:
+                _, listed = collect_paged_rest_items(f"/repos/{name}/issues",
+                    query={"state": "open", "sort": "created", "direction": "asc"},
+                    bucket="rest_core", step_prefix="next_discovered_issues")
+                if any(item.get("pull_request") for item in listed) or repository.get("has_issues") is False:
+                    _, pulls = collect_paged_rest_items(f"/repos/{name}/pulls",
+                        query={"state": "open", "sort": "created", "direction": "asc"},
+                        bucket="rest_core", step_prefix="next_discovered_pulls")
+                    listed = [item for item in listed if not item.get("pull_request")]
+                    listed.extend({**pull, "pull_request": {"url": pull["html_url"]}} for pull in pulls)
+            issues = [item for item in listed if not item.get("pull_request")]
+            pulls = [item for item in listed if item.get("pull_request")]
+            truncated = issue_limit is not None and len(issues) > issue_limit
+            issues = list({item["number"]: item for item in [*issues[:issue_limit],
+                *(item for item in issues if github_direction_next.is_live_breakage(item))]}.values())
+            listed = [{**item, "repo": name} for item in [*issues, *pulls]]
+            source.update(issue_count=len(issues), pull_request_count=len(pulls), truncated=truncated, complete=not truncated)
+            if NEXT_READS is not None:
+                NEXT_READS.inventory[name.casefold()] = listed
+                for item in listed:
+                    github_work_graph.publish_issue_pages(NEXT_READS, item, EXPECTED_ACTOR)
+                    NEXT_READS.publish(github_work_graph.issue_path(name, int(item["number"])), (EXPECTED_ACTOR, item))
+                query = {"state": "open", "sort": "created", "direction": "asc"}
+                for offset in range(0, len(pulls) + 1, 100):
+                    path = path_with_query(f"/repos/{name}/pulls", {**query, "per_page": 100, "page": offset // 100 + 1})
+                    NEXT_READS.publish(path, (EXPECTED_ACTOR, pulls[offset:offset + 100]))
+            return source, listed
+        except (PlanError, github_read.GitHubReadError, github_read.GitHubReadShapeError,
+                github_next_reads.ReadDeadline, ValueError, KeyError, TypeError, AttributeError) as exc:
+            error = exc if isinstance(exc, PlanError) else plan_read_error(exc)
+            return {**source, "complete": False, "error": next_source_error(error)}, []
+
+    ordered_repositories = sorted(repositories, key=lambda item: str(item.get("full_name", "")).casefold())
+    results = NEXT_READS.map(read_repository, ordered_repositories) if NEXT_READS else list(map(read_repository, ordered_repositories))
+    ordered = []
+    for source_context, repository_records in results:
+        coverage["repositories"].append(source_context)
+        coverage["complete"] &= source_context["complete"]
+        ordered.extend(repository_records)
+    coverage.update(capacity_complete=coverage["complete"], issue_inventory_count=sum(not item.get("pull_request") for item in ordered),
+                    pull_request_inventory_count=sum(bool(item.get("pull_request")) for item in ordered))
     return ordered, coverage
 
 
@@ -5262,7 +5232,7 @@ def exclude_landed_candidates(candidates: list[dict[str, Any]], excluded: list[d
 
 
 def next_wait_context(
-    issues: list[dict[str, Any]], *, scan_limit: int, inventory_complete: bool,
+    issues: list[dict[str, Any]], *, scan_limit: int | None, inventory_complete: bool,
     reference_repositories: set[str] | None = None,
     structured_waits: dict[tuple[str, int], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -5278,13 +5248,13 @@ def next_wait_context(
     unavailable: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
     failures: dict[str, direction_audit.AuditError] = {}
-    budget = max(1, scan_limit) * 5
+    budget = max(1, scan_limit) * 5 if scan_limit is not None else None
 
     def fetch(argv: list[str]) -> Any:
         path = "/" + argv[1].lstrip("/")
         if path not in cache:
             with fetch_lock:
-                if path not in read_paths and len(read_paths) >= budget:
+                if budget is not None and path not in read_paths and len(read_paths) >= budget:
                     raise direction_audit.AuditError("wait read limit reached")
                 read_paths.add(path)
             try:
@@ -5310,7 +5280,7 @@ def next_wait_context(
     for item in selected:
         groups.setdefault(item["repo"], []).append(item)
     reports: list[dict[str, Any]] = []
-    complete = inventory_complete and len(unique) <= scan_limit
+    complete = inventory_complete and (scan_limit is None or len(unique) <= scan_limit)
     references: dict[str, dict[str, Any]] = {}
     checked = 0
     scope_labels = {}
@@ -5536,17 +5506,31 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         raise ClassifiedPlanError(code, message, payload={"milestone_summary": summary,
             "recommended_next_action": CURRENT_RETRY_FIELDS["recommended_next_action"], **evidence})
 
+    NEXT_READS.start_phase("repository_inventory")
+    complete_inventory, inventory_context = discover_direction_work(repo, args, selection_context=selection_context, capacity_evidence=True)
     NEXT_READS.start_phase("live_breakage_inventory")
-    incident_inventory, live_breakage_context = next_live_breakage(repo, args, graph_reader(repo)) if scope is None else (
-        [], {"complete": True, "exclusion": "explicit_milestone_scope"})
+    if NEXT_READS.inventory:
+        incident_inventory = [item for item in complete_inventory if not item.get("pull_request") and github_direction_next.is_live_breakage(item)]
+        live_breakage_context = {"complete": inventory_context["complete"], "source": "complete_repository_inventory",
+                                 "repositories": inventory_context.get("repositories", [])}
+    else:
+        incident_inventory, live_breakage_context = next_live_breakage(repo, args, graph_reader(repo)) if scope is None else (
+            [], {"complete": True, "exclusion": "explicit_milestone_scope"})
     if not live_breakage_context["complete"]:
         unread("live_breakage_unread", "Live-breakage inventory is unread or partial; priority cannot be established",
                action=live_breakage_context.get("recommended_next_action", "review_partial_coverage"),
                live_breakage_context=live_breakage_context)
     NEXT_READS.start_phase("track_inventory")
+    scope_number = (scope or {}).get("number")
     try:
-        root_inventory = github_work_graph.track_inventory(graph_reader(repo), collect_paged_rest_items, repo,
-            limit=NEXT_PLAN_INVENTORY_LIMIT, milestone=scope["number"] if scope else None)
+        if repo.casefold() in NEXT_READS.inventory:
+            root_issues = [item for item in NEXT_READS.inventory[repo.casefold()] if not item.get("pull_request")
+                           and (scope_number is None or (item.get("milestone") or {}).get("number") == scope_number)]
+            root_inventory = github_work_graph.TrackInventory(EXPECTED_ACTOR, root_issues,
+                {(item["repo"].casefold(), item["number"]): item for item in complete_inventory}, inventory_context["complete"])
+        else:
+            root_inventory = github_work_graph.track_inventory(graph_reader(repo), collect_paged_rest_items, repo,
+                limit=NEXT_PLAN_INVENTORY_LIMIT, milestone=scope_number)
     except (github_read.GitHubReadError, github_read.GitHubReadShapeError, github_next_reads.ReadDeadline,
             ValueError, KeyError, TypeError, AttributeError) as exc:
         detail = next_source_error(plan_read_error(exc))
@@ -5569,10 +5553,10 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     context_locks: dict[str, Any] = {}
     graph_read_ahead: set[tuple[str, int]] = set()
 
-    def graph_comments(issue_repo: str, number: int, rows_to_read: int) -> tuple[list[dict[str, Any]], bool]:
+    def graph_comments(issue_repo: str, number: int, rows_to_read: int | None) -> tuple[list[dict[str, Any]], bool]:
         rows = collect_paged_rest_items(f"/repos/{issue_repo}/issues/{number}/comments", query={},
             bucket="rest_core", step_prefix="next_issue_comments", limit=rows_to_read)[1]
-        return rows, len(rows) < rows_to_read
+        return rows, rows_to_read is None or len(rows) < rows_to_read
 
     def graph_relationships(issue_repo: str, number: int, raw: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
         nonlocal actor
@@ -5617,7 +5601,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             target_config, focus_values = contexts[context_key]
             focus = focus_values.get(source_issue.get("html_url") or source_issue.get("url") or "")
             return github_work_graph.read_direction_node(source_issue, config=target_config, focus=focus,
-                comment_limit=getattr(args, "comment_limit", None) or 100,
+                comment_limit=getattr(args, "comment_limit", None),
                 read_comments=lambda count: graph_comments(issue_repo, number, count),
                 read_relationships=lambda: graph_relationships(issue_repo, number, source_issue),
                 resolve_wait=lambda comments: graph_wait(source_issue, comments, issue_repo),
@@ -5708,6 +5692,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         raise exc
 
     def with_ancestry(leaf_item: dict[str, Any]) -> dict[str, Any]:
+        assert NEXT_READS is not None
         ancestors: list[dict[str, Any]] = []
         key = (leaf_item["repo"].casefold(), leaf_item["number"])
         visited = {key}
@@ -5718,7 +5703,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         for _ in range(10):
             try:
                 if key not in parents:
-                    parent = (NEXT_READS.submit(("parent", *key), lambda key=key: parent_observation(key)).result()
+                    raw_parent = seeds.get(key, {})
+                    parent = raw_parent["parent"] if "parent" in raw_parent else (NEXT_READS.submit(("parent", *key), lambda parent_key=key: parent_observation(parent_key)).result()
                               if NEXT_READS.workers > 1 else parent_observation(key))
                     if isinstance(parent, PlanError):
                         raise parent
@@ -5807,7 +5793,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         for review in selection_context.get("issues", {}).values()
     )))
     if scope is None:
-        inventory, discovery = discover_direction_work(repo, args, selection_context=selection_context, capacity_evidence=capacity_evidence)
+        inventory = [item for item in complete_inventory if not item.get("pull_request")]
+        discovery = inventory_context
         seen = {(item["repo"].casefold(), item["number"]) for item in [*ranked["candidates"], *ranked["excluded"]] if item.get("exclusion") != "outside_direction_tracks"}
         inventory = [item for item in inventory if (item["repo"].casefold(), item["number"]) not in seen]
         waypoints = {source["repo"]: repository_direction_milestones(source)
@@ -5981,15 +5968,29 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     candidate_coverage_complete = bool(graph_coverage["complete"] and (scope is not None or discovery.get("complete")))
     priority_keys = [(entry["repo"].casefold(), entry["number"]) for entry in [*ranked["candidates"], *discoveries]]
     evidence_keys = dict.fromkeys([*priority_keys, *nodes])
+    pull_items = []
+    for raw in complete_inventory:
+        if not raw.get("pull_request"):
+            continue
+        item = {**compact_list_issue(raw["repo"], raw), "record_type": "pull_request", "source": "repository_discovery",
+                "head_sha": (raw.get("head") or {}).get("sha"), "milestone": next_milestone_context(raw)}
+        if "_graph_comments" in raw:
+            item["discussion"] = github_direction_next.discussion_snapshot(raw, raw["_graph_comments"], complete=True)
+        pull_items.append(item)
+    discoveries.extend(pull_items)
     NEXT_READS.start_phase("ownership")
     queue_context = annotate_next_queue(list({(entry["repo"].casefold(), entry["number"]): entry
         for entry in [*ranked["candidates"], *discoveries]}.values()), args)
+    for item in pull_items:
+        discussion = item.get("discussion") or {}
+        if discussion:
+            discussion.update(ancestry_complete=True, parents=[])
     for name, observed in graph_queue_context.get("repositories", {}).items():
         queue_context.setdefault("repositories", {}).setdefault(name, observed)
     NEXT_READS.start_phase("wait_evidence")
     wait_context = next_wait_context(
         [seeds[key] for key in evidence_keys if key in seeds],
-        scan_limit=args.scan_limit * 2,
+        scan_limit=args.scan_limit * 2 if args.scan_limit is not None else None,
         inventory_complete=candidate_coverage_complete,
         reference_repositories={item["repo"] for item in discovery.get("repositories", [])},
         structured_waits={key: node["item"]["structured_wait"] for key, node in nodes.items() if "structured_wait" in node["item"]},
@@ -6086,16 +6087,14 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     }
     ranked["truncated"] |= bool(discovery.get("inventory_truncated") or discovery.get("unevaluated_count") or any(source.get("truncated") and not source.get("hold") for source in discovery.get("repositories", [])))
     sections = section_map(direction_text or "")
-    NEXT_READS.start_phase("dependabot")
-    dependabot = next_dependabot_work(
-        discovery.get("repositories", []), scan_limit=args.scan_limit, limit=args.limit,
-        comment_limit=getattr(args, "comment_limit", None) or 100,
-        inventory_complete=not discovery.get("inventory_truncated", False) and "error" not in discovery,
-    ) if scope is None else {"dependabot_context": {"complete": False, "exclusion": "explicit_milestone_scope"}}
-    if scope is None and dependabot.get("dependabot_context", {}).get("complete") is False:
-        if candidate_coverage_complete:
-            ranked["candidate_coverage"]["warning"] = "Dependency-update reads are incomplete; ordinary work evidence is reported separately."
-        candidate_coverage_complete = ranked["candidate_coverage"]["complete"] = False
+    dependabot = next_dependabot_work(discovery.get("repositories", []), scan_limit=None, limit=args.limit,
+        comment_limit=getattr(args, "comment_limit", None), inventory_complete=inventory_context.get("complete") is True and not inventory_context.get("inventory_truncated"),
+        pull_inventory=NEXT_READS.inventory) if scope is None else {
+            "dependabot_context": {"complete": False, "exclusion": "explicit_milestone_scope"}}
+    pull_queues = {(item["repo"].casefold(), item["number"]): item.get("queue", {}) for item in pull_items}
+    for field in ("pr_followthrough", "dependabot_candidates", "dependabot_unverified_candidates"):
+        for item in dependabot.get(field, []):
+            item["queue"] = pull_queues.get((item["repo"].casefold(), item["number"]), {})
     # Account for every speculative read before emitting the terminal receipt.
     NEXT_READS.drain(unused_failure=unused_failure)
     payload = {
@@ -7434,13 +7433,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--milestone", help="Limit selection to one milestone by number or title")
     p.add_argument("--limit", type=positive_limit, default=5,
                    help="How many ranked results to return (default %(default)s); does not widen evaluation")
-    p.add_argument("--scan-limit", type=positive_limit, default=NEXT_DEFAULT_SCAN_LIMIT,
-                   help="How many issues to evaluate per scan allowance (default %(default)s); global next has separate graph and discovery allowances, each with an extra allowance for other-agent issues; discovery also reserves a held-repository allowance and evaluates marked incidents separately")
-    p.add_argument("--repo-limit", type=positive_limit, help="Global next: bound accessible repository inventory (default 100)")
-    p.add_argument("--repository-issue-limit", type=positive_limit, help=f"Global next: open issues per repository (default {NEXT_DEFAULT_SCAN_LIMIT})")
-    p.add_argument("--comment-limit", type=positive_limit, help="Comments per evaluated issue (default 100)")
+    p.add_argument("--scan-limit", type=positive_limit, help=f"Optional evaluation bound; global next reads all work by default, repository-local next defaults to {NEXT_DEFAULT_SCAN_LIMIT}")
+    p.add_argument("--repo-limit", type=positive_limit, help="Global next: bound accessible repository inventory (default all)")
+    p.add_argument("--repository-issue-limit", type=positive_limit, help="Global next: optional open issue inventory bound (default all)")
+    p.add_argument("--comment-limit", type=positive_limit, help="Comments per evaluated issue (default all)")
     p.add_argument("--read-workers", type=positive_limit, choices=range(1, 17), default=8, help="Global next: concurrent read workers (default %(default)s)")
-    p.add_argument("--time-budget", type=positive_limit, default=180, help="Global next: total read budget in seconds (default %(default)s); raise for wider evidence")
+    p.add_argument("--time-budget", type=positive_limit, default=0, help="Global next: optional read deadline in seconds (default none)")
     p.add_argument("--selection-context", help="Current owner holds and issue review evidence JSON; never a durable plan")
     p.set_defaults(func=cmd_next)
 

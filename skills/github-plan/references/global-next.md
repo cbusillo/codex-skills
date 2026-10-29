@@ -12,18 +12,16 @@ Read for `next` in a repository owner's direction repository, including explicit
    `graph_context` and `discovery_context` separately, including each source's
    exclusions, merged direction, failures, and bounds. An inaccessible source is
    unknown. A complete graph never means all repositories or sessions were read.
-   Global CLI reads use bounded workers and a total read budget; `--help` prints
-   the current defaults and bounds. Progress is
-   stderr-only; stdout remains one terminal JSON result. `performance` records
-   elapsed time, phase costs and invocation-local read reuse. Raise
-   `--time-budget SECONDS` for broader evidence, or lower `--read-workers`
-   to reduce concurrency. First observations still use the authenticated shared
-   reader/cache/quota path; reuse lasts only for this invocation. Native-frontier
-   ownership is read before optional discovery; discovery reserves part of the
-   effective budget for final wait/ownership evidence. A budget stop preserves unread
-   evidence and names known skipped discoveries; it never proves availability
-   or complete portfolio/milestone ranking. Check the independent coverage
-   receipts even when the command exits successfully.
+   Global CLI reads page every accessible repository's open issues and PRs,
+   including labels, assignees, milestones, blockers, parents and complete
+   discussions. Graph, queue and dependency projections reuse that inventory.
+   There is no default scan, repository, discussion or time budget. Optional
+   `--scan-limit`, `--repo-limit`, `--repository-issue-limit`, `--comment-limit`
+   and `--time-budget` keep explicit partial reads available; their receipts
+   remain incomplete. `--limit` bounds displayed results only. Worker concurrency
+   stays bounded by `--read-workers`. Progress is stderr-only; stdout remains
+   one terminal JSON result. `performance` records timing and invocation-local
+   reuse through the authenticated reader and its existing quota/retry policy.
    Ctrl-C or a fatal read failure signals the invocation's reader retry runtime
    before joining workers, waking pending backoffs and cancelling queued reads.
    An already running transport retains its existing bounded request deadline;
@@ -97,19 +95,11 @@ execution-scope.
 Remove the marker when the incident is resolved. The marker only prioritizes
 possible work; it never establishes ownership, lifts holds, or overrides blockers.
 
-Director-marked issues are evaluated outside the ordinary discovery scan allowance.
-A separate label inventory covers marked issues beyond a repository's ordinary
-issue-list bound. Native `blocked-by` and sub-issue leaves also inherit priority through
-`incident_via`, an issue URL path with the relationship of each step. A separate
-`--scan-limit` allowance bounds unique descendant evaluations beyond the ordinary scan.
-Eligible incident nodes also reuse the existing ancestor check, bounded to ten
-parents per node; the descendant allowance is not an API-request count.
-`discovery_context.incident_context` reports truncation, cycles and unavailable
-reads. Whole-parent waits stop the traversal; leaf holds, dependencies, ancestor
-waits and current ownership review still apply. Provenance never sets a label,
-clears a wait or grants availability. Repository access/inventory limits and failed reads remain
-explicit coverage limits. Inspect `candidate_coverage` beside the ranked list:
-a partial list cannot establish that no higher-priority work exists.
+Director-marked incidents and their native prerequisite/child paths retain
+priority through `incident_via`. The same inventory supplies marked roots;
+there is no second label inventory. Cycles and unavailable paths remain explicit
+in `discovery_context.incident_context`. Holds, blockers, waits, ancestry and
+ownership still apply. An explicit scan bound can truncate descendant traversal.
 
 Each candidate's `overall_milestone_context` reports an established native Track
 path/ancestry/blocking target or an exact waypoint title shared by the issue's open milestone,
@@ -163,7 +153,7 @@ or unavailable wait read for that frontier issue cannot establish capacity
 admission; increase the bounded scan or resolve its unavailable reference.
 Unrelated gaps in the stale report remain coverage warnings, not a global veto.
 
-Wait proofs run in the final evidence pass so discovery can use its budget first.
+Wait proofs reuse the inventory during the final evidence pass.
 
 The CLI reads current discussions and inventories claims, linked open PRs and
 branches once per repository before projecting the start queue. It uses the
@@ -286,11 +276,8 @@ when current staffing or person/event-wait reviews leave that admission possible
 inventoried read-only.
 A hold alone is never a person wait. Their milestone candidates need the same
 current staffing or person/event-wait reviews; unrelated holds do not block independent tooling.
-Held issues use a separate bounded allowance of `--scan-limit`, leaving the
-ordinary discovery allowance available to selectable work. Their failures and
-bounds affect `discovery_context.capacity_complete`, not ordinary candidate
-coverage. Failed ancestry on already-excluded discoveries likewise preserves
-ordinary wait reports while making capacity evidence incomplete. Capacity
+Held issues use the same complete inventory and remain excluded. Failed
+ancestry or discussion reads keep capacity evidence incomplete. Capacity
 admission requires complete milestone graph coverage. Portfolio discovery bounds
 and `discovery_context.capacity_complete` remain reporting evidence and do not
 veto admission by themselves. Inspected discoveries with unresolved milestone
@@ -337,20 +324,16 @@ independent work in other repositories; they do not invent cross-repository hold
 Keep snapshots private when they contain session or operational context. Ordinary
 read-only `next` does not write a snapshot, update an issue, or start a worker.
 
-For an explicitly selected or unambiguously detected agent family, the graph and
-repository-discovery scans each reserve a separate `--scan-limit` allowance for
-other-family issues. Those issues retain dependency, parent-wait and milestone
-capacity evidence before the final family filter. Graph nodes consume the
-ordinary allowance unless a freshly read assignment uses the remaining
-other-family allowance; the graph stops when the ordinary allowance is exhausted.
-Thus graph reads remain bounded by twice `--scan-limit`. After the other-family
-allowance fills, additional other-family graph nodes spend the ordinary allowance
-and can still leave an eligible leaf unseen; raise `--scan-limit` when needed.
-Discovery keeps its existing held-repository and marked-incident allowances,
-so it evaluates at most three times `--scan-limit` issues plus marked incidents. Omitted work still
-reports incomplete coverage and known omitted milestones still prevent capacity
-admission. Unknown or conflicting assignments consume the ordinary allowance.
-
+Agent-family filtering happens after the complete read. Other-family and held
+records consume no reserved allowances. PRs enter the same `Next actor` queue:
+missing actors need status, named agents/claims/current Ready remain underway,
+and drafts, Client-wait handoffs, structured waits and person/event actors stay
+held. PR identity and its remote head identify the work record; local source
+artifacts and active claims remain ownership evidence. `pr_followthrough` and
+`dependabot_*` remain compatibility projections from this inventory, including
+the dependency age and enrollment rules. They do not authorize claiming or
+merging, or clear a canonical issue's wait. Capacity admission and
+`--selection-context` retain their existing contracts.
 
 ## Correct An Invalid Wait Before Claiming
 

@@ -348,8 +348,9 @@ for the PR discovery bounds. An empty issue list with PR candidates does not
 mean no work is available. This visibility changes no priority, hold, or merge
 authority.
 
-`pr_followthrough` reports other open PRs from the same inventory separately
-from source issue ranking. Each row keeps the current head and bounded
+`pr_followthrough` preserves a compatibility view of other open PRs. Global
+`next` also puts PRs through the same `Next actor` queue and ranking as issues,
+using one complete inventory by default. Each row keeps the current head and bounded
 discussion excerpts with source links, including Client projections. Current
 Ready handoffs and claims are underway; drafts, Client-wait handoffs and
 structured waits stay held. Legacy or incomplete evidence
