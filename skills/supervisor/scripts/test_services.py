@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
+from typing import Any
 
 import services
 
@@ -27,7 +28,7 @@ class ServicesTests(unittest.TestCase):
         self.root = Path(directory.name)
         self.config = self.root / "config.json"
         self.fixture = self.root / "child.py"
-        self.data = {
+        self.data: dict[str, Any] = {
             "uv": shutil.which("uv"),
             "services": {name: {"argv": [sys.executable, str(self.fixture)],
                                 "cwd": str(self.root), "restart_seconds": 0.01}
@@ -76,6 +77,22 @@ class ServicesTests(unittest.TestCase):
 
     def test_running_service_and_uv_child_leave_shared_cache_prunable(self):
         self.assert_service_cache_prunable([])
+
+    def test_optional_idle_job_uses_existing_runner_and_preserves_failure_stop(self) -> None:
+        name = services.IDLE_SERVICES[0]
+        self.data["services"][name] = dict(self.data["services"]["foreign"])
+        self.fixture.write_text("raise SystemExit(4)\n")
+        self.save()
+        output = services.render(self.config, Path(__file__).resolve().parents[3], self.root / "jobs")
+        with (output / f"{services.LABEL_PREFIX}.{name}.plist").open("rb") as stream:
+            job = plistlib.load(stream)
+        result = subprocess.run(job["ProgramArguments"], capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertTrue(services.reconciliation_marker(self.config, name).exists())
+        again = subprocess.run(job["ProgramArguments"], capture_output=True, text=True, timeout=15)
+        self.assertEqual(again.returncode, 1)
+        events = [json.loads(line) for line in again.stdout.splitlines()]
+        self.assertFalse(any(event["event"] == "started" for event in events))
 
     def test_uv_child_with_existing_cache_flag_still_runs_and_allows_pruning(self):
         self.assert_service_cache_prunable(["--no-cache"])

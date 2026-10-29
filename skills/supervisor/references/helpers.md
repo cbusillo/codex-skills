@@ -289,8 +289,10 @@ uv run skills/supervisor/scripts/finished_map.py --ledger <private-ledger.json>
 Rebuild the ~23-minute check and morning digest using the harness's scheduler.
 On a turn-end notice, immediately enter the skill's
 [finished-session procedure](../SKILL.md#close-finished-sessions-on-every-notice-and-check)
-for its exact session. Do not collect notices until the next check. Run each
-watch as a background job: the harness wakes you when it exits, not when it
+for its exact session. Do not collect notices until the next check. With the
+[persistent idle services](#persistent-supervisor-services), notices are sent
+immediately through the existing exact-session notification routes and the
+watch keeps running. Without those services, run each bounded watch as a background job: the harness wakes you when it exits, not when it
 prints. The watch exits right after printing a `closeout_request` that is not
 yet in its `--delivered-state` file, and records it there first, so a request
 pending at takeover or between watches wakes you once and re-arming over a
@@ -1020,8 +1022,8 @@ reconciled. Never treat a loaded job alone as proof that digests are arriving.
 
 ## Persistent Supervisor services
 
-On the Director's Mac, launchd owns four jobs: enqueue, drive, foreign and
-throughput. They survive Supervisor session restarts and start again at login.
+On the Director's Mac, launchd owns enqueue, drive, foreign and throughput,
+plus optional `idle-codex` and `idle-claude` jobs. They survive Supervisor session restarts and start again at login.
 The Supervisor installs and starts them after review; an executing session
 prepares and tests the helper without installing or starting these services.
 Use the installed runtime catalog, not a task worktree, as their source.
@@ -1063,6 +1065,54 @@ credential sources. A configuration has this shape, with all four entries:
 }
 ```
 
+Existing four-entry configurations remain valid. To remove per-notice idle-watch
+re-arming, add an optional entry to that same `services` object:
+
+```json
+"idle-codex": {
+  "argv": ["/absolute/path/to/uv", "run", "/runtime/catalog/skills/supervisor/scripts/codex_idle_watch.py", "--ledger", "/private/existing-worker-ledger.json", "--delivered-state", "/private/codex-delivered.json", "--persistent", "--notify-session-id", "EXACT-SUPERVISOR-NATIVE-ID", "--notify-ledger", "/private/existing-session-ledger.json"],
+  "cwd": "/runtime/catalog",
+  "restart_seconds": 1
+}
+```
+
+`idle-claude` uses the same watcher with `--harness claude` and its own
+`--delivered-state`. Reuse existing ledgers and delivered-state files. The
+recipient must be one exact Supervisor-owned native entry in the existing
+ledger; omit `--notify-ledger` when it is already in `--ledger`. Codex delivery
+uses the existing native queue helper. Claude delivery uses the existing guarded
+tmux notification route, including idle, empty-composer and identity checks.
+Unsupported routes and identity errors stop for reconciliation. A certainly
+unsent busy recipient is rechecked on the next poll; uncertain or denied sends
+are never automatically replayed.
+
+Persistent mode immediately sends each new closeout request and authentication
+failure at the next poll, then keeps watching. It rechecks closeout requests with
+`finished_map.py`'s exact-session candidate reader and includes the supported
+`finished_map.py --session-id` command in the notice. Do not reconstruct transcript
+parsers. Notice delivery grants no exit authority: every existing handoff, input,
+task, process-exit and claim verification still applies. The watcher keeps its
+existing deadline; the service restarts clean deadline exits automatically.
+Keep the idle service restart delay short, as in the example. Logging notices
+until the next scheduled check does not meet the immediate-handling rule.
+
+The same delivered-state file retains an attempt before calling the notification
+sender and marks it delivered only after success. A pending attempt blocks any
+watcher restart, including bounded mode. Inspect it without changing state:
+
+```sh
+uv run /runtime/catalog/skills/supervisor/scripts/codex_idle_watch.py --ledger /private/existing-worker-ledger.json --delivered-state /private/codex-delivered.json --reconcile-notification
+```
+
+Read the retained exact recipient and reconcile that original delivery. Only
+once readback proves the outcome, repeat with `--delivery-outcome delivered`
+or `--delivery-outcome not-sent` and `--evidence <readback-evidence>`. This records
+the result in the same state file; it never sends a message or changes authority.
+A refusal still needs its underlying cause resolved on the supported route.
+Then use the existing service `clear` command below. Never delete state or clear
+an uncertain attempt to make a send run again. One lock per delivered-state file
+prevents two watches using it concurrently.
+
 Replace the example paths and scope with the current Supervisor handoff's
 commands. The drive entry runs the existing bounded loop calling the maintained
 train driver, one driver per repository. It does not replace Launchplane's
@@ -1095,7 +1145,7 @@ After reviewing those jobs, the Supervisor starts each with:
 launchctl bootstrap "gui/$(id -u)" /private/supervisor-services/com.codex-skills.supervisor.enqueue.plist
 ```
 
-Repeat for `drive`, `foreign` and `throughput`. To start automatically after a
+Repeat for `drive`, `foreign`, `throughput` and each configured idle job. To start automatically after a
 Mac login, the Supervisor places the reviewed plists in `~/Library/LaunchAgents/`
 and bootstraps those paths instead. Session takeovers reuse the loaded jobs;
 do not bootstrap another set or re-arm deadline loops. During each check:

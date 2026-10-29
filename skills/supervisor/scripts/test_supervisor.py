@@ -885,6 +885,77 @@ class LedgerTests(unittest.TestCase):
         notices = [json.loads(line) for line in output.getvalue().splitlines()]
         self.assertEqual(notices[-1]["closeout_request"]["session_id"], self.entry["session_id"])
 
+    def test_persistent_watch_notifies_immediately_and_keeps_its_watermark_across_restarts(self) -> None:
+        import review_notifications
+        args = self.watch_args(persistent=True, notify_session_id=self.entry["session_id"],
+                               notify_ledger=self.ledger, deadline_seconds=180)
+        sleeps = []
+        with patch.object(review_notifications, "send") as notify:
+            for _ in range(2):
+                clock = iter(range(0, 10_000, 45))
+                with patch.object(codex_idle_watch.time, "monotonic", side_effect=lambda: next(clock)), \
+                        patch.object(codex_idle_watch.time, "sleep", side_effect=sleeps.append), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(codex_idle_watch.watch(args, None), 0)
+                self.assertEqual(notify.call_count, 1)
+            self.assertGreater(len(sleeps), 1)
+        self.assertEqual(notify.call_args.args[0]["session_id"], self.entry["session_id"])
+
+    def test_uncertain_notification_stops_and_cannot_replay_after_restart(self) -> None:
+        import review_notifications
+        args = self.watch_args(persistent=True, notify_session_id=self.entry["session_id"], notify_ledger=self.ledger)
+        with patch.object(review_notifications, "send", side_effect=TimeoutError("unknown delivery")) as notify, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(codex_idle_watch.watch(args, None), 1)
+            self.assertEqual(codex_idle_watch.watch(args, None), 1)
+            self.assertEqual(notify.call_count, 1)
+        state = args.delivered_state.read_text()
+        reconciliation = SimpleNamespace(delivered_state=args.delivered_state, delivery_outcome=None, evidence=None)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(codex_idle_watch.reconcile_notification(reconciliation), 0)
+        self.assertEqual(args.delivered_state.read_text(), state)
+        reconciliation.delivery_outcome = "delivered"
+        reconciliation.evidence = "Exact recipient readback confirms the retained notice."
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(codex_idle_watch.reconcile_notification(reconciliation), 0)
+            with patch.object(review_notifications, "send") as notify:
+                self.assertEqual(codex_idle_watch.watch(self.watch_args(persistent=True,
+                    notify_session_id=self.entry["session_id"], notify_ledger=self.ledger, once=True), None), 0)
+        notify.assert_not_called()
+
+    def test_certainly_unsent_busy_recipient_is_rechecked_without_spending_delivery(self) -> None:
+        import review_notifications
+        args = self.watch_args(persistent=True, notify_session_id=self.entry["session_id"],
+                               notify_ledger=self.ledger, deadline_seconds=180)
+        clock = iter(range(0, 10_000, 45))
+        with patch.object(review_notifications, "send", side_effect=[
+                review_notifications.NotSent("recipient busy", needs_attention=False), None]) as notify, \
+                patch.object(codex_idle_watch.time, "monotonic", side_effect=lambda: next(clock)), \
+                patch.object(codex_idle_watch.time, "sleep"), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(codex_idle_watch.watch(args, None), 0)
+        self.assertEqual(notify.call_count, 2)
+        self.assertFalse(any(value.startswith(codex_idle_watch.PENDING_NOTIFICATION)
+                             for value in codex_idle_watch.load_delivered(args.delivered_state)))
+
+    def test_notification_rechecks_exact_candidate_before_any_send(self) -> None:
+        import review_notifications
+        args = self.watch_args(persistent=True, notify_session_id=self.entry["session_id"],
+                               notify_ledger=self.ledger, once=True)
+        with patch.object(finished_map, "candidates", return_value=[{"closeout_request": None}]) as canonical, \
+                patch.object(review_notifications, "send") as notify, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(codex_idle_watch.watch(args, None), 0)
+        canonical.assert_called_once_with(self.ledger, self.entry["session_id"])
+        notify.assert_not_called()
+
+    def test_permission_refusal_remains_spent_even_before_notification_delivery(self) -> None:
+        import review_notifications
+        args = self.watch_args(persistent=True, notify_session_id=self.entry["session_id"], notify_ledger=self.ledger)
+        with patch.object(review_notifications, "send", side_effect=PermissionError("denied")) as notify, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(codex_idle_watch.watch(args, None), 1)
+            self.assertEqual(codex_idle_watch.watch(args, None), 1)
+        self.assertEqual(notify.call_count, 1)
+
     def run_watch_to_deadline(self) -> tuple[int, list[float], list[dict]]:
         clock = iter(range(0, 10_000, 45))
         sleeps = []

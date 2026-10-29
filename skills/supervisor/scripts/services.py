@@ -25,6 +25,7 @@ import threading
 import time
 
 SERVICES = ("enqueue", "drive", "foreign", "throughput")
+IDLE_SERVICES = ("idle-codex", "idle-claude")
 LABEL_PREFIX = "com.codex-skills.supervisor"
 
 
@@ -33,8 +34,9 @@ def load_config(path):
     if not isinstance(config, dict) or set(config) != {"uv", "services"}:
         raise ValueError("configuration requires uv and services")
     absolute_path(config["uv"])
-    if not isinstance(config["services"], dict) or set(config["services"]) != set(SERVICES):
-        raise ValueError("configure enqueue, drive, foreign and throughput services")
+    if (not isinstance(config["services"], dict) or not set(SERVICES) <= set(config["services"])
+            or set(config["services"]) - set(SERVICES + IDLE_SERVICES)):
+        raise ValueError("configure enqueue, drive, foreign and throughput; idle-codex and idle-claude are optional")
     for value in config["services"].values():
         if not isinstance(value, dict) or set(value) != {"argv", "cwd", "restart_seconds"}:
             raise ValueError("each service requires argv, cwd and restart_seconds")
@@ -67,7 +69,7 @@ def render(config_path, catalog, output):
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     log_dir = output / "logs"
     log_dir.mkdir(exist_ok=True, mode=0o700)
-    for name in SERVICES:
+    for name in config["services"]:
         label = f"{LABEL_PREFIX}.{name}"
         job = {
             "Label": label,
@@ -170,17 +172,19 @@ def main(argv=None):
     prepare.add_argument("--output", type=Path, required=True)
     run = sub.add_parser("run", help="launchd entry point")
     run.add_argument("--config", type=Path, required=True)
-    run.add_argument("--service", choices=SERVICES, required=True)
+    run.add_argument("--service", choices=SERVICES + IDLE_SERVICES, required=True)
     clear = sub.add_parser("clear", help="clear a stop marker after reconciliation")
     clear.add_argument("--config", type=Path, required=True)
-    clear.add_argument("--service", choices=SERVICES, required=True)
+    clear.add_argument("--service", choices=SERVICES + IDLE_SERVICES, required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "render":
             emit("rendered", directory=str(render(args.config, args.catalog, args.output)))
             return 0
         config = load_config(args.config)
-        settings = config["services"][args.service]
+        settings = config["services"].get(args.service)
+        if settings is None:
+            raise ValueError("requested service is not configured")
         config_path = args.config.resolve()
         marker = reconciliation_marker(config_path, args.service)
         if args.command == "clear":
