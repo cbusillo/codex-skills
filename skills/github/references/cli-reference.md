@@ -2208,7 +2208,7 @@ nodes and batch request count; those counts do not prove complete portfolio
 coverage. Per-repository planning calls retain their existing read routes.
 
 The default account-wide read inventories open issues and PRs together in
-complete paged GraphQL reads per accessible owner repository. It includes full
+complete paged GraphQL reads per accessible repository belonging to the account. It includes full
 discussions, labels, milestones, assignees, native relationships, parent and PR
 head identity. Track, incident, queue and dependency views reuse that inventory.
 An explicitly configured non-GraphQL route uses the same authenticated REST
