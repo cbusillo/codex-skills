@@ -400,8 +400,6 @@ including non-dim text, establishes neither its author nor approval.
   for authorization, credentials, security, policy or guidance changes, and
   hard debugging, as recorded in the
   [direction#28 effort decision](https://github.com/cbusillo/direction/issues/28#issuecomment-5999464811).
-- When host load is high, add CPU-light work (read-only analysis, reviews,
-  docs, repositories with small suites) instead of holding launches.
 
 ## The Pattern
 
@@ -534,8 +532,19 @@ current default-branch checkout to read its product section.
    including child and comment results. Require their complete-coverage result;
    a first page or the goal board's bounded window is not complete staffing
    coverage. Report failed or incomplete reads
-   as unknown instead of building a parallel manual inventory. Staff actionable unclaimed children from that state; add no
+   as unknown instead of building a parallel manual inventory.
+
+   Read `openai_workers` and `load1_limit` from `[staffing]` in the host's private
+   `skill-data/supervisor.toml` for the running-worker target and one-minute load
+   limit. If unset, report the missing values and continue staffing available
+   work. Keep that OpenAI target staffed below the limit, refilling in the same
+   turn a worker closes. At high load, even without a configured limit, add
+   CPU-light work (analysis, reviews, docs, small suites). When `next` is thin,
+   look at actionable unclaimed `plan:active` issues and issues filed from
+   Cloud-driven passes, following the overall Order and existing claim and
+   launch rules. Add no
    staffing label and do not depend on a buried staffing-request comment.
+
    Workers report on their child issues. Parents hold in-place Current Status
    summaries and decisions, without per-slice comments or acknowledgements.
    Local heavy runs use the [one locked entrypoint](references/heavy-runs.md),
