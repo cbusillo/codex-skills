@@ -40,7 +40,7 @@ def enrolled(status="enrolled"):
 
 
 def discover(module: Any, pulls, *, sources=None, limit=10, scan_limit=50, status="enrolled", inventory_complete=True):
-    reads = Mock(return_value=("automation-gh", pulls))
+    reads = Mock(side_effect=lambda path, **_kwargs: ("automation-gh", pulls if path.endswith("/pulls") else []))
     with patch.multiple(module, read_next_train_enrollment=Mock(return_value=enrolled(status)), collect_paged_rest_items=reads):
         result = module.next_dependabot_work(
             sources or [{"repo": "owner/repo"}], scan_limit=scan_limit,
@@ -62,9 +62,9 @@ def test_age_author_state_branch_and_pr_identity():
     assert item["head_sha"] == "head-4" and item["age_hours"] == 72
     assert item["age"] == "72.0 hours" and item["ownership"] == "not_checked"
     assert "held" not in json.dumps(result) and "major" not in json.dumps(result)
-    assert reads.call_args.args == ("/repos/owner/repo/pulls",)
-    assert reads.call_args.kwargs["query"] == {"state": "open", "sort": "created", "direction": "asc"}
-    assert reads.call_args.kwargs["limit"] == 51
+    inventory = next(call for call in reads.call_args_list if call.args == ("/repos/owner/repo/pulls",))
+    assert inventory.kwargs["query"] == {"state": "open", "sort": "created", "direction": "asc"}
+    assert inventory.kwargs["limit"] == 51
     assert result["dependabot_context"]["complete"] is True
 
 
@@ -82,7 +82,7 @@ def test_renovate_shares_dependency_candidate_age_bounds_and_enrollment() -> Non
     assert candidate["url"] == "https://github.com/owner/repo/pull/1"
     assert candidate["age_hours"] == 72 and candidate["head_sha"] == "head-1"
     assert result["dependabot_context"]["result_truncated"] is True
-    assert reads.call_count == 1
+    assert result["pr_followthrough"][0]["number"] == 6
     result, _ = discover(module, [pull(author="renovate[bot]")], status="unknown")
     assert result["dependabot_candidates"] == []
     assert result["dependabot_unverified_candidate_count"] == 1
@@ -214,7 +214,7 @@ def test_local_next_preserves_issue_ranking_and_includes_prs():
     output = {}
     def collect(path, **kwargs):
         if path.endswith("/pulls"):
-            return "automation-gh", [pull()]
+            return "automation-gh", [pull(), pull(2, author="bot")]
         if path.endswith("/comments"):
             return "automation-gh", [{"user": {"login": "owner"}, "body": module.github_plan_wait.marker(
                 module.github_plan_wait.reviewed(evidence="Ranking fixture has no person/event wait"))}]
@@ -226,10 +226,11 @@ def test_local_next_preserves_issue_ranking_and_includes_prs():
         next_focus_context=lambda *_: (None, {}, {"available": False}),
         read_next_issue_relationships=lambda *_: (None, relationships(), []), emit=output.update,
     ):
-        module.cmd_next(next_args(repo="owner/repo"))
+        module.cmd_next(module.build_parser().parse_args(["--repo", "owner/repo", "next"]))
     assert [item["number"] for item in output["candidates"]] == [10]
     assert [item["number"] for item in output["dependabot_candidates"]] == [1]
     assert output["candidate_count"] == 1
+    assert output["pr_followthrough"][0]["number"] == 2
 
 
 def test_global_next_finds_pr_only_repositories_and_respects_holds():

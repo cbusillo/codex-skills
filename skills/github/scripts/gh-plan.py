@@ -55,6 +55,7 @@ import github_identity
 import github_client
 import github_direction_next
 import github_next_queue
+import github_next_pr
 import github_next_reads
 import github_plan_claim
 import github_plan_closure
@@ -4453,12 +4454,14 @@ def read_next_train_enrollment(repo: str) -> dict[str, Any]:
 
 def next_dependabot_work(
     sources: list[dict[str, Any]], *, scan_limit: int, limit: int,
-    now: datetime | None = None, inventory_complete: bool = True,
+    now: datetime | None = None, inventory_complete: bool = True, comment_limit: int = 100,
 ) -> dict[str, Any]:
     """List old PR facts separately from ranked issues and ownership judgments."""
     observed_at = now or datetime.now(timezone.utc)
     candidates: list[dict[str, Any]] = []
     unverified: list[dict[str, Any]] = []
+    followthrough: list[dict[str, Any]] = []
+    pull_inventory_complete = inventory_complete
     coverage: dict[str, Any] = {
         "complete": inventory_complete, "repositories": [],
         "pull_request_limit_per_repository": scan_limit,
@@ -4500,14 +4503,37 @@ def next_dependabot_work(
         except PlanError as exc:
             context.update(complete=False, error=next_source_error(exc))
             coverage["complete"] = False
+            pull_inventory_complete = False
             continue
         context.update(complete=len(pulls) <= scan_limit,
                        truncated=len(pulls) > scan_limit, pull_request_count=min(len(pulls), scan_limit))
         coverage["complete"] &= context["complete"]
+        pull_inventory_complete &= context["complete"]
+        ordinary = [pull for pull in pulls[:scan_limit] if pull.get("state") == "open"
+                    and (pull.get("user") or {}).get("login") not in {"dependabot[bot]", "renovate[bot]"}]
+        repository_name = str(repo)
+        trusted = {name.casefold() for name in wait_authors(repo)} if ordinary else set()
+
+        def project_pull(pull: dict[str, Any]) -> dict[str, Any]:
+            if pull.get("draft") or github_plan_claim.is_train_batch(pull):
+                return github_next_pr.project(repository_name, pull, [], trusted=trusted, complete=True)
+            try:
+                _, comments = collect_paged_rest_items(f"/repos/{repo}/issues/{pull['number']}/comments",
+                    query={}, bucket="rest_core", step_prefix="next_pr_comments", limit=comment_limit + 1)
+                return github_next_pr.project(repository_name, pull, comments[:comment_limit],
+                    trusted=trusted, complete=len(comments) <= comment_limit)
+            except PlanError as read_error:
+                return {"repo": repo, "number": pull["number"], "url": pull["html_url"],
+                    "head_sha": (pull.get("head") or {}).get("sha"), "state": "unknown",
+                    "reason": "pr_discussion_unavailable", "detail": next_source_error(read_error)}
+
+        followthrough.extend(NEXT_READS.map(project_pull, ordinary) if NEXT_READS is not None else map(project_pull, ordinary))
         observations: list[dict[str, Any]] = []
         for pull in pulls[:scan_limit]:
             author = (pull.get("user") or {}).get("login")
-            if pull.get("state") != "open" or author not in {"dependabot[bot]", "renovate[bot]"}:
+            if pull.get("state") != "open":
+                continue
+            if author not in {"dependabot[bot]", "renovate[bot]"}:
                 continue
             try:
                 created = datetime.fromisoformat(pull["created_at"].replace("Z", "+00:00"))
@@ -4550,7 +4576,12 @@ def next_dependabot_work(
     for items in (candidates, unverified):
         items.sort(key=lambda entry: (datetime.fromisoformat(entry["created_at"].replace("Z", "+00:00")), entry["repo"].casefold(), entry["number"]))
     coverage["result_truncated"] = len(candidates) > limit or len(unverified) > limit
+    followthrough.sort(key=lambda entry: (entry.get("created_at") or "", entry["repo"].casefold(), entry["number"]))
     return {
+        "pr_followthrough": followthrough[:limit], "pr_followthrough_count": len(followthrough),
+        "pr_followthrough_context": {"complete": pull_inventory_complete and all(
+            row.get("discussion_complete") is True for row in followthrough),
+            "result_truncated": len(followthrough) > limit},
         "dependabot_candidates": candidates[:limit], "dependabot_candidate_count": len(candidates),
         "dependabot_unverified_candidates": unverified[:limit],
         "dependabot_unverified_candidate_count": len(unverified), "dependabot_context": coverage,
@@ -4746,7 +4777,7 @@ def cmd_next(args: argparse.Namespace) -> None:
         notes.append("project_focus_truncated")
     if dependency_degraded_count:
         notes.append("dependency_reads_degraded")
-    dependabot = next_dependabot_work([{"repo": repo}], scan_limit=args.scan_limit, limit=args.limit)
+    dependabot = next_dependabot_work([{"repo": repo}], scan_limit=args.scan_limit, limit=args.limit, comment_limit=getattr(args, "comment_limit", None) or 100)
     selection_context = next_selection_context(args)
     queue_context = annotate_next_queue(candidates, args)
     queue_result = project_local_queue(candidates, excluded, selection_context)
@@ -5983,6 +6014,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     NEXT_READS.start_phase("dependabot")
     dependabot = next_dependabot_work(
         discovery.get("repositories", []), scan_limit=args.scan_limit, limit=args.limit,
+        comment_limit=getattr(args, "comment_limit", None) or 100,
         inventory_complete=not discovery.get("inventory_truncated", False) and "error" not in discovery,
     ) if scope is None else {"dependabot_context": {"complete": False, "exclusion": "explicit_milestone_scope"}}
     if scope is None and dependabot.get("dependabot_context", {}).get("complete") is False:
