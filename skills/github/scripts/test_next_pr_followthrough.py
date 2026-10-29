@@ -15,6 +15,7 @@ import github_next_queue
 import github_plan_claim as claim
 import github_plan_wait as wait
 import ready_handoff
+from github_next_reads import NextReads, ReadDeadline
 from test_gh_plan_dependabot import discover, load_module, pull
 from test_github_next_queue import evidence, item
 
@@ -152,10 +153,13 @@ def test_acceptance_reads_preserve_deadline_coverage_and_bound_the_child() -> No
     comments = [comment(1, ready_handoff.handoff_body(HEAD, waiting_for_client=True))]
     row["discussion"]["comments"] = [{**entry, "author": entry["user"]["login"]} for entry in comments]
     observed = pr_evidence(row)
-    for error in (module.github_next_reads.ReadDeadline("Expired"), CancelledError()):
-        with module.github_next_reads.NextReads(workers=1, seconds=0) as reads:
+    for error in (ReadDeadline("Expired"), CancelledError()):
+        with NextReads(workers=1, seconds=0) as reads:
             module.NEXT_READS = reads
-            with patch.object(reads, "request", side_effect=error), patch("subprocess.run") as child:
+            if isinstance(error, ReadDeadline):
+                reads.deadline = -1
+                error = None
+            with patch.object(reads, "request", wraps=reads.request, side_effect=error), patch("subprocess.run") as child:
                 queued = github_next_queue.classify(row, observed, trusted={"owner", "bot"},
                                                    acceptance_reader=module.next_pr_acceptance)
                 assert queued["state"] == "review"
