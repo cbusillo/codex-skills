@@ -730,7 +730,7 @@ for recovery or repeat them as fact.
    running.
 5. Recreate the ~23-minute check and morning digest with the harness's own
    scheduling feature. When the existing [persistent idle services](references/helpers.md#persistent-supervisor-services)
-   are configured, run `services.py bind --config <existing-service-config>`
+   are configured, run `uv run <skill-dir>/scripts/services.py bind --config <existing-service-config>`
    from this Supervisor at setup and takeover, then reuse the loaded jobs. Their
    current binding supplies immediate notices without per-notice re-arming.
    Otherwise start the bounded

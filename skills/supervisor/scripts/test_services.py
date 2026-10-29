@@ -211,10 +211,10 @@ class ServicesTests(unittest.TestCase):
         import codex_session_proxy
         self.save()
         identities = ("01970242-7941-7f0c-b461-16aa5723fb51", "01970242-7941-7f0c-b461-16aa5723fb52")
-        with patch.object(codex_session_proxy, "source_endpoint") as source:
+        with patch.object(codex_session_proxy, "source_endpoint"):
             for identity in identities:
                 transcript, env = self.codex_source(identity)
-                bound = services.bind_supervisor(self.config, transcript, environ=env)
+                bound = services.bind_supervisor(self.config, environ=env)
                 self.assertEqual(bound["session_id"], identity)
                 self.assertNotIn("supervisor_owned", bound)
                 self.assertEqual(services.supervisor_recipient(self.config), bound)

@@ -149,7 +149,7 @@ def supervisor_lock(config_path: Path) -> AbstractContextManager[None]:
 
 def supervisor_recipient(config_path: Path) -> dict:
     recipient = load_config(config_path).get("supervisor")
-    if recipient is None:
+    if not isinstance(recipient, dict):
         raise ValueError("bind the current Supervisor before starting idle notifications")
     return dict(recipient)
 
@@ -160,7 +160,7 @@ def claude_supervisor_route(tmux_socket: str) -> dict:
 
     parents, processes = process_parents(), inventory()
     pid, visited = os.getppid(), set()
-    source = None
+    source: tuple[int, str, str] | None = None
     while pid in parents and pid not in visited:
         visited.add(pid)
         matches = [row for row in processes if row[0] == pid]
@@ -197,6 +197,9 @@ def bind_supervisor(config_path: Path, transcript: Path | None = None, tmux_sock
                 if agent == "codex" else native.get("CLAUDE_CODE_SESSION_ID"))
     if not identity:
         raise ValueError("current harness native identity is unavailable; bind from the Supervisor session")
+    from session_liveness import native_uuid
+    if native_uuid(identity) != identity:
+        raise ValueError("current Supervisor native identity must be canonical")
     if agent == "codex" and native.get("CODEX_SESSION_ID", identity) != identity:
         raise ValueError("a Codex child cannot bind itself as the root Supervisor")
     home_root = Path(environ.get("HOME", str(Path.home())))
@@ -314,7 +317,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.command == "bind":
-            recipient = bind_supervisor(args.config, args.transcript, args.tmux_socket)
+            try:
+                recipient = bind_supervisor(args.config, args.transcript, args.tmux_socket)
+            except (OSError, ValueError, TypeError, subprocess.SubprocessError) as error:
+                emit("binding_unavailable", reason=str(error))
+                return 1
             emit("supervisor_bound", harness=recipient["harness"], session_id=recipient["session_id"])
             return 0
         if args.command == "render":

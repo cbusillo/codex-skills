@@ -1032,7 +1032,7 @@ class LedgerTests(unittest.TestCase):
     def test_persistent_watch_sigterm_exits_cleanly_without_a_pending_send(self) -> None:
         self.write([event("agent_message", message="Working."), event("task_started")])
         args = self.persistent_args()
-        command = [sys.executable, codex_idle_watch.__file__, "--ledger", str(self.ledger), "--delivered-state",
+        command = [sys.executable, str(Path(__file__).with_name("codex_idle_watch.py")), "--ledger", str(self.ledger), "--delivered-state",
                    str(args.delivered_state), "--persistent", "--notify-config", str(args.notify_config)]
         child = subprocess.Popen(command, env={**os.environ, "HOME": str(self.root), "CODE_HOME": str(self.root),
                                  "CODEX_HOME": str(self.root)}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
