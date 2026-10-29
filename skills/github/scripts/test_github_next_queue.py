@@ -141,14 +141,9 @@ def test_direction_list_is_authoritative_and_holds_override_automatic_review() -
     graph = {'candidates': [], 'excluded': [], 'dependency_context': {'complete': True}}
     result = direction.rank_portfolio_work(graph, [row], milestone_titles=[])
     assert len(result['available_candidates']) == 1
-    assert not result['tooling_capacity_context']['admitted']
-    context = {'repository_holds': {'owner/repo': {'reason': 'Director hold', 'evidence': ['Current instruction']}}}
-    result = direction.rank_portfolio_work(graph, [row], milestone_titles=[], selection_context=context)
-    assert not result['available_candidates']
-    assert result['excluded'][0]['exclusion'] == 'repository_held'
     row['direction_category'] = None
     result = direction.rank_portfolio_work(graph, [row], milestone_titles=[])
-    assert not result['available_candidates']  # no inferred tooling admission
+    assert not result['available_candidates']
 
 
 def test_local_adapter_reads_current_ownership_and_splits_counts_without_writing() -> None:
@@ -166,7 +161,7 @@ def test_local_adapter_reads_current_ownership_and_splits_counts_without_writing
         raise AssertionError(path)
     with patch.multiple(module, collect_paged_rest_items=read), patch.multiple(module.github_identity, configured_bot_logins=lambda: ('bot',)), patch.multiple(module.github_plan_claim, local_inventory=lambda *_a, **_kw: evidence()['inventory']):
         ctx = module.real_annotate_next_queue(rows, cli.next_args(repo='owner/repo'))
-    result = module.project_local_queue(rows, [], {})
+    result = module.project_local_queue(rows, [])
     assert [x['number'] for x in result['available_candidates']] == [1, 4]
     assert [x['number'] for x in result['waiting']] == [2]
     assert result['verification_only'] == result['scope_review'] == []
@@ -174,25 +169,12 @@ def test_local_adapter_reads_current_ownership_and_splits_counts_without_writing
     assert result['candidate_count'] == result['available_candidate_count'] == 2
     assert ctx['claim_required'] and not ctx['all_active_sessions_searched']
     assert len(observed_paths) == 2  # one ownership inventory per repo
-    hold = {'repository_holds': {'owner/repo': {'reason': 'Hold', 'evidence': ['Director instruction']}}}
-    assert not module.project_local_queue(rows, [], hold)['candidates']
-    reviewed_row = rows[0]
-    for state in ['waiting', 'ineligible', 'underway']:
-        review = {'state': state, 'reason': 'Caller checked current ownership/wait', 'evidence': ['Current thread'],
-                  'discussion_digest': reviewed_row['discussion']['digest']}
-        context = {'issues': {'owner/repo#1': review}}
-        assert not module.project_local_queue([reviewed_row], [], context)['available_candidates']
-        review['discussion_digest'] = 'obsolete discussion'
-        assert module.project_local_queue([reviewed_row], [], context)['available_candidates']
     counts = queue.coverage(rows, rows[:2], result)
     assert counts['active_inventory_count'] == 4 and counts['active_unevaluated_count'] == 2
     ambiguous = item('Evaluate remaining export scope.', actor='')
     ambiguous['queue'] = classify(ambiguous)
-    review = {'state': 'available', 'reason': 'Current source scope reviewed', 'evidence': ['Current thread'],
-              'ownership_complete': True, 'discussion_digest': ambiguous['discussion']['digest']}
-    context = {'issues': {'owner/repo#1': review}}
-    assert module.project_local_queue([ambiguous], [], context)['needs_status']
-    assert not module.project_local_queue([ambiguous], [], context)['available_candidates']
+    assert module.project_local_queue([ambiguous], [])['needs_status']
+    assert not module.project_local_queue([ambiguous], [])['available_candidates']
 
 
 def test_bounded_global_coverage_counts_active_discoveries_not_yet_read() -> None:
@@ -251,9 +233,9 @@ def test_repository_inventory_bound_can_be_widened_without_losing_held_work() ->
     raw[-1]["updated_at"] = "2026-08-22T00:00:00Z"
     args = cli.next_args()
     with patch.multiple(module, collect_paged_rest_items=read, load_direction=lambda *_: cli.DIRECTION), patch.multiple(module.github_identity, github_app_config=lambda: {}):
-        complete, context = module.real_discover_direction_work('someone/direction', args, selection_context={})
+        complete, context = module.real_discover_direction_work('someone/direction', args)
         args.repository_issue_limit = 1
-        limited, partial = module.real_discover_direction_work('someone/direction', args, selection_context={})
+        limited, partial = module.real_discover_direction_work('someone/direction', args)
     assert len(complete) == len(raw) and context['complete']
     assert len(limited) < len(complete) and not partial['complete']
     assert limited[0]['number'] == raw[-1]['number']
@@ -284,11 +266,6 @@ def test_clear_discovered_milestone_work_is_available_without_a_caller_snapshot(
     assert [entry['number'] for entry in result['available_candidates']] == [row['number']]
     assert result['available_candidates'][0]['category'] == 'milestone'
     assert result['available_candidates'][0]['claim_required']
-    current_review = {'state': 'available', 'category': 'milestone', 'ownership_complete': True,
-                      'discussion_digest': row['discussion']['digest'], 'reason': 'Current evidence', 'evidence': ['Fixture review']}
-    reviewed = direction.rank_portfolio_work(graph, [row], milestone_titles=['First'],
-               repository_waypoints={'owner/repo': ['First']}, selection_context={'issues': {'owner/repo#1': current_review}})
-    assert reviewed['available_candidates']
     row['discussion']['ancestry_complete'] = False
     assert not rank()['available_candidates']
     row['discussion']['ancestry_complete'] = True
@@ -364,22 +341,14 @@ def test_needs_status_survives_caller_reviews_and_milestone_projection() -> None
     row.update(queue=classify(row), direction_category="own_project", plan_status="active",
                overall_milestone_context={"state": "matched", "titles": ["First"]})
     row["discussion"]["ancestry_complete"] = True
-    context = {"issues": {"owner/repo#1": {"state": "available", "reason": "Reviewed", "evidence": ["Thread"],
-                "ownership_complete": True, "discussion_digest": row["discussion"]["digest"], "category": "own_project"}}}
     graph = {"candidates": [], "excluded": [], "dependency_context": {"complete": True}}
-    result = direction.rank_portfolio_work(graph, [row], milestone_titles=[], selection_context=context)
+    result = direction.rank_portfolio_work(graph, [row], milestone_titles=[])
     assert result["needs_status"] and not result["available_candidates"]
     assert result["verification_only"] == result["scope_review"] == []
     summary = direction.milestone_summary(["First"], completed=[], candidates=[], graph_waits=[],
         track_next_actions={}, needs_status=[row])
     assert summary[0]["state"] == "needs_status"
     assert summary[0]["needs_status"]
-    row["milestone"] = cli.milestone_data(1, "First", created_at="2026-01-01T00:00:00Z")
-    context["issues"]["owner/repo#1"]["state"] = "underway"
-    capacity = direction.tooling_capacity_context(graph, [row], milestone_titles=["First"], context=context,
-        repository_waypoints={"owner/repo": ["First"]}, coverage_complete=True)
-    assert not capacity["admitted"]
-    assert capacity["required"] == "current_next_actor"
 
 
 def test_adapter_uses_body_edit_time_for_the_current_actor() -> None:
@@ -401,7 +370,7 @@ def test_adapter_uses_body_edit_time_for_the_current_actor() -> None:
                         api_json=Mock(return_value=("bot", {}))):
         module.real_annotate_next_queue([row], cli.next_args(repo="owner/repo"))
     assert row["queue"]["state"] == "review"
-    assert not module.project_local_queue([row], [], {})["available_candidates"]
+    assert not module.project_local_queue([row], [])["available_candidates"]
     source = {"worker": "worker", "session": "session", "branch": "work/source", "claimed_at": "2026-10-29T01:10:00Z"}
     for state, marker in [
         ("waiting", wait.marker(wait.reviewed(evidence="Owner test needed", waiting_for="Owner test", ends_when="Owner records result"))),
@@ -431,7 +400,7 @@ def test_inherited_actor_waits_are_compact_and_visible_in_milestones() -> None:
             track_next_actions={})
         assert summary[0]["state"] == "waiting"
         assert not result["excluded"]
-        local = module.project_local_queue([row], [], {})
+        local = module.project_local_queue([row], [])
         assert not local["excluded"]
         assert local["waiting"][0]["reported_by"] == result["waiting"][0]["reported_by"] == row["url"]
         assert not result["waiting"][0]["non_external"]
@@ -459,6 +428,64 @@ def main() -> None:
         if name.startswith('test_'):
             test()
     print('next queue tests passed')
+
+
+def test_milestone_availability_flag_requires_complete_current_evidence() -> None:
+    row = item()
+    row.update(queue=classify(row), plan_status='active', via=[{'repo': 'owner/direction', 'number': 1}],
+               milestone=cli.milestone_data(1, 'First', created_at='2026-01-01T00:00:00Z'))
+    row['discussion']['ancestry_complete'] = True
+    graph = {'candidates': [row], 'excluded': [], 'dependency_context': {'complete': True}}
+    flag = 'all_listed_milestones_have_no_available_item'
+
+    def rank(complete: bool = True) -> dict:
+        return direction.rank_portfolio_work(graph, [], milestone_titles=['First'], coverage_complete=complete)
+
+    assert rank()[flag] is False
+    assert rank(False)[flag] is False
+    for state, expected in [('underway', True), ('waiting', True), ('needs_status', None), ('review', None)]:
+        row['queue']['state'] = state
+        result = rank()
+        assert result[flag] is expected, (state, result)
+        assert not result['available_candidates']
+        assert rank(False)[flag] is None
+    row['queue']['state'] = 'underway'
+    row['discussion']['complete'] = False
+    assert rank()[flag] is None
+    row['discussion']['complete'] = True
+    row['discussion']['ancestry_complete'] = False
+    assert rank()[flag] is None
+    row['discussion']['ancestry_complete'] = True
+    graph['dependency_context']['complete'] = False
+    assert rank()[flag] is None
+    graph['dependency_context']['complete'] = True
+    graph['candidates'] = []
+    graph['excluded'] = [row]
+    for exclusion in ['unknown_dependencies', 'unknown_ancestry', 'dependency_cycle', 'wait_review_required', 'stale_needs_review', 'scope_review_required']:
+        row['exclusion'] = exclusion
+        assert rank()[flag] is None
+    graph['excluded'] = []
+    assert rank()[flag] is True
+
+
+def test_global_flag_precedes_family_and_display_filters() -> None:
+    for family, other in [('codex', 'claude'), ('claude', 'codex')]:
+        root = cli.track('someone/direction', 1, 'First')
+        leaf = cli.global_issue('someone/business', 2, labels=[f'agent:{other}'],
+                                body='## Current Status\nNext actor: agent\nNext action: Implement the next item.')
+        edges = {(root['repo'], root['number']): cli.relationships(sub_issues=[leaf])}
+        with cli.global_fixture([root], [leaf], edges) as (module, result, _reads):
+            args = cli.next_args()
+            args.agent = family
+            args.limit = 0
+            def annotate(rows: list[dict], _args: object) -> dict:
+                for row in rows:
+                    row['queue'] = {'state': 'available'}
+                return {'repositories': {}}
+            module.annotate_next_queue = annotate
+            module.cmd_next(args)
+        assert not result['available_candidates']
+        assert result['all_listed_milestones_have_no_available_item'] is False
 
 
 if __name__ == '__main__':

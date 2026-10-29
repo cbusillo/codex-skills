@@ -200,7 +200,7 @@ class AgentTests(unittest.TestCase):
             self.assertFalse(result["candidates"])
             self.assertEqual([item["number"] for item in result["discovery_context"]["unevaluated_milestone_issues"]], [3])
             self.assertFalse(result["candidate_coverage"]["complete"])
-            self.assertFalse(result["tooling_capacity_context"]["admitted"])
+            self.assertIsNone(result["all_listed_milestones_have_no_available_item"])
             with next_tests.global_fixture([], [parent], edges, discovered=[*leaves, child]) as (module, result, _):
                 args.scan_limit = None
                 module.cmd_next(args)
@@ -208,34 +208,6 @@ class AgentTests(unittest.TestCase):
             self.assertFalse(result["discovery_context"]["unevaluated_count"])
 
 
-    def test_other_family_frontier_still_controls_capacity_admission(self):
-        for family, other in (("codex", "claude"), ("claude", "codex")):
-            roots = [next_tests.track("someone/direction", 1, "First"),
-                     next_tests.track("someone/direction", 2, "Second")]
-            leaves = [next_tests.global_issue("someone/business", n, labels=[f"agent:{assigned}", "plan:waiting"], waiting_for="Customer testing",
-                                              body="## Current Status\nWaiting for: Customer testing.")
-                      for n, assigned in ((10, other), (11, family))]
-            tool = next_tests.global_issue("someone/tools", 20, labels=[f"agent:{family}"])
-            edges = {(root["repo"], root["number"]): next_tests.relationships(sub_issues=[leaf])
-                     for root, leaf in zip(roots, leaves)}
-            with next_tests.global_fixture(roots, leaves, edges, discovered=[tool], clear_waits=[tool]) as (module, result, _):
-                args = next_tests.next_args(scan_limit=None)
-                args.agent = family
-                module.cmd_next(args)
-                items = {item["number"]: item for item in [*result["candidates"], *result["excluded"]]}
-                context = {"issues": {
-                    **{f"someone/business#{n}": next_tests.reviewed(items[n], "waiting", waiting_on="person")
-                       for n in (10, 11)},
-                    "someone/tools#20": next_tests.reviewed(items[20], category="repeated_stop_tooling"),
-                }}
-                with patch.object(module, "next_selection_context", return_value=context):
-                    module.cmd_next(args)
-                    self.assertTrue(result["tooling_capacity_context"]["admitted"])
-                    self.assertIn(20, [item["number"] for item in result["available_candidates"]])
-                    context["issues"]["someone/business#10"]["state"] = "underway"
-                    module.cmd_next(args)
-                    self.assertFalse(result["tooling_capacity_context"]["admitted"])
-                    self.assertNotIn(20, [item["number"] for item in result["available_candidates"]])
 
     def test_unknown_and_conflicting_assignment_require_resolution(self):
         self.assertIsNone(agent.exclusion({"labels": []}, None))

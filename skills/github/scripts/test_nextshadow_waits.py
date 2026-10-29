@@ -157,17 +157,6 @@ def test_structured_wait_text_is_data_even_when_it_looks_like_status_fields() ->
     assert not reported['agent_next']
 
 
-def test_caller_review_cannot_override_a_required_wait_review() -> None:
-    row = queue_tests.item()
-    row['discussion']['body'] = row['discussion']['body'].split(wait.PREFIX)[0]
-    for reason in ['wait_review_required', 'unreadable_ownership_or_wait', 'incomplete_discussion']:
-        row.update(queue={'state': 'review', 'reason': reason},
-                   via=[{'repo': 'owner/direction', 'number': 1}], milestone={'title': 'First'}, plan_status='active')
-        context = {'issues': {'owner/repo#1': cli.reviewed(row, ownership_complete=True)}}
-        result = direction.rank_portfolio_work({'candidates': [row], 'excluded': []}, [],
-            milestone_titles=['First'], selection_context=context)
-        assert not result['available_candidates']
-        assert result['candidates'][0]['review_required'] == reason
 
 
 def test_state_only_legacy_hold_is_visible_for_review() -> None:
@@ -193,17 +182,6 @@ def test_malformed_contributor_envelope_requires_wait_review() -> None:
     assert row['exclusion'] == 'wait_review_required'
 
 
-def test_wait_review_blocks_availability_but_preserves_conservative_caller_states() -> None:
-    row = queue_tests.item()
-    row.update(queue={'state': 'review', 'reason': 'wait_review_required'}, via=[{'repo': 'owner/direction', 'number': 1}], milestone={'title': 'First'}, plan_status='active')
-    for state in ['underway', 'waiting', 'ineligible']:
-        result = direction.rank_portfolio_work({'candidates': [row], 'excluded': []}, [], milestone_titles=['First'],
-            selection_context={'issues': {'owner/repo#1': cli.reviewed(row, state, ownership_complete=True)}})
-        assert not result['available_candidates']
-        if state == 'underway':
-            assert result['underway'] and not result['candidates']
-        else:
-            assert result['excluded'] and not result['candidates']
 
 
 def test_unspecified_state_only_holds_remain_visible_for_wait_review() -> None:
@@ -243,16 +221,6 @@ def test_short_references_need_observed_repository_identity() -> None:
     assert {(ref['repo'], ref['number']) for ref in refs} == {('cbusillo/launchplane', 2792), ('cbusillo/123', 15)}
 
 
-def test_service_wait_review_flag_blocks_available_without_cli_queue() -> None:
-    module = cli.load_module()
-    raw = cli.global_issue('owner/repo', 1, body='## Current Status\nState: Active.\nNext action: Implement export.\nWaiting for: None.')
-    record = {'version': 1, 'state': 'review', 'evidence': '', 'waits': []}
-    row = direction.evaluate_direction_node(raw, config=module.DEFAULT_CONFIG, focus=None, relationships=cli.relationships(), structured_wait=record)['item']
-    row.update(discussion=direction.discussion_snapshot(raw, [], complete=True), via=[{'repo': 'owner/direction', 'number': 1}], milestone={'title': 'First'})
-    result = direction.rank_portfolio_work({'candidates': [row], 'excluded': []}, [], milestone_titles=['First'],
-        selection_context={'issues': {'owner/repo#1': cli.reviewed(row, ownership_complete=True)}})
-    assert not result['available_candidates']
-    assert result['excluded'][0]['exclusion'] == 'wait_review_required'
 
 
 def test_bold_legacy_wait_keeps_its_invalid_milestone_finding() -> None:

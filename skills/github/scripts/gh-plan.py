@@ -5033,9 +5033,8 @@ def cmd_next(args: argparse.Namespace) -> None:
     if dependency_degraded_count:
         notes.append("dependency_reads_degraded")
     dependabot = next_dependabot_work([{"repo": repo}], scan_limit=args.scan_limit, limit=args.limit, comment_limit=getattr(args, "comment_limit", None) or 100)
-    selection_context = next_selection_context(args)
     queue_context = annotate_next_queue(candidates, args)
-    queue_result = project_local_queue(candidates, excluded, selection_context)
+    queue_result = project_local_queue(candidates, excluded)
     emit({
         "ok": True,
         "actor": actor,
@@ -5074,14 +5073,6 @@ def cmd_next(args: argparse.Namespace) -> None:
         "notes": notes,
         **dependabot,
     })
-
-
-def next_selection_context(args: argparse.Namespace) -> dict[str, Any]:
-    path = getattr(args, "selection_context", None)
-    try:
-        return github_direction_next.validate_selection_context(json.loads(pathlib.Path(path).read_text()) if path else {})
-    except (OSError, ValueError) as exc:
-        raise PlanError(f"Invalid selection context: {exc}") from exc
 
 
 def next_status_body_time(item: dict[str, Any], trusted: set[str]) -> str | None:
@@ -5173,15 +5164,11 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
             "repositories": {repo: {"complete": value["complete"], **value["coverage"]} for repo, value in evidence.items()}}
 
 
-def project_local_queue(candidates: list[dict[str, Any]], excluded: list[dict[str, Any]], context: dict[str, Any]) -> dict[str, Any]:
+def project_local_queue(candidates: list[dict[str, Any]], excluded: list[dict[str, Any]]) -> dict[str, Any]:
     groups: dict[str, Any] = {"candidates": [], "available_candidates": [], "underway": [], "verification_only": [], "scope_review": [], "needs_status": [], "waiting": [], "excluded": list(excluded)}
-    reviews = {key.casefold(): review for key, review in context.get("issues", {}).items()}
     for item in candidates:
-        hold = github_direction_next.repository_hold(context, item["repo"])
         state = (item.get("queue") or {}).get("state", "review")
-        if hold:
-            groups["excluded"].append({**item, "exclusion": "repository_held", "review": hold})
-        elif state in {"underway", "needs_status"}:
+        if state in {"underway", "needs_status"}:
             groups[state].append(item)
         elif state == "waiting":
             if item["queue"].get("reason") == "recorded_next_actor":
@@ -5189,16 +5176,6 @@ def project_local_queue(candidates: list[dict[str, Any]], excluded: list[dict[st
             else:
                 groups["excluded"].append({**item, "exclusion": "recorded_wait"})
         else:
-            review = reviews.get(f"{item['repo']}#{item['number']}".casefold(), {})
-            discussion = item.get("discussion") or {}
-            complete = discussion.get("complete")
-            if isinstance(complete, bool) and complete and review.get("discussion_digest") == discussion.get("digest"):
-                if review.get("state") == "underway":
-                    groups["underway"].append({**item, "availability": "underway", "review": review})
-                    continue
-                if review.get("state") in {"waiting", "ineligible"}:
-                    groups["excluded"].append({**item, "exclusion": "reviewed_wait" if review["state"] == "waiting" else "outside_owner_direction", "review": review})
-                    continue
             row = {**item, "availability": "available" if state == "available" else "needs_review"}
             groups["candidates"].append(row)
             if row["availability"] == "available":
@@ -5243,21 +5220,19 @@ def read_next_parent(repo: str, number: int) -> dict[str, Any] | None:
 
 
 def discover_direction_work(
-    repo: str, args: argparse.Namespace, *, selection_context: dict[str, Any],
-    capacity_evidence: bool = False,
+    repo: str, args: argparse.Namespace,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Inventory the current actor's owner repositories, including non-plan issues.
 
     No name/label heuristic can decide product vs tooling or override an owner
     hold. Return merged direction and explicit source coverage for that review.
     """
-    del capacity_evidence
     repo_limit = getattr(args, "repo_limit", None)
     issue_limit = getattr(args, "repository_issue_limit", None)
     coverage: dict[str, Any] = {
         "owner": repo.split("/")[0], "repository_limit": repo_limit,
         "issue_limit_per_repository": issue_limit, "repositories": [],
-        "complete": True, "capacity_complete": True, "inventory_truncated": False,
+        "complete": True, "inventory_truncated": False,
         "scope": "repositories accessible to the configured actor; owner repositories only",
         "outside_scope": ["repositories not accessible to this actor", "closed records", "active session inventory"],
     }
@@ -5278,9 +5253,6 @@ def discover_direction_work(
             return {**source, "exclusion": "other_owner"}, []
         if not repository_scope.includes_repository(repository, include_archived=getattr(args, "include_archived", False)) or repository.get("disabled"):
             return {**source, "exclusion": "archived_or_disabled"}, []
-        hold = github_direction_next.repository_hold(selection_context, name)
-        if hold:
-            source.update(hold=hold, exclusion="repository_held")
         try:
             source["direction"] = load_direction(name)
             reader = next_graph_reader(name)
@@ -5332,7 +5304,7 @@ def discover_direction_work(
         coverage["repositories"].append(source_context)
         coverage["complete"] &= source_context["complete"]
         ordered.extend(repository_records)
-    coverage.update(capacity_complete=coverage["complete"], issue_inventory_count=sum(not item.get("pull_request") for item in ordered),
+    coverage.update(issue_inventory_count=sum(not item.get("pull_request") for item in ordered),
                     pull_request_inventory_count=sum(bool(item.get("pull_request")) for item in ordered))
     return ordered, coverage
 
@@ -5602,7 +5574,6 @@ def next_live_breakage(repo: str, args: argparse.Namespace,
 def direction_next(args: argparse.Namespace, repo: str) -> None:
     assert NEXT_READS is not None
     NEXT_READS.start_phase("direction_context")
-    selection_context = next_selection_context(args)
     direction_text = load_direction(repo)
     titles = direction_milestone_titles(direction_text or "")
     if direction_text is None or not re.search(r"(?m)^##\s+Milestones\s*$", direction_text):
@@ -5650,7 +5621,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             "recommended_next_action": CURRENT_RETRY_FIELDS["recommended_next_action"], **evidence})
 
     NEXT_READS.start_phase("repository_inventory")
-    complete_inventory, inventory_context = discover_direction_work(repo, args, selection_context=selection_context) if scope is None else (
+    complete_inventory, inventory_context = discover_direction_work(repo, args) if scope is None else (
         [], {"complete": False, "exclusion": "explicit_milestone_scope"})
     NEXT_READS.start_phase("live_breakage_inventory")
     if NEXT_READS.inventory:
@@ -5772,7 +5743,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         reason = item.get("exclusion")
         wait = github_direction_next.milestone_wait_evidence(item, node.get("status_text") or "", titles)
         listed_wait = reason in {"waiting", "wait_review_required"} and ((item.get("milestone") or {}).get("title") in titles or not wait["valid"])
-        if ((not reason or capacity_evidence or listed_wait)
+        if ((not reason or listed_wait)
                 and reason not in {"completed", "pull_request", "unknown_dependencies"}):
             if "parent" not in seeds.get(key, {}):
                 parent_observation(key)
@@ -5930,14 +5901,6 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     inventory: list[dict[str, Any]] = []
     unevaluated_milestones: list[dict[str, Any]] = []
     discovery: dict[str, Any] = {"complete": False, "exclusion": "explicit_milestone_scope"}
-    preflight = github_direction_next.tooling_capacity_context(
-        ranked, [], milestone_titles=titles, context=selection_context,
-        repository_waypoints={}, coverage_complete=graph_coverage["complete"],
-    )
-    capacity_evidence = bool(preflight["admitted"] or (preflight["reason"] in {"no_milestone_waits", "milestone_names_no_person"} and any(
-        review.get("state") == "underway" or (review.get("state") == "waiting" and review.get("waiting_on") in {"person", "event"})
-        for review in selection_context.get("issues", {}).values()
-    )))
     if scope is None:
         inventory = [item for item in complete_inventory if not item.get("pull_request")]
         discovery = inventory_context
@@ -5963,35 +5926,30 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             repository_waypoints=waypoints, director_owner=repo.split("/")[0], bot_logins=client_bot_logins,
         ) for item in inventory]
         scanned = github_direction_next.discovery_scan(
-            inventory, args.scan_limit, selection_context,
-            agent=github_agent.running_agent(getattr(args, "agent", None)),
+            inventory, args.scan_limit,
         )
         scanned_keys = {(item["repo"].casefold(), item["number"]) for item in scanned}
         skipped_counts: dict[str, int] = {}
-        capacity_unevaluated = len(inventory) - len(scanned)
+        unevaluated = len(inventory) - len(scanned)
         for item in inventory:
             if (item["repo"].casefold(), item["number"]) not in scanned_keys:
                 # Inventory already identifies title-matched milestone work;
                 # an ordinary scan bound must not erase that known frontier.
                 if (item.get("milestone") or {}).get("title") in titles or item.get("client_request"):
                     unevaluated_milestones.append(compact_list_issue(item["repo"], item))
-                if not github_direction_next.repository_hold(selection_context, item["repo"]):
-                    skipped_counts[item["repo"]] = skipped_counts.get(item["repo"], 0) + 1
+                skipped_counts[item["repo"]] = skipped_counts.get(item["repo"], 0) + 1
         discovery.update(
             evaluated=len(scanned), scan_limit=args.scan_limit,
-            live_breakage_evaluated=sum(github_direction_next.is_live_breakage(item) and not github_direction_next.repository_hold(selection_context, item["repo"]) for item in scanned),
+            live_breakage_evaluated=sum(github_direction_next.is_live_breakage(item) for item in scanned),
             unevaluated_count=sum(skipped_counts.values()),
-            capacity_unevaluated_count=capacity_unevaluated,
             unevaluated_milestone_issues=unevaluated_milestones,
-            held_scan_limit=args.scan_limit,
             evaluation_note=(f"Checked {len(scanned)} of {len(inventory)} discovered open issues outside the evaluated milestone graph. "
                              "Evaluation stopped early; raise --scan-limit to check more."
-                             if capacity_unevaluated else None),
+                             if unevaluated else None),
             unevaluated_repositories=[{"repo": name, "issue_count": count} for name, count in sorted(skipped_counts.items())],
         )
         discovery["parent_limit_per_issue"] = 10
         discovery["complete"] &= not discovery["unevaluated_count"]
-        discovery["capacity_complete"] = discovery.get("capacity_complete", True) and not capacity_unevaluated and discovery["complete"]
         NEXT_READS.start_phase("discovery_evaluation")
         # All current inventory seeds exist before concurrent node observations.
         seeds.update({(raw["repo"].casefold(), raw["number"]): raw for raw in scanned})
@@ -6012,11 +5970,10 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             item: dict[str, Any] = {**node["item"], "source": "repository_discovery"}
             original_exclusion = item.get("exclusion")
             ordinary_discussion_complete = bool((item.get("discussion") or {}).get("complete"))
-            held = github_direction_next.repository_hold(selection_context, item["repo"])
             status_text = node.get("status_text") or ""
             wait_evidence = github_direction_next.milestone_wait_evidence(item, status_text, titles)
             listed_wait = original_exclusion in {"waiting", "wait_review_required"} and ((item.get("milestone") or {}).get("title") in titles or not wait_evidence["valid"])
-            if (not original_exclusion or capacity_evidence or listed_wait) and item.get("exclusion") not in {"completed", "pull_request", "unknown_dependencies"}:
+            if (not original_exclusion or listed_wait) and item.get("exclusion") not in {"completed", "pull_request", "unknown_dependencies"}:
                 exclusion = item.get("exclusion")
                 item = with_ancestry(item)
                 preserve_ancestry = exclusion in {"waiting", "wait_review_required"} and (
@@ -6028,12 +5985,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
                     if exclusion != "parent_waiting":
                         item.pop("waiting_on_parent", None)
             if not (item.get("discussion") or {}).get("complete"):
-                discovery["capacity_complete"] = False
-                if not held and (not original_exclusion or not ordinary_discussion_complete):
+                if not original_exclusion or not ordinary_discussion_complete:
                     discovery["complete"] = False
-            if held:
-                discoveries.append(item)
-                continue
             if item.get("exclusion"):
                 ranked["excluded"].append(item)
                 reports = node.get("waiting") or []
@@ -6047,22 +6000,19 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
                         "reported_by": item["url"], "reported_at": item.get("updated_at"),
                     })
                 if item["exclusion"] in {"unknown_dependencies", "unknown_ancestry"}:
-                    discovery["capacity_complete"] = False
-                    if not held and (original_exclusion not in {"waiting", "wait_review_required"} or not ordinary_discussion_complete
-                                     or (item.get("milestone") or {}).get("title") in titles):
+                    if (original_exclusion not in {"waiting", "wait_review_required"} or not ordinary_discussion_complete
+                            or (item.get("milestone") or {}).get("title") in titles):
                         discovery["complete"] = False
             else:
                 discoveries.append(item)
         if len(evaluated_discoveries) < len(scanned):
             omitted = scanned[len(evaluated_discoveries):]
             for raw in omitted:
-                if not github_direction_next.repository_hold(selection_context, raw["repo"]):
-                    skipped_counts[raw["repo"]] = skipped_counts.get(raw["repo"], 0) + 1
+                skipped_counts[raw["repo"]] = skipped_counts.get(raw["repo"], 0) + 1
                 if (raw.get("milestone") or {}).get("title") in titles or raw.get("client_request"):
                     unevaluated_milestones.append(compact_list_issue(raw["repo"], raw))
-            discovery.update(complete=False, capacity_complete=False, time_budget_limited=True, evaluated=len(evaluated_discoveries),
+            discovery.update(complete=False, time_budget_limited=True, evaluated=len(evaluated_discoveries),
                 unevaluated_count=sum(skipped_counts.values()),
-                capacity_unevaluated_count=capacity_unevaluated + len(omitted),
                 unevaluated_repositories=[{"repo": name, "issue_count": count} for name, count in sorted(skipped_counts.items())],
                 evaluation_note="Global next reserved its remaining time for wait/ownership evidence; raise --time-budget to inspect remaining discoveries.")
     # Marked incidents can be decomposed outside both the ordinary scan and
@@ -6073,7 +6023,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         incident_node = read_node(issue_repo, number)
         incident_item = incident_node["item"]
         exclusion = incident_item.get("exclusion")
-        if (exclusion in {None, "blocked_by_open_dependency", "delegated_to_open_sub_issues"} or capacity_evidence) and exclusion not in {"completed", "pull_request", "unknown_dependencies"}:
+        if (exclusion in {None, "blocked_by_open_dependency", "delegated_to_open_sub_issues"}) and exclusion not in {"completed", "pull_request", "unknown_dependencies"}:
             incident_item = with_ancestry(incident_item)
             if exclusion and exclusion not in {"blocked_by_open_dependency", "delegated_to_open_sub_issues"}:
                 incident_item["exclusion"] = exclusion
@@ -6091,9 +6041,6 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     for item in incidents["items"]:
         if not (item.get("discussion") or {}).get("complete"):
             discovery["complete"] = False
-            discovery["capacity_complete"] = False
-        if item.get("exclusion") in {"unknown_dependencies", "unknown_ancestry"}:
-            discovery["capacity_complete"] = False
         incident_key = (item["repo"].casefold(), item["number"])
         if incident_key in existing:
             existing[incident_key]["incident_via"] = item["incident_via"]
@@ -6171,8 +6118,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         if github_next_queue.own_project(entry["repo"], own_projects, repo.split("/")[0]):
             entry["direction_category"] = "own_project"
     portfolio = github_direction_next.rank_portfolio_work(
-        ranked, discoveries, milestone_titles=titles, selection_context=selection_context,
-        coverage_complete=scope is None and graph_coverage["complete"] and not unevaluated_milestones and not incomplete_milestone_sources,
+        ranked, discoveries, milestone_titles=titles,
+        coverage_complete=scope is None and graph_inventory_complete and graph_coverage["complete"] and discovery.get("complete") is True,
         repository_clients=client_records, director_owner=repo.split("/")[0], bot_logins=client_bot_logins,
         reference_repositories={entry["repo"] for entry in list(seeds.values())} | {entry["repo"] for entry in discovery.get("repositories", [])},
         repository_milestones={source["repo"]: direction_milestone_titles(source["direction"]) if source.get("direction") else None for source in discovery.get("repositories", []) if isinstance(source.get("repo"), str)},
@@ -7589,7 +7536,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--comment-limit", type=positive_limit, help="Comments per evaluated issue (default all)")
     p.add_argument("--read-workers", type=positive_limit, choices=range(1, 17), default=8, help="Global next: concurrent read workers (default %(default)s)")
     p.add_argument("--time-budget", type=positive_limit, default=0, help="Global next: optional read deadline in seconds (default none)")
-    p.add_argument("--selection-context", help="Current owner holds and issue review evidence JSON; never a durable plan")
     p.set_defaults(func=cmd_next)
 
     p = sub.add_parser("close", help="Close a completed or not-planned plan safely")
