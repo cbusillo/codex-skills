@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export DOCKER_RAMDISK=1
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts /run /sys/fs/cgroup
+mount -t devpts devpts /dev/pts
+mount -t cgroup2 none /sys/fs/cgroup
+ip link set lo up
+for module in virtio_pci virtio_blk 9pnet_virtio 9p ext4 overlay veth bridge br_netfilter; do
+    modprobe "$module"
+done
+mount -t 9p -o trans=virtio,version=9p2000.L workspace /workspace
+mount -t 9p -o trans=virtio,version=9p2000.L control /native/control
+mount -t ext4 /dev/vda /var/lib/docker
+exec python3 /native/guest.py
