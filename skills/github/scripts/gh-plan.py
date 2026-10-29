@@ -4277,12 +4277,20 @@ def cmd_update_section(args: argparse.Namespace) -> None:
             new_text = read_body(args)
         preparation_step = "input_validation"
         if args.section.casefold() == "current status":
+            previous_status = issue_plan_sections(issue).get("Current Status", "")
+            unchanged_actor = ([value for _, value in github_plan_next_actor.fields(new_text)] ==
+                               [value for _, value in github_plan_next_actor.fields(previous_status)])
             if actor_only:
                 next_actor = github_plan_next_actor.validate(args.next_actor)
+            elif getattr(args, "next_actor", None) is None and unchanged_actor:
+                next_actor = None
             elif getattr(args, "next_actor", None) is not None or github_plan_next_actor.read(new_text) is not None:
                 next_actor = github_plan_next_actor.resolve(new_text, getattr(args, "next_actor", None))
             else:
-                next_actor = github_plan_next_actor.read(issue_plan_sections(issue).get("Current Status", ""))
+                try:
+                    next_actor = github_plan_next_actor.read(previous_status)
+                except ValueError:
+                    next_actor = None
             if next_actor is not None:
                 new_text = github_plan_next_actor.write(new_text, next_actor)
         elif getattr(args, "next_actor", None) is not None:

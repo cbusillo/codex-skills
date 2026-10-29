@@ -80,6 +80,14 @@ class SectionTests(unittest.TestCase):
         status = PLAN.section_map(PLAN.template_body("New work"))["Current Status"]
         self.assertEqual(PLAN.github_plan_next_actor.read(status), "agent")
 
+    def test_legacy_status_rewrites_preserve_unchanged_narrative_actor(self) -> None:
+        previous = "Next actor: Supervisor routes the PR."
+        self.issue["body"] += "\n## Current Status\n\nState: Active.\n" + previous
+        self.issue["state"] = "closed"
+        code, _result, edit, errors = self.run_update("--body", "State: Done.\n" + previous, section="Current Status")
+        self.assertEqual(code, 0, errors)
+        self.assertIn(previous, edit.call_args.kwargs["body"])
+
     def setUp(self) -> None:
         self.issue: dict[str, Any] = {
             "repo": "owner/repo", "number": 42, "title": "Fixture", "state": "open",
