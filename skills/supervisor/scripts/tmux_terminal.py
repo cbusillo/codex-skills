@@ -486,6 +486,8 @@ async def operate(args):
             if choice:
                 result["account"] = account_choice.public(choice)
             iterm_tab.source_launch_metadata(result, choice)
+            progress.update(phase="register_ledger", launch=result)
+            await iterm_tab.register_fresh_launch(args, result, choice)
             results.append(result)
         except Exception as error:
             if launch_script is not None and progress["tab_id"] is None:

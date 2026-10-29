@@ -163,6 +163,7 @@ class Ingress:
         self.upstream = closure.daemon_endpoint(home)
         self.launch_metadata = None
         self.child_tty = "?"
+        self.launch_receipt: Path | None = None
 
     def exact_resume(self, message):
         params = message.get("params")
@@ -300,6 +301,12 @@ class Ingress:
                                     except (OSError, ValueError) as error:
                                         raw = json.dumps({"id": identity, "error": {"code": -32603,
                                             "message": "native thread start succeeded but its ownership lease was not created: " + str(error)}})
+                                    if owned and isinstance(thread, dict) and self.launch_receipt and self.launch_metadata:
+                                        try:
+                                            self.publish_launch(thread)
+                                        except (OSError, ValueError) as error:
+                                            self.launch_receipt = None
+                                            print("native start succeeded but launch receipt publication failed: " + str(error), file=sys.stderr)
                                 if action_method not in closure.ROUTED_METHODS:
                                     for target in guarded | owned:
                                         closure.set_action_pending(target, True, method=action_method, home=self.home)
@@ -334,11 +341,56 @@ class Ingress:
                 leases.clear()
 
 
-async def run_client(home: Path, native: list[str], *, session: str | None = None) -> int:
+    def publish_launch(self, thread: dict) -> None:
+        destination = self.launch_receipt
+        if destination is None or self.launch_metadata is None:
+            raise ValueError("native launch receipt was not requested")
+        path = Path(thread.get("path") or "/").resolve()
+        if not path.is_relative_to((self.home / "sessions").resolve()):
+            payload = {"error": "started native transcript is outside the selected home or unavailable"}
+        else:
+            payload = {**self.launch_metadata, "session_id": thread["id"], "transcript": str(path),
+                       "pid": self.launch_metadata["launch_pid"], "tty": self.child_tty}
+        with tempfile.NamedTemporaryFile("w", dir=destination.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(payload, stream)
+        try:
+            os.replace(temporary, destination)
+            self.launch_receipt = None
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def read_launch_receipt(path: Path) -> dict:
+    receipt = json.loads(path.expanduser().read_text())
+    if not isinstance(receipt, dict):
+        raise ValueError("native launch receipt must be an object")
+    if receipt.get("error"):
+        raise ValueError(str(receipt["error"]))
+    if (any(not isinstance(receipt.get(key), str) or not receipt[key] for key in (
+            "session_id", "codex_home", "transcript", "launch_generation", "launch_started_at", "tty"))
+            or type(receipt.get("launch_pid")) is not int or receipt["launch_pid"] <= 0
+            or receipt.get("pid") != receipt["launch_pid"]):
+        raise ValueError("native launch receipt identity is incomplete")
+    require_native_identity(receipt["session_id"])
+    home = Path(receipt["codex_home"]).resolve()
+    transcript = Path(receipt["transcript"]).resolve()
+    if not transcript.is_relative_to((home / "sessions").resolve()):
+        raise ValueError("native launch transcript is outside the selected home")
+    with transcript.open() as stream:
+        header = json.loads(stream.readline())
+    if (not isinstance(header, dict) or header.get("type") != "session_meta"
+            or not isinstance(header.get("payload"), dict) or header["payload"].get("id") != receipt["session_id"]):
+        raise ValueError("native launch transcript identity differs from receipt")
+    return receipt
+
+
+async def run_client(home: Path, native: list[str], *, session: str | None = None, launch_receipt: Path | None = None) -> int:
     """Run one TUI through a private ingress; never start or restart its daemon."""
     codex_auth_health.require_usable(home)
     from websockets.asyncio.server import unix_serve
     ingress = Ingress(home)
+    ingress.launch_receipt = launch_receipt
     import stat
     source = ingress.upstream.stat()
     if not stat.S_ISSOCK(source.st_mode) or source.st_uid != os.getuid() or source.st_mode & 0o022:
@@ -373,7 +425,7 @@ async def run_client(home: Path, native: list[str], *, session: str | None = Non
                         ingress.launch_metadata = {key: proxy[key] for key in (
                             "codex_home", "launch_pid", "launch_generation", "launch_started_at")}
                         ingress.child_tty = os.ttyname(0).removeprefix("/dev/") if os.isatty(0) else "?"
-                        return await asyncio.to_thread(child.wait)
+                        return int(await asyncio.to_thread(child.wait))
                     finally:
                         if child.poll() is None:
                             child.terminate()
@@ -383,3 +435,4 @@ async def run_client(home: Path, native: list[str], *, session: str | None = Non
                     closure.remove_registration(os.getpid(), proxy["launch_generation"])
                 except (OSError, ValueError) as error:
                     print("native client cleanup incomplete: " + str(error), file=sys.stderr)
+    raise ValueError("native client lifecycle ended without an exit code")
