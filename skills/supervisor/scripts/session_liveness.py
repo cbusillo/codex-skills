@@ -88,6 +88,11 @@ def process_absent(pid):
     return False
 
 
+def source_harness(argv: list[str] | None, harness: str | None = None) -> bool:
+    return bool(argv and (harness_family(argv[0]) in ({harness} if harness else {"codex", "claude"})
+                         or Path(argv[0]).name in {"codex-session.py", "codex_session_proxy.py"}))
+
+
 def idle_terminal_command(command):
     try:
         argv = shlex.split(command)
@@ -543,10 +548,7 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
         owner_known = replacement_owner is not None and replacement_owner(pid)
         if replacement_owner is not None and not owner_known:
             raise ValueError("process belongs to no verified new TTY owner; terminal kept")
-        if scope == "session" and argv and (
-            harness_family(argv[0]) in ({entry["harness"]} if entry.get("harness") else {"codex", "claude"})
-            or Path(argv[0]).name in {"codex-session.py", "codex_session_proxy.py"}
-        ):
+        if scope == "session" and source_harness(argv, entry.get("harness")):
             explicit_other = native_uuid(exact_resume) is not None
             noninteractive = command_kind == "exec"
             if not (explicit_other or noninteractive

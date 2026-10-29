@@ -5,12 +5,67 @@
 # ///
 import argparse
 import json
+import time
 from pathlib import Path
 
+from capacity_retry import load_state, retry_status
 from check_changes import changes
-from finished_map import closeout_request
-from session_record import load_ledger
-from status import snapshot
+from session_record import load_ledger, session_status
+
+
+def snapshot(ledger: Path, capacity_state: Path | None = None, *, entries: list[dict] | None = None) -> list[dict]:
+    state = load_state(capacity_state) if capacity_state else None
+    results = []
+    for entry in load_ledger(ledger) if entries is None else entries:
+        try:
+            result = session_status(entry)
+            result["idle_seconds"] = max(0, int(time.time() - result["mtime"]))
+            if state is not None:
+                result["capacity_retry"] = retry_status(entry, result, state)
+            results.append(result)
+        except (OSError, ValueError, TypeError) as error:
+            results.append({"session_id": entry["session_id"], "error": str(error)})
+    return results
+
+
+class SessionAbsent(ValueError):
+    pass
+
+
+def closeout_request(entry: dict, status: dict) -> dict | None:
+    if entry.get("supervisor_owned") is not True or not status["safe_verdict"] or status["background_tasks"]:
+        return None
+    return {
+        "action": "verify_finished_session",
+        "session_id": entry["session_id"],
+        "harness": entry["harness"],
+        "handoff_url": entry.get("handoff_url"),
+        "verdict_at": status["timestamp"],
+        "procedure": "skills/supervisor/SKILL.md",
+    }
+
+
+def candidates(ledger: Path, session_id: str | None = None) -> list[dict]:
+    entries = load_ledger(ledger)
+    if session_id is not None:
+        entries = [entry for entry in entries if entry["session_id"] == session_id]
+        if len(entries) != 1:
+            raise SessionAbsent("notice must match exactly one native ledger session")
+    results = snapshot(ledger, entries=entries)
+    for entry, result in zip(entries, results, strict=True):
+        if "error" in result:
+            result["candidate"] = False
+            continue
+        result["closeout_request"] = closeout_request(entry, result)
+        result["candidate"] = result["closeout_request"] is not None
+        result["closeout_blockers"] = (
+            result["background_tasks"] if entry.get("supervisor_owned") is True and result["safe_verdict"] else []
+        )
+        if result["closeout_blockers"]:
+            result["next_action"] = "ask_worker_to_resolve_background_tasks"
+        result["handoff_url"] = entry.get("handoff_url")
+        result["needs_verification"] = ["issue handoff", "process and tab identity", "input line", "pending prompt"]
+    return results
 
 
 def check(ledger: Path, state: Path, capacity_state: Path | None = None) -> dict:
@@ -21,7 +76,7 @@ def check(ledger: Path, state: Path, capacity_state: Path | None = None) -> dict
     if state.resolve() in sources:
         raise ValueError("check state must be separate from its sources")
     rows = []
-    for result in snapshot(ledger, capacity_state):
+    for result in snapshot(ledger, capacity_state, entries=list(entries.values())):
         entry = entries[result["session_id"]]
         row = {
             "session_id": result["session_id"],

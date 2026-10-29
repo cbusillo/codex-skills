@@ -29,6 +29,7 @@ def changes(rows: list[dict], path: Path, scope: list[str], *, key: str, complet
         or row.get("error")
         or row.get("unread")
         or row.get("read") is False
+        or row.get("resurface")
     ]
     if complete:
         selected.extend({key: identity, "removed": True} for identity in before.keys() - fingerprints.keys())

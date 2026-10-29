@@ -191,6 +191,14 @@ class StartupFailure(ValueError):
         super().__init__(reason)
 
 
+class CloseUncertain(ValueError):
+    pass
+
+
+def empty_agent_input(readback: dict) -> bool:
+    return (readback.get("input_line") or {}).get("style") in {"empty", "dim"}
+
+
 def startup_prompt_window(choice):
     """Only Codex shows the hook-review prompt; other launches keep the short check."""
     return CODEX_PROMPT_WINDOW if choice and choice["provider"] == "openai" else 0.0
@@ -1637,6 +1645,36 @@ async def register_fresh_launch(args: argparse.Namespace, result: dict, choice: 
 
 
 
+def register_claude_launch(launch: dict, native: dict, ledger: Path) -> dict:
+    import session_liveness
+    import session_record
+    existing = [row for row in (session_record.load_ledger(ledger) if ledger.exists() else []) if row["session_id"] == native["session_id"]]
+    if existing:
+        entry = session_record.terminal_entry(ledger, "tmux_session_id", launch["session_id"])
+        if (len(existing) != 1 or entry["session_id"] != native["session_id"] or entry["harness"] != "claude"
+                or entry["tty"] != launch["tty"].removeprefix("/dev/")):
+            raise ValueError("native Claude identity belongs to another terminal")
+        return entry
+    deadline = time.monotonic() + LAUNCH_TIMEOUT
+    while True:
+        paths = list((Path(native["home"]) / "projects").glob("*/" + native["session_id"] + ".jsonl"))
+        if paths or time.monotonic() >= deadline:
+            break
+        time.sleep(0.2)
+    if len(paths) != 1:
+        raise ValueError("exact fresh Claude transcript is unavailable; preserve its terminal")
+    processes = [row for row in session_liveness.inventory() if row[1] == launch["tty"].removeprefix("/dev/")
+                 and session_liveness.harness_family((session_liveness.harness_arguments(row[2]) or [""])[0]) == "claude"]
+    processes = [row for row in processes if row[0] == launch["pid"]] or processes
+    if len(processes) != 1:
+        raise ValueError("fresh Claude process identity is ambiguous")
+    entry = {**launch, "session_id": native["session_id"], "tmux_session_id": launch["session_id"],
+             "transcript": str(paths[0]), "pid": processes[0][0], "harness": "claude", "supervisor_owned": True}
+    session_record.session_status(entry)
+    append_launch_ledger(ledger, entry)
+    return entry
+
+
 def cancel_unsubmitted_gui(choice, progress):
     if choice and "gui" in choice and progress["submission"] == "not_attempted":
         gui = choice["gui"]
@@ -1687,7 +1725,10 @@ async def close_session(app, session_id, ledger):
     closing_session, after = await verify()
     if after != before:
         raise ValueError("terminal state changed during verification; tab kept")
-    await closing_session.async_close(force=False)
+    try:
+        await closing_session.async_close(force=False)
+    except Exception as error:
+        raise CloseUncertain("native close may have been sent; inspect the exact terminal without replay") from error
     return {"session_id": session_id, "close_requested": True, "readback_required": True}
 
 
@@ -2027,6 +2068,8 @@ def main():
             print(json.dumps(error.detail, indent=2))
             parser.exit(1, f"SEND FAILED: {error}; read and clear verified input before another send\n")
         except (ValueError, OSError, subprocess.SubprocessError) as error:
+            if args.command in {"new", "close"}:
+                print(json.dumps({"ok": False, "mutation_started": isinstance(error, CloseUncertain), "error": str(error)}))
             parser.exit(1, f"refused: {error}\n")
         return
     import iterm2
@@ -2042,8 +2085,12 @@ def main():
             print(json.dumps(error.detail, indent=2))
             parser.exit(1, f"SEND FAILED: {error}; read and clear verified input before another send\n")
         except (ValueError, OSError, subprocess.SubprocessError) as error:
+            if args.command in {"new", "close"}:
+                print(json.dumps({"ok": False, "mutation_started": isinstance(error, CloseUncertain), "error": str(error)}))
             parser.exit(1, f"refused: {error}\n")
         except iterm2.rpc.RPCException:
+            if args.command == "close":
+                print(json.dumps({"ok": False, "mutation_started": False, "error": "native preflight read failed"}))
             parser.exit(1, "iTerm RPC failed; preserve the target and read list before any retry\n")
 
     iterm2.run_until_complete(connected)

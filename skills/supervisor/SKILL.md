@@ -7,15 +7,6 @@ resources:
   - path: references/routine-check.md
     kind: reference
     description: Short entry for recurring checks without skill reloads.
-  - path: scripts/compact_check.py
-    kind: script
-    description: Read each ledger session once and emit changed pointers or outstanding actions and coverage gaps.
-  - path: scripts/session_closeout.py
-    kind: script
-    description: Run normal finished-session gates with a compact receipt and no uncertain mutation replay.
-  - path: scripts/catalog_landing.py
-    kind: script
-    description: Verify a catalog landing through runtime reconciliation and fresh native sessions on both harnesses.
   - path: scripts/heavy_run.py
     kind: script
     description: Queue capped local Docker runs through cleanup with private evidence.
@@ -86,21 +77,6 @@ resources:
     kind: reference
     description: Rules every Supervisor brief carries by link, and the milestone lead brief template.
 commands:
-  - name: supervisor-check
-    source: skill
-    resource_path: scripts/compact_check.py
-    example_argv: ["uv", "run", "scripts/compact_check.py", "--ledger", "<ledger.json>", "--state", "<check-state.json>"]
-    purpose: Print changed session pointers, outstanding actions and current coverage without response contents.
-  - name: supervisor-closeout
-    source: skill
-    resource_path: scripts/session_closeout.py
-    example_argv: ["uv", "run", "scripts/session_closeout.py", "--ledger", "<ledger.json>", "--session-id", "<native-id>", "--supervisor-session", "<supervisor-id>", "--owner", "OWNER", "--evidence", "<private-evidence>"]
-    purpose: Close one normal finished session or return its first failed gate with private evidence.
-  - name: supervisor-verify-landing
-    source: skill
-    resource_path: scripts/catalog_landing.py
-    example_argv: ["uv", "run", "scripts/catalog_landing.py", "--config", "<private-landing.json>", "--evidence", "<private-evidence>"]
-    purpose: Reconcile and verify a catalog landing through both fresh native harnesses.
   - name: supervisor-heavy-run
     source: skill
     resource_path: scripts/heavy_run.py
@@ -349,95 +325,89 @@ under the shared queue rules. Say whether each handoff contains a new lesson.
 
 ## Harnesses
 
-Use the [tmux launch procedure](references/helpers.md#tmux-launches) for new
-workers on `tmux -L supervisor`; existing iTerm workers retain their backend.
-Detaching a view leaves workers running. Never kill the server to disconnect.
-A read-only view cannot accept the Director's answers: say at launch that you
-will relay them, then use exact-session sends at a verified idle prompt.
-For Codex, use the managed daemon ingress and `codex-session.py queue` with the
-source home; it invalidates closure under the ownership lease. For stale queued
-input, read [recovery](references/helpers.md#release-a-verified-finished-session)
-and use explicit queue-cancel preview and ID/digest apply. Cancellation does
-not prove completion or release claims. A refusal never permits switching accounts.
-Codex as Supervisor is expected to work; claim verification only after a run is
-recorded on the handoff record. Keep the brief, issue and current step through compaction.
+Use [tmux](references/helpers.md#tmux-launches) for new workers; existing iTerm
+sessions retain their backend. Detaching does not stop workers; never kill the
+server to disconnect. Tell the Director when the view is read-only and relay
+answers to verified idle exact sessions. Codex uses managed ingress and guarded
+`codex-session.py queue` with its source home. Stale queued input uses explicit
+ID/digest cancellation under the recovery procedure, never a completion proof.
+Refusal never permits account switching. Claim Codex Supervisor verification
+only after a recorded run. Preserve brief, issue and current step through compaction.
 
 ## Accounts, Pace, And Launch Effort
 
-Follow Context Panel's account choice and capacity. Never apply a banked reset.
-Ask the Director to apply one only when every account of that provider,
-including use-last, has 0% remaining. Relay reset-expiry notices within 24 hours;
-they do not authorize an early reset. Fill productive capacity with soonest
-expiries first. Medium is the default launch effort; use high for authorization,
-credentials, security, policy, guidance and hard debugging.
+Follow Context Panel's account/capacity choice. Never apply banked resets;
+ask the Director only when every provider account including use-last is empty.
+Relay expiry notices within 24 hours without treating them as early reset
+authority. Fill productive capacity, soonest expiry first. Default launch effort
+is medium; use high for authorization, credentials, security, policy, guidance
+and hard debugging.
 
 ## The Pattern
 
-1. Before briefing product work or asking about it, run `product_summary.py`
-   against a current default checkout. Group one repository and related
-   subsystem work per brief and PR. Use `github-plan` to prepare a canonical
-   parent, recheck live ownership, and claim the parent and each included issue
-   on the same branch before moving native children or creating a worktree.
-   On refusal, reconcile and release only newly made group claims. Verify both
-   parents after a move; restore a missing original link after a failed move.
-2. Every worker has an anchor in its repository, including sweeps and checks.
-   Use `Anchor and claim:` or `Read-only anchor:` and one `Admission:` line
-   with the kind and exact evidence URLs. A held issue stays held until its
-   actual blocker changes; release, a new timestamp or a split does not clear it.
-   For retained work, supply `Resume from:` with the source claim ID or URL;
-   require the authored release and qualified handoff. Read-only work answering
-   a wait may proceed unclaimed with its ownership check.
-3. State a goal and observable finish line, not a mechanism. Include
-   [brief rules](references/brief-rules.md) by link, and use its milestone-lead
-   or Cloud-pass template when applicable. A named mechanism is a suggestion
-   unless it records a Director decision. Check which visual thing a request
-   means before briefing it. New scope needs a Director decision and a fresh
-   brief and session; the running brief remains unchanged. Brief unsupported
-   operations as designing a supported path. Never append an extra Supervisor
-   qualification step after delivery; use the completing PR's tests and normal
-   deploy health checks, preserving real event waits and remaining engineering.
-4. Pass the prompt through `iterm_tab.py new --brief-file` and keep settings
-   and invocation in the command file. Follow the launcher preflight and read
-   the first screen. A missing transcript after one minute or trust prompt is
-   blocked; preserve its exact terminal, never relaunch or grant trust to pass.
-   Use headless page checks. Explicit GUI briefs use the
-   [GUI and browser preflight](references/helpers.md#browser-and-computer-use-preflight)
-   and `--require-browser`; Codex is the default. Claude Computer Use needs the
-   Director's approval for that visible iTerm session.
-5. Before a batch, compare opened and merged PRs over recent hours. When merges
-   lag and no merge-path repair is available, launch finishing work only.
-   Follow the brief rules' PR cap and state any repair exemption. Workers post
-   on child issues; parents hold in-place Current Status and decisions.
-   Local heavy Docker runs use [one locked entrypoint](references/heavy-runs.md).
-6. Director questions go on their item's issue, then the shared queue. Record
-   actual decisions under [question rules](../references/talking-with-the-director.md#decisions-holds-and-work-state)
-   and [status labels](../github-plan/SKILL.md#status-labels), preserving every
-   unresolved wait. Point the worker at the recorded decision. A Supervisor or
-   direction-recorded decision counts; leave escalation labels for the weekly
-   direction audit. Link the question queue in every check and handoff.
-7. Run [Routine check](references/routine-check.md) about every 23 minutes and
-   close finished sessions immediately on notices. Read `[staffing]`
-   `openai_workers` and `load1_limit` from the host's private Supervisor config;
-   report missing values and continue available work. Refill below the target
-   in the same turn a worker closes. At high load add CPU-light work. When
-   `next` is thin, read actionable unclaimed `plan:active` issues and Cloud-pass
-   findings under the overall Order. Require complete paginated staffing
-   coverage; a first page or bounded board is insufficient. Never add a
-   staffing label or parallel manual inventory.
-8. Nudge stalls with exact facts. Continue an actionable lead at its verified
-   idle prompt. Allow automatic compaction; routine idleness alone is no reason
-   to compact. Manual Claude `/compact` needs a safe idle prompt and Keep
-   instructions. Never queue a Codex request to compact itself. On failed
-   compaction or account departure, obtain a durable handoff, recheck ownership,
-   close safely, then relaunch the same goal with its retained-work source.
-9. Land through the assigned train with the maintained driver, one per repo,
-   or the repository's authorized protected-branch route where assigned.
-   Load `launchplane` before train actions. After about 45 minutes with only
-   `lease held`, read candidate CI directly. Use the
-   [auto-enqueue procedure](references/helpers.md#interim-auto-enqueue-watcher)
-   for existing interim routing. After landing load `github`, perform
-   [catalog verification](references/helpers.md#catalog-landing-verification)
-   for catalog landings, then complete After A Merge and planning reconciliation.
+Before briefing product work or asking about it, run `product_summary.py` on a
+current default checkout. Group related subsystem work in one repository per
+brief/PR. Follow [brief rules](references/brief-rules.md) for the goal, anchor,
+admission, claims, linked worktrees, review, closing keywords, PR cap and train
+handoff; every brief carries that link. Its templates cover milestone leads
+and Cloud passes. The launcher owns dispatch preflight; never add stop lines
+of your own. A mechanism is a suggestion unless it records a Director decision.
+
+For a group, claim parent and children on one branch before moving children or
+creating the worktree. Reconcile and release only newly made claims on refusal.
+Verify both parents after moves; restore a missing original link on failure.
+For retained delivery use `Resume from:` with its authored release and qualified
+handoff. Another launch, release, timestamp or split does not clear an actual
+hold. Read-only work answering a wait can proceed with its ownership check.
+
+Fix/diagnosis briefs ask which invariant should have prevented the failure,
+why it went unnoticed, which global paths it could stop, and whether the stuck
+condition persists. Check which visual thing a request means before briefing.
+New scope needs a Director decision and a fresh brief/session; do not widen a
+running brief. If no supported operational route exists, brief designing one.
+Use the completing PR's tests and normal deploy health checks, not an extra
+Supervisor qualification step. Preserve real waits and remaining engineering.
+
+Pass prompts with `--brief-file` and settings/invocation in the command file.
+Read [launch preflight](references/helpers.md#terminal-launches) before launch
+and its first screen afterward. A missing transcript after a minute or a trust
+prompt is blocked: preserve its terminal, never relaunch or grant trust to pass.
+Page checks are headless; explicit GUI tasks use the linked GUI/browser route.
+Desktop IDE closure does not establish that headless inspection is unavailable.
+Before batches, compare recent opened/merged PRs; when merges lag without an
+available merge-path repair, launch finishing work only. Workers report on child
+issues; parents hold in-place Current Status and decisions. Local heavy Docker
+runs use [one locked entrypoint](references/heavy-runs.md).
+
+Director questions live on their item's issue and the shared queue. Write from
+the decision record quoting the Director, never a PR's wording; attribute holds
+to their source. Supervisor preferences are preferences, not prohibitions or
+grant requests. Record decisions under the shared question/status rules, preserve
+unresolved waits, point workers at the decision, and leave escalation labels
+for the weekly direction audit. Client test notes already settling acceptance
+need no new pre-merge question.
+
+Run [Routine check](references/routine-check.md) about every 23 minutes and act
+on finished notices immediately. Read host `[staffing]` `openai_workers` and
+`load1_limit`; report missing values and continue available work. Refill below
+target in the same turn a worker closes. Add CPU-light work at high load and use
+actionable unclaimed active issues/Cloud findings under the overall Order when
+`next` is thin. Require complete paginated staffing coverage; add no staffing
+label or parallel manual inventory. Compare sessions with DIRECTION.md; a
+mismatch is a Director question, not a Supervisor verdict. Nudge with exact facts.
+
+Continue actionable leads at verified idle prompts. Let automatic compaction
+proceed; routine idleness alone is no reason to compact. Manual Claude compaction
+needs an idle prompt and Keep instructions; never queue a Codex compaction request.
+On failed compaction/account departure, obtain a durable handoff, recheck
+ownership, close safely, then relaunch the same goal with its retained source.
+
+Land by the assigned train or authorized protected-branch route. Load the owning
+skill first. Use one maintained driver per repo and its interim auto-enqueue
+procedure; after about 45 minutes with only `lease held`, read candidate CI.
+After landing load `github`, complete catalog verification where applicable,
+then After A Merge and planning reconciliation. Prefer per-repo `since` reads
+over search where the maintained readers support them.
 
 ## Client Products
 
@@ -468,37 +438,28 @@ reader is not proof that a Track's own exit criteria passed.
 
 ## Local State
 
-Resolve private paths absolutely. Keep only the session registry, helper
-watermarks/deadlines, enqueue holds, capacity-retry state, closed-session log,
-and one recovery note overwritten when a pending local action changes.
-Record exact session/terminal/transcript identities, repository, issue and brief.
-Keep pointers, not status prose, copied decisions, board lines or rule lists.
-GitHub owns those facts. Historical logs are not authority or takeover input.
+Keep only the absolute private pointers and helper state in
+[Routine check](references/routine-check.md) and the registry schema. GitHub
+owns status/decisions; keep no copied prose/rules or historical recovery narrative.
 
 ## Procedure
 
-At takeover, check permission mode, load `direction` for its daily-turn reads,
-resolve this Director's handoff record and read the latest handoff and later
-comments. Read original Director words before repeating them. Rebuild the full
-goal board and registry, read each named thread or screen once, verify recovery
-note actions at their sources, and list actual watcher/driver processes.
-Recreate the ~23-minute check and morning digest with the harness scheduler.
-Bind existing [persistent services](references/helpers.md#persistent-supervisor-services)
-with `services.py bind`; otherwise start bounded Codex and Claude idle watches
-with separate delivered-state files and the scoped foreign watcher. Process
-closeout notices immediately, re-arm bounded watches after delivery/error/deadline,
-and preserve coverage gaps. Watch live Client production-release events too.
-Schedule the [pending-review dispatcher](references/helpers.md#dispatcher-timer)
-while worker review requests exist. Never relaunch existing services blindly.
-Read `direction_audit.py --stale-waits-only` for repositories discovered by
-`gh-plan.py next`, with quota and landing priority considered. Review full
-finish lines, post-merge comments, selection exclusions and coverage; correct
-obsolete qualification-only waits instead of staffing completed work. Real
-engineering and people's waits remain. Post findings and needs-Director links
-on the handoff record. A retire/stop/redirect finding goes to `direction`, not
-an executing change or a Supervisor verdict.
-Keep working through compaction. Close out only when done, compaction fails,
-or the account needs departure, with durable handoff and verified safe closure.
+At takeover check permission mode and load `direction` for daily-turn reads.
+Read this Director's latest handoff and later comments, original Director words,
+full current board and registry, each named thread/screen and the recovery note.
+Verify pending actions at their source and list actual watcher/driver processes.
+Recreate the check/digest with the harness scheduler. Bind existing persistent
+services; otherwise start scoped bounded idle/foreign watches with separate
+harness watermarks, processing closeout notices immediately and re-arming after
+exit. Preserve coverage gaps, watch live Client releases, and schedule the
+pending-review dispatcher while requests exist. Never duplicate live services.
+Read `direction_audit.py --stale-waits-only` for repositories `gh-plan.py next`
+discovers, respecting quota/landing priority. Read full finish lines and later
+comments before correcting obsolete qualification waits; preserve real people
+waits, engineering and selection exclusions. Post takeover findings and question
+links on the handoff record. Escalate retire/stop/redirect findings to `direction`.
+Keep working through compaction; close out only when done, compaction fails or
+an account needs departure, with durable handoff and verified safe closure.
 
 ## Move Rate-Limited Claude Sessions
 
@@ -508,138 +469,78 @@ identity to carry a refused action.
 
 ## Close Finished Sessions On Every Notice And Check
 
-For normal sessions use `session_closeout.py` from
-[Routine check](references/routine-check.md). It runs the gates below and
-returns one receipt or the first failed gate. Its journal never permits an
-uncertain mutation to be replayed. Use the procedure below for input preservation,
-pending prompts, interrupted sessions and other exceptional recovery.
+Act immediately on a watch closeout request or Claude idle notice; resolve its
+exact native ledger entry. Never guess identity or skip malformed ledger rows:
+reconcile against original launch receipts. Thread-only, Director-owned and
+ambiguous sessions stay open. Read the actual latest completed native response,
+unqualified `Safe to exit: yes`, and posted issue handoff. Later work invalidates
+it; silence, screen redraws, quotes, aborts and verdicts for one check do not qualify.
+A required review wait takes precedence. The shared parser owns recognition,
+including complete citation blocks and native exit/compaction tails; an
+unrecognized format needs a fresh standalone verdict, never a parser override.
 
-Handle turn-end notices as they arrive. For a watch notice with
-`closeout_request`, start this procedure immediately and re-arm that
-harness's watch with the same `--delivered-state` file. For a Claude
-`notify_when_idle` notice, resolve its exact native session in the ledger and
-run `finished_map.py --ledger <private-ledger.json> --session-id <native-id>`;
-its `closeout_request` enters the same procedure. Re-read the transcript even
-when the notice supplies a request. A request is a verification task, not
-permission to send an exit command. An absent request leaves the session open
-for normal stall or capacity handling. Every scheduled check still scans all
-sessions, recovering missed notices. Re-arm an expired or failed watch; do not
-let loss of the watch look like a fleet with no finished sessions.
+Use `session_closeout.py` from [Routine check](references/routine-check.md) for a
+normal session. Supply its actual posted `--handoff-url` when the launch ledger
+has none; the helper verifies and saves it before shutdown. It returns one
+receipt or its first failed gate. Nonempty/unknown input, permission prompts,
+interrupted sources and other exceptional cases use the procedure below and
+[shutdown/recovery](references/helpers.md#finished-session-shutdown-stages).
+Each session's verification/discovery is independent of global work selection,
+train polling and other sessions. Aim for two minutes from the verdict; on any
+failed check preserve the session and report the missing proof and next actor.
+A deadline never waives a gate; missed targets remain in the next handoff.
 
-Match a notice's terminal id to the ledger's `iterm_session_id` or
-`tmux_session_id`, then verify the backend's `read` TTY and the native identity
-in that entry's transcript. An agent name or tab title alone is not identity;
-use its original launch receipt to find the exact terminal and native ids, or
-report the ambiguity and keep it open. A malformed ledger is a fleet-wide
-read blocker: report the invalid entry and reconcile it against its original
-launch receipt before retrying; never guess or skip identity checks.
+Before exit, run the session-scoped claim check on its claiming host. Require
+`claims_clear: true` and complete coverage; otherwise nudge the exact worker
+once to release through work-closeout, preserving retained work, then check
+again. If it cannot, it records conditional/no, blocker and next actor on its
+issue and stays open. Live background/Monitor tasks and scheduled jobs are
+blockers. Ask that worker to check completion, stop only obsolete native tasks,
+reconcile missing IDs with native lists, and give a fresh verdict. Do not send
+exit or stop another session's tasks to clear the list. Missing task notices
+are not completion. Scheduled jobs alone do not suppress an idle review notice;
+active turns or background Bash/Monitor work still do.
 
-Before exit, when `closeout_blockers` lists background tasks or scheduled jobs,
-report their ids and keep the session open. Nudge that exact worker to check
-each task's completion condition and stop an obsolete task through its native
-TaskStop or CronDelete route, then give a fresh close-out verdict. For an unknown
-schedule id or a job that is already absent, have the worker run native CronList
-to reconcile the list before deciding what to delete. A still-needed
-task remains a wait. A missing terminal
-notice is uncertainty, not proof that a task ended; never send exit keys or
-stop another session's tasks to clear the list.
-Once process exit is independently proven, use the established final-verdict
-and process closure checks. Scheduled jobs alone do not suppress a review
-notification to an idle empty Claude prompt; an active turn or Bash/Monitor
-task still does.
+Inspect full screen and input before keys. Styles are evidence, never authorship.
+Dim suggestions are not Director decisions. Preserve confirmed Director drafts
+privately with exact session/tab identity before Ctrl-U. Preserve other nonempty
+input as unverified text, including dim text; keep the session open if preservation
+or authorship is uncertain. Resolve only verified closeout permission prompts
+whose full pending transcript call matches the visible prompt and existing scope.
+Use one-time approval only, never persistent permission changes or new access.
+Recheck immediately before each response, send once, read back, and never replay
+an uncertain send or answer a subsequent prompt without verifying it. Prompts
+requiring the Director stay open and enter the needs-Director list. After any
+resolution, recheck transcript and handoff because work may have resumed.
 
-Aim to finish verification and shutdown within two minutes of the worker's
-verdict. If a check fails, keep the session open and report the exact missing
-proof and next action immediately. Do not bypass a check to meet that target.
-Run each session's verification and claim discovery separately from global
-work selection, train polling and other finished sessions; a slow GitHub read,
-uncertain release or pending permission on one session must not hold up the
-others. A missed target remains visible in the next check and handoff.
+Immediately before exit, recheck transcript, handoff, idle prompt and input.
+Clear with verified-target Ctrl-U, then prove the whole input empty; fully dim
+suggestions are not typed input. Typed/mixed/unknown text preserves the terminal.
+Send `/exit` for Claude or `/quit` for Codex through exact terminal input, never
+Codex queue. Check every send's status/output. Failed or uncertain submission
+needs exact-session readback; only proven non-submission allows verified clear,
+empty readback and another send. Never append a second command blindly.
+Prove matched process exit in a bounded wait; an uncertain identity or remaining
+process stays open with its next action in the ledger.
 
-1. Match the ledger's session to its transcript, process, and terminal tab.
-   Leave the Director's own sessions alone. Keep thread-only sessions without
-   a matched terminal open and record them in the ledger. Read the session's
-   latest response in its transcript: it must give the session's unqualified
-   close-out verdict `Safe to exit: yes`, and its work must be handed off on
-   the item's issue. A quotation, negation, or verdict for one check does not
-   qualify. Never infer completion from silence,
-   idleness, or the screen; Claude Code redraws its screen and can hide the
-   close-out message. If later transcript activity resumes work, keep it open.
-   Use `safe_verdict`, then run the session's
-   [claim check](references/helpers.md#claim-checks-at-close-out); keep the
-   terminal open until it clears. A required review wait still takes
-   precedence; do not close that worker out.
-2. Inspect the input line before sending keys. `read` reports its visible
-   style as `dim`, `non_dim`, `mixed`, `empty` or `unknown`; this is style
-   evidence, never authorship or approval. Never record dim suggestions as
-   Director text or decisions. Ctrl-U clears typed input; a suggestion survives
-   Ctrl-U. Use that known check only after preserving any confirmed
-   Director-typed draft in private handoff files with its session/tab identity.
-   Before clearing other nonempty input, preserve it privately as unverified
-   text, including dim text; that backup never counts as a Director decision.
-   Keep the tab open when text cannot be preserved or its author is uncertain.
-3. A prompt for unfinished item work means the session is not finished; keep
-   it open. Resolve a pending close-out permission prompt only after verifying
-   the full pending tool call in the transcript matches the prompt and its
-   exact action meets the brief and the owning skill's existing rules.
-   If the action cannot be verified, keep the session open and report the prompt.
-   Use one-time approval only; never select an option that changes persistent
-   permissions. Never approve new scope or access to make a session exit.
-   Immediately before each approval, verify the visible prompt still matches
-   the checked tool call. Send one response, then read back the prompt state;
-   never retry an uncertain send or answer a subsequent prompt without checking it.
-   If the prompt needs the Director, leave the session open and include it in the next
-   "needs the Director" list. After resolving a prompt, recheck the transcript
-   and handoff before continuing, because the session may have resumed work.
-4. Immediately before sending keys, recheck the transcript, handoff, input
-   line, and that the session is at its prompt with no turn running. Clear the
-   input with Ctrl-U and verify the entire input is empty before sending
-   `/exit` for Claude Code or `/quit` for Codex into that terminal's input,
-   never through `codex queue`. A fully dim suggestion is not typed input;
-   if typed, mixed or unknown input remains, keep the tab open.
-   Check every send's output and exit status. A failed send can leave text
-   typed with Return not attempted or its submission unknown. Read the exact
-   session; after proving it was not submitted, use verified-target `clear`
-   and verify empty input before another send. Never append a second command
-   or retry an uncertain submission.
-   Use a bounded wait for that session's process to end. Verify it ended before closing
-   the tab. If it is still running or its identity is uncertain, keep the tab
-   open and record the next action in the ledger.
-5. After verified process exit, run `release_session_claims.py finish` as
-   [finished-session shutdown stages](references/helpers.md#finished-session-shutdown-stages)
-   describes, before closing the tab. It records the observed exit in the
-   shared host-local closed-session log, discovers the session's claims across accessible
-   repositories under `--owner` and the configured automation identity, and
-   reports their existing exact worker or validated Supervisor releases.
-   It reports unresolved claim IDs without posting another release. Use the
-   existing evidence-backed `gh-plan.py release-claim` route to reconcile those
-   claims, preserving retained PRs, then rerun finish.
-   Load `github` and `github-plan` before that step. Keep incomplete discovery,
-   unreleasable claims and uncertain writes in the ledger for reconciliation;
-   never report claims released without confirmed readback. A running session,
-   foreign identity or missing unqualified verdict is reported, never released.
-   Use the helper's `backfill` mode for already-ended sessions with original
-   verified closure times and transcript/issue handoffs in that log. It never
-   treats log age, a merged PR or an idle tab as closure evidence. Preserve
-   status, waits, blockers and retained artifacts; release is ownership only.
-   Name retained PRs and worktrees in the handoff and record any incomplete
-   reconciliation before reporting shutdown complete. The closed-session log
-   records the transcript's verified verdict and observed process exit; never
-   write a fixed "safe-exit yes" just because a close command was attempted.
+Only after actual exit, run `release_session_claims.py finish` with the owning
+GitHub/planning skills loaded. It verifies source/native proof and discovers
+canonical releases across the owner. Incomplete discovery, unresolved claims,
+uncertain writes or planning reconciliation stay in the ledger. Reconcile exact
+IDs through the existing evidence-backed release-claim path, then rerun finish;
+never report release without readback or write a fixed safe verdict after an
+attempted close. Preserve status, waits, blockers, retained PRs/worktrees and
+original verified times. Historical closed sessions use explicit backfill.
 
-6. After the process-exit wait, read `list`. If the exact session is gone,
-   record that the tab already closed. For a surviving idle shell, use `iterm_tab.py close --session-id <exact-iterm-id>
-   --ledger <private-ledger.json>`. It checks the launch ledger, rejects split
-   tabs, and rechecks the TTY processes and native shell prompt twice before
-   one non-force close. Read `list` once to confirm disappearance; preserve an
-   uncertain close rather than retrying. Missing shell input proof preserves
-   the tab; read the [native shell-input setup](references/helpers.md#native-shell-input-proof)
-   for the supported launch-shell setup, without changing the Director's profile.
-   If a retained ended session has no TTY processes, preserve it and report the
-   profile setting; do not force-close it or change the Director's setting.
-   For tmux, follow the linked backend procedure: an ended pane is retained
-   for readback and closes only after its owned ledger identity and actual
-   process exit are proved. A live shell or split window stays open.
+Finally list terminals. If this exact terminal is gone, record disappearance.
+Otherwise use the owned backend's non-force `close` once and list again. iTerm
+rechecks unsplit location, PID/TTY and native editing-shell empty-input proof
+twice; missing proof or a retained session with no TTY jobs preserves it. Use
+the documented shell-integration setup without changing the Director's profile.
+tmux proves owned nonce/location and actual process exit, rejects live shells
+and split/linked windows, and removes only the still-dead matching pane.
+Uncertain closure is retained, never retried or forced. Physical pane cleanup
+does not prove a source resumed elsewhere has ended.
 
 ## Handoff Shape
 
@@ -656,9 +557,11 @@ shared lessons to field reports too; keep operational contents on their sources.
 
 ## Lessons From The Pilot
 
-Use fresh exact source evidence. Session titles, silence, successful launch,
-physical job completion and earlier summaries do not prove present workflow
-success. Preserve active or uncertain work and exact identities. A real launch,
-claim, review or cleanup defect belongs on its owning issue; do not maintain
-private rule copies. Long watches use `uv run --no-cache` so they do not hold
-shared cache-use locks; do not interrupt another session to reclaim a cache.
+Read current time from the system clock. Never hand the Director shell lines;
+verify alignment claims before they reach other people. Before a planned host
+restart, checkpoint active work without releasing claims and resume those same
+sessions afterward. After restart, recheck interrupted CI and recreate only
+session-owned checks/watchers through their supported paths.
+
+Long watches use `uv run --no-cache`; never interrupt another session to reclaim
+shared cache-use locks. Durable facts and defects stay on their owning records.

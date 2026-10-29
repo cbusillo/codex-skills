@@ -1,17 +1,34 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["aiohttp==3.14.5"]
 # ///
 import argparse
+import asyncio
 import json
-import subprocess
 import time
 from pathlib import Path
+from subprocess import SubprocessError
 
-import release_session_claims as release
+import iterm_tab
+import pending_reviews
 import session_liveness
-from check_operation import GateFailed, Operation
+from capacity_retry import save_state
+from check_changes import fingerprint
+from check_operation import (
+    GateFailed,
+    GitHubReader,
+    GitHubReadError,
+    GitHubReadShapeError,
+    Operation,
+    automation_only_gh_prefix_args,
+    claim_release,
+    closure,
+    github_identity,
+    native,
+    observation_homes,
+    release,
+)
 from session_record import load_ledger, session_status
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -22,13 +39,37 @@ def require(condition: bool, gate: str, reason: str) -> None:
         raise GateFailed(gate, reason)
 
 
+def explicit_session(body: str, session: str) -> bool:
+    return claim_release.related_sessions_match(body, session) and not claim_release.related_sessions_match(body, "other-" + session)
+
+
+async def native_idle(entry: dict) -> None:
+    if entry["harness"] != "codex":
+        return
+
+    home = Path(entry["codex_home"]).expanduser().resolve(strict=True)
+    action = closure.lease_state(entry["session_id"])
+    homes = {home, *(Path(value) for value in closure.action_homes(action)["known"])}
+    snapshots = closure.transcripts(entry["session_id"], entry["transcript"], include_status=True, additional_homes=homes)
+    paths = native.authenticated_paths(snapshots, observation_homes(strict=True, additional_homes=homes))
+    homes.update(Path(value) for value in paths)
+    snapshot = {"path": entry["transcript"], "transcripts": snapshots, "home_paths": paths}
+    for current in homes:
+        async with native.connection(current) as request:
+            facts = await native.read_thread_facts(request, entry["session_id"])
+        native.require_quiet(facts, native.local_snapshot(snapshot, facts, str(current)), native.home_action(action, str(current)))
+
+
 def ready(entry: dict, supervisor: str) -> dict:
     require(
         entry.get("supervisor_owned") is True and entry["session_id"] != supervisor,
         "ownership",
         "requires another explicitly Supervisor-owned session",
     )
-    status = session_status(entry)
+    try:
+        status = session_status(entry)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise GateFailed("verdict", str(error)) from error
     require(
         status["safe_verdict"] and status["state"] == "turn_ended" and not status["background_tasks"],
         "verdict",
@@ -41,23 +82,45 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
     entries = [entry for entry in load_ledger(args.ledger) if entry["session_id"] == args.session_id]
     require(len(entries) == 1, "identity", "native session must match exactly one ledger entry")
     entry = entries[0]
+    selected_handoff = getattr(args, "handoff_url", None)
+    if selected_handoff:
+        entry["handoff_url"] = selected_handoff
+    generation = fingerprint({key: value for key, value in release.closure_identity(entry).items() if key != "handoff_url"})
+    require(operation.state.get("generation", generation) == generation, "identity", "journal belongs to another launch generation")
+    operation.state["generation"] = generation
+    save_state(operation.path, operation.state)
     ready(entry, args.supervisor_session)
     backend = entry.get("backend", "iterm")
-    terminal_id = entry.get("tmux_session_id" if backend == "tmux" else "iterm_session_id")
-    require(bool(terminal_id), "identity", "thread-only session has no matched terminal")
+    selected_terminal = entry.get("tmux_session_id" if backend == "tmux" else "iterm_session_id")
+    if not isinstance(selected_terminal, str) or not selected_terminal:
+        raise GateFailed("identity", "thread-only session has no matched terminal")
+    terminal_id = selected_terminal
     terminal = ["uv", "run", str(SCRIPTS / "iterm_tab.py"), "--backend", backend]
 
-    def call(gate: str, action: str, *extra: str, once: bool = False) -> dict | list:
+    def call(gate: str, action: str, *extra: str, once: bool = False) -> dict:
         return operation.run(gate, [*terminal, action, "--session-id", terminal_id, *extra], once=once)
 
     def verify_handoff() -> None:
-        reader = release.GitHubReader(gh_prefix_args=release.automation_only_gh_prefix_args(), deadline_at=time.time() + 60)
-        handoff = release.handoff(reader, entry, release.github_identity.automation_login())
+        operation.gate = "handoff"
+        reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 60)
+        handoff = release.handoff(reader, entry, github_identity.automation_login())
         require(
-            release.release.related_sessions_match(handoff.get("body") or "", args.session_id),
+            explicit_session(handoff.get("body") or "", args.session_id),
             "handoff",
             "handoff must name this native session",
         )
+        if selected_handoff:
+            with closure.store_lock(args.ledger, create=True):
+                rows = json.loads(args.ledger.read_text())
+                matches = [row for row in rows if row.get("session_id") == args.session_id]
+                require(
+                    len(matches) == 1
+                    and release.closure_identity({**matches[0], "handoff_url": selected_handoff}) == release.closure_identity(entry),
+                    "identity",
+                    "ledger generation changed before handoff update",
+                )
+                matches[0]["handoff_url"] = selected_handoff
+                save_state(args.ledger, rows)
 
     def claims() -> None:
         result = operation.run(
@@ -73,12 +136,31 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
                 "--transcript",
                 entry["transcript"],
             ],
+            timeout=660,
         )
         require(
             result.get("claims_clear") is True and result.get("coverage", {}).get("complete") is True,
             "claims",
             "claim releases or discovery coverage are incomplete",
         )
+        operation.gate = "review_wait"
+        reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
+        actor = github_identity.automation_login()
+        if not actor:
+            raise GateFailed("identity", "configured automation identity is unknown")
+        logins = {actor.casefold()}
+        for url in {url for row in result.get("released_claims", []) for url in row.get("retained_prs", [])}:
+            repo, number = url.removeprefix("https://github.com/").rsplit("/pull/", 1)
+            comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="closeout_review")
+            request = pending_reviews.latest_request(comments, logins)
+            if request:
+                pull = reader.get_json(f"/repos/{repo}/pulls/{number}", step="closeout_review_head")
+                completion = pending_reviews.completion_record(comments, request, pull["head"]["sha"], logins)
+                require(
+                    bool(completion and completion.get("acknowledged")),
+                    "review_wait",
+                    "required review still needs its current-head disposition",
+                )
 
     def prompt(gate: str) -> None:
         pane = call(gate, "read")
@@ -95,42 +177,57 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
             for row in rows
             if row[0] == entry.get("pid")
             and row[1] == entry.get("tty")
-            and session_liveness.harness_family((session_liveness.harness_arguments(row[2]) or [""])[0]) == entry["harness"]
+            and session_liveness.source_harness(session_liveness.harness_arguments(row[2]), entry["harness"])
         ]
         require(len(matches) == 1, "process", "matched harness PID and TTY are unavailable")
+        if entry.get("launch_started_at"):
+            require(
+                session_liveness.process_started_at(entry["pid"]).isoformat() == entry["launch_started_at"],
+                "process",
+                "process birth differs from this launch generation",
+            )
         require(not pane.get("dead"), "prompt", "terminal process already ended; use verified recovery")
         screen = "\n".join(pane["screen"]) if isinstance(pane["screen"], list) else pane["screen"]
         require("esc to interrupt" not in screen.casefold() and "Working (" not in screen, "prompt", "turn appears to be running")
-        line = pane.get("input_line") or {}
         require(
-            line.get("style") == "empty"
-            or entry["harness"] == "codex"
-            and line.get("style") == "dim"
-            and line.get("text") == "Ask Codex to do anything",
+            iterm_tab.empty_agent_input(pane),
             "input",
             "nonempty or uncertain input needs preservation and manual verification",
         )
 
     verify_handoff()
     claims()
+
+    def wait_for_exit() -> None:
+        operation.gate = "process_exit"
+        deadline = time.monotonic() + args.exit_seconds
+        while not session_liveness.process_absent(entry.get("pid")) and time.monotonic() < deadline:
+            time.sleep(0.25)
+        require(session_liveness.process_absent(entry.get("pid")), "process_exit", "process remains; terminal kept")
+
     if not operation.state["steps"].get("quit") and not session_liveness.process_absent(entry.get("pid")):
-        prompt("prompt")
-        ready(entry, args.supervisor_session)
-        call("clear", "clear", "--verified-target", once=True)
-        prompt("empty_input")
-        ready(entry, args.supervisor_session)
-        verify_handoff()
-        claims()
-        call("quit", "send", "--text", "/quit" if entry["harness"] == "codex" else "/exit", "--verified-target", once=True)
+        operation.gate = "ownership"
+        with closure.ownership(args.session_id, create=True):
+            prompt("prompt")
+            ready(entry, args.supervisor_session)
+            operation.gate = "native_idle"
+            asyncio.run(native_idle(entry))
+            call("clear", "clear", "--verified-target")
+            prompt("empty_input")
+            ready(entry, args.supervisor_session)
+            verify_handoff()
+            claims()
+            operation.gate = "native_idle"
+            asyncio.run(native_idle(entry))
+            call("quit", "send", "--text", "/quit" if entry["harness"] == "codex" else "/exit", "--verified-target", once=True)
+            wait_for_exit()
     elif operation.state["steps"].get("quit"):
         require(
             operation.state["steps"]["quit"].get("complete") is True,
             "quit",
             "previous send is uncertain; preserve the session for reconciliation",
         )
-    deadline = time.monotonic() + args.exit_seconds
-    while not session_liveness.process_absent(entry.get("pid")) and time.monotonic() < deadline:
-        time.sleep(0.25)
+        wait_for_exit()
     require(session_liveness.process_absent(entry.get("pid")), "process_exit", "process remains; terminal kept")
     ready(entry, args.supervisor_session)
     finish = operation.run(
@@ -151,7 +248,6 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
             "--confirm-session-ended",
             "--apply",
         ],
-        once=True,
         timeout=660,
     )
     require(
@@ -159,10 +255,10 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
         "finish",
         "claim discovery or release needs reconciliation; terminal kept",
     )
-    panes = operation.run("terminals", [*terminal, "list"])
+    panes = operation.rows("terminals", [*terminal, "list"])
     if any(pane["session_id"] == terminal_id for pane in panes):
         call("close", "close", "--ledger", str(args.ledger), once=True)
-    panes = operation.run("disappearance", [*terminal, "list"])
+    panes = operation.rows("disappearance", [*terminal, "list"])
     require(not any(pane["session_id"] == terminal_id for pane in panes), "disappearance", "terminal closure is uncertain")
 
 
@@ -173,19 +269,20 @@ def main() -> int:
     parser.add_argument("--supervisor-session", required=True)
     parser.add_argument("--owner", required=True)
     parser.add_argument("--evidence", type=Path, required=True)
+    parser.add_argument("--handoff-url", help="exact posted issue handoff; verify and save it in the ledger before shutdown")
     parser.add_argument("--exit-seconds", type=float, default=30)
     args = parser.parse_args()
     try:
         require(0 < args.exit_seconds <= 60, "arguments", "exit wait must be between zero and 60 seconds")
-        with release.closure.store_lock(args.ledger.with_name(args.ledger.name + ".closeout-" + args.session_id), create=True):
-            operation = Operation(args.evidence, [str(args.ledger.resolve()), args.session_id, args.supervisor_session])
+        with closure.store_lock(args.ledger.with_name(args.ledger.name + ".closeout-" + args.session_id), create=True):
+            operation = Operation(args.evidence, [str(args.ledger.resolve()), args.session_id])
             closeout(args, operation)
         result = operation.receipt(args.session_id)
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, KeyError, TypeError, SubprocessError, GitHubReadError, GitHubReadShapeError) as error:
         result = {
             "ok": False,
             "identity": args.session_id,
-            "gate": error.gate if isinstance(error, GateFailed) else "verification",
+            "gate": error.gate if isinstance(error, GateFailed) else operation.gate if "operation" in locals() else "identity",
             "reason": str(error),
             "evidence": str(args.evidence),
         }

@@ -39,6 +39,10 @@ import compact_check
 import services
 
 
+def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    return patch.object(target, name, *args, **kwargs)
+
+
 def claude(text, **extra) -> dict[str, Any]:
     return {
         "type": "assistant",
@@ -784,11 +788,11 @@ class LedgerTests(unittest.TestCase):
 
     def test_compact_checks_keep_action_and_coverage_without_response_contents(self) -> None:
         state = self.root / "check.json"
-        with patch.object(status, "session_status", wraps=session_record.session_status) as read:
+        with patch_attr(compact_check, "session_status", wraps=session_record.session_status) as read:
             report = compact_check.check(self.ledger, state)
         self.assertEqual(read.call_count, 1)
         self.assertTrue(report["coverage"]["complete"])
-        self.assertEqual(report["sessions"][0]["action"], "verify_finished_session")
+        self.assertEqual(report["sessions"][0]["action"], finished_map.candidates(self.ledger)[0]["closeout_request"]["action"])
         self.assertNotIn("last_text", json.dumps(report))
         self.assertTrue(compact_check.check(self.ledger, state)["sessions"])
         self.write([event("task_started", turn_id="working")])

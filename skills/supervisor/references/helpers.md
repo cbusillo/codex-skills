@@ -1,69 +1,31 @@
 # Supervisor helpers
 
-Read this before rebuilding the session registry, goal board, watcher or
-digest, or sending terminal input. Run every Python helper with `uv run` from any directory using its catalog
-path. The status, question and candidate helpers are read-only by default;
-the question helper's explicit `--register` and `--ack` write delivery records.
-iTerm controls
-require macOS, iTerm2's Python API enabled and the session's existing authority;
-API connection failure is a stop, not a reason to change personal settings.
+Use [Routine check](routine-check.md) for recurring reads, not this full reference.
+Run Python helpers with `uv run` and their catalog path. Readers are read-only;
+question registration/acknowledgement and named operation helpers write only
+when explicitly invoked under the run's existing authority. iTerm requires
+macOS and its existing Python API; connection failure never authorizes changing
+personal settings.
 
-The shared launcher passes Claude Code
-`--settings '{"promptSuggestionEnabled": false, "autoMemoryEnabled": false}'`
-before its brief on either backend, including when the command file has other
-settings. Auto memory is off because a worker's findings belong on the item's
-issue, and a write to the memory folder outside the working directory stops
-the worker at a permission prompt nobody can answer
-([memory settings](https://code.claude.com/docs/en/memory#enable-or-disable-auto-memory)).
-A launch-file inline `--settings` object is merged with this override,
-preserving its other keys. For `--settings file.json`, set both to `false` in
-that file first: the launcher checks them
-before launch and preserves the file argument, private values and relative
-permission-rule base. It never rewrites that file or inlines its contents.
-Use literal JSON or a readable file path; relative files resolve under the command's `cd` directory.
-Use an absolute path in place of shell-expanded settings paths.
-Relative settings files require an absolute `cd` directory; otherwise use an absolute file path.
-Claude launches also scope `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false` to the
-launch so an inherited override cannot enable suggestions. Remove explicit
-assignments of that variable from command files; the launcher supplies it.
-Claude launches also get `--autocompact auto` before the brief unless the
-command file already passes `--autocompact` or `--autocompact=VALUE`, which it
-keeps. Claude Code skips its autocompact offer dialog when the window comes
-from a launch flag, and `auto` keeps the window it tunes for the model, so
-nothing is saved to the account's settings.
-Claude launches also get `--disallowedTools AskUserQuestion`, which removes the
-question picker from the session
-([CLI reference](https://code.claude.com/docs/en/cli-reference)), so a worker
-asks its question on the item, as the brief rules say, instead of waiting on a
-picker nobody can answer.
-Codex launches get `-c memories.generate_memories=false` before the brief, so
-a briefed thread is never a Codex memory input: its findings belong on the
-item, and Codex memory turns brief wording into the Director's preferences
-([config reference](https://learn.chatgpt.com/docs/config-file/config-reference)).
-On the daemon route the Codex client does not forward that key, so the
-launcher's ingress also sets it on each `thread/start` and `thread/fork` it
-carries, and a `codex --remote` launch without `--account-provider openai`,
-which would bypass the ingress, is refused. The Director's own Codex sessions
-and config files are unchanged.
-Existing sessions may still draw dim suggestions. `read` retains the
-plain `screen` and adds `input_line` with the last visible `❯`, `›` or `>`
-prompt's text, line index and style (`dim`, `non_dim`, `mixed`, `empty`, or
-`unknown`). tmux reads SGR faint attributes with `capture-pane -e`; iTerm reads
-cell faint attributes. A single leading inverse cursor cell followed by dim
-characters is classified as dim; other mixed styles stay mixed. Missing
-prompt/style evidence is unknown. This is a
-single visible line, not a full multiline draft or idle-prompt proof; inspect
-the full screen and transcript too. `director_input_verified` is always false:
-no terminal style establishes authorship or approval. Follow the skill's
-Director-input and Ctrl-U checks before clearing or closing.
+The launcher owns scoped unattended settings: worker memory and suggestions
+off, native question picker disabled, automatic compaction selected. The
+Director's own settings are unchanged. It merges inline JSON without losing
+other keys; settings files retain their private values and relative-rule base.
+Fix required file values through the reported preflight remedy, never by
+rewriting/inlining the file or changing personal settings. Relative settings
+files require an absolute `cd`; otherwise use an absolute literal path.
+Codex remote workers use the managed ingress, never a bypassing raw connection.
 
-A send failure after typing reports JSON on stdout, an explicit failure on
-stderr, and exits nonzero. `text_sent: true` (or `null` for uncertain text delivery), `input_may_contain_text: true`
-and `submission: not_attempted|unknown` preserve the partial outcome. Read
-both output and exit status; do not redirect away a refusal and send again.
-After verified non-submission, `clear --verified-target` sends Ctrl-U; read
-back empty input before another send. An unknown submission needs readback,
-not a retry.
+`read` returns the full screen and visible input style: empty, dim, non_dim,
+mixed or unknown. Style never proves authorship, approval, a complete multiline
+draft or idle state. Never record dim suggestions as Director input. Follow the
+full shutdown procedure's preservation and clear/readback checks before keys.
+A send failure reports partial delivery/submission on stdout and exits nonzero;
+read both outputs. Uncertain submission needs exact-session reconciliation,
+never another command appended blindly. Proven non-submission permits a
+verified-target clear and empty readback before a new send. Close refusals
+report whether the native close request may have started; only a definite
+preflight refusal can be repeated after its prerequisite is resolved.
 
 ## Handoff record
 
@@ -276,14 +238,8 @@ hold or repeatedly end/re-arm the monitor. A dead-key check may wait up to eleve
 seconds for native log delivery before reporting UNKNOWN. Healthy accounts do
 not wait for log publication.
 
-```sh
-uv run skills/supervisor/scripts/goal_board.py --owner OWNER --format markdown
-uv run skills/supervisor/scripts/fleet_counts.py --owner OWNER
-uv run skills/supervisor/scripts/compact_check.py --ledger <private-ledger.json> --state <private-check-state.json>
-uv run skills/supervisor/scripts/codex_idle_watch.py --ledger <private-ledger.json> --delivered-state <private-codex-delivered.json> --deadline-seconds 1800
-uv run skills/supervisor/scripts/codex_idle_watch.py --ledger <private-ledger.json> --harness claude --delivered-state <private-claude-delivered.json> --deadline-seconds 1800
-uv run skills/supervisor/scripts/oq.py OWNER/REPO#123 --owner <Director-login> --decision-author <recording-automation-login>
-```
+The canonical recurring commands and their private state pointers are in
+[Routine check](routine-check.md); use the individual helper CLI for rare modes.
 
 Use [Routine check](routine-check.md) for scheduled checks. Persistent idle
 services deliver immediate notices; otherwise bounded watches must run as
@@ -1789,36 +1745,15 @@ The helper exports the account's `env` ahead of the command, including an agent
 started after `cd`. A command that sets or unsets account variables refuses, including through
 common shell wrappers. Keep brief text in `--brief-file`, separate from the
 shell settings in `--command-file`.
-Receipts for the reader's App Group default go through the snapshot
-command's executable, Context Panel's `--record-launch` mode: one receipt on
-stdin, and the app writes it. macOS refuses that store to a process with no app
-behind it, such as a worker under the launchd-started tmux server, and the app
-reaches it from any process with no new grant
-([#2069](https://github.com/cbusillo/codex-skills/issues/2069)). Before any tab
-is created the launcher checks that executable is installed. Exit 64 (invalid
-receipt), exit 1 (storage failure), a timeout or an unnamed file refuses the
-launch with Context Panel's reason; nothing is launched without a confirmed
-receipt. An explicit `--storage-root` is written directly, because the app
-takes no root override: a temporary write probe checks it before any tab is
-created, is removed and is never counted. A probe failure names the error type
-and asks for write access; EPERM there also names macOS app-data protection
-and the app route. The private GUI receipt below is always written directly.
-Each receipt is written
-atomically immediately before the launch command is
-submitted, after its tab has a session. A failed or uncertain submit retains its
-receipt; inspect the tab before retrying. Direct writes prune only this
-launcher's day-old files (identified by the `supervisor-` filename suffix);
-`--record-launch` prunes the same files itself. A batch failure reports the completed launch identities and the failed tab,
-including whether its receipt was written and whether submission was attempted.
-List and read these tabs before retrying, rather than replaying the whole batch.
-
-```sh
-# Read-only previews; these do not write receipts.
-uv run skills/supervisor/scripts/account_choice.py --provider anthropic
-uv run skills/supervisor/scripts/account_choice.py --provider openai --count 3
-uv run skills/supervisor/scripts/iterm_tab.py new --window-id <id> --command-file <launch-file> --brief-file <brief-file> --account-provider anthropic
-uv run skills/supervisor/scripts/iterm_tab.py new --window-id <id> --command-file <first-launch> --brief-file <first-brief> --command-file <second-launch> --brief-file <second-brief> --account-provider openai
-```
+App Group launch receipts go through the installed snapshot executable's
+`--record-launch`, never a direct worker write. Explicit storage roots instead
+use a temporary write probe. Both routes preflight before terminal creation;
+errors, timeout or unconfirmed receipt names refuse launch without new grants.
+Receipt publication is atomic immediately before submission. Failed/uncertain
+submission retains its receipt and exact terminal identities: list/read before
+retrying, never replay the whole batch. Only this launcher's own expired receipt
+files are pruned. Use `account_choice.py --provider PROVIDER [--count N]` for
+read-only previews; normal `iterm_tab.py new` owns actual receipts.
 
 Read the returned account, source and reason before recording the session.
 Successful launch output reports environment variable names, without their
@@ -1835,133 +1770,61 @@ Snapshots older than
 [context-panel#961](https://github.com/cbusillo/context-panel/pull/961) carry
 no periods, so both are `null` (unknown) and the label is `null`.
 
-For source work on Codex's shared app server, launch with `codex --remote unix:// -C /absolute/repository`: the empty
-Unix endpoint resolves through the selected `CODEX_HOME`, so each account uses
-its own daemon. A fixed socket or WebSocket endpoint attaches to that server's
-account regardless of the exported home. Keep the per-session `-c` settings:
-removing `--remote` while retaining the reasoning override can select embedded
-mode instead of the shared daemon (see [the Q152 validation](https://github.com/cbusillo/codex-skills/issues/1613#issuecomment-6102593628)).
-`-C` (or `--cd`) must name the brief's repository explicitly: a shell `cd` alone
-leaves a remote worker in the daemon's working folder. The launcher requires
-exactly one existing literal absolute directory (no `~` or shell variables)
-and checks every launch in a batch
-before starting any daemon, creating terminals or preparing receipts.
-The preflight reads each selected account's `config.toml` `[projects]` entries.
-It checks the canonical directory, then its original spelling, then the Git
-trust root in the same order. For a registered linked worktree that root is
-the main checkout; its trust also covers repository subdirectories. An explicit
-directory entry takes precedence even when it has no trust level. The first
-matching entry must have `trust_level = "trusted"`. Trusting an unrelated parent
-such as `/Users/example/Developer` does not cover a repository root.
-An untrusted folder refuses with the selected home and an interactive Codex
-command to review its folder-trust prompt, naming the actual trust target.
-When an explicit entry already exists with an untrusted or absent trust level,
-the refusal instead asks you to review that entry and deliberately change it
-yourself if appropriate; launching Codex may not show another prompt.
-Review trust yourself before retrying;
-the launcher never edits config or supplies trust overrides. An unreadable or
-malformed config also refuses without printing its contents. The preflight uses
-only these selected-home project entries; it does not use managed, cloud, profile
-or CLI trust overrides as evidence. See the official
-[directory option](https://developers.openai.com/codex/cli/reference/) and
-[project trust setting](https://developers.openai.com/codex/config-reference/).
+For source work use `codex --remote unix:// -C /absolute/repository` with the
+per-session settings. The empty endpoint selects that account's daemon; fixed
+endpoints can attach to another account, and removing remote can select embedded
+mode. Every batch command needs exactly one existing literal absolute `-C`/`--cd`,
+without variables or tilde; shell `cd` alone does not set a remote worker's folder.
+Preflight precedes daemons, terminals and receipts. Selected-home project trust
+checks canonical, original and Git-root entries in order; explicit directory
+entries take precedence even with no trust level. Worktree trust roots are the
+main checkout; unrelated parent-folder trust never qualifies. The first match
+must be trusted and the config readable/valid. The launcher uses no other trust
+overrides and never edits config. Follow its exact-target interactive review
+or explicit-entry remedy yourself; it may not show a new prompt for an existing
+untrusted entry. See the native [directory option](https://developers.openai.com/codex/cli/reference/)
+and [project trust](https://developers.openai.com/codex/config-reference/).
 
-Claude launches use `cd /absolute/repository && exec claude ...`; a launch
-without that literal absolute `cd` refuses. Claude Code records folder trust as
-`projects["<root>"].hasTrustDialogAccepted` in each home's `.claude.json`
-(`~/.claude.json` for the default home), keyed on the repository root, or the
-main checkout's root for a linked worktree
-([permissions](https://code.claude.com/docs/en/permissions#what-runs-before-you-trust-a-folder)).
-Trust on a parent folder does not cover a repository inside it. Under the
-Director's decision in [#2100](https://github.com/cbusillo/codex-skills/issues/2100),
-the launcher sets that one key in every configured Claude home, and in the
-default home's `~/.claude.json` when it exists (Q471), before any tab, when the root is under `~/Developer`, or the folder is a linked worktree
-in the configured [worktree root](../../github/references/worktrees.md#per-host-configuration)
-whose main checkout is under `~/Developer`. For a worktree it records both the
-main checkout's root and the worktree's own root, because Claude's docs
-describe both. Symlinks are resolved first, in the launch folder and in a
-worktree's Git pointer, so a link under `~/Developer` that points elsewhere is
-outside that scope. Each write swaps the new file in atomically (macOS
-`renamex_np` `RENAME_SWAP`, Linux `renameat2` `RENAME_EXCHANGE`) and gets back
-the file it displaced. If a running session saved in between, its content is
-carried forward and swapped in again, so that save is never discarded. A save
-after the swap replaces the launcher's file whole; the readback then applies
-the key again. This relies on Claude Code saving by renaming a new file over
-`.claude.json`, which its leftover `.claude.json.tmp.*` files show. Any other folder launches only
-when the selected home already trusts its root; otherwise the launch refuses
-and names the home, so you can open `claude` there and review the dialog
-yourself. A configured home without `.claude.json` also refuses before any
-write; a default home without one is skipped, never created. The launcher leaves every other key, including the login, unchanged.
-For daemon-routed launches, before creating any tab or launch receipt, `iterm_tab.py new --account-provider openai`
-runs `CODEX_HOME=<selected-home> codex app-server daemon start` for each selected
-home, with a 30-second command timeout. Native `start` reuses a healthy running
-daemon; it also brings one back after a reboot. It does not use `bootstrap`,
-which can stop existing work. After a successful exit, the launcher checks that home's
-`app-server-control/app-server-control.sock` with a one-second connection timeout.
-If startup fails or the socket is still unavailable, the whole launch refuses,
-naming that home, the failure, and its shell-quoted native command for diagnosis.
-The launcher does not read tokens or change account configuration. The check
-proves the socket accepts connections; it cannot
-guarantee that the daemon stays running until the launch command executes.
+Claude needs literal `cd /absolute/repository && exec claude ...`.
+Under [the existing #2100 decision](https://github.com/cbusillo/codex-skills/issues/2100),
+launcher trust covers roots under `~/Developer` and registered configured-root
+worktrees whose main checkout is there. It resolves symlinks first and records
+both worktree and main roots in every configured Claude home and an existing
+default config; parent-folder trust never qualifies. It changes only the trust
+key, atomically preserving concurrent saves and all other keys/login data.
+Missing configured configs refuse; missing default configs are not created.
+Other roots must already be trusted in the selected home or refuse for the
+Director's interactive review. The launcher never broadens that scope.
 
-The launcher then connects through the native Unix WebSocket transport and checks
-admission with `thread/resume` using an intentionally invalid native UUID;
-the daemon rejects draining admission before validating that UUID. The normal
-invalid-session-id response proves admission is open without creating a thread,
-running hooks or starting inference. Unknown admission responses and admission
-timeouts refuse. One ten-second protocol budget covers initialization, admission,
-the optional `plugin/list` check for browser-required launches, and the thread
-inventory after a draining response. Each step uses the time left in that same
-budget; the known-open path does not read unrelated loaded threads. Thread metadata reads
-can fail or wait independently of admission, and scanning them first made a busy
-account's launch depend on every other loaded thread ([#2182](https://github.com/cbusillo/codex-skills/issues/2182)).
-This protocol check is version-sensitive; an unfamiliar response needs diagnosis,
-not a restart or a fallback that treats the socket as healthy.
+Before remote Codex launch, native `daemon start` on each selected home reuses
+healthy daemons or brings back stopped ones with a bounded command/socket check.
+It never uses bootstrap or reads tokens/changes accounts. Success proves a
+connection now, not continued daemon health. Native WebSocket admission probes
+an invalid UUID through `thread/resume`, without creating a thread, hooks or
+inference. Initialization, admission, optional browser plugin check and draining
+inventory share the protocol deadline. Unknown responses/timeouts refuse;
+healthy admission never waits on unrelated loaded threads.
 
-Never restart or stop a draining daemon from the launcher. After draining admission
-is confirmed, the launcher reads all loaded threads with `thread/loaded/list`
-and metadata-only `thread/read` within the remaining protocol budget, including
-workers with no terminal. A refusal reports the active-thread count only after
-the complete inventory succeeds; otherwise it preserves the draining reason,
-reports the count as unknown, and names the failed method or RPC error code when
-available. No inventory result permits restart. Wait for the daemon to finish, or use
-Context Panel's account reader and `--account <name>` to choose another configured
-account explicitly. Before any separately authorized manual restart, freshly
-inspect the daemon's active threads and refuse while one is running or their
-state is unknown. Terminal clients and dead tmux panes cannot prove a worker
-has ended; a remote Codex thread can continue after its terminal disappears.
+Never restart/stop a draining daemon. Complete loaded-thread metadata inventory
+is required to report its active count; failed/partial inventory reports unknown
+and the method/error, never permission to restart. Wait or explicitly select
+another configured Context Panel account. Any separately authorized manual
+restart still requires fresh complete inactive-thread proof; dead terminal/pane
+state does not prove a remote worker ended. An unfamiliar admission response
+needs diagnosis, never a socket-only healthy fallback.
 
-Both terminal backends extend the launch command timeout to preparation reads,
-including worktree trust discovery and resume source files. A stalled read returns
-`preparation_unavailable` with input paths and target identity. Inspect the
-preserved attempt and any pending macOS file-access prompt before deciding what
-to do. Account probes and writes retain their own bounds and cleanup. This is
-qualified with interruptible FIFO reads; interruption of a real pending macOS
-privacy check has not been observed. The launcher never relaunches, changes
-permissions or restarts a server to recover from this timeout.
-
-Both terminal backends observe the first two seconds after submission. An early
-exit, including a failed Codex bootstrap, returns `launch_failed`, retaining the exact
-terminal identity, any already-written count-only receipt, and available last
-output (tmux also reports available exit status or termination signal). An iTerm profile that immediately closes
-the exited session can make its final screen unavailable. Inspect those terminals before retrying;
-the launcher never replays a batch automatically. This observation catches early
-exit and a visible Codex hook-review prompt (`launch_blocked`), not full agent
-readiness or a later failure. iTerm replaces the interactive
-shell with the launch command in a scoped zsh process, so an agent exit ends
-that exact session even if the launch file omitted `exec`. It uses the native
-session termination monitor; tmux reads pane state without driving iTerm. Brief
-text and echoed commands are never treated as startup-error evidence.
-Both backends use non-interactive zsh. iTerm inherits the exported environment;
-tmux forwards the launcher variables documented in [tmux launches](#tmux-launches).
-Use executable paths and explicit exports in launch files for tools that need
-them; interactive-only aliases, functions and directory-change hooks are not
-loaded by that scoped shell. A failed observation returns an unknown dead state,
-never proof that the submitted worker exited.
-Some tmux servers leave both cause fields empty even for a confirmed dead pane;
-the launcher still reports failure with its output, rather than inventing a cause.
-Failure screens can include echoed account-home exports and the private brief;
-keep the raw launch diagnostic private and redact it before public reporting.
+Preparation bounds include worktree trust and resume source reads. A stalled
+read reports `preparation_unavailable` with preserved paths/target; inspect it
+and any macOS privacy prompt without relaunching, changing permissions or
+restarting a server. Actual pending-macOS-prompt interruption remains unqualified.
+First-screen observation catches early exit and visible hook-review prompts,
+not complete readiness. Failed/unknown observations preserve identities,
+receipts and available cause/output; never infer a missing cause or exit proof.
+Inspect before retrying. iTerm uses scoped zsh/native termination monitoring;
+tmux reads pane state without driving iTerm. Echoed briefs are not startup proof.
+Both use noninteractive zsh: use executable paths/explicit exports, not aliases
+or interactive directory hooks. Keep raw screens/briefs/account-home diagnostics
+private and redact public reports.
 
 Accounts live only in private config, the first `[accounts]` table in
 `$CODE_HOME`, then `$CODEX_HOME`, then `~/.code`, under
@@ -1977,12 +1840,6 @@ name = "<local nickname>"
 provider = "anthropic"
 context_panel_configuration_id = "<configurationID from the snapshot>"  # or context_panel_label
 env = { CLAUDE_CONFIG_DIR = "<account config dir>" }
-
-[[accounts.account]]
-name = "<default-profile nickname>"
-provider = "anthropic"
-context_panel_label = "<default profile label in the snapshot>"
-env = {}
 
 [[accounts.account]]
 name = "<existing AGY login nickname>"
@@ -2268,167 +2125,81 @@ it does not transfer another claim or authorize editing a sibling branch.
 
 ### Release a verified finished session
 
-For a normal finished worker, run `session_closeout.py` as
-[Routine check](routine-check.md) describes. Its one-line receipt names the
-first failed gate or completion and private evidence. A failed gate preserves
-the ledger and terminal. It never releases a live worker's claims or archives
-a refused finish. Pending prompts, nonempty input, thread-only sessions,
-unknown identity and uncertain sends use the full shutdown procedure instead.
-Keep the original evidence directory on recovery; mutation intents prevent
-replaying uncertain sends, launches, finish or close requests.
+Normal shutdown uses `session_closeout.py` under [Routine check](routine-check.md).
+Supply its actual posted `--handoff-url` when absent from the ledger; it is
+verified and saved before shutdown. Failed gates preserve the source. Required
+reviews, nonempty/unknown input, prompts and interrupted sources stay with the
+full shutdown/recovery procedure. Preserve the original journal on recovery:
+definite refusals can recover after prerequisites change, while uncertain
+sends/launches/closes are never replayed under another directory. A genuinely
+new launch generation has its own evidence.
 
-`release_session_claims.py finish` remains the owner of post-exit closure and
-claim discovery. Run it only after independently verified actual exit, never
-as an active-session escape from the pre-exit claim gate. Default is preview:
-
-```sh
-uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <private-ledger.json> --session-id <finished-native-id> --supervisor-session <current-native-id> --owner OWNER --confirm-session-ended
-```
-
-Inspect preview, then add `--apply` to record closure. Finish reports existing
-canonical releases and unresolved claim IDs; it posts no attestation or release
-and changes no status, wait, blocker, branch or worktree. A terminal closes only
-after successful finish, then disappears in one fresh terminal inventory.
-`claims_clear` and complete pre-exit coverage, actual process exit, finish's
-`ok: true` and `needs_reconciliation: false` are separate gates. Unknown and
-unreleasable claims remain in the ledger. Scope omission discovers accessible
-repositories under `--owner`; `--repo` is only for disposable trials and is
-reported as explicit scope. Empty scope, another owner or another automation
-identity cannot become a fleet all-clear or a personal-identity fallback.
-
-The shared host-local closed log is
-`~/.code/skill-data/supervisor-closed-sessions.json`; ownership leases and the
-canonical account inventory `~/.code/skill-data/supervisor.toml` use the same
-user-wide location independently of account-home overrides. An alternate
-`--closed-log` is private recovery evidence, not successor authority.
-The log retains native identity, transcript, PID/TTY, exact `handoff_url`,
-original `ended_at`, verified `verdict_at` and `process_exit_verified`.
-Retries preserve original times; log-write, notice, conversion and attestation
-times never substitute for actual closure. For latency use ended minus verdict.
-Never invent missing metadata, infer an alias from its worker token, rewrite
-an earlier closure or move it forward to match later evidence.
-
-Finish rechecks unqualified output, process and TTY identity, native execution,
-queues, background work, schedules, loaded goals, original/effective and touched
-accounts, all authenticated relevant transcript copies, and chronology through
-the recorded cutoff. Use the existing account mapping, `--account-config`, or
-explicit `--transcript-root` directories when mapping is absent. Unknown
-hosts, ID-less picker/GUI clients and peers remain the Supervisor's actual
-verification responsibility; `--confirm-session-ended` attests current exit,
-not a historical assumption. A merged PR, old log, safe message alone or missing
-inventory cannot prove closure. Reused PIDs, uncertain TTY ancestry, newer
-native work, malformed or changing source records and missing native coverage
-refuse. Preserve the original source and follow the reported next action.
-The maintained [release implementation](../scripts/release_session_claims.py)
-and [native proof](../../github/scripts/github_plan_native.py) own the exact
-checks and receipt schema; callers never bypass their refusal.
-
-Managed Codex clients use the private RPC ingress and shared nonblocking
-per-thread ownership lease. Queue/resume/turn/approval and source attachments
-invalidate old end proof before forwarding. A claim freezes its predecessor;
-read-only metadata does not release a freeze or erase an earlier action floor.
-Do not delete ownership files, invent launch facts, switch accounts, restart a
-running daemon or treat an acknowledgement as completion. Complete current
-native proof may resolve an invalidation; exact canonical release is still
-required to end ownership. UNKNOWN never supplies that proof.
-
-For a stopped source with stale input, use explicit queue preview and one
-observed entry ID plus full digest:
+The pre-exit claim check must be clear with complete coverage. Only after
+independently verified actual exit, the maintained finish helper owns closure
+and canonical release discovery. Manual recovery previews before apply:
 
 ```sh
-uv run skills/supervisor/scripts/codex-session.py queue-cancel --session-id <native-id> --codex-home <source-home> --ledger <original-ledger.json>
-uv run skills/supervisor/scripts/codex-session.py queue-cancel --session-id <native-id> --codex-home <source-home> --ledger <original-ledger.json> --queued-submission-id <selected-id> --entry-sha256 <observed-sha256> --apply
+uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <private-ledger.json> --session-id <native-id> --supervisor-session <supervisor-id> --owner OWNER --confirm-session-ended
 ```
 
-The original owned ledger or original source-host `--termination-record` must
-bind the exact generation. Keep it private, regular, owned by the current user
-and unwritable by group/other; an output attestation cannot replace it. Apply
-requires **NotLoaded**, repeats physical/native checks under ownership, preserves
-unrelated entries and successor freezes, and checks deletion readback and clean
-teardown. Never unload, archive, drain or resume to force qualification.
-Native deletion has no digest compare-and-swap against unmanaged same-ID edits;
-uncertainty after possible deletion requires inspection without replay.
-Cancellation supplies neither completion nor claim release.
+`--apply` records closure and reports existing releases; finish posts no new
+attestation/release and changes no wait, blocker, status or retained artifact.
+Require `ok: true` and `needs_reconciliation: false` before guarded close and
+confirmed disappearance. Unknown claims/writes stay in the ledger. The canonical
+user-wide log/account inventory under `~/.code/skill-data` is independent of
+provider homes; alternate logs are private evidence, not successor authority.
+Preserve original source, transcript, process/terminal generation, handoff and
+actual ended/verdict times. Never invent metadata, move a cutoff forward,
+link aliases by worker token or infer exit from log age, silence or a merged PR.
 
-If native recovery needs a stopped daemon, prove it stopped and use its exact
-configured home with `env CODEX_HOME="<source-home>" codex app-server daemon start`.
-Never restart a running/draining daemon or infer permission from unknown admission.
-Resume only an exited source through the guarded launcher, preserving its ledger:
+[Release](../scripts/release_session_claims.py) and
+[native proof](../../github/scripts/github_plan_native.py) own all process,
+queue, execution, schedule/goal, account-copy and chronology checks. Missing,
+malformed, changing or newer source facts stay unknown. Use existing mappings,
+`--account-config` or explicit transcript roots. Unknown hosts, ID-less clients
+and peers still need actual Supervisor verification; the confirm flag attests
+current exit. Other owners/Apps never authorize identity switching. Disposable
+`--repo` scope never becomes a fleet all-clear. Read-only metadata cannot clear
+an action barrier/freeze; never delete leases or restart running/draining daemons.
+A stopped daemon may use its exact configured-home native `daemon start` route.
 
-```sh
-uv run skills/supervisor/scripts/iterm_tab.py --backend tmux new --window-id <container-id> --resume-session-id <native-id> --ledger <original-ledger.json> --account-provider openai
-uv run skills/supervisor/scripts/codex-session.py status --session-id <native-id>
-```
-
-Supply no command/brief files or browser flags for resume. Inspect the returned
-terminal and idle input before sending a fresh safe turn. Preserve native
-`session_id`, transcript and handoff; record the verified recovery's actual
-terminal ID, PID/TTY and generation, never old coordinates. The launch result's
-`session_id` is terminal identity; `native_session_id` is the source. Receipt or
-submission uncertainty preserves the exact pane. A frozen predecessor needs a
-new thread claimed through `gh-plan.py`, not an alternate resume. A genuinely
-resumed-and-ended source or corrected handoff uses a fresh private closed log,
-preserving earlier evidence. Account/fingerprint drift is not authority to
-rewrite original closure times; use supported ordinary/unloaded recovery.
+An exited Codex source resumes only through guarded `new --resume-session-id`
+with its original owned ledger/account and no command/brief/browser files.
+Inspect idle input before a fresh safe turn; preserve native identity/handoff
+and record this recovery's verified terminal, PID/TTY and generation. A frozen
+predecessor needs a new claimed thread. Stale queued input uses `queue-cancel`
+preview on the original owned ledger/source-host termination record, then one
+observed ID/full digest apply to **NotLoaded** only. Never unload/archive/drain
+or resume to qualify. Cancellation preserves unrelated entries/freezes, proves
+no completion/release, and uncertainty requires readback without replay.
 
 #### Finish claim reconciliation
 
-Read [Planning: Claim](../../github/references/cli-reference.md#planning-claim)
-and its abandoned-claim procedure before reconciling. Select each exact source
-from its canonical discussion and verify author/native identity. Use finish's
-original `ended_at` in the attestation. Cite a genuine handoff or the permitted
-original structured ownership record, labeled as ownership context rather than
-an invented handoff. Preview the exact source and verified related IDs through
-`gh-plan.py release-claim`, apply only after its checks pass, then rerun finish.
-Never reconstruct handoffs from shell commands or fallback summary threads.
+Use [Planning: Claim](../../github/references/cli-reference.md#planning-claim)'s
+abandoned-claim path: exact canonical source/related IDs, verified author/native
+identity, original ended time, genuine handoff or honestly labeled permitted
+ownership context; preview/apply release-claim and rerun finish. After an attempt,
+follow `release_recovery_action`, resolve unknown writes and preserve selected
+IDs before new evidence. Never rebuild handoffs from shell commands/caches.
+Aliases, foreign authors, status-only ownership and failed reads stay unresolved.
 
-After a prior attempt, inspect producer/transport receipts and resolve unknown
-writes first. Follow `release_recovery_action`; preserve selected related IDs
-and reuse/deduplicate confirmed publication. A later qualifying attestation
-needs no corrected evidence or moved closure time. Aliases without native
-identity, foreign-author ownership, unresolved follow-ups, status-only markers
-and failed canonical reads remain unresolved. `issue_refusals`,
-`pr_claim_handoffs` or `needs_reconciliation` prevent an all-clear; a body marker
-matching a valid released source alone is ended ownership, not a new claim.
+Historical backfill preserves every original verified source row and retained
+PR, uses existing matching checkouts, and previews before applying the canonical
+attestation/release path. Missing historical PID/TTY is an explicit Supervisor
+attestation, never invented evidence. Conflicting URLs/times or bad identity
+preserve the whole session; malformed whole-ledger structure/duplicate IDs refuse
+globally. Only confirmed issue-scoped refusals can leave independent verified
+claims proceeding; source uncertainty, unknown writes or retained/source-worktree
+peers stop that source. Use backfill's `--closed-log`, `--checkout-root`,
+`--confirm-session-ended`, targeted `--session-id` and bounded deadline selectors.
+Input inventories are never rewritten; PR handoffs stay owned until their route
+succeeds. Original records and timestamps, never output attestations, bind recovery.
 
-For historical backfill, supply original verified closure records or the
-verified inventory with exact repo/issue/claim/native IDs, original `ended_at`,
-`safe_exit_yes: true`, `still_running: false`, and optional agreed `handoff_url`
-and retained PR URLs. Missing PID/TTY in historical inventory is an explicit
-Supervisor attestation, never invented process facts. Verify actual current
-inactivity including ID-less clients and unknown hosts. Keep every source row
-and retained PR; conflicting URLs/times or a bad row preserve the whole session
-group. A reused worker token never links native sessions.
-
-```sh
-uv run skills/supervisor/scripts/release_session_claims.py backfill --closed-log <private-closed.json> --supervisor-session <current-native-id> --owner OWNER --checkout-root <existing-checkout-directory> --confirm-session-ended
-```
-
-Inspect default preview before `--apply`. Backfill requires existing matching
-repository checkouts before any closure/release write. Its preview cannot prove
-a later posted attestation or write readback. Apply uses the maintained canonical
-attestation and `release-claim` preview/apply path. PR-only handoffs stay owned
-until that supplied route succeeds. Input inventories are never rewritten.
-Malformed whole-ledger structure or duplicate IDs refuse the log; correct them
-against original evidence. Per-session and confirmed issue-scoped refusals can
-leave independent verified work proceeding; source uncertainty or unknown
-writes stop that source's remaining release steps. Visible peers in retained
-or source worktrees still block, including peers with different native IDs.
-Use `--session-id` to reconcile one record and `--deadline-seconds` for a bounded
-larger discovery window. Discovery includes closed issues and requires complete
-coverage. Another owner's records use their existing authorized identity route.
-
-Normal finish/release precedes guarded terminal closure. Interrupted sources
-use termination recovery before physical cleanup. The terminal helper rechecks
-owned nonce/location, PID/TTY, native empty-shell proof or dead-pane ancestry,
-rejects splits, and issues one non-force close. Surviving iTerm shell scripts,
-helpers, unknown input or uncertain/reused PIDs preserve the tab. Physical cleanup
-of an old dead pane does not prove a resumed source ended. Confirm disappearance
-once; never force or retry uncertain closure. See [native shell-input proof](#native-shell-input-proof).
-
-Persistent service runners use temporary uv caches; apply changed service
-settings only at the owning Supervisor's normal restart boundary. Never stop
-another session for cache maintenance.
+Normal finish precedes close; termination recovery precedes interrupted cleanup.
+Native close owns nonce/location, PID/TTY, unsplit and shell/dead-pane proof.
+Physical pane cleanup does not prove a resumed source ended. Preserve uncertain
+closure without force/replay. See [shell-input proof](#native-shell-input-proof).
+Service/cache changes wait for their owning Supervisor's normal restart boundary.
 
 ## Pending reviews of record
 

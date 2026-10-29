@@ -369,8 +369,11 @@ class Terminal:
         # Check liveness and the launch nonce inside the server as well. Remove
         # only the dead pane, so a concurrent split never kills a sibling.
         condition = "#{&&:#{pane_dead},#{==:#{@supervisor_identity}," + marker + "}}"
-        self.run("if-shell", "-F", "-t", before["pane_id"], condition,
-                 "kill-pane -t " + before["pane_id"])
+        try:
+            self.run("if-shell", "-F", "-t", before["pane_id"], condition,
+                     "kill-pane -t " + before["pane_id"])
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
+            raise iterm_tab.CloseUncertain("native close may have been sent; inspect the exact pane without replay") from error
         return {"session_id": identity, "close_requested": True, "readback_required": True}
 
 
