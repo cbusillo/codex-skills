@@ -5,9 +5,15 @@
 # ///
 
 import argparse
+import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -184,9 +190,45 @@ class QuestionRecordTests(unittest.TestCase):
         view = record.read_record(storage.read(self.source["url"]))
         self.assertEqual(view["record"], question())
         self.assertEqual(view["author"], self.source["author"])
+        output = StringIO()
+        with (
+            patch.object(record.delivery.oq, "fetch", return_value=[self.source]),
+            patch.object(sys, "argv", ["oq.py", "show-question", self.source["url"]]),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(record.delivery.oq.main(), 0)
+        self.assertEqual(json.loads(output.getvalue()), view)
         counter = record.question_id.counter_path()
         self.assertFalse(counter.exists())
         self.assertFalse(counter.with_name(counter.name + ".lock").exists())
+
+    def test_public_create_command_validates_and_renders_without_allocation(self) -> None:
+        path = Path(self.temporary.name) / "question.json"
+        value = question()
+        path.write_text(json.dumps(value))
+        command = [
+            sys.executable,
+            str(Path(__file__).with_name("oq.py")),
+            "create",
+            "--record-file",
+            str(path),
+            "--owner",
+            self.args.owner,
+            "--dry-run",
+        ]
+        environment = {**os.environ, "HOME": self.temporary.name, "CODEX_HOME": self.temporary.name}
+        valid = subprocess.run(command, env=environment, text=True, capture_output=True, timeout=15)
+        self.assertEqual(valid.returncode, 0, valid.stderr)
+        for field in ("decision", "basis", "comparison", "manual"):
+            self.assertIn(value[field], valid.stdout)
+        self.assertIsNone(record.RECORD.search(valid.stdout))
+        value.update(basis=[], manual="")
+        path.write_text(json.dumps(value))
+        invalid = subprocess.run(command, env=environment, text=True, capture_output=True, timeout=15)
+        self.assertNotEqual(invalid.returncode, 0)
+        for field in ("basis", "manual"):
+            self.assertIn(field, invalid.stderr)
+        self.assertFalse(record.question_id.counter_path().exists())
 
     def test_registration_failure_keeps_saved_source(self) -> None:
         self.args.queue = "example/direction#9"
