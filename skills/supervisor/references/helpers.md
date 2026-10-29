@@ -1101,9 +1101,7 @@ earlier SHA on its owning issue and in the Supervisor report as
 landing that superseded it, then check the latest landing. A later runtime
 passing does not prove an earlier revision passed.
 
-Run `catalog_landing.py --config <private-landing.json> --evidence <private-evidence>`
-from the catalog's Supervisor scripts with `uv run`. The private JSON contains
-pointers and exact identities, never copied skill contents:
+Run `uv run skills/supervisor/scripts/catalog_landing.py --config <private-landing.json> --evidence <private-evidence>` with private identity pointers:
 
 Set `repo` to `OWNER/codex-skills`, integer `pr`/`issue`, and the full merged
 `landing_sha`. Supply absolute `source_worktree` (retained landed source),
@@ -1124,7 +1122,8 @@ use no tools and arrive within two minutes; launcher return and echoed input
 alone do not pass. It then sends one targeted handoff request to each idle empty
 prompt, saves its exact native-session issue handoff, and delegates normal closeout.
 A saved handoff reruns closeout directly, preserving its URL and native ID even
-after retirement. Manual recovery reuses `<catalog-evidence>/<harness>-closeout`. A Codex `register_ledger` failure preserves its launch object:
+after retirement. Manual recovery reuses `<catalog-evidence>/<harness>-closeout`.
+A Codex `register_ledger` failure preserves its launch object:
 save that object as a private receipt, run `iterm_tab.py register --receipt-file
 <retained-launch.json> --ledger <ledger.json>`, then rerun with the same evidence.
 Registration reads the retained native receipt; it never relaunches the worker.
@@ -1877,11 +1876,6 @@ neither a personal profile nor `.zshrc`. Uncertain input preserves the tab.
 Claude final `exec` uses `exec env` for account-move opt-in; returning launches
 contain it in a subshell. The Director's profile governs automatic tab closure.
 
-### Verify and close
-
-Use [shutdown](../SKILL.md#close-finished-sessions-on-every-notice-and-check)
-for every verification; `session_closeout.py` handles only its normal path.
-
 ### Recovery after a host or terminal crash
 
 A killed worker cannot supply its own verdict. A Supervisor or direction session
@@ -1966,11 +1960,9 @@ resolution still apply; release grants no product, runtime or merge authority.
 
 ### Release a verified finished session
 
-Normal shutdown uses `session_closeout.py` under [Routine check](routine-check.md).
-Supply its actual posted `--handoff-url` when absent from the ledger; it is
-verified and saved before shutdown. A different recorded handoff refuses. Failed gates preserve the source. Required
-reviews, nonempty/unknown input, prompts and interrupted sources stay with the
-full shutdown/recovery procedure. Preserve the original journal on recovery:
+Normal shutdown uses [Routine check](routine-check.md); exceptional input,
+reviews and handoffs follow [shutdown](../SKILL.md#close-finished-sessions-on-every-notice-and-check).
+Preserve the original journal on recovery:
 definite refusals can recover after prerequisites change, while uncertain
 sends/launches/closes are never replayed under another directory. Completed retirement
 can recover from the canonical closure with the same generation; every current

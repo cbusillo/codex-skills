@@ -13,7 +13,7 @@ from pathlib import Path
 from contextlib import nullcontext
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import catalog_landing
 import check_changes
@@ -25,6 +25,10 @@ import session_closeout
 import session_liveness
 import tmux_terminal
 import codex_session_proxy
+
+
+def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    return patch.object(target, name, *args, **kwargs)
 
 
 class ChangesTests(unittest.TestCase):
@@ -184,7 +188,7 @@ class OperationTests(unittest.TestCase):
         original = {"state": "turn_ended", "size": 5, "last_text": "landing", "safe_verdict": False}
         final = {**original, "size": 10, "safe_verdict": True, "last_text": "Posted the handoff. Safe to exit: yes"}
         with (
-            patch("catalog_landing.session_status", side_effect=[original, final]),
+            patch_attr(catalog_landing, "session_status", side_effect=[original, final]),
             patch.object(catalog_landing.time, "sleep"),
         ):
             self.assertEqual(catalog_landing.observe({}, "landing", after_size=5, final=True), final)
@@ -248,7 +252,7 @@ class OperationTests(unittest.TestCase):
         operation.state["steps"]["codex_launch"] = {"complete": False}
         check_operation.save_state(self.root / "codex_launch.json", {"stdout": json.dumps({"failed_launch": {"phase": "register_ledger", "launch": launch}})})
         config: dict[str, Any] = {"repo": "owner/catalog", "issue": 1, "landing_sha": "a" * 40, "ledger": str(ledger)}
-        with (patch("catalog_landing.read_launch_receipt", return_value=native),
+        with (patch_attr(catalog_landing, "read_launch_receipt", return_value=native),
               patch.object(subprocess, "run") as run,
               patch.object(catalog_landing, "observe", side_effect=check_operation.GateFailed("response", "fixture"))):
             with self.assertRaises(check_operation.GateFailed) as failure:
@@ -261,7 +265,7 @@ class OperationTests(unittest.TestCase):
         comments = [{"id": number, "created_at": "2026-01-01T00:00:00Z", "user": {"login": "agent[bot]"},
                      "body": "Session: native " + config["landing_sha"], "html_url": "comment-" + str(number)} for number in (1, 2)]
         with (patch.object(catalog_landing, "observe"),
-              patch("catalog_landing.GitHubReader", return_value=SimpleNamespace(paged_json=lambda *_, **__: comments)),
+              patch_attr(catalog_landing, "GitHubReader", return_value=SimpleNamespace(paged_json=lambda *_, **__: comments)),
               patch.object(catalog_landing.github_identity, "automation_login", return_value="agent[bot]"),
               patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, '{"ok":true}', "")) as close):
             self.assertEqual(catalog_landing.verify_smoke(config, operation, "codex", "openai", self.root), "comment-2")
@@ -285,6 +289,14 @@ class OperationTests(unittest.TestCase):
                                                           "session_id": "native", "transcript": "source"}))
 
     def test_send_preflight_is_distinct_from_partial_delivery(self) -> None:
+        for text in ("/quit", "/exit"):
+            for draft, footer in (("unfinished " + text, []), (text + " unfinished", []), (None, []), (text, ["tab to queue message"])):
+                read = AsyncMock(return_value={"screen": ["› " + (draft or ""), *footer],
+                                               "input_line": {"line_index": 0, "style": "non_dim", "text": draft}})
+                press = AsyncMock()
+                with patch.object(iterm_tab.asyncio, "sleep", new=AsyncMock()), self.assertRaises(iterm_tab.SendFailure):
+                    asyncio.run(iterm_tab.submit_message("exact", text, True, read, press))
+                press.assert_not_awaited()
         class Terminal:
             dead = True
             writes: list = []
@@ -309,16 +321,10 @@ class OperationTests(unittest.TestCase):
         native = {"session_id": "native-claude", "home": str(self.root)}
         transcript = self.root / "projects" / "fixture" / (native["session_id"] + ".jsonl")
         transcript.parent.mkdir(parents=True)
-        transcript.write_text(
-            json.dumps(
-                {
-                    "sessionId": native["session_id"],
-                    "type": "assistant",
-                    "message": {"content": [{"type": "text", "text": "acknowledged"}], "stop_reason": "end_turn"},
-                }
-            )
-            + "\n"
-        )
+        transcript.write_text(json.dumps({
+            "sessionId": native["session_id"], "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "acknowledged"}], "stop_reason": "end_turn"},
+        }) + "\n")
         launch = {"session_id": "owned-terminal", "pid": 8, "tty": "/dev/ttys001", "backend": "tmux"}
         ledger = self.root / "ledger.json"
         with patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", "claude")]):

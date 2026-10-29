@@ -537,6 +537,8 @@ async def submit_message(
                     and any(re.search(r"\btab to queue(?: message)?\b", line) for line in footer)):
                 key = "\t"
         if submit:
+            if text in {"/quit", "/exit"} and (prompt.get("text") != text or key != "\r"):
+                raise SendFailure(identity, "not_attempted", "exit input changed or would be queued")
             submission = "unknown"
             await press(key)
             pressed = True

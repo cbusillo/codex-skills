@@ -2868,7 +2868,7 @@ class TerminalTests(unittest.TestCase):
                     self.assertEqual(press.await_count, int(submit))
 
     def test_exit_readback_allows_delayed_process_reaping(self) -> None:
-        before = {"screen": [], "input_line": {"line_index": None}}
+        before = {"screen": ["› /quit"], "input_line": {"line_index": 0, "text": "/quit"}}
         observer = Mock(side_effect=[False, True])
         with patch("asyncio.sleep", new=AsyncMock()):
             result = asyncio.run(iterm_tab.submit_message("exact", "/quit", True,
