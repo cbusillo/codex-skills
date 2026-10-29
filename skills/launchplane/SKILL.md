@@ -355,7 +355,7 @@ commands:
         "--reason",
         "<reason>",
       ]
-    purpose: Saves a private service review for removing named stored runtime settings and returns its review id and digest; it has no apply.
+    purpose: Saves a private service review for removing named stored runtime settings; this CLI exposes review and readback, not the producer's separately authorized apply.
   - name: launchplane-runtime-setting-removal-readback
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -1440,8 +1440,10 @@ reviewed-inspect procedure and verify the situation.
   settings. Output holds names and digests only, never values or the reason.
   A dry run saves a private service review and returns its `review_id` and
   `plan_sha256`. Readback repeats the same keys and reason with that review id
-  and digest. There is no apply here. Apply belongs to the signed-in admin,
-  and a dry-run digest does not authorize it. Read the
+  and digest. This CLI has no apply command; that is a client limitation, not
+  a universal human-only producer rule. The producer separately authorizes a
+  narrow Director `local_operator` instance-preview apply as well as legitimate
+  signed-in admin scopes; the review digest grants neither. Read the
   [helper contract](references/write-action-helper-contract.md#runtime-setting-removal-review).
 - `POST /v1/product-profiles/{product}/owner`: Bounded helper path
   that records or clears a product's Client (`product-owner-dry-run` /
