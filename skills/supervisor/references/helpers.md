@@ -334,9 +334,9 @@ presentation under the shared [question queue rules](../../references/talking-wi
 These commands use the configured automation identity and read back their writes:
 
 ```sh
-uv run skills/supervisor/scripts/oq.py ORIGINAL_QUESTION_URL --owner OWNER --decision-author TRUSTED_BOT --queue OWNER/CATALOG#QUEUE --register
-uv run skills/supervisor/scripts/oq.py --owner OWNER --decision-author TRUSTED_BOT --queue OWNER/CATALOG#QUEUE
-uv run skills/supervisor/scripts/oq.py --owner OWNER --decision-author TRUSTED_BOT --queue OWNER/CATALOG#QUEUE --ack ORIGINAL_QUESTION_URL --delivery-url PRESENTATION_RECEIPT_URL
+uv run skills/supervisor/scripts/oq.py ORIGINAL_QUESTION_URL --owner OWNER --queue OWNER/CATALOG#QUEUE --register
+uv run skills/supervisor/scripts/oq.py --owner OWNER --queue OWNER/CATALOG#QUEUE
+uv run skills/supervisor/scripts/oq.py --owner OWNER --queue OWNER/CATALOG#QUEUE --ack ORIGINAL_QUESTION_URL --delivery-url PRESENTATION_RECEIPT_URL
 ```
 
 Name the queue once in the private `skill-data/supervisor.toml`, beside
@@ -349,7 +349,8 @@ whose question is not registered there
 queue = "OWNER/CATALOG#QUEUE"
 ```
 
-Pass each trusted decision/registration author's login with `--decision-author`.
+The configured automation login and previously trusted automation logins are
+trusted by default. Use `--decision-author` only for an additional trusted recorder.
 The read-only queue view recovers registered source discussions on takeover and
 also accepts source items from the worker ledger/handoffs. Normal queue reads
 select registered URLs; explicit question URLs select just those questions,

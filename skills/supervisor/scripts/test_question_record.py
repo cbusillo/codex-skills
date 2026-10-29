@@ -47,7 +47,8 @@ class QuestionRecordTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.home = patch.dict(os.environ, {"CODE_HOME": self.temporary.name})
+        self.home = patch.dict(os.environ, {"CODE_HOME": self.temporary.name, "GH_WITH_ENV_TOKEN_EXPECTED_LOGIN": AUTHOR,
+                                            "CODEX_AUTOMATION_BOT_LOGINS": ""})
         self.home.start()
         self.addCleanup(self.home.stop)
         self.config = patch.object(record.question_id, "configured_queue", return_value=None)
@@ -199,18 +200,20 @@ class QuestionRecordTests(unittest.TestCase):
                     self.assertEqual(record.delivery.oq.main(), 0)
                 return json.loads(output.getvalue())
 
+            with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_EXPECTED_LOGIN": "new-writer", "CODEX_AUTOMATION_BOT_LOGINS": AUTHOR}):
+                self.assertEqual(routine_check()["queue_length"], 1)
             queued = routine_check()
             self.assertEqual(queued["queue_length"], 1)
             self.assertEqual(queued["untrusted_records"], [])
             self.assertIn(first["url"], json.dumps(queued["questions"]))
             threads[record.delivery.source_item(first["url"])].append({
                 "id": 100, "author": AUTHOR, "url": question()["issue"] + "#issuecomment-100",
-                "body": f"Director decision {first['question_id']}: reuse the runner. This answers {first['url']}",
+                "body": f"Director decision {first['question_id']}: reuse the runner, combined with Q299's testing decision.",
                 "created_at": "2026-10-29T17:00:00Z",
             })
             decided = routine_check()
             self.assertEqual(decided["queue_length"], 0)
-            self.assertEqual(decided["questions"], [{"url": first["url"], "removed": True}])
+            self.assertEqual([row["url"] for row in decided["questions"] if row.get("removed")], [first["url"]])
 
         with patch.dict(os.environ, {"CODEX_SKILLS_ENV_FILE": "/missing/fixture.env"}):
             with_call_stub(api, run)

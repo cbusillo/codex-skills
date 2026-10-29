@@ -63,7 +63,7 @@ def supervisor_settled_questions(comments: list[dict], trusted: set[str]) -> set
 
 
 def is_decision(body: str) -> bool:
-    return body.startswith(oq.DECISION_PREFIXES)
+    return oq.DECISION_HEADING.match(body) is not None
 DUE = re.compile(r"(?im)^\s*(?:[-*] )?\**Due\**:\s*(\d{4}-\d{2}-\d{2}T[^\s*]+)")
 CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:https://github.com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)(\d+)\b", re.I)
 

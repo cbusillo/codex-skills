@@ -20,12 +20,8 @@ from skills.supervisor.scripts.check_changes import changes, fingerprint
 
 ITEM = re.compile(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)")
 QUESTION_PREFIXES = ("Director question:", "Owner question:")
-DECISION_PREFIXES = (
-    "Director decision:",
-    "Director decision,",
-    "Director decision (",
-    "Director decision**",
-    "Owner decision",
+DECISION_HEADING = re.compile(
+    r"^(?:Director|Owner) decision(?: (?P<number>Q[1-9][0-9]*)\s*:|[:,]|\s\(|\*\*| (?=https://))"
 )
 
 
@@ -43,9 +39,10 @@ def questions(comments, owner, decision_authors, related_comments=(), *, recorde
         for answer in [*comments[i + 1 :], *related_comments]:
             author = (answer.get("author") or "").casefold()
             text = answer.get("body", "").lstrip().lstrip("*")
-            recorded = text.startswith(DECISION_PREFIXES) or bool(
-                re.match(r"^(?:Director|Owner) decision Q[1-9][0-9]*\b", text.replace("*", ""))
-            )
+            decision = DECISION_HEADING.match(text)
+            recorded = decision is not None
+            if decision is not None and decision["number"] and number and decision["number"] != number:
+                continue
             authorized = author == owner or (
                 author in decision_authors and recorded
             )
@@ -58,12 +55,13 @@ def questions(comments, owner, decision_authors, related_comments=(), *, recorde
             decision_number = QUESTION.match(content)
             content = re.sub(r"^Q[1-9][0-9]*\s*[:=,.—-]?\s*", "", content)
             content = re.sub(r"https://\S+", "", content).strip()
-            if recorded_decisions_only and re.fullmatch(r"(?i)(?:later|not now)[\s.;!—-]*", content):
+            if recorded_decisions_only and re.fullmatch(r"(?i)(?:later|not now|not yet|waiting|pending)[\s.;!—-]*", content):
                 continue
             numbered = (
                 recorded and number is not None and numbers[number] == 1 and decision_number is not None
                 and decision_number[0] == number and bool(content.strip(".,:;= -"))
-                and {match[0] for match in QUESTION.finditer(text)} == {number}
+                and ((decision is not None and decision["number"] == number)
+                     or {match[0] for match in QUESTION.finditer(text)} == {number})
             )
             linked = question["url"] in text or re.search(
                 rf"(?<!\d){question['id']}(?!\d)", text
@@ -107,8 +105,8 @@ def fetch(item):
 
 
 def default_decision_authors() -> list[str]:
-    author = github_identity.automation_login()
-    return [author] if author else []
+    authors = (github_identity.automation_login(), *github_identity.configured_bot_logins())
+    return sorted({author for author in authors if isinstance(author, str) and author})
 
 
 def main() -> int:

@@ -82,7 +82,7 @@ class DirectorQuestionGateTests(unittest.TestCase):
     def test_unasked_director_decision_refuses_naming_the_registration_command(self) -> None:
         message = self.refusal(wait("Chris approves the live install"))
         self.assertIn('"Chris approves the live install"', message)
-        self.assertIn(f"oq.py QUESTION_URL --owner director --decision-author {BOT} --queue {QUEUE} --register", message)
+        self.assertIn(f"oq.py QUESTION_URL --owner director --queue {QUEUE} --register", message)
 
     def test_registered_numbered_question_allows_the_wait(self) -> None:
         self.assertIsNone(self.gap(wait("Chris approves the live install", f"Asked: {link(11)}")))
@@ -98,6 +98,11 @@ class DirectorQuestionGateTests(unittest.TestCase):
     def test_hold_the_director_set_or_agreed_is_exempt(self) -> None:
         self.assertIsNone(self.gap(wait("Chris to dogfood 1.0.76 from TestFlight", link(13))))
         self.assertIsNone(self.gap(wait("Chris to dogfood 1.0.76 from TestFlight", link(14))))
+        for body, recorded in (("Director decision Q700: try it through the weekend", True),
+                               ("Director decision Q700 pending; continuing independent work.", False),
+                               ("Owner decision needed: Q700", False)):
+            with self.subTest(body=body), patch.dict(COMMENTS, {14: comment(14, BOT, body)}):
+                self.assertEqual(self.gap(wait("Chris to dogfood 1.0.76 from TestFlight", link(14))) is None, recorded)
         for waiting_for in ("Chris to dogfood 1.0.76 from TestFlight", "Chris to resume after the weekend",
                             "Chris selects the deployment architecture"):
             with self.subTest(waiting_for=waiting_for):

@@ -1683,7 +1683,7 @@ def test_closed_unanswered_messages_still_need_attention(monkeypatch):
 
 @pytest.mark.parametrize("prefix", [
     *github_unanswered_comments.director_questions.QUESTION_PREFIXES,
-    *github_unanswered_comments.director_questions.DECISION_PREFIXES,
+    "Director decision:", "Owner decision:", "Director decision Q700:",
 ])
 def test_awareness_accepts_existing_record_prefixes(prefix, app_ready_discussion):
     external, *_ = app_ready_discussion

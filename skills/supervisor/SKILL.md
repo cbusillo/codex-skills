@@ -125,7 +125,7 @@ commands:
   - name: supervisor-oq
     source: skill
     resource_path: scripts/oq.py
-    example_argv: ["uv", "run", "scripts/oq.py", "OWNER/REPO#NUMBER", "--owner", "<owner-login>", "--decision-author", "<recording-automation-login>"]
+    example_argv: ["uv", "run", "scripts/oq.py", "OWNER/REPO#NUMBER", "--owner", "<owner-login>"]
     purpose: Gather Director questions from the whole discussion; see helpers for explicit queue registration and presentation acknowledgement.
   - name: supervisor-q-number-report
     source: skill
