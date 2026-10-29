@@ -16,7 +16,6 @@ import time
 from collections import Counter
 from urllib.parse import quote
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import direction_audit as audit
 from skills.direction.scripts.question_id import heading_id
@@ -31,7 +30,6 @@ import github_unanswered_comments as attention
 
 UTC = dt.timezone.utc
 # The Director writes status times in US Eastern ("2:20 PM ET").
-EASTERN = ZoneInfo("America/New_York")
 QUESTION = re.compile(r"\bQ[1-9][0-9]*\b")
 PREFIXES = oq.QUESTION_PREFIXES
 COMMENT_LINK = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/\d+#issuecomment-\d+(?!\d)")
@@ -94,35 +92,6 @@ def calendar(text: str) -> dt.datetime | None:
     return None
 
 
-LAST_VERIFIED = re.compile(r"(?im)^[ \t]*(?:[-*][ \t]*)?\**Last verified\**:\**[ \t]*(.*)$")
-CLOCK = re.compile(r"\b(\d{1,2}):(\d{2})\s*([AP])\.?M\b", re.I)
-
-
-def verified_at(body: str | None) -> dt.datetime | None:
-    """When a Track's Current Status says it was last verified.
-
-    An ISO timestamp or a clock time (read as Eastern) is exact. A bare date
-    counts as the end of that Eastern day, so same-day changes stay quiet.
-    """
-    text = body or ""
-    text = text[text.find("Current Status"):] if "Current Status" in text else text
-    line = LAST_VERIFIED.search(text)
-    date = re.search(DATE, line[1], re.I) if line else None
-    if line is None or date is None:
-        return None
-    if "T" in date[0]:
-        exact = stamp(date[0])
-        return exact.astimezone(UTC) if exact else None
-    day = calendar(date[0])
-    if day is None:
-        return None
-    local = dt.datetime(day.year, day.month, day.day, tzinfo=EASTERN)
-    if clock := CLOCK.search(line[1], date.end()):
-        hour = int(clock[1]) % 12 + (12 if clock[3].upper() == "P" else 0)
-        return local.replace(hour=hour, minute=int(clock[2])).astimezone(UTC)
-    return (local + dt.timedelta(days=1)).astimezone(UTC)
-
-
 NEXT_ACTION = re.compile(r"(?im)^[ \t]*(?:[-*][ \t]*)?\**Next action\**:\**[ \t]*(.*)$")
 # The role is capitalized; a lowercase "supervisor" is a path, skill or description.
 ROLE = r"(?<![\w/.-])Supervisor(?![\w/-])"
@@ -143,26 +112,6 @@ def supervisor_next_action(body: str | None) -> str | None:
     line = NEXT_ACTION.search(status)
     action = line[1].strip() if line else ""
     return action if SUPERVISOR_ACTS.search(action) else None
-
-
-def is_track(record: dict) -> bool:
-    item = record["item"]
-    return (record["repo"].endswith("/direction") and item.get("state") == "open"
-            and "pull_request" not in item and str(item.get("title") or "").startswith("Track:"))
-
-
-def track_changes(record: dict, owners: set[str], trusted: set[str]) -> list[tuple[dt.datetime, str]]:
-    """Milestone-relevant changes: a child closing, or Director words on the Track or a child."""
-    changes = []
-    for source in [record, *record.get("track_children", [])]:
-        item = source["item"]
-        if source is not record and item.get("state") == "closed" and (closed := stamp(item.get("closed_at"))):
-            changes.append((closed, item.get("html_url") or ""))
-        for c in source.get("comments", []):
-            if (login(c) in owners or (login(c) in trusted and is_decision(question_body(c)))) and (
-                    when := stamp(c.get("created_at"))):
-                changes.append((when, c.get("html_url") or ""))
-    return changes
 
 
 def ends_at(text: str, *, leading: bool) -> dt.datetime | None:
@@ -498,15 +447,6 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
             add("stale_blocked_view", record, url, closed, "Supervisor / landing reconciler",
                 "Blocked view remains after all recorded native blockers completed and structured wait is clear.",
                 evidence=[b.get("html_url") for b in blockers])
-        if "track_children" in record:
-            verified = verified_at(item.get("body"))
-            newer = sorted(c for c in track_changes(record, owners, trusted) if verified is None or c[0] > verified)
-            if newer:
-                add("stale_track_status", record, url, newer[0][0], "Supervisor / milestone session",
-                    "Track Current Status is older than a later closure or decision on it or its children; "
-                    "rebuild it from those records." if verified else
-                    "Track Current Status has no readable Last verified; rebuild it from its children's records.",
-                    evidence=[source for _, source in newer])
         selected = merged_link(record)
         if selected:
             completing, pull = selected
@@ -1003,28 +943,6 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                         status_body_time(record)
                 records.append(record)
                 collected.add((repo, number))
-    # A Track's children live in other repositories; reuse their collected
-    # discussions and read only changed, uncollected ones after Last verified.
-    known = {(r["repo"], r["item"]["number"]): r for r in records if not r.get("trigger_only")}
-    for record in [r for r in records if is_track(r)]:
-        verified = verified_at(record["item"].get("body"))
-        before = len(gaps)
-        children = []
-        for child in listing(f"repos/{record['repo']}/issues/{record['item']['number']}/sub_issues"):
-            match = re.fullmatch(r"https://api.github.com/repos/([\w.-]+/[\w.-]+)", child.get("repository_url") or "")
-            if not match or type(child.get("number")) is not int:
-                gaps.append({"source": f"{record['repo']}#{record['item']['number']}", "reason": "track_child_identity_unknown"})
-                continue
-            key = (match[1].casefold(), child["number"])
-            comments = []
-            if key in known:
-                comments = known[key]["comments"]
-            elif child.get("comments") and (verified is None or (stamp(child.get("updated_at")) or now) > verified):
-                since = f"?since={verified.strftime('%Y-%m-%dT%H:%M:%SZ')}" if verified else ""
-                comments = listing(f"repos/{key[0]}/issues/{child['number']}/comments{since}")
-            children.append({"item": child, "comments": comments})
-        if len(gaps) == before:
-            record["track_children"] = children
     if unread_scopes:
         gaps.append({"source": "repository_inventory", "reason": "unread_repository_scopes", "scopes": unread_scopes})
     if question_delivery is not None:

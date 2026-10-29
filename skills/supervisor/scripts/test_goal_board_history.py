@@ -50,7 +50,6 @@ class TrackHistoryTests(unittest.TestCase):
                 row = board["tracks"][0]
                 if complete:
                     self.assertEqual(row["status"], expected["status"])
-                    self.assertEqual(row["blocked_by"], expected["blocked_by"])
                     self.assertEqual(row["latest_decision"], decision["url"])
                     self.assertTrue(board["coverage"]["complete"], board)
                 else:
@@ -58,7 +57,6 @@ class TrackHistoryTests(unittest.TestCase):
                     self.assertFalse(board["coverage"]["complete"])
                     self.assertTrue(board["errors"])
                 self.assertEqual(row["latest_decision"], expected["latest_decision"])
-                self.assertEqual(row["next_action"], expected["next_action"])
                 self.assertEqual(row["closure_review"], expected["closure_review"])
 
 

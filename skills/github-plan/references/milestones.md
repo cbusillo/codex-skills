@@ -31,7 +31,7 @@ alternate backlogs.
   when the proof itself must change.
 
 The existing Supervisor goal-board check and weekly direction audit assess
-each Track's proof against the merged milestone line, trusted Current Status
+each Track's proof against the merged milestone line, child records
 and linked evidence, independently of open blockers or newly admitted work.
 Their proof-review projections carry recorded text, never a completion verdict.
 Close met Tracks and milestones within authority, or surface closing candidates

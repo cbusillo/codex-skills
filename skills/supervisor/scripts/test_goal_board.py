@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 
 import goal_board
 from skills.github.scripts.github_api import ApiResult
-from skills.github.scripts import github_plan_body, github_plan_wait, github_plan_status
+from skills.github.scripts import github_plan_body, github_plan_wait, github_plan_status, github_plan_claim
 
 BOT = {"__typename": "Bot", "login": "shiny-code-app"}
 TRUSTED = {"owner", "shiny-code-app[bot]"}
@@ -74,35 +74,84 @@ def details(**tracks) -> dict[str, Any]:
 
 
 class GoalBoardTests(unittest.TestCase):
-    def test_met_proof_remains_a_closing_candidate_when_later_work_is_added(self):
-        for number, proof, state, later in (
-            (3, "The site serves real visitors after backup and tested rollback.",
-             "The site is live and the accepted indexing/analytics release is complete.", 25),
-            (102, "The original issues close and the accepted release reaches production.",
-             "The accepted release, rollback-drill recovery and legacy package retirement are complete.", 3),
-        ):
-            with self.subTest(occurrence=number):
-                node = track(number)
-                node["body"] = f"## Objective\n{proof}\n\n{status('Reconcile survivors.', state)}"
-                before = goal_board.track_row(node, TRUSTED, TRUSTED)["closure_review"]
-                node["blockedBy"] = {"totalCount": later, "nodes": [
-                    {"number": 1000 + index, "state": "OPEN", "url": f"https://github.com/owner/app/issues/{1000 + index}",
-                     "repository": {"nameWithOwner": "owner/app"}} for index in range(later)]}
-                board = self.replay(listing([{"number": number, "title": node["title"]}]), details(**{f"t{number}": node}))
-                row = board["tracks"][0]
-                self.assertEqual(row["closure_review"]["track_proof"], proof)
-                self.assertIn(state, before["recorded_status"])
-                self.assertEqual(len(row["blocked_by"]), later)
-                self.assertIn(proof, goal_board.markdown({**board, "checked_at": "now"}))
-                self.assertNotIn(proof, goal_board.markdown({**board, "checked_at": "now"}, links_only=True))
+    def test_track_proof_stays_visible_without_using_a_recorded_summary(self) -> None:
+        node = track(3)
+        proof = "The site serves visitors after backup and tested rollback."
+        node["body"] = f"## Objective\n{proof}\n\n{status('Wait forever.', 'Waiting')}"
+        first = goal_board.track_row(node, TRUSTED, TRUSTED)
+        node["body"] = f"## Objective\n{proof}\n"
+        second = goal_board.track_row(node, TRUSTED, TRUSTED)
+        self.assertEqual(first, second)
+        self.assertEqual(second["closure_review"]["track_proof"], proof)
 
-    def test_proof_review_uses_latest_trusted_status(self):
-        node = track(3, comments=[comment(status("Read release evidence.", "Release complete."), ident=20)])
-        review = goal_board.track_row(node, TRUSTED, TRUSTED)["closure_review"]
-        self.assertEqual(review["recorded_status"], goal_board.github_direction_next.section_map(
-            node["comments"]["nodes"][-1]["body"])["Current Status"])
-        node["comments"]["nodes"][-1]["author"] = {"__typename": "User", "login": "outsider"}
-        self.assertNotEqual(goal_board.track_row(node, TRUSTED, TRUSTED)["closure_review"]["recorded_status"], review["recorded_status"])
+    def test_child_records_group_claims_waits_and_questions_without_track_summary(self) -> None:
+        claim = {"worker": "worker", "session": "native-session", "branch": "work/task",
+                 "claimed_at": "2026-10-16T10:00:00Z"}
+        claimed = comment(github_plan_claim.marker(claim), ident=50)
+        question = comment("Director question: Q1: Choose the result?", ident=51)
+        held = github_plan_wait.reviewed(evidence="Device result needed", waiting_for="Owner device test",
+                                        ends_when="Owner posts the test result")
+        held_child = child(11)
+        held_child["body"] = github_plan_wait.marker(held)
+        rows = [child(10, comments=[claimed]), held_child,
+                child(12), child(13, comments=[question])]
+        node = track(1, children=rows)
+        node["body"] = "## Objective\nPeople use the result.\n"
+        board = self.replay(listing([{"number": 1, "title": node["title"]}]), details(t1=node))
+        row = board["tracks"][0]
+        self.assertEqual({key: [item["number"] for item in values] for key, values in row["groups"].items()},
+                         {"running": [10], "waiting": [11, 13], "available": [12], "closed": [], "unknown": [], "held": []})
+        self.assertEqual(row["children"][0]["claims"], [claim])
+        self.assertEqual(row["children"][3]["open_questions"][0]["url"], question["url"])
+        self.assertNotIn("next_action", row)
+        self.assertIsNone(row["closure_review"]["recorded_status"])
+        self.assertTrue(board["coverage"]["complete"], board)
+        text = goal_board.markdown({**board, "checked_at": "now"})
+        self.assertIn(held["waits"][0]["ends_when"], text)
+        self.assertIn(question["url"], text)
+
+    def test_recursive_children_keep_prs_and_released_claims_become_available(self) -> None:
+        claim = {"worker": "worker", "session": "native-session", "branch": "work/task",
+                 "claimed_at": "2026-10-16T10:00:00Z"}
+        source = comment(github_plan_claim.marker(claim), ident=50)
+        release = comment("Released claim 50", at="2026-10-16T11:00:00Z", ident=51)
+        parent = child(10, prs=[pr(90)])
+        parent["subIssuesSummary"] = {"total": 1, "completed": 0}
+        expanded = {**parent, "subIssues": {"totalCount": 1, "nodes": [child(11, comments=[source, release])]}}
+        self.reader.graphql_json.side_effect = [ApiResult(ok=True, status=200, body=body) for body in (
+            listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[parent])), details(t10=expanded))]
+        board = goal_board.goal_board(self.reader, "owner", trusted=TRUSTED, wait_trusted=TRUSTED)
+        row = board["tracks"][0]
+        self.assertTrue(board["coverage"]["complete"], board)
+        self.assertEqual([item["number"] for item in row["groups"]["waiting"]], [10])
+        self.assertEqual([item["number"] for item in row["groups"]["available"]], [11])
+        self.assertFalse(row["children"][1]["claims"])
+        self.assertEqual(row["children"][0]["open_prs"][0]["url"], parent["closedByPullRequestsReferences"]["nodes"][0]["url"])
+
+    def test_recursive_failure_preserves_siblings_and_reports_unknown(self) -> None:
+        parent = child(10)
+        parent["subIssuesSummary"]["total"] = 1
+        self.reader.graphql_json.side_effect = [ApiResult(ok=True, status=200, body=body) for body in (
+            listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[parent, child(12)])))] + [
+            ApiResult(ok=False, status=502, body=None)]
+        board = goal_board.goal_board(self.reader, "owner", trusted=TRUSTED, wait_trusted=TRUSTED)
+        self.assertFalse(board["coverage"]["complete"])
+        self.assertEqual([item["number"] for item in board["tracks"][0]["groups"]["unknown"]], [10])
+        self.assertEqual([item["number"] for item in board["tracks"][0]["groups"]["available"]], [12])
+
+    def test_recorded_queue_answers_resolve_child_questions(self) -> None:
+        question = comment("Director question: Q1: Choose the result?", ident=51)
+        answer = comment(f"Director decision: Q1: Yes. {question['url']}", ident=52)
+        queue = {"number": 98, "updatedAt": "2026-10-16T12:00:00Z", "repository": {"nameWithOwner": "owner/direction"},
+                 "comments": {"nodes": [answer], "totalCount": 1, "pageInfo": {"hasNextPage": False, "endCursor": None}}}
+        self.reader.graphql_json.side_effect = [ApiResult(ok=True, status=200, body=body) for body in (
+            listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[child(10, comments=[question])])),
+            {"data": {"repository": {"issue": queue}}})]
+        with patch.object(goal_board.question_id, "configured_queue", return_value="owner/direction#98"):
+            board = goal_board.goal_board(self.reader, "owner", trusted=TRUSTED, wait_trusted=TRUSTED)
+        self.assertTrue(board["coverage"]["complete"], board)
+        self.assertFalse(board["tracks"][0]["children"][0]["open_questions"])
+        self.assertEqual(board["tracks"][0]["children"][0]["group"], "available")
 
     def test_mixed_case_trusted_people_and_bots_keep_decisions_and_handoffs(self):
         for typename, name in (("User", "MixedCaseOwner"), ("Bot", "MixedCaseApp")):
@@ -328,7 +377,7 @@ class GoalBoardTests(unittest.TestCase):
         self.assertEqual([row["number"] for row in board["tracks"]], [1, 3])
         one = board["tracks"][0]
         self.assertEqual(one["latest_decision"], decision["url"])
-        self.assertEqual(one["status"], github_plan_status.DEFAULT_STATUS_LABELS["active"])
+        self.assertEqual(one["children"][0]["group"], "waiting")
         self.assertEqual([(row["url"].rsplit("/", 1)[1], row["handoff"]) for row in one["children"][0]["open_prs"]],
                          [("100", "ready"), ("101", "ready for an older head"),
                           ("103", "engineering ready, waiting"), ("104", "no handoff")])
@@ -415,7 +464,6 @@ class GoalBoardTests(unittest.TestCase):
             {**details(t1=broken, t2=track(2)), "errors": [
                 {"path": ["repository", "t1", "subIssues"], "message": "Field unavailable"}]})
         self.assertEqual(board["coverage"], {"discovered": 2, "read": 2, "complete": False})
-        self.assertEqual(board["tracks"][0]["next_action"], "Track 1 step.")
         self.assertFalse(board["tracks"][1]["unread"])
         text = goal_board.markdown({**board, "checked_at": "now"})
         self.assertIn("repository.t1.subIssues", text)
@@ -434,7 +482,6 @@ class GoalBoardTests(unittest.TestCase):
                 self.assertEqual(board["coverage"], {"discovered": 2, "read": 1, "complete": False})
                 self.assertFalse(board["tracks"][0]["read"])
                 self.assertTrue(board["tracks"][1]["read"])
-                self.assertEqual(board["tracks"][1]["next_action"], "Track 2 step.")
                 text = goal_board.markdown({**board, "checked_at": "now"})
                 for reason in board["errors"]:
                     self.assertIn(reason, text)
@@ -487,7 +534,6 @@ class GoalBoardTests(unittest.TestCase):
             child(10), child(11, comments=[newer, forged]), child(12, body="No status here."), wordy,
             child(14, body="## Current Status\n\nState: Done\n")])))
         one = board["tracks"][0]
-        self.assertEqual(one["next_action"], "Track 1 step.")
         self.assertEqual([row["next_action"] for row in one["children"][:3]],
                          ["Child 10 step.", "Comment step.", "no Current Status"])
         self.assertEqual(len(one["children"][3]["next_action"]), goal_board.NEXT_ACTION_CHARS)
@@ -530,7 +576,6 @@ class GoalBoardTests(unittest.TestCase):
         root["comments"]["totalCount"] = 145
         root_row = goal_board.track_row(root, TRUSTED, TRUSTED)
         self.assertIsNone(root_row["closure_review"]["recorded_status"])
-        self.assertFalse(root_row["closure_review"]["discussion_complete"])
         self.assertEqual(len(root_row["unread"]), len(set(root_row["unread"])))
 
 

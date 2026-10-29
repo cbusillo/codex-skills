@@ -437,8 +437,7 @@ use `goal_board.py --owner OWNER --changes-state <private-board-state.json>`
 for routine output and the full board for takeover. Coverage gaps stay unknown.
 Open the linked decision and Current Status before repeating a hold or briefing
 work. PR handoffs stay open until merged; read current head, mergeability and
-train reason. Correct conflicting Track summaries under `github-plan`, naming
-the governing decision and reason. Assess each Track's `closure_review` under
+train reason. Assess each Track's `closure_review` under
 the [milestone contract](../github-plan/references/milestones.md); the pointer
 reader is not proof that a Track's own exit criteria passed.
 
