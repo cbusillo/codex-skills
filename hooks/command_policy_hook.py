@@ -60,21 +60,12 @@ CLAIM_LEASE = CATALOG / "github" / "scripts" / "github_plan_lease.py"
 CODE_HOME_SKILLS = "$CODE_HOME/skills/"
 OPERATORS = re.compile(r"^[;&|()\n]+$")
 REDIRECTION = re.compile(r"[<>][<>&|]*|&>>?")
-ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 TRANSPARENT = {"command", "exec", "time", "nohup"}
 SHELL_KEYWORDS = {"{", "!", "if", "then", "elif", "else", "do", "while", "until"}
 SHELLS = {"sh", "bash", "zsh"}
 SCRIPT_INTERPRETERS = re.compile(r"^(?:osascript|python[\d.]*|node|swift|xdotool|xte|cliclick)$")
 SCRIPT_WRAPPERS = {"sudo", "timeout", "xargs"}
-DATA_ARGUMENT_HEADS = {"launchplane", "grep", "echo", "printf", "ls", "which"}
-GIT_DATA_COMMANDS = {"log", "grep", "status", "diff", "show", "rev-parse", "ls-files", "ls-tree", "for-each-ref", "describe"}
-GIT_VALUE_FLAGS = {"-C", "--git-dir", "--work-tree", "--namespace"}
-RG_VALUE_FLAGS = {
-    "-e", "--regexp", "-f", "--file", "-g", "--glob", "--iglob", "--pre-glob", "-r", "--replace",
-    "--context-separator", "--field-context-separator", "--field-match-separator",
-}
-FIND_VALUE_FLAGS = {"-name", "-iname", "-path", "-ipath", "-regex", "-iregex", "-type", "-user", "-group", "-size", "-perm"}
-FIND_EXECUTION_FLAGS = {"-exec", "-execdir", "-ok", "-okdir"}
 STDIN_PROGRAM_PATHS = {"-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"}
 SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
 GH_WRAPPER_FLAGS = {"--print-auth-account", "--require-automation-auth"}
@@ -468,98 +459,12 @@ def writes_shell_variable(argv: list[str]) -> bool:
     return len(argv) > 1 and argv[0] == "printf" and argv[1].startswith("-v")
 
 
-def git_program_arguments(argv: list[str]) -> list[list[str]] | None:
-    cursor = 1
-    while cursor < len(argv) and argv[cursor].startswith("-"):
-        token = argv[cursor]
-        if token in {"-P", "--no-pager"}:
-            cursor += 1
-        elif token in GIT_VALUE_FLAGS:
-            cursor += 2
-        elif token.startswith("-C") or "=" in token and token.split("=", 1)[0] in GIT_VALUE_FLAGS:
-            cursor += 1
-        else:
-            return None
-    if cursor >= len(argv) or argv[cursor] not in GIT_DATA_COMMANDS:
-        return None
-    command = argv[cursor]
-    programs = []
-    cursor += 1
-    while cursor < len(argv) and argv[cursor] != "--":
-        token = argv[cursor]
-        if command == "grep" and token in {"-e", "--regexp", "-f", "--file"}:
-            cursor += 2
-            continue
-        flag, separator, value = token.partition("=")
-        if flag in {"--ext-diff", "--textconv"}:
-            return None
-        pager = re.match(r"^-[^-O]*O(.*)$", token) if command == "grep" else None
-        if pager:
-            programs.append([pager[1]] if pager[1] else [])
-        elif command == "grep" and flag.startswith("--") and "--open-files-in-pager".startswith(flag):
-            programs.append([value] if separator else [])
-        cursor += 1
-    return programs
-
-
-def rg_program_arguments(argv: list[str]) -> list[list[str]]:
-    programs = []
-    cursor = 1
-    while cursor < len(argv) and argv[cursor] != "--":
-        token = argv[cursor]
-        flag, separator, value = token.partition("=")
-        if flag in {"--pre", "--hostname-bin"}:
-            programs.append([value] if separator else argv[cursor + 1 : cursor + 2])
-        cursor += 2 if token in RG_VALUE_FLAGS else 1
-    return programs
-
-
 def execution_spans(argv: list[str]) -> list[list[str]]:
     arguments = without_redirections(argv)
     executable = executable_arguments(arguments)
-    if not executable:
-        return [arguments]
-    prefix = arguments[: len(arguments) - len(executable) + 1]
-    head = executable[0]
-    if head == "rg":
-        programs = rg_program_arguments(executable)
-        return [arguments, *programs] if programs else [prefix]
-    if head == "git":
-        programs = git_program_arguments(executable)
-        if programs is None:
-            return [arguments]
-        return [arguments, *programs] if programs else [prefix]
-    if writes_shell_variable(executable):
-        return [arguments]
-    if head in DATA_ARGUMENT_HEADS:
-        return [prefix]
-    if head != "find":
-        return [arguments]
-    spans = [prefix]
-    cursor = 1
-    ambiguous = False
-    while cursor < len(executable):
-        token = executable[cursor]
-        if token in FIND_VALUE_FLAGS and not ambiguous:
-            cursor += 2
-            continue
-        if token in FIND_EXECUTION_FLAGS:
-            start = cursor + 1
-            end = next(
-                (
-                    index
-                    for index in range(start, len(executable))
-                    if executable[index] == ";" or executable[index] == "+" and index > start and executable[index - 1] == "{}"
-                ),
-                len(executable),
-            )
-            spans.extend(execution_spans(executable[start:end]))
-            cursor = cursor + 1 if ambiguous else end + 1
-            continue
-        if token.startswith("-"):
-            ambiguous = True
-        cursor += 1
-    return spans
+    if executable[:1] == ["launchplane"]:
+        return [arguments[: len(arguments) - len(executable) + 1]]
+    return [arguments]
 
 
 def unwrap(argv: list[str]) -> list[list[str]]:

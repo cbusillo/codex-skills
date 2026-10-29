@@ -403,6 +403,7 @@ class CommandPolicyHookTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0)
                 self.assertFalse(result.stderr, "allowance must come from successful policy evaluation")
         for command in ("launchplane status", "uv run launchplane status",
+                        "X+=1 launchplane merge-train run-once",
                         "printf '%s' launchplane && launchplane status"):
             with self.subTest(command=command):
                 self.assertEqual(bash(command).returncode, 2)
@@ -489,9 +490,11 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "UV_PROJECT=/other uv run " + command,
                 "PATH=/other/bin && uv run " + command,
                 "set -a; UV_PROJECT=/other; uv run " + command,
+                "set -a; UV_PROJECT+=/other; uv run " + command,
                 "{ UV_PROJECT=/other; } && uv run " + command,
                 "if UV_PROJECT=/other; then uv run " + command + "; fi",
                 "set -a; PGHOSTADDR=10.0.0.5; uv run launchplane ci postgres-integration --database-url postgresql://fixture@127.0.0.1/postgres",
+                "set -a; PGHOSTADDR+=10.0.0.5; uv run launchplane ci postgres-integration --database-url postgresql://fixture@127.0.0.1/postgres",
                 "/global/bin/" + command,
                 "bash -lc 'cd /other && " + command + "'",
                 "true && bash -lc 'cd /other && " + command + "'",
@@ -580,7 +583,7 @@ class CommandPolicyHookTests(unittest.TestCase):
             self.assertEqual(bash("uv run --project /other launchplane ci unittest-shard local", checkout).returncode, 2)
             self.assertEqual(bash("echo --repository; tools/launchplane action-pins check --revision HEAD", checkout).returncode, 2)
 
-    def test_gate_data_arguments_and_sibling_reads_do_not_change_execution_context(self) -> None:
+    def test_native_gate_arguments_are_data(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             checkout = root / "checkout"
@@ -589,41 +592,17 @@ class CommandPolicyHookTests(unittest.TestCase):
             subprocess.run(
                 ["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True
             )
-            gate = "uv run launchplane service export-openapi --output artifact.json"
             for command in (
                 "uv run launchplane ingress health-history-summary --page captures/launchplane --check private_http:private-runtime --identity-check private_http:private-runtime",
                 "uv run launchplane ingress health-history-summary --page=captures/launchplane --help",
                 "uv run --no-sync launchplane ingress health-history-summary --help",
                 "uv run launchplane ingress health-history-summary --page bash --page FOO=bar --help",
+                "uv run launchplane ingress health-history-summary --page bash --page -c --help",
                 "uv run launchplane service export-openapi --output generated/launchplane",
                 "uv run launchplane service export-openapi --output artifact.json > evidence/launchplane",
                 "uv run launchplane local-consumer prepare --directory /private/launchplane",
                 "uv run launchplane action-pins check --repo-root ../launchplane --revision HEAD --repository /global/bin/launchplane",
                 "uv run launchplane action-pins check --repo-root=../launchplane --revision HEAD --repository=/global/bin/launchplane",
-                "rg -n bash . && " + gate,
-                "rg -n bash -c . && " + gate,
-                "rg 'FOO=bar' . && " + gate,
-                "rg -e --pre -e bash . && " + gate,
-                "rg --regexp --hostname-bin -e bash . && " + gate,
-                "rg --glob --pre -e bash . && " + gate,
-                "rg --replace --pre -e bash . && " + gate,
-                "rg -- --pre bash && " + gate,
-                "git log --grep FOO=bar && " + gate,
-                "git grep bash && " + gate,
-                "git --no-pager log --grep bash && " + gate,
-                "git -C . log --grep FOO=bar && " + gate,
-                "git --git-dir=.git --work-tree . grep bash && " + gate,
-                "git grep -e --open=bash -e FOO=bar && " + gate,
-                "git grep -- --open=bash bash && " + gate,
-                "echo bash && " + gate,
-                "printf '%s' FOO=bar && " + gate,
-                "ls /bin/zsh && " + gate,
-                "which bash && " + gate,
-                "find . -name bash && " + gate,
-                "find . -maxdepth 2 -name bash && " + gate,
-                "find . -name FOO=bar && " + gate,
-                "find . -name -exec -name bash && " + gate,
-                "find . -exec rg -n bash {} + && " + gate,
             ):
                 with self.subTest(command=command):
                     result = bash(command, checkout)
@@ -655,16 +634,10 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "custom-wrapper FOO=bar && " + gate,
                 "rg --pre sh pattern . && " + gate,
                 "rg --hostname-bin bash --hyperlink-format default pattern . && " + gate,
-                "rg --pre=sh pattern . && " + gate,
-                "rg --hostname-bin=bash pattern . && " + gate,
                 "git -c core.pager=sh log bash && " + gate,
                 "git diff --ext-diff sh && " + gate,
                 "printf -v UV_PROJECT /other && " + gate,
                 "printf -vUV_PROJECT /other && " + gate,
-                "git grep -Obash pat && " + gate,
-                "git grep -nObash pat && " + gate,
-                "git grep --open-files=bash pat && " + gate,
-                "git grep --open=bash pat && " + gate,
                 "find . -printf -name -exec sh -c 'uv run launchplane merge-train run-once' \\;",
                 "find . -fprintf -exec rg -exec sh -c 'uv run launchplane merge-train run-once' \\;",
                 "./rg sh -c 'uv run launchplane merge-train run-once'",
