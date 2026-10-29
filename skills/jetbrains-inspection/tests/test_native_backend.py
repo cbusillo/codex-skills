@@ -1911,9 +1911,8 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
                + STAMP + '   INFO - #c.i.p.i.b.AppStarter - Will skip the config import to directory "/w/config" ["plugin_PODOO.license"]\n')
 
     def interrupt_engine_after_logging(self, log_text):
-        self.script.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nimport time\n"
-                               f"Path('logs/idea.log').write_text({log_text!r}.format(project=Path.cwd() / 'project'))\n"
-                               "time.sleep(30)\n")
+        self.script.write_text(f"#!{sys.executable}\nfrom pathlib import Path\n"
+                               f"Path('logs/idea.log').write_text({log_text!r}.format(project=Path.cwd() / 'project'))\n")
         with patch_attr(native, native.group_gone.__name__, return_value=False):
             self.assess()
         self.assertTrue((self.worker / "native-run.json").exists())
