@@ -53,7 +53,9 @@ def add_parser(subparsers: Any) -> None:
     for command, mode in COMMAND_MODES.items():
         parser = subparsers.add_parser(
             command,
-            help=f"Runtime-setting removal {mode} by names only; apply belongs to the signed-in admin.",
+            help=(f"Runtime-setting removal {mode} by names only; this helper exposes review/readback. "
+                  "See https://github.com/cbusillo/launchplane/blob/main/docs/"
+                  "reviewed-retirement.md#plain-stored-settings for separately authorized producer apply."),
         )
         parser.add_argument("--product", required=True)
         parser.add_argument("--scope", required=True, choices=SCOPES)
@@ -211,9 +213,11 @@ def project(h: Any, response: object, body: dict[str, Any]) -> tuple[dict[str, o
         recommendation = (
             "Save review_id, plan_sha256 and the exact keys and reason for readback. "
             + ("requires_compatible_readers_and_rollback is true: qualify readers of retirement-only "
-               "records and keep a rollback build before any admin apply. "
+               "records and keep a rollback build before any apply. "
                if result["requires_compatible_readers_and_rollback"] else "")
-            + "This helper has no apply; apply belongs to the signed-in admin."
+            + ("This helper exposes review/readback only; see "
+               "https://github.com/cbusillo/launchplane/blob/main/docs/"
+               "reviewed-retirement.md#plain-stored-settings for separately authorized producer apply.")
         )
     summary: dict[str, object] = {
         "launchplane_status": "ok",
@@ -247,7 +251,6 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     if settings is None:
         return 2
     try:
-        # Dry run and readback take no Idempotency-Key; only the admin's apply does.
         response = h.request_launchplane(service_url=settings["service_url"],
             path=h.helper_command_path(operation), settings=settings, body=body, timeout=args.timeout)
     except urllib.error.HTTPError as error:

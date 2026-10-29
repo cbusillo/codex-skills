@@ -2425,8 +2425,27 @@ needs service-wide policy read authority to show full scopes.
 `runtime-setting-removal-dry-run` and `runtime-setting-removal-readback` are
 bounded helper bindings of `POST /v1/admin/runtime-settings/removal`. They
 let the Director agent review removing stored plain runtime settings and read
-back the result. There is no apply command. Apply belongs to the signed-in
-admin in Launchplane, and a dry-run digest does not authorize it.
+back the result. This CLI has no apply command and reports
+`apply_supported: false`; both are client limitations, not a universal
+human-only producer rule. The producer's
+[plain stored settings contract](https://github.com/cbusillo/launchplane/blob/main/docs/reviewed-retirement.md#plain-stored-settings)
+owns the schema and authority checks. It permits an authenticated Director
+`local_operator` with existing exact write authority to apply an exclusively
+owned, enabled instance preview that does not alias a stable lane. Wider
+signed-in admin scopes retain their existing rules; the review grants no access.
+
+Apply uses the exact saved `review_id`, `reviewed_plan_sha256`, unchanged
+product/scope/context/instance/keys/reason, and the stable original
+`Idempotency-Key`. Use the same authorized identity, without borrowing a token
+or adding a grant.
+
+Apply only changes the service record: it does not call a provider, sync or
+deploy. Preserve the original request, key, and any original completion receipt
+after an uncertain effect. Recovery is same-request, same-key only—never a
+blind retry or a new key—and independent readback is separate current-state
+proof. Follow the producer's distinction between a proven rolled-back
+`runtime_setting_removal_stale` attempt, which needs a fresh review, and an
+unverified attempt, which preserves the original operation's continuity.
 
 Inputs are flags, not a file: `--product`, `--scope` (`global`, `context` or
 `instance`), `--context`, `--instance`, one `--key` per stored setting name,
@@ -2471,11 +2490,11 @@ is not success.
 
 `requires_compatible_readers_and_rollback: true` means the removal takes the
 last stored value from a record that keeps provider-retirement intent, so the
-record survives with no values. Before any admin apply, deploy readers that
+record survives with no values. Before any apply, deploy readers that
 accept such records everywhere and keep a rollback build with that support.
 The flag reports the requirement; it does not attest deployment or approve it.
 
-A 409 `runtime_setting_removal_unverified` returns `stale`: refresh the
+A review/readback 409 `runtime_setting_removal_unverified` returns `stale`: refresh the
 names-only runtime-settings read and run a fresh dry run, or for readback
 reuse the dry run's exact keys, reason, review id and digest. A 403
 `authorization_denied` returns `denied`, a 401 `unauthorized`, a 503
