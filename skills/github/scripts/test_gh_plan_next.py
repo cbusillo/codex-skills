@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import importlib.util
+import copy
 import random
 import re
 import sys
@@ -2395,19 +2396,37 @@ def test_milestone_summary_names_each_wait_when_no_milestone_work_is_listed() ->
 
 
 def test_empty_track_scoping_uses_reviewed_records_instead_of_summary() -> None:
-    for prose in ("", "State: Waiting.\nNext action: Director chooses the next step."):
-        track_issue = active_track("someone/direction", 1, "First", prose)
-        if not prose:
+    observed = {"complete": True, "pulls": [], "inventory": {"local_branches": [], "remote_branches": [], "worktrees": []},
+                "coverage": {"source": "fixture"}}
+    for actor in ("", "person:director", "event:deployment", "agent:old-session"):
+        track_issue = active_track("someone/direction", 1, "First", f"State: Waiting.\nNext actor: {actor}\n")
+        if not actor:
             track_issue["body"] = "## Objective\nProve the milestone.\n"
         with global_fixture([track_issue], [], {}, clear_waits=[track_issue]) as (module, result, _reads):
-            with patch.object(module, "next_status_body_time", side_effect=AssertionError("Track prose ordering is not needed")):
+            with patch.multiple(module, annotate_next_queue=module.real_annotate_next_queue,
+                read_queue_ownership=lambda _: observed, wait_authors=lambda _: {"someone"},
+                next_status_body_time=Mock(side_effect=AssertionError("Track prose ordering is not needed"))):
                 module.cmd_next(next_args())
-        assert [(item["repo"], item["number"]) for item in result["candidates"]] == [(track_issue["repo"], track_issue["number"])]
-    track_issue["_fixture_waiting_for"] = "Director chooses the launch date"
-    with global_fixture([track_issue], [], {}) as (module, result, _reads):
-        module.cmd_next(next_args())
-    assert not result["candidates"]
-    assert any(row["waiting_for"] == track_issue["_fixture_waiting_for"] for row in result["waiting"])
+        assert [(item["repo"], item["number"]) for item in result["available_candidates"]] == [(track_issue["repo"], track_issue["number"])]
+        assert not result["needs_status"] and not result["underway"]
+    scoped = result["available_candidates"][0]
+    for condition, expected in (("claim", "underway"), ("wait", "waiting"), ("incomplete", "review")):
+        row = copy.deepcopy(scoped)
+        row.pop("queue")
+        evidence = {**observed, "complete": condition != "incomplete"}
+        if condition == "claim":
+            body = module.github_plan_claim.marker({"worker": "worker", "session": "another-session",
+                "branch": "work/scoping", "claimed_at": "2026-10-29T12:00:00Z"})
+        else:
+            body = module.github_plan_wait.marker(module.github_plan_wait.reviewed(evidence="Device result needed",
+                waiting_for="Director device test", ends_when="Director posts the result")) if condition == "wait" else "Progress"
+        row["discussion"]["comments"].append({"id": 10001, "author": "someone", "body": body,
+            "created_at": "2026-10-29T12:00:00Z", "updated_at": "2026-10-29T12:00:00Z"})
+        with patch.multiple(module, read_queue_ownership=lambda _: evidence, wait_authors=lambda _: {"someone"},
+            next_status_body_time=Mock(side_effect=AssertionError("Track prose ordering is not needed"))):
+            module.real_annotate_next_queue([row], next_args())
+        assert row["queue"]["state"] == expected
+        assert not module.project_local_queue([row], [])["available_candidates"]
 
 
 def test_named_next_actor_or_absence_keeps_a_stated_precondition() -> None:

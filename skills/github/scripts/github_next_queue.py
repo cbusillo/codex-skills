@@ -139,16 +139,22 @@ def released_actor(actor: str, discussion: dict[str, Any], trusted: set[str]) ->
     return bool(relevant and relevant[-1] in {index for index, _, _ in github_plan_claim.exact_released_sources(comments)})
 
 
+def is_scoping_track(item: dict[str, Any]) -> bool:
+    return github_direction_next.TRACK_SCOPING in (item.get("reasons") or [])
+
+
 def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[str], status_known: bool = True,
              acceptance_reader: Callable[[str, int, str], bool] | None = None) -> dict[str, Any]:
     discussion = item.get("discussion") or {}
-    status = current_status(discussion, trusted, body_recorded_at=discussion.get("body_recorded_at")) if status_known else ""
-    row = {"next_action": status_field(status, "Next action"), "recorded_state": status_field(status, "State"),
+    scoping = is_scoping_track(item)
+    status = current_status(discussion, trusted, body_recorded_at=discussion.get("body_recorded_at")) if status_known and not scoping else ""
+    row = {"next_action": "Scope the first work issue for this Track." if scoping else status_field(status, "Next action"),
+           "recorded_state": status_field(status, "State"),
            "claim_required": True, "ownership_complete": False,
            "ownership_source": "current_reads", "ownership_coverage": ownership.get("coverage", {}),
            "observed_ownership_complete": ownership.get("complete") is True}
     try:
-        actor = next_actor.read(status)
+        actor = "agent" if scoping else next_actor.read(status)
     except ValueError:
         actor = None
     row["next_actor"] = actor

@@ -28,6 +28,8 @@ import github_milestone as github_milestone_core
 LIVE_BREAKAGE_LABEL = "live-breakage"
 
 
+TRACK_SCOPING = "tracking_issue_needs_scoping"
+
 def normalize_labels(items: Any) -> list[str]:
     if not isinstance(items, list):
         return []
@@ -1338,7 +1340,7 @@ def rank_direction_work(
             item.pop("exclusion", None)
             item["reasons"] = [
                 f"direction_milestone_{order[milestone['title']] + 1}",
-                "tracking_issue_needs_scoping",
+                TRACK_SCOPING,
                 *(item.get("reasons") or []),
             ]
             candidates.append(item)
