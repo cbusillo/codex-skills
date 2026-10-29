@@ -32,8 +32,8 @@ brew install bash  # only if Homebrew Bash is not installed
 PATH="$(brew --prefix bash)/bin:$PATH" bash --version
 ```
 
-Use the same `PATH` prefix for the selected focused local commands in
-`qualityGate.test.local`; see the [test command contract](config-schema.md#workflow-metadata).
+Use the same `PATH` prefix when a selected command needs Bash 4+; see the
+[test command contract](config-schema.md#workflow-metadata) for local and CI test scope.
 The prefix works on both Apple Silicon and Intel Macs and passes the selected
 `PATH` to child helpers. It leaves `/bin/bash`, the login shell, and persistent
 shell configuration unchanged. Selecting only an absolute interpreter for the
