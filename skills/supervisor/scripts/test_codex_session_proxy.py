@@ -11,7 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timezone
 import threading
 import uuid
@@ -42,19 +42,24 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
         f.__enter__()
         self.addCleanup(f.__exit__)
         f.rpc_results["thread/start"] = {"thread": {"id": f.session, "path": str(f.transcript)}}
-        task, request, response, _ = await self.start_client(f, external=True)
+        native_receipt = f.root / "native-launch.json"
+        task, request, response, _ = await self.start_client(f, external=True, launch_receipt=native_receipt)
         try:
             self.assertIn("result", await self.send(task, request, response, "thread/start", None))
-            rows = [row for row in closure.log_rows() if row.get("session_id") == f.session]
-            self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0]["resumed_generation"]["transcript"], str(f.transcript))
-            self.assertTrue(rows[0]["resumed_generation"]["launch_generation"])
+            native = proxy.read_launch_receipt(native_receipt)
+            self.assertEqual(native["transcript"], str(f.transcript))
+            self.assertTrue(native["launch_generation"])
+            self.assertFalse(any(row.get("resumed_generation") for row in closure.log_rows()))
             processes = [(int(line.split()[0]), "?", line.split(maxsplit=1)[1])
                          for line in f.commands.splitlines() if line.split()]
             ledger = f.root / "launch-ledger.json"
             receipt = {"session_id": "terminal-id", "tty": "/dev/?", "window_id": "window", "tab_id": "tab"}
-            choice = {"provider": "openai", "env": {"CODEX_HOME": str(f.home)}}
-            with patch.object(session_liveness, "inventory", return_value=processes):
+            choice = {"provider": "openai", "env": {"CODEX_HOME": str(f.home)}, "native_receipt": str(native_receipt)}
+            transcript_text = f.transcript.read_text()
+            f.transcript.unlink()
+            async def publish_transcript(_delay: float) -> None:
+                f.transcript.write_text(transcript_text + '{"type":')
+            with patch.object(asyncio, "sleep", side_effect=publish_transcript), patch.object(session_liveness, "inventory", return_value=processes):
                 await iterm_tab.register_fresh_launch(Namespace(ledger=ledger), receipt, choice)
             entry = json.loads(ledger.read_text())[0]
             self.assertEqual(entry["session_id"], f.session)
@@ -74,14 +79,29 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
         f.__enter__()
         self.addCleanup(f.__exit__)
         ledger = f.root / "launch-ledger.json"
+        unbound = {"iterm_session_id": "unbound-terminal", "supervisor_owned": True}
+        ledger.write_text(json.dumps([unbound]))
         entries = []
         for identity in (f.session, OTHER_THREAD):
             transcript = f.home / "sessions" / (identity + ".jsonl")
             transcript.write_text(f.transcript.read_text().replace(f.session, identity))
             entries.append({**f.entry, "session_id": identity, "transcript": str(transcript)})
+        waiting = threading.Event()
+        def append(entry: dict) -> None:
+            waiting.set()
+            iterm_tab.append_launch_ledger(ledger, entry)
         with ThreadPoolExecutor(max_workers=2) as pool:
-            list(pool.map(lambda entry: iterm_tab.append_launch_ledger(ledger, entry), entries))
-        self.assertEqual({row["session_id"] for row in json.loads(ledger.read_text())}, {f.session, OTHER_THREAD})
+            with closure.store_lock(ledger, create=True):
+                first = pool.submit(append, entries[0])
+                self.assertTrue(waiting.wait(1))
+                with self.assertRaises(FutureTimeout):
+                    first.result(timeout=0.1)
+            second = pool.submit(append, entries[1])
+            first.result(timeout=2)
+            second.result(timeout=2)
+        recorded = json.loads(ledger.read_text())
+        self.assertEqual({row.get("session_id") for row in recorded}, {None, f.session, OTHER_THREAD})
+        self.assertIn(unbound, recorded)
 
     async def test_tmux_launch_reattachment_finishes_with_or_without_a_queue_nudge(self) -> None:
         import iterm_tab
@@ -732,7 +752,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             (f.root / "stop").touch()
             self.assertEqual(await asyncio.wait_for(task, 8), 0)
 
-    async def start_client(self, f, *, resume=None, wrapper=False, external=False, default_unix=False):
+    async def start_client(self, f, *, resume=None, wrapper=False, external=False, default_unix=False, launch_receipt=None):
         ready, request, response, stop = [f.root / name for name in ("ready", "request", "response", "stop")]
         child = f.root / "codex"
         child.write_text(f"#!{sys.executable}\n" +
@@ -766,10 +786,11 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             native += ["--", "task with  repeated spaces\nnext\tline"]
         if external:
             child = await asyncio.create_subprocess_exec(sys.executable, str(Path(proxy.__file__).with_name("codex-session.py")),
-                "launch", "--codex-home", str(f.home), "--", *native)
+                "launch", "--codex-home", str(f.home),
+                *(["--launch-receipt", str(launch_receipt)] if launch_receipt else []), "--", *native)
             task = asyncio.create_task(child.wait())
         else:
-            task = asyncio.create_task(proxy.run_client(f.home, native, session=resume))
+            task = asyncio.create_task(proxy.run_client(f.home, native, session=resume, launch_receipt=launch_receipt))
         async def finish():
             if not task.done():
                 if stop.parent.exists():

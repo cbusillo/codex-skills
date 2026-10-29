@@ -18,7 +18,7 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import github_plan_closure as closure
 from github_plan_native import queue_input, cancel_queue
-from codex_session_proxy import run_client, managed_argv, source_endpoint
+from codex_session_proxy import run_client, managed_argv, source_endpoint, read_launch_receipt
 
 
 def run(args) -> int:
@@ -42,9 +42,11 @@ def run(args) -> int:
         if native[:1] == ["--"]:
             native = native[1:]
         native = managed_argv(home, native)
+        if getattr(args, "launch_receipt", None):
+            return asyncio.run(run_client(home, native, launch_receipt=args.launch_receipt))
         return asyncio.run(run_client(home, native))
-    if args.command == "status" and getattr(args, "launch_generation", None):
-        print(json.dumps(closure.launch_status(args.launch_generation, args.codex_home)))
+    if args.command == "status" and getattr(args, "launch_receipt", None):
+        print(json.dumps(read_launch_receipt(args.launch_receipt)))
         return 0
     canonical = str(uuid.UUID(args.session_id))
     if canonical != args.session_id:
@@ -76,7 +78,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("launch", "native", "resume", "queue", "queue-cancel", "status"))
     parser.add_argument("--session-id")
-    parser.add_argument("--launch-generation")
+    parser.add_argument("--launch-receipt", type=Path)
     parser.add_argument("--codex-home", type=Path)
     parser.add_argument("--proxy", type=Path)
     parser.add_argument("--proxy-parent", type=int)
@@ -91,9 +93,9 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true")
     args, native = parser.parse_known_args()
     args.native_args = native
-    if args.launch_generation and (args.command != "status" or args.session_id or not args.codex_home):
-        parser.error("--launch-generation needs status --codex-home, without --session-id")
-    if args.command not in {"launch", "native"} and (native or not (args.session_id or args.launch_generation)):
+    if args.launch_receipt and (args.command not in {"launch", "status"} or args.session_id):
+        parser.error("--launch-receipt belongs to launch or status, without --session-id")
+    if args.command not in {"launch", "native"} and (native or not (args.session_id or args.launch_receipt)):
         parser.error("use --session-id with resume, queue or status; native argv belongs to launch")
     if args.command != "status" and args.codex_home is None:
         parser.error("resume and queue require --codex-home")

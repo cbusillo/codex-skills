@@ -1338,16 +1338,27 @@ out of the command file. Shell wrappers, extra commands, trailing shell punctuat
 and shell comments refuse because they may discard the prompt.
 For fresh managed Codex `--remote` workers on either terminal backend, add
 `--ledger /private/launch-ledger.json`. The existing ingress publishes the
-native thread ID and transcript with its process generation; the launcher
-waits for that exact generation and atomically appends a validated owned row,
-preserving concurrent appends. Its receipt includes `native_session_id`,
-`transcript` and `ledger_recorded`; terminal `session_id` keeps its existing meaning.
-Other fresh launch modes keep their existing recording procedure.
-A registration failure after submission names the terminal and requires
-inspection before any retry. Do not relaunch it or construct a replacement row.
-First-screen verification and all shutdown checks still apply. To inspect the
-published metadata directly, use `codex-session.py status --launch-generation
-<generation> --codex-home <selected-home>` instead of transcript globbing.
+first native thread ID and transcript into that launch's private receipt,
+without changing the closed-session log or other launches. The launcher
+matches account, process generation and terminal, checks the transcript identity
+header, and atomically appends an owned row. Streaming transcript content does
+not delay registration. The receipt includes `native_session_id`, `transcript`,
+`native_receipt` and `ledger_recorded`; terminal `session_id` keeps its existing meaning.
+First-screen verification and all shutdown checks still apply.
+A registration failure after submission names the terminal and retains its
+receipt. Inspect the terminal and save the reported `launch` object to a private
+file, then use `iterm_tab.py register --receipt-file <file> --ledger <ledger>`
+to finish registration without relaunching. Duplicate registration refuses.
+`codex-session.py status --launch-receipt <native_receipt>` reads the same
+identity, including after the client exits; no transcript globbing is needed.
+Keep retained receipts while their workers need recovery, then remove them
+with normal task-evidence cleanup.
+Other fresh modes keep their launch procedure. Append their existing native
+ledger entries through `iterm_tab.py register --entry-file <entry.json>
+--ledger <ledger>` so every append shares the lock. Do existing-row maintenance
+only after launches and registrations using that ledger have finished; never
+write an old whole-ledger snapshot over a running batch. Launch-only rows are
+preserved by appends and still need their normal identity binding before shutdown.
 For an exact-source recovery without command/brief files, use the documented
 [`new --resume-session-id` route](#release-a-verified-finished-session).
 Empty, whitespace-only, missing or unreadable briefs

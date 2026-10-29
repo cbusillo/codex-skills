@@ -535,20 +535,6 @@ def launch_metadata(pid: int, generation: str, home: str) -> dict:
             "launch_generation": generation, "launch_started_at": process_started_at(pid).isoformat()}
 
 
-def launch_status(generation: str, home: Path) -> dict:
-    matches = [row for row in log_rows()
-               if row.get("resumed_generation", {}).get("launch_generation") == generation
-               and row["resumed_generation"].get("codex_home") == str(home.resolve())]
-    if len(matches) != 1:
-        raise ValueError("native launch session is not unique or not yet published")
-    row = matches[0]
-    metadata = row["resumed_generation"]
-    require_canonical_identity(row["session_id"])
-    if process_started_at(metadata["launch_pid"]).isoformat() != metadata["launch_started_at"]:
-        raise ValueError("native launch process generation changed")
-    return {"session_id": row["session_id"], **metadata}
-
-
 def resumed_launch(session: str, metadata: dict, transcript: str, tty: str) -> None:
     """Record a new generation while the resume helper holds the source lease."""
     if session not in (_LEASES.get() or set()):
