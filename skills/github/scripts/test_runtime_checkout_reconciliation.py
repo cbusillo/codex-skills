@@ -273,6 +273,39 @@ def test_reconcile_ignores_inherited_git_worktree_environment(tmp_path: Path) ->
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
 
 
+def test_reconcile_keeps_the_original_git_identity_for_binding_postconditions(tmp_path: Path) -> None:
+    fixture = build_runtime_fixture(tmp_path)
+    namespace = runpy.run_path(str(fixture.script))
+    run_git = namespace["run_git"]
+
+    def replace_git_directory(repo: Path, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        result = run_git(repo, *args, **kwargs)
+        if args[0] == "merge":
+            (fixture.runtime / ".git").rename(tmp_path / "original-git")
+            (fixture.runtime / ".git").write_text(f"gitdir: {fixture.landing / '.git'}\n")
+        return result
+
+    environment = {"HOME": str(tmp_path / "host-home"), "CODE_HOME": str(fixture.code_home),
+                   "CODEX_HOME": str(tmp_path / "no-codex"), "CLAUDE_CONFIG_DIR": str(tmp_path / "no-claude")}
+    with mock.patch.dict(os.environ, environment), \
+            mock.patch.dict(namespace["reconcile_checkout"].__globals__, {"run_git": replace_git_directory}):
+        receipt = namespace["reconcile_runtime_checkout"](fixture.merged, fixture.repo, fixture.landing_sha)
+    assert receipt["reason_code"] == "postcondition_runtime_binding_changed"
+    assert receipt["runtime_mutated"]
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
+
+
+def test_reconcile_preserves_a_clean_runtime_with_a_paused_git_operation(tmp_path: Path) -> None:
+    fixture = build_runtime_fixture(tmp_path)
+    operation = Path(git(fixture.runtime, "rev-parse", "--path-format=absolute", "--git-path", "CHERRY_PICK_HEAD"))
+    operation.write_text(fixture.head_sha)
+    proc, receipt = fixture.run()
+    assert proc.returncode == 2
+    assert receipt["fetched_sha"] is None
+    assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
+    assert operation.read_text() == fixture.head_sha
+
+
 def test_reconcile_blocks_dirty_runtime_without_fetching_or_mutating(tmp_path: Path) -> None:
     fixture = build_runtime_fixture(tmp_path)
     (fixture.runtime / "dirty.txt").write_text("dirty\n")

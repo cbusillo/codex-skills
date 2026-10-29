@@ -7,12 +7,14 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+from types import ModuleType
 
 
 DEFAULT_CONFIG_RELATIVE = Path(".config/codex-skills/worktrees.json")
@@ -132,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
             if helper.resolve() in {Path(__file__).resolve(), Path(__file__).with_name("dev-worktree").resolve()}:
                 raise Refused("hostHelper must not refer to the catalog helper itself.")
         if len(args) == 3 and args[0] != "retire":
+            refresh_primary(Path(args[0]))
             retire_finished(Path(args[0]))
         if helper:
             # The host owns volume identity, locks and retirement; do not mkdir or fall back.
@@ -146,6 +149,23 @@ def main(argv: list[str] | None = None) -> int:
         detail = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
         print(f"dev-worktree: {detail}", file=sys.stderr)
         return 1
+
+
+def checkout_rules(source: Path | None = None) -> ModuleType:
+    spec = importlib.util.spec_from_file_location("checkout_rules", source or Path(__file__).with_name("reconcile-runtime-checkout.py"))
+    if spec is None or spec.loader is None:
+        raise Refused("Checkout rules unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def refresh_primary(checkout: Path) -> None:
+    try:
+        receipt = checkout_rules().reconcile_primary_checkout(checkout)
+        print(f"dev-worktree: primary checkout refresh: {json.dumps(receipt)}", file=sys.stderr)
+    except Exception as exc:
+        print(f"dev-worktree: primary checkout refresh unavailable; inspect checkout: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
 def retire_finished(checkout: Path) -> None:
