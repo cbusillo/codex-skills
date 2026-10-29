@@ -83,7 +83,7 @@ def remaining_work(status: str) -> dict[str, Any]:
     def clauses(text: str) -> list[str]:
         return re.split(r"[;\n]|[.]\s+", text)
     delivery_state = ";".join(re.split(r"\bprerequisites?\b", clause, maxsplit=1, flags=re.I)[0]
-                              for clause in clauses(delivery_state))
+                              for clause in clauses(state))
     delivered = bool(re.search(r"\b(?:landed|merged|delivered|source landing confirmed|source engineering is complete|completed .*slices)\b", delivery_state, re.I))
     delivered |= any(re.search(r"\bdelivery(?:\s+of\b.*?)?\s+is complete\b", clause, re.I) for clause in clauses(delivery_state))
     if re.search(r"\b(?:not|never|yet to be|needs to be|must be|will be|to be|awaiting|pending)\s+(?:\w+\s+){0,2}(?:merged|landed|delivered)\b", state, re.I):
