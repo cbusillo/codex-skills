@@ -660,8 +660,10 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
     closed_pr_inventory_complete = True
     director = director.casefold() if director else None
     repos = [repo.casefold() for repo in repos]
-    bots = {name for name in (github_identity.automation_login(), *github_identity.configured_bot_logins())
-            if isinstance(name, str) and name}
+    bots: set[str] = set()
+    for name in (github_identity.automation_login(), *github_identity.configured_bot_logins()):
+        if isinstance(name, str) and name:
+            bots.add(name)
 
     def fetch(args):
         nonlocal reads, budget
