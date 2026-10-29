@@ -4506,7 +4506,8 @@ def next_dependabot_work(
         coverage["complete"] &= context["complete"]
         observations: list[dict[str, Any]] = []
         for pull in pulls[:scan_limit]:
-            if pull.get("state") != "open" or (pull.get("user") or {}).get("login") != "dependabot[bot]":
+            author = (pull.get("user") or {}).get("login")
+            if pull.get("state") != "open" or author not in {"dependabot[bot]", "renovate[bot]"}:
                 continue
             try:
                 created = datetime.fromisoformat(pull["created_at"].replace("Z", "+00:00"))
@@ -4523,7 +4524,7 @@ def next_dependabot_work(
                 "created_at": pull["created_at"], "age_hours": round(age / 3600, 1),
                 "age": f"{age / 3600:.1f} hours", "head_sha": (pull.get("head") or {}).get("sha"),
                 "base_branch": (pull.get("base") or {}).get("ref"),
-                "reasons": ["dependabot_open_more_than_one_day"],
+                "reasons": [f"{author.removesuffix('[bot]')}_open_more_than_one_day"],
                 "next_action": "Review the PR discussion, changelog, compatibility and current ownership before taking work.",
                 "ownership": "not_checked",
             })

@@ -334,9 +334,10 @@ not override candidate exclusions or authorize starting it. Report incomplete
 `blocking_work_elsewhere_context` separately from candidate/dependency coverage,
 including truncation, unread gates, and unavailable reads.
 
-Also report `dependabot_candidates` as PR work needing an agent, with each PR's
-link and age. Read the PR discussion and check current ownership before taking
-it on; the PR is its work record. For authorized PR-only work, claim the PR
+Also report `dependabot_candidates` as Dependabot and Renovate PR work needing
+an agent, with each PR's link and age. Supervisor and executing-loop selection
+use this same candidate read. Read the PR discussion and check current ownership
+before taking it on; the PR is its work record. For authorized PR-only work, claim the PR
 through [Planning: Claim](../github/references/cli-reference.md#planning-claim)
 before creating a linked worktree, then load `github` and follow its existing-PR
 workflow. Use a linked canonical implementation issue when one exists.
