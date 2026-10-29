@@ -4,6 +4,18 @@ description: Use to hand implementation work to a separate agent process on any 
 metadata:
   short-description: Brief, watch, nudge, and record agent sessions
 resources:
+  - path: references/routine-check.md
+    kind: reference
+    description: Short entry for recurring checks without skill reloads.
+  - path: scripts/compact_check.py
+    kind: script
+    description: Read each ledger session once and emit changed pointers or outstanding actions and coverage gaps.
+  - path: scripts/session_closeout.py
+    kind: script
+    description: Run normal finished-session gates with a compact receipt and no uncertain mutation replay.
+  - path: scripts/catalog_landing.py
+    kind: script
+    description: Verify a catalog landing through runtime reconciliation and fresh native sessions on both harnesses.
   - path: scripts/heavy_run.py
     kind: script
     description: Queue capped local Docker runs through cleanup with private evidence.
@@ -74,6 +86,21 @@ resources:
     kind: reference
     description: Rules every Supervisor brief carries by link, and the milestone lead brief template.
 commands:
+  - name: supervisor-check
+    source: skill
+    resource_path: scripts/compact_check.py
+    example_argv: ["uv", "run", "scripts/compact_check.py", "--ledger", "<ledger.json>", "--state", "<check-state.json>"]
+    purpose: Print changed session pointers, outstanding actions and current coverage without response contents.
+  - name: supervisor-closeout
+    source: skill
+    resource_path: scripts/session_closeout.py
+    example_argv: ["uv", "run", "scripts/session_closeout.py", "--ledger", "<ledger.json>", "--session-id", "<native-id>", "--supervisor-session", "<supervisor-id>", "--owner", "OWNER", "--evidence", "<private-evidence>"]
+    purpose: Close one normal finished session or return its first failed gate with private evidence.
+  - name: supervisor-verify-landing
+    source: skill
+    resource_path: scripts/catalog_landing.py
+    example_argv: ["uv", "run", "scripts/catalog_landing.py", "--config", "<private-landing.json>", "--evidence", "<private-evidence>"]
+    purpose: Reconcile and verify a catalog landing through both fresh native harnesses.
   - name: supervisor-heavy-run
     source: skill
     resource_path: scripts/heavy_run.py
@@ -286,521 +313,206 @@ policy:
 
 # Supervisor
 
-Follow [task scope](../references/execution-scope.md) and
-[talking with the Director](../references/talking-with-the-director.md) for checks, handoffs and questions.
-Use [the step-to-skill table](../references/using-skills.md) for each step,
-`direction` for daily turns and escalations, and `launchplane` for train operations.
+Follow [task scope](../references/execution-scope.md), the Director's overall
+and repository direction, and [talking with the Director](../references/talking-with-the-director.md).
+Full supervision is a direction session the Director starts directly in a host,
+not a subordinate call. The Supervisor briefs, watches, nudges and records;
+it never decides for the Director, widens a running brief, or judges a run it
+launched. Another model's direction session judges that run.
 
-For a separate worker, read [Harnesses](#harnesses), [launch effort](#accounts-pace-and-launch-effort), [the session registry](references/helpers.md#local-state-and-the-session-registry),
-[terminal launches](references/helpers.md#terminal-launches), [account choice](references/helpers.md#choosing-the-account), and
-[worker closeout](#close-finished-sessions-on-every-notice-and-check) before using `iterm_tab.py new --account-provider`.
-Within existing delegation authority, the launching session takes the Supervisor's role in these sections and the brief rules for workers it launches. This does not start a full Supervisor run.
-
-For full supervision, the Director starts `/shared:supervisor` on Claude Code
-and names the run. This is a `direction` session, started directly in a host,
-never as a subordinate call from an executing agent.
+Load this skill at takeover. Scheduled checks use only
+[Routine check](references/routine-check.md), which names the private ledger,
+recovery note and compact readers. Read a rare event's linked section when it
+occurs; do not reload this skill or the whole helpers reference each check.
+For a separate worker under existing delegation authority, read
+[terminal launches](references/helpers.md#terminal-launches),
+[account choice](references/helpers.md#choosing-the-account),
+[the registry](references/helpers.md#local-state-and-the-session-registry), and
+[shutdown](#close-finished-sessions-on-every-notice-and-check) before launching.
+That role does not start a full Supervisor run.
 
 ## Before Taking Over: Permission Mode
 
-The permission mode decides what a Supervisor can do. In Claude Code's auto
-mode the classifier can deny launching sessions and merging, but not reliably:
-on October 10 it let a merge-train driver start. Your brief, not a denial,
-decides what you may run. The auto-mode
-entries in the catalog README's Auto mode section, which the Director applies
-by hand, cover only a direct `gh-pr.py merge` that this session's messages
-authorize; they cover neither launching sessions nor merge-train landings.
-Check the current mode before taking over. If it will deny a step you need,
-tell the Director in your first message, before the first denial, and name
-each step it blocks. Never change the Director's settings yourself.
+Check the current permission mode. If it blocks a needed step, name that step
+in the first message, before a denial. Claude auto mode is not launch or train
+authority; its README exception covers only an authorized direct `gh-pr.py merge`.
+The brief decides scope. Never change the Director's settings or work around a denial.
 
 ## Pilot Status
 
-This skill is a pilot. Each Director's pilot record is that Director's own
-[handoff record](references/helpers.md#handoff-record), never an issue in
-another person's repository. Lessons about shared skills that other Directors
-would hit too go to the [field reports](references/field-reports.md) issue.
-The skill stays a pilot until its three exit criteria hold:
-
-1. Two consecutive Supervisor handoffs with no new lesson and no brief widened
-   after launch.
-2. A fresh Supervisor session takes over from the handoff alone, without the
-   Director stepping in, including recreating its checks and the morning
-   digest.
-3. The Director's open questions reach the Director in one place under the
-   [question queue rules](../references/talking-with-the-director.md#decisions-holds-and-work-state),
-   and the handoff record holds handoffs and lessons only.
-
-Post each handoff as the [Handoff Shape](#handoff-shape) says, and say in it
-whether any lesson was new.
+Use this Director's [handoff record](references/helpers.md#handoff-record),
+not another person's repository. Shared lessons go to
+[field reports](references/field-reports.md). The pilot ends after two consecutive
+handoffs with no new lesson or widened brief, takeover from a handoff alone
+including checks and digest, and Director questions delivered in one place
+under the shared queue rules. Say whether each handoff contains a new lesson.
 
 ## Harnesses
 
-Verified on Claude Code as the Supervisor. From there it reaches Codex sessions
-with `codex-session.py queue --session-id <id> --codex-home <source-home> --message "<text>"`,
-run with `uv run` from this skill's scripts directory, as [helper setup](references/helpers.md)
-says. This invalidates the old closure before sending. It reaches Claude Code sessions in
-terminal tabs with `skills/supervisor/scripts/iterm_tab.py`, using an exact
-`--session-id` from its `list` output. Launch Codex sessions with "keep working
-through compaction" and Keep instructions naming the brief, issue and current
-step; do not hand them off at a context percentage. Codex as
-the Supervisor is expected to work; claim it only after a run has verified it and the handoff record
-records that run.
-
-For stale queued input on a stopped source, read the [recovery procedure](references/helpers.md#release-a-verified-finished-session)
-and use `codex-session.py queue-cancel` preview before an explicit ID/digest apply.
-Cancellation requires a NotLoaded target and the original owned ledger or freshly
-verified termination record. It preserves pending actions and successor freezes;
-it does not establish completion or release claims.
-
-For new Supervisor launches, use `iterm_tab.py --backend tmux` with the
-dedicated `tmux -L supervisor` server so controls work while the display sleeps
-or the screen is locked. Existing iTerm sessions keep using the default iTerm
-backend during the transition. Read [tmux launch, viewing and locked-screen
-proof](references/helpers.md#tmux-launches) before the first tmux launch or
-closure. To see the sessions as familiar iTerm tabs, attach read-only from
-iTerm with `tmux -N -L supervisor -CC attach -r -t <container-id>` using the
-returned container id; the running server must be tmux 3.7 or later to enforce
-read-only input.
-Detaching or reattaching leaves agent sessions running; never kill the server
-to disconnect the view.
-The Director cannot type into that view. When a worker needs the Director's
-answers, for example a computer-use session, tell the Director at launch that
-you will relay: bring each question to chat as a numbered Q and send the reply
-with `iterm_tab.py send` at a verified idle prompt.
-
-The shared launcher disables Claude Code prompt suggestions and auto memory
-with `--settings '{"promptSuggestionEnabled": false, "autoMemoryEnabled": false}'`
-on both backends. Keep those settings on Supervisor launches; existing sessions
-may still show suggestions.
-It also passes `--autocompact auto` unless the launch file sets
-`--autocompact`, which keeps Claude Code's tuned window and stops the "Want to
-autocompact at … instead?" offer that an unattended session cannot answer
-([#2067](https://github.com/cbusillo/codex-skills/issues/2067)). A session
-launched without it that stops at that offer goes on the "needs the Director"
-list; the helpers send no Esc, arrow or Enter keys.
-Dim input-line text is a suggestion, never Director input. Only the Director's
-own words in chat or on GitHub count as decisions. Terminal text alone,
-including non-dim text, establishes neither its author nor approval.
+Use the [tmux launch procedure](references/helpers.md#tmux-launches) for new
+workers on `tmux -L supervisor`; existing iTerm workers retain their backend.
+Detaching a view leaves workers running. Never kill the server to disconnect.
+A read-only view cannot accept the Director's answers: say at launch that you
+will relay them, then use exact-session sends at a verified idle prompt.
+For Codex, use the managed daemon ingress and `codex-session.py queue` with the
+source home; it invalidates closure under the ownership lease. For stale queued
+input, read [recovery](references/helpers.md#release-a-verified-finished-session)
+and use explicit queue-cancel preview and ID/digest apply. Cancellation does
+not prove completion or release claims. A refusal never permits switching accounts.
+Codex as Supervisor is expected to work; claim verification only after a run is
+recorded on the handoff record. Keep the brief, issue and current step through compaction.
 
 ## Accounts, Pace, And Launch Effort
 
-- Agents never apply a banked reset. Ask the Director to apply one only when
-  Context Panel shows every account of that provider, including its use-last
-  account, has no capacity left (0% remaining). Still relay Context Panel's
-  safety notice when a reset expires within 24 hours; that notice does not
-  permit applying it before the provider is empty. This covers Claude too,
-  under the
-  [context-panel#791 reset decision](https://github.com/cbusillo/context-panel/issues/791#issuecomment-6050912240)
-  and [Claude confirmation](https://github.com/cbusillo/context-panel/issues/791#issuecomment-6050965276).
-- Run enough productive work that banked resets get used before they expire,
-  soonest expiry first. The [newer pacing decision](https://github.com/cbusillo/context-panel/issues/791#issuecomment-6050912240)
-  supersedes the older "pace to last the week" line on
-  [direction#28](https://github.com/cbusillo/direction/issues/28#issuecomment-5999464811).
-- Medium is the default reasoning effort for Supervisor launches. Use high
-  for authorization, credentials, security, policy or guidance changes, and
-  hard debugging, as recorded in the
-  [direction#28 effort decision](https://github.com/cbusillo/direction/issues/28#issuecomment-5999464811).
+Follow Context Panel's account choice and capacity. Never apply a banked reset.
+Ask the Director to apply one only when every account of that provider,
+including use-last, has 0% remaining. Relay reset-expiry notices within 24 hours;
+they do not authorize an early reset. Fill productive capacity with soonest
+expiries first. Medium is the default launch effort; use high for authorization,
+credentials, security, policy, guidance and hard debugging.
 
 ## The Pattern
 
-Before briefing work or asking a question about a product, run
-`uv run <skill-dir>/scripts/product_summary.py /path/to/repository` against a
-current default-branch checkout to read its product section.
-
-1. **One brief per session and repository.** Before launching from a survey or
-   report, recheck each item's live state. Choose items that share a subsystem
-   and kind of work into one session and one PR, so they share context and
-   avoid conflicting edits. Under `github-plan`, prepare a
-   parent in that repository scoped to the group. Reuse that parent, or nest
-   a new one under the existing parent to preserve the Track path.
-   The executing session claims the parent and each included item with
-   `gh-plan.py claim` on the same branch before moving items or creating its
-   worktree. On a refusal, stop, reconcile the owned status records and release
-   only the claims just made for that group. After successful claims, link the
-   items as native sub-issues. Move already parented items one at a time with
-   `unlink` and `link`; after readback of a failed move, restore any missing
-   original link. Verify both parents with `deps` before creating the worktree.
-   Use the [catalog worktree helper and per-host setting](../github/references/worktrees.md).
-   For Claude Desktop, start in the trusted repository with automatic worktree
-   creation disabled; the worker claims before creating its task worktree.
-   After creation, the worker switches its implementation working directory to
-   the printed task path; edits and scratch must not land in a catalog runtime
-   checkout.
-   Desktop folder trust remains a manual Director action as that reference
-   explains; IDE trusted roots do not grant it.
-   Keep sessions separate for different repositories, different risk or
-   approval levels (such as production data, credentials, recovery or Client
-   acceptance), and truly independent work where parallel wall-clock time
-   matters.
-   The brief writes no stop lines of its own: limits come only from DIRECTION.md,
-   the brief rules, and Director decisions quoted with their links. A fix or diagnosis brief also asks which invariant should have prevented
-   the failure (add it as a test), why it went unnoticed (reuse existing
-   monitors), what the fix could block on global paths such as the train,
-   deploys or recovery, and whether a stuck condition underneath keeps
-   producing symptoms.
-   Never widen a brief after launch. Write it from the decision record,
-   quoting the Director's words, never from a PR's wording.
-   Attribute Director holds to their source; write Supervisor preferences as
-   preferences, not prohibitions or reasons to request a grant, under
-   [task scope](../references/execution-scope.md)
-   and the shared [question rules](../references/talking-with-the-director.md#decisions-holds-and-work-state).
-   Brief an operational step through an existing supported path; when none
-   exists, brief designing the path instead.
-   When a request names a visual thing, check which one before writing the brief. A session
-   that needs more scope gets a Director question. If the Director says yes,
-   the wider scope goes in a new brief for a fresh session; the running
-   session's brief stays as it was. Every brief, worker or milestone lead,
-   carries the [brief rules](references/brief-rules.md) by link; the
-   [milestone lead](references/brief-rules.md#milestone-lead-briefs) and
-   [Codex Cloud pass](references/brief-rules.md#codex-cloud-pass-briefs)
-   templates are there too. Change a rule there, never in a local copy. The
-   [ready handoff contract](../github/references/cli-reference.md#ready-handoffs)
-   those rules link classifies acceptance from the PR's own Client test
-   notes. Do not ask for a new pre-merge decision when those notes
-   already settle it; a renewed wait follows that contract's withdrawal route.
-   Desktop IDE closure alone does not establish that headless inspection is
-   unavailable. When the Supervisor runs the review, point the author to the
-   [worker review request](references/helpers.md#worker-review-request);
-   keep the template there rather than copying it into briefs.
-   Use closing keywords for the PR completing an issue's work. Briefs must not
-   append "then the Supervisor verifies/qualifies/reads back the deployed
-   change" after routing. Follow GitHub's
-   [issue closing guidance](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof):
-   record real event waits by event and actor. Brief real remaining source work
-   with its own completing PR, or an authorized operational step through its
-   supported path. Preserve people's waits.
-   Pass each launch's prompt through `iterm_tab.py new --brief-file`; keep the
-   command file to the agent invocation and settings. The launcher validates
-   every brief before launch side effects; read the launching procedure in
-   [helpers](references/helpers.md#launching-and-nudging).
-   Page checks run headless. When a GUI brief explicitly names the Agents
-   Chrome profile, use the pinned `mcp__catalog-chrome__*` route on Claude or
-   local Codex on its account-relative bundle. Add `--require-browser` to that
-   launch and read [tool preflight](references/helpers.md#browser-and-computer-use-preflight).
-   Codex is the default for screen work. Claude Computer Use runs only in a
-   visible iTerm tab with the Director's approval for that session.
-   Then read each launch's first screen. The launcher reports a visible Codex
-   hook-review prompt as `launch_blocked`, retaining the terminal identity and
-   screen. Inspect that terminal before acting; do not relaunch or grant trust
-   automatically. A folder-trust or later prompt may still need attention;
-   a launch with no transcript after one minute is blocked
-   ([#2018](https://github.com/cbusillo/codex-skills/issues/2018)). Claude
-   launches into `~/Developer` repositories and their worktrees get folder
-   trust set before launch, in every Claude home including the default one; other folders must already be trusted
-   ([#2100](https://github.com/cbusillo/codex-skills/issues/2100)).
-   Give each running session its own anchor issue in the same repository,
-   sweeps and checks included. Put `Anchor: <issue URL>` (or `Anchor and claim:`)
-   on its own line in single-issue execution briefs, and `Read-only anchor: <issue URL>`
-   in briefs that will not claim. Execution briefs put `Admission: <kind>; <evidence URLs>`
-   on one line, naming the kind the worker will claim and each exact admission
-   issue or decision-comment URL. The launcher also recognizes the older
-   `Admission for this item:` form; only the Admission line's own URLs are evidence.
-   The shared launcher reuses the claim's admission and wait checks, full status and
-   ownership reads before dispatch. After a stopped launch, keep the issue with
-   its blocker, wait, claim holder or retained delivery until that fact changes;
-   another launch, an exact claim release or a newer timestamp alone does not
-   clear the other holds. Do not split a child just to redispatch the same held
-   work. Read-only work answering a wait can proceed without claiming it;
-   its ownership check still runs. Reconcile waits through
-   [wait records](../github/references/cli-reference.md#planning-claim).
-   For retained delivery, put `Resume from:
-   <same-issue claim comment ID or another source's full issue-comment URL>`
-   on its own line. Require the authored release and
-   a qualified handoff to exempt current artifacts; the worker still uses
-   `claim --resume-from` for full lineage validation.
-   Before a launch batch, compare PRs merged with PRs opened in each
-   repository over the last few hours. If merges are behind and no merge-path
-   fix is available, launch only finishing work. Apply the
-   [brief rules' PR cap](references/brief-rules.md#rules-every-brief-carries),
-   stating its exemption in merge-path and CI-repair briefs.
-2. **Director questions live on the item's issue**, as a comment that starts
-   `Director question:`. Follow the shared
-   [question and decision-record rules](../references/talking-with-the-director.md#decisions-holds-and-work-state)
-   for deciding what reaches the Director and presenting the queue. The Director
-   answers in chat, Discord, or on GitHub. The
-   Supervisor records the answer as a `Director decision:` comment on that issue
-   under those shared rules. Before dispatching work, reconcile each structured
-   wait the decision ends under [wait records](../github/references/cli-reference.md#planning-claim)
-   and [Status Labels](../github-plan/SKILL.md#status-labels),
-   linking that decision as evidence and preserving every unresolved wait.
-   Then point the session at it. Briefs accept a decision recorded by the
-   Supervisor or a direction session, not only one posted from the Director's
-   own login. On an escalation, it leaves the `direction` label in place; the
-   weekly direction audit judges the decision and removes it.
-3. **A check about every 23 minutes.** Rebuild the goal board first, under
-   [Milestone State](#milestone-state). For staffing, poll existing `plan:active`
-   child issues, their claims and `gh-plan.py next` across the run's repositories.
-   Use the maintained readers' pagination and consume all returned results,
-   including child and comment results. Require their complete-coverage result;
-   a first page or the goal board's bounded window is not complete staffing
-   coverage. Report failed or incomplete reads
-   as unknown instead of building a parallel manual inventory.
-
-   Read `openai_workers` and `load1_limit` from `[staffing]` in the host's private
-   `skill-data/supervisor.toml` for the running-worker target and one-minute load
-   limit. If unset, report the missing values and continue staffing available
-   work. Keep that OpenAI target staffed below the limit, refilling in the same
-   turn a worker closes. At high load, even without a configured limit, add
-   CPU-light work (analysis, reviews, docs, small suites). When `next` is thin,
-   look at actionable unclaimed `plan:active` issues and issues filed from
-   Cloud-driven passes, following the overall Order and existing claim and
-   launch rules. Add no
-   staffing label and do not depend on a buried staffing-request comment.
-
-   Workers report on their child issues. Parents hold in-place Current Status
-   summaries and decisions, without per-slice comments or acknowledgements.
-   Local heavy runs use the [one locked entrypoint](references/heavy-runs.md),
-   replacing comment-based window grants and BEGIN/END handoffs. Keep the session registry under
-   [Local State](#local-state). At takeover and each check, catch up any
-   unverified catalog landings through
-   [catalog landing verification](references/helpers.md#catalog-landing-verification),
-   including landings completed by the service after a local driver stopped.
-   Nudge a stalled session with exact facts: the comment,
-   the failing check, the time it last moved. When a lead ends its scheduled
-   progress turn saying the Track remains actionable, send queued guidance or
-   "continue" at the verified idle prompt. Check each session's context
-   size. Let automatic compaction proceed; a routine idle check alone is not
-   a reason to compact. When a session needs manual compaction, use the
-   harness's built-in mechanism at a safe point with Keep instructions naming
-   its brief, issue and current step. For Claude Code, send `/compact` with
-   those instructions only at a verified idle prompt. Codex keeps working
-   through automatic compaction, carrying its brief's Keep instructions; never
-   queue a request for it to compact itself. If a worker's compaction fails or its account needs it gone,
-   request a durable handoff, recheck prerequisites and ownership, and relaunch
-   the same goal after verified safe closeout with its existing retained-work
-   source when needed. If it cannot hand off, preserve it and bring the failure to the
-   Director. Gather the
-   open Director questions: read the existing foreign watcher's new
-   `director_question` notices on every check, open each full comment, and
-   register it in the Director's queue under the shared question rules.
-   For session anchors outside the watcher's repository coverage, read them
-   with `oq.py OWNER/REPO#ISSUE --owner OWNER --decision-author TRUSTED_BOT`
-   at each check and register new questions
-   under the same rules; report an unreadable anchor as a coverage gap.
-   For queued questions deferred until a stated event, recheck the condition in
-   the question or wait record at each check; when met, present the existing
-   question under the shared queue rules.
-   Read the latest stranded-work digest's
-   `supervisor_next_action` list, oldest first: do the Supervisor-only steps,
-   rewrite the rest to name the next agent and its step, or hand a batch to a
-   triage session. Then its `unasked_director_wait` list, oldest first: post
-   each as a Director question on its issue and register it, or correct a wait
-   that is not the Director's. Report milestone state only from this check's
-   goal board. Close finished sessions using the procedure below
-   on every check, including sessions that finished their item without needing
-   a relaunch.
-4. **Every check and every handoff points to the Director's question queue**,
-   headed with the Director's name (the pilot's handoffs say "Needs Chris").
-   Follow the shared question queue rules above; link queued questions rather
-   than copying or asking the whole queue in one message.
-5. **Land through the merge train** with the maintained driver,
-   `skills/launchplane/scripts/launchplane-train-drive.py`, one driver per
-   repository train, never a hand-written loop. Where a repository lands
-   outside the train, the session's own `github` merge path applies. The train
-   refuses a whole batch when its candidate fails, while the driver may only
-   report "lease held"; after about 45 minutes, read the candidate's CI
-   directly.
-   After landing, load `github`. For catalog landings, complete
-   [catalog landing verification](references/helpers.md#catalog-landing-verification)
-   before retiring the source worktree. Then complete
-   [After A Merge](../github/SKILL.md#after-a-merge), including
-   [issue closure and planning metadata](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof)
-   for the work handed to you. Reconcile closure in the landing flow. Apart
-   from catalog landing verification, do not create a later agent qualification
-   step or per-issue deploy check; use the PR's tests and the deploy's existing
-   health checks for that proof.
-   For Q154's interim automatic routing, read the
-   [auto-enqueue helper procedure](references/helpers.md#interim-auto-enqueue-watcher)
-   before running it. Executing sessions still hand off; the Supervisor owns
-   enqueue authority and optional manual pauses. Launchplane#3327 owns replacing this
-   interim watcher with service admission.
-6. **The Supervisor briefs, watches, nudges, and records.** It never decides
-   for the Director, never widens a brief, and never scores a run it launched;
-   a direction session on another model judges those runs. When the Director
-   asks it to judge its own work, it says so and points to that session.
-   During the run it
-   does alignment checks: it compares what each session is doing with that
-   repository's `DIRECTION.md` and the Director's overall direction, and a
-   mismatch becomes a Director question, not a verdict on the run.
+1. Before briefing product work or asking about it, run `product_summary.py`
+   against a current default checkout. Group one repository and related
+   subsystem work per brief and PR. Use `github-plan` to prepare a canonical
+   parent, recheck live ownership, and claim the parent and each included issue
+   on the same branch before moving native children or creating a worktree.
+   On refusal, reconcile and release only newly made group claims. Verify both
+   parents after a move; restore a missing original link after a failed move.
+2. Every worker has an anchor in its repository, including sweeps and checks.
+   Use `Anchor and claim:` or `Read-only anchor:` and one `Admission:` line
+   with the kind and exact evidence URLs. A held issue stays held until its
+   actual blocker changes; release, a new timestamp or a split does not clear it.
+   For retained work, supply `Resume from:` with the source claim ID or URL;
+   require the authored release and qualified handoff. Read-only work answering
+   a wait may proceed unclaimed with its ownership check.
+3. State a goal and observable finish line, not a mechanism. Include
+   [brief rules](references/brief-rules.md) by link, and use its milestone-lead
+   or Cloud-pass template when applicable. A named mechanism is a suggestion
+   unless it records a Director decision. Check which visual thing a request
+   means before briefing it. New scope needs a Director decision and a fresh
+   brief and session; the running brief remains unchanged. Brief unsupported
+   operations as designing a supported path. Never append an extra Supervisor
+   qualification step after delivery; use the completing PR's tests and normal
+   deploy health checks, preserving real event waits and remaining engineering.
+4. Pass the prompt through `iterm_tab.py new --brief-file` and keep settings
+   and invocation in the command file. Follow the launcher preflight and read
+   the first screen. A missing transcript after one minute or trust prompt is
+   blocked; preserve its exact terminal, never relaunch or grant trust to pass.
+   Use headless page checks. Explicit GUI briefs use the
+   [GUI and browser preflight](references/helpers.md#browser-and-computer-use-preflight)
+   and `--require-browser`; Codex is the default. Claude Computer Use needs the
+   Director's approval for that visible iTerm session.
+5. Before a batch, compare opened and merged PRs over recent hours. When merges
+   lag and no merge-path repair is available, launch finishing work only.
+   Follow the brief rules' PR cap and state any repair exemption. Workers post
+   on child issues; parents hold in-place Current Status and decisions.
+   Local heavy Docker runs use [one locked entrypoint](references/heavy-runs.md).
+6. Director questions go on their item's issue, then the shared queue. Record
+   actual decisions under [question rules](../references/talking-with-the-director.md#decisions-holds-and-work-state)
+   and [status labels](../github-plan/SKILL.md#status-labels), preserving every
+   unresolved wait. Point the worker at the recorded decision. A Supervisor or
+   direction-recorded decision counts; leave escalation labels for the weekly
+   direction audit. Link the question queue in every check and handoff.
+7. Run [Routine check](references/routine-check.md) about every 23 minutes and
+   close finished sessions immediately on notices. Read `[staffing]`
+   `openai_workers` and `load1_limit` from the host's private Supervisor config;
+   report missing values and continue available work. Refill below the target
+   in the same turn a worker closes. At high load add CPU-light work. When
+   `next` is thin, read actionable unclaimed `plan:active` issues and Cloud-pass
+   findings under the overall Order. Require complete paginated staffing
+   coverage; a first page or bounded board is insufficient. Never add a
+   staffing label or parallel manual inventory.
+8. Nudge stalls with exact facts. Continue an actionable lead at its verified
+   idle prompt. Allow automatic compaction; routine idleness alone is no reason
+   to compact. Manual Claude `/compact` needs a safe idle prompt and Keep
+   instructions. Never queue a Codex request to compact itself. On failed
+   compaction or account departure, obtain a durable handoff, recheck ownership,
+   close safely, then relaunch the same goal with its retained-work source.
+9. Land through the assigned train with the maintained driver, one per repo,
+   or the repository's authorized protected-branch route where assigned.
+   Load `launchplane` before train actions. After about 45 minutes with only
+   `lease held`, read candidate CI directly. Use the
+   [auto-enqueue procedure](references/helpers.md#interim-auto-enqueue-watcher)
+   for existing interim routing. After landing load `github`, perform
+   [catalog verification](references/helpers.md#catalog-landing-verification)
+   for catalog landings, then complete After A Merge and planning reconciliation.
 
 ## Client Products
 
-These are the Director's
-[October 9 rules](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6091977127)
-for products a Client runs business on.
-
-- Use the overall `DIRECTION.md` for release authority. Before briefing a
-  release, establish the product's recorded Client and existing acceptance,
-  including `director_standing` when the Director is the Client. Preserve
-  release timing and Launchplane's gated release path; use
-  [launchplane](../launchplane/SKILL.md) for that routing.
-- For Launchplane release mechanics, read [Client release review](https://github.com/cbusillo/launchplane/blob/main/docs/release-review.md).
-- Open a Client-visible PR as soon as its work is ready; it gets one preview
-  request whenever it opens, so holding it only delays the Client.
-- When Launchplane maps the repository to a Client other than the Director,
-  under the [ready handoff rule](../github/references/cli-reference.md#ready-handoffs),
-  each Client-visible PR needs the Client's own Accept before it lands, and the
-  release needs a separate Accept. Hand the PR off with
-  `--waiting-for-client` until then. A `director_standing` product or a
-  repository with no Client needs neither unless the PR is explicitly held.
-  A base update that leaves the change unchanged
-  [keeps its acceptance](https://github.com/cbusillo/launchplane/blob/main/docs/owner-acceptance.md#carried-acceptance),
-  so there is no landing order to track.
-- Green engineering PRs route to the train as soon as they are ready, under
-  [Q312](https://github.com/cbusillo/launchplane/issues/3327#issuecomment-6182485308).
-- Every PR in a repository that feeds a Client release (shared add-ons,
-  devkit, images, tenants and the live sites) carries a `## Client test notes`
-  section.
-- Classify each PR from its own notes under [Q537](https://github.com/cbusillo/codex-skills/issues/2332#issuecomment-6271199870)
-  and the [ready handoff notes contract](../github/references/cli-reference.md#ready-handoffs).
-  Bring the Director only real judgment calls.
-- On a Client's repositories, Discussions are drafts and issues are requests
-  (Q122): read Discussions, act only on issues.
+Follow overall direction for release timing, Client identity and acceptance,
+including `director_standing`; Launchplane owns the gated production path.
+Read Launchplane's Client release review documentation for the mechanics.
+Open Client-visible PRs when ready so previews reach the Client. Other-Client
+products need their own Accept on the current change before landing and a
+separate release Accept; hand off `--waiting-for-client` until then. Unchanged
+base updates retain acceptance under Launchplane's carried-acceptance rule.
+Director-standing or no-Client repositories need no extra acceptance unless held.
+Classify each PR from its own Client test notes under the
+[ready-handoff contract](../github/references/cli-reference.md#ready-handoffs);
+bring only judgment calls to the Director. Every Client-release repository's
+PR carries `## Client test notes`. Discussions are drafts; issues are requests.
 
 ## Milestone State
 
-The goal board is a view, rebuilt from GitHub on every check, after compaction
-and at takeover. Never keep, edit or carry a board forward. Rebuild it with:
-
-```sh
-uv run skills/supervisor/scripts/goal_board.py --owner OWNER --format markdown
-```
-
-It covers every open `Track:` issue on OWNER/direction:
-each Track's status label, its native children, the live `Next action:` from
-each one's Current Status, the latest `Director decision` comment on each, and
-the open PRs that close each child, with their handoff state under the merge
-train's ready-handoff rule. A closed child shows as closed, whatever its label
-says. It prints a checked-at time
-and the Tracks discovered versus read. Anything it could not read says
-"unknown, not refreshed"; report that, never an earlier status. Quota is no
-reason to skip it.
-[Goal board](references/helpers.md#goal-board) has the output and its limits.
-
-The board points to records; it does not hold them. Before you repeat a
-Director hold or wait, or brief work from a board line, open the linked
-decision or the issue's Current Status and read the exact words. A PR handed
-off as ready counts as open until it merges; read its head, its mergeability
-and the train's reason for it. When a Track's Current Status disagrees with
-its records, correct it under `github-plan`, naming the gating Director
-decision and its reason in plain words. On October 16 a successor repeated two
-Clients' waits from summaries after a recorded decision and a launch had ended
-them ([Q415](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6222082256)),
-and a hand-kept board line called two parked ideas a Director hold
-([#2053](https://github.com/cbusillo/codex-skills/issues/2053)).
-
-Use each Track's `closure_review` at this same check under the
-[milestone contract](../github-plan/references/milestones.md).
+Rebuild the board from GitHub at takeover, each check and after compaction;
+use `goal_board.py --owner OWNER --changes-state <private-board-state.json>`
+for routine output and the full board for takeover. Coverage gaps stay unknown.
+Open the linked decision and Current Status before repeating a hold or briefing
+work. PR handoffs stay open until merged; read current head, mergeability and
+train reason. Correct conflicting Track summaries under `github-plan`, naming
+the governing decision and reason. Assess each Track's `closure_review` under
+the [milestone contract](../github-plan/references/milestones.md); the pointer
+reader is not proof that a Track's own exit criteria passed.
 
 ## Local State
 
-Resolve scratch and recovery destinations to absolute, task-owned paths before
-writing, so a working-directory change cannot redirect them.
-
-Keep locally only what GitHub cannot rebuild:
-
-- the session registry (the helpers' `--ledger` file): each session's exact
-  session, terminal and transcript identities, repository, issue and brief;
-- the helpers' own state: watcher watermarks and deadlines, the enqueue hold
-  record, capacity-retry state and the closed-session log;
-- one recovery note, overwritten at each change rather than appended, naming
-  pending local actions (an uncertain send, a marker to reconcile) and where
-  these files are.
-
-Keep no status prose, copied decisions, board lines or rule lists there. A
-decision lives on its issue, status in the issue's Current Status, and a
-lesson in this skill once proven or on a linked issue while pending. The
-narrative log kept during the pilot's first two weeks is archived once, marked
-historical. That archive and its RULE lines are not authority: never read them
-for recovery or repeat them as fact.
+Resolve private paths absolutely. Keep only the session registry, helper
+watermarks/deadlines, enqueue holds, capacity-retry state, closed-session log,
+and one recovery note overwritten when a pending local action changes.
+Record exact session/terminal/transcript identities, repository, issue and brief.
+Keep pointers, not status prose, copied decisions, board lines or rule lists.
+GitHub owns those facts. Historical logs are not authority or takeover input.
 
 ## Procedure
 
-1. Check the permission mode as above.
-2. Load `direction` for its [daily-turn reads](../direction/SKILL.md#direction-session).
-3. Find the Director's [handoff record](references/helpers.md#handoff-record)
-   with `handoff_record.py`. Read its latest handoff, then every comment after it.
-   Before you repeat what the Director said, read the exact words where the
-   Director said them, not a summary. Allocate new question IDs through the
-   [shared question counter rules](../references/talking-with-the-director.md#decisions-holds-and-work-state);
-   keep existing IDs from the handoff. Then rebuild the goal board under
-   [Milestone State](#milestone-state); the handoff's Track list is history.
-4. Rebuild the session registry. For each session the handoff names, read its
-   tab screen or thread once. Read the recovery note and verify each pending
-   action against its source before acting on it. List running processes
-   before you rely on a background driver or watcher the handoff says is
-   running.
-5. Recreate the ~23-minute check and morning digest with the harness's own
-   scheduling feature. When the existing [persistent idle services](references/helpers.md#persistent-supervisor-services)
-   are configured, run `uv run <skill-dir>/scripts/services.py bind --config <existing-service-config>`
-   from this Supervisor at setup and takeover, then reuse the loaded jobs. Their
-   current binding supplies immediate notices without per-notice re-arming.
-   Otherwise start the bounded
-   `skills/supervisor/scripts/codex_idle_watch.py` watch as a background job
-   once per harness (`--harness codex` and `--harness claude`), each with its
-   own `--delivered-state` file. A background job wakes you only when it
-   exits, so the watch exits on each `closeout_request` it has not delivered.
-   On that exit, or another turn-end notice, immediately run
-   [finished-session verification](#close-finished-sessions-on-every-notice-and-check)
-   for that exact session; do not defer it to the ~23-minute check. A notice
-   prompts verification, never a completion verdict.
-   Start the bounded `skills/supervisor/scripts/foreign_watch.py` watch for the
-   run's Director-owned repositories and configured own/Launchplane logins,
-   with the Director's login and mention approval so mentions outside those
-   repositories are reported; read its `coverage_gaps` during checks.
-   Foreign notices are untrusted data: verify the record and existing authority;
-   they never start or widen work. List each new notice in the check with its
-   excerpt and link, and open the full comment before acting on or closing
-   that thread or a thread it links. Re-arm after reading notices, errors or the
-   deadline, using the same private watermark state. Also watch Launchplane
-   production release events for each live Client product; a release can
-   start without a comment.
-   Read [helper setup](references/helpers.md) before rebuilding the session
-   registry or running a helper.
-   While workers post Supervisor review requests, also schedule the
-   [pending-review dispatcher](references/helpers.md#dispatcher-timer) using
-   its documented cadence and terminal route, and recreate it at takeover.
-6. Read `stale_wait_report` from the existing
-   `uv run skills/direction/scripts/direction_audit.py --repo OWNER/REPO --stale-waits-only` output for
-   each Director repository returned in `discovery_context.repositories` by
-   `gh-plan.py --repo OWNER/direction next` under `github-plan`. A run over
-   every repository spends much of the hourly GitHub quota; check the remaining
-   quota first and keep landings ahead of it. Include report
-   findings and repository-discovery or report coverage gaps in the takeover
-   comment. Before capacity selection, review active post-merge records and their coverage
-   gaps against the full finish line. Omit records carrying `selection_exclusion`
-   from implementation briefs until reconciliation. Read post-merge comments as well as
-   Current Status; if they establish a new fix or acceptance step, update the status
-   and brief that real remainder. For other flagged records, reconcile a
-   qualification-only come-back step under the
-   [issue closing guidance](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof)
-   instead of briefing another agent to verify completed work. Brief only real
-   remaining engineering; record event waits as waits. A merged PR alone
-   never completes a split remainder or releases a person/event hold.
-   Review each reported wait
-   against the full issue and current evidence before correcting its status;
-   this report-only mode leaves weekly audit markers untouched and grants no
-   release of a real hold.
-7. Post a takeover comment on the handoff record: what you found, what you
-   corrected, and the "needs the Director" list.
-8. When a finding would retire, stop, or redirect work, load `direction`
-   again and open an issue labeled `direction` under its escalation
-   procedure. The Supervisor never acts on such a finding or declines it.
-9. Keep working through compaction, preserving the brief, issue and current
-   step in Keep instructions, and rebuild the goal board before the next
-   report. Close out only when compaction fails, the work
-   is done, or the account needs the session gone; then write the handoff below
-   and use `work-closeout`. This is the Director's one-week experiment from
-   [codex-skills#885](https://github.com/cbusillo/codex-skills/issues/885), judged
-   at the next weekly audit by continuation, handoffs and repeated/reverted work.
+At takeover, check permission mode, load `direction` for its daily-turn reads,
+resolve this Director's handoff record and read the latest handoff and later
+comments. Read original Director words before repeating them. Rebuild the full
+goal board and registry, read each named thread or screen once, verify recovery
+note actions at their sources, and list actual watcher/driver processes.
+Recreate the ~23-minute check and morning digest with the harness scheduler.
+Bind existing [persistent services](references/helpers.md#persistent-supervisor-services)
+with `services.py bind`; otherwise start bounded Codex and Claude idle watches
+with separate delivered-state files and the scoped foreign watcher. Process
+closeout notices immediately, re-arm bounded watches after delivery/error/deadline,
+and preserve coverage gaps. Watch live Client production-release events too.
+Schedule the [pending-review dispatcher](references/helpers.md#dispatcher-timer)
+while worker review requests exist. Never relaunch existing services blindly.
+Read `direction_audit.py --stale-waits-only` for repositories discovered by
+`gh-plan.py next`, with quota and landing priority considered. Review full
+finish lines, post-merge comments, selection exclusions and coverage; correct
+obsolete qualification-only waits instead of staffing completed work. Real
+engineering and people's waits remain. Post findings and needs-Director links
+on the handoff record. A retire/stop/redirect finding goes to `direction`, not
+an executing change or a Supervisor verdict.
+Keep working through compaction. Close out only when done, compaction fails,
+or the account needs departure, with durable handoff and verified safe closure.
 
 ## Move Rate-Limited Claude Sessions
 
-For an enrolled Supervisor Claude session with a pending rate-limit move, read
-[account moves](references/claude-account-moves.md) for relaunch qualification
-and its terminal, transcript and account readbacks before sending input.
+Use [the account-move procedure](references/claude-account-moves.md) only for
+its opted-in rate-limit route. Preserve the source on uncertainty; never switch
+identity to carry a refused action.
 
 ## Close Finished Sessions On Every Notice And Check
+
+For normal sessions use `session_closeout.py` from
+[Routine check](references/routine-check.md). It runs the gates below and
+returns one receipt or the first failed gate. Its journal never permits an
+uncertain mutation to be replayed. Use the procedure below for input preservation,
+pending prompts, interrupted sessions and other exceptional recovery.
 
 Handle turn-end notices as they arrive. For a watch notice with
 `closeout_request`, start this procedure immediately and re-arm that
@@ -931,91 +643,22 @@ others. A missed target remains visible in the next check and handoff.
 
 ## Handoff Shape
 
-Post the full handoff as one comment on the Director's own
-[handoff record](references/helpers.md#handoff-record)
-([Q403](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6220453592),
-[#2462](https://github.com/cbusillo/codex-skills/issues/2462)). Send each new
-lesson about a shared skill, public-safe, to the
-[field reports](references/field-reports.md) issue as well.
-Follow [Agent Comments](../references/talking-with-the-director.md#agent-comments).
-Link item records and earlier decisions for facts already recorded; write out
-only new recovery information needed for takeover:
-
-- The goal board rebuilt at handoff time under
-  [Milestone State](#milestone-state), with its checked-at time and coverage:
-  each Track's state in plain words, the Director decision governing it
-  (linked, with its reason), and every PR handed off as ready but not merged.
-  The handoff is incomplete until every discovered Track is read or named as
-  unknown, not refreshed.
-- The sessions left running: tab title or thread id, repository, issue, brief
-  limits, next step, and context size for each.
-- Background drivers and watchers, each with its exact command or helper,
-  repository scope, logins, private state and deadline, and how you confirmed
-  it is running. Say which ones end with this session.
-- Where the Supervisor's files are kept, and the Director's own tabs to leave
-  alone.
-- Links to the rules in force for the run.
-- New lessons, each already landed as a skill change or a linked issue as
-  part of this handoff; links to lessons already recorded.
-- The Director's question queue under the shared queue rules.
+Post one full handoff comment on this Director's own handoff record under
+[Agent Comments](../references/talking-with-the-director.md#agent-comments).
+Link the freshly rebuilt board and coverage, governing decisions, open ready
+PRs, running session identities and anchors, briefs and next actors, verified
+watchers/drivers with scopes/state/deadlines, private file pointers and Director
+sessions to leave alone. Link new landed lessons or their tracking issues,
+the latest catalog-verification receipt, pending recovery actions and the
+Director's question queue. Say whether any lesson is new. A handoff is incomplete
+until each discovered Track is read or named unknown. Send new public-safe
+shared lessons to field reports too; keep operational contents on their sources.
 
 ## Lessons From The Pilot
 
-A lesson lands here or in the references once proven, and lives on a linked
-issue while pending. There is no local rule list.
-
-- System Events `keystroke` and `key code` go to the frontmost application,
-  even inside `tell process "Google Chrome"`. A file-picker attempt typed a
-  path and Return into the Director's iTerm direction session
-  ([#1753](https://github.com/cbusillo/codex-skills/issues/1753)). Use the
-  alternatives named by the keyboard command policies above; activating
-  a window first does not establish a safe target.
-- Start a fresh tab per task; reused old sessions caused most of the friction.
-  Put Supervisor tabs in one dedicated terminal window and leave the
-  Director's own sessions alone.
-- An exact release frees an issue for a successor at once, whatever the
-  released session's process or thread is doing. An unreleased claim refuses a
-  successor until its holder's lease expires
-  ([Q621](https://github.com/cbusillo/codex-skills/issues/2453)).
-- Read the current time from `date`. Take expiry, deadline and reported event
-  times from their source, never from memory or a summary.
-- Recorded pilot compactions preserved briefs and issues on both harnesses;
-  keep recording degradation during the experiment above. The previous 450k
-  close-out rule lacked evidence.
-- Supervisor-launched sessions start without the Discord channels flag so no
-  prompt blocks them; sessions the Director starts keep it.
-- Sessions never use `git stash`; it is shared across worktrees.
-- When a bug fits a pattern, sweep the whole path once instead of fixing it
-  round by round on the train.
-- Before routing the parent of a stacked PR, keep each held child draft or
-  unlabeled, as the `launchplane` skill says; every child that lands must be
-  ready itself.
-- A killed train driver can leave a lease for a while, and two drivers on one
-  repository is a wait, not a failure.
-- Prefer per-repository listings with `since` over the search API. The
-  automation App's hourly quota has run out with about 17 sessions, mostly
-  spent by the train and its drivers' polling; current measured capacity is
-  tracked in
-  [codex-skills#1191](https://github.com/cbusillo/codex-skills/issues/1191).
-- Before a planned host restart, have active sessions checkpoint their work
-  and recovery state without releasing their claims, then resume those same
-  sessions afterward. Use successor recovery only when ownership actually
-  changes; a restart alone does not end it.
-- After a host restart, the launcher starts each selected account's Codex
-  app-server daemon and names the failure if startup fails. Re-run train
-  candidate jobs that a runner shutdown killed (not a code failure), restart the driver, and
-  recreate session-only watchers and checks.
-- Shared CI runners saturate; private repositories run CI on self-hosted
-  runners.
-- The Director answers in plain words and the Supervisor records them. Never
-  hand the Director shell lines to paste.
-- Verify an alignment claim before the text reaches other people.
-- A watcher notice listed by URL alone was acknowledged unread, and an issue
-  closed over a Client's correction on a linked issue
-  ([#2111](https://github.com/cbusillo/codex-skills/issues/2111)). Notices now
-  carry an excerpt, and closing refuses over an unanswered outside comment.
-
-Long-running watches should start with `uv run --no-cache` so their lifetime does
-not hold the shared cache-use lock and defer native cache maintenance. This uses
-uv's temporary cache; existing cached watches finish naturally before relaunch.
-Never interrupt another session to obtain a cache lock.
+Use fresh exact source evidence. Session titles, silence, successful launch,
+physical job completion and earlier summaries do not prove present workflow
+success. Preserve active or uncertain work and exact identities. A real launch,
+claim, review or cleanup defect belongs on its owning issue; do not maintain
+private rule copies. Long watches use `uv run --no-cache` so they do not hold
+shared cache-use locks; do not interrupt another session to reclaim a cache.

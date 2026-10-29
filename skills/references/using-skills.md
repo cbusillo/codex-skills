@@ -36,6 +36,10 @@ is compacted or summarized, load it again before its next step. A skill loaded
 in an earlier turn, a remembered command, or a previous run's summary is not a
 substitute for loading the current owning skill.
 
+For an established Supervisor scheduled check, use its short
+[Routine check](../supervisor/references/routine-check.md) instead of reloading
+skills. Takeover and rare events still load their owning skill before acting.
+
 Choose the smallest set of skills that covers the work. Follow the user's
 instructions and existing task authorization; loading a skill does not grant
 permission for a new action. If a needed skill is unavailable, say so and use

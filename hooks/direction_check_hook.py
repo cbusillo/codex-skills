@@ -479,7 +479,7 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
     if turn:
         # Claude Code shows the session-start text once; Codex re-sends its catalog on its own.
         if os.environ.get("CLAUDECODE") == "1":
-            print(f"Name each step's owning skill and load it before acting; see {SKILLS_PROTOCOL_PATH}.", flush=True)
+            print(f"Follow {SKILLS_PROTOCOL_PATH}; established Supervisor checks use its Routine check entry without skill reloads.", flush=True)
         return 0
     try:
         if os.environ.get("CLAUDECODE") == "1":

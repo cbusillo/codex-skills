@@ -279,114 +279,55 @@ not wait for log publication.
 ```sh
 uv run skills/supervisor/scripts/goal_board.py --owner OWNER --format markdown
 uv run skills/supervisor/scripts/fleet_counts.py --owner OWNER
-uv run skills/supervisor/scripts/status.py --ledger <private-ledger.json>
+uv run skills/supervisor/scripts/compact_check.py --ledger <private-ledger.json> --state <private-check-state.json>
 uv run skills/supervisor/scripts/codex_idle_watch.py --ledger <private-ledger.json> --delivered-state <private-codex-delivered.json> --deadline-seconds 1800
 uv run skills/supervisor/scripts/codex_idle_watch.py --ledger <private-ledger.json> --harness claude --delivered-state <private-claude-delivered.json> --deadline-seconds 1800
 uv run skills/supervisor/scripts/oq.py OWNER/REPO#123 --owner <Director-login> --decision-author <recording-automation-login>
-uv run skills/supervisor/scripts/finished_map.py --ledger <private-ledger.json>
 ```
 
-Rebuild the ~23-minute check and morning digest using the harness's scheduler.
-On a turn-end notice, immediately enter the skill's
-[finished-session procedure](../SKILL.md#close-finished-sessions-on-every-notice-and-check)
-for its exact session. Do not collect notices until the next check. With the
-[persistent idle services](#persistent-supervisor-services), notices are sent
-immediately through the existing exact-session notification routes and the
-watch keeps running. Without those services, run each bounded watch as a background job: the harness wakes you when it exits, not when it
-prints. The watch exits right after printing a `closeout_request` that is not
-yet in its `--delivered-state` file, and records it there first, so a request
-pending at takeover or between watches wakes you once and re-arming over a
-session still under verification does not wake you again. Watch notices include
-`closeout_request` only when the latest completed response has
-an unqualified verdict, the ledger says Supervisor-owned and no background
-task remains. Those notices bypass `--idle-seconds` and arrive on the next
-watch poll (45 seconds by default); ordinary turn ends retain the idle delay.
-The request names the session, harness, known handoff URL, completed-verdict
-timestamp (`verdict_at`, or null if absent) and verification skill. It does not
-establish input, handoff or process proof. Timestamped closeout notices dedup
-by completed response rather than transcript size: trailing usage metadata does
-not request verification again. A later verdict or changed ownership/handoff
-does. A watcher restart may repeat a notice; coalesce it with any verification
-already in progress and never replay an uncertain send.
+Use [Routine check](routine-check.md) for scheduled checks. Persistent idle
+services deliver immediate notices; otherwise bounded watches must run as
+background jobs, because the harness wakes when they exit. Keep each harness's
+existing delivered-state file and re-arm after delivery or its wall-clock bound.
+Closeout notices bypass idle delay and identify the completed native response.
+Coalesce repeats with current verification, never by replaying uncertain sends.
 
-For Claude's native `notify_when_idle` notice, read back only the matched
-session through the same candidate router:
+Both watch notices and Claude `notify_when_idle` enter exact-session verification
+immediately, with the scheduled all-session scan as fallback. For an exact
+notice use `finished_map.py --ledger <ledger.json> --session-id <native-id>`.
+Candidates prove neither handoff, input nor process exit. An abort or
+`closeout_request: null` can still need stall/capacity handling; `clean: null`
+never asserts success. Live background/scheduled tasks are blockers: ask their
+worker to reconcile them and produce a fresh verdict. Do not stop another
+session's tasks. Full verification precedes every exit send.
 
-```sh
-uv run skills/supervisor/scripts/finished_map.py --ledger <private-ledger.json> --session-id <native-id>
-```
-
-A missing or mismatched native identity, malformed transcript, later work,
-unqualified-verdict failure or live background task cannot request shutdown.
-Candidates with a recognized verdict and live tasks expose `closeout_blockers`
-with their task ids and `next_action: ask_worker_to_resolve_background_tasks`.
-Report and nudge them using the finished-session procedure rather than silently
-waiting for the next scan. Exact-session reads retain strict whole-ledger
-validation; a malformed unrelated entry must be reconciled against its launch
-receipt before any notice query can proceed.
-Run the full existing verification before sending keys. A notice containing
-`closeout_request: null` is still useful for stall or capacity handling and
-never authorizes closing. No script here sends an exit command automatically.
-
-For each scheduled check, scan all sessions as a fallback for missed notices,
-nudge stalls with exact facts and gather Director questions.
-The watcher exits at its wall-clock bound or on a new closeout request; re-arm
-it with the harness's built-in monitor/scheduler. A new watcher may repeat a
-notice. `clean: null` means a turn ended, not that work succeeded; an abort
-is also a notice. Claude Code's `notify_when_idle`, where it covers a worker,
-routes through the same exact-session read above; the Claude watch covers
-terminal-launched Claude workers it cannot see.
-
-The Codex idle watcher filters a mixed-harness ledger before transcript
-validation. It emits a `skipped: true` diagnostic with the ledger index,
-session id and reason for each non-Codex entry, once per unchanged entry in
-that watch run. Codex entries still require valid, unique native ids and
-transcript paths; malformed ledger structure still refuses. Shared completion
-and closure readers retain their strict ledger validation.
+Shared completion readers strictly validate the whole ledger. The Codex watcher
+alone filters a mixed ledger first, reporting every non-Codex entry as skipped
+with index, native identity and reason; selected Codex entries still require
+valid unique identities and transcripts. Malformed structure refuses. Reconcile
+against the original launch receipt rather than guessing or silently skipping.
 
 ### Goal board
 
-`goal_board.py` consumes the shared `github_work_graph.py` read. The shared
-reader lists the open issues on OWNER/direction (100 per page) and
-keeps those titled `Track:`, whatever their milestone. It then reads one Track per GraphQL query: each Track's body, labels and last 100
-comments, its first 50 native children with their state, body, labels,
-sub-issue counts and last 100 comments, and up to five PRs closing each child with their last
-30 comments. Detail reads are isolated by Track so one failed request cannot
-hide the other Tracks. All requests share the command's deadline.
+`goal_board.py` rebuilds every open `Track:` through `github_work_graph.py`.
+Decision authors and current-head handoffs use shared authority parsers. Only
+open PRs closing a child appear; the auto-enqueue watcher routes other PRs.
 
-The latest `Director decision` comment counts only from the `--owner` login, the
-configured automation login, or `--decision-author` logins. PR handoff state
-uses the merge train's shared parser: `ready` for the current head, `ready for
-an older head`, `engineering ready, waiting`, or `no handoff`. Merged and
-closed PRs are dropped. A PR that only mentions a child, rather than closing
-it, is not on the board; the [auto-enqueue watcher](#interim-auto-enqueue-watcher)
-still routes it.
+Use `--format json` for full rows/diagnostics, `markdown` for titles and actions,
+or `links` to omit those Client details. Closed children remain closed despite
+stale labels. Current Status and decisions use shared planning authority;
+missing status/action is explicit, never guessed. Assess each Track's own
+closure proof under the milestone contract, opening the linked source.
+`--changes-state <private-state.json>` prints changed record pointers and fresh
+coverage, storing only fingerprints. Every call still rebuilds current sources.
+Use the full board at takeover and handoff.
 
-A closed child prints as `closed`; an open planning label left on it is
-noted as `closed (label plan:active is stale)`. Each Track and child row
-carries `next_action`: the `Next action:` line of its Current Status, chosen
-by the shared `gh-plan.py` rule (a newer trusted status comment wins over the
-body), whitespace collapsed and cut to 200 characters. A row without a
-Current Status says `no Current Status`; one without that line says `no Next
-action in Current Status`.
-
-`--format json` (default) prints rows and transport diagnostics,
-`--format markdown` the board with titles, and `--format links` the board
-without titles or next-action text, for public places where Client details
-must not appear.
-`coverage` gives `discovered`, `read` and `complete`. A failed or partial
-discovery read prints no Tracks and says every Track is unknown. Within a
-read Track, each row's `unread` lists what the read could not settle, and the
-board prints it as `unknown, not refreshed`: more than 50 children or five
-closing PRs, a status label beyond the labels read, or a thread longer than
-the comments read with no decision or handoff among them, or with no
-status comment among them while the body is older than the oldest comment
-read (or has no Current Status). The newest decision
-or handoff inside the window is the latest, so a long thread with one stays
-complete. Field conversion failures name the affected part and its exception, preserving
-the other parts of the row. GraphQL errors retain their field path and reason;
-a wholly unread Track also names its reason. Any unread Track or part makes
-`complete` false and exits 1.
+Coverage reports discovered/read/complete and per-field `unread` details.
+Partial discovery cannot reuse old status or remove missing records. Truncated
+children, PRs, labels/comments, missing authoritative status in a bounded window,
+field conversion errors and GraphQL failures remain unknown, not refreshed.
+Any unread Track or field makes coverage incomplete and exits nonzero; open the
+source rather than treating an empty diff as a pass.
 
 ### Codex provider capacity stops
 
@@ -403,7 +344,7 @@ must be available. No helper starts a daemon or changes login settings.
 
 ```sh
 uv run skills/supervisor/scripts/codex_idle_watch.py --ledger <private-ledger.json> --delivered-state <private-codex-delivered.json> --capacity-state <private-capacity-state.json> --resume-capacity --deadline-seconds 1800
-uv run skills/supervisor/scripts/status.py --ledger <private-ledger.json> --capacity-state <private-capacity-state.json>
+uv run skills/supervisor/scripts/compact_check.py --ledger <private-ledger.json> --state <private-check-state.json> --capacity-state <private-capacity-state.json>
 ```
 
 Use the same retry-state path in every watcher restart, check and morning
@@ -1248,62 +1189,48 @@ landing that superseded it, then check the latest landing. A later runtime
 passing does not prove an earlier revision passed. Keep a link to the latest
 verification in the next handoff so takeover can repeat this check.
 
-1. Take the full landing SHA from the merged PR or terminal train result, as
-   defined in [After A Merge](../../github/SKILL.md#after-a-merge). Resolve the
-   helper and its source worktree through
-   [runtime checkout reconciliation](../../github/references/cli-reference.md#runtime-checkout-reconciliation):
-   keep the landed source until verification finishes; if it is already retired,
-   use the runtime's own copy, or the copy from a worktree at the fetched tip
-   when the reconciler reports a source mismatch. Run the helper from that
-   same source worktree:
+Run `catalog_landing.py --config <private-landing.json> --evidence <private-evidence>`
+from the catalog's Supervisor scripts with `uv run`. The private JSON contains
+pointers and exact identities, never copied skill contents:
 
-   ```sh
-   uv run <landed-worktree>/skills/github/scripts/reconcile-runtime-checkout.py --repo OWNER/REPO --merged-worktree <landed-worktree> --landing-sha <landing-sha>
-   ```
+```json
+{
+  "repo": "OWNER/codex-skills",
+  "pr": 123,
+  "issue": 100,
+  "landing_sha": "<full merged landing SHA>",
+  "source_worktree": "<retained landed source>",
+  "runtime_worktree": "<bound catalog checkout>",
+  "ledger": "<absolute private ledger.json>",
+  "window_id": "<existing Supervisor tmux container>",
+  "supervisor_session": "<current native session ID>",
+  "command_files": {"codex": "<normal fresh Codex launch file>", "claude": "<normal fresh Claude launch file>"}
+}
+```
 
-   A local driver's `runtime_reconciliation` receipt for that same landing can
-   supply this result. Require `synchronized` or `already_current`, and verify
-   that the bound runtime contains the landing commit. `not_applicable`, a
-   missing receipt, or a blocked/failed result is not proof of an updated
-   runtime. Follow the reconciler's reported next action; preserve an unsafe
-   checkout and report the blocked step.
-2. From the reconciled runtime, use the existing [tmux launch procedure](#tmux-launches)
-   to launch one fresh Codex session and one fresh Claude Code session under
-   `tmux -L supervisor`. Reuse the Supervisor's dedicated container and normal
-   launch files, account selection and receipts; use `--without-browser`.
-   Keep Codex's managed daemon route (`codex --remote unix://`) so the smoke
-   exercises fresh native thread creation through the same ingress as workers.
-   Resume, `--version`, and noninteractive reviewer runs do not exercise that
-   path. Never restart a daemon or server to make the check pass.
-3. Anchor each brief on the owning catalog issue without claiming it. Name the
-   landing SHA and request a short acknowledgement as its own first reply,
-   without tools, file changes, claims or product work. Leave the session idle
-   afterward for the Supervisor's closeout message.
-   Record both exact terminal identities and native session/transcript
-   identities in the private registry. Read each first screen
-   for startup failures or blocking prompts, then require a completed assistant
-   turn acknowledging this landing in each native transcript. An echoed brief,
-   live pane or successful launcher return alone is not a pass. Use a bounded
-   observation of at most two minutes per harness; an unfinished turn at that
-   point is a failed smoke, with its session preserved for inspection.
-   After a passing acknowledgement, nudge that exact idle session through the
-   existing targeted send/queue route to post one final issue handoff comment
-   naming the landing SHA and its native session ID, then complete normal safe
-   closeout. Set its ledger `handoff_url` to its own comment before shutdown.
-   Handoff and shutdown use the normal finished-session timing; a delay there
-   keeps the terminal open without turning a passed launch into a failed smoke.
-4. Record the landing SHA, actual runtime SHA, reconciliation receipt and each
-   harness's pass/fail on the owning issue, linking the smoke handoffs.
-   If reconciliation or either launch fails, post
-   **Catalog landing verification FAILED: `<landing-sha>`**, name the failed
-   step/harness and the observed cause, and surface it in the Supervisor's
-   current report. The merge remains landed; landing verification remains
-   incomplete. A permission or authorization refusal stops that action under
-   [task scope](../../references/execution-scope.md); continue independent checks
-   without replaying the refused action elsewhere. Do not answer trust prompts
-   or change access to obtain a pass. Close successful smoke sessions through
-   [finished-session shutdown](#finished-session-shutdown-stages); preserve any
-   uncertain or failed session for the Supervisor's normal recovery.
+An optional `account_config` selects existing private account mappings.
+Resolve a retired source through the runtime reconciliation procedure, keeping
+an available landed/runtime source until this check finishes. The helper requires
+the exact merged PR landing SHA, synchronized/already-current runtime receipt,
+matching bound checkout and landing ancestry. `not_applicable` never proves sync.
+It launches fresh managed Codex and Claude sessions through normal account
+selection and receipts on `tmux -L supervisor`, without browser access, using
+the existing dedicated container. It never restarts a daemon or answers a trust
+prompt. Each initial completed native acknowledgement must name the landing,
+use no tools and arrive within two minutes; launcher return and echoed input
+alone do not pass. It then sends one targeted handoff request to each idle empty
+prompt, finds its exact native-session issue comment, and invokes normal closeout.
+A delayed handoff or shutdown leaves a passed launch distinct from incomplete
+cleanup. Failed or uncertain sessions remain preserved for the normal recovery.
+
+The one-line result names the first failed gate or completion, landing/runtime
+SHAs, smoke handoffs and private evidence. Post that result on the owning issue:
+use **Catalog landing verification FAILED: `<landing-sha>`** with the gate and
+cause when incomplete, or link the passing handoffs and reconciliation receipt.
+A failed smoke does not undo the confirmed merge. Keep the latest verification
+link in the Supervisor handoff. Reuse the same evidence directory on recovery;
+an uncertain mutation is never retried with a fresh journal or another route.
+For other rare terminal recovery, use [finished-session shutdown](#finished-session-shutdown-stages).
 
 ## Launching and nudging
 
@@ -2163,22 +2090,13 @@ profile still decides whether an ended terminal closes automatically.
 
 ### Verify and close
 
-`finished_map.py` offers candidates only. Its conservative last-line parser
-rejects quoted, negated, conditional and aborted verdicts. The shared parser used
-by status, candidates and terminal closure ignores one complete trailing
-`<oai-mem-citation>` block when evaluating the verdict, while retaining the full
-response in status output. Text after the block or an incomplete block remains
-unrecognized. A complete Claude local `/exit` record sequence or a compaction
-summary preserves the preceding verdict; other commands or new work invalidate it. Read the transcript
-and issue handoff yourself under the skill's full shutdown procedure; an
-unrecognized format remains manual verification, never permission to close.
-
-Resolve verified close-out prompts one time by the owning skill, preserving
-Director text privately. Once the session is idle at its prompt, use
-`iterm_tab.py clear --session-id <id> --verified-target` for Ctrl-U, then `read`
-to verify the entire input is empty. Send `/exit` or `/quit` with `send --text`
-only after that check, then wait a bounded time for the matched process to end.
-Update the ledger's handoff URL from the actual issue record.
+Use [the shutdown procedure](../SKILL.md#close-finished-sessions-on-every-notice-and-check)
+for full transcript, handoff, pending-prompt and input-preservation verification.
+`session_closeout.py` handles its normal path. Candidate recognition alone is
+never authority; an unrecognized verdict requires a fresh standalone verdict,
+not a parser override. After verified input preservation, clear once, read back
+empty input, send the harness exit command and prove matched process exit before
+finish and native terminal closure. Preserve uncertain sends without replay.
 
 ### Recovery after a host or terminal crash
 
@@ -2350,641 +2268,167 @@ it does not transfer another claim or authorize editing a sibling branch.
 
 ### Release a verified finished session
 
-Before closing the verified-finished tab, discover its claims and verify their
-existing releases. Reconcile unresolved claims through the evidence-backed
-`gh-plan.py release-claim` route before retrying finish. Read [Planning: Claim](../../github/references/cli-reference.md#planning-claim)
-and its Abandoned automation claims section first. The current Supervisor must
-verify the completed transcript and actual process exit, including hosts/peers
-the helpers cannot inventory. The helper rechecks the exact native transcript,
-unqualified safe verdict and native activity before every release; normal
-finish and full closure ledgers also recheck their recorded PID/TTY. It also
-checks exact-ID resumed harness processes and matching native transcripts in
-all account homes from the existing Supervisor account configuration. Newer
-native records, including a resumed session's metadata, invalidate closure.
-No credentials or account logins are read or changed. `--account-config` selects
-that existing mapping; without a mapping, repeat `--transcript-root` for every
-known source-harness transcript directory on this host (Codex sessions and
-archived_sessions; Claude projects). Unknown hosts/peers remain the caller's
-verified-closure responsibility, never an inference from missing inventory.
-Check current native task status as well: ID-less resume/picker commands and an
-idle desktop thread may not expose an ID in process arguments or write a new
-transcript yet. `--confirm-session-ended` attests that the source is still ended
-now, including those cases, not merely that the historical log once said so.
-It does not
-send exit commands or change issue status, waits, blockers, branches or worktrees.
+For a normal finished worker, run `session_closeout.py` as
+[Routine check](routine-check.md) describes. Its one-line receipt names the
+first failed gate or completion and private evidence. A failed gate preserves
+the ledger and terminal. It never releases a live worker's claims or archives
+a refused finish. Pending prompts, nonempty input, thread-only sessions,
+unknown identity and uncertain sends use the full shutdown procedure instead.
+Keep the original evidence directory on recovery; mutation intents prevent
+replaying uncertain sends, launches, finish or close requests.
+
+`release_session_claims.py finish` remains the owner of post-exit closure and
+claim discovery. Run it only after independently verified actual exit, never
+as an active-session escape from the pre-exit claim gate. Default is preview:
 
 ```sh
 uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <private-ledger.json> --session-id <finished-native-id> --supervisor-session <current-native-id> --owner OWNER --confirm-session-ended
 ```
 
-The default closed-session log is
-`~/.code/skill-data/supervisor-closed-sessions.json`. Its ownership leases and
-receipt account inventory (`~/.code/skill-data/supervisor.toml`) use this same
-user-wide location even when the caller exports another `CODE_HOME` or
-`CODEX_HOME`. Keep the configured account inventory there; an account-local or
-alternate-runtime config cannot substitute for it. This prevents a later shell
-environment from hiding an admitted predecessor's freeze. `--closed-log` still
-selects an explicit private log for historical or
-resumed-session recovery; successor observation reads only the shared default.
-For Codex entries with a configured absolute `codex_home`, closure also records
-the host boot identity, launch generation and fingerprints of every configured
-native transcript copy. The account set is canonical and independent of the
-caller's account home. Optional receipt enrichment failures do not stop ordinary
-closure or claim release. The mandatory source-action barrier described below
-still applies, and legacy logs are never upgraded by assumption.
+Inspect preview, then add `--apply` to record closure. Finish reports existing
+canonical releases and unresolved claim IDs; it posts no attestation or release
+and changes no status, wait, blocker, branch or worktree. A terminal closes only
+after successful finish, then disappears in one fresh terminal inventory.
+`claims_clear` and complete pre-exit coverage, actual process exit, finish's
+`ok: true` and `needs_reconciliation: false` are separate gates. Unknown and
+unreleasable claims remain in the ledger. Scope omission discovers accessible
+repositories under `--owner`; `--repo` is only for disposable trials and is
+reported as explicit scope. Empty scope, another owner or another automation
+identity cannot become a fleet all-clear or a personal-identity fallback.
 
-Finish validates its selected closure record and preserves other sessions' rows
-unchanged. An incomplete row with a clearly different session ID does not block
-that selection. Ambiguous identities, duplicate selected records and malformed
-selected records still require reconciliation before closure is recorded.
+The shared host-local closed log is
+`~/.code/skill-data/supervisor-closed-sessions.json`; ownership leases and the
+canonical account inventory `~/.code/skill-data/supervisor.toml` use the same
+user-wide location independently of account-home overrides. An alternate
+`--closed-log` is private recovery evidence, not successor authority.
+The log retains native identity, transcript, PID/TTY, exact `handoff_url`,
+original `ended_at`, verified `verdict_at` and `process_exit_verified`.
+Retries preserve original times; log-write, notice, conversion and attestation
+times never substitute for actual closure. For latency use ended minus verdict.
+Never invent missing metadata, infer an alias from its worker token, rewrite
+an earlier closure or move it forward to match later evidence.
 
-An idle-loaded thread needs either that matching receipt or full current
-native recovery proof with validated source ownership, unchanged authenticated
-source copies around the native reads, fresh process checks and complete current
-work coverage. Ending native work does not release ownership; its recorded
-claims still need exact validated worker or Supervisor releases.
-Any active thread, source PID (including reuse), old worker on the source TTY,
-resume process, unknown client, changed generation or unavailable evidence keeps
-it live. A proven new TTY occupant born after closure is not the old worker.
-Unidentified interactive clients, pickers, stdio servers and unobserved daemons
-still refuse. Fresh noninteractive execs cannot attach to the predecessor;
-`exec resume`, its `e` alias, and resume pickers can. Process checks share one
-native invocation classifier. The OS argument reader preserves quoted prompt
-boundaries and recognizes session operands after `resume --`. It parses only argc
-and argv, never decoding or reporting environment values. A different UUID operand or fresh noninteractive
-exec supplies unrelated-session proof only with those actual boundaries; flattened
-`ps` text supplies conservative veto candidates. If argv is unavailable, use the
-guarded launcher or the existing manual release route. `--last` leaves the target
-unknown, even when its prompt is UUID-shaped. Keep initial managed prompts after
-`--`; launch bindings hash only the preceding option prefix.
-An arbitrary word after `resume` does not prove another session. Claude
-`--continue`/`-c` and ID-less resume pickers leave the native target unknown.
-On the source TTY, a replacement pane's ancestry alone does not establish a
-different native session. Use the guarded launcher or verify the native target
-through the documented manual release route. Unknown-ID clients on other TTYs
-remain part of the caller's `--confirm-session-ended` responsibility described
-above; they do not identify this source. Unattended native observation has no
-such manual attestation and remains conservative.
-The supported daemon-routed fresh and resume launchers run each TUI through a
-private local RPC ingress, connected to the existing selected-home daemon. Each
-action holds its targets' ownership leases until its matching native response;
-server approvals hold them until the client's answer has been forwarded.
-Overlapping actions retain each target until all matching operations complete,
-including replies received out of order. Every later action reacquires ownership
-and checks the source freeze before forwarding. This includes in-TUI
-`/resume`, pickers, turn starts and server approval requests with a thread ID.
-A frozen predecessor receives a native RPC error before it can act. Read-only
-thread reads still pass after handoff. No daemon is restarted and no native
-subscriber API is assumed.
+Finish rechecks unqualified output, process and TTY identity, native execution,
+queues, background work, schedules, loaded goals, original/effective and touched
+accounts, all authenticated relevant transcript copies, and chronology through
+the recorded cutoff. Use the existing account mapping, `--account-config`, or
+explicit `--transcript-root` directories when mapping is absent. Unknown
+hosts, ID-less picker/GUI clients and peers remain the Supervisor's actual
+verification responsibility; `--confirm-session-ended` attests current exit,
+not a historical assumption. A merged PR, old log, safe message alone or missing
+inventory cannot prove closure. Reused PIDs, uncertain TTY ancestry, newer
+native work, malformed or changing source records and missing native coverage
+refuse. Preserve the original source and follow the reported next action.
+The maintained [release implementation](../scripts/release_session_claims.py)
+and [native proof](../../github/scripts/github_plan_native.py) own the exact
+checks and receipt schema; callers never bypass their refusal.
 
-Server `currentTime/read` requests and their replies also preserve a final
-verdict: their `threadId` identifies the clock's source, not an execution
-attachment. Authentication-refresh and attestation housekeeping retain the
-same non-action treatment. These requests, `/quit`'s `thread/unsubscribe`,
-and disconnect never clear an earlier queue, resume, turn or approval barrier.
-Client `app/installed`, `app/list` and `app/read` also preserve the verdict:
-their optional `threadId` selects effective app configuration, not execution.
-They take no source lease and cannot move an action barrier when a metadata
-reply arrives after a queued turn completes. Refreshing the app snapshot or
-requesting display-only tool summaries does not invoke an app; starting a
-turn or answering an approval remains guarded.
+Managed Codex clients use the private RPC ingress and shared nonblocking
+per-thread ownership lease. Queue/resume/turn/approval and source attachments
+invalidate old end proof before forwarding. A claim freezes its predecessor;
+read-only metadata does not release a freeze or erase an earlier action floor.
+Do not delete ownership files, invent launch facts, switch accounts, restart a
+running daemon or treat an acknowledgement as completion. Complete current
+native proof may resolve an invalidation; exact canonical release is still
+required to end ownership. UNKNOWN never supplies that proof.
 
-A fresh `thread/start` names no thread. The ingress takes the returned thread's
-ownership lease and durable action barrier before the client sees its ID; a
-reply without a usable ID becomes an RPC error. JSON Schema payloads
-(`inputSchema`, `outputSchema`, `requestedSchema`) and null optional thread IDs
-name no target. Wrong-typed or empty IDs refuse, and thread or turn actions
-without an ID still refuse.
-
-Completion releases the operation's lease, so another Supervisor can queue a
-nudge or capacity `continue` while that worker's TUI stays connected. A pending
-operation still refuses those sends; capacity retry defers without spending an
-attempt. Queue never joins or bypasses a busy source lease. Native action
-requests need a request ID so ownership can span acknowledgement.
-
-Observation reads native state and checks source process exit before taking a
-pending source's ownership lease or scanning its transcripts. Live workers keep
-receiving actions and approvals while inventory waits.
-When a source can contribute end proof, observation acquires its lease,
-rechecks identity and current work, and retains successful proof through final
-claim publication. Busy or unsuccessful sources supply no end proof and retain
-no new lease through later claim round trips.
-
-The parent ingress and its native client register PID/birth, selected home,
-private socket identity and a digest of the immutable option prefix before
-`--`. Prompt text is not stored or hashed. A matching client on an observed
-daemon no longer globally blocks another thread's proof. A waiting npm wrapper
-may have a native child; both need matching option prefixes and a verified live
-parent birth. Old registrations without the guarded connection, changed options,
-PID reuse, missing ingress or unobserved daemons still refuse. Use
-`codex-session.py` for native resume/queue. Terminal send retains its `/resume`
-route check for targets that may be old unmanaged clients; safety no longer
-depends on that text check for managed clients.
-
-Close, supported resume/queue and admission share a nonblocking per-thread
-ownership lease. Claim retains it through final readback and freezes the source
-before its first external write. Each native action invalidates old end proof
-before forwarding and keeps its lease through acknowledgement. A busy lease,
-an acknowledgement or a nonzero client exit is not proof that work ended.
-
-For recovery, preserve the original Supervisor ledger, exact native ID,
-transcript, source account and verified process/terminal identity. Retry normal
-claim observation or `finish` preview/apply with that validated source context.
-An invalidated or partial record alone is not end proof; missing or unowned
-source identity stays unknown. Do not invent launch metadata or delete the
-ownership file. A recovery ledger's native terminal coordinates apply only
-when its actual launch generation matches; an IDs-only observer cannot guess
-a replacement pane.
-
-The shared end check verifies source process exit, the native TTY exit cutoff
-when a TTY has been reused, authenticated final safe output in relevant source
-copies, empty native queues and no current execution, background work, scheduled
-jobs or active loaded native goal. It reads the original/effective account,
-accounts touched by guarded actions and every authenticated relevant copy's
-account. Retained original accounts may supply recovery reads without becoming
-eligible for configured resume. Missing required current-work coverage refuses.
-For a stopped source with stale queued input, preview bounded IDs and full native
-entry digests, then explicitly select one entry:
+For a stopped source with stale input, use explicit queue preview and one
+observed entry ID plus full digest:
 
 ```sh
-uv run skills/supervisor/scripts/codex-session.py queue-cancel --session-id <native-id> --codex-home <target-home> --ledger <original-ledger.json>
-uv run skills/supervisor/scripts/codex-session.py queue-cancel --session-id <native-id> --codex-home <target-home> --ledger <original-ledger.json> --queued-submission-id <selected-id> --entry-sha256 <observed-sha256> --apply
+uv run skills/supervisor/scripts/codex-session.py queue-cancel --session-id <native-id> --codex-home <source-home> --ledger <original-ledger.json>
+uv run skills/supervisor/scripts/codex-session.py queue-cancel --session-id <native-id> --codex-home <source-home> --ledger <original-ledger.json> --queued-submission-id <selected-id> --entry-sha256 <observed-sha256> --apply
 ```
 
-Use one original private Supervisor-owned ledger or `--termination-record` with
-the original source-host record. An output termination attestation cannot replace
-the original record. The input must be a regular file owned by the current user,
-with no group or other write permission. Read access such as mode `0644` is allowed;
-the helper checks integrity and does not change file permissions. Keep operational
-records private in their existing storage. Relative ledger transcript paths remain
-supported. If the
-original account is no longer configured, retain its absolute `codex_home` in the
-record. Without that field a termination transcript must bind to a known account's
-actual `sessions` or `archived_sessions` directory. Keep the matching recovery
-ledger when a later generation exists; an older termination record cannot authorize
-cleanup for that generation.
-The cleanup adapter validates the original retained-artifact metadata without
-requiring historical worktrees to remain on disk. Public termination verification
-for claim release still checks those Git artifacts. Cleanup binds the original
-host, PID/TTY and native terminal once, then rechecks physical exit, source files
-and native runtime state at each boundary. Every original termination transcript
-root remains covered, including retained archives outside account directories;
-these roots do not grant account or target authority.
+The original owned ledger or original source-host `--termination-record` must
+bind the exact generation. Keep it private, regular, owned by the current user
+and unwritable by group/other; an output attestation cannot replace it. Apply
+requires **NotLoaded**, repeats physical/native checks under ownership, preserves
+unrelated entries and successor freezes, and checks deletion readback and clean
+teardown. Never unload, archive, drain or resume to force qualification.
+Native deletion has no digest compare-and-swap against unmanaged same-ID edits;
+uncertainty after possible deletion requires inspection without replay.
+Cancellation supplies neither completion nor claim release.
 
-Preview creates no lease or source state. With no existing ownership file, its
-identities are observations only. Apply acquires ownership directly and repeats
-every check, preserving an existing successor freeze.
-The selected target must already be **NotLoaded**. Deleting from LoadedIdle can
-wake another queued entry through the native revision watcher. Other authenticated
-copies may be LoadedIdle only with empty queues and complete quiet runtime coverage.
-There is no automatic unload, resume, archive or drain step. Stop the source through
-its supported native lifecycle before retrying. Restore an unavailable required
-daemon using the account's existing launch procedure, then repeat the preview.
-
-Preview identifies the target `codexHome` and reports opaque entries in other
-relevant homes too. Success names only the deleted entry and target home and gives
-remaining queue counts per home; another stale copy may still need cleanup.
-
-Cancellation sends one native ID deletion and checks the full queue readback. It
-preserves unrelated entries, source transcripts, pending-action floors, action homes
-and successor freezes. It does not prove completion or release claims. Native delete
-has no digest compare-and-swap: the digest guards the observed full entry, including
-opaque native fields, but cannot bind an unmanaged concurrent same-ID edit atomically.
-Success requires clean native connection and ownership teardown after readback.
-Any failure after deletion may have started, including timeout or cancellation
-during teardown, returns uncertainty. This top-level queue-cancel command reports
-post-send cancellation as a failed operation with no-replay guidance. Before the
-delete starts, cancellation propagates normally. On uncertainty, preserve the
-result and inspect fresh state; never replay the deletion automatically.
-
-If a pending source's required daemon is unavailable, verify that it is stopped,
-restore it on that exact home with `env CODEX_HOME="<source-home>" codex app-server daemon start`
-as described below, then retry observation or `finish`. Repeat for each required
-home that is stopped. A safe transcript cannot replace missing native coverage;
-do not clear the barrier or restart a running or draining daemon.
-Loaded idle proof binds actual native turns to completed source history. A
-known older database projection may lag the authenticated source completion;
-unanchored or conflicting actual turn order refuses. For an unloaded source,
-persisted history is supplementary: an empty, stale or unavailable index alone
-does not defeat authenticated completed source history. Positively later native
-work still refuses.
-
-Loaded proofs use the same complete current-work reader for ordinary closure
-receipts and pending-action recovery. The existing paginated history read also
-flushes pending canonical events before responding; a failed read cannot prove
-durability. Its response is bounded at 64 MiB and five seconds. The final
-canonical scan follows the last persistence read. Canonical realtime start and
-close records supplement the rebuildable realtime index, which can lag. An
-active or unrecognized canonical realtime lifecycle refuses loaded proof; old
-unclosed realtime history alone does not defeat current NotLoaded evidence.
-
-Successful end proof can resolve an invalidation during claim observation or
-applied finish; another closure publication is not required just to clear it.
-It does not release ownership: an exact validated worker or Supervisor release
-is still required. Known queue, turn and exact-resume acknowledgements do not
-require another safe message merely because they arrive after the actual turn
-completed. Pending queued work and in-flight requests still refuse. Approval
-answers and unknown actions remain conservative: a loaded source needs an
-actual safe message and turn completion after their opaque-action floor. A
-completion alone cannot refresh an older safe message. Complete unloaded-source
-proof can recover an aborted or uncertain send without starting another turn.
-A new scoped action cannot erase an earlier unknown action's floor or scope.
-
-If end proof fails, preserve claims and artifacts and address the reported live
-work or missing evidence. Resume when the source needs more work, using its
-configured account and the supported guarded route below. A frozen predecessor
-still refuses resume: start a new thread and claim through `gh-plan.py` instead.
-
-From the Supervisor's terminal tooling, use `new --resume-session-id` on
-either backend. First verify that the original client has exited. Preserve
-the original ledger and exit evidence; select its one Supervisor-owned Codex
-entry with the native ID, matching transcript and source `codex_home`
-(absolute after `~` expansion). The launcher keeps that configured account,
-uses its existing daemon and normal launch receipts, and runs the guarded
-helper above. Supply no command/brief files or browser flags.
+If native recovery needs a stopped daemon, prove it stopped and use its exact
+configured home with `env CODEX_HOME="<source-home>" codex app-server daemon start`.
+Never restart a running/draining daemon or infer permission from unknown admission.
+Resume only an exited source through the guarded launcher, preserving its ledger:
 
 ```sh
-uv run skills/supervisor/scripts/iterm_tab.py --backend tmux new --window-id <container-id> --resume-session-id <native-id> --ledger <original-private-ledger.json> --account-provider openai
-uv run skills/supervisor/scripts/iterm_tab.py --backend tmux read --session-id <returned-terminal-id>
-uv run skills/supervisor/scripts/iterm_tab.py --backend tmux send --session-id <returned-terminal-id> --text-file <fresh-safe-turn.txt> --verified-target
+uv run skills/supervisor/scripts/iterm_tab.py --backend tmux new --window-id <container-id> --resume-session-id <native-id> --ledger <original-ledger.json> --account-provider openai
 uv run skills/supervisor/scripts/codex-session.py status --session-id <native-id>
 ```
 
-Inspect the idle prompt and preserve any input before sending the fresh turn.
-Verify its completed safe verdict, then use normal empty-prompt `/quit`,
-verified process exit and `finish` preview/apply. In a recovery ledger,
-preserve native `session_id`, transcript and handoff, and replace terminal
-coordinates and launch metadata with this recovery's verified values. Launch
-output's `session_id` is the terminal ID; `native_session_id` is the source.
-Store the terminal ID as `tmux_session_id` or `iterm_session_id`, never over
-the native ID. If launch identity is unavailable, use `status` and verify
-PID/TTY; never substitute the old generation. Record the recovery's actual
-exit time and preserve earlier evidence. A receipt/submit failure retains the
-exact pane for inspection; never replay an uncertain launch. Daemon refusal
-requires waiting or diagnosis on this same source account, without switching
-accounts or restarting the daemon.
-
-A missing socket or connection refusal can mean that this source's daemon is
-stopped, for example after a reboot. Verify that it is stopped first, then use
-the existing native start route on its exact configured home and retry recovery:
-
-```sh
-env CODEX_HOME="<source-home>" codex app-server daemon start
-```
-
-The recovery launcher, resume and queue never start it automatically. Native
-`start` brings back a stopped daemon; do not use `stop`, `restart` or `bootstrap`,
-and never treat draining or an unknown admission response as permission to restart.
-
-If recording generation metadata fails after a native resume, the RPC reports
-that partial outcome and retains the connection and durable invalidation. Retry
-the exact resume for metadata, preserving the source in the meantime.
-The release-discovery operation has its own lock. Global observation creates no log,
-directory or lease file, and receipt file work runs off the native RPC event loop
-with a bounded scan budget. A busy or missing lease, unavailable account config,
-missing/malformed/stale receipt, changed transcript path or changed fingerprint
-preserves the conservative native checks. Moving a transcript to the archive can
-therefore invalidate an old receipt; normal unloaded/authored-release recovery
-remains supported. No daemon is restarted or interrupted.
-Idle execution proof reads at most 100 pages of 20 native items and requires
-complete history; it cannot assume an older background command ended from a
-recent quiet page. Each transcript scan must finish within three seconds, within
-the five-second native observation budget. Longer histories or slower copies
-therefore keep refusing idle admission; they do not weaken ordinary verified
-release or the unloaded recovery path.
-The supported fresh launcher adds the selected account's explicit remote
-endpoint when omitted or given as the documented bare `unix://` shorthand,
-and normalizes an equivalent endpoint through a selected-home symlink.
-The launcher validates this before any terminal or account receipt is created,
-and refuses conflicting endpoints or raw resume/fork
-commands, standalone servers, unknown options and `--no-daemon` before native
-execution. Put an initial literal prompt after `--`, as the brief launcher does.
-The short shared-log mutation lock waits up to one second. A write failure or
-continued contention refuses the managed launch; correct the shared path or
-retry after the writer finishes. It never falls through to a direct connection.
-Runtime registration cleanup removes only this launch's exact generation or
-confirmed dead process rows. Source/admission leases remain nonblocking because
-a claim can retain one during GitHub round-trips. A capacity nudge that has sent
-nothing when a lease is busy defers without spending an attempt.
-
-A queue nudge only invalidates closure. Fork and archive are conservatively
-treated as source attachments too: they own that source's lease, invalidate
-its receipt, and refuse a frozen source. Archive can stop execution, so it stays
-subject to the named source's freeze and ownership checks. This guard checks
-only that source; it does not acquire descendants' leases or prevent archive
-from stopping an independently resumed descendant of an unfrozen parent.
-These operations do not record their client as a new
-worker generation of the source. Read-only history, search, terminal and voice
-list RPCs do not invalidate closure or acquire its lease, including after
-handoff. Rename, metadata, read-state, section, unsubscribe and unarchive RPCs
-also preserve the source generation and take no execution lease. Unarchiving
-moves the transcript, so its old fingerprint still refuses idle admission;
-finish also refuses both the missing original path and a changed path in the
-original closure record. The existing unloaded/authored-release recovery
-remains available. A generation preserved by housekeeping is not a refreshed
-closure proof: if native persistence changes a rollout (including legacy git
-metadata updates), idle admission refuses the old fingerprint and finish
-refuses any record newer than closure. Unchanged transcripts permit
-finish retry; an mtime-only change invalidates idle proof but does not itself
-prevent ordinary finish. Metadata
-updates store preferences; they do not select a turn's access or grant it.
-Queue, fork and archive invalidations do not create a new worker generation
-by themselves. Retry the shared end check with the original validated source
-identity. If a real guarded resume occurred, `codex-session.py status` supplies
-its actual new launch metadata for the recovery ledger. A failed prelaunch is
-not a new generation. Optional idle-proof fingerprints belong to admission;
-an older boot/account fingerprint does not prevent ordinary verified closure
-with the original actual closure time.
-
-Default is a read-only preview. `finish` consumes canonical claim releases;
-backfill previews claim IDs, retained PRs and attestation bodies.
-A pending Codex source can be previewed with its original Supervisor-owned
-ledger and matching shared source record. Each validation after discovery and
-canonical release reads takes the existing ownership guard and obtains fresh
-native end proof for the same source generation and pending action. Preview
-leaves that action, the shared closure record and lease contents unchanged;
-apply alone can clear the original proved action. A new action or changed source
-requires fresh verification through the existing recovery route above, and
-cannot borrow the preview's earlier proof. Transcript records after the saved
-closure time still refuse; preview does not waive the source's safe verdict,
-process, native work or configured transcript-copy checks.
-For `finish`, discovery checks original claim comments after their release.
-An exact `Released claim <id>` directive binds the release through that source's
-native session, with both comments authored by the automation actor. A worker's
-release must precede its recorded closure. A Supervisor/direction release may
-be posted later: its canonical source, receipt and cited closure evidence are
-validated together, with the original source's end time. Each canonical
-comment/evidence snapshot is reused only within that read phase. Related
-ownership follow-ups released after the source ended also need their actual
-exact-ID release, linked to the same validated structured receipt and its
-selected related IDs. The receipt binds their source author, worker, native
-session and original closure chronology. The receipt must precede the actual
-related release in canonical creation order, and its source/receipt pair must
-independently satisfy the shared exact-release guard. An earlier ordinary release
-of that source does not hide its later validated receipt. Structured-source
-reporting also uses the first qualifying canonical proof, keeping the original
-worker end cutoff even when an earlier ineligible release precedes a valid
-receipt. Explanatory prose and later explanation-only edits carry no authority
-and need no fresh related post.
-When every source has that evidence, the report says `already released` and
-names the release handoffs without writing another release. A verified session
-that never claimed reports `nothing to release`. A body marker matching the
-released source counts as ended ownership; Current Status text stays unchanged.
-With `--repo`, these statuses add `in explicit scope` and the session report's
-`coverage` matches the command's scope; claims elsewhere are not accounted for.
-Held, foreign, malformed and status-only ownership, unresolved follow-ups and
-failed canonical reads appear in `issue_refusals`, with exact source IDs when
-available. They keep `needs_reconciliation` true and the command nonzero.
+Supply no command/brief files or browser flags for resume. Inspect the returned
+terminal and idle input before sending a fresh safe turn. Preserve native
+`session_id`, transcript and handoff; record the verified recovery's actual
+terminal ID, PID/TTY and generation, never old coordinates. The launch result's
+`session_id` is terminal identity; `native_session_id` is the source. Receipt or
+submission uncertainty preserves the exact pane. A frozen predecessor needs a
+new thread claimed through `gh-plan.py`, not an alternate resume. A genuinely
+resumed-and-ended source or corrected handoff uses a fresh private closed log,
+preserving earlier evidence. Account/fingerprint drift is not authority to
+rewrite original closure times; use supported ordinary/unloaded recovery.
 
 #### Finish claim reconciliation
 
-After verifying closure, finish includes its original `ended_at` in the session
-report. Refused IDs are accounting facts, not proof that one record belongs to
-another source. The report links this procedure once when reconciliation is needed.
+Read [Planning: Claim](../../github/references/cli-reference.md#planning-claim)
+and its abandoned-claim procedure before reconciling. Select each exact source
+from its canonical discussion and verify author/native identity. Use finish's
+original `ended_at` in the attestation. Cite a genuine handoff or the permitted
+original structured ownership record, labeled as ownership context rather than
+an invented handoff. Preview the exact source and verified related IDs through
+`gh-plan.py release-claim`, apply only after its checks pass, then rerun finish.
+Never reconstruct handoffs from shell commands or fallback summary threads.
 
-For a first attempt, identify the source in the canonical discussion and verify
-its actor and native identity. Use the report's original `ended_at` in the verified
-attestation's `Ended at:` field. Cite a genuine handoff when available; otherwise
-use the exact original structured ownership context permitted by the
-[manual abandoned-claim procedure](../../github/references/cli-reference.md#abandoned-automation-claims),
-without presenting it as a worker handoff. Run the existing release-claim preflight
-with the selected source and verified related IDs before applying. The producer
-validates that selection. Rerun finish to read the resulting canonical releases.
-Correct a failed or malformed canonical read before selecting release records.
+After a prior attempt, inspect producer/transport receipts and resolve unknown
+writes first. Follow `release_recovery_action`; preserve selected related IDs
+and reuse/deduplicate confirmed publication. A later qualifying attestation
+needs no corrected evidence or moved closure time. Aliases without native
+identity, foreign-author ownership, unresolved follow-ups, status-only markers
+and failed canonical reads remain unresolved. `issue_refusals`,
+`pr_claim_handoffs` or `needs_reconciliation` prevent an all-clear; a body marker
+matching a valid released source alone is ended ownership, not a new claim.
 
-If a release was already attempted, inspect its producer and transport results
-and resolve any unknown write outcome before any retry or new attestation.
-Follow the producer's `release_recovery_action`; confirmed receipts and related
-publications use its existing reuse and deduplication. A partial publication does
-not authorize changing the original related IDs or bypassing producer recovery.
-
-An attestation whose `Ended at:` is later than the report's `ended_at` still
-qualifies once its validated release is confirmed: the producer checked source
-activity through that later time, and finish verifies the source is still ended.
-Do not post corrected evidence for it, and do not move the recorded closure
-forward to match it.
-
-Unresolved aliases remain unresolved until their canonical native identity and
-source relationship are verified. Do not infer that relationship from a shared
-worker token. A Supervisor must not post an exact-ID release on an ended worker's
-behalf for an alias with no native session field. It stays refused, with
-`needs_reconciliation` true, until its native identity is established.
-Foreign-author records stay with their owning identity and must not be released
-as the configured automation actor. Ownership diagnostics retain unresolved IDs
-from every valid source group, each once, without choosing a release route.
-
-`finish` never reconstructs handoffs from shell commands or falls through to
-new release writes after a read failure. Reconcile the named records using
-[Planning: Claim](../../github/references/cli-reference.md#planning-claim)'s
-existing exact-ID worker or evidence-backed Supervisor release route, then
-rerun finish. Transcript, process-exit and unqualified safe-verdict verification
-still apply to every finish result, including already-released and no-claim
-sessions.
-
-Explicit backfill retains the maintained release path. PR-only backfill claims
-appear in `pr_claim_handoffs`, with exact claim IDs, the verified closure's
-`attestation_body`, checkout and dry-run/apply argv. They stay owned until that
-route succeeds. Post the supplied attestation on the PR through `gh-comment`,
-put its returned URL in the evidence slot, then run the supported `release-claim`
-dry run and apply from that repository's checkout. Source-branch activity,
-author, closure and peer checks still apply. Outstanding PR handoffs keep
-`needs_reconciliation` true and the command nonzero.
-
-A backfill preview does not assert write preflight success: that check needs a
-posted attestation. Repeat with `--apply` after inspecting it. Apply records the
-verified exit in a private JSON log, posts/readbacks the required `Closed session`
-/ `Ended at:` / `Safe to exit: yes` attestation on each canonical issue, then runs
-the maintained `release-claim` preview and apply. `finish --apply` records closure
-and reports existing releases; it posts no attestation or release. Finish
-needs no `--checkout-root`; existing callers may still pass it. Backfill requires
-that checkout root before it can create a closure/release lock or write evidence.
-The original observed exit
-time survives retries. The log has the ledger's array schema plus `ended_at`
-(timezone-qualified ISO timestamp), the verified completed response's
-`verdict_at`, and `process_exit_verified: true`; retain
-the native transcript path, PID/TTY and exact issue-comment `handoff_url`.
-Use `ended_at - verdict_at` for the one-day shutdown-latency measurement.
-Retries preserve both original times. Legacy records without `verdict_at`
-remain valid and need their original native transcript to reconstruct it;
-never substitute notice arrival or log-write time for the verdict.
-Repeat finish previews use the existing log's original closure time. Shared
-source reads require valid saved metadata or proved absence of that source.
-Unreadable, unsafe, ambiguous or continuously changing source data stays unknown:
-finish preserves pending, and claim observation takes no new source lease or
-ended verdict. Correct the existing source artifact, then preview again;
-unknown metadata never becomes a first closure from caller-supplied launch facts.
-A first closure requires an empty or idle TTY, an exact dead-pane cutoff, or a proved
-replacement process tree before recording its own observation time; it never
-trusts an end time supplied by the ledger. If the original nonce-bearing tmux
-pane has already been removed, the helper can use the birth of one newer TTY
-root as a cutoff only after proving that every TTY process descends from it.
-It rechecks that root and ancestry throughout closure verification. Missing or
-uncertain pane/process coverage, orphaned work, any recorded source PID and a
-resumed source still refuse. The normal `finish` command is the recovery route;
-do not replace the original ledger identity or supply a guessed cutoff.
-A newer unidentified
-client of the source's harness still refuses on retry. With a matching current
-shared closure, use the existing guarded Codex launcher so its PID, birth, argv
-and private ingress establish that its actions cannot silently resume the source.
-An alternate `--closed-log` alone does not provide that shared source proof.
-Otherwise exit the unrelated client or start it in another tab, then retry;
-this also applies to Claude clients.
-If a session truly resumes and closes again, verify its new PID/TTY, transcript and
-handoff, then use a fresh `--closed-log` file for that newly observed closure;
-preserve the prior log unchanged. A corrected handoff can likewise use a fresh
-verified log rather than silently rewriting earlier evidence.
-No transcript text or process arguments are posted. Checkouts must already
-exist as `<checkout-root>/<repository-name>` with the matching origin; the
-release command runs there for that repository's ownership inventory and never
-edits the checkout. A missing or mismatched checkout leaves claims untouched.
-
-Discovery pages the automation installation's Director repositories and their
-issue comments and issue bodies since the earliest timestamp in the source transcripts,
-including closed issues. It reads each matching canonical discussion, honors
-existing valid authored releases through the shared ownership classifier, and
-names source-branch or handoff-retained PRs. Partial inventory is an error, not
-an empty result. Unstructured source claims need an authored exact-ID release;
-structured claims and their related ownership follow-ups use `release-claim`.
-Hand-written and status-only ownership are explicitly reported instead of
-silently dropped. Planning refusals are isolated by issue and session, so
-verified independent claims still proceed; `issue_refusals` prevents an all-clear.
-Automatic follow-up selection requires the same actor and worker, unstructured
-ownership and an exact native `Session:` field. It covers hand claims made before
-or after the structured source. The shared release preflight still checks native
-identity and original closure chronology; a reused worker token alone is not evidence.
-The shared bot login alone never identifies a session. Native session coverage
-remains explicit in the release receipts; missing peer APIs are covered only
-by the Supervisor's actual transcript/closure verification.
-
-For the one-time STALE-CLAIMS backfill, supply either the closed-session ledger
-above or the Supervisor's verified inventory directly as `--closed-log`.
-Inventory rows name `repo`, `issue`, `claim_comment_id`, `session_id`, original
-`ended_at`, `safe_exit_yes: true`, `still_running: false`, and optional
-`handoff_url` / `retained_pr_url`. Repeated native sessions are grouped; a bad
-row or conflicting end time preserves that session's entire group. Exact
-source claim IDs bound the inventory scope, and already-valid releases are
-reported. The existing canonical route also includes that source's verified
-same-author, exact-session ownership follow-ups; preview lists those related
-IDs explicitly. Unlisted structured sources are never added. An active
-follow-up without a selected structured source is reported for reconciliation.
-The input file is never rewritten. Use the default read-only preview first.
-
-Historical inventory records lack original PID/TTY data. This is an explicit
-Supervisor closure attestation, not invented process metadata: the caller must
-verify actual inactivity, including ID-less GUI/picker sessions and unknown
-hosts, before using `--confirm-session-ended`. The helper locates native
-transcripts in configured account homes and archives, verifies exact native
-identity and the current safe verdict, and rechecks resume arguments and all
-transcript activity against the original end time. Normal finish still requires
-the matched PID/TTY and Supervisor-owned ledger entry.
-
-Backfill uses the ledger's explicit exact `handoff_url`, verified against the
-canonical comment author and issue. Inventory rows for one native session may
-supply one agreed nonempty URL; it remains the handoff context, preserving every
-PR named in that comment as well as every row's `retained_pr_url`. The canonical
-inventory handoff must remain no newer than the original end and must not name a
-different native session. Conflicting URLs preserve the whole session for
-reconciliation. Keep the original inventory and use each source's existing
-evidence-backed `release-claim` route. Alternatively, a separate inventory can
-retain every source row and every named PR through `retained_pr_url`, omitting
-the optional conflicting URLs so the supported original source-context route
-can run. Do not choose one URL, merge handoff prose or drop source rows.
-There is no transcript command interpreter,
-summary-thread fallback or handoff cache.
-An interrupted session with no public closeout can use the inventory's original
-structured ownership comment as recovery context only when its exact native ID,
-author and original timestamp still match. The attestation labels it as an
-ownership record with closeout verified separately; it never invents a source
-summary or publishes the private transcript. Missing/changed source records
-remain reported for reconciliation. Retained PRs in
-the inventory are named alongside source-branch and exact handoff PRs. Preview
-checks the target checkout remote, native peers, ownership activity, retained
-PR identity/links and head dates using the shared canonical guards. It posts
-no attestation/release and cannot prove the later write readback; apply must
-still run canonical `release-claim` preview/apply from each target checkout.
-
-Use the original actual closure timestamps; neither conversion time nor
-attestation posting time substitutes for them. Backfill still requires the
-recorded PID to be absent and the transcript unchanged; another job on a reused
-historical TTY does not identify the source session. Normal finish checks all
-jobs on the matched current TTY. Backfill refuses a harness on that TTY unless
-its resume arguments identify a different session; an unidentified harness
-needs native-identity verification through the documented manual release route.
-Invalid closure records are reported per session while
-independent verified sessions proceed. If a record lacks a matched
-transcript, unqualified safe verdict, original closure proof or handoff URL,
-report it for reconciliation instead of inventing evidence.
-Malformed ledger schema or duplicate native IDs refuse the whole log; correct
-its format against original evidence before retrying.
+For historical backfill, supply original verified closure records or the
+verified inventory with exact repo/issue/claim/native IDs, original `ended_at`,
+`safe_exit_yes: true`, `still_running: false`, and optional agreed `handoff_url`
+and retained PR URLs. Missing PID/TTY in historical inventory is an explicit
+Supervisor attestation, never invented process facts. Verify actual current
+inactivity including ID-less clients and unknown hosts. Keep every source row
+and retained PR; conflicting URLs/times or a bad row preserve the whole session
+group. A reused worker token never links native sessions.
 
 ```sh
 uv run skills/supervisor/scripts/release_session_claims.py backfill --closed-log <private-closed.json> --supervisor-session <current-native-id> --owner OWNER --checkout-root <existing-checkout-directory> --confirm-session-ended
 ```
 
-The discovery read deadline defaults to ten minutes; `--deadline-seconds` sets a bounded
-longer window for a larger historical inventory. Each repository's open PR list
-is reused within a session; exact handoff URLs also identify merged retained PRs.
-Per-issue read windows restart after discovery, so release subprocess time does
-not consume another session's read budget. PR conversation comments are filtered
-out; deleted or inaccessible attestations invalidate their historical releases.
-Superseded unmerged or foreign handoff PRs are not retained candidates, while
-source-branch PRs still undergo the maintained release safety checks.
-Possible PID reuse remains a conservative refusal. Verify the current native
-identity, then use the documented evidence-backed `release-claim` route for that
-record; never invent a replacement PID or change the original closure timestamp.
-The command uses the currently configured automation identity only; claims by
-another App or a human are reported and preserved, with no identity fallback.
-Use `--session-id` to reconcile one logged session; inspect the default preview,
-then add `--apply`. For disposable live trials only, repeat `--repo OWNER/REPO`
-to scope discovery; that result reports explicit scope rather than all-repository
-coverage. Test only self-created throwaway issues/claims, never real stale claims.
-On a refusal or uncertain write, preserve posted attestations/releases and
-their returned diagnostics. Only a confirmed issue-scoped dry-run refusal may
-continue to independent claims after fresh closure verification. Source-session
-uncertainty and uncertain writes stop that session's remaining release steps.
-Visible peers in source or retained worktrees also stop the session's releases,
-even with a different native ID: a continuation may have acquired a new ID.
-The shared release helper owns this classification; it is not inferred from
-error wording.
-Inspect their readback before recovery. Already valid releases are skipped;
-unchanged attestations and releases use the shared transport's body deduplication.
-Keep unfinished reconciliation in the ledger. `retained_status_claims` explicitly names Current Status markers that still
-need reconciliation or the supported `--resume-from` handoff route. The helper
-does not rewrite those fields.
-`needs_reconciliation` distinguishes successful ownership releases from a
-completely reconciled planning record. Empty repository scope refuses. Output
-also explicitly excludes other `--owner` values and automation App identities;
-use those repositories' configured evidence-backed release route under existing
-posting authority, without changing identity settings or using a personal fallback.
-Then perform the guarded tab-close
-step below.
+Inspect default preview before `--apply`. Backfill requires existing matching
+repository checkouts before any closure/release write. Its preview cannot prove
+a later posted attestation or write readback. Apply uses the maintained canonical
+attestation and `release-claim` preview/apply path. PR-only handoffs stay owned
+until that supplied route succeeds. Input inventories are never rewritten.
+Malformed whole-ledger structure or duplicate IDs refuse the log; correct them
+against original evidence. Per-session and confirmed issue-scoped refusals can
+leave independent verified work proceeding; source uncertainty or unknown
+writes stop that source's remaining release steps. Visible peers in retained
+or source worktrees still block, including peers with different native IDs.
+Use `--session-id` to reconcile one record and `--deadline-seconds` for a bounded
+larger discovery window. Discovery includes closed issues and requires complete
+coverage. Another owner's records use their existing authorized identity route.
 
-```sh
-uv run skills/supervisor/scripts/iterm_tab.py close --session-id <exact-iterm-id> --ledger <private-ledger.json>
-```
+Normal finish/release precedes guarded terminal closure. Interrupted sources
+use termination recovery before physical cleanup. The terminal helper rechecks
+owned nonce/location, PID/TTY, native empty-shell proof or dead-pane ancestry,
+rejects splits, and issues one non-force close. Surviving iTerm shell scripts,
+helpers, unknown input or uncertain/reused PIDs preserve the tab. Physical cleanup
+of an old dead pane does not prove a resumed source ended. Confirm disappearance
+once; never force or retry uncertain closure. See [native shell-input proof](#native-shell-input-proof).
 
-Normal completion runs verified finish/release before native close. Interrupted
-work uses the termination-release procedure before physical cleanup. The native
-close command rechecks the exact owned terminal, source PID and TTY, and actual
-empty shell input. Finish owns the native verdict and issue handoff proof;
-termination recovery owns the interrupted-source proof. Physical cleanup of an
-old dead pane preserves a verified replacement worker and a source resumed in
-another terminal; source-session closure still checks resumed work. Only `login` and idle login/interactive
-shell processes can remain on an iTerm TTY; prompt helpers and shell scripts
-preserve the tab. Process arguments are inspected privately and never emitted.
-The close command performs one
-non-force close request and has no dry-run mode. An uncertain inventory or remaining/reused PID preserves
-the tab. Read back `iterm_tab.py list` to confirm closure; never force or retry
-an uncertain close. Other terminal applications use the same skill procedure
-through their supported controls, not this iTerm adapter.
-
-Rendered persistent service runners use temporary uv caches. The configured uv
-executable also receives `--no-cache` when it launches a long-running service
-child. This flag is local to that invocation: short nested helper calls retain
-normal caching and avoid repeated dependency downloads. Direct service commands
-must use the documented temporary-cache watch launcher when they run a watch.
-Apply updated service definitions only at the owning Supervisor's normal
-restart boundary; do not interrupt another session to make cache maintenance run.
+Persistent service runners use temporary uv caches; apply changed service
+settings only at the owning Supervisor's normal restart boundary. Never stop
+another session for cache maintenance.
 
 ## Pending reviews of record
 

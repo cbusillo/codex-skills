@@ -51,7 +51,7 @@ def load_state(path: Path) -> dict:
     return state
 
 
-def save_state(path: Path, state: dict) -> None:
+def save_state(path: Path, state: dict | list) -> None:
     # A durable reservation precedes any send. Atomic replacement preserves it
     # across a crash; owner-only files can contain private target coordinates.
     descriptor, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)

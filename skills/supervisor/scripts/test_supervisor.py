@@ -35,6 +35,7 @@ from codex_session_proxy import MEMORY_SETTING
 import oq
 import session_record
 import status
+import compact_check
 import services
 
 
@@ -780,6 +781,25 @@ class LedgerTests(unittest.TestCase):
         self.entry["supervisor_owned"] = False
         self.ledger.write_text(json.dumps([self.entry]))
         self.assertFalse(finished_map.candidates(self.ledger)[0]["candidate"])
+
+    def test_compact_checks_keep_action_and_coverage_without_response_contents(self) -> None:
+        state = self.root / "check.json"
+        with patch.object(status, "session_status", wraps=session_record.session_status) as read:
+            report = compact_check.check(self.ledger, state)
+        self.assertEqual(read.call_count, 1)
+        self.assertTrue(report["coverage"]["complete"])
+        self.assertEqual(report["sessions"][0]["action"], "verify_finished_session")
+        self.assertNotIn("last_text", json.dumps(report))
+        self.assertTrue(compact_check.check(self.ledger, state)["sessions"])
+        self.write([event("task_started", turn_id="working")])
+        self.assertTrue(compact_check.check(self.ledger, state)["sessions"])
+        self.assertEqual(compact_check.check(self.ledger, state)["sessions"], [])
+        self.transcript.unlink()
+        for _ in range(2):
+            report = compact_check.check(self.ledger, state)
+            self.assertFalse(report["coverage"]["complete"])
+            self.assertIn("error", report["sessions"][0])
+        self.assertNotIn("Safe to exit", state.read_text())
 
     def test_watch_dedup_resume_and_abort_notice(self):
         seen = {}

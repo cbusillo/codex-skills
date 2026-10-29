@@ -17,6 +17,7 @@ import re
 import sys
 import time
 from typing import Any
+from check_changes import changes, fingerprint
 
 CATALOG = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(CATALOG))
@@ -323,6 +324,7 @@ def main():
     parser.add_argument("--format", choices=("json", "markdown", "links"), default="json",
         help="links omits titles, for posting where Client details must not appear")
     parser.add_argument("--deadline-seconds", type=float, default=120)
+    parser.add_argument("--changes-state", type=Path, help="print changed record pointers and current coverage; save only fingerprints")
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_-]+", args.owner) or not re.fullmatch(r"[A-Za-z0-9_.-]+", args.repo):
         parser.error("owner and repo must be GitHub names")
@@ -340,11 +342,25 @@ def main():
             "errors": [f"Track discovery failed, every Track is {UNKNOWN}: {error}"]}
     board = {"ok": board["coverage"]["complete"], "owner": args.owner, "repository": f"{args.owner}/{args.repo}",
         "checked_at": checked_at, **board}
-    if args.format == "json":
+    if args.changes_state:
+        print(json.dumps(board_changes(board, args.changes_state, sorted(trusted))))
+    elif args.format == "json":
         print(json.dumps({**board, "diagnostics": reader.diagnostics()}))
     else:
         print(markdown(board, links_only=args.format == "links"))
     return 0 if board["ok"] else 1
+
+
+def board_changes(board: dict, state: Path, trusted: list[str]) -> dict:
+    rows = []
+    for track in board["tracks"]:
+        for record in (track, *track.get("children", [])):
+            source = {key: value for key, value in record.items() if key != "children"}
+            rows.append({"url": record["url"], "track_url": track["url"],
+                         **{key: record[key] for key in ("status", "state", "latest_decision", "open_prs", "unread", "read") if key in record},
+                         "revision": fingerprint(source)})
+    return {"records": changes(rows, state, [board["repository"], *trusted], key="url", complete=board["coverage"]["complete"]),
+            "coverage": board["coverage"], "checked_at": board["checked_at"], "errors": board["errors"]}
 
 
 if __name__ == "__main__":

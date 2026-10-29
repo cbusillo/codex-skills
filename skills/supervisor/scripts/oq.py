@@ -12,6 +12,7 @@ import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
+from check_changes import changes, fingerprint
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from skills.direction.scripts.question_id import QUESTION, heading_id
@@ -111,13 +112,18 @@ def main():
     parser.add_argument("--register", action="store_true", help="Register exact positional question URLs in that queue, with readback")
     parser.add_argument("--ack", metavar="QUESTION_URL", help="Acknowledge actual presentation to the Director")
     parser.add_argument("--delivery-url", help="Durable receipt for the presentation, not just queue registration")
+    parser.add_argument("--changes-state", type=Path, help="print changed question pointers; save only fingerprints")
     args = parser.parse_args()
+    if args.changes_state and (args.register or args.ack):
+        parser.error("changes mode is read-only; use a separate registration or presentation acknowledgement")
     if args.queue:
         from question_delivery import run_queue
         if (args.register and args.ack) or bool(args.ack) != bool(args.delivery_url):
             parser.error("use either --register or --ack QUESTION_URL --delivery-url RECEIPT_URL")
         try:
             report = run_queue(args, fetch)
+            if args.changes_state:
+                report = question_changes(report, args.changes_state, [args.owner, *sorted(args.decision_author), args.queue])
             print(json.dumps(report))
             return 0 if report["complete"] else 1
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
@@ -126,22 +132,37 @@ def main():
     if not args.items or args.register or args.ack or args.delivery_url:
         parser.error("supply source items, or --queue for queue operations")
     failed = False
+    reports = []
     for item in args.items:
         try:
-            print(
-                json.dumps(
-                    {
+            report = {
                         "item": item,
                         "questions": questions(
                             fetch(item), args.owner, args.decision_author
                         ),
                     }
-                )
-            )
+            reports.append(report)
+            if not args.changes_state:
+                print(json.dumps(report))
         except (ValueError, KeyError, subprocess.SubprocessError) as error:
             failed = True
-            print(json.dumps({"item": item, "error": str(error)}))
+            reports.append({"item": item, "error": str(error)})
+            if not args.changes_state:
+                print(json.dumps(reports[-1]))
+    if args.changes_state:
+        report = {"complete": not failed, "questions": [row for report in reports for row in report.get("questions", [])],
+                  "source_errors": [report for report in reports if "error" in report]}
+        print(json.dumps(question_changes(report, args.changes_state, [args.owner, *sorted(args.decision_author), *sorted(args.items)])))
     return int(failed)
+
+
+def question_changes(report: dict, state: Path, scope: list[str]) -> dict:
+    rows = []
+    for question in report["questions"]:
+        source = {key: value for key, value in question.items() if key != "age_seconds"}
+        rows.append({**{key: value for key, value in source.items() if key != "question"}, "revision": fingerprint(source)})
+    return {**{key: value for key, value in report.items() if key != "questions"},
+            "questions": changes(rows, state, scope, key="url", complete=report["complete"])}
 
 
 if __name__ == "__main__":
