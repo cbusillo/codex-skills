@@ -265,10 +265,10 @@ class ShellScript:
 
 def reads_script_from_input(argv: list[str]) -> bool:
     """A shell without `-c`, even behind a wrapper such as `sudo`, or ssh may run heredoc text."""
-    argv = executable_arguments(argv)
+    argv = executable_arguments(without_redirections(argv))
     if not argv:
         return False
-    if argv[0] == "ssh":
+    if Path(argv[0]).name == "ssh":
         return True
     return any(
         Path(token).name in SHELLS and not any(SHELL_COMMAND_FLAG.match(argument) for argument in span[index + 1 :])
