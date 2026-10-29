@@ -266,6 +266,9 @@ def _closure_identity(entry):
     return identity
 
 
+closure_identity = _closure_identity
+
+
 def _saved_closure(path, session, *, create=False):
     """Read the recorder's selected saved identity under its store lock."""
     with closure.store_lock(path, create=create):

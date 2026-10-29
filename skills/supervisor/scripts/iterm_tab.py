@@ -191,6 +191,26 @@ class StartupFailure(ValueError):
         super().__init__(reason)
 
 
+class InputRefused(ValueError):
+    pass
+
+
+@contextmanager
+def input_preflight():
+    try:
+        yield
+    except Exception as error:
+        raise InputRefused(str(error)) from error
+
+
+class CloseUncertain(ValueError):
+    pass
+
+
+def empty_agent_input(readback: dict) -> bool:
+    return (readback.get("input_line") or {}).get("style") in {"empty", "dim"}
+
+
 def startup_prompt_window(choice):
     """Only Codex shows the hook-review prompt; other launches keep the short check."""
     return CODEX_PROMPT_WINDOW if choice and choice["provider"] == "openai" else 0.0
@@ -444,9 +464,10 @@ def append_brief(command_text, brief):
 
 
 async def send(session, text, submit=True, allow_tabs=False):
-    if resume_input(text):
-        validate_resume_input(text, tty=await session.async_get_variable("tty"))
-    validate_text(text, allow_tabs=allow_tabs)
+    with input_preflight():
+        if resume_input(text):
+            validate_resume_input(text, tty=await session.async_get_variable("tty"))
+        validate_text(text, allow_tabs=allow_tabs)
     if "\n" in text or "\t" in text:
         text = "\x1b[200~" + text + "\x1b[201~"
     try:
@@ -516,6 +537,8 @@ async def submit_message(
                     and any(re.search(r"\btab to queue(?: message)?\b", line) for line in footer)):
                 key = "\t"
         if submit:
+            if text in {"/quit", "/exit"} and (prompt.get("text") != text or key != "\r"):
+                raise SendFailure(identity, "not_attempted", "exit input changed or would be queued")
             submission = "unknown"
             await press(key)
             pressed = True
@@ -1637,6 +1660,41 @@ async def register_fresh_launch(args: argparse.Namespace, result: dict, choice: 
 
 
 
+def register_claude_launch(launch: dict, native: dict, ledger: Path) -> dict:
+    import session_liveness
+    import session_record
+    existing = [row for row in (session_record.load_ledger(ledger) if ledger.exists() else []) if row["session_id"] == native["session_id"]]
+    if existing:
+        entry = session_record.terminal_entry(ledger, "tmux_session_id", launch["session_id"])
+        if (len(existing) != 1 or entry["session_id"] != native["session_id"] or entry["harness"] != "claude"
+                or entry["tty"] != launch["tty"].removeprefix("/dev/")):
+            raise ValueError("native Claude identity belongs to another terminal")
+        return entry
+    deadline = time.monotonic() + LAUNCH_TIMEOUT
+    while True:
+        paths = list((Path(native["home"]) / "projects").glob("*/" + native["session_id"] + ".jsonl"))
+        if paths or time.monotonic() >= deadline:
+            break
+        time.sleep(0.2)
+    if len(paths) != 1:
+        raise ValueError("exact fresh Claude transcript is unavailable; preserve its terminal")
+    processes = [row for row in session_liveness.inventory() if row[1] == launch["tty"].removeprefix("/dev/")
+                 and session_liveness.harness_family((session_liveness.harness_arguments(row[2]) or [""])[0]) == "claude"]
+    exact = [row for row in processes if row[0] == launch["pid"]]
+    if not exact:
+        import tmux_terminal
+        parents = tmux_terminal.process_parents()
+        exact = [row for row in processes if tmux_terminal.belongs_to(row[0], launch["pid"], parents)]
+    processes = exact
+    if len(processes) != 1:
+        raise ValueError("fresh Claude process identity is ambiguous")
+    entry = {**launch, "session_id": native["session_id"], "tmux_session_id": launch["session_id"],
+             "transcript": str(paths[0]), "pid": processes[0][0], "harness": "claude", "supervisor_owned": True}
+    session_record.session_status(entry)
+    append_launch_ledger(ledger, entry)
+    return entry
+
+
 def cancel_unsubmitted_gui(choice, progress):
     if choice and "gui" in choice and progress["submission"] == "not_attempted":
         gui = choice["gui"]
@@ -1687,7 +1745,10 @@ async def close_session(app, session_id, ledger):
     closing_session, after = await verify()
     if after != before:
         raise ValueError("terminal state changed during verification; tab kept")
-    await closing_session.async_close(force=False)
+    try:
+        await closing_session.async_close(force=False)
+    except Exception as error:
+        raise CloseUncertain("native close may have been sent; inspect the exact terminal without replay") from error
     return {"session_id": session_id, "close_requested": True, "readback_required": True}
 
 
@@ -1717,23 +1778,25 @@ async def operate(app, args):
                     )
         return result
     if args.command in {"send", "read", "clear"}:
-        session = select_session(app, args.session_id)
+        with input_preflight():
+            session = select_session(app, args.session_id)
         if args.command == "read":
             return await read_session(session)
         if not args.verified_target:
-            raise ValueError(
+            raise InputRefused(
                 "verify the target, input line and prompt before --verified-target"
             )
         if args.command == "clear":
             await session.async_send_text("\x15", suppress_broadcast=True)
         else:
-            text = (
-                args.text_file.read_text(encoding="utf-8")
-                if args.text_file
-                else args.text
-            )
-            ended = exit_observer(text, await session.async_get_variable("tty")) if (
-                not args.no_submit and text in {"/quit", "/exit"}) else None
+            with input_preflight():
+                text = (
+                    args.text_file.read_text(encoding="utf-8")
+                    if args.text_file
+                    else args.text
+                )
+                ended = exit_observer(text, await session.async_get_variable("tty")) if (
+                    not args.no_submit and text in {"/quit", "/exit"}) else None
             await send(session, text, submit=False)
 
             async def read_message() -> dict[str, Any]:
@@ -2027,13 +2090,16 @@ def main():
             print(json.dumps(error.detail, indent=2))
             parser.exit(1, f"SEND FAILED: {error}; read and clear verified input before another send\n")
         except (ValueError, OSError, subprocess.SubprocessError) as error:
+            if args.command in {"new", "close"} or isinstance(error, InputRefused):
+                print(json.dumps({"ok": False, "mutation_started": isinstance(error, CloseUncertain), "error": str(error)}))
             parser.exit(1, f"refused: {error}\n")
         return
     import iterm2
 
     async def connected(connection):
-        app = await iterm2.async_get_app(connection)
         try:
+            with input_preflight():
+                app = await iterm2.async_get_app(connection)
             print(json.dumps(await operate(app, args), indent=2))
         except LaunchFailure as error:
             print(json.dumps(error.detail, indent=2))
@@ -2042,8 +2108,12 @@ def main():
             print(json.dumps(error.detail, indent=2))
             parser.exit(1, f"SEND FAILED: {error}; read and clear verified input before another send\n")
         except (ValueError, OSError, subprocess.SubprocessError) as error:
+            if args.command in {"new", "close"} or isinstance(error, InputRefused):
+                print(json.dumps({"ok": False, "mutation_started": isinstance(error, CloseUncertain), "error": str(error)}))
             parser.exit(1, f"refused: {error}\n")
         except iterm2.rpc.RPCException:
+            if args.command == "close":
+                print(json.dumps({"ok": False, "mutation_started": False, "error": "native preflight read failed"}))
             parser.exit(1, "iTerm RPC failed; preserve the target and read list before any retry\n")
 
     iterm2.run_until_complete(connected)

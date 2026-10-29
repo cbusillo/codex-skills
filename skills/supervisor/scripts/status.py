@@ -7,26 +7,9 @@
 
 import argparse
 import json
-import time
 from pathlib import Path
 
-from session_record import load_ledger, session_status
-from capacity_retry import load_state, retry_status
-
-
-def snapshot(ledger: Path, capacity_state: Path | None = None) -> list[dict]:
-    state = load_state(capacity_state) if capacity_state else None
-    results = []
-    for entry in load_ledger(ledger):
-        try:
-            result = session_status(entry)
-            result["idle_seconds"] = max(0, int(time.time() - result["mtime"]))
-            if state is not None:
-                result["capacity_retry"] = retry_status(entry, result, state)
-            results.append(result)
-        except (OSError, ValueError, TypeError) as error:
-            results.append({"session_id": entry["session_id"], "error": str(error)})
-    return results
+from compact_check import snapshot
 
 
 def main() -> int:
