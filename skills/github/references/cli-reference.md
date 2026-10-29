@@ -2321,6 +2321,17 @@ than one day, oldest first, targeting a base branch enrolled in Launchplane's ac
 policy. The PR itself is the record; each entry includes its URL, age, and head
 SHA. These are possible work needing an agent's review, not proof of a train
 hold or available ownership. Issue ranking and claim behavior are unchanged.
+`pr_followthrough` separately exposes other open PRs, without the dependency
+age threshold, using that same inventory and bounded discussion reads. Rows
+include current-head identity, structured waits and bounded discussion excerpts
+with source links, including Client projections. They remain review work, held, underway or
+unknown, never automatically available source assignments. A stale canonical
+issue wait does not erase the PR record. Current claims and current-head Ready
+handoffs remain underway; drafts and Client-wait handoffs remain held. Legacy conditions require
+reconciliation, and unknown evidence remains explicit. Claims and the existing
+Ready path still check source custody, Client authority and readiness afresh.
+`pr_followthrough_context` reports its independent completeness and truncation;
+`pr_followthrough_count` is the full observed count before `--limit`.
 `dependabot_context` reports per-repository enrollment and bounded GitHub read
 coverage. Unknown enrollment retains observed old PRs in
 `dependabot_unverified_candidates`, never as confirmed candidates or confirmed

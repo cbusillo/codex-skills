@@ -348,6 +348,16 @@ for the PR discovery bounds. An empty issue list with PR candidates does not
 mean no work is available. This visibility changes no priority, hold, or merge
 authority.
 
+`pr_followthrough` reports other open PRs from the same inventory separately
+from source issue ranking. Each row keeps the current head and bounded
+discussion excerpts with source links, including Client projections. Current
+Ready handoffs and claims are underway; drafts, Client-wait handoffs and
+structured waits stay held. Legacy or incomplete evidence
+stays scope review or unknown. These rows require fresh source custody,
+Client authority and readiness checks before action; they never clear an
+issue wait or authorize a merge. `pr_followthrough_context` reports read
+coverage and truncation independently of dependency PR coverage.
+
 Check beyond occupied results before saying no work is available.
 `candidate_count` greater than the returned list calls for a larger bounded
 `--limit`; truncated inventory or incomplete dependencies remain a partial
