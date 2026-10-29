@@ -1119,6 +1119,9 @@ and follow the existing recovery steps rather than deleting delivery state.
 
 Codex delivery uses the existing native queue helper. Claude delivery uses the
 existing guarded tmux route, including idle, empty-composer and identity checks.
+Keep a Claude Supervisor at its idle empty prompt without non-scheduled background
+tasks. While it is busy, notices defer until that proof returns; the normal
+finished-session check still handles candidates during the wait.
 Both idle watches serialize sends under the configuration lock. Native queue results distinguish a certainly unsent attempt from
 a permission or RPC refusal. Unsupported routes and identity errors stop for
 reconciliation. A certainly unsent busy recipient is rechecked on the next poll;

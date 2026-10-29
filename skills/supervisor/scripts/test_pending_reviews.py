@@ -1485,7 +1485,6 @@ class NotificationTests(unittest.TestCase):
     def setUp(self):
         self.temp = self.enterContext(tempfile.TemporaryDirectory())
         self.home = Path(self.temp).resolve()
-        self.enterContext(patch.dict(os.environ, {"CODE_HOME": str(self.home)}))
         self.native = "11111111-2222-4333-8444-555555555555"
         self.transcript = self.home / "sessions" / "native.jsonl"
         self.transcript.parent.mkdir()
