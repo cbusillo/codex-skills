@@ -35,7 +35,12 @@ from codex_session_proxy import MEMORY_SETTING
 import oq
 import session_record
 import status
+import compact_check
 import services
+
+
+def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    return patch.object(target, name, *args, **kwargs)
 
 
 def claude(text, **extra) -> dict[str, Any]:
@@ -780,6 +785,32 @@ class LedgerTests(unittest.TestCase):
         self.entry["supervisor_owned"] = False
         self.ledger.write_text(json.dumps([self.entry]))
         self.assertFalse(finished_map.candidates(self.ledger)[0]["candidate"])
+
+    def test_compact_checks_keep_action_and_coverage_without_response_contents(self) -> None:
+        state = self.root / "check.json"
+        with patch_attr(compact_check, "session_status", wraps=session_record.session_status) as read:
+            report = compact_check.check(self.ledger, state)
+        self.assertEqual(read.call_count, 1)
+        self.assertTrue(report["coverage"]["complete"])
+        self.assertEqual(report["sessions"][0]["action"], finished_map.candidates(self.ledger)[0]["closeout_request"]["action"])
+        self.assertNotIn("last_text", json.dumps(report))
+        self.assertTrue(compact_check.check(self.ledger, state)["sessions"])
+        self.write([event("task_started", turn_id="working")])
+        self.assertTrue(compact_check.check(self.ledger, state)["sessions"])
+        self.assertEqual(compact_check.check(self.ledger, state)["sessions"], [])
+        capacity = self.root / "capacity.json"
+        capacity.write_text(json.dumps({self.entry["session_id"]: {
+            "attempts": 1, "last_attempt": 0, "phase": "pending", "target": [str(self.transcript.resolve()), ""]}}))
+        for _ in range(2):
+            report = compact_check.check(self.ledger, state, capacity)
+            self.assertTrue(report["sessions"])
+            self.assertTrue(report["sessions"][0]["action"])
+        self.transcript.unlink()
+        for _ in range(2):
+            report = compact_check.check(self.ledger, state)
+            self.assertFalse(report["coverage"]["complete"])
+            self.assertIn("error", report["sessions"][0])
+        self.assertNotIn("Safe to exit", state.read_text())
 
     def test_watch_dedup_resume_and_abort_notice(self):
         seen = {}
@@ -2837,7 +2868,7 @@ class TerminalTests(unittest.TestCase):
                     self.assertEqual(press.await_count, int(submit))
 
     def test_exit_readback_allows_delayed_process_reaping(self) -> None:
-        before = {"screen": [], "input_line": {"line_index": None}}
+        before = {"screen": ["› /quit"], "input_line": {"line_index": 0, "text": "/quit"}}
         observer = Mock(side_effect=[False, True])
         with patch("asyncio.sleep", new=AsyncMock()):
             result = asyncio.run(iterm_tab.submit_message("exact", "/quit", True,

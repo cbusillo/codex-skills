@@ -428,6 +428,9 @@ def _authenticated_paths(snapshots, homes):
     return {home: copies for home, copies in paths.items() if copies}
 
 
+authenticated_paths = _authenticated_paths
+
+
 def source_snapshot(entry, process=None):
     """Only file/process reads; safe to await in a cancellable worker thread."""
     from github_plan_sessions import configured_homes, observation_homes

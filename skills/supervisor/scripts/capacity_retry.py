@@ -9,11 +9,9 @@ import fcntl
 import asyncio
 import json
 import math
-import os
 import socket
 import stat
 import subprocess
-import tempfile
 import time
 import uuid
 import sys
@@ -22,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from session_record import session_status
+from check_changes import save_state
 from iterm_tab import codex_daemon_endpoint
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
@@ -49,25 +48,6 @@ def load_state(path: Path) -> dict:
                 or not math.isfinite(row["last_attempt"]) or row["last_attempt"] < 0):
             raise ValueError("malformed capacity retry record")
     return state
-
-
-def save_state(path: Path, state: dict) -> None:
-    # A durable reservation precedes any send. Atomic replacement preserves it
-    # across a crash; owner-only files can contain private target coordinates.
-    descriptor, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(state, stream)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
 
 
 @contextmanager
