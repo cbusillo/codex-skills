@@ -2751,8 +2751,8 @@ def link_native_dependency(
     return actor, refresh_planning_targets([(source["repo"], int(source["number"]))])
 
 
-def check_claim_wait(waiting_issue: dict[str, Any], waiting_status: str, config: dict[str, Any], *,
-                     wait_resolved: str | None = None, record_status: str | None = None) -> bool:
+def evaluate_claim_wait(waiting_issue: dict[str, Any], waiting_status: str, config: dict[str, Any], *,
+                        wait_resolved: str | None = None, record_status: str | None = None) -> tuple[bool, ClassifiedPlanError | None]:
     wait = waiting_issue["claim_wait"]
     status_state = next_plan_status(waiting_issue, config)
     has_wait = bool(wait["state"] != "clear" or status_state in {"stale", "done"})
@@ -2764,13 +2764,23 @@ def check_claim_wait(waiting_issue: dict[str, Any], waiting_status: str, config:
             "url": waiting_issue.get("html_url"), "plan_status": status_state,
             "current_status": record_status if record_status is not None else waiting_status,
         }
-        raise ClassifiedPlanError("claim_wait_unresolved",
+        error = ClassifiedPlanError("claim_wait_unresolved",
             f"Review claim admission on {waiting_repo}#{waiting_number} "
             f"(plan status: {status_state}, structured wait: {wait['state']}) with "
             f"gh-plan.py --repo {waiting_repo} wait {waiting_number}. For a missing legacy record, read the full "
             "issue/discussion once and record its waits or verified absence; --wait-resolved records existing resolution evidence.",
             payload={"structured_wait": wait, "previous_current_status": waiting_status,
                      "review_required": wait["state"] == "review", "waiting_record": waiting_record})
+        return has_wait, error
+    return has_wait, None
+
+
+def check_claim_wait(waiting_issue: dict[str, Any], waiting_status: str, config: dict[str, Any], *,
+                     wait_resolved: str | None = None, record_status: str | None = None) -> bool:
+    has_wait, error = evaluate_claim_wait(waiting_issue, waiting_status, config,
+                                          wait_resolved=wait_resolved, record_status=record_status)
+    if error is not None:
+        raise error
     return has_wait
 
 
@@ -2845,6 +2855,36 @@ def claim_once(args: argparse.Namespace) -> None:
     phase_family_error = None
     phase = {}
 
+    def recovery_requirement(kind: str, scope: str, **details: Any) -> dict[str, Any]:
+        return {"kind": kind, "scope": scope, **details}
+
+    def attach_recovery_requirements(
+        recovery_error: PlanError | github_plan_claim.ClaimProofError, requirements: list[dict[str, Any]],
+    ) -> PlanError | github_plan_claim.ClaimProofError:
+        if not requirements:
+            return recovery_error
+        recovery_error.payload["recovery_requirements"] = {
+            "coverage": "partial",
+            "admission": "UNKNOWN",
+            "requirements": requirements,
+        }
+        return recovery_error
+
+    def branch_exclusion_requirement(branches: set[str], scope: str) -> dict[str, Any]:
+        return recovery_requirement("branch_exclusion", scope, branches=sorted(branches))
+
+    def wait_requirement(errors: list[ClassifiedPlanError]) -> dict[str, Any] | None:
+        records = []
+        for waiting_error in errors:
+            record = waiting_error.payload["waiting_record"]
+            waiting_repo, waiting_number = record["repo"], record["number"]
+            records.append({**record, "structured_wait": waiting_error.payload["structured_wait"],
+                            "review_required": waiting_error.payload["review_required"],
+                            "review_command": f"gh-plan.py --repo {waiting_repo} wait {waiting_number}"})
+        if not records:
+            return None
+        return recovery_requirement("wait_review", "retained_pull_requests", records=records)
+
     def read_record(record_number, record_repo, *, allow_closed=False):
         key = (record_repo.casefold(), int(record_number))
         if key not in phase_records:
@@ -2874,10 +2914,8 @@ def claim_once(args: argparse.Namespace) -> None:
                    and entry["claim_id"] != args.resume_from for entry in ended_owners) else None)
         return conflicts, owned
 
-    def check_wait(waiting_issue: dict[str, Any], waiting_status: str, *, target: bool = False,
-                   record_status: str | None = None) -> bool:
-        return check_claim_wait(waiting_issue, waiting_status, phase["target_config"] if target else config,
-                                wait_resolved=args.wait_resolved, record_status=record_status)
+    def check_wait(waiting_issue: dict[str, Any], waiting_status: str) -> bool:
+        return check_claim_wait(waiting_issue, waiting_status, config, wait_resolved=args.wait_resolved)
 
     def check_issue_holds(checked_issue: dict[str, Any]) -> None:
         expected = previous_wait
@@ -3217,12 +3255,21 @@ def claim_once(args: argparse.Namespace) -> None:
             retained_mode = selection["mode"] != "plain"
             handoff_id = selection["handoff"]
             if not retained_mode:
-                if source_number != number or issue_repo.casefold() != target_repo.casefold() or source_open:
-                    raise github_plan_claim.ClaimProofError("claim_handoff_pr_required",
+                handoff_required = source_number != number or issue_repo.casefold() != target_repo.casefold() or source_open
+                same_source_branch = claim["branch"] == record["branch"]
+                if handoff_required:
+                    handoff_error = github_plan_claim.ClaimProofError("claim_handoff_pr_required",
                         "Released work requires a qualified source-authored retained-PR handoff")
-                if claim["branch"] == record["branch"]:
-                    raise github_plan_claim.ClaimProofError("claim_ended_branch_reused",
+                    requirements = [recovery_requirement("retained_handoff", "released_source",
+                                                        source_repo=issue_repo, source_number=source_number)]
+                    if same_source_branch:
+                        requirements.append(branch_exclusion_requirement({record["branch"]}, "released_source"))
+                    raise attach_recovery_requirements(handoff_error, requirements)
+                if same_source_branch:
+                    source_branch_error = github_plan_claim.ClaimProofError("claim_ended_branch_reused",
                         "Ended ownership requires a new task branch; preserve the retained source branch and worktree")
+                    raise attach_recovery_requirements(source_branch_error, [
+                        branch_exclusion_requirement({record["branch"]}, "released_source")])
                 return None
             if handoff is None:
                 raise github_plan_claim.ClaimProofError("claim_handoff_pr_required", "Released retained work has no qualified handoff")
@@ -3359,11 +3406,26 @@ def claim_once(args: argparse.Namespace) -> None:
             raise prepared["error"]
         source_number, source_comments, source_status = prepared["source"]
         target_pulls, permitted = prepared["pulls"], prepared["permitted"]
+        evaluated_waits = {}
+        known_wait_errors = []
+        for pull_number, (target, sections, target_comments) in prepared["targets"].items():
+            evaluation = evaluate_claim_wait(
+                target, sections.get("Current Status", ""), phase["target_config"],
+                wait_resolved=args.wait_resolved,
+                record_status=claim_current_status(target, sections, target_comments))
+            evaluated_waits[pull_number] = evaluation
+            if evaluation[1] is not None:
+                known_wait_errors.append(evaluation[1])
+        aggregate_wait_requirement = wait_requirement(known_wait_errors)
         for ended in ended_owners:
             ended["pull_requests"] = [f"https://github.com/{target_repo}/pull/{p['number']}" for p in target_pulls
                                       if (p.get("head") or {}).get("ref") == ended["branch"]]
         if claim["branch"] in permitted and selection["mode"] != "next":
-            raise PlanError("Retained handoff requires a new task branch, separate from every retained PR/source branch")
+            retained_branch_error = PlanError("Retained handoff requires a new task branch, separate from every retained PR/source branch")
+            requirements = [branch_exclusion_requirement(set(permitted), "retained_handoff")]
+            if aggregate_wait_requirement is not None:
+                requirements.append(aggregate_wait_requirement)
+            raise attach_recovery_requirements(retained_branch_error, requirements)
         if prepared["open_conflicts"]:
             refuse(prepared["open_conflicts"], owner_comments=source_comments, owner_number=source_number)
         observed_waits = {}
@@ -3379,10 +3441,12 @@ def claim_once(args: argparse.Namespace) -> None:
                 refuse(competing, owner_comments=target_comments, owner_repo=target_repo, owner_number=pull["number"])
             released_target_sessions.update(record["session"] for _, record, _ in
                                             github_plan_claim.exact_released_sources(target_comments))
-            target_status = sections.get("Current Status", "")
             target_wait = target["claim_wait"]
-            if check_wait(target, target_status, target=True,
-                          record_status=claim_current_status(target, sections, target_comments)):
+            has_wait, wait_error = evaluated_waits[pull["number"]]
+            if wait_error is not None:
+                requirements = [aggregate_wait_requirement] if aggregate_wait_requirement is not None else []
+                raise attach_recovery_requirements(wait_error, requirements)
+            if has_wait:
                 wait_labels = sorted(set(normalize_labels(target.get("labels"))) &
                                      {config["labels"][key] for key in ("waiting", "blocked", "stale", "done")})
                 observed_waits[pull["number"]] = "Labels: " + ", ".join(wait_labels) + "\n" + github_plan_wait.marker(target_wait)
