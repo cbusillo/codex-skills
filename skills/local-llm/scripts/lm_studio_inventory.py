@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 from lm_studio_api import (
-    DEFAULT_BASE_URL,
     DEFAULT_CONFIG,
     LocalLLMError,
     fetch_lm_studio_runtime,
