@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 from pathlib import Path
 import subprocess
 import tempfile
@@ -133,6 +134,17 @@ class LandedDecisionTests(Fixture):
 
 
 class RetireTests(unittest.TestCase):
+    def test_later_preview_failure_preserves_earlier_retirement_result(self) -> None:
+        for failing_preview, expected in ((True, "kept"), (False, "unknown")):
+            def run(path: str, *, dry_run: bool) -> subprocess.CompletedProcess[str]:
+                if path == "/later" and dry_run == failing_preview:
+                    raise subprocess.TimeoutExpired("fixture", 1)
+                return subprocess.CompletedProcess([], 0, "", "")
+
+            rows = landed_worktrees.retire([{"path": path, "decision": "candidate"} for path in ("/first", "/later")],
+                                           apply=True, runner=run)
+            self.assertEqual([row["decision"] for row in rows], ["retired", expected])
+
     def runner(self, refuse_preview=False, refuse_apply=False):
         calls = []
 
@@ -163,10 +175,17 @@ class RetireTests(unittest.TestCase):
             self.assertEqual(calls, expected_calls)
 
     def test_expired_budget_keeps_a_candidate_without_starting_removal(self) -> None:
-        calls, run = self.runner()
-        with mock.patch.object(landed_worktrees.time, "monotonic", side_effect=[0, 2]):
+        calls = []
+        clock = [0]
+
+        def preview(path: str, *, dry_run: bool) -> subprocess.CompletedProcess[str]:
+            calls.append((path, dry_run))
+            clock[0] = 2
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        with mock.patch.object(landed_worktrees.time, "monotonic", side_effect=lambda: clock[0]):
             rows = landed_worktrees.retire([{"path": "/a", "decision": "candidate"}], apply=True,
-                                           runner=run, deadline=1)
+                                           runner=preview, deadline=1)
         self.assertEqual(calls, [("/a", True)])
         self.assertEqual(rows[0]["decision"], "kept")
 
@@ -174,11 +193,58 @@ class RetireTests(unittest.TestCase):
     def test_unlocked_portable_retirement_uses_the_portable_guard() -> None:
         with mock.patch.object(landed_worktrees.dev_worktree, "configuration", return_value=(Path("/tasks"), None)), \
                 mock.patch.object(landed_worktrees, "portable_retire") as portable:
-            landed_worktrees.run_retire("/tasks/project/task", dry_run=True)
+            landed_worktrees.retirement_command("/tasks/project/task", True)
         portable.assert_called_once_with(Path("/tasks/project/task"), dry_run=True)
 
 
+class PreviewTests(Fixture):
+    @unittest.skipUnless(os.name == "posix", "process-group preview custody")
+    def test_preview_timeout_stops_descendants_and_apply_keeps_its_own_completion(self) -> None:
+        helper = self.base / "host"
+        receipt = self.base / "pids.json"
+        helper.write_text(
+            f"#!{sys.executable}\nimport json, os, subprocess, sys, time\nfrom pathlib import Path\n"
+            "if '--dry-run' in sys.argv:\n"
+            "    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            f"    Path({str(receipt)!r}).write_text(json.dumps([os.getpid(), child.pid]))\n"
+            "    time.sleep(60)\n"
+            "else:\n"
+            "    time.sleep(0.2)\n"
+        )
+        helper.chmod(0o700)
+        with mock.patch.object(landed_worktrees.dev_worktree, "configuration", return_value=(self.root, helper)), \
+                mock.patch.object(landed_worktrees, "DEV_WORKTREE", helper), \
+                mock.patch.object(landed_worktrees, "PREVIEW_TIMEOUT", 1):
+            preview = landed_worktrees.run_retire(str(self.base / "target"), dry_run=True)
+            self.assertNotEqual(preview.returncode, 0)
+            pids = json.loads(receipt.read_text())
+            for pid in pids:
+                state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
+                self.assertTrue(state.returncode != 0 or not state.stdout.strip() or state.stdout.strip().startswith("Z"))
+            with mock.patch.object(landed_worktrees, "PREVIEW_TIMEOUT", 0.01):
+                applied = landed_worktrees.run_retire(str(self.base / "target"), dry_run=False)
+            self.assertEqual(applied.returncode, 0)
+
+
 class RepositoryTests(Fixture):
+    def test_aged_prless_default_start_ignores_unrelated_commit_pr(self) -> None:
+        path = self.worktree("abandoned")
+        os.utime(Path(self.git(path, "rev-parse", "--absolute-git-dir")) / "HEAD", (0, 0))
+        reader = mock.Mock()
+        associations = []
+
+        def paged(route: str, **_: object) -> list[dict]:
+            if "/commits/" in route:
+                associations.append(route)
+                return [{"number": 99, "state": "closed"}]
+            return []
+
+        reader.paged_json.side_effect = paged
+        reader.request.return_value = mock.Mock(body={"total_count": 0, "incomplete_results": False, "items": []})
+        rows = list(landed_worktrees.repository_rows(reader, mock.Mock(), "o/sample", self.repo, self.root))
+        self.assertEqual([(row["path"], row["decision"]) for row in rows], [(str(path), "candidate")])
+        self.assertEqual(associations, [])
+
     def test_commit_association_recovers_detached_and_separate_review_trees(self) -> None:
         for detached in (False, True):
             path = self.worktree(f"review-{detached}")
@@ -227,7 +293,7 @@ class RepositoryTests(Fixture):
 
     def test_portable_retirement_keeps_private_or_unpublished_work_and_live_use(self) -> None:
         run = subprocess.run
-        for cause in ("dirty", "ignored", "unpublished", "in_use", "proof_unavailable", "eligible"):
+        for cause in ("dirty", "ignored", "unpublished", "in_use", "proof_unavailable", "pull_only", "eligible"):
             path = self.worktree(cause, lock=None)
             if cause == "dirty":
                 (path / "notes").write_text("private work")
@@ -239,6 +305,9 @@ class RepositoryTests(Fixture):
                 (path / "private").write_text("private output")
             elif cause == "unpublished":
                 self.commit(path, "Local work")
+            elif cause == "pull_only":
+                self.commit(path, "Squashed source")
+                self.git(path, "push", "origin", "HEAD:refs/pull/7/head")
 
             def dispatch(args: list[str], **options: object) -> subprocess.CompletedProcess[str]:
                 if args[0] == "lsof":
@@ -252,9 +321,9 @@ class RepositoryTests(Fixture):
 
             with self.subTest(cause=cause), mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch) as calls:
                 result = landed_worktrees.portable_retire(path, dry_run=False)
-            self.assertEqual(result.returncode == 0, cause == "eligible", result)
+            self.assertEqual(result.returncode == 0, cause in {"eligible", "pull_only"}, result)
             removals = [call.args[0] for call in calls.call_args_list if "remove-worktree" in call.args[0]]
-            self.assertEqual(len(removals), int(cause == "eligible"))
+            self.assertEqual(len(removals), int(cause in {"eligible", "pull_only"}))
 
 
 class MainTests(Fixture):

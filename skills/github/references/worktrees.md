@@ -84,7 +84,9 @@ behavior has not been qualified. Process ID reuse can also conservatively refuse
 a later call; an unrelated child can remove `DEV_WORKTREE_DELEGATED` from its
 own environment before explicitly starting an independent request.
 This setting selects an existing trusted host executable; it does
-not install, replace or edit one.
+not install, replace or edit one. Its `retire --dry-run` contract must be read-only;
+creation bounds that preview using the existing process-group probe, while apply
+finishes without an interrupt that could prevent lock restoration.
 
 Chris-Studio keeps its existing host-local helper and external-volume checks
 with this configuration:
@@ -108,7 +110,8 @@ does not provision host storage or change runtime configuration.
 ## Retirement
 
 Use `work-closeout` to verify ownership, live use, contents and publication
-before cleanup. Portable worktrees are ordinary unlocked Git worktrees: remove
+before cleanup. Release a task claim last; until then it protects a tree still
+needed by its session. Portable worktrees are ordinary unlocked Git worktrees: remove
 an eligible finished one with `git worktree remove /exact/task/path`, without
 force, then apply the normal branch cleanup policy. Kept trees follow `work-closeout` before retrying automatic retirement. When a registration's lock names a retirement
 command, use that exact command. With `hostHelper` configured, the catalog entry
