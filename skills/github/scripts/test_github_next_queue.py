@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from unittest.mock import Mock, patch
 
+import github_client
 import github_direction_next as direction
 import github_next_queue as queue
 import github_plan_claim as claim
@@ -527,10 +528,16 @@ def test_milestone_flag_follows_open_dependencies_without_assuming_their_status(
     module = cli.load_module()
     flag = 'all_listed_milestones_have_no_available_item'
     for relation in ['blocked_by', 'sub_issues']:
-        for state in ['available', 'own_project', 'underway', 'needs_status', 'waiting', 'missing', 'cycle', 'transitive']:
+        for state in ['available', 'own_project', 'underway', 'needs_status', 'waiting', 'missing', 'cycle', 'transitive', 'closed_seed', 'done_seed', 'shared']:
             raws = [cli.global_issue('owner/repo', number,
                 body='## Current Status\nNext actor: agent\nNext action: Complete the item.') for number in [1, 2, 3]]
             raws[0]['milestone'] = cli.milestone_data(1, 'First', created_at='2026-01-01T00:00:00Z')
+            if state == 'closed_seed':
+                raws[0]['state'] = 'closed'
+            if state == 'done_seed':
+                raws[0]['labels'] = [{'name': 'plan:done'}]
+            if state == 'shared':
+                raws[1]['milestone'] = cli.milestone_data(2, 'Second', created_at='2026-01-01T00:00:00Z')
             rows = []
             for index, raw in enumerate(raws):
                 raw['user'] = {'login': 'bot'}
@@ -559,19 +566,85 @@ def test_milestone_flag_follows_open_dependencies_without_assuming_their_status(
             if state == 'missing':
                 rows = rows[:1]
             graph = {'candidates': [], 'excluded': [], 'dependency_context': {'complete': True}}
-            result = direction.rank_portfolio_work(graph, rows, milestone_titles=['First'],
-                repository_waypoints={'owner/repo': ['First']}, coverage_complete=True)
-            if state == 'own_project':
+            if state in ['closed_seed', 'done_seed']:
+                rows[0]['via'] = [{'repo': 'owner/direction', 'number': 9}]
+                rows[1]['discussion']['parents'] = [rows[0]]
+                graph['excluded'] = [rows[0]]
+                graph['tracking_milestones'] = [{key: rows[0][key] for key in ['repo', 'number', 'milestone']}]
+                rows = rows[1:]
+            result = direction.rank_portfolio_work(graph, rows, milestone_titles=['First', 'Second'],
+                repository_waypoints={'owner/repo': ['First', 'Second']}, coverage_complete=True)
+            if state in ['closed_seed', 'done_seed']:
+                assert result[flag] is True, (relation, state, result)
+                assert all(row.get('category') != 'milestone' for row in result['candidates'])
+            elif state == 'shared':
+                blocker = next(row for row in result['available_candidates'] if row['number'] == raws[1]['number'])
+                assert blocker['overall_milestone_context']['titles'] == [raw['milestone']['title'] for raw in raws[:2]]
+                assert blocker['overall_milestone_context']['basis'] == 'exact_listed_title_match'
+                assert blocker['milestone'] == rows[1]['milestone']
+            elif state == 'own_project':
                 assert result[flag] is False, (relation, state, result)
             elif state in ['underway', 'waiting']:
                 assert result[flag] is True, (relation, state, result)
             elif state in ['available', 'transitive']:
-                assert result[flag] in [False, None], (relation, state, result)
+                assert result[flag] is False, (relation, state, result)
                 blocker = next(row for row in result['candidates'] if row['number'] == raws[1 if state == 'available' else 2]['number'])
-                if relation == 'blocked_by' and state == 'available':
-                    assert blocker['overall_milestone_context']['state'] == 'unknown'
+                assert blocker['overall_milestone_context']['titles'] == [raws[0]['milestone']['title']]
+                assert blocker['category'] == 'milestone'
+                assert blocker['milestone'] is None
             else:
                 assert result[flag] is None, (relation, state, result)
+
+
+def test_discovered_prerequisites_rank_with_listed_or_client_milestone_through_the_cli() -> None:
+    for seed in ['listed', 'client']:
+        for relation in ['blocked_by', 'sub_issues']:
+            rows = [cli.global_issue('someone/product', number,
+                body='## Current Status\nNext actor: agent\nNext action: Complete the item.') for number in [1, 2, 3, 4]]
+            for raw in rows:
+                raw['user'] = {'login': 'bot'}
+            rows[0]['milestone'] = cli.milestone_data(1, 'First', created_at='2026-01-01T00:00:00Z')
+            rows[3]['milestone'] = cli.milestone_data(2, 'Second', created_at='2026-01-01T00:00:00Z')
+            if seed == 'client':
+                rows[0].update(milestone=None, user={'login': 'client'})
+            edges = {(rows[index]['repo'], rows[index]['number']): cli.relationships(**{relation: [rows[index + 1]]})
+                     for index in [0, 1]}
+            roots = [cli.track('someone/direction', 90 + index, title) for index, title in enumerate(['First', 'Second'])]
+            comments: dict[tuple[str, int], list[dict]] = {}
+            with cli.global_fixture(roots, rows, edges, discovered=list(reversed(rows)), clear_waits=rows,
+                                    comments=comments) as (module, result, _reads):
+                module.load_direction = lambda *_: '# Direction\n## Milestones\n- `First`\n- `Second`\n'
+                module.discover_direction_work = lambda *_args, **_kwargs: (list(reversed(rows)), {
+                    'complete': True, 'repositories': [{'repo': rows[0]['repo'], 'direction': module.load_direction()}]})
+
+                def annotate(items: list[dict], _args: object) -> dict:
+                    for row in items:
+                        row['queue'] = queue.classify(row, evidence(), trusted={'someone', 'client', 'bot'})
+                    return {'repositories': {}}
+
+                module.annotate_next_queue = annotate
+                with patch.object(github_client, 'recorded_client', return_value={
+                    'status': 'recorded', 'source': 'repo_people_overlay', 'login': 'client'}):
+                    module.cmd_next(cli.next_args())
+                available = result['available_candidates']
+                assert [row['number'] for row in available] == [rows[2]['number'], rows[3]['number']], (seed, relation, result)
+                assert available[0]['category'] == 'milestone'
+                assert available[0]['overall_milestone_context']['titles'] == ['First']
+                assert available[0]['milestone'] is None
+                assert result['all_listed_milestones_have_no_available_item'] is False
+                held = rows[1 if relation == 'sub_issues' else 2]
+                comments[(held['repo'], held['number'])].append({'user': {'login': 'someone'},
+                    'body': wait.marker(wait.reviewed(evidence='Director holds the whole plan before any preparation',
+                        waiting_for='Director tests the candidate', ends_when='Director records the result'))})
+                with patch.object(github_client, 'recorded_client', return_value={
+                    'status': 'recorded', 'source': 'repo_people_overlay', 'login': 'client'}):
+                    module.cmd_next(cli.next_args())
+                assert [row['number'] for row in result['available_candidates']] == [rows[3]['number']]
+                assert any(row['number'] == held['number'] and row['overall_milestone_context']['titles'] == ['First']
+                           for row in result['waiting'])
+                if relation == 'sub_issues':
+                    assert any(row['number'] == rows[2]['number'] and row['exclusion'] == 'parent_waiting'
+                               for row in result['excluded'])
 
 
 if __name__ == '__main__':

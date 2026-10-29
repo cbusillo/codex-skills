@@ -2445,7 +2445,11 @@ Every candidate has `overall_milestone_context` with `matched`, `none_found` or
 path/ancestry/blocking target or an open issue milestone title listed in both repository and
 overall direction. Title matches explicitly carry `basis: exact_listed_title_match`,
 not a native Track-link claim. Unread or unparsed direction stays unknown.
-Context does not alter eligibility, availability or ranking.
+One native scope traversal shares those titles with transitive open prerequisites
+and children, including those of recorded Client requests. Ranking and the
+availability flag use that same scope. Native GitHub milestone membership stays
+unchanged; waits, ownership, assignment and incomplete evidence still determine
+availability.
 Relationship endpoints are skipped only when the already-read native issue
 summary explicitly reports an integer-zero total for that relationship; missing,
 malformed or nonzero totals keep the bounded reads, including closed history.
