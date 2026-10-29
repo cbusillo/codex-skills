@@ -1,8 +1,8 @@
 # Supervisor brief rules
 
 These are the rules every Supervisor brief carries, and the milestone lead
-brief template. They live here so they are reviewed and keep history, not in
-a local copy that drifts
+and Codex Cloud pass templates. They live here so they are reviewed and keep
+history, not in a local copy that drifts
 ([Q587](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6300994805)).
 Change them only through a PR to this file.
 
@@ -215,3 +215,30 @@ Rules for this brief: https://github.com/cbusillo/codex-skills/blob/main/skills/
 On October 19 four leads sat idle for 20 to 40 minutes because their
 background polling loops never fired (one had a case-sensitive status match);
 that is why leads check CI directly.
+
+## Codex Cloud pass briefs
+
+Fill the placeholders for the local agent running the pass. Keep each Director's
+Cloud environment IDs in private configuration or the private handoff record,
+never in this catalog. The linked shared rules own claims, worktrees, checks,
+review and PR handoff; this template adds only the Cloud pass specifics.
+
+```text
+Brief from the Supervisor (__HANDOFF_RECORD__), __DATE__. Trial token: __TOKEN__. Codex Cloud pass brief.
+
+Read-only anchor: __ANCHOR_URL__
+Anchor and claim: __PASS_ISSUE_URL__
+Admission: __KIND__; __EVIDENCE_URLS__
+Goal and finish line: __BOUNDED_PASS_GOAL_AND_OBSERVABLE_FINISH__
+Cloud environment: resolve __REPOSITORIES__ through __PRIVATE_CONFIG_OR_HANDOFF_REFERENCE__.
+
+1. Read the anchor and pass issue in full. Leave the anchor unclaimed; claim the pass issue with the admission and evidence above under the shared rules before launching work.
+2. Launch several bounded, independent tasks at once through codex cloud exec. Send only public-safe source and task instructions, never private data, credentials or local evidence. Keep private environment mappings out of Cloud prompts and public results.
+3. Check each result against current code and the pass goal. Discard wrong results with a short reason. Apply each accepted result in its own linked task worktree under the pass claim, following the shared worktree and bot identity rules.
+4. Run only the affected tests locally, plus the shared rules' required safety modules, lint, type checks and inspection. Get and weigh another provider's review through model-review. Hand each PR off through its repository's merge path under the shared rules.
+5. Prefer removal: net maintained lines must go down, or report the growth and why it is needed. Report Removed: and Net lines: for each result.
+6. Post a short tally on __TRIAL_RECORD_URL__: tasks launched, accepted and discarded (with reasons), PR links, Removed: and Net lines:. Keep detailed results on the pass issue and its Current Status current; close out and release its claim under the shared rules.
+
+Keep working through compaction. Keep: this brief, the anchor, the pass issue and current step.
+Rules for this brief: https://github.com/cbusillo/codex-skills/blob/main/skills/supervisor/references/brief-rules.md
+```

@@ -450,8 +450,10 @@ current default-branch checkout to read its product section.
    that needs more scope gets a Director question. If the Director says yes,
    the wider scope goes in a new brief for a fresh session; the running
    session's brief stays as it was. Every brief, worker or milestone lead,
-   carries the [brief rules](references/brief-rules.md) by link; the lead
-   template is there too. Change a rule there, never in a local copy. The
+   carries the [brief rules](references/brief-rules.md) by link; the
+   [milestone lead](references/brief-rules.md#milestone-lead-briefs) and
+   [Codex Cloud pass](references/brief-rules.md#codex-cloud-pass-briefs)
+   templates are there too. Change a rule there, never in a local copy. The
    [ready handoff contract](../github/references/cli-reference.md#ready-handoffs)
    those rules link classifies acceptance from the PR's own Client test
    notes. Do not ask for a new pre-merge decision when those notes
