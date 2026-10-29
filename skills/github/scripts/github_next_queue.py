@@ -157,6 +157,33 @@ def remaining_work(status: str) -> dict[str, Any]:
             "reason": "current_source_action" if engineering else "current_scope_needs_review"}
 
 
+def retained_source_handoffs(status: str, comments: list[dict[str, Any]], inventory: dict[str, Any],
+                             pulls: list[dict[str, Any]], *, trusted: set[str]) -> list[dict[str, Any]]:
+    present = {*inventory["local_branches"], *inventory["remote_branches"],
+               *(tree["branch"] for tree in inventory["worktrees"])}
+    result = []
+    for source_index, record, release_index in github_plan_claim.exact_released_sources(comments):
+        source, release = comments[source_index], comments[release_index]
+        branch = record["branch"]
+        if (str((source.get("user") or {}).get("login") or "").casefold() not in trusted
+                or branch not in present or not re.search(rf"(?<![\w/.-]){re.escape(branch)}(?![\w/.-])", status)):
+            continue
+        if any((pull.get("head") or {}).get("ref") == branch for pull in pulls):
+            continue
+        text = release.get("body") or ""
+        action = status_field(text, "Next actor") or status_field(text, "Next action")
+        if not action:
+            action = status_field(status, "Next actor") or status_field(status, "Next action")
+        recipient = re.match(r"(.+?)\s+(?:integrat\w*|consum\w*|open\w*|adopt\w*|carr\w*|land\w*)\b", action, re.I)
+        if (recipient is None or re.search(r"\b(?:agent|worker|whoever|anyone|someone)\b", recipient[1], re.I)
+                or not re.search(r"\b(?:pushed|published|retain\w*|handoff|handed)\b", text, re.I)):
+            continue
+        result.append({"source": "retained_source_handoff", "branch": branch, "claim_id": source["id"],
+                       "release_id": release["id"], "next_action": action, "handoff": text,
+                       "certainty": "recorded_recipient_requires_coordination"})
+    return result
+
+
 def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[str],
                     resume_from: int | None = None, resume_source: dict[str, Any] | None = None,
                     expired_sessions: set[str] | frozenset[str] = frozenset()) -> dict[str, Any]:
@@ -195,6 +222,8 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
         {"worker": "", "session": "", "branch": ""}, own_record=False, repo=item["repo"], recorded_branches=branches,
         retained_branches=retained["permitted"] if retained else None, retained_repo=item["repo"] if retained else None,
         ended_branches=github_plan_claim.ended_artifact_branches(ended, comments, ownership.get("pulls") or []))
+    if resume_from is None:
+        artifacts.extend(retained_source_handoffs(status, comments, inventory, ownership.get("pulls") or [], trusted=trusted))
     return {**row, "conflicts": conflicts, "artifacts": artifacts, "wait": wait}
 
 
