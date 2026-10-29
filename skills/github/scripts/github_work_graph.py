@@ -614,7 +614,6 @@ def read_direction_node(
     read_comments: Callable[[int | None], tuple[list[dict[str, Any]], bool]],
     read_relationships: Callable[[], tuple[dict[str, Any], list[str]]],
     resolve_wait: Callable[[list[dict[str, Any]]], dict[str, Any] | None],
-    resolve_body_time: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> dict[str, Any]:
     base = {
         **github_direction_next.compact_list_issue(issue["repo"], issue),
@@ -642,11 +641,6 @@ def read_direction_node(
             issue, config=config, focus=focus, relationships=relationships, truncated_relationships=truncated, structured_wait=wait
         )
     node["item"]["discussion"] = github_direction_next.discussion_snapshot(issue, comments, complete=complete)
-    if resolve_body_time is not None and complete and str(issue.get("title", "")).startswith("Track:"):
-        recorded_at = resolve_body_time(node["item"])
-        if recorded_at is not None:
-            node["item"]["discussion"] = github_direction_next.discussion_snapshot(
-                {**issue, "last_edited_at": recorded_at}, comments, complete=complete)
     return node
 
 

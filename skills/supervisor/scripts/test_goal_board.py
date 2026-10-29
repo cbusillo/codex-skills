@@ -80,7 +80,8 @@ class GoalBoardTests(unittest.TestCase):
         held = github_plan_wait.reviewed(evidence="Track acceptance remains", waiting_for="Client acceptance",
                                         ends_when="Client accepts the result")
         question = comment("Director question: Q2: Choose the result?", ident=53)
-        node["comments"]["nodes"].extend([comment(github_plan_wait.marker(held), ident=52), question])
+        node["comments"]["nodes"].extend([comment(github_plan_wait.marker(held), ident=52), question,
+                                         comment("Claimed by historical-worker", ident=55)])
         node["comments"]["totalCount"] = len(node["comments"]["nodes"])
         blocker = {"number": 2, "state": "OPEN", "url": "https://github.com/owner/direction/issues/2",
                    "repository": {"nameWithOwner": "owner/direction"}}
@@ -96,6 +97,11 @@ class GoalBoardTests(unittest.TestCase):
         self.assertEqual(second["blocked_by"][0]["number"], blocker["number"])
         self.assertEqual(second["open_questions"][0]["url"], question["url"])
         self.assertEqual([row["number"] for row in second["groups"]["available"]], [10])
+        self.assertFalse(second["unread"])
+        board = {"coverage": {"discovered": 1, "read": 1, "complete": True}, "checked_at": "now",
+                 "tracks": [{**second, "read": True}], "errors": []}
+        self.assertIn(second["hold_status"], goal_board.markdown(board))
+
 
     def test_child_records_group_claims_waits_and_questions_without_track_summary(self) -> None:
         claim = {"worker": "worker", "session": "native-session", "branch": "work/task",
@@ -117,7 +123,6 @@ class GoalBoardTests(unittest.TestCase):
         self.assertEqual(row["children"][0]["claims"], [claim])
         self.assertEqual(row["children"][3]["open_questions"][0]["url"], question["url"])
         self.assertNotIn("next_action", row)
-        self.assertIsNone(row["closure_review"]["recorded_status"])
         self.assertTrue(board["coverage"]["complete"], board)
         text = goal_board.markdown({**board, "checked_at": "now"})
         self.assertIn(held["waits"][0]["ends_when"], text)
@@ -659,7 +664,6 @@ class GoalBoardTests(unittest.TestCase):
         root = track(1, comments=window)
         root["comments"]["totalCount"] = 145
         root_row = goal_board.track_row(root, TRUSTED, TRUSTED)
-        self.assertIsNone(root_row["closure_review"]["recorded_status"])
         self.assertEqual(len(root_row["unread"]), len(set(root_row["unread"])))
 
 

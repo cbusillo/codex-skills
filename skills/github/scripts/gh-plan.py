@@ -5731,8 +5731,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
                 comment_limit=getattr(args, "comment_limit", None),
                 read_comments=lambda count: graph_comments(issue_repo, number, count),
                 read_relationships=lambda: graph_relationships(issue_repo, number, source_issue),
-                resolve_wait=lambda comments: graph_wait(source_issue, comments, issue_repo),
-                resolve_body_time=lambda work_item: next_status_body_time(work_item, github_plan_wait.authors(issue_repo)))
+                resolve_wait=lambda comments: graph_wait(source_issue, comments, issue_repo))
         except PlanError as exc:
             # Inaccessible cross-owner nodes are unknown, not unblocked. Quota,
             # auth and provider failures retain the shared helper's stop policy.

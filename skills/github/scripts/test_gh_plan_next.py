@@ -2394,12 +2394,20 @@ def test_milestone_summary_names_each_wait_when_no_milestone_work_is_listed() ->
     assert summary["Second"]["state"] == "no_linked_work"
 
 
-def test_track_whose_next_action_belongs_to_a_person_is_not_agent_work() -> None:
-    track_issue = active_track("someone/direction", 1, "First", "State: Active.\nNext action: Director selects the launch date.\nWaiting for: None; next actor is an agent.")
+def test_empty_track_scoping_uses_reviewed_records_instead_of_summary() -> None:
+    for prose in ("", "State: Waiting.\nNext action: Director chooses the next step."):
+        track_issue = active_track("someone/direction", 1, "First", prose)
+        if not prose:
+            track_issue["body"] = "## Objective\nProve the milestone.\n"
+        with global_fixture([track_issue], [], {}, clear_waits=[track_issue]) as (module, result, _reads):
+            with patch.object(module, "next_status_body_time", side_effect=AssertionError("Track prose ordering is not needed")):
+                module.cmd_next(next_args())
+        assert [(item["repo"], item["number"]) for item in result["candidates"]] == [(track_issue["repo"], track_issue["number"])]
+    track_issue["_fixture_waiting_for"] = "Director chooses the launch date"
     with global_fixture([track_issue], [], {}) as (module, result, _reads):
         module.cmd_next(next_args())
-    assert result["candidates"] == []
-    assert result["excluded"][0]["exclusion"] == "tracking_without_open_work"
+    assert not result["candidates"]
+    assert any(row["waiting_for"] == track_issue["_fixture_waiting_for"] for row in result["waiting"])
 
 
 def test_named_next_actor_or_absence_keeps_a_stated_precondition() -> None:
@@ -2422,7 +2430,7 @@ TESTS.extend([
     test_global_scan_diagnostic_counts_all_allowances_and_limit_only_caps_results,
     test_milestone_summary_names_each_wait_when_no_milestone_work_is_listed,
     test_named_next_actor_or_absence_keeps_a_stated_precondition,
-    test_track_whose_next_action_belongs_to_a_person_is_not_agent_work,
+    test_empty_track_scoping_uses_reviewed_records_instead_of_summary,
 ])
 
 

@@ -1434,7 +1434,7 @@ def milestone_outcomes(
                     nodes[key] = root
                     row["tracks"].append(f"https://github.com/{direction_repo}/issues/{root['number']}")
                     row.setdefault("closure_reviews", []).append({"url": row["tracks"][-1],
-                        **github_direction_next.milestone_closure_review(root.get("body") or "", "")})
+                        **github_direction_next.milestone_closure_review(root.get("body") or "")})
         except AuditError:
             row["unavailable"].append("tracks")
         graph = read_audit_graph([{**node, "repo": key[0], "number": key[1]} for key, node in nodes.items()],

@@ -79,12 +79,10 @@ def section_map(body: str) -> dict[str, str]:
     return sections
 
 
-def milestone_closure_review(body: str, status_text: str | None = None) -> dict[str, Any]:
+def milestone_closure_review(body: str) -> dict[str, Any]:
     sections = section_map(body)
-    status = sections.get("Current Status", "") if status_text is None else status_text
     return {
         "track_proof": sections.get("Finish Line") or sections.get("Objective") or None,
-        "recorded_status": status or None,
     }
 
 
@@ -1223,8 +1221,8 @@ def rank_direction_work(
         node_cache[key] = read_node(root["repo"], root["number"])
         discussion = node_cache[key]["item"].get("discussion") or {}
         closure_reviews.append({"url": root["url"], "milestone": root["milestone"]["title"],
-            **milestone_closure_review(discussion.get("body", ""), ""),
-            "discussion_complete": bool(discussion.get("complete"))})
+            **milestone_closure_review(discussion.get("body", "")),
+            })
     # A stack keeps even a deep dependency chain within the explicit scan bound.
     pending: list[tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], bool, list[dict[str, Any]]]] = [
         (root, root["milestone"], [], True, []) for root in reversed(tracks)
@@ -1292,6 +1290,7 @@ def rank_direction_work(
                                                   "truncated_relationships": item.get("truncated_relationships", [])})
             continue
         reports = [] if item.get("wait_finding") else node.get("waiting") or []
+        reviewed_wait = item.get("structured_wait")
         if key not in waits_recorded:
             waiting.extend({**report, "milestone": milestone, "via": via} for report in reports)
         if key not in waits_recorded and reason in {"waiting", "wait_review_required"} and not reports and not tracking:
@@ -1331,19 +1330,15 @@ def rank_direction_work(
                 parents = [own_item, *held_parents] if inherits else []
                 pending.append(({**edge, "relationship": relationship}, milestone, via, False, parents))
         elif tracking and not (
-            item.get("plan_status") == "active" and not reports
-            and re.search(r"(?im)^\s*State:\s*active\b", status_text or "")
-            and re.search(r"(?im)^\s*Next action:.*\b(?:agent|supervisor)\b", status_text or "")
+            item.get("plan_status") == "active" and not reports and not item.get("exclusion")
+            and isinstance(reviewed_wait, dict) and reviewed_wait.get("state") == "clear"
         ):
             excluded.append({**item, "exclusion": "tracking_without_open_work"})
         elif tracking:
-            # An active Track with no linked work issue and no recorded wait
-            # is itself the next step when that step names an agent, such as scoping
-            # its first issue.
             item.pop("exclusion", None)
             item["reasons"] = [
                 f"direction_milestone_{order[milestone['title']] + 1}",
-                "tracking_issue_next_action_without_work_issue",
+                "tracking_issue_needs_scoping",
                 *(item.get("reasons") or []),
             ]
             candidates.append(item)
