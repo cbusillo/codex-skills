@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 import errno
 import json
+import importlib
 import os
 import re
 import shlex
@@ -24,6 +25,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import uuid
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -905,7 +907,8 @@ def with_account(command_text, choice, brief=None, *, coordinate=False):
         from codex_session_proxy import managed_argv
         words = managed_argv(Path(choice["env"]["CODEX_HOME"]), words)
         wrapper = ["uv", "run", str(Path(__file__).with_name("codex-session.py")), "launch",
-                   "--codex-home", choice["env"]["CODEX_HOME"], "--", *words]
+                   "--codex-home", choice["env"]["CODEX_HOME"],
+                   *(["--launch-receipt", choice["native_receipt"]] if choice.get("native_receipt") else []), "--", *words]
         command_text = shlex.join([*prefix, *wrapper])
         if directory is not None:
             command_text = "cd " + shlex.quote(directory) + " && " + command_text
@@ -1356,8 +1359,8 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
     """Validate the full batch and prepare accounts before creating terminals."""
     if getattr(args, "resume_session_id", None):
         return prepare_resume(args)
-    if getattr(args, "ledger", None):
-        raise ValueError("new --ledger requires --resume-session-id")
+    if getattr(args, "ledger", None) and getattr(args, "account_provider", None) != "openai":
+        raise ValueError("fresh --ledger registration needs --account-provider openai")
     if not getattr(args, "command_file", None):
         raise ValueError("new launches require --command-file or --resume-session-id")
     if getattr(args, "require_browser", False) and getattr(args, "without_browser", False):
@@ -1367,6 +1370,10 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         raise ValueError("--require-browser needs --account-provider anthropic or openai")
     files = args.command_file if isinstance(args.command_file, list) else [args.command_file]
     command_texts = [read_launch_text(path).rstrip("\n") for path in files]
+    if getattr(args, "ledger", None):
+        read_launch_ledger(args.ledger)
+        if any(not codex_daemon_without_ingress(text) for text in command_texts):
+            raise ValueError("fresh --ledger registration needs managed Codex --remote launches")
     for text in command_texts:
         validate_text(text)
     brief_files = getattr(args, "brief_file", None)
@@ -1429,6 +1436,12 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
             override = "marketplaces.openai-bundled.source=" + json.dumps(str(source_path))
             if choices[0].get("tools", {}).get("route") != "local":
                 command_texts[0] += " --no-daemon -c " + shlex.quote(override)
+        if getattr(args, "ledger", None):
+            if any(choice.get("tools", {}).get("route") == "local" for choice in choices):
+                raise ValueError("fresh --ledger registration needs the managed remote route")
+            args.ledger.parent.mkdir(parents=True, exist_ok=True)
+            for choice in choices:
+                choice["native_receipt"] = str(args.ledger.parent / f".native-launch-{uuid.uuid4()}.json")
         command_texts = [with_account(text, choice, brief,
                                      coordinate=not app and choice.get("tools", {}).get("route") != "local")
                          for text, choice, brief, app in zip(command_texts, choices, briefs, apps)]
@@ -1554,6 +1567,74 @@ def source_launch_metadata(result, choice):
     except (OSError, ValueError, ImportError, subprocess.SubprocessError):
         result["launch_identity_unavailable"] = True
     return result
+
+
+def read_launch_ledger(path: Path) -> list[dict]:
+    entries = json.loads(path.read_text()) if path.exists() else []
+    if not isinstance(entries, list) or not all(isinstance(row, dict) for row in entries):
+        raise ValueError("launch ledger must contain session objects")
+    return entries
+
+
+def append_launch_ledger(path: Path, entry: dict) -> None:
+    github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+    if github not in sys.path:
+        sys.path.append(github)
+    github_plan_closure = importlib.import_module("github_plan_closure")
+    if (entry.get("harness") not in {"codex", "claude"} or entry.get("supervisor_owned") is not True
+            or not isinstance(entry.get("session_id"), str) or not entry["session_id"].strip()):
+        raise ValueError("launch ledger append needs a native identity and explicit Supervisor ownership")
+    with github_plan_closure.store_lock(path, create=True):
+        entries = read_launch_ledger(path)
+        if any(row.get("session_id") == entry["session_id"] for row in entries):
+            raise ValueError("native session is already in the launch ledger; inspect before retry")
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as stream:
+                temporary = Path(stream.name)
+                json.dump([*entries, entry], stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            if temporary:
+                temporary.unlink(missing_ok=True)
+
+
+async def register_fresh_launch(args: argparse.Namespace, result: dict, choice: dict | None) -> None:
+    path = getattr(args, "ledger", None)
+    if not isinstance(path, Path) or getattr(args, "resume_session_id", None):
+        return
+    from codex_session_proxy import read_launch_receipt
+    if choice is None:
+        choice = {"provider": "openai", "env": {"CODEX_HOME": result["codex_home"]}}
+    receipt_path = result.get("native_receipt") or (choice or {}).get("native_receipt")
+    if not isinstance(receipt_path, str) or not receipt_path:
+        raise ValueError("registration needs the retained native launch receipt")
+    receipt = Path(receipt_path)
+    result["native_receipt"] = str(receipt)
+    deadline = time.monotonic() + LAUNCH_TIMEOUT
+    while True:
+        try:
+            if not result.get("launch_generation"):
+                source_launch_metadata(result, choice)
+            native = read_launch_receipt(receipt)
+            if any(native[key] != result[key] for key in ("launch_pid", "launch_generation", "launch_started_at", "codex_home")):
+                raise ValueError("native launch metadata differs from this terminal generation")
+            if native["tty"].removeprefix("/dev/") != result["tty"].removeprefix("/dev/"):
+                raise ValueError("native launch TTY differs from this terminal")
+            break
+        except (KeyError, FileNotFoundError, json.JSONDecodeError) as error:
+            if time.monotonic() >= deadline:
+                raise ValueError("launch submitted but native identity unavailable; retain this receipt and use register after inspection: " + str(error)) from error
+            await asyncio.sleep(0.2)
+    entry = {**result, **native, "harness": "codex", "supervisor_owned": True,
+             "tmux_session_id" if result.get("backend") == "tmux" else "iterm_session_id": result["session_id"]}
+    entry.pop("launch_identity_unavailable", None)
+    append_launch_ledger(path, entry)
+    result.update(native_session_id=native["session_id"], transcript=native["transcript"], ledger_recorded=True)
+    result.pop("launch_identity_unavailable", None)
+
 
 
 def cancel_unsubmitted_gui(choice, progress):
@@ -1718,6 +1799,10 @@ async def operate(app, args):
                 except (AttributeError, OSError, ValueError):
                     result["launch_identity_unavailable"] = True
                 source_launch_metadata(result, choice)
+            try:
+                await register_fresh_launch(args, result, choice)
+            except (OSError, ValueError, TypeError) as error:
+                raise LaunchFailure(results, {**progress, "phase": "register_ledger", "launch": result}, error) from error
             results.append(result)
         return results[0] if len(results) == 1 else results
     if args.command == "window" and previous_tab:
@@ -1855,7 +1940,7 @@ def main():
     new.add_argument("--brief-file", type=Path, action="append",
                      help="nonempty prompt to append as one argument; one per command file, in launch order")
     new.add_argument("--resume-session-id", help="resume one exact Supervisor-owned Codex source from --ledger")
-    new.add_argument("--ledger", type=Path, help="private source ledger for --resume-session-id")
+    new.add_argument("--ledger", type=Path, help="private source ledger for resume or atomic fresh managed Codex registration")
     new.add_argument(
         "--account-provider",
         required=True,
@@ -1881,7 +1966,27 @@ def main():
             source.add_argument("--text")
             source.add_argument("--text-file", type=Path)
             sub.add_argument("--no-submit", action="store_true")
+    register = commands.add_parser("register", help="register a submitted launch from its retained receipt, without launching")
+    source = register.add_mutually_exclusive_group(required=True)
+    source.add_argument("--receipt-file", type=Path)
+    source.add_argument("--entry-file", type=Path, help="append another supported launch mode's existing ledger entry")
+    register.add_argument("--ledger", type=Path, required=True)
     args = parser.parse_args()
+    if args.command == "register":
+        try:
+            if args.entry_file:
+                import session_record
+                result = session_record.normalize_ledger_entry(args.ledger, json.loads(args.entry_file.read_text()))
+                session_record.session_status(result)
+                append_launch_ledger(args.ledger, result)
+                print(json.dumps({"session_id": result["session_id"], "ledger_recorded": True}))
+                return
+            result = json.loads(args.receipt_file.read_text())
+            asyncio.run(register_fresh_launch(args, result, None))
+            print(json.dumps(result))
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            parser.exit(1, f"registration failed; preserve the launch and receipt: {error}\n")
+        return
     if args.command == "view":
         if args.backend != "tmux":
             parser.error("view requires --backend tmux")
