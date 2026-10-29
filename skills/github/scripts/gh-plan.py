@@ -5741,10 +5741,6 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     # Establish useful native-frontier evidence before optional portfolio work.
     NEXT_READS.start_phase("milestone_ownership")
     graph_queue_context = annotate_next_queue(ranked["candidates"], args)
-    NEXT_READS.start_phase("milestone_wait_evidence")
-    next_wait_context([seeds[key] for key in nodes if key in seeds], scan_limit=args.scan_limit * 2,
-        inventory_complete=graph_coverage["complete"],
-        structured_waits={key: node["item"]["structured_wait"] for key, node in nodes.items() if "structured_wait" in node["item"]})
 
     def evidence_complete(queue: dict[str, Any], waits: dict[str, Any], focuses: list[dict[str, Any]]) -> bool:
         return bool(waits.get("complete") and all(item.get("complete") is True
