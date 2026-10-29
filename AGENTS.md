@@ -22,7 +22,7 @@ Evidence: [DIRECTION.md](DIRECTION.md).
   documented in [README.md](README.md#system-skill-overrides); generated
   `.system` caches and installed plugin caches are not development targets.
 - For skill structure and metadata, follow the maintained
-  [skill-creator authoring contract](skills/skill-creator/SKILL.md#authoring-contracts).
+  [skill-creator authoring contract](skills/skill-creator/SKILL.md).
 - Validate instruction-only changes with the existing skill structure, reference,
   behavior, and command-policy validators. Do not add tests that merely duplicate
   wording or run unrelated runtime suites without an affected behavior.
