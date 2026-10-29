@@ -7,12 +7,14 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+from types import ModuleType
 
 
 DEFAULT_CONFIG_RELATIVE = Path(".config/codex-skills/worktrees.json")
@@ -132,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
             if helper.resolve() in {Path(__file__).resolve(), Path(__file__).with_name("dev-worktree").resolve()}:
                 raise Refused("hostHelper must not refer to the catalog helper itself.")
         if len(args) == 3 and args[0] != "retire":
+            refresh_primary(Path(args[0]))
             retire_finished(Path(args[0]))
         if helper:
             # The host owns volume identity, locks and retirement; do not mkdir or fall back.
@@ -146,6 +149,74 @@ def main(argv: list[str] | None = None) -> int:
         detail = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
         print(f"dev-worktree: {detail}", file=sys.stderr)
         return 1
+
+
+def checkout_rules() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("checkout_rules", Path(__file__).with_name("reconcile-runtime-checkout.py"))
+    if spec is None or spec.loader is None:
+        raise Refused("Checkout rules unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def require_clean_default(rules: ModuleType, primary: Path, branch: str) -> None:
+    blockers = rules.runtime_blockers(primary, branch)
+    operations = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "rebase-merge",
+                  "rebase-apply", "sequencer", "BISECT_LOG", "BISECT_START")
+    if blockers or any(Path(rules.git_text(primary, "rev-parse", "--path-format=absolute", "--git-path", name)).exists()
+                       for name in operations):
+        raise Refused("Primary checkout is dirty, on another branch, or has an active Git operation")
+
+
+def refresh_primary(checkout: Path) -> None:
+    rules = checkout_rules()
+    try:
+        common = rules.git_common_dir(checkout)
+        if common.name != ".git":
+            raise Refused("Unsupported primary checkout layout")
+        primary = common.parent
+        for binding, _, authoritative in rules.runtime_skills_paths():
+            status, reason, bound_root = rules.inspect_binding(binding, common)
+            if status == "failed" and authoritative:
+                raise Refused(reason)
+            if bound_root == primary:
+                helper = primary / rules.HELPER_IN_CATALOG
+                expected_repo = rules.repository_from_remote_url(rules.git_text(checkout, "config", "--get", "remote.origin.url"))
+                result = subprocess.run([sys.executable, str(helper), "--merged-worktree", str(primary), "--repo", expected_repo],
+                                        capture_output=True, text=True, env=git_environment())
+                print(result.stdout.strip() or result.stderr.strip(), file=sys.stderr)
+                if result.returncode:
+                    raise Refused("Runtime reconciler did not refresh the primary checkout")
+                return
+        with rules.reconciliation_lock(common):
+            branch = rules.resolve_default_branch(checkout)
+            require_clean_default(rules, primary, branch)
+            head = rules.git_text(primary, "rev-parse", "HEAD")
+            upstream = rules.git_text(primary, "for-each-ref", "--format=%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream)",
+                                      f"refs/heads/{branch}").split("\0")
+            if len(upstream) != 3 or not all(upstream) or upstream[0] == "." or upstream[1] != f"refs/heads/{branch}":
+                raise Refused("Primary default branch needs an unambiguous configured remote upstream")
+            remote, remote_ref, tracking_ref = upstream
+            origin_url = rules.git_text(checkout, "config", "--get", "remote.origin.url")
+            if rules.git_has_url_rewrite(primary) or rules.git_text(primary, "config", "--get", f"remote.{remote}.url") != origin_url:
+                raise Refused("Primary upstream does not match the source repository")
+            rules.run_git(primary, "fetch", "--no-tags", "--no-recurse-submodules", remote, f"{remote_ref}:{tracking_ref}")
+            tip = rules.git_text(primary, "rev-parse", f"{tracking_ref}^{{commit}}")
+            if not rules.git_is_ancestor(primary, head, tip):
+                raise Refused("Primary checkout is ahead or diverged")
+            require_clean_default(rules, primary, branch)
+            if rules.git_text(primary, "rev-parse", "HEAD") != head or not rules.git_is_ancestor(primary, head, tip):
+                raise Refused("Primary checkout changed before fast-forward")
+            if head != tip:
+                rules.run_git(primary, "merge", "--ff-only", "--no-autostash", "--no-overwrite-ignore", tip)
+            require_clean_default(rules, primary, branch)
+            if rules.git_text(primary, "rev-parse", "HEAD") != tip:
+                raise Refused("Primary checkout did not reach the pinned upstream commit")
+            print(f"dev-worktree: primary default checkout current: {primary} ({tip})", file=sys.stderr)
+    except (Refused, OSError, ValueError, rules.GitCommandError, rules.ReconciliationBusy) as exc:
+        print(f"dev-worktree: Local default checkout remains stale; fast-forward it before default-branch work or audits. {exc}",
+              file=sys.stderr)
 
 
 def retire_finished(checkout: Path) -> None:

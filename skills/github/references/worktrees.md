@@ -10,7 +10,9 @@ catalog's helper by its absolute path; no PATH installation is needed:
 
 Here `<catalog>` is the checkout containing the loaded skills, not a literal
 directory name. The command creates `work/task-slug` at the explicit starting
-commit and prints the new path. Before creation it runs the guarded
+commit and prints the new path. Before creation it refreshes the primary
+default-branch checkout using the [checkout refresh rules](post-merge-checkouts.md),
+then runs the guarded
 `landed_worktrees.py --all --apply` for that repository, reporting retired and
 kept trees with reasons on stderr. Unavailable cleanup evidence keeps trees and
 creation continues; it never weakens a retirement guard. A per-start

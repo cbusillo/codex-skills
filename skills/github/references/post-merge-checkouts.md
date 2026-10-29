@@ -52,6 +52,16 @@ upstream, use the pinned fast-forward. This refresh has no landing SHA to prove
 and must not invent one. If a proof fails, leave the branch as it is and report
 its state and the next safe action.
 
+## Primary Checkout Before Task Creation
+
+`dev-worktree` evaluates the primary checkout before creating a task on either
+harness. Runtime bindings go through that checkout's own reconciler, without
+a landing SHA. Otherwise it requires a clean primary checkout already on the
+configured default branch, a matching repository upstream and no active Git
+operation, then uses the pinned fast-forward above. Dirty, other-branch, ahead,
+diverged or ambiguous checkouts stay untouched; the helper reports the stale
+checkout and continues task creation. The explicit task start remains unchanged.
+
 ## Default Checkout After A Merge
 
 After every confirmed merge, inspect `git worktree list --porcelain` for a

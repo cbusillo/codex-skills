@@ -18,12 +18,17 @@ import tempfile
 import time
 import unittest
 from unittest import mock
+from typing import Any
 
 import dev_worktree
 from dev_worktree import DEFAULT_CONFIG_RELATIVE
 
 
 SCRIPT = Path(__file__).with_name("dev_worktree.py")
+
+
+def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    return mock.patch.object(target, name, *args, **kwargs)
 
 
 class WorktreeTests(unittest.TestCase):
@@ -103,10 +108,92 @@ class WorktreeTests(unittest.TestCase):
     def test_unavailable_sweep_does_not_prevent_creation(self) -> None:
         for outcome in (subprocess.CompletedProcess([], 2, "", "unavailable"), FileNotFoundError("missing helper")):
             with mock.patch.object(dev_worktree, "configuration", return_value=(self.base, None)), \
+                    mock.patch.object(dev_worktree, "refresh_primary"), \
                     mock.patch.object(dev_worktree.subprocess, "run", side_effect=[outcome]), \
                     mock.patch.object(dev_worktree, "create", return_value=self.base / "created") as create:
                 self.assertEqual(dev_worktree.main([str(self.repo), "new-task", self.initial]), 0)
             create.assert_called_once()
+
+    def prepare_upstream(self) -> None:
+        remote = self.base / "remote.git"
+        self.git("clone", "--bare", str(self.repo), str(remote))
+        self.git("remote", "add", "origin", str(remote))
+        self.git("fetch", "origin")
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        self.git("branch", "--set-upstream-to=origin/main", "main")
+        self.git("reset", "--hard", self.initial)
+
+    def test_creation_refreshes_primary_without_changing_explicit_task_start(self) -> None:
+        self.prepare_upstream()
+        result = self.run_helper(self.repo, "task", self.initial)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.source_head)
+        self.assertEqual(self.git("rev-parse", "HEAD", repo=Path(result.stdout.strip())), self.initial)
+
+    def test_primary_runtime_bindings_use_the_reconciler_on_both_harnesses(self) -> None:
+        self.prepare_upstream()
+        helper = self.repo / "skills/github/scripts/reconcile-runtime-checkout.py"
+        helper.parent.mkdir(parents=True)
+        marker = self.base / "runtime-call.json"
+        helper.write_text(f"import json, sys\nfrom pathlib import Path\nPath({str(marker)!r}).write_text(json.dumps(sys.argv[1:]))\n")
+        bindings = (self.home / ".agents/skills/shared", self.home / ".claude/skills/shared")
+        for binding in bindings:
+            with self.subTest(binding=binding):
+                binding.parent.mkdir(parents=True, exist_ok=True)
+                binding.symlink_to(self.repo / "skills")
+                with mock.patch.dict(os.environ, self.env, clear=True):
+                    dev_worktree.refresh_primary(self.repo)
+                args = json.loads(marker.read_text())
+                self.assertEqual(Path(args[args.index("--merged-worktree") + 1]), self.repo)
+                self.assertEqual(self.git("rev-parse", "HEAD"), self.initial)
+                binding.unlink()
+                marker.unlink()
+
+    def test_primary_change_during_fetch_is_preserved(self) -> None:
+        self.prepare_upstream()
+        rules = dev_worktree.checkout_rules()
+        run_git = rules.run_git
+
+        def change_branch(repo: Path, *args: str, **kwargs: object) -> object:
+            result = run_git(repo, *args, **kwargs)
+            if args[0] == "fetch":
+                self.git("checkout", "-b", "concurrent-work")
+            return result
+
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(dev_worktree, "checkout_rules", return_value=rules), \
+                patch_attr(rules, "run_git", side_effect=change_branch):
+            dev_worktree.refresh_primary(self.repo)
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.initial)
+        self.assertEqual(self.git("branch", "--show-current"), "concurrent-work")
+
+    def test_creation_preserves_unsafe_primary_checkouts(self) -> None:
+        self.prepare_upstream()
+        for state in ("dirty", "other-branch", "diverged", "operation", "missing-upstream"):
+            with self.subTest(state=state):
+                self.git("checkout", "main")
+                self.git("reset", "--hard", self.initial)
+                self.git("branch", "--set-upstream-to=origin/main", "main")
+                dirty = self.repo / "untracked"
+                operation = self.repo / ".git" / "CHERRY_PICK_HEAD"
+                if state == "dirty":
+                    dirty.write_text("keep")
+                elif state == "other-branch":
+                    self.git("checkout", "-b", "other")
+                elif state == "diverged":
+                    self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                             "commit", "--allow-empty", "-m", "Local work")
+                elif state == "operation":
+                    operation.write_text(self.source_head)
+                else:
+                    self.git("branch", "--unset-upstream", "main")
+                before = self.git("rev-parse", "HEAD")
+                result = self.run_helper(self.repo, state, self.initial)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.git("rev-parse", "HEAD"), before)
+                self.assertIn("Local default checkout remains stale", result.stderr)
+                dirty.unlink(missing_ok=True)
+                operation.unlink(missing_ok=True)
 
     def test_default_creates_branch_at_explicit_start_outside_source(self):
         result = self.run_helper(self.repo, "task", self.initial)
