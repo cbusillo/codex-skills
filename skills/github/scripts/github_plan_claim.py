@@ -793,8 +793,9 @@ def is_train_batch(pull: dict[str, Any]) -> bool:
             and bool(head_repo) and head_repo.casefold() == (base.get("repo") or {}).get("full_name", "").casefold())
 
 
-def is_retained_work(pull: dict[str, Any], *, author: str, issue_repo: str, issue_number: int, target_repo: str) -> bool:
-    if pull.get("state") != "open" and not (pull.get("state") == "closed" and pull.get("merged_at")):
+def is_retained_work(pull: dict[str, Any], *, author: str, issue_repo: str, issue_number: int, target_repo: str,
+                     include_closed_unmerged: bool = False) -> bool:
+    if pull.get("state") != "open" and not (pull.get("state") == "closed" and (pull.get("merged_at") or include_closed_unmerged)):
         return False
     if (pull.get("user") or {}).get("login") != author:
         return False
