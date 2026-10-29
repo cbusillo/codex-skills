@@ -5677,10 +5677,6 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     # Establish useful native-frontier evidence before optional portfolio work.
     NEXT_READS.start_phase("milestone_ownership")
     graph_queue_context = annotate_next_queue(ranked["candidates"], args)
-    NEXT_READS.start_phase("milestone_wait_evidence")
-    next_wait_context([seeds[key] for key in nodes if key in seeds], scan_limit=args.scan_limit * 2,
-        inventory_complete=graph_coverage["complete"],
-        structured_waits={key: node["item"]["structured_wait"] for key, node in nodes.items() if "structured_wait" in node["item"]})
 
     def evidence_complete(queue: dict[str, Any], waits: dict[str, Any], focuses: list[dict[str, Any]]) -> bool:
         return bool(waits.get("complete") and all(item.get("complete") is True
@@ -5723,6 +5719,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             item, ranked, milestone_titles=titles, repository_clients=client_records,
             repository_waypoints=waypoints, director_owner=repo.split("/")[0], bot_logins=client_bot_logins,
         ) for item in inventory]
+        inventory.sort(key=lambda raw: github_next_queue.remaining_work(
+            section_map(raw.get("body") or "").get("Current Status", ""))["state"] != "engineering")
         scanned = github_direction_next.discovery_scan(
             inventory, args.scan_limit, selection_context,
             agent=github_agent.running_agent(getattr(args, "agent", None)),
