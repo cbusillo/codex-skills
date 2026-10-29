@@ -236,23 +236,20 @@ def test_local_next_preserves_issue_ranking_and_includes_prs():
 def test_global_next_finds_pr_only_repositories_and_respects_holds():
     with global_fixture([], [], {}) as (module, output, _reads):
         module.next_dependabot_work = module.real_next_dependabot_work
-        original = module.collect_paged_rest_items
-        def collect(path, **kwargs):
-            if path.endswith("/pulls"):
-                assert path == "/repos/someone/pr-only/pulls"
-                return "automation-gh", [pull(repo="someone/pr-only", author="renovate[bot]")]
-            return original(path, **kwargs)
-        with patch.multiple(
-            module, collect_paged_rest_items=collect, read_next_train_enrollment=lambda *_: enrolled(),
-            discover_direction_work=lambda *_args, **_kwargs: ([], {
-                "complete": True, "inventory_truncated": True, "repositories": [
-                    {"repo": "someone/pr-only", "exclusion": "issues_disabled"},
-                    {"repo": "someone/held", "hold": {"reason": "Director hold"}},
-                ],
-            }),
-        ):
+        raw = {**pull(repo="someone/pr-only", author="renovate[bot]"), "repo": "someone/pr-only", "pull_request": {},
+               "body": "## Current Status\nNext actor: agent\n" + module.github_plan_wait.marker(
+                   module.github_plan_wait.reviewed(evidence="No current hold"))}
+        raw["pull_request"] = {"url": raw["html_url"]}
+        def discover_inventory(*_args: Any, **_kwargs: Any) -> Any:
+            module.NEXT_READS.inventory = {"someone/pr-only": [raw]}
+            return [raw], {"complete": True, "inventory_truncated": True, "repositories": [
+                {"repo": "someone/pr-only", "exclusion": "issues_disabled"},
+                {"repo": "someone/held", "hold": {"reason": "Director hold"}},
+            ]}
+        with patch.multiple(module, read_next_train_enrollment=lambda *_: enrolled(),
+                            discover_direction_work=discover_inventory):
             module.cmd_next(next_args())
-        assert output["candidates"] == []
+        assert output["candidates"][0]["record_type"] == "pull_request"
         assert output["dependabot_candidates"][0]["repo"] == "someone/pr-only"
         assert output["dependabot_context"]["complete"] is False
         assert output["dependabot_context"]["repositories"][1]["exclusion"] == "repository_held"

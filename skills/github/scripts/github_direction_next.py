@@ -18,7 +18,6 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-import github_agent
 import github_plan_graph
 import github_plan_claim
 import github_plan_wait
@@ -46,23 +45,11 @@ def is_live_breakage(issue: dict[str, Any]) -> bool:
     return bool(issue.get("incident_via")) or LIVE_BREAKAGE_LABEL in {name.casefold() for name in normalize_labels(issue.get("labels"))}
 
 
-def discovery_scan(inventory: list[dict[str, Any]], scan_limit: int, selection_context: dict[str, Any] | None = None, *, agent: str | None = None) -> list[dict[str, Any]]:
-    """Keep bounded evidence allowances separate from selectable discovery."""
-    counts = {"ordinary": 0, "held": 0, "other_family": 0}
-    incidents = []
-    scanned = []
-    for item in inventory:
-        if is_live_breakage(item):
-            incidents.append(item)
-            continue
-        mismatch = github_agent.exclusion(item, agent)
-        bucket = ("held" if repository_hold(selection_context or {}, item["repo"]) else
-                  "other_family" if mismatch and mismatch["exclusion"] == "assigned_elsewhere" else
-                  "ordinary")
-        if counts[bucket] < scan_limit:
-            counts[bucket] += 1
-            scanned.append(item)
-    return incidents + scanned
+def discovery_scan(inventory: list[dict[str, Any]], scan_limit: int | None, selection_context: dict[str, Any] | None = None, *, agent: str | None = None) -> list[dict[str, Any]]:
+    del selection_context, agent
+    incidents = [item for item in inventory if is_live_breakage(item)]
+    ordinary = [item for item in inventory if not is_live_breakage(item)]
+    return [*incidents, *ordinary[:scan_limit]]
 
 
 def compact_list_issue(repo: str, issue: dict[str, Any]) -> dict[str, Any]:
@@ -1274,7 +1261,7 @@ def evaluate_direction_node(
 
 
 def incident_work_paths(
-    roots: list[dict[str, Any]], *, read_node: Callable[[str, int], dict[str, Any]], scan_limit: int,
+    roots: list[dict[str, Any]], *, read_node: Callable[[str, int], dict[str, Any]], scan_limit: int | None,
     prefetch_nodes: Callable[[list[dict[str, Any]]], None] | None = None,
 ) -> dict[str, Any]:
     """Follow native incident prerequisites/children with a separate bounded allowance.
@@ -1293,7 +1280,7 @@ def incident_work_paths(
     degraded = False
     while pending:
         if prefetch_nodes is not None:
-            allowance = max(0, scan_limit - evaluated) + len(root_keys.difference(seen))
+            allowance = max(0, scan_limit - evaluated) + len(root_keys.difference(seen)) if scan_limit is not None else None
             prefetch_nodes([ref for ref, _path in reversed(pending)
                             if (ref["repo"].casefold(), ref["number"]) not in seen][:allowance])
         ref, path = pending.pop()
@@ -1308,7 +1295,7 @@ def incident_work_paths(
         if key in seen:
             continue
         if key not in root_keys:
-            if evaluated >= scan_limit:
+            if scan_limit is not None and evaluated >= scan_limit:
                 truncated = True
                 continue
             evaluated += 1
@@ -1335,7 +1322,7 @@ def rank_direction_work(
     *,
     milestone_titles: list[str],
     read_node: Callable[[str, int], dict[str, Any]],
-    scan_limit: int,
+    scan_limit: int | None,
     completed_milestone_titles: list[str] | None = None,
     agent: str | None = None,
     wait_milestone_titles: list[str] | None = None,
@@ -1351,8 +1338,6 @@ def rank_direction_work(
     Parent waits follow sub-issues; independent blockers and explicitly split
     children remain selectable. Candidates retain their original
     issue milestone and the native path that gives them their overall priority.
-    A known other-family assignment has its own scan_limit allowance, preserving
-    portfolio evidence without spending the ordinary allowance prematurely.
     """
     order = {title: index for index, title in enumerate(milestone_titles)}
     completed = set(completed_milestone_titles or [])
@@ -1377,8 +1362,6 @@ def rank_direction_work(
     waits_recorded: set[tuple[str, int]] = set()
     degraded = 0
     truncated = False
-    ordinary_evaluated = 0
-    other_family_evaluated = 0
     track_next_actions: dict[str, dict[str, Any]] = {}
     from github_next_queue import current_status
     closure_reviews: list[dict[str, Any]] = []
@@ -1405,7 +1388,7 @@ def rank_direction_work(
             # DFS order, assignment allowances and coverage stay unchanged.
             refs = [entry[0] for _index, entry in scheduled
                     if (entry[0]["repo"].casefold(), entry[0]["number"]) not in seen]
-            prefetch_nodes(refs[:max(0, scan_limit - ordinary_evaluated)])
+            prefetch_nodes(refs[:max(0, scan_limit - len(seen))] if scan_limit is not None else refs)
         # Evaluate the visible unheld frontier before spending the remaining
         # allowance on held subtrees. Those are still read, with the same bound.
         next_index = scheduled[0][0]
@@ -1423,7 +1406,7 @@ def rank_direction_work(
         route_key = (*key, held)
         if route_key in routes or (held and (*key, False) in routes):
             continue
-        if key not in seen and ordinary_evaluated >= scan_limit:
+        if key not in seen and scan_limit is not None and len(seen) >= scan_limit:
             truncated = True
             break
         routes.add(route_key)
@@ -1431,11 +1414,6 @@ def rank_direction_work(
             seen.add(key)
             if key not in node_cache:
                 node_cache[key] = read_node(ref["repo"], ref["number"])
-            mismatch = github_agent.exclusion(node_cache[key]["item"], agent)
-            if mismatch and mismatch["exclusion"] == "assigned_elsewhere" and other_family_evaluated < scan_limit:
-                other_family_evaluated += 1
-            else:
-                ordinary_evaluated += 1
         elif not held:
             # A later independent route supersedes the earlier held route,
             # without a second issue read or a second scan allowance.

@@ -18,7 +18,9 @@ from typing import Any
 import github_plan_claim
 import github_plan_wait
 import github_direction_next
+import github_next_pr
 from github_plan_status import next_actor
+from github_plan_status.references import linked_issues
 
 
 def current_status(discussion: dict[str, Any], trusted: set[str], *, body_recorded_at: str | None = None) -> str:
@@ -69,6 +71,29 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
         conflicts, _ = github_plan_claim.discussion_evidence(status, comments,
             {"worker": "", "session": "", "branch": "", "claimed_at": ""},
             ended_claims={source["claim_id"] for source in ended})
+        if item.get("record_type") == "pull_request":
+            pull = next((pull for pull in ownership.get("pulls", []) if pull["number"] == item["number"]), None)
+            if not isinstance(pull, dict):
+                return {**row, "error": "pr_ownership_inventory_incomplete"}
+            source_keys = {((source.get("repo") or item["repo"]).casefold(), source["number"])
+                           for source in ownership.get("records", []) if not source.get("pull_request")}
+            missing_sources = [(repo, number) for repo, number in linked_issues(item["repo"], pull)
+                               if (repo.casefold(), number) not in source_keys]
+            if missing_sources:
+                return {**row, "error": "source_custody_unread", "detail": ", ".join(f"{repo}#{number}" for repo, number in missing_sources)}
+            for source in ownership.get("records", []):
+                if source.get("pull_request") or not github_plan_claim.pr_issue_reference(pull, source["number"],
+                        repo=source.get("repo") or item["repo"], local_references=(source.get("repo") or item["repo"]).casefold() == item["repo"].casefold()):
+                    continue
+                if source.get("_graph_comments_complete") is not True:
+                    return {**row, "error": "source_claim_discussion_incomplete"}
+                source_comments = source["_graph_comments"]
+                ended_sources = github_plan_claim.ended_ownership(source_comments, inventory, expired_sessions)
+                source_status = current_status(github_direction_next.discussion_snapshot(source, source_comments, complete=True), trusted)
+                source_conflicts, _ = github_plan_claim.discussion_evidence(source_status, source_comments,
+                    {"worker": "", "session": "", "branch": "", "claimed_at": ""},
+                    ended_claims={source["claim_id"] for source in ended_sources})
+                conflicts.extend(source_conflicts)
         wait = github_plan_wait.current(
             {"body": discussion.get("body") or "", "user": {"login": discussion.get("author") or ""}}, comments, trusted)
         if resume_from:
@@ -83,11 +108,21 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
                 return {**row, "error": "retained_handoff_unavailable"}
     except (ValueError, KeyError, TypeError) as exc:
         return {**row, "error": "unreadable_ownership_or_wait", "detail": str(exc)}
+    if item.get("record_type") == "pull_request":
+        subject = next((pull for pull in ownership.get("pulls", []) if pull["number"] == item["number"]), {})
+        if not (subject.get("head") or {}).get("ref") or any(
+            (((subject.get(side) or {}).get("repo") or {}).get("full_name") or "").casefold() != item["repo"].casefold()
+            for side in ("head", "base")):
+            return {**row, "error": "pr_canonical_issue_required"}
     branches = github_plan_claim.recorded_claim_branches(status, comments)
-    artifacts = github_plan_claim.artifact_evidence(inventory, ownership.get("pulls") or [], item["number"],
-        {"worker": "", "session": "", "branch": ""}, own_record=False, repo=item["repo"], recorded_branches=branches,
-        retained_branches=retained["permitted"] if retained else None, retained_repo=item["repo"] if retained else None,
-        ended_branches=github_plan_claim.ended_artifact_branches(ended, comments, ownership.get("pulls") or []))
+    try:
+        artifacts = github_plan_claim.artifact_evidence(inventory, ownership.get("pulls") or [], item["number"],
+            {"worker": "", "session": "", "branch": ""}, own_record=False, repo=item["repo"], recorded_branches=branches,
+            retained_branches=retained["permitted"] if retained else None, retained_repo=item["repo"] if retained else None,
+            subject_pr=item["number"] if item.get("record_type") == "pull_request" else None,
+            ended_branches=github_plan_claim.ended_artifact_branches(ended, comments, ownership.get("pulls") or []))
+    except (ValueError, KeyError, TypeError) as exc:
+        return {**row, "error": "unreadable_ownership_or_wait", "detail": str(exc)}
     return {**row, "conflicts": conflicts, "artifacts": artifacts, "wait": wait}
 
 
@@ -115,15 +150,24 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
     except ValueError:
         actor = None
     row["next_actor"] = actor
+    pull = next((pull for pull in ownership.get("pulls", []) if pull["number"] == item["number"]), None) if item.get("record_type") == "pull_request" else None
+    projected: dict[str, Any] = {}
+    if isinstance(pull, dict):
+        comments = [{**comment, "user": {"login": comment.get("author") or ""}} for comment in discussion.get("comments", [])]
+        projected = github_next_pr.project(item["repo"], pull, comments, trusted=trusted, complete=discussion.get("complete") is True)
+        if projected["reason"] in {"train_batch", "draft_park"} or projected["state"] == "unknown":
+            return {**row, "state": "review" if projected["state"] == "unknown" else projected["state"], "reason": projected["reason"]}
     facts = ownership_facts(item, ownership, trusted=trusted)
     if facts.get("error"):
-        return {**row, "state": "review", "reason": facts["error"], **({"detail": facts["detail"]} if "detail" in facts else {})}
+        return {**row, "state": "review", "observed_ownership_complete": False, "reason": facts["error"], **({"detail": facts["detail"]} if "detail" in facts else {})}
     conflicts, artifacts, wait = facts["conflicts"], facts["artifacts"], facts["wait"]
     row["wait_review_required"] = wait["state"] == "review"
     if wait["state"] == "waiting":
         return {**row, "state": "waiting", "reason": "recorded_wait", "wait": wait}
     if actor and actor.startswith(("person:", "event:")):
         return {**row, "state": "waiting", "reason": "recorded_next_actor"}
+    if projected.get("reason") in {"current_head_ready", "current_head_client_wait"}:
+        return {**row, "state": projected["state"], "reason": projected["reason"]}
     if conflicts or artifacts:
         return {**row, "state": "underway", "reason": "existing_claim_or_artifact",
                 "ownership_evidence": [*conflicts, *artifacts], "certainty": "current_or_stale"}
