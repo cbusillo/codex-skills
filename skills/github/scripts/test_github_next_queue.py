@@ -46,7 +46,7 @@ def test_october_16_delivered_and_unstarted_status_shapes() -> None:
         else:
             assert result['state'] != 'engineering', (number, result)
             assert classify(row)['state'] != 'available', (number, classify(row))
-    for state in ['Active; prerequisite #3266 merged via PR #3310.', 'Active; integration remains unstarted.']:
+    for state in ['Active; prerequisite #3266 merged via PR #3310.', 'Active; integration remains unstarted.', 'Delivery of prerequisite #3266 is complete; integration remains unstarted.']:
         assert classify(item(fixtures['3267']['action'], state))['state'] == 'available'
     assert classify(item('Verify deployed export.', 'Active; first source slice merged and prerequisite #10 landed'))['state'] == 'verification'
     # Finished clauses cannot create or erase a genuine present source step.
@@ -83,6 +83,10 @@ def test_role_descriptions_preserve_actions_and_supervisor_followthrough() -> No
                    'Supervisor lands PR #71, then an agent implements the remaining parser.']:
         assert classify(item(action))['state'] == 'available'
     assert classify(item('Diagnose the importer timeout.', 'Source delivery is complete. Computer Use selection failed.'))['state'] == 'available'
+    for action in ['Fix the GUI bug in the sidebar toolbar.', 'Repair the email attachment upload.',
+                   'Diagnose the timeout in the CSV importer.',
+                   'Next agent compares the instances, implements the missing resolver.']:
+        assert classify(item(action, 'Source delivery is complete. Computer Use selection failed.'))['state'] == 'available'
     assert classify(item('Implement the canonical parser.', 'Source delivery remains blocked; design review is complete'))['state'] == 'available'
 
 
