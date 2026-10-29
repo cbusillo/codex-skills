@@ -2583,7 +2583,7 @@ def cmd_release(args: argparse.Namespace) -> None:
     posted_comment = None
 
     def snapshot() -> dict[str, Any]:
-        record, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True)
+        work_record, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True)
         source = next((c for c in comments if c.get("id") == args.claim_comment), None)
         records = github_plan_claim.records((source or {}).get("body") or "")
         if (source is None or (source.get("user") or {}).get("login") != expected_actor
@@ -2592,7 +2592,7 @@ def cmd_release(args: argparse.Namespace) -> None:
                             "an ended session's claim uses release-claim")
         confirmed = next((c for c in comments if c.get("id") != source["id"]
                           and github_plan_release.exact_source_release(source["id"], c, comments)), None)
-        return {"issue": record, "status": status, "can_update": can_update,
+        return {"issue": work_record, "status": status, "can_update": can_update,
                 "release": confirmed, "source": source, "comments": comments}
 
     preflight = snapshot()
@@ -2641,6 +2641,7 @@ def cmd_release(args: argparse.Namespace) -> None:
                                   payload={"completed_steps": list(completed)}) from error
     status_body = None
     if existing is None:
+        assert next_actor is not None
         current = preflight if args.dry_run else snapshot()
         if current["release"] is not None:
             raise PlanError("Release changed during preflight; read the record before retrying")
