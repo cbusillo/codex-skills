@@ -5719,8 +5719,6 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             item, ranked, milestone_titles=titles, repository_clients=client_records,
             repository_waypoints=waypoints, director_owner=repo.split("/")[0], bot_logins=client_bot_logins,
         ) for item in inventory]
-        inventory.sort(key=lambda raw: github_next_queue.remaining_work(
-            section_map(raw.get("body") or "").get("Current Status", ""))["state"] != "engineering")
         scanned = github_direction_next.discovery_scan(
             inventory, args.scan_limit, selection_context,
             agent=github_agent.running_agent(getattr(args, "agent", None)),

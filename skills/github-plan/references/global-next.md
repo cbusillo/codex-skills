@@ -163,9 +163,7 @@ or unavailable wait read for that frontier issue cannot establish capacity
 admission; increase the bounded scan or resolve its unavailable reference.
 Unrelated gaps in the stale report remain coverage warnings, not a global veto.
 
-Discovery evaluates inventory rows describing current source work first. This
-is a read-order hint; full discussions and final priority/coverage checks still
-decide availability. Wait proofs run in the final evidence pass.
+Wait proofs run in the final evidence pass so discovery can use its budget first.
 
 The CLI reads current discussions and inventories claims, linked open PRs and
 branches once per repository before projecting the start queue. It uses the

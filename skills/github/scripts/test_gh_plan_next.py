@@ -4124,39 +4124,33 @@ def test_global_next_reads_milestone_proofs_before_a_descendant_uses_the_scan_bu
 TESTS.append(test_global_next_reads_milestone_proofs_before_a_descendant_uses_the_scan_budget)
 
 
-def test_source_discovery_precedes_optional_proof_warmup_and_scan_exhaustion() -> None:
+def test_source_discovery_precedes_optional_proof_warmup() -> None:
     import time
     roots = [track('someone/direction', 1, 'First')]
     noise = global_issue('someone/project', 20)
     source = global_issue('someone/project', 21, milestone=roots[0]['milestone'],
-                          body='## Current Status\nState: Active.\nNext action: Implement the missing resolver.')
-    for limited_scan in [False, True]:
-        with global_fixture(roots, [], {}, discovered=[noise, source]) as (module, result, _reads):
-            module.discover_direction_work = lambda *_args, **_kwargs: ([noise, source], {
-                'complete': True, 'repositories': [{'repo': source['repo'], 'direction': DIRECTION}]})
-            original = module.next_wait_context
-            def expensive_proof(*proof_args: Any, **proof_options: Any) -> Any:
-                module.NEXT_READS.deadline = time.time() + module.NEXT_READS.final_evidence_reserve / 2
-                return original(*proof_args, **proof_options)
-            if not limited_scan:
-                module.next_wait_context = expensive_proof
-            def ownership(items: list[dict[str, Any]], _args: Any) -> dict[str, Any]:
-                for row in items:
-                    row['queue'] = {'state': 'available' if row['number'] == source['number'] else 'review',
-                                    'claim_required': True, 'observed_ownership_complete': True}
-                return {'repositories': {}}
-            module.annotate_next_queue = ownership
-            args = next_args(scan_limit=1 if limited_scan else 20)
-            args.time_budget = 50
-            module.cmd_next(args)
-            assert [row['number'] for row in result['available_candidates']] == [source['number']], result
-            if limited_scan:
-                assert result['discovery_context']['unevaluated_count'] == 1
-                assert not result['candidate_coverage']['complete']
+                      body='## Current Status\nState: Active.\nNext action: Implement the missing resolver.')
+    with global_fixture(roots, [], {}, discovered=[noise, source]) as (module, result, _reads):
+        module.discover_direction_work = lambda *_args, **_kwargs: ([noise, source], {
+            'complete': True, 'repositories': [{'repo': source['repo'], 'direction': DIRECTION}]})
+        original = module.next_wait_context
+        def expensive_proof(*proof_args: Any, **proof_options: Any) -> Any:
+            module.NEXT_READS.deadline = time.time() + module.NEXT_READS.final_evidence_reserve / 2
+            return original(*proof_args, **proof_options)
+        module.next_wait_context = expensive_proof
+        def ownership(items: list[dict[str, Any]], _args: Any) -> dict[str, Any]:
+            for row in items:
+                row['queue'] = {'state': 'available' if row['number'] == source['number'] else 'review',
+                                'claim_required': True, 'observed_ownership_complete': True}
+            return {'repositories': {}}
+        module.annotate_next_queue = ownership
+        args = next_args()
+        args.time_budget = 50
+        module.cmd_next(args)
+        assert [row['number'] for row in result['available_candidates']] == [source['number']], result
 
 
-TESTS.append(test_source_discovery_precedes_optional_proof_warmup_and_scan_exhaustion)
-
+TESTS.append(test_source_discovery_precedes_optional_proof_warmup)
 
 def main() -> None:
     for test in TESTS:
