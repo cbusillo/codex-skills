@@ -204,7 +204,9 @@ It is `null` (unknown) when the inventory or graph is incomplete, any milestone
 item needs status or has unread discussion, wait, ownership or ancestry evidence,
 or an explicit milestone scope prevents a portfolio-wide answer. It is `true`
 only after the complete read finds no available milestone item. This is an
-availability observation; the Supervisor and weekly check still judge admission
+availability observation. Open blockers and sub-issues reached transitively from
+a listed milestone item count as that milestone's items; an unread dependency or
+a cycle keeps the flag null. The Supervisor and weekly check still judge admission
 under the overall Order. Display limits and family filtering cannot make it true.
 
 The command and existing top-level output names stay. `tooling_capacity_context`

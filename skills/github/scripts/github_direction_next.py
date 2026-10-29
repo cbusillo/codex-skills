@@ -537,18 +537,40 @@ def no_available_milestone_item(
     def matched(item: dict[str, Any]) -> bool:
         return overall_milestone_context(item, graph, milestone_titles, repository_waypoints)["state"] == "matched"
 
-    if any(matched(item) for item in available):
-        return False
-    if not coverage_complete or not graph.get("dependency_context", {}).get("complete"):
-        return None
+    def key(item: dict[str, Any]) -> tuple[str, int]:
+        return item["repo"].casefold(), item["number"]
+
+    indexed: dict[tuple[str, int], dict[str, Any]] = {}
     for item in entries:
-        if item.get("exclusion") in {"completed", "outside_direction_tracks"}:
+        indexed.setdefault(key(item), item)
+    edges = {ident: {key(dependency) for dependency in [*item.get("blocked_by", []), *item.get("open_sub_issues", [])]}
+             for ident, item in indexed.items()}
+    pending = [ident for ident, item in indexed.items() if matched(item)]
+    scope: set[tuple[str, int]] = set()
+    missing = False
+    while pending:
+        ident = pending.pop()
+        if ident in scope:
             continue
-        context = overall_milestone_context(item, graph, milestone_titles, repository_waypoints)
-        if context["state"] == "unknown":
-            return None
-        if not matched(item):
+        if ident not in indexed:
+            missing = True
             continue
+        scope.add(ident)
+        pending.extend(edges[ident] - scope)
+    if any(key(item) in scope for item in available):
+        return False
+    if missing or not coverage_complete or not graph.get("dependency_context", {}).get("complete"):
+        return None
+    remaining = set(scope)
+    while leaves := {ident for ident in remaining if not edges[ident].intersection(remaining)}:
+        remaining.difference_update(leaves)
+    if remaining:
+        return None
+    if any(overall_milestone_context(item, graph, milestone_titles, repository_waypoints)["state"] == "unknown"
+           for item in indexed.values() if item.get("exclusion") not in {"completed", "outside_direction_tracks"}):
+        return None
+    for ident in scope:
+        item = indexed[ident]
         discussion = item.get("discussion") or {}
         if not discussion.get("complete") or discussion.get("ancestry_complete") is False:
             return None
@@ -568,7 +590,9 @@ def no_available_milestone_item(
         if exclusion in {"blocked_by_open_dependency", "delegated_to_open_sub_issues"}:
             continue
         if exclusion == "waiting" or queue.get("state") == "waiting":
-            if item.get("wait_evidence_complete") is True:
+            status = section_map(discussion.get("body", "")).get("Current Status", "")
+            if (item.get("wait_evidence_complete") is True and not item.get("wait_finding")
+                    and milestone_wait_evidence(item, status, milestone_titles)["valid"]):
                 continue
             return None
         if exclusion == "parent_waiting":
