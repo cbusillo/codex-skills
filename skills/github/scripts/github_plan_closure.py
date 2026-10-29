@@ -333,6 +333,22 @@ def replace_rows(rows: list[dict]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def successor_claims(session: str, state: dict) -> set[tuple[str, int]] | None:
+    from github_plan_claim_log import target
+    if "successor_claims" not in state:
+        return None
+    claims = state["successor_claims"]
+    if not isinstance(claims, list) or not claims:
+        raise ValueError("successor claim coverage is unavailable")
+    targets = set()
+    for claim in claims:
+        if not isinstance(claim, (list, tuple)) or len(claim) != 2:
+            raise ValueError("successor claim coverage is unavailable")
+        repo, number = target({"session": session, "repository": claim[0], "record": claim[1]}, session)
+        targets.add((repo.casefold(), number))
+    return targets
+
+
 def resume_record(session: str, rows: list[dict]) -> dict | None:
     """Check known source refusals without leases, invalidation or publication."""
     require_canonical_identity(session)
@@ -340,7 +356,12 @@ def resume_record(session: str, rows: list[dict]) -> dict | None:
     if len(matches) > 1:
         raise ValueError("duplicate closed generations; preserve the source")
     row = matches[0] if matches else None
-    if lease_state(session).get("successor_admitted") or row is not None and row.get("successor_admitted"):
+    state = lease_state(session)
+    transferred = successor_claims(session, state)
+    from github_plan_claim_log import read
+    partial = transferred is not None and bool({(repo.casefold(), number) for repo, number in read(session)} - transferred)
+    if (row is not None and (row.get("successor_admitted") or state.get("successor_admitted") and row.get("closure_evidence") is not None)
+            or state.get("successor_admitted") and not partial):
         raise ValueError("this generation handed off its work; start a new thread and claim through gh-plan.py")
     return row
 
@@ -349,8 +370,7 @@ def resume_record(session: str, rows: list[dict]) -> dict | None:
 def resume_guard(session: str, *, method: str | None = None, home: str | Path | None = None):
     """Invalidate the closed generation before an exact native resume/queue."""
     with ownership(session, create=True):
-        if lease_state(session).get("successor_admitted"):
-            raise ValueError("this generation handed off its work; start a new thread and claim through gh-plan.py")
+        resume_record(session, [])
         path = closed_log()
         # The source lease also serializes closure publication for this ID.
         # A new thread has no receipt to invalidate and need not wait behind
@@ -369,10 +389,20 @@ def resume_guard(session: str, *, method: str | None = None, home: str | Path | 
         yield
 
 
-def admit_sources(sessions: set[str]) -> None:
+def admit_sources(sessions: set[str] | dict[str, set[tuple[str, int]]]) -> None:
+    from github_plan_claim_log import read
     for session in sorted(sessions):
         with ownership(session, create=True):
-            write_lease_state(session, {**lease_state(session), "successor_admitted": True})
+            state = lease_state(session)
+            if isinstance(sessions, dict) and (not state.get("successor_admitted") or "successor_claims" in state):
+                transferred = (successor_claims(session, state) or set()) | {(repo.casefold(), number) for repo, number in sessions[session]}
+                if {(repo.casefold(), number) for repo, number in read(session)} - transferred:
+                    state["successor_claims"] = sorted(transferred)
+                else:
+                    state.pop("successor_claims", None)
+            else:
+                state.pop("successor_claims", None)
+            write_lease_state(session, {**state, "successor_admitted": True})
 
 
 def closed_log() -> Path:

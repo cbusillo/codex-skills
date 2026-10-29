@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import importlib.util
 import json
@@ -17,6 +18,7 @@ import tempfile
 import time
 import unittest
 from argparse import Namespace
+from contextlib import asynccontextmanager
 from datetime import datetime
 from itertools import product
 from pathlib import Path
@@ -1253,6 +1255,52 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             with github_plan_closure.resume_guard(OTHER["session"]): pass
         with github_plan_closure.resume_guard(OWNER["session"]): pass
+
+    def test_partial_successor_handoff_preserves_source_queue_until_all_claims_transfer(self) -> None:
+        import github_plan_closure as closure
+        import github_plan_claim_log as claim_log
+        import github_plan_native as native
+        proxy = importlib.import_module("codex_session_proxy")
+
+        claim_log.record(OTHER["session"], "owner/repo", 42)
+        claim_log.record(OTHER["session"], "owner/other", 43)
+        self.ended_holder_fixture()
+        self.args.resume_from = 71
+        self.run_claim()
+        closure.resume_record(OTHER["session"], [])
+        sent = []
+
+        @asynccontextmanager
+        async def connection(*_args: object, **_kwargs: object):
+            async def request(method: str, params: dict[str, Any]) -> dict[str, Any]:
+                if method == "thread/read":
+                    return {"thread": {"id": OTHER["session"], "path": str(Path.home() / "source.jsonl"), "status": {"type": "idle"}}}
+                sent.append(params)
+                return {"queuedSubmission": {"id": "queued", **params}}
+
+            yield request
+
+        with patch.dict(proxy.__dict__, {"source_endpoint": Mock()}), patch.object(native, "connection", connection):
+            receipt = asyncio.run(native.queue_input(Path.home(), OTHER["session"], "continue other work"))
+        self.assertEqual(receipt["queuedSubmissionId"], "queued")
+        self.assertEqual([row["threadId"] for row in sent], [OTHER["session"]])
+
+        self.args.session, self.args.worker = OTHER["session"], OTHER["worker"]
+        self.args.branch, self.args.resume_from = "work/source-reclaim", None
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+
+        self.args.session, self.args.worker = OWNER["session"], OWNER["worker"]
+        self.args.repo, self.args.issue = "owner/other", "43"
+        self.args.branch, self.args.resume_from = "work/other-successor", 71
+        self.issue["body"] = PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n\n## Current Status\n\nUnclaimed.\n"
+        self.ended_holder_fixture()
+        self.run_claim()
+        claim_log.record(OTHER["session"], "owner/unclaimed", 44)
+        with self.assertRaises(ValueError):
+            with closure.resume_guard(OTHER["session"]):
+                self.fail("fully transferred source resumed")
 
     def test_live_or_unknown_holder_returns_coordination_before_any_write(self):
         for state in ("unknown", "live"):

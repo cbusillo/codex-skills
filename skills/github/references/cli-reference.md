@@ -1076,6 +1076,13 @@ with `session_not_native` and names the native ID, because `release-claim` can
 only release a session that exists. A harness that exposes no native ID claims
 as before.
 
+Successor admission covers the released work record, including inherited
+parent and retained-PR claims. A source with other journaled work may still
+resume or receive queued messages; the work record's claim checks keep it out
+of the transferred work. Once all journaled work transfers, or the source has
+a full closure or handoff record, the whole session stays blocked. Legacy
+session-wide freezes and unavailable claim coverage keep their refusal.
+
 For PR-only work, including Dependabot fixes and bare PRs, pass the PR number,
 `OWNER/REPO#N`, or its exact `https://github.com/OWNER/REPO/pull/N` URL to the same
 command. A PR claim uses the same structured comment, ownership/readback,

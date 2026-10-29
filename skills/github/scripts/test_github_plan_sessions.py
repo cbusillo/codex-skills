@@ -847,6 +847,21 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
 
 
 class IdleReceiptIntegrationTests(unittest.TestCase):
+    def test_full_closure_and_legacy_handoff_override_partial_claims(self) -> None:
+        from github_plan_claim_log import record
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy), ReceiptFixture() as f:
+                record(f.session, "owner/repo", 1)
+                record(f.session, "owner/other", 2)
+                if legacy:
+                    CLOSURE.replace_rows([{"session_id": f.session, "successor_admitted": True}])
+                CLOSURE.admit_sources({f.session: {("owner/repo", 1)}})
+                with self.assertRaises(ValueError):
+                    CLOSURE.resume_record(f.session, CLOSURE.log_rows())
+                with self.assertRaises(ValueError):
+                    with CLOSURE.resume_guard(f.session):
+                        self.fail("full closure resumed after a partial transfer")
+
     def test_source_without_closed_row_is_frozen_and_action_clear_preserves_freeze(self):
         with ReceiptFixture() as f:
             CLOSURE.replace_rows([])
