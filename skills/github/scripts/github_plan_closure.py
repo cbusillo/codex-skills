@@ -361,6 +361,10 @@ def has_current_claim(session: str) -> bool:
                 raise GitHubReadShapeError("source claim comment identity is unavailable")
             conflicts, _ = discussion_evidence("", comments, {"session": "", "worker": "", "branch": "", "claimed_at": ""})
             authors = {comment["id"]: (comment.get("user") or {}).get("login") for comment in comments}
+            if (not reader.expected_actor or any("record" not in record for record in conflicts)
+                    or any(record.get("record", {}).get("session") == session
+                           and authors.get(record.get("id")) != reader.expected_actor for record in conflicts)):
+                raise GitHubReadShapeError("source claim ownership cannot be authenticated")
             if reader.expected_actor and conflicts and all(record.get("record", {}).get("session") == session
                                  and authors.get(record.get("id")) == reader.expected_actor for record in conflicts):
                 return True
@@ -369,20 +373,23 @@ def has_current_claim(session: str) -> bool:
     return False
 
 
-def resume_record(session: str, rows: list[dict]) -> dict | None:
+def resume_record(session: str, rows: list[dict], *, check_claims: bool = True) -> dict | None:
     """Check known source refusals without leases, invalidation or publication."""
     require_canonical_identity(session)
     matches = [r for r in rows if r.get("session_id") == session]
     if len(matches) > 1:
         raise ValueError("duplicate closed generations; preserve the source")
     row = matches[0] if matches else None
-    handed_off = lease_state(session).get("successor_admitted") or row is not None and row.get("successor_admitted")
+    state = lease_state(session)
+    if "claim_admission_unknown" in state:
+        raise ValueError("claim admission outcome is unknown; rerun the original gh-plan.py claim for reconciliation before resuming")
+    handed_off = state.get("successor_admitted") or row is not None and row.get("successor_admitted")
     if not handed_off:
         return row
     from github_plan_release import stamp
     closed = row is not None and row.get("ended_at") and (
         not row.get("resumed_at") or stamp(row["resumed_at"]) <= stamp(row["ended_at"]))
-    if row is not None and row.get("successor_admitted") or closed or not has_current_claim(session):
+    if row is not None and row.get("successor_admitted") or closed or check_claims and not has_current_claim(session):
         raise ValueError("this generation handed off its work; start a new thread and claim through gh-plan.py")
     return row
 
@@ -391,7 +398,7 @@ def record_resume(session: str, row: dict | None, *, method: str | None, home: s
     from github_plan_lease import renew
 
     if row is not None:
-        with store_lock(closed_log()):
+        with store_lock(closed_log(), create=True):
             rows = log_rows()
             current = [source for source in rows if source.get("session_id") == session]
             if current != [row]:

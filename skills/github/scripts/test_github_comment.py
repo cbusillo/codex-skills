@@ -83,6 +83,7 @@ def test_create_preserves_markdown_body() -> None:
 
 def test_dedupe_body_reuses_existing_actor_comment_without_write() -> None:
     markdown = "Completed with evidence.\n"
+    prepared = []
     existing = comment_body(
         1002,
         body=github_api.body_with_operation_marker(markdown, "a" * 32),
@@ -103,10 +104,12 @@ def test_dedupe_body_reuses_existing_actor_comment_without_write() -> None:
             repo="owner/repo",
             gh_cmd="fake-gh",
             dedupe_body=True,
+            before_create=prepared.append,
         )
         assert payload["comment_action"] == "existing", payload
         assert payload["deduplicated"] is True, payload
         assert payload["comment"]["id"] == 1002, payload
+        assert not prepared, prepared
         assert payload["completed_steps"] == ["resolve_actor", "reuse_existing_comment"], payload
         assert [call["method"] for call in calls] == ["GET", "GET"], calls
 
@@ -447,7 +450,7 @@ def test_resolved_own_user_failure_keeps_fingerprint_and_reconciliation_actor() 
             github_comment.comment("issue", 42, "replacement", repo="owner/repo", gh_cmd="fake-gh")
         except github_comment.CommentError as exc:
             assert exc.payload["reconciliation"]["actor"] == "contributor", exc.payload
-            assert exc.payload["operation_marker"]["value"] == github_comment._comment_fingerprint(
+            assert exc.payload["operation_marker"]["value"] == github_comment.comment_fingerprint(
                 "owner/repo", 42, "contributor", "replacement"
             ), exc.payload
         else:
@@ -551,6 +554,49 @@ def test_active_fallback_reports_response_actor_after_route_switch() -> None:
         assert payload["expected_actor"] is None, payload
 
     with_call_stub(callback, run)
+
+
+def test_before_create_receives_the_original_operation_before_provider_effects() -> None:
+    body_text = "Prepared immutable claim.\n"
+    for mode in ("success", "refused", "crash", "attachments"):
+        prepared = []
+
+        def prepare(intent: dict[str, Any]) -> None:
+            prepared.append(intent)
+            if mode == "refused":
+                raise ValueError("fixture local preparation failed")
+
+        def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            if path == "/user":
+                return success({"login": "fixture-automation"})
+            if method == "GET":
+                return success([])
+            assert prepared, "provider POST preceded durable preparation"
+            intent = prepared[0]
+            assert intent["repo"] == "owner/repo" and intent["number"] == 42, intent
+            assert intent["actor"] == "fixture-automation", intent
+            assert intent["operation_marker"]["value"] == github_comment.comment_fingerprint("owner/repo", 42, intent["actor"], body_text)
+            assert github_api.body_has_operation_marker(body["body"], intent["operation_marker"]["operation_id"])
+            if mode == "crash":
+                raise SystemExit("fixture caller exited after POST was sent")
+            return success(comment_body(1019, body=body["body"]))
+
+        def run(calls: list[dict[str, Any]]) -> None:
+            try:
+                github_comment.comment("issue", 42, body_text, repo="owner/repo", gh_cmd="fake-gh", before_create=prepare,
+                                       attachments=["fixture.png"] if mode == "attachments" else None)
+            except github_comment.CommentError as error:
+                assert mode in {"refused", "attachments"}, mode
+                assert error.failure.write_outcome == "not_started", error.failure
+                assert not any(call["method"] == "POST" for call in calls), calls
+            except SystemExit:
+                assert mode == "crash", mode
+                assert prepared, prepared
+            else:
+                assert mode == "success", mode
+                assert prepared, prepared
+
+        with_call_stub(callback, run)
 
 
 def test_unknown_create_no_match_fails_closed_without_repeat() -> None:
@@ -1499,6 +1545,7 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
 
 
 TESTS: list[Callable[[], None]] = [
+    test_before_create_receives_the_original_operation_before_provider_effects,
     test_planning_reference_boundaries_preserve_qualified_repository_names,
     test_explicit_comment_commands_refuse_ambiguous_refs_before_posting,
     test_attachment_limits_refuse_before_cli,

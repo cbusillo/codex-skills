@@ -67,7 +67,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     proceed.set()
                     self.assertIn("result", await pending)
                 self.assertIn(unrelated, closure.log_rows())
-                with patch.object(closure, "has_current_claim", side_effect=AssertionError("unchanged admission re-read claims")):
+                with patch.object(closure, "has_current_claim", side_effect=ValueError("fixture GitHub read unavailable")):
                     self.assertIn("result", await self.send(task, request, response, "turn/start", f.session))
             finally:
                 proceed.set()

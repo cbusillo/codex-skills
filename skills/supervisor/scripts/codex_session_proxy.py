@@ -65,7 +65,7 @@ def source_endpoint(session, home, *, transcript=None):
     for path in dict.fromkeys(paths):
         session_record.session_status({"session_id": session, "harness": "codex", "transcript": str(path)})
     if closure.closed_log().exists():
-        closure.resume_record(session, closure.log_rows())
+        closure.resume_record(session, closure.log_rows(), check_claims=False)
     endpoint = closure.daemon_endpoint(home)
     try:
         info = endpoint.stat()

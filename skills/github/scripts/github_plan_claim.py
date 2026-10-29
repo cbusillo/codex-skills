@@ -21,6 +21,7 @@ except ModuleNotFoundError:
 
 
 MARKER = "github-plan:claim "
+LEASE_TAKEOVER_PREFIX = "Lease takeover: claim "
 EMPTY_HOLDERS = {"none", "unassigned", "unclaimed", "not assigned", "n/a", "-", "nobody", "no one", "no-one"}
 
 
@@ -502,12 +503,45 @@ def attested_handoff_note(text: str, index: int, comments: list[dict[str, Any]])
     return False
 
 
+def takeover_sources(comments: list[dict[str, Any]]) -> dict[int, int]:
+    from github_plan_release import stamp
+    from github_plan_status.waits import live_lines as live_directives
+    sources = {}
+    superseded = {}
+    for comment in comments:
+        parsed = records(comment.get("body") or "")
+        if len(parsed) != 1 or type(comment.get("id")) is not int:
+            continue
+        successor = parsed[0]
+        author = (comment.get("user") or {}).get("login")
+        for _, line in live_directives(comment.get("body") or "", prefix=LEASE_TAKEOVER_PREFIX):
+            match = re.fullmatch(re.escape(LEASE_TAKEOVER_PREFIX) + r"([1-9]\d*) \(session (\S+)\) had no recorded activity for \S+ minutes\.", line)
+            if match is None:
+                continue
+            source = sources.get(int(match[1]))
+            if source is None or not author or author != (source.get("user") or {}).get("login"):
+                continue
+            original = records(source.get("body") or "")[0]
+            if original["session"] != match[2] or original["session"] == successor["session"]:
+                continue
+            try:
+                source_at = max(stamp(original["claimed_at"]), stamp(source.get("updated_at") or source.get("created_at")))
+                if not source_at < stamp(successor["claimed_at"]) <= stamp(comment.get("created_at")):
+                    continue
+            except (ValueError, TypeError):
+                continue
+            superseded[source["id"]] = comment["id"]
+        sources[comment["id"]] = comment
+    return superseded
+
+
 def discussion_evidence(
     status: str, comments: list[dict[str, Any]], claim: dict[str, str], *, resume_from: int | None = None,
     ended_claims: set[int] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     from github_plan_release import effective_comments
     comments = effective_comments(comments)
+    ended_claims = (ended_claims or set()) | set(takeover_sources(comments))
     conflicts: list[dict[str, Any]] = []
     # A legacy source has no native identity. Reusing its worker would look
     # like renewal and invalidate the release after posting the successor.
@@ -604,7 +638,7 @@ def discussion_evidence(
 
 def expired_lease_sessions(comments: list[dict[str, Any]]) -> set[str]:
     import github_plan_lease
-    released = {comments[i]["id"] for i, _, _ in exact_released_sources(comments)}
+    released = {comments[i]["id"] for i, _, _ in exact_released_sources(comments)} | set(takeover_sources(comments))
     sessions = {r["session"] for c in comments if c.get("id") not in released for r in records(c.get("body") or "")}
     return {session for session in sessions if github_plan_lease.state(session) == github_plan_lease.EXPIRED}
 
@@ -614,6 +648,7 @@ def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any],
     from github_plan_release import effective_comments
     comments = effective_comments(comments)
     released = {comments[i]["id"]: comments[j]["id"] for i, _, j in exact_released_sources(comments)}
+    superseded = takeover_sources(comments)
     ended = []
     for source in comments:
         parsed = records(source.get("body") or "")
@@ -622,6 +657,8 @@ def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any],
         record = parsed[0]
         if source["id"] in released:
             evidence = {"evidence": "authored_release", "release_id": released[source["id"]]}
+        elif source["id"] in superseded:
+            evidence = {"evidence": "lease_takeover", "successor_id": superseded[source["id"]]}
         elif record["session"] in expired_sessions:
             evidence = {"evidence": "lease_expired"}
         else:
@@ -632,7 +669,7 @@ def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any],
 
 
 def lease_takeovers(ended: list[dict[str, Any]]) -> str:
-    return "".join(f"Lease takeover: claim {entry['claim_id']} (session {entry['session']}) had no recorded activity "
+    return "".join(f"{LEASE_TAKEOVER_PREFIX}{entry['claim_id']} (session {entry['session']}) had no recorded activity "
                    f"for {recorded_lease_minutes(entry['session']):g} minutes.\n\n"
                    for entry in ended if entry["evidence"] == "lease_expired")
 

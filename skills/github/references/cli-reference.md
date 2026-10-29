@@ -1083,8 +1083,14 @@ Finished records, failed attempts and records with a competing successor do not.
 With no remaining claim, or a recorded full closure or handoff, the session refuses. Unavailable reads retain
 the refusal; retry the supported resume or queue command once reads recover.
 Successful resume renews the source lease. Successor admission holds source
-ownership through publication and rechecks expired takeovers under that lock,
-so a resumed source and its successor cannot both win the same takeover.
+ownership through publication for expiry-based takeovers and rechecks expiry
+under that lock. An acknowledged queued action renews the lease; it is not a
+promise that deferred execution will finish within that lease.
+An unresolved claim POST keeps its prepared original operation fenced, including
+after a caller crash. Repeating the original claim invocation reads that exact
+operation back before execution gates; it never reposts after an empty or failed
+read. Another authorized agent can reconcile the same saved event during its
+own claim invocation, but still needs its own ownership and hold checks.
 
 For PR-only work, including Dependabot fixes and bare PRs, pass the PR number,
 `OWNER/REPO#N`, or its exact `https://github.com/OWNER/REPO/pull/N` URL to the same

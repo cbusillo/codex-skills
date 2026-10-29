@@ -209,11 +209,23 @@ class ClaimTests(unittest.TestCase):
         if path == "/repos/other/plans/pulls": items = []
         return "bot", copy.deepcopy(items)
 
+    def prepare_comment(self, number: int, body: str, *, repo: str, actor: str = TEST_BOT,
+                        marker: dict[str, Any] | None = None) -> tuple[dict[str, Any], str]:
+        marker = marker if marker is not None else {"operation_id": PLAN.github_api_core.new_operation_id(),
+            "started_at": datetime.now().astimezone().isoformat(), "kind": "request_fingerprint"}
+        marker["value"] = github_comment.comment_fingerprint(repo, number, actor, body)
+        return ({"repo": repo, "number": number, "actor": actor, "operation_marker": dict(marker)},
+                PLAN.github_api_core.body_with_operation_marker(body, marker["operation_id"]))
+
     def post(self, _kind, _number, body, **_):
+        if _.get("before_create") is not None:
+            intent, body = self.prepare_comment(_number, body, repo=_["repo"])
+            _["before_create"](intent)
         self.events.append("post")
         self.post_route = (_kind, _number, _["repo"])
         comment_id = self.comment_id_offset + len(self.comments) + 1
-        self.comments.append({"id": comment_id, "body": body, "user": {"login": TEST_BOT}})
+        self.comments.append({"id": comment_id, "body": body, "user": {"login": TEST_BOT},
+                              "created_at": datetime.now().astimezone().isoformat()})
         self.after_post()
         return {"ok": True, "comment": {"id": comment_id}}
 
@@ -1401,6 +1413,325 @@ class ClaimTests(unittest.TestCase):
                             self.fail("malformed ownership resumed")
                 self.assertIsInstance(unavailable.exception.__cause__, github_read.GitHubReadShapeError)
                 self.assertFalse(closure.action_pending(OTHER["session"]))
+        held = {"id": 81, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]}
+        legacy = {"id": 80, "body": "Claimed by legacy-worker", "user": {"login": TEST_BOT}}
+        for actor, comments in ((None, [held]), (TEST_BOT, [legacy, held]),
+                                (TEST_BOT, [{**held, "user": {"login": "unverified-user"}}])):
+            with self.subTest(actor=actor, comments=comments):
+                reader = Mock(expected_actor=actor, get_json=Mock(return_value={"state": "open"}), paged_json=Mock(return_value=comments))
+                with patch.object(github_read, "GitHubReader", return_value=reader):
+                    with self.assertRaises(ValueError) as unknown:
+                        with closure.resume_guard(OTHER["session"]):
+                            self.fail("unauthenticated source ownership resumed")
+                self.assertIsInstance(unknown.exception.__cause__, github_read.GitHubReadShapeError)
+
+    def unknown_takeover_fixture(self, *, crash: bool = False) -> dict[str, Any]:
+        self.ended_holder_fixture(released=False)
+        self.lease_fixture("expired")
+        marker = {"operation_id": PLAN.github_api_core.new_operation_id(), "started_at": datetime.now().astimezone().isoformat(),
+                  "kind": "request_fingerprint", "value": "fixture-fingerprint"}
+        bodies = []
+
+        def publish(_kind: str, _number: int, body: str, **_kwargs: Any) -> None:
+            bodies.append(body)
+            intent, _ = self.prepare_comment(_number, body, repo=_kwargs["repo"], marker=marker)
+            _kwargs["before_create"](intent)
+            if crash:
+                raise SystemExit("fixture caller exited after sending POST")
+            raise github_comment.CommentError("fixture unknown POST", failure=PLAN.github_api_core.FailureDetail(
+                cause="network_provider_failure", message="fixture unknown POST", retryable=False,
+                fallback_eligible=False, disposition="stop", write_outcome="unknown", failed_step="post_claim"),
+                payload={"operation_marker": marker, "reconciliation": {"result": "no_match"}})
+
+        publisher = self.enterContext(patch.object(self, "post", side_effect=publish))
+        with self.assertRaises(SystemExit if crash else PLAN.PlanError) as unknown:
+            self.run_claim()
+        if not crash:
+            self.assertEqual(unknown.exception.failure.write_outcome, "unknown")
+        return {"marker": marker, "body": bodies[0], "claim": CLAIM.records(bodies[0])[0], "publisher": publisher}
+
+    def delayed_takeover(self, pending: dict[str, Any], *, identifier: int = 90, actor: str = TEST_BOT,
+                         operation_id: str | None = None) -> dict[str, Any]:
+        return {"id": identifier, "user": {"login": actor}, "created_at": datetime.now().astimezone().isoformat(),
+                "body": PLAN.github_api_core.body_with_operation_marker(
+                    pending["body"], operation_id or pending["marker"]["operation_id"])}
+
+    def test_unknown_takeover_requires_exact_original_readback_without_reposting(self) -> None:
+        import github_plan_closure as closure
+        pending = self.unknown_takeover_fixture()
+        for branch in (self.args.branch, "work/different-claim"):
+            with self.subTest(branch=branch):
+                original_branch = self.args.branch
+                self.args.branch = branch
+                with self.assertRaises(PLAN.ClassifiedPlanError) as unresolved:
+                    self.run_claim()
+                self.assertEqual(unresolved.exception.code, "claim_mutation_reconciliation_required")
+                self.assertEqual(unresolved.exception.failure.write_outcome, "unknown")
+                self.args.branch = original_branch
+        self.assertEqual(pending["publisher"].call_count, 1)
+        with patch.object(closure, "has_current_claim", side_effect=AssertionError("unknown admission queried ownership")):
+            with self.assertRaises(ValueError):
+                with closure.resume_guard(OTHER["session"]):
+                    self.fail("unknown admission resumed")
+        self.comments.append(self.delayed_takeover(pending))
+        self.run_claim()
+        result = self.emitted.call_args.args[0]
+        self.assertEqual(result["claim_comment"]["comment"]["id"], self.comments[-1]["id"])
+        self.assertEqual(result["claim"], pending["claim"])
+        self.assertEqual(pending["publisher"].call_count, 1)
+        self.assertNotIn("claim_admission_unknown", closure.lease_state(OTHER["session"]))
+
+    def test_crash_after_takeover_post_keeps_the_prepared_operation_fenced(self) -> None:
+        import github_plan_closure as closure
+        pending = self.unknown_takeover_fixture(crash=True)
+        with self.assertRaises(ValueError):
+            with closure.resume_guard(OTHER["session"]):
+                self.fail("crashed publication resumed its old source")
+        with self.assertRaises(PLAN.ClassifiedPlanError) as unknown:
+            self.run_claim()
+        self.assertEqual(unknown.exception.code, "claim_mutation_reconciliation_required")
+        self.comments.append(self.delayed_takeover(pending))
+        self.run_claim()
+        self.assertEqual(pending["publisher"].call_count, 1)
+        self.assertEqual(self.emitted.call_args.args[0]["claim"], pending["claim"])
+
+    def test_another_agent_can_reconcile_the_exact_original_operation_without_claiming_its_work(self) -> None:
+        import github_plan_closure as closure
+        pending = self.unknown_takeover_fixture()
+        self.comments.append(self.delayed_takeover(pending))
+        self.args.worker, self.args.session, self.args.branch = "other-agent", "other-session", "work/other-agent"
+        with self.assertRaises(PLAN.ClassifiedPlanError) as held:
+            self.run_claim()
+        self.assertEqual(held.exception.code, "claim_conflict")
+        self.assertNotIn("claim_admission_unknown", closure.lease_state(OTHER["session"]))
+        self.assertEqual(pending["publisher"].call_count, 1)
+
+    def test_unknown_operation_on_another_product_does_not_block_an_authored_released_claim(self) -> None:
+        import github_plan_closure as closure
+        ordinary_post = self.post
+        self.unknown_takeover_fixture()
+        fence = copy.deepcopy(closure.lease_state(OTHER["session"])["claim_admission_unknown"])
+        self.args.repo, self.args.issue = "client/b", "43"
+        self.args.worker, self.args.session, self.args.branch = "client-b", "client-b-session", "work/client-b"
+        self.issue["body"] = PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n\n## Current Status\n\nUnclaimed.\n"
+        source = {**OTHER, "branch": "work/source-b"}
+        self.comments = [
+            {"id": 81, "body": CLAIM.marker(source), "user": {"login": TEST_BOT}, "created_at": source["claimed_at"]},
+            {"id": 82, "body": "Released claim 81", "user": {"login": TEST_BOT}, "created_at": "2026-10-01T01:00:00Z"},
+        ]
+        self.inventory = {"worktrees": [], "local_branches": [], "remote_branches": []}
+        get_issue = self.get_issue
+
+        def product_read(ref: str, repo: str) -> tuple[str, dict[str, Any]]:
+            self.assertEqual(repo, "client/b")
+            return get_issue(ref, repo)
+
+        with patch.object(self, "get_issue", side_effect=product_read), patch.object(self, "post", side_effect=ordinary_post):
+            self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.assertEqual(closure.lease_state(OTHER["session"])["claim_admission_unknown"], fence)
+
+    def test_unknown_takeover_rejects_foreign_ambiguous_and_missing_operation_evidence(self) -> None:
+        import github_plan_closure as closure
+        for mode in ("foreign_actor", "different_operation", "duplicate", "missing_marker", "missing_claim"):
+            with self.subTest(mode=mode):
+                self.setUp()
+                pending = self.unknown_takeover_fixture()
+                delayed = self.delayed_takeover(pending)
+                if mode == "foreign_actor":
+                    delayed["user"] = {"login": "foreign"}
+                if mode == "different_operation":
+                    delayed = self.delayed_takeover(pending, operation_id=PLAN.github_api_core.new_operation_id())
+                self.comments.append(delayed)
+                if mode == "duplicate":
+                    self.comments.append(self.delayed_takeover(pending, identifier=91))
+                if mode in {"missing_marker", "missing_claim"}:
+                    with closure.ownership(OTHER["session"], create=True):
+                        state = closure.lease_state(OTHER["session"])
+                        key = {"missing_marker": "operation_marker", "missing_claim": "claim"}[mode]
+                        state["claim_admission_unknown"][key] = None
+                        closure.write_lease_state(OTHER["session"], state)
+                with self.assertRaises(PLAN.ClassifiedPlanError) as unresolved:
+                    self.run_claim()
+                self.assertEqual(unresolved.exception.code, "claim_mutation_reconciliation_required")
+                self.assertIn("claim_admission_unknown", closure.lease_state(OTHER["session"]))
+                self.assertEqual(pending["publisher"].call_count, 1)
+
+    def test_a_different_target_receipt_cannot_clear_the_original_operation(self) -> None:
+        import github_plan_closure as closure
+        pending = self.unknown_takeover_fixture()
+        self.comments.append(self.delayed_takeover(pending))
+        with closure.ownership(OTHER["session"], create=True):
+            state = closure.lease_state(OTHER["session"])
+            state["claim_admission_unknown"]["number"] = 99
+            closure.write_lease_state(OTHER["session"], state)
+        fence = copy.deepcopy(state["claim_admission_unknown"])
+        self.run_claim()
+        self.assertEqual(closure.lease_state(OTHER["session"])["claim_admission_unknown"], fence)
+        self.assertEqual(pending["publisher"].call_count, 1)
+
+    def test_a_new_expired_takeover_cannot_overwrite_another_unresolved_operation(self) -> None:
+        import github_plan_closure as closure
+        pending = self.unknown_takeover_fixture()
+        fence = copy.deepcopy(closure.lease_state(OTHER["session"])["claim_admission_unknown"])
+        self.args.issue = "43"
+        self.args.worker, self.args.session, self.args.branch = "third", "third-session", "work/third"
+        self.issue["body"] = PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n\n## Current Status\n\nUnclaimed.\n"
+        source = {**OTHER, "branch": "work/source-b"}
+        self.comments = [{"id": 81, "body": CLAIM.marker(source), "user": {"login": TEST_BOT},
+                          "created_at": source["claimed_at"]}]
+        self.inventory = {"worktrees": [], "local_branches": [], "remote_branches": []}
+        with self.assertRaises(PLAN.ClassifiedPlanError) as unresolved:
+            self.run_claim()
+        self.assertEqual(unresolved.exception.code, "claim_mutation_reconciliation_required")
+        self.assertEqual(closure.lease_state(OTHER["session"])["claim_admission_unknown"], fence)
+        self.assertEqual(pending["publisher"].call_count, 1)
+
+    def test_unknown_takeover_readback_precedes_wait_gates_and_source_renewal(self) -> None:
+        import github_plan_closure as closure
+        for boundary in ("wait", "source_renewed", "closed"):
+            with self.subTest(boundary=boundary):
+                self.setUp()
+                pending = self.unknown_takeover_fixture()
+                self.comments.append(self.delayed_takeover(pending))
+                if boundary == "source_renewed":
+                    LEASE.renew(OTHER["session"])
+                elif boundary == "closed":
+                    self.issue["state"] = "closed"
+                else:
+                    held_wait = wait_record.reviewed(waiting_for="external event", ends_when="event observed",
+                                                     evidence="fixture hold after publication")
+                    self.comments.append({"id": 91, "body": wait_record.marker(held_wait), "user": {"login": TEST_BOT},
+                                          "created_at": datetime.now().astimezone().isoformat()})
+                if boundary == "wait":
+                    before = copy.deepcopy(self.comments[-1])
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as held:
+                        self.run_claim()
+                    self.assertEqual(held.exception.code, "claim_wait_unresolved")
+                    self.assertEqual(self.comments[-1], before)
+                elif boundary == "closed":
+                    with self.assertRaises(PLAN.PlanError):
+                        self.run_claim()
+                    self.assertEqual(self.issue["state"], "closed")
+                else:
+                    self.run_claim()
+                    self.assertEqual(self.emitted.call_args.args[0]["claim"], pending["claim"])
+                self.assertNotIn("claim_admission_unknown", closure.lease_state(OTHER["session"]))
+                self.assertEqual(pending["publisher"].call_count, 1)
+
+    def test_confirmed_rejected_takeovers_do_not_create_an_unknown_fence(self) -> None:
+        import github_plan_closure as closure
+        import github_plan_claim_log as journal
+        import github_read
+        for outcome in ("rejected", "not_started"):
+            with self.subTest(outcome=outcome):
+                self.setUp()
+                self.ended_holder_fixture(released=False)
+                self.lease_fixture("expired")
+                journal.record(OTHER["session"], "owner/repo", 42)
+                failure = github_comment.CommentError("fixture confirmed refusal", failure=PLAN.github_api_core.FailureDetail(
+                    cause="fixture_refusal", message="fixture confirmed refusal", retryable=False,
+                    fallback_eligible=False, disposition="stop", write_outcome=outcome, failed_step="post_claim"))
+                def rejected(_kind: str, _number: int, body: str, **options: Any) -> None:
+                    intent, _ = self.prepare_comment(_number, body, repo=options["repo"])
+                    options["before_create"](intent)
+                    raise failure
+
+                with patch.object(self, "post", side_effect=rejected):
+                    with self.assertRaises(PLAN.PlanError):
+                        self.run_claim()
+                reader = Mock(expected_actor=TEST_BOT, get_json=Mock(return_value={"state": "open"}),
+                              paged_json=Mock(return_value=copy.deepcopy(self.comments)))
+                with patch.object(github_read, "GitHubReader", return_value=reader):
+                    with closure.resume_guard(OTHER["session"]):
+                        pass
+                self.assertNotIn("claim_admission_unknown", closure.lease_state(OTHER["session"]))
+
+    def test_authored_release_source_can_continue_through_successor_publication(self) -> None:
+        import github_plan_closure as closure
+        from concurrent.futures import ThreadPoolExecutor
+        self.ended_holder_fixture()
+        self.lease_fixture("live")
+        continued = set()
+
+        def resume_source() -> None:
+            with closure.resume_guard(OTHER["session"]):
+                pass
+
+        def during(phase: str) -> None:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(resume_source).result()
+            continued.add(phase)
+
+        self.after_post = lambda: during("post")
+        self.after_status = lambda: during("status")
+        with patch.object(closure, "has_current_claim", return_value=True):
+            self.run_claim()
+        self.assertEqual(continued, {"post", "status"})
+
+    def test_expired_takeover_stays_superseded_when_source_continues_and_successor_hands_off(self) -> None:
+        import github_plan_closure as closure
+        import github_plan_claim_log as journal
+        import github_read
+        self.ended_holder_fixture(released=False)
+        self.lease_fixture("expired")
+        journal.record(OTHER["session"], "owner/repo", 42)
+        journal.record(OTHER["session"], "owner/other", 43)
+        self.run_claim()
+        artifacts = copy.deepcopy(self.inventory)
+        remaining = [{"id": 81, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]}]
+
+        def reader(**options: Any) -> Mock:
+            return Mock(expected_actor=TEST_BOT, get_json=Mock(return_value={"state": "open"}),
+                        paged_json=Mock(side_effect=lambda *_a, **_k: copy.deepcopy(
+                            remaining if options["repository"] == "owner/other" else self.comments)))
+
+        with patch.object(github_read, "GitHubReader", side_effect=reader):
+            self.assertTrue(closure.has_current_claim(OWNER["session"]))
+            with closure.resume_guard(OTHER["session"]):
+                pass
+            self.assertEqual(LEASE.state(OTHER["session"]), LEASE.LIVE)
+        successor = next(comment for comment in self.comments if any(record["session"] == OWNER["session"]
+                         for record in CLAIM.records(comment.get("body") or "")))
+        self.comments.append({"id": 91, "body": f"Released claim {successor['id']}", "user": {"login": TEST_BOT},
+                              "created_at": datetime.now().astimezone().isoformat()})
+        self.args.session, self.args.worker, self.args.branch = "session-third", "third", "work/third"
+        self.args.resume_from = successor["id"]
+        self.run_claim()
+        self.assertEqual(self.inventory, artifacts)
+        result = self.emitted.call_args.args[0]
+        self.assertTrue(result["ok"])
+        self.assertTrue(any(artifact["claim_id"] == 71 and artifact["worktrees"] for artifact in result["retained_artifacts"]))
+
+    def test_takeover_supersession_requires_authored_chronological_live_evidence(self) -> None:
+        source = {"id": 71, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]}
+        successor = {**OWNER, "claimed_at": "2026-10-02T00:00:00Z"}
+        directive = CLAIM.lease_takeovers([{**OTHER, "claim_id": source["id"], "evidence": "lease_expired"}])
+        proof = {"id": 72, "body": directive + CLAIM.marker(successor), "user": {"login": TEST_BOT},
+                 "created_at": successor["claimed_at"]}
+        for mode in ("valid", "foreign", "edited_source", "earlier", "quoted", "fenced", "wrong_session", "prose_only"):
+            with self.subTest(mode=mode):
+                first, second = copy.deepcopy(source), copy.deepcopy(proof)
+                if mode == "foreign":
+                    second["user"] = {"login": "foreign"}
+                if mode == "edited_source":
+                    first["updated_at"] = "2026-10-03T00:00:00Z"
+                if mode == "earlier":
+                    second["body"] = directive + CLAIM.marker({**successor, "claimed_at": "2026-09-30T00:00:00Z"})
+                if mode == "quoted":
+                    second["body"] = "> " + directive + CLAIM.marker(successor)
+                if mode == "fenced":
+                    second["body"] = "```\n" + directive + "```\n" + CLAIM.marker(successor)
+                if mode == "wrong_session":
+                    second["body"] = CLAIM.lease_takeovers([{**OTHER, "session": "different-source", "claim_id": 71,
+                                                            "evidence": "lease_expired"}]) + CLAIM.marker(successor)
+                if mode == "prose_only":
+                    second["body"] = directive
+                comments = [first, second, {"id": 73, "body": "Released claim 72", "user": {"login": TEST_BOT},
+                                            "created_at": "2026-10-04T00:00:00Z"}]
+                self.assertEqual(bool(CLAIM.takeover_sources(comments)), mode == "valid")
+                conflicts, _ = CLAIM.discussion_evidence("", comments, {"session": "", "worker": "", "branch": "", "claimed_at": ""})
+                self.assertEqual(any(record.get("record") == OTHER for record in conflicts), mode != "valid")
 
     def test_live_or_unknown_holder_returns_coordination_before_any_write(self):
         for state in ("unknown", "live"):
