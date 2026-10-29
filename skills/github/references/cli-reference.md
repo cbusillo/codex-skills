@@ -1141,6 +1141,16 @@ refuse admission when its wait is clear. The error names its supported
 stays canonical and can differ from `waiting_record.current_status`. This
 diagnostic resolves no wait and supplies no retry authority.
 
+Some first-guard claim refusals also return `recovery_requirements`. Its
+`requirements` entries have unique `kind` and `scope` pairs. Branch exclusions
+name branches already verified as retained, while a retained-source handoff
+entry reports that the existing guard found a handoff necessary. A grouped
+wait-review entry contains the independently observed retained-PR records and
+the supported read-only review command for each scope. This is a partial,
+advisory observation: `admission` remains `UNKNOWN`, later ownership and claim
+guards may not have run, and the result neither establishes readiness nor
+authorizes changing waits or taking custody.
+
 Before the first claim of a legacy issue or PR, read its full body/discussion
 and run `gh-plan.py wait <issue>` for the one-time review report. Record every
 actual person, decision, external-event or prose-only executing-session hold:
