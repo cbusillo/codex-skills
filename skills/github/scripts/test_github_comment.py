@@ -1313,21 +1313,35 @@ def test_concurrent_numbering_reconciles_the_same_saved_body() -> None:
         with_call_stub(callback, run)
 
 
-def test_numbered_questions_are_unchanged_without_counter_access() -> None:
-    for markdown in ("Owner question: Q12. Continue?", "**Director question:** Q13. Continue?",
-                     "***Owner question:*** Q14. Continue?"):
-        def callback(method: str, endpoint: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
-            if endpoint == "/user":
-                return success({"login": "fixture-automation"})
-            if method == "GET":
-                return success([])
-            assert github_comment._canonical_comment_body(body["body"]) == markdown
-            return success(comment_body(1001, body=body["body"]))
+def test_numbered_questions_require_owned_source_or_unbound_reservation() -> None:
+    with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"CODE_HOME": directory}), \
+            patch.object(question_counter, "configured_queue", return_value=None):
+        path = question_counter.counter_path()
+        question_counter.update(path, seed=(10, ["fixture"]), allocate=False)
+        for kind in ("issue", "pr"):
+            number = question_counter.update(path)
+            markdown = f"**Director question:** Q{number}. Continue?"
 
-        def run(_calls: list[dict[str, Any]]) -> None:
-            github_comment.comment("issue", 42, markdown, repo="owner/repo", gh_cmd="fake-gh")
+            def callback(method: str, endpoint: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+                if endpoint == "/user":
+                    return success({"login": "fixture-automation"})
+                if method == "GET":
+                    return success([])
+                return success(comment_body(number, body=body["body"]))
 
-        with patch.object(question_counter, "update", side_effect=AssertionError("already numbered")):
+            def run(calls: list[dict[str, Any]]) -> None:
+                result = github_comment.comment(kind, 42, markdown, repo="owner/repo", gh_cmd="fake-gh")
+                question_counter.verify_number(path, number, result["url"])
+                for text in (markdown, "Director question: Q9999. Invented?"):
+                    before = len([c for c in calls if c["method"] in {"POST", "PATCH"}])
+                    try:
+                        github_comment.comment(kind, 42, text, repo="owner/repo", gh_cmd="fake-gh")
+                    except github_comment.CommentError as error:
+                        assert error.failure.write_outcome == "not_started"
+                    else:
+                        raise AssertionError("invented or reused numbers must fail before publication")
+                    assert len([c for c in calls if c["method"] in {"POST", "PATCH"}]) == before
+
             with_call_stub(callback, run)
 
 
@@ -1344,7 +1358,7 @@ def recording_callback(posted: list[str]) -> Callable[..., github_api.ApiResult]
 
 
 def test_question_refuses_live_mentions_of_anyone_but_the_owner() -> None:
-    quiet = ("Owner question: Q15. Post this?\n\n> <code>@mike-b</code> Fixed, thanks @Owner.\n\n"
+    quiet = ("Owner question: Post this?\n\n> <code>@mike-b</code> Fixed, thanks @Owner.\n\n"
              "Mail a@b.com.")
     posted: list[str] = []
 
@@ -1359,7 +1373,8 @@ def test_question_refuses_live_mentions_of_anyone_but_the_owner() -> None:
         assert not calls, calls
         github_comment.comment("issue", 42, quiet, repo="owner/repo", gh_cmd="fake-gh")
 
-    with_call_stub(recording_callback(posted), run)
+    with patch.object(github_comment, "_number_saved_question", side_effect=lambda payload, *a, **k: payload):
+        with_call_stub(recording_callback(posted), run)
     assert posted == [quiet]
 
 
@@ -1504,11 +1519,19 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
 
                 requested = (github_comment.AGENT_POSTED_LINE + "\r\n\r\nproof") if mode == "crlf_body" else "proof"
                 if mode == "attributed_question":
-                    requested = github_comment.AGENT_POSTED_LINE + "\n\nOwner question: Q123. Decide about <code>@outside</code>?"
+                    counter_file = pathlib.Path(directory) / f"question-{kind}-{mode}.json"
+                    with patch.object(question_counter, "configured_queue", return_value=None):
+                        question_counter.update(counter_file, seed=(10, ["fixture"]), allocate=False)
+                        reserved = question_counter.update(counter_file)
+                    requested = github_comment.AGENT_POSTED_LINE + f"\n\nOwner question: Q{reserved}. Decide about <code>@outside</code>?"
+                    readback["body"] = requested + "\n\n![proof](https://github.com/user-attachments/assets/example)"
                 requested_repo = f"{github_comment.ATTACHMENT_OWNER}/repo"
                 if mode == "canonical_case":
                     requested_repo = requested_repo.upper()
-                with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}), patch.object(
+                counter_file = pathlib.Path(directory) / f"question-{kind}-{mode}.json"
+                with patch.object(question_counter, "counter_path", return_value=counter_file), \
+                        patch.object(question_counter, "configured_queue", return_value=None), \
+                        patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}), patch.object(
                     github_comment.subprocess, "run", side_effect=run
                 ), patch.object(github_comment, "_call_api", side_effect=read_api):
                     try:
@@ -1552,7 +1575,7 @@ TESTS: list[Callable[[], None]] = [
     test_attachment_passthrough_and_failures_never_replay,
     test_concurrent_numbering_reconciles_the_same_saved_body,
     test_question_numbering_follows_confirmed_write_and_repairs_same_assignment,
-    test_numbered_questions_are_unchanged_without_counter_access,
+    test_numbered_questions_require_owned_source_or_unbound_reservation,
     test_question_refuses_live_mentions_of_anyone_but_the_owner,
     test_only_an_unescaped_code_tag_quiets_a_mention,
     test_ordinary_comment_keeps_its_mentions,

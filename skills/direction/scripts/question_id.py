@@ -168,6 +168,36 @@ def validate_counter(state: Any) -> None:
             or any(not isinstance(key, str) or type(number) is not int or not 0 < number <= state["last_id"]
                    for key, number in state.get("questions", {}).items())):
         raise ValueError("Invalid question counter; preserve it and recover its last verified state")
+    reservations = state.get("reservations", {})
+    if (not isinstance(reservations, dict) or any(
+            not isinstance(key, str) or type(number) is not int or not 0 < number <= state["last_id"]
+            for key, number in reservations.items())):
+        raise ValueError("Invalid question reservations; preserve the counter before recovery")
+
+
+def require_number(state: dict[str, Any], number: int, source: str | None = None) -> None:
+    reservations = state.get("reservations", {})
+    owners = {key for key, value in state.get("questions", {}).items() if value == number and key not in reservations}
+    if owners == {source} or (not owners and number in reservations.values()):
+        return
+    raise ValueError(f"Q{number} has no reservation or belongs to another source; use question_id.py next "
+                     "before exact-text approval for a new question; reconcile historical ownership from its trusted source")
+
+
+def verify_number(path: Path, number: int, source: str | None = None) -> None:
+    with path.with_name(path.name + ".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = json.loads(path.read_text())
+        validate_counter(state)
+        repository = state.get("counter_repository")
+        queue = configured_queue()
+        if repository and (not queue or repository != queue.split("#", 1)[0]
+                           or state.get("counter_seed_pending") or not state.get("counter_commit")):
+            raise ValueError("Restore and reconcile the recorded shared counter before checking a question number")
+        if repository:
+            state = read_counter(repository, state["last_id"]).state
+            source = hashlib.sha256(source.encode()).hexdigest() if source else None
+        require_number(state, number, source)
 
 
 def decoded_counter(repo: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -229,7 +259,8 @@ def write_counter(repo: str, sha: str, state: dict[str, Any]) -> str | None:
 
 
 def reserve_question(minimum: int, key: str | None, repo: str | None, *, create: bool = False,
-                     assignments: dict[str, int] | None = None, restore_from: str | None = None) -> Allocation:
+                     assignments: dict[str, int] | None = None, restore_from: str | None = None,
+                     number: int | None = None, reservation: bool = False) -> Allocation:
     if repo is None:
         return Allocation(minimum + int(key is not None))
     request_key = hashlib.sha256(key.encode()).hexdigest() if key is not None else None
@@ -238,18 +269,30 @@ def reserve_question(minimum: int, key: str | None, repo: str | None, *, create:
             snapshot = read_counter(repo, minimum, create=create, restore_from=restore_from, assignments=assignments)
             create, restore_from = False, None
             state = snapshot.state
-            for prior, number in (assignments or {}).items():
-                if prior in state["questions"] and state["questions"][prior] != number:
+            for prior, imported_number in (assignments or {}).items():
+                if prior in state["questions"] and state["questions"][prior] != imported_number:
                     raise ValueError("Prior counters disagree on a question ID; preserve both assignments for reconciliation")
-                state["questions"][prior] = number
+                state["questions"][prior] = imported_number
             if request_key in state["questions"]:
+                if number is not None and state["questions"][request_key] != number:
+                    raise ValueError("Source already owns a different question number")
                 return Allocation(state["questions"][request_key], snapshot.commit_sha)
             state["last_id"] = max(state["last_id"], minimum)
             if request_key is not None:
-                state["last_id"] += 1
-                state["questions"][request_key] = state["last_id"]
+                if number is None:
+                    state["last_id"] += 1
+                    number_to_assign = state["last_id"]
+                else:
+                    require_number(state, number, request_key)
+                    number_to_assign = number
+                    for prior in [k for k, value in state.get("reservations", {}).items() if value == number]:
+                        state["reservations"].pop(prior)
+                        state["questions"].pop(prior, None)
+                state["questions"][request_key] = number_to_assign
+                if reservation:
+                    state.setdefault("reservations", {})[request_key] = number_to_assign
             if commit := write_counter(repo, snapshot.file_sha, state):
-                return Allocation(state["last_id"], commit)
+                return Allocation(state["questions"][request_key] if request_key is not None else state["last_id"], commit)
     except (KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
         raise ValueError("Shared question allocation could not be confirmed; preserve its request and retry after reconciliation") from error
     raise ValueError("Shared counter changed concurrently; preserve the pending request and retry allocation")
@@ -281,7 +324,10 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
 
 def update(path: Path, *, seed: tuple[int, list[str]] | None = None, allocate: bool = True,
            question_url: str | None = None, include_counters: list[dict[str, Any]] | None = None,
-           confirm_prior_counters_complete: bool = False, restore_from: str | None = None) -> int:
+           confirm_prior_counters_complete: bool = False, restore_from: str | None = None,
+           question_number: int | None = None) -> int:
+    if question_number is not None and (not allocate or not question_url or type(question_number) is not int or question_number <= 0):
+        raise ValueError("Binding requires a positive reserved number and its confirmed question URL")
     if restore_from is not None and not re.fullmatch(r"[0-9a-fA-F]{40}", restore_from):
         raise ValueError("Restore requires a verified full counter commit SHA")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -315,6 +361,8 @@ def update(path: Path, *, seed: tuple[int, list[str]] | None = None, allocate: b
                     for url, number in assignments.items())):
                 raise ValueError("Invalid question assignments; preserve the counter before recovery")
             if question_url in assignments:
+                if question_number is not None and assignments[question_url] != question_number:
+                    raise ValueError("Source already owns a different question number")
                 return assignments[question_url]
         number = state["last_id"]
         queue = configured_queue()
@@ -328,14 +376,20 @@ def update(path: Path, *, seed: tuple[int, list[str]] | None = None, allocate: b
             raise ValueError("Counter restoration requires seed, a configured queue and --confirm-prior-counters-complete after reconciling pending writes")
         if allocate:
             key = question_url or state.setdefault("pending_request", uuid.uuid4().hex)
+            if question_number is not None and not repository:
+                require_number(state, question_number, question_url)
             save_state(path, state)
-            allocation = reserve_question(state["last_id"], key, repository)
-            number = allocation.number
+            allocation = reserve_question(state["last_id"], key, repository, number=question_number,
+                                          reservation=question_url is None)
+            number = question_number if question_number is not None and not repository else allocation.number
             state["last_id"] = max(state["last_id"], number)
             if allocation.commit_sha:
                 state["counter_commit"] = allocation.commit_sha
             if question_url is None:
+                state.setdefault("reservations", {})[key] = number
                 state.pop("pending_request", None)
+            else:
+                state["reservations"] = {k: value for k, value in state.get("reservations", {}).items() if value != number}
         elif repository:
             known_history = any(snapshot.get("counter_commit") for snapshot in snapshots)
             for snapshot in snapshots:

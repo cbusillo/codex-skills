@@ -1023,6 +1023,22 @@ def test_attachment_route_enforces_limits_through_real_wrapper() -> None:
             assert result.returncode != 0, (command, changes, result.stdout)
             calls = [json.loads(line)[0] for line in calls_file.read_text().splitlines()]
             assert not any(call[:2] == ["issue", "comment"] for call in calls), calls
+        from skills.direction.scripts import question_id
+        counter_file = root / ".code/director-question-counter.json"
+        with patch.object(question_id, "configured_queue", return_value=None):
+            question_id.update(counter_file, seed=(10, ["fixture"]), allocate=False)
+            reserved = question_id.update(counter_file)
+        numbered = github_comment.AGENT_POSTED_LINE + f"\n\nDirector question: Q{reserved}. Continue?"
+        result = subprocess.run([str(SCRIPT), *args], env=env, input=numbered, text=True, capture_output=True, timeout=15)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        with patch.object(question_id, "configured_queue", return_value=None):
+            question_id.verify_number(counter_file, reserved, result.stdout.strip())
+        for requested_body in (numbered, github_comment.AGENT_POSTED_LINE + "\n\nDirector question: Q9999. Invented?"):
+            calls_file.write_text("")
+            result = subprocess.run([str(SCRIPT), *args], env=env, input=requested_body, text=True, capture_output=True, timeout=15)
+            assert result.returncode != 0
+            calls = [json.loads(line)[0] for line in calls_file.read_text().splitlines()]
+            assert not any(call[:2] == ["issue", "comment"] for call in calls), calls
         original_env = env_file.read_text()
         env_file.write_text(original_env.replace(f"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN={owner}",
                                                 "GH_WITH_ENV_TOKEN_OWN_USER_LOGIN=another-person"))
