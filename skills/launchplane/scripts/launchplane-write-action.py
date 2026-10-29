@@ -3090,7 +3090,7 @@ class _FieldDrops:
         try:
             projected = validate(value)
         except LaunchplaneSafetyError:
-            assert_public_safe_shape(value)
+            assert_public_safe_shape(PublicIdentifier(value) if isinstance(value, str) else value)
             self.drop(path)
             return ""
         assert_public_safe_shape(projected if isinstance(projected, PublicIdentifier) else value)
@@ -3226,6 +3226,119 @@ def _protected_artifact_digest(value: object) -> str:
         raise LaunchplaneSafetyError("invalid_response")
     return digest
 
+PROTECTED_ARTIFACTS_MAX_PROVENANCE_ITEMS = 50
+
+
+def _optional_retained_identifier(value: object) -> str:
+    return _protected_artifact_lane(value, optional=True)
+
+
+def _project_retained_provenance_value(value: object, schema: Any, *, path: str, drops: _FieldDrops) -> Any:
+    if isinstance(schema, dict):
+        if not isinstance(value, dict):
+            drops.drop(path)
+            return None
+        projected: dict[str, object] = {}
+        for _ in value.keys() - schema.keys():
+            drops.drop(f"{path}.<unlisted field>")
+        for key, validate in schema.items():
+            field_path = f"{path}.{key}"
+            if key not in value:
+                drops.drop(field_path)
+                continue
+            item = value[key]
+            if key in {"source_build", "pull_request_number"} and item is None:
+                projected[key] = None
+                continue
+            kept = _project_retained_provenance_value(item, validate, path=field_path, drops=drops)
+            if kept is not None:
+                projected[key] = kept
+        return projected or None
+    if isinstance(schema, list):
+        if not isinstance(value, list):
+            drops.drop(path)
+            return None
+        items = [
+            _project_retained_provenance_value(item, schema[0], path=f"{path}[]", drops=drops)
+            for item in value[:PROTECTED_ARTIFACTS_MAX_PROVENANCE_ITEMS]
+        ]
+        if len(value) > PROTECTED_ARTIFACTS_MAX_PROVENANCE_ITEMS:
+            drops.paths.add(f"{path}[]")
+            drops.count += len(value) - PROTECTED_ARTIFACTS_MAX_PROVENANCE_ITEMS
+        return [item for item in items if item is not None]
+    if value is None or (value == "" and schema is not _optional_retained_identifier):
+        drops.drop(path)
+        return None
+    previous_drop_count = drops.count
+    kept = drops.keep(path, schema, value)
+    return kept if drops.count == previous_drop_count else None
+
+
+def _retained_coverage(drops: _FieldDrops, *, status: str | None = None) -> dict[str, object]:
+    return {
+        "status": status or ("partial" if drops.count else "complete"),
+        "dropped_field_count": drops.count,
+        "dropped_field_paths": sorted(drops.paths),
+    }
+
+
+def _project_retained_identity(entry: dict[str, Any]) -> dict[str, object]:
+    drops = _FieldDrops()
+    fields = {
+        "source_git_ref": _optional_retained_identifier,
+        "image_repository": _optional_retained_identifier,
+        "image_references": [_protected_artifact_identifier],
+    }
+    identity = {key: entry[key] for key in fields if key in entry}
+    projected = _project_retained_provenance_value(identity, fields, path="retained_identity", drops=drops) or {}
+    return {**projected, "identity_coverage": _retained_coverage(drops)}
+
+
+def _retained_workflow_path(value: object) -> str:
+    return public_identifier(value, pattern=re.compile(r"\.github/workflows/[A-Za-z0-9_.-]{1,200}\.ya?ml"))
+
+
+def _project_retained_manifest(value: object) -> dict[str, object]:
+    drops = _FieldDrops()
+    provenance = None
+    status = "unavailable"
+    if isinstance(value, dict) and type(value.get("schema_version")) is int and value["schema_version"] in {1, 2}:
+        image = {"repository": _protected_artifact_lane, "digest": _protected_artifact_digest, "tags": [_protected_artifact_lane]}
+        source_pair = {"source_repository": _optional_retained_identifier, "source_ref": _optional_retained_identifier}
+        fields = {
+            "schema_version": _positive_int,
+            "source_commit": _public_commit_sha,
+            "image": image,
+            "build_provenance": {
+                "base_images": [{"role": public_code, "image": image, **source_pair}],
+                "build_tools": [{"name": _protected_artifact_lane, "version": _optional_retained_identifier, **source_pair}],
+            },
+            "addon_sources": [{"repository": _protected_artifact_lane, "ref": _protected_artifact_lane}],
+            "addon_selectors": [{"repository": _protected_artifact_lane, "selector": _protected_artifact_lane, "resolved_ref": _protected_artifact_lane}],
+            "source_build": {
+                "repository": _protected_artifact_lane,
+                "repository_id": _protected_artifact_lane,
+                "workflow_path": _retained_workflow_path,
+                "event": public_code,
+                "purpose": public_code,
+                "pull_request_number": _positive_int,
+                "run_id": _positive_int,
+                "run_attempt": _positive_int,
+                "github_artifact_id": _positive_int,
+                "manifest_artifact_id": _protected_artifact_identifier,
+            },
+        }
+        provenance = _project_retained_provenance_value(value, fields, path="manifest_provenance", drops=drops)
+        status = "partial" if drops.count else "complete"
+    elif value is not None:
+        drops.drop("manifest_provenance")
+        status = "unsupported"
+    return {
+        "manifest_provenance": provenance,
+        "manifest_provenance_coverage": _retained_coverage(drops, status=status),
+    }
+
+
 def _project_protected_artifacts(value: object) -> dict[str, object]:
     source = _require_dict(value)
     entries = source.get("entries")
@@ -3245,6 +3358,8 @@ def _project_protected_artifacts(value: object) -> dict[str, object]:
                 public_identifier(entry.get("source_record_id"))
             ),
             "image_digest": _protected_artifact_digest(entry.get("image_digest")),
+            **_project_retained_identity(entry),
+            **_project_retained_manifest(entry.get("manifest_provenance")),
         })
     projected = {
         "product": _protected_artifact_lane(source.get("product")),

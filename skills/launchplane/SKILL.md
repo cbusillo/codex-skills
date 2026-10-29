@@ -1309,12 +1309,9 @@ reviewed-inspect procedure and verify the situation.
   [read contract](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads)
   before interpreting product health or release readiness.
 - `GET /v1/artifacts/protected`: Bounded helper read
-  (`protected-artifacts-read --product P [--context C]`) of protected artifacts:
-  per-entry reason, context, instance, artifact id, source record type and id,
-  and image digest. It returns sanitized warning texts, total entry and warning
-  counts, and truncation flags. Image reference lists, URLs and other provider fields are
-  dropped. Identifier validation and retention limits follow the
-  [helper contract](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads).
+  (`protected-artifacts-read --product P [--context C]`). Read the
+  [helper contract](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads)
+  for projected provenance, omission coverage, redaction and retention limits.
 - `GET /v1/product-profiles/{product}`: Bounded helper read
   (`product-profile-read --product`) for who a product's Client is and its
   `production_use` and `release_on_acceptance` metadata. For release authority,
