@@ -297,6 +297,8 @@ class Ingress:
                                             raise ValueError("started native thread identity is unavailable")
                                         require_native_identity(target)
                                         owned = acquire({target}, "thread/start")
+                                        if self.launch_metadata and isinstance(thread, dict) and thread.get("path"):
+                                            session = target
                                     except (OSError, ValueError) as error:
                                         raw = json.dumps({"id": identity, "error": {"code": -32603,
                                             "message": "native thread start succeeded but its ownership lease was not created: " + str(error)}})

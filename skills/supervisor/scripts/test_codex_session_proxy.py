@@ -4,6 +4,7 @@
 # ///
 """Real argv, private sockets and a disposable native client exercise ingress ownership."""
 import asyncio
+from argparse import Namespace
 import json
 import os
 from pathlib import Path
@@ -34,6 +35,54 @@ class ReceiptFixture(HistoricalReceiptFixture):
 
 
 class IngressTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fresh_thread_publishes_native_identity_for_launch_ledger(self) -> None:
+        import iterm_tab
+        import session_liveness
+        f = ReceiptFixture()
+        f.__enter__()
+        self.addCleanup(f.__exit__)
+        f.rpc_results["thread/start"] = {"thread": {"id": f.session, "path": str(f.transcript)}}
+        task, request, response, _ = await self.start_client(f, external=True)
+        try:
+            self.assertIn("result", await self.send(task, request, response, "thread/start", None))
+            rows = [row for row in closure.log_rows() if row.get("session_id") == f.session]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["resumed_generation"]["transcript"], str(f.transcript))
+            self.assertTrue(rows[0]["resumed_generation"]["launch_generation"])
+            processes = [(int(line.split()[0]), "?", line.split(maxsplit=1)[1])
+                         for line in f.commands.splitlines() if line.split()]
+            ledger = f.root / "launch-ledger.json"
+            receipt = {"session_id": "terminal-id", "tty": "/dev/?", "window_id": "window", "tab_id": "tab"}
+            choice = {"provider": "openai", "env": {"CODEX_HOME": str(f.home)}}
+            with patch.object(session_liveness, "inventory", return_value=processes):
+                await iterm_tab.register_fresh_launch(Namespace(ledger=ledger), receipt, choice)
+            entry = json.loads(ledger.read_text())[0]
+            self.assertEqual(entry["session_id"], f.session)
+            self.assertEqual(entry["iterm_session_id"], receipt["session_id"])
+            self.assertEqual(entry["transcript"], str(f.transcript))
+            self.assertTrue(receipt["ledger_recorded"])
+            with self.assertRaises(ValueError):
+                iterm_tab.append_launch_ledger(ledger, entry)
+            self.assertEqual(len(json.loads(ledger.read_text())), 1)
+        finally:
+            (f.root / "stop").touch()
+            await asyncio.wait_for(task, 8)
+
+    def test_concurrent_launch_ledger_appends_preserve_both_workers(self) -> None:
+        import iterm_tab
+        f = ReceiptFixture()
+        f.__enter__()
+        self.addCleanup(f.__exit__)
+        ledger = f.root / "launch-ledger.json"
+        entries = []
+        for identity in (f.session, OTHER_THREAD):
+            transcript = f.home / "sessions" / (identity + ".jsonl")
+            transcript.write_text(f.transcript.read_text().replace(f.session, identity))
+            entries.append({**f.entry, "session_id": identity, "transcript": str(transcript)})
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(lambda entry: iterm_tab.append_launch_ledger(ledger, entry), entries))
+        self.assertEqual({row["session_id"] for row in json.loads(ledger.read_text())}, {f.session, OTHER_THREAD})
+
     async def test_tmux_launch_reattachment_finishes_with_or_without_a_queue_nudge(self) -> None:
         import iterm_tab
         import session_liveness

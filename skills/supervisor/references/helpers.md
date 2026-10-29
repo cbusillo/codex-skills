@@ -1336,6 +1336,18 @@ environment prefixes. `agy` uses its native `--prompt-interactive` option;
 Codex and Claude take one positional prompt after `--`. Keep prompt options
 out of the command file. Shell wrappers, extra commands, trailing shell punctuation
 and shell comments refuse because they may discard the prompt.
+For fresh managed Codex `--remote` workers on either terminal backend, add
+`--ledger /private/launch-ledger.json`. The existing ingress publishes the
+native thread ID and transcript with its process generation; the launcher
+waits for that exact generation and atomically appends a validated owned row,
+preserving concurrent appends. Its receipt includes `native_session_id`,
+`transcript` and `ledger_recorded`; terminal `session_id` keeps its existing meaning.
+Other fresh launch modes keep their existing recording procedure.
+A registration failure after submission names the terminal and requires
+inspection before any retry. Do not relaunch it or construct a replacement row.
+First-screen verification and all shutdown checks still apply. To inspect the
+published metadata directly, use `codex-session.py status --launch-generation
+<generation> --codex-home <selected-home>` instead of transcript globbing.
 For an exact-source recovery without command/brief files, use the documented
 [`new --resume-session-id` route](#release-a-verified-finished-session).
 Empty, whitespace-only, missing or unreadable briefs

@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 import errno
 import json
+import importlib
 import os
 import re
 import shlex
@@ -1356,8 +1357,8 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
     """Validate the full batch and prepare accounts before creating terminals."""
     if getattr(args, "resume_session_id", None):
         return prepare_resume(args)
-    if getattr(args, "ledger", None):
-        raise ValueError("new --ledger requires --resume-session-id")
+    if getattr(args, "ledger", None) and getattr(args, "account_provider", None) != "openai":
+        raise ValueError("fresh --ledger registration needs --account-provider openai")
     if not getattr(args, "command_file", None):
         raise ValueError("new launches require --command-file or --resume-session-id")
     if getattr(args, "require_browser", False) and getattr(args, "without_browser", False):
@@ -1367,6 +1368,12 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         raise ValueError("--require-browser needs --account-provider anthropic or openai")
     files = args.command_file if isinstance(args.command_file, list) else [args.command_file]
     command_texts = [read_launch_text(path).rstrip("\n") for path in files]
+    if getattr(args, "ledger", None):
+        import session_record
+        if args.ledger.exists():
+            session_record.load_ledger(args.ledger)
+        if any(not codex_daemon_without_ingress(text) for text in command_texts):
+            raise ValueError("fresh --ledger registration needs managed Codex --remote launches")
     for text in command_texts:
         validate_text(text)
     brief_files = getattr(args, "brief_file", None)
@@ -1556,6 +1563,53 @@ def source_launch_metadata(result, choice):
     return result
 
 
+def append_launch_ledger(path: Path, entry: dict) -> None:
+    github_plan_closure = importlib.import_module("github_plan_closure")
+    import session_record
+    session_record.session_status(entry)
+    with github_plan_closure.store_lock(path, create=True):
+        entries = session_record.load_ledger(path) if path.exists() else []
+        if any(row["session_id"] == entry["session_id"] for row in entries):
+            raise ValueError("native session is already in the launch ledger; inspect before retry")
+        entries = json.loads(path.read_text()) if path.exists() else []
+        with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump([*entries, entry], stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+async def register_fresh_launch(args: argparse.Namespace, result: dict, choice: dict | None) -> None:
+    path = getattr(args, "ledger", None)
+    if not isinstance(path, Path) or getattr(args, "resume_session_id", None):
+        return
+    github_plan_closure = importlib.import_module("github_plan_closure")
+    deadline = time.monotonic() + LAUNCH_TIMEOUT
+    while True:
+        try:
+            source_launch_metadata(result, choice)
+            native = github_plan_closure.launch_status(result["launch_generation"], Path(result["codex_home"]))
+            if (native["tty"].removeprefix("/dev/") != result["tty"].removeprefix("/dev/")
+                    or native["launch_pid"] != result["launch_pid"]):
+                raise ValueError("native launch metadata differs from this terminal")
+            break
+        except (KeyError, OSError, ValueError) as error:
+            if time.monotonic() >= deadline:
+                raise ValueError("launch submitted but native identity unavailable; inspect this terminal before retry: " + str(error)) from error
+            await asyncio.sleep(0.2)
+    terminal_id = result["session_id"]
+    entry = {**result, **native, "harness": "codex", "supervisor_owned": True,
+             "tmux_session_id" if result.get("backend") == "tmux" else "iterm_session_id": terminal_id}
+    entry.pop("launch_identity_unavailable", None)
+    append_launch_ledger(path, entry)
+    result.update(native_session_id=native["session_id"], transcript=native["transcript"], ledger_recorded=True)
+    result.pop("launch_identity_unavailable", None)
+
+
 def cancel_unsubmitted_gui(choice, progress):
     if choice and "gui" in choice and progress["submission"] == "not_attempted":
         gui = choice["gui"]
@@ -1718,6 +1772,10 @@ async def operate(app, args):
                 except (AttributeError, OSError, ValueError):
                     result["launch_identity_unavailable"] = True
                 source_launch_metadata(result, choice)
+            try:
+                await register_fresh_launch(args, result, choice)
+            except (OSError, ValueError, TypeError) as error:
+                raise LaunchFailure(results, {**progress, "phase": "register_ledger", "launch": result}, error) from error
             results.append(result)
         return results[0] if len(results) == 1 else results
     if args.command == "window" and previous_tab:
@@ -1855,7 +1913,7 @@ def main():
     new.add_argument("--brief-file", type=Path, action="append",
                      help="nonempty prompt to append as one argument; one per command file, in launch order")
     new.add_argument("--resume-session-id", help="resume one exact Supervisor-owned Codex source from --ledger")
-    new.add_argument("--ledger", type=Path, help="private source ledger for --resume-session-id")
+    new.add_argument("--ledger", type=Path, help="private source ledger for resume or atomic fresh managed Codex registration")
     new.add_argument(
         "--account-provider",
         required=True,

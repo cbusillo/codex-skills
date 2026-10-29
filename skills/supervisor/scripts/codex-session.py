@@ -43,6 +43,9 @@ def run(args) -> int:
             native = native[1:]
         native = managed_argv(home, native)
         return asyncio.run(run_client(home, native))
+    if args.command == "status" and getattr(args, "launch_generation", None):
+        print(json.dumps(closure.launch_status(args.launch_generation, args.codex_home)))
+        return 0
     canonical = str(uuid.UUID(args.session_id))
     if canonical != args.session_id:
         raise ValueError(f"use the canonical native thread UUID {canonical}")
@@ -73,6 +76,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("launch", "native", "resume", "queue", "queue-cancel", "status"))
     parser.add_argument("--session-id")
+    parser.add_argument("--launch-generation")
     parser.add_argument("--codex-home", type=Path)
     parser.add_argument("--proxy", type=Path)
     parser.add_argument("--proxy-parent", type=int)
@@ -87,7 +91,9 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true")
     args, native = parser.parse_known_args()
     args.native_args = native
-    if args.command not in {"launch", "native"} and (native or not args.session_id):
+    if args.launch_generation and (args.command != "status" or args.session_id or not args.codex_home):
+        parser.error("--launch-generation needs status --codex-home, without --session-id")
+    if args.command not in {"launch", "native"} and (native or not (args.session_id or args.launch_generation)):
         parser.error("use --session-id with resume, queue or status; native argv belongs to launch")
     if args.command != "status" and args.codex_home is None:
         parser.error("resume and queue require --codex-home")
