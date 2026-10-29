@@ -2031,26 +2031,21 @@ def test_graph_wait_ancestry_keeps_intermediate_nodes_and_one_capacity_frontier(
 
 
 TESTS = [
+    test_graph_wait_ancestry_keeps_intermediate_nodes_and_one_capacity_frontier,
     test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output,
     test_bare_reference_missing_here_keeps_post_merge_evidence_complete,
     test_active_post_merge_read_gaps_remain_visible_on_selection_candidates,
     test_local_and_global_next_exclude_stale_landing_but_keep_split_work,
     test_global_adjacent_notes_preserve_absence_and_pending_clauses,
-
     test_global_wait_comments_named_actors_and_wrapped_urls_use_own_evidence,
-
-
     test_global_no_wait_notes_do_not_park_active_work,
     test_global_unowned_authorization_holds_never_become_candidates_or_stale,
     test_global_cross_repo_link_label_does_not_create_a_local_reference,
     test_global_parent_only_stale_wait_moves_out_of_current_waiting,
-
     test_global_waits_belong_to_their_own_open_waiting_issue,
     test_global_agent_only_waits_are_unowned_and_real_holds_stay_parked,
     test_global_stale_wait_report_reuses_merged_pr_proof_and_refuses_capacity,
     test_global_wait_reference_budget_and_auth_stop_are_explicit,
-
-
     test_client_track_precedence_keeps_real_membership_and_completed_assignments,
     test_client_requests_rank_with_product_without_changing_order_or_authority,
     test_client_requests_inherit_native_product_track_and_still_need_reviews,
@@ -2070,15 +2065,10 @@ TESTS = [
     test_inbound_scan_bounds_and_partial_reads_are_explicit,
     test_inbound_unclassified_failure_degrades_report_but_quota_stops,
     test_portfolio_nonempty_unparsed_direction_and_local_only_flags_refuse,
-
     test_portfolio_discovery_preserves_parent_waits_and_ancestry_discussions,
-
     test_portfolio_empty_milestones_and_unspecified_wait_are_supported,
-
     test_portfolio_nontrack_direction_issues_and_repository_milestone_order,
     test_portfolio_repository_inventory_truncation_and_auth_failure,
-
-
     test_portfolio_inventory_failure_and_scan_bound_never_claim_full_coverage,
     test_next_beta_rc_stable_chain_respects_native_blockers,
     test_next_excludes_non_actionable_states_with_reasons,
@@ -2151,8 +2141,10 @@ def test_milestone_order_detection_preserves_additional_human_holds() -> None:
     assert shared.milestone_wait_evidence(item, "Waiting for: Alex to test; since 2026-08-20", ["First"])["since"] == "2026-08-20"
 
 
-TESTS.extend([test_milestone_order_detection_preserves_additional_human_holds,  test_milestone_order_wait_is_a_finding_and_remains_available,
-              ])
+TESTS.extend([
+    test_milestone_order_detection_preserves_additional_human_holds,
+    test_milestone_order_wait_is_a_finding_and_remains_available,
+])
 
 
 def test_discovered_milestone_wait_remains_available_and_cannot_admit_tooling() -> None:
@@ -2202,10 +2194,11 @@ def test_unmatched_local_milestone_keeps_its_recorded_wait() -> None:
         assert next(item for item in result["excluded"] if item["number"] == 120)["exclusion"] == "wait_review_required"
 
 
-TESTS.extend([test_discovered_milestone_wait_remains_available_and_cannot_admit_tooling,
-              test_supported_wait_forms_and_person_work_do_not_become_ordering_findings,
-              test_unmatched_local_milestone_keeps_its_recorded_wait,
-              ])
+TESTS.extend([
+    test_discovered_milestone_wait_remains_available_and_cannot_admit_tooling,
+    test_supported_wait_forms_and_person_work_do_not_become_ordering_findings,
+    test_unmatched_local_milestone_keeps_its_recorded_wait,
+])
 
 
 def test_invalid_discovered_parent_wait_delegates_to_its_child() -> None:
@@ -2236,8 +2229,7 @@ def test_multiline_wait_and_literal_milestone_wait_have_opposite_results() -> No
     assert not shared.milestone_wait_evidence({"repo": "someone/business", "number": 10, "url": "https://github.com/someone/business/issues/10"}, "State: Waiting on Alex", ["Launch"])["valid"]
 
 
-TESTS.extend([
-              test_multiline_wait_and_literal_milestone_wait_have_opposite_results])
+TESTS.extend([test_multiline_wait_and_literal_milestone_wait_have_opposite_results])
 
 
 def test_milestone_scope_still_recognizes_other_listed_milestone_waits() -> None:
@@ -2298,8 +2290,10 @@ def test_blocked_wait_and_unknown_start_do_not_become_available_or_dated() -> No
         assert evidence["since"] == "2026-08-20"
 
 
-TESTS.extend([test_discovery_preserves_valid_waits_above_invalid_child_or_parent_waits,
-              test_blocked_wait_and_unknown_start_do_not_become_available_or_dated])
+TESTS.extend([
+    test_discovery_preserves_valid_waits_above_invalid_child_or_parent_waits,
+    test_blocked_wait_and_unknown_start_do_not_become_available_or_dated,
+])
 
 
 def test_excluded_unrelated_wait_failure_preserves_ordinary_coverage() -> None:
@@ -2333,8 +2327,10 @@ def test_unmatched_parent_wait_does_not_emit_internal_exclusion() -> None:
         assert "_own_exclusion" not in item
 
 
-TESTS.extend([test_excluded_unrelated_wait_failure_preserves_ordinary_coverage,
-              test_unmatched_parent_wait_does_not_emit_internal_exclusion])
+TESTS.extend([
+    test_excluded_unrelated_wait_failure_preserves_ordinary_coverage,
+    test_unmatched_parent_wait_does_not_emit_internal_exclusion,
+])
 
 
 def test_waiting_pr_does_not_become_an_invalid_issue_wait() -> None:
@@ -2423,11 +2419,13 @@ def test_named_next_actor_or_absence_keeps_a_stated_precondition() -> None:
         assert next(item for item in result["excluded"] if item["number"] == 2)["exclusion"] == "wait_review_required"
 
 
-TESTS.extend([test_milestone_agent_work_behind_bookkeeping_blocker_ranks_first,
-              test_global_scan_diagnostic_counts_all_allowances_and_limit_only_caps_results,
-              test_milestone_summary_names_each_wait_when_no_milestone_work_is_listed,
-              test_named_next_actor_or_absence_keeps_a_stated_precondition,
-              test_track_whose_next_action_belongs_to_a_person_is_not_agent_work])
+TESTS.extend([
+    test_milestone_agent_work_behind_bookkeeping_blocker_ranks_first,
+    test_global_scan_diagnostic_counts_all_allowances_and_limit_only_caps_results,
+    test_milestone_summary_names_each_wait_when_no_milestone_work_is_listed,
+    test_named_next_actor_or_absence_keeps_a_stated_precondition,
+    test_track_whose_next_action_belongs_to_a_person_is_not_agent_work,
+])
 
 
 def test_incident_leaves_beyond_ordinary_scan_keep_native_priority_and_review() -> None:
@@ -2475,8 +2473,10 @@ def test_incident_paths_stop_whole_parent_waits_and_report_bounds_and_cycles() -
             assert ("someone/live", 91) not in reads
 
 
-TESTS.extend([test_incident_leaves_beyond_ordinary_scan_keep_native_priority_and_review,
-              test_incident_paths_stop_whole_parent_waits_and_report_bounds_and_cycles])
+TESTS.extend([
+    test_incident_leaves_beyond_ordinary_scan_keep_native_priority_and_review,
+    test_incident_paths_stop_whole_parent_waits_and_report_bounds_and_cycles,
+])
 
 
 def test_incident_leaf_in_direction_inventory_is_not_a_track_exclusion() -> None:
@@ -2581,8 +2581,10 @@ def test_local_identity_refused_relationships_degrade_and_credentials_stop() -> 
                     raise AssertionError("credential/actor failures must still stop selection")
 
 
-TESTS.extend([test_identity_refused_graph_node_keeps_other_milestone_candidates,
-              test_local_identity_refused_relationships_degrade_and_credentials_stop])
+TESTS.extend([
+    test_identity_refused_graph_node_keeps_other_milestone_candidates,
+    test_local_identity_refused_relationships_degrade_and_credentials_stop,
+])
 
 
 def test_parallel_global_graph_preserves_selection_waits_and_coverage() -> None:
@@ -2823,16 +2825,18 @@ def test_global_milestone_backend_receipt_contributes_actual_attempts() -> None:
         assert module.CURRENT_RETRY_SUMMARY.elapsed_wait == backend.elapsed_wait
 
 
-TESTS.extend([test_required_proof_root_preserves_provider_and_credential_stop_policy,
-              test_global_milestone_backend_receipt_contributes_actual_attempts,
-              test_graph_read_ahead_is_bounded_beyond_a_deep_scan_frontier,
-              test_enrollment_helper_does_not_launch_after_inherited_deadline,
-              test_global_read_wrapper_coalesces_gets_and_classifies_actual_deadlines,
-              test_one_worker_discovery_reads_each_discussion_once,
-              test_parallel_wait_reports_preserve_stale_frozen_and_unavailable_evidence,
-              test_global_reserves_final_evidence_time_without_claiming_a_complete_scan,
-              test_global_zero_comment_summary_avoids_only_proven_empty_discussion_read,
-              test_parallel_global_graph_preserves_selection_waits_and_coverage])
+TESTS.extend([
+    test_required_proof_root_preserves_provider_and_credential_stop_policy,
+    test_global_milestone_backend_receipt_contributes_actual_attempts,
+    test_graph_read_ahead_is_bounded_beyond_a_deep_scan_frontier,
+    test_enrollment_helper_does_not_launch_after_inherited_deadline,
+    test_global_read_wrapper_coalesces_gets_and_classifies_actual_deadlines,
+    test_one_worker_discovery_reads_each_discussion_once,
+    test_parallel_wait_reports_preserve_stale_frozen_and_unavailable_evidence,
+    test_global_reserves_final_evidence_time_without_claiming_a_complete_scan,
+    test_global_zero_comment_summary_avoids_only_proven_empty_discussion_read,
+    test_parallel_global_graph_preserves_selection_waits_and_coverage,
+])
 
 
 def test_waiting_and_stale_nodes_preserve_independent_native_work() -> None:
@@ -2908,9 +2912,11 @@ def test_newly_reached_unread_relationships_degrade_coverage_with_issue_evidence
     assert bounded["truncated"] and not bounded["dependency_context"]["complete"]
 
 
-TESTS.extend([test_waiting_and_stale_nodes_preserve_independent_native_work,
-              test_waited_route_does_not_hide_an_independently_linked_leaf,
-              test_newly_reached_unread_relationships_degrade_coverage_with_issue_evidence])
+TESTS.extend([
+    test_waiting_and_stale_nodes_preserve_independent_native_work,
+    test_waited_route_does_not_hide_an_independently_linked_leaf,
+    test_newly_reached_unread_relationships_degrade_coverage_with_issue_evidence,
+])
 
 
 def test_explicit_independent_child_keeps_other_waits_and_ancestry() -> None:
@@ -3005,8 +3011,10 @@ def test_held_subtree_blocker_keeps_earliest_milestone_and_prefetch_order() -> N
         assert reads.count((blocker["repo"], 12)) == 1
 
 
-TESTS.extend([test_direct_blockers_preserve_legacy_and_explicit_whole_plan_holds,
-              test_held_subtree_blocker_keeps_earliest_milestone_and_prefetch_order])
+TESTS.extend([
+    test_direct_blockers_preserve_legacy_and_explicit_whole_plan_holds,
+    test_held_subtree_blocker_keeps_earliest_milestone_and_prefetch_order,
+])
 
 
 def test_tracking_wait_summary_does_not_hold_its_direct_blocker() -> None:
@@ -3037,8 +3045,10 @@ def test_local_next_uses_current_wait_and_native_graph_over_old_labels() -> None
     assert waiting["derived"]["waits"] == person_wait["waits"], waiting
 
 
-TESTS.extend([test_local_next_uses_current_wait_and_native_graph_over_old_labels,
-              test_unstatused_scope_is_review_work_without_becoming_a_person_wait])
+TESTS.extend([
+    test_local_next_uses_current_wait_and_native_graph_over_old_labels,
+    test_unstatused_scope_is_review_work_without_becoming_a_person_wait,
+])
 
 
 def test_local_next_comment_limit_keeps_unread_discussion_under_review() -> None:
@@ -3093,8 +3103,10 @@ def test_local_next_comment_read_failure_is_wait_review_not_unknown_dependencies
     assert not observed["blocked_by"], observed
 
 
-TESTS.extend([test_local_next_comment_limit_keeps_unread_discussion_under_review,
-              test_local_next_comment_read_failure_is_wait_review_not_unknown_dependencies])
+TESTS.extend([
+    test_local_next_comment_limit_keeps_unread_discussion_under_review,
+    test_local_next_comment_read_failure_is_wait_review_not_unknown_dependencies,
+])
 
 
 def test_global_next_reads_milestone_proofs_before_a_descendant_uses_the_scan_budget() -> None:

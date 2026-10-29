@@ -445,11 +445,15 @@ def test_milestone_availability_flag_requires_complete_current_evidence() -> Non
     assert rank(False)[flag] is False
     for state, expected in [('underway', True), ('waiting', True), ('needs_status', None), ('review', None)]:
         row['queue']['state'] = state
+        row['queue']['reason'] = 'recorded_next_actor'
         result = rank()
         assert result[flag] is expected, (state, result)
         assert not result['available_candidates']
         assert rank(False)[flag] is None
     row['queue']['state'] = 'underway'
+    row['wait_evidence_complete'] = False
+    assert rank()[flag] is None
+    row.pop('wait_evidence_complete')
     row['discussion']['complete'] = False
     assert rank()[flag] is None
     row['discussion']['complete'] = True
@@ -461,9 +465,13 @@ def test_milestone_availability_flag_requires_complete_current_evidence() -> Non
     graph['dependency_context']['complete'] = True
     graph['candidates'] = []
     graph['excluded'] = [row]
-    for exclusion in ['unknown_dependencies', 'unknown_ancestry', 'dependency_cycle', 'wait_review_required', 'stale_needs_review', 'scope_review_required']:
-        row['exclusion'] = exclusion
-        assert rank()[flag] is None
+    raw = cli.global_issue('owner/repo', row['number'], labels=[cli.load_module().DEFAULT_CONFIG['labels']['blocked']],
+                           milestone=row['milestone'])
+    _, excluded = direction.evaluate_next_plan(raw, config=cli.load_module().DEFAULT_CONFIG,
+                                               focus=None, relationships=cli.relationships())
+    excluded.update(discussion=row['discussion'], via=row['via'])
+    graph['excluded'] = [excluded]
+    assert rank()[flag] is None
     graph['excluded'] = []
     assert rank()[flag] is True
 
@@ -477,7 +485,7 @@ def test_global_flag_precedes_family_and_display_filters() -> None:
         with cli.global_fixture([root], [leaf], edges) as (module, result, _reads):
             args = cli.next_args()
             args.agent = family
-            args.limit = 0
+            args.limit = 1
             def annotate(rows: list[dict], _args: object) -> dict:
                 for row in rows:
                     row['queue'] = {'state': 'available'}
@@ -486,6 +494,33 @@ def test_global_flag_precedes_family_and_display_filters() -> None:
             module.cmd_next(args)
         assert not result['available_candidates']
         assert result['all_listed_milestones_have_no_available_item'] is False
+
+
+def test_global_flag_settles_unrelated_exclusions_but_not_unread_milestone_waits() -> None:
+    root = cli.track('someone/direction', 1, 'First')
+    leaf = cli.global_issue('someone/business', 2, waiting_for='Client tests the candidate')
+    blocked = cli.global_issue('someone/tools', 3)
+    blocker = cli.global_issue('someone/tools', 4)
+    parked = cli.global_issue('someone/tools', 5, waiting_for='Director tests hardware')
+    edges = {(root['repo'], root['number']): cli.relationships(sub_issues=[leaf]),
+             (blocked['repo'], blocked['number']): cli.relationships(blocked_by=[blocker]),
+             (blocker['repo'], blocker['number']): cli.relationships(blocking=[blocked])}
+    flag = 'all_listed_milestones_have_no_available_item'
+    with cli.global_fixture([root], [leaf, blocked, blocker, parked], edges,
+                            discovered=[blocked, blocker, parked]) as (module, result, _reads):
+        module.load_direction = lambda *_: '# Direction\n## Milestones\n- `First`\n'
+        module.cmd_next(cli.next_args())
+        assert result[flag] is True, result
+        original = module.next_wait_context
+
+        def unread(*args: object, **kwargs: object) -> dict:
+            report = original(*args, **kwargs)
+            report['unavailable'].append({'repo': leaf['repo'], 'number': leaf['number']})
+            return report
+
+        module.next_wait_context = unread
+        module.cmd_next(cli.next_args())
+        assert result[flag] is None
 
 
 if __name__ == '__main__':

@@ -2438,7 +2438,8 @@ complete by default. `--repo-limit`, `--repository-issue-limit`, `--comment-limi
 and `--scan-limit` opt into partial evidence, with no family or held-repository
 allowances. `candidate_coverage` reports incomplete source, traversal or ownership
 coverage and known omitted repositories/counts. An explicit milestone scope
-remains a ranking filter and cannot establish portfolio capacity admission.
+remains a ranking filter and keeps the portfolio-wide availability flag null
+unless known available milestone work makes it false.
 Every candidate has `overall_milestone_context` with `matched`, `none_found` or
 `unknown`, titles and its evidence source. Matches require a native Track
 path/ancestry/blocking target or an open issue milestone title listed in both repository and

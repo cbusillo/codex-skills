@@ -5741,10 +5741,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         node = future.result()
         item = node["item"]
         reason = item.get("exclusion")
-        wait = github_direction_next.milestone_wait_evidence(item, node.get("status_text") or "", titles)
-        listed_wait = reason in {"waiting", "wait_review_required"} and ((item.get("milestone") or {}).get("title") in titles or not wait["valid"])
-        if ((not reason or listed_wait)
-                and reason not in {"completed", "pull_request", "unknown_dependencies"}):
+        if reason not in {"completed", "pull_request"}:
             if "parent" not in seeds.get(key, {}):
                 parent_observation(key)
 
@@ -5970,10 +5967,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             item: dict[str, Any] = {**node["item"], "source": "repository_discovery"}
             original_exclusion = item.get("exclusion")
             ordinary_discussion_complete = bool((item.get("discussion") or {}).get("complete"))
-            status_text = node.get("status_text") or ""
-            wait_evidence = github_direction_next.milestone_wait_evidence(item, status_text, titles)
-            listed_wait = original_exclusion in {"waiting", "wait_review_required"} and ((item.get("milestone") or {}).get("title") in titles or not wait_evidence["valid"])
-            if (not original_exclusion or listed_wait) and item.get("exclusion") not in {"completed", "pull_request", "unknown_dependencies"}:
+            wait_evidence = github_direction_next.milestone_wait_evidence(item, node.get("status_text") or "", titles)
+            if item.get("exclusion") not in {"completed", "pull_request"}:
                 exclusion = item.get("exclusion")
                 item = with_ancestry(item)
                 preserve_ancestry = exclusion in {"waiting", "wait_review_required"} and (
@@ -6023,7 +6018,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         incident_node = read_node(issue_repo, number)
         incident_item = incident_node["item"]
         exclusion = incident_item.get("exclusion")
-        if (exclusion in {None, "blocked_by_open_dependency", "delegated_to_open_sub_issues"}) and exclusion not in {"completed", "pull_request", "unknown_dependencies"}:
+        if exclusion not in {"completed", "pull_request"}:
             incident_item = with_ancestry(incident_item)
             if exclusion and exclusion not in {"blocked_by_open_dependency", "delegated_to_open_sub_issues"}:
                 incident_item["exclusion"] = exclusion
@@ -6076,8 +6071,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         for entry in [*ranked["candidates"], *discoveries]}.values()), args)
     for item in pull_items:
         discussion = item.get("discussion") or {}
-        if discussion:
-            discussion.update(ancestry_complete=True, parents=[])
+        discussion.update(ancestry_complete=True, parents=[])
+        item["discussion"] = discussion
     for name, observed in graph_queue_context.get("repositories", {}).items():
         queue_context.setdefault("repositories", {}).setdefault(name, observed)
     NEXT_READS.start_phase("wait_evidence")

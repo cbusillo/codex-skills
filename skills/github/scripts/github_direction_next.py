@@ -525,7 +525,7 @@ def overall_milestone_context(
         return {"state": "matched", "titles": [local_title], "source": f"{repo}:DIRECTION.md", "basis": "exact_listed_title_match"}
     known_repo = any(key.casefold() == repo.casefold() for key in repository_milestones)
     ancestry_complete = (item.get("discussion") or {}).get("ancestry_complete")
-    complete = known_repo and repository_titles is not None and ancestry_complete and not item.get("blocking") and graph.get("dependency_context", {}).get("complete", False)
+    complete = known_repo and repository_titles is not None and ancestry_complete and graph.get("dependency_context", {}).get("complete", False)
     return {"state": "none_found" if complete else "unknown", "titles": [], "source": "checked_native_ancestry_and_repository_direction" if complete else "incomplete_context"}
 
 
@@ -549,14 +549,35 @@ def no_available_milestone_item(
             return None
         if not matched(item):
             continue
-        if (not (item.get("discussion") or {}).get("complete")
-                or (item.get("discussion") or {}).get("ancestry_complete") is False
-                or item.get("wait_review_required") or item.get("stale_wait_evidence")
-                or item.get("exclusion") in {"unknown_dependencies", "unknown_ancestry", "dependency_cycle", "wait_review_required", "stale_needs_review", "scope_review_required"}):
+        discussion = item.get("discussion") or {}
+        if not discussion.get("complete") or discussion.get("ancestry_complete") is False:
+            return None
+        exclusion = item.get("exclusion")
+        if exclusion in {"tracking", "tracking_without_open_work"}:
+            continue
+        if (item.get("wait_review_required") or item.get("stale_wait_evidence")
+                or item.get("wait_evidence_complete") is False):
             return None
         queue = item.get("queue") or {}
-        if queue.get("state") in {"needs_status", "review"} or (not item.get("exclusion") and queue.get("state") not in {"waiting", "underway"}):
+        if queue.get("state") == "needs_status" or queue.get("state") == "review":
             return None
+        if queue.get("state") == "underway":
+            continue
+        if queue.get("state") == "waiting" and queue.get("reason") == "recorded_next_actor":
+            continue
+        if exclusion in {"blocked_by_open_dependency", "delegated_to_open_sub_issues"}:
+            continue
+        if exclusion == "waiting" or queue.get("state") == "waiting":
+            if item.get("wait_evidence_complete") is True:
+                continue
+            return None
+        if exclusion == "parent_waiting":
+            parent = next((parent for parent in discussion.get("parents", [])
+                           if parent.get("url") == item.get("waiting_on_parent")), {})
+            if (parent.get("wait_evidence_complete") is True and not parent.get("stale_wait_evidence")
+                    and not parent.get("wait_review_required") and (parent.get("discussion") or {}).get("complete")):
+                continue
+        return None
     return True
 
 
