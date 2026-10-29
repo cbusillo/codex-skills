@@ -534,8 +534,16 @@ current default-branch checkout to read its product section.
    including child and comment results. Require their complete-coverage result;
    a first page or the goal board's bounded window is not complete staffing
    coverage. Report failed or incomplete reads
-   as unknown instead of building a parallel manual inventory. Staff actionable unclaimed children from that state; add no
+   as unknown instead of building a parallel manual inventory.
+
+   Read the host's private `skill-data/supervisor.toml` for the running OpenAI
+   worker target and one-minute load limit. Keep that target staffed with
+   actionable unclaimed work while load is below the limit, refilling in the
+   same turn a worker closes instead of waiting for the next check. When `next`
+   is thin, look at unclaimed `plan:active` issues and Cloud-driven passes,
+   following the overall Order and existing claim and launch rules. Add no
    staffing label and do not depend on a buried staffing-request comment.
+
    Workers report on their child issues. Parents hold in-place Current Status
    summaries and decisions, without per-slice comments or acknowledgements.
    Local heavy runs use the [one locked entrypoint](references/heavy-runs.md),
