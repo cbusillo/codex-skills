@@ -132,12 +132,12 @@ class CompleteInventoryTests(unittest.TestCase):
 
     def test_global_pr_artifacts_never_hide_followthrough_or_missing_status(self) -> None:
         for actor, accepted, bucket in [("agent", False, "available_candidates"), ("", False, "needs_status"),
-                                         ("", True, "available_candidates")]:
+                                         (None, True, "available_candidates")]:
             with cli.global_fixture([], [], {}) as (module, result, _reads):
                 raw = cli.global_issue("someone/pr-only", 11, labels=["live-breakage"])
                 raw.update(
                     user={"login": "someone"},
-                    body=f"## Current Status\nNext actor: {actor}\n"
+                    body=(f"## Current Status\nNext actor: {actor}\n" if actor is not None else "## Current Status\n")
                     + module.github_plan_wait.marker(module.github_plan_wait.reviewed(evidence="Full fixture reviewed")),
                     pull_request={"url": "https://github.com/someone/pr-only/pull/11"},
                     html_url="https://github.com/someone/pr-only/pull/11",
@@ -151,7 +151,7 @@ class CompleteInventoryTests(unittest.TestCase):
                     },
                     base={"repo": {"full_name": "someone/pr-only"}},
                 )
-    
+
                 def discover(*_args: object, **_kwargs: object) -> tuple[list[dict], dict]:
                     module.NEXT_READS.inventory = {"someone/pr-only": [raw], "someone/direction": []}
                     return [raw], {
@@ -161,17 +161,18 @@ class CompleteInventoryTests(unittest.TestCase):
                             {"repo": "someone/direction", "complete": True, "direction": None},
                         ],
                     }
-    
+
                 with patch.multiple(
                     module,
                     discover_direction_work=discover,
+                    next_dependabot_work=module.real_next_dependabot_work,
                     annotate_next_queue=module.real_annotate_next_queue,
                     load_direction=lambda *_: "# Direction\n## Order\n4. Own projects: pr-only.\n## Milestones\n",
                     read_queue_ownership=lambda *_: {**evidence(), "pulls": [raw], "inventory": {
                         "local_branches": [raw["head"]["ref"]], "remote_branches": [],
                         "worktrees": [{"branch": raw["head"]["ref"], "path": "/workspace/old-source"}]}},
                     wait_authors=lambda *_: {"someone"},
-                ), patch.object(github_next_pr, "read_acceptance", return_value=accepted):
+                ), patch.object(github_next_pr, "read_acceptance", return_value=accepted) as acceptance:
                     module.cmd_next(module.build_parser().parse_args(["--repo", "someone/direction", "next"]))
                 self.assertEqual(
                     [row["number"] for row in result[bucket]],
@@ -179,6 +180,8 @@ class CompleteInventoryTests(unittest.TestCase):
                 )
                 self.assertEqual(result[bucket][0]["record_type"], "pull_request")
                 self.assertTrue(result[bucket][0]["queue"]["claim_required"])
+                self.assertEqual(acceptance.call_count, int(accepted))
+                self.assertEqual(result["pr_followthrough"][0]["queue"], result[bucket][0]["queue"])
 
     def test_partial_source_inventory_keeps_ranked_work_and_reports_the_gap(self) -> None:
         root = cli.track("someone/direction", 1, "First")

@@ -4774,7 +4774,8 @@ def next_dependabot_work(
                     _, comments = collect_paged_rest_items(f"/repos/{repo}/issues/{pull['number']}/comments",
                         query={}, bucket="rest_core", step_prefix="next_pr_comments", limit=comment_limit + 1 if comment_limit is not None else None)
                 return github_next_pr.project(repository_name, pull, comments[:comment_limit],
-                    trusted=trusted, complete=comment_limit is None or len(comments) <= comment_limit)
+                    trusted=trusted, complete=comment_limit is None or len(comments) <= comment_limit,
+                    acceptance_reader=next_pr_acceptance)
             except PlanError as read_error:
                 return {"repo": repo, "number": pull["number"], "url": pull["html_url"],
                     "head_sha": (pull.get("head") or {}).get("sha"), "state": "unknown",
@@ -4833,7 +4834,7 @@ def next_dependabot_work(
     return {
         "pr_followthrough": followthrough[:limit], "pr_followthrough_count": len(followthrough),
         "pr_followthrough_context": {"complete": pull_inventory_complete and all(
-            row.get("discussion_complete") is True for row in followthrough),
+            row.get("discussion_complete") is True and row.get("state") != "unknown" for row in followthrough),
             "result_truncated": len(followthrough) > limit},
         "dependabot_candidates": candidates[:limit], "dependabot_candidate_count": len(candidates),
         "dependabot_unverified_candidates": unverified[:limit],
@@ -5075,6 +5076,12 @@ def cmd_next(args: argparse.Namespace) -> None:
     })
 
 
+def next_pr_acceptance(repo: str, number: int, head: str) -> bool:
+    def read() -> bool:
+        return github_next_pr.read_acceptance(repo, number, head)
+    return NEXT_READS.observe(f"client_acceptance:{repo.casefold()}#{number}:{head}", read) if NEXT_READS else read()
+
+
 def next_status_body_time(item: dict[str, Any], trusted: set[str]) -> str | None:
     def read_edit() -> Any:
         owner, name = item["repo"].split("/")
@@ -5155,10 +5162,10 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
                     item["discussion"]["body_recorded_at"] = body_time
             except PlanError as exc:
                 detail = next_source_error(exc)
-                item["queue"] = {**github_next_queue.classify(item, evidence[repo], trusted=trusted, status_known=False),
+                item["queue"] = {**github_next_queue.classify(item, evidence[repo], trusted=trusted, status_known=False, acceptance_reader=next_pr_acceptance),
                                  "detail": detail}
                 continue
-        item["queue"] = github_next_queue.classify(item, evidence[repo], trusted=trusted)
+        item["queue"] = github_next_queue.classify(item, evidence[repo], trusted=trusted, acceptance_reader=next_pr_acceptance)
     return {"source": "issue_discussion_and_current_claim_pr_branch_reads", "claim_required": True,
             "all_active_sessions_searched": False,
             "repositories": {repo: {"complete": value["complete"], **value["coverage"]} for repo, value in evidence.items()}}

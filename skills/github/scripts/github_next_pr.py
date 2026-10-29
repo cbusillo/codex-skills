@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,8 @@ def read_acceptance(repo: str, number: int, head: str) -> bool:
     return bool(isinstance(decision, dict) and decision.get("decision") == "accepted" and decision.get("head_sha") == head)
 
 
-def project(repo: str, pull: dict[str, Any], comments: list[dict[str, Any]], *, trusted: set[str], complete: bool) -> dict[str, Any]:
+def project(repo: str, pull: dict[str, Any], comments: list[dict[str, Any]], *, trusted: set[str], complete: bool,
+            acceptance_reader: Callable[[str, int, str], bool] | None = None) -> dict[str, Any]:
     head = (pull.get("head") or {}).get("sha")
     row = {
         "repo": repo,
@@ -89,10 +91,10 @@ def project(repo: str, pull: dict[str, Any], comments: list[dict[str, Any]], *, 
         return {**row, "state": "underway", "reason": "current_head_ready"}
     if client_wait:
         try:
-            accepted = read_acceptance(repo, pull["number"], head)
+            accepted = (acceptance_reader or read_acceptance)(repo, pull["number"], head)
         except (ValueError, OSError, subprocess.SubprocessError):
             return {**row, "state": "unknown", "reason": "client_acceptance_unavailable"}
-        if accepted:
+        if accepted and (wait["state"] == "clear" or source is None):
             return {**row, "state": "review", "reason": "pr_followthrough_needs_fresh_readiness", "next_actor": "agent",
                     "next_action": "Post checked Ready for the accepted current head after fresh readiness and custody checks."}
         return {**row, "state": "waiting", "reason": "current_head_client_wait"}

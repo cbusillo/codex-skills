@@ -130,7 +130,6 @@ def test_existing_artifacts_and_partial_reads_stay_out_of_start_queue() -> None:
     assert classify(row)['state'] == 'review'
 
 
-
 def test_pr_artifacts_cannot_hide_the_recorded_actor_or_missing_owner() -> None:
     for actor, expected in [("", "needs_status"), ("agent", "available"),
                             ("agent:integrator", "underway"), ("person:owner", "waiting")]:

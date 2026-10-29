@@ -89,8 +89,10 @@ def test_saved_current_head_acceptance_ends_only_the_client_handoff_wait() -> No
         with patch("subprocess.run", return_value=response):
             result = project(comments)
             assert result["state"] == expected
-            for actor in ("", "agent", "person:owner", "agent:integrator"):
-                row = item(actor=actor)
+            for actor in (None, "agent", "person:owner", "agent:integrator", "invalid", "agent\nNext actor: person:owner"):
+                row = item(actor=actor or "agent")
+                if actor is None:
+                    row["discussion"]["body"] = row["discussion"]["body"].replace("Next actor: agent\n", "")
                 row["record_type"] = "pull_request"
                 row["discussion"]["body"] = row["discussion"]["body"].split(wait.PREFIX)[0]
                 row["discussion"]["comments"] = [
@@ -104,6 +106,8 @@ def test_saved_current_head_acceptance_ends_only_the_client_handoff_wait() -> No
                 queued = github_next_queue.classify(row, observed, trusted={"owner", "bot"})
                 if actor == "person:owner":
                     assert queued["state"] == "waiting"
+                elif expected == "review" and actor not in (None, "agent", "agent:integrator"):
+                    assert queued["state"] == "needs_status"
                 elif expected == "review":
                     assert queued["state"] == ("underway" if actor == "agent:integrator" else "available")
                     assert queued["next_actor"] == (actor or "agent")
@@ -117,11 +121,24 @@ def test_saved_current_head_acceptance_ends_only_the_client_handoff_wait() -> No
                     evidence="Hardware observation still required", waiting_for="Owner hardware check",
                     ends_when="Owner records the check")))
                 assert project([*comments, held])["state"] == "waiting"
+                review = comment(2, wait.marker({"version": 1, "state": "review", "evidence": "Review independent custody", "waits": []}))
+                assert project([*comments, review])["state"] == "waiting"
                 assert project([*comments, comment(2, ready_handoff.handoff_body(HEAD))])["state"] == "underway"
     for response in [subprocess.CompletedProcess([], 1, "{}", ""),
                      subprocess.CompletedProcess([], 0, "not json", "")]:
         with patch("subprocess.run", return_value=response):
             assert project(comments)["state"] == "unknown"
+            row = item(actor="person:owner")
+            row["record_type"] = "pull_request"
+            row["discussion"]["comments"] = [{**entry, "author": entry["user"]["login"]} for entry in comments]
+            pr = {**pull(author="bot"), "number": row["number"], "body": row["discussion"]["body"],
+                  "head": {"sha": HEAD, "ref": "work/source", "repo": {"full_name": row["repo"]}},
+                  "base": {"repo": {"full_name": row["repo"]}}}
+            assert github_next_queue.classify(row, {**evidence(), "pulls": [pr]}, trusted={"owner", "bot"})["state"] == "waiting"
+            module = load_module()
+            with patch.multiple(module, wait_authors=lambda *_: {"bot", "owner"}):
+                result, _ = discover(module, [{**pr, "_graph_comments": comments}])
+            assert not result["pr_followthrough_context"]["complete"]
 
 
 def test_existing_inventory_supplies_pr_followthrough_without_dependency_age_rule() -> None:
