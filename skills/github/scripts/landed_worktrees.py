@@ -13,6 +13,7 @@ from pathlib import Path
 import subprocess
 import sys
 from urllib.parse import urlencode
+from typing import Any
 
 import dev_worktree
 import github_plan_claim
@@ -95,7 +96,7 @@ def landed_decisions(checkout: Path, branch: str, pr_head: str, root: Path, *,
         row = {"path": str(tree.path), "branch": tree.branch, "head": tree.head}
         if not is_under(tree.path, root):
             row.update(decision="kept", reason="outside the configured worktree root")
-        elif not tree.names_retire_command:
+        elif not tree.names_retire_command and (tree.lock is not None or dev_worktree.configuration()[1] is not None):
             row.update(decision="kept", reason="lock names no retire command; follow work-closeout")
         elif tree.branch and tree.branch in claims:
             row.update(decision="kept", reason="an open claim names this branch")
@@ -110,8 +111,37 @@ def landed_decisions(checkout: Path, branch: str, pr_head: str, root: Path, *,
 
 
 def run_retire(path: str, *, dry_run: bool) -> subprocess.CompletedProcess[str]:
+    if dev_worktree.configuration()[1] is None:
+        return portable_retire(Path(path), dry_run=dry_run)
     args = [str(DEV_WORKTREE), "retire", *(["--dry-run"] if dry_run else []), path]
     return subprocess.run(args, capture_output=True, text=True)
+
+
+def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess[str]:
+    def kept(reason: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess([], 1, "", reason)
+
+    status = git(path, "status", "--porcelain", "--ignored", "--untracked-files=all")
+    if status.returncode or status.stdout.strip():
+        return kept("uncommitted, untracked or ignored files remain")
+    history = git(path, "reflog", "show", "--format=%H", "HEAD")
+    remote = git(path, "ls-remote", "origin", "refs/heads/*", "refs/tags/*")
+    if history.returncode or remote.returncode or not remote.stdout.strip():
+        return kept("live publication or reflog evidence unavailable")
+    tips = [line.split()[0] for line in remote.stdout.splitlines()]
+    heads = {git(path, "rev-parse", "HEAD").stdout.strip(), *history.stdout.split()}
+    if any(not any(contained(path, head, tip) for tip in tips) for head in heads):
+        return kept("HEAD or reflog history is unpublished")
+    try:
+        users = subprocess.run(["lsof", "-nP", "-t", "+D", str(path)], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return kept("live-use proof unavailable")
+    if users.stdout.strip() or users.stderr.strip() or users.returncode not in {0, 1}:
+        return kept("worktree is in use or live-use proof is incomplete")
+    inspector = Path(__file__).parents[2] / "jetbrains-inspection/scripts/jb-inspect.py"
+    return subprocess.run([sys.executable, str(inspector), "remove-worktree", "--offline-only", "--repo", str(path),
+                           *([] if dry_run else ["--no-dry-run"])], capture_output=True, text=True,
+                          env=dev_worktree.git_environment())
 
 
 def retire(rows: list[dict], *, apply: bool, runner=None) -> list[dict]:
@@ -325,23 +355,55 @@ def branch_rows(reader, github_read, repo: str, branch: str, checkout: Path, roo
     return {}, keep_fresh_starts(rows, dt.datetime.now(dt.timezone.utc))
 
 
+def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, root: Path, *,
+                    preserve: set[Path] | frozenset[Path] = frozenset()) -> list[dict]:
+    rows = {}
+    for tree in registered(checkout):
+        row = {"path": str(tree.path), "branch": tree.branch, "head": tree.head, "decision": "kept"}
+        if any(is_under(path, tree.path) for path in preserve):
+            row["reason"] = "source checkout or calling session uses this tree"
+        elif not is_under(tree.path, root):
+            row["reason"] = "outside the configured worktree root"
+        elif not tree.branch:
+            row["reason"] = "detached HEAD; requires exact PR provenance"
+        elif not tree.names_retire_command and (tree.lock is not None or dev_worktree.configuration()[1] is not None):
+            row["reason"] = "lock names no retire command; follow work-closeout"
+        else:
+            try:
+                pulls = reader.paged_json(f"repos/{repo}/pulls", step_prefix="retirement_repository_pulls",
+                                          params={"state": "all", "head": f"{repo.split('/')[0]}:{tree.branch}"})
+                if any(pull.get("state") != "closed" for pull in pulls):
+                    row["reason"] = "branch has an open PR"
+                else:
+                    if pulls:
+                        pull = max(pulls, key=lambda item: item.get("closed_at") or "")
+                        _, decisions = pull_rows(reader, github_read, repo, pull["number"], checkout, root)
+                    else:
+                        _, decisions = branch_rows(reader, github_read, repo, tree.branch, checkout, root)
+                    row = next((decision for decision in decisions if decision["path"] == str(tree.path)),
+                               {**row, "reason": "no covered worktree found"})
+            except (LookupError, ValueError, OSError) as exc:
+                row["reason"] = str(exc)
+            except (github_read.GitHubReadError, github_read.GitHubReadShapeError) as exc:
+                row["reason"] = f"retirement evidence unavailable: {exc}"
+        rows[str(tree.path)] = row
+    return list(rows.values())
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Retire a landed PR's worktrees with the command each lock names.")
     parser.add_argument("--repo", required=True, help="OWNER/REPO of the landed work")
     landed = parser.add_mutually_exclusive_group(required=True)
+    landed.add_argument("--all", action="store_true", help="check every linked worktree of this repository")
     landed.add_argument("--pr", type=int)
     landed.add_argument("--branch", help="a task branch that never had a PR and is in the default branch")
     parser.add_argument("--checkout", required=True, type=Path, help="any local checkout of that repository")
     parser.add_argument("--apply", action="store_true", help="retire; the default only previews")
     args = parser.parse_args(argv)
     try:
-        root, helper = dev_worktree.configuration()
+        root, _helper = dev_worktree.configuration()
     except (dev_worktree.Refused, OSError, json.JSONDecodeError) as exc:
         return refuse(f"worktree configuration: {exc}")
-    if helper is None:
-        # Portable worktrees carry no retire command; work-closeout removes them.
-        print(json.dumps({"ok": True, "worktrees": [], "note": "no hostHelper configured; nothing to retire"}))
-        return 0
     checkout_slug = github_slug(args.checkout)
     if not same_repository(checkout_slug, args.repo):
         return refuse(f"checkout origin is {checkout_slug or 'not GitHub'}, not {args.repo}")
@@ -349,7 +411,11 @@ def main(argv: list[str] | None = None) -> int:
 
     reader = github_read.GitHubReader(operation="github.worktree.retire_landed", include_archived=True)
     try:
-        if args.branch:
+        if args.all:
+            summary = {}
+            rows = repository_rows(reader, github_read, args.repo, args.checkout, root,
+                                   preserve={args.checkout.resolve(), Path.cwd().resolve(), Path(__file__).resolve()})
+        elif args.branch:
             summary, rows = branch_rows(reader, github_read, args.repo, args.branch, args.checkout, root)
         else:
             summary, rows = pull_rows(reader, github_read, args.repo, args.pr, args.checkout, root)

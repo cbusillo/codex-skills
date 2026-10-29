@@ -53,7 +53,7 @@ class Fixture(unittest.TestCase):
         self.git(where, *IDENTITY, "commit", "-q", "--allow-empty", "-m", message)
         return self.git(where, "rev-parse", "HEAD")
 
-    def worktree(self, task, *, lock=NAMED, parent=None):
+    def worktree(self, task: str, *, lock: str | None = NAMED, parent: Path | None = None) -> Path:
         path = (parent or self.root / "sample") / task
         self.git(self.repo, "worktree", "add", "-q", *(["--lock", "--reason", lock] if lock else []),
                  "-b", f"work/{task}", str(path), "origin/main")
@@ -161,6 +161,68 @@ class RetireTests(unittest.TestCase):
             rows = landed_worktrees.retire([{"path": "/a", "decision": "candidate"}], apply=True, runner=run)
             self.assertEqual((rows[0]["decision"], rows[0]["detail"]), ("kept", ["Retire refused: dirty"]))
             self.assertEqual(calls, expected_calls)
+
+
+class RepositoryTests(Fixture):
+    def test_repository_scan_reuses_pr_and_branch_guards_and_reports_every_tree(self) -> None:
+        done = self.worktree("done")
+        active = self.worktree("active")
+        fresh = self.worktree("fresh")
+        foreign = self.worktree("foreign", lock="Another job")
+        reader = mock.Mock()
+        reader.paged_json.side_effect = lambda _path, **options: (
+            [{"number": 7, "state": "closed"}] if options["params"]["head"].endswith(":work/done") else []
+        )
+        with mock.patch.object(landed_worktrees, "pull_rows", return_value=({}, [
+            {"path": str(done), "decision": "candidate"}])) as pull, \
+                mock.patch.object(landed_worktrees, "branch_rows", side_effect=lambda *_args: ({}, [
+                    {"path": str(fresh), "decision": "kept", "reason": "fresh start"}])) as branch:
+            rows = landed_worktrees.repository_rows(reader, mock.Mock(), "o/sample", self.repo, self.root,
+                                                    preserve={active})
+        self.assertEqual({row["path"]: row["decision"] for row in rows}, {
+            str(done): "candidate", str(active): "kept", str(fresh): "kept", str(foreign): "kept"})
+        pull.assert_called_once()
+        branch.assert_called_once()
+
+    def test_unavailable_pr_evidence_keeps_tree_and_continues(self) -> None:
+        path = self.worktree("unread")
+        reader = mock.Mock()
+        reader.paged_json.side_effect = LookupError("offline")
+        rows = landed_worktrees.repository_rows(reader, mock.Mock(), "o/sample", self.repo, self.root)
+        self.assertEqual([(row["path"], row["decision"]) for row in rows], [(str(path), "kept")])
+        self.assertIn("offline", rows[0]["reason"])
+
+    def test_portable_retirement_keeps_private_or_unpublished_work_and_live_use(self) -> None:
+        run = subprocess.run
+        for cause in ("dirty", "ignored", "unpublished", "in_use", "proof_unavailable", "eligible"):
+            path = self.worktree(cause, lock=None)
+            if cause == "dirty":
+                (path / "notes").write_text("private work")
+            elif cause == "ignored":
+                (path / ".gitignore").write_text("private\n")
+                self.git(path, "add", ".gitignore")
+                self.commit(path, "Ignore private output")
+                self.git(path, "push", "origin", f"HEAD:work/{cause}")
+                (path / "private").write_text("private output")
+            elif cause == "unpublished":
+                self.commit(path, "Local work")
+
+            def dispatch(args: list[str], **options: object) -> subprocess.CompletedProcess[str]:
+                if args[0] == "lsof":
+                    if cause == "proof_unavailable":
+                        raise FileNotFoundError("lsof")
+                    return subprocess.CompletedProcess(args, 0 if cause == "in_use" else 1,
+                                                       "123\n" if cause == "in_use" else "", "")
+                if "remove-worktree" in args:
+                    return subprocess.CompletedProcess(args, 0, "proved", "")
+                return run(args, **options)
+
+            with self.subTest(cause=cause), mock.patch.object(landed_worktrees.subprocess, "run", side_effect=dispatch) as calls:
+                result = landed_worktrees.portable_retire(path, dry_run=False)
+            self.assertEqual(result.returncode == 0, cause == "eligible", result)
+            removals = [call.args[0] for call in calls.call_args_list if "remove-worktree" in call.args[0]]
+            self.assertEqual(len(removals), int(cause == "eligible"))
+            self.assertTrue(path.exists())
 
 
 class MainTests(Fixture):

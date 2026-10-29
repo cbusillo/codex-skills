@@ -1129,16 +1129,6 @@ failure and never causes a merge retry.
   and the stale-checkout report. A runtime-bound checkout only ever uses the
   reconciler. Never reset, stash, clean, or overwrite an unsafe checkout. The
   active task worktree stays the agent's source.
-- **Source worktree**: Load `work-closeout` before retirement. Sessions end before
-  the train lands their PR, so the
-  landing step retires the PR's task worktree on this host:
-  `uv run scripts/landed_worktrees.py --repo OWNER/REPO --pr N --checkout /any/local/checkout --apply`.
-  It acts only on a merged or closed PR, on worktrees whose lock names a retire
-  command and whose branch holds nothing beyond the PR head, or whose HEAD is
-  one of the PR's own commits, as a review or conflict refresh leaves it. It
-  previews each through that command before retiring it. The host helper keeps dirty,
-  unpublished and in-use worktrees; report each kept one with its reason. See
-  [task worktrees](references/worktrees.md#retirement).
 - **Verify and sweep**: Check Actions and relevant security and quality signals
   as part of landing, and follow github-plan's
   [Close Or Hand Off](../github-plan/SKILL.md#close-or-hand-off) reconciliation.

@@ -69,7 +69,7 @@ Rules for this brief (every Supervisor brief carries them):
   already done, or waiting, record why, skip it and continue independent items. A wait
   does not block read-only work that answers it.
 - Work in your own linked worktree from
-  `/Users/cbusillo/.local/bin/dev-worktree /Users/cbusillo/Developer/<repo> <slug> origin/main`
+  `<catalog>/skills/github/scripts/dev-worktree /absolute/repository <slug> origin/main`
   ([task worktrees](../../github/references/worktrees.md)). Never edit a
   primary checkout. Commit and push with
   `/Users/cbusillo/Developer/codex-skills/skills/github/scripts/git-commit-as-bot`
