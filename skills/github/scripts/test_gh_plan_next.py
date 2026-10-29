@@ -1936,7 +1936,7 @@ def test_live_breakage_inventory_finds_incident_beyond_repository_issue_bound() 
         inventory, coverage = module.discover_direction_work("someone/direction", args, selection_context={})
     assert {item["number"] for item in inventory} == {1, 243}
     assert not coverage["complete"]  # Ordinary issue inventory remains bounded.
-    assert len(calls) == 2
+    assert not any(options["query"].get("labels") for _path, options in calls)
 
 
 
@@ -2918,16 +2918,13 @@ def test_empty_track_discovery_still_reads_held_milestone_capacity_evidence() ->
     held = global_issue("someone/held", 12, labels=["plan:waiting"], milestone=milestone_data(8, "Second", created_at="2026-01-01"),
                         body="## Current Status\nWaiting for: Alex to test.", waiting_for='Alex to test.')
     tool = global_issue("someone/tools", 20)
-    modes = []
     with global_fixture(roots, [first], {(roots[0]["repo"], 1): relationships(sub_issues=[first])},
                         discovered=[second, held, tool]) as (module, result, _reads):
         def discover(_repo: str, _args: Any, **kwargs: Any) -> Any:
-            mode = kwargs["capacity_evidence"]
-            modes.append(mode)
-            return [second, tool, *([held] if mode else [])], {"complete": True, "repositories": [
+            return [second, tool, held], {"complete": True, "repositories": [
                 {"repo": "someone/business", "direction": DIRECTION},
                 {"repo": "someone/tools", "direction": None},
-                {"repo": "someone/held", "direction": DIRECTION if mode else None}]}
+                {"repo": "someone/held", "direction": DIRECTION}]}
         module.discover_direction_work = discover
         module.cmd_next(next_args())
         items = {item["number"]: item for item in [*result["candidates"], *result["excluded"]]}
@@ -2936,7 +2933,6 @@ def test_empty_track_discovery_still_reads_held_milestone_capacity_evidence() ->
                               "someone/tools#20": reviewed(items[20], category="repeated_stop_tooling")}}
         with patch.object(module, "next_selection_context", return_value=context):
             module.cmd_next(next_args())
-        assert modes[-1] is True
         assert result["tooling_capacity_context"]["admitted"] is False
         assert result["tooling_capacity_context"]["issue"] == "someone/held#12"
         assert not result["available_candidates"]

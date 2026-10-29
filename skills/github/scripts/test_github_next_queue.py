@@ -242,6 +242,8 @@ def test_repository_inventory_bound_can_be_widened_without_losing_held_work() ->
     def read(path: str, **kwargs):
         if path == '/installation/repositories':
             return 'bot', [{'full_name': 'someone/product', 'size': 1, 'open_issues_count': len(raw)}]
+        if path.endswith('/comments'):
+            return 'bot', []
         assert path == '/repos/someone/product/issues'
         if kwargs['query'].get('labels'):
             return 'bot', []

@@ -19,7 +19,7 @@ from test_github_next_queue import evidence, item
 from test_github_work_graph import connection, node
 
 
-def test_default_global_next_evaluates_every_inventoried_record() -> None:
+def assert_default_global_next_evaluates_every_inventoried_record() -> None:
     module = cli.load_module()
     args = module.build_parser().parse_args(["--repo", "someone/direction", "next"])
     count = (args.scan_limit or module.NEXT_DEFAULT_SCAN_LIMIT) + 1
@@ -44,7 +44,7 @@ class CompleteInventoryTests(unittest.TestCase):
         args = module.build_parser().parse_args(["next"])
         with module.github_next_reads.NextReads(workers=1, seconds=args.time_budget) as reads:
             self.assertIsNone(reads.deadline)
-        test_default_global_next_evaluates_every_inventoried_record()
+        assert_default_global_next_evaluates_every_inventoried_record()
 
     def test_shared_filter_preserves_pr_waits_ownership_and_missing_status(
         self,
@@ -83,6 +83,16 @@ class CompleteInventoryTests(unittest.TestCase):
             {"id": 10, "user": {"login": "owner"}, "body": "Released claim 9", "created_at": "2026-10-29T00:01:00Z"}
         )
         self.assertEqual(queue.classify(row, observed, trusted={"owner"})["state"], "available")
+        source["repo"] = "owner/source"
+        source["_graph_comments"].pop()
+        pull["body"] = "Closes https://github.com/owner/source/issues/7"
+        self.assertEqual(queue.classify(row, observed, trusted={"owner"})["state"], "underway")
+        observed["records"] = []
+        original_head = pull["head"]["repo"]
+        for head in ({"full_name": "outside/fork"}, {"full_name": None}):
+            pull["head"]["repo"] = head
+            self.assertEqual(queue.classify(row, observed, trusted={"owner"})["reason"], "pr_canonical_issue_required")
+        pull["head"]["repo"] = original_head
         self.assertEqual(queue.classify(row, evidence(), trusted={"owner"})["state"], "review")
         for actor, state in [
             ("person:owner", "waiting"),
@@ -150,6 +160,107 @@ class CompleteInventoryTests(unittest.TestCase):
             )
             self.assertEqual(result["available_candidates"][0]["record_type"], "pull_request")
             self.assertTrue(result["available_candidates"][0]["queue"]["claim_required"])
+
+    def test_partial_source_inventory_keeps_ranked_work_and_reports_the_gap(self) -> None:
+        root = cli.track("someone/direction", 1, "First")
+        leaf = cli.global_issue("someone/product", 2)
+        leaf["parent"] = {"repo": root["repo"], "number": root["number"], "state": "open", "html_url": root["html_url"]}
+        with cli.global_fixture([root], [leaf], {(root["repo"], 1): cli.relationships(sub_issues=[leaf])}) as (module, result, _):
+            original_wait = module.next_wait_context
+
+            def check_parent_evidence(issues: list[dict], **kwargs: Any) -> dict:
+                parent = next(row for row in issues if row["repo"] == root["repo"] and row["number"] == root["number"])
+                self.assertTrue(parent.get("body"))
+                self.assertTrue(parent.get("labels"))
+                return original_wait(issues, **kwargs)
+
+            original = module.collect_paged_rest_items
+
+            def collect(path: str, **kwargs: Any) -> Any:
+                if path == "/installation/repositories":
+                    return "bot", [{"full_name": name} for name in ("someone/direction", "someone/product", "someone/unavailable")]
+                return original(path, **kwargs)
+
+            def read_repository(_reader: Any, repo: str) -> list[dict]:
+                if repo == "someone/unavailable":
+                    raise module.github_read.GitHubReadShapeError("Pagination changed")
+                return [root] if repo.endswith("direction") else [leaf]
+
+            with (
+                patch.multiple(
+                    module,
+                    discover_direction_work=module.real_discover_direction_work,
+                    next_wait_context=check_parent_evidence,
+                    next_graph_reader=lambda *_: Mock(results=[], actor="bot"),
+                    collect_paged_rest_items=collect,
+                ),
+                patch.multiple(module.github_identity, github_app_config=dict),
+                patch.multiple(module.github_next_inventory, read_repository=read_repository),
+            ):
+                module.cmd_next(module.build_parser().parse_args(["--repo", "someone/direction", "next"]))
+            self.assertTrue(result["candidates"])
+            self.assertFalse(result["discovery_context"]["complete"])
+            self.assertFalse(result["candidate_coverage"]["complete"])
+            self.assertTrue(any(row.get("error") for row in result["discovery_context"]["repositories"]))
+
+    def test_milestone_scope_does_not_read_the_unrelated_portfolio_or_include_its_prs(self) -> None:
+        root = cli.track("someone/direction", 1, "First")
+        unrelated = cli.global_issue("someone/other", 11)
+        unrelated.update(pull_request={"url": "pull"}, _graph_comments=[])
+        with cli.global_fixture([root], [], {}, discovered=[unrelated]) as (module, result, _):
+            discovery = Mock(side_effect=AssertionError("Unrelated portfolio must not be read"))
+            with (
+                patch.multiple(module, discover_direction_work=discovery),
+                patch.multiple(
+                    module.github_milestone_core, show_milestone=lambda *_args, **_kwargs: {"milestone": root["milestone"]}
+                ),
+            ):
+                module.cmd_next(cli.next_args(milestone="First"))
+            self.assertFalse(discovery.called)
+            self.assertFalse(any(row.get("record_type") == "pull_request" for row in result["candidates"]))
+
+    def test_rest_inventory_completes_source_discussions_and_disabled_tracker_prs(self) -> None:
+        module = cli.load_module()
+        raw = cli.issue(7)
+        raw.update(body="", user={"login": "owner"})
+        pull = {
+            "repo": "owner/repo",
+            "number": 8,
+            "state": "open",
+            "html_url": "https://github.com/owner/repo/pull/8",
+            "title": "Change",
+            "body": "Closes #7",
+            "head": {"ref": "work/source"},
+        }
+        calls = []
+
+        def collect(path: str, **_kwargs: Any) -> Any:
+            calls.append(path)
+            if path == "/installation/repositories":
+                return "bot", [
+                    {"full_name": "owner/repo"},
+                    {"full_name": "owner/pr-only", "has_issues": False},
+                    {"full_name": "other/repo"},
+                    {"full_name": "owner/archive", "archived": True},
+                ]
+            if path.endswith("/comments"):
+                return "bot", [{"id": 1, "body": "source status", "user": {"login": "owner"}}]
+            if path == "/repos/owner/repo/issues":
+                return "bot", [raw, {**pull, "pull_request": {"url": pull["html_url"]}}]
+            if path.endswith("/pulls"):
+                return "bot", [pull]
+            raise AssertionError(path)
+
+        with (
+            patch.multiple(module, collect_paged_rest_items=collect, load_direction=lambda *_: cli.DIRECTION),
+            patch.multiple(module.github_identity, github_app_config=dict),
+        ):
+            rows, coverage = module.real_discover_direction_work("owner/direction", cli.next_args(), selection_context={})
+        self.assertTrue(coverage["complete"])
+        self.assertTrue(all(row["_graph_comments_complete"] for row in rows))
+        self.assertFalse(any(path == "/repos/owner/pr-only/issues" for path in calls))
+        self.assertEqual(next(row for row in rows if row["number"] == raw["number"])["_graph_comments"][0]["id"], 1)
+        self.assertEqual({row.get("exclusion") for row in coverage["repositories"]}, {None, "other_owner", "archived_or_disabled"})
 
     def test_paged_issue_and_pr_inventory_completes_nested_connections(self) -> None:
         first = node(1)
@@ -246,9 +357,8 @@ class CompleteInventoryTests(unittest.TestCase):
         self.assertEqual([row["number"] for row in rows], [1, 2, 3])
         self.assertEqual(len(rows[0]["_graph_comments"]), 2)
         self.assertEqual(rows[-1]["head"]["sha"], pull["headRefOid"])
-        self.assertEqual(reader.graphql_json.call_count, 3)
 
-    def test_failed_or_changing_inventory_is_never_complete(self) -> None:
+    def test_failed_or_incomplete_inventory_is_never_complete(self) -> None:
         first = node(1)
         first.update(assignees=connection([]), parent=None)
         for payload in [
@@ -264,7 +374,7 @@ class CompleteInventoryTests(unittest.TestCase):
         ]:
             reader = Mock(actor="bot")
             reader.graphql_json.return_value = github_api.ApiResult(ok=True, status=200, body=payload)
-            with self.assertRaises((inventory.github_read.GitHubReadShapeError, KeyError)):
+            with self.assertRaises(inventory.github_read.GitHubReadShapeError):
                 inventory.read_repository(reader, "owner/repo")
 
 

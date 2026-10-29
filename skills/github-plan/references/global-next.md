@@ -267,13 +267,12 @@ the milestone-wait condition, not provider usage.
 `tooling_capacity_context` explains whether the capacity rule is established,
 including the first unresolved issue when a milestone review or context is missing.
 Missing milestone staffing or person/event-wait reviews are reported before discovery context that
-the capacity-only reads have not yet gathered. Supply current reviews with
+the inventory has not supplied. Supply current reviews with
 `--selection-context` and rerun; an ordinary unreviewed `next` does not establish
 capacity admission. Unknown discovery context still prevents admission once the
 milestone reviews are complete.
-Held repositories remain excluded from selection. Capacity-only reads run only
-when current staffing or person/event-wait reviews leave that admission possible; available unclaimed graph work disables those extra reads. Then held repositories are
-inventoried read-only.
+Held repositories remain excluded from selection and are inventoried read-only
+with the rest of the portfolio.
 A hold alone is never a person wait. Their milestone candidates need the same
 current staffing or person/event-wait reviews; unrelated holds do not block independent tooling.
 Held issues use the same complete inventory and remain excluded. Failed

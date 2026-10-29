@@ -4973,7 +4973,7 @@ def read_queue_ownership(repo: str) -> dict[str, Any]:
         bound = None if NEXT_READS is not None else NEXT_PLAN_INVENTORY_LIMIT
         observed.update(github_work_graph.ownership_inventory(collect_paged_rest_items, repo, limit=bound))
         if NEXT_READS is not None:
-            observed["records"] = NEXT_READS.inventory.get(repo.casefold(), [])
+            observed["records"] = [row for rows in NEXT_READS.inventory.values() for row in rows]
         target = pathlib.Path.home() / "Developer" / repo.split("/")[1]
         if target.is_dir() and not (NEXT_READS and NEXT_READS.expired):
             try:
@@ -5116,6 +5116,7 @@ def discover_direction_work(
     No name/label heuristic can decide product vs tooling or override an owner
     hold. Return merged direction and explicit source coverage for that review.
     """
+    del capacity_evidence
     repo_limit = getattr(args, "repo_limit", None)
     issue_limit = getattr(args, "repository_issue_limit", None)
     coverage: dict[str, Any] = {
@@ -5151,15 +5152,21 @@ def discover_direction_work(
             if reader is not None:
                 listed = github_next_inventory.read_repository(reader, name)
             else:
-                _, listed = collect_paged_rest_items(f"/repos/{name}/issues",
-                    query={"state": "open", "sort": "created", "direction": "asc"},
-                    bucket="rest_core", step_prefix="next_discovered_issues")
+                listed = []
+                if repository.get("has_issues") is not False:
+                    _, listed = collect_paged_rest_items(f"/repos/{name}/issues",
+                        query={"state": "open", "sort": "created", "direction": "asc"},
+                        bucket="rest_core", step_prefix="next_discovered_issues")
                 if any(item.get("pull_request") for item in listed) or repository.get("has_issues") is False:
                     _, pulls = collect_paged_rest_items(f"/repos/{name}/pulls",
                         query={"state": "open", "sort": "created", "direction": "asc"},
                         bucket="rest_core", step_prefix="next_discovered_pulls")
                     listed = [item for item in listed if not item.get("pull_request")]
                     listed.extend({**pull, "pull_request": {"url": pull["html_url"]}} for pull in pulls)
+                for record in listed:
+                    _, record_comments = collect_paged_rest_items(f"/repos/{name}/issues/{record['number']}/comments",
+                        query={}, bucket="rest_core", step_prefix="next_inventory_comments")
+                    record.update(_graph_comments=record_comments, _graph_comments_complete=True)
             issues = [item for item in listed if not item.get("pull_request")]
             pulls = [item for item in listed if item.get("pull_request")]
             truncated = issue_limit is not None and len(issues) > issue_limit
@@ -5507,7 +5514,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             "recommended_next_action": CURRENT_RETRY_FIELDS["recommended_next_action"], **evidence})
 
     NEXT_READS.start_phase("repository_inventory")
-    complete_inventory, inventory_context = discover_direction_work(repo, args, selection_context=selection_context, capacity_evidence=True)
+    complete_inventory, inventory_context = discover_direction_work(repo, args, selection_context=selection_context) if scope is None else (
+        [], {"complete": False, "exclusion": "explicit_milestone_scope"})
     NEXT_READS.start_phase("live_breakage_inventory")
     if NEXT_READS.inventory:
         incident_inventory = [item for item in complete_inventory if not item.get("pull_request") and github_direction_next.is_live_breakage(item)]
@@ -5516,7 +5524,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     else:
         incident_inventory, live_breakage_context = next_live_breakage(repo, args, graph_reader(repo)) if scope is None else (
             [], {"complete": True, "exclusion": "explicit_milestone_scope"})
-    if not live_breakage_context["complete"]:
+    if not live_breakage_context["complete"] and not NEXT_READS.inventory:
         unread("live_breakage_unread", "Live-breakage inventory is unread or partial; priority cannot be established",
                action=live_breakage_context.get("recommended_next_action", "review_partial_coverage"),
                live_breakage_context=live_breakage_context)
@@ -5527,7 +5535,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             root_issues = [item for item in NEXT_READS.inventory[repo.casefold()] if not item.get("pull_request")
                            and (scope_number is None or (item.get("milestone") or {}).get("number") == scope_number)]
             root_inventory = github_work_graph.TrackInventory(EXPECTED_ACTOR, root_issues,
-                {(item["repo"].casefold(), item["number"]): item for item in complete_inventory}, inventory_context["complete"])
+                {(item["repo"].casefold(), item["number"]): item for item in complete_inventory}, next((source.get("complete") is True for source in inventory_context.get("repositories", []) if source.get("repo", "").casefold() == repo.casefold()), False))
         else:
             root_inventory = github_work_graph.track_inventory(graph_reader(repo), collect_paged_rest_items, repo,
                 limit=NEXT_PLAN_INVENTORY_LIMIT, milestone=scope_number)
@@ -5538,7 +5546,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     actor, issues, seeds = root_inventory.actor, root_inventory.issues, root_inventory.seeds
     inventory_truncated = not root_inventory.complete
     graph_inventory_complete = root_inventory.complete
-    if NEXT_READS.expired:
+    if NEXT_READS.expired and repo.casefold() not in NEXT_READS.inventory:
         unread("work_graph_unread", "Track graph is unread within the deadline; milestones are unknown")
     for item in incident_inventory:
         if "body" in item:
@@ -5630,7 +5638,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         listed_wait = reason in {"waiting", "wait_review_required"} and ((item.get("milestone") or {}).get("title") in titles or not wait["valid"])
         if ((not reason or capacity_evidence or listed_wait)
                 and reason not in {"completed", "pull_request", "unknown_dependencies"}):
-            parent_observation(key)
+            if "parent" not in seeds.get(key, {}):
+                parent_observation(key)
 
     def prefetch_nodes(refs: list[dict[str, Any]], *, ancestry: bool = False) -> None:
         selected = [ref for ref in refs[:NEXT_READS.workers]
@@ -5717,7 +5726,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
                 if key in visited:
                     break
                 visited.add(key)
-                seeds[key] = parent
+                if "body" in parent:
+                    seeds.setdefault(key, parent)
                 classified = read_node(parent["repo"], parent["number"])["item"]
                 ancestors.append(classified)
                 if classified.get("exclusion") == "unknown_dependencies":
@@ -5965,12 +5975,12 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         and (source.get("truncated") or source.get("error"))
     ]
     discovery["incomplete_milestone_repositories"] = incomplete_milestone_sources
-    candidate_coverage_complete = bool(graph_coverage["complete"] and (scope is not None or discovery.get("complete")))
+    candidate_coverage_complete = bool(graph_coverage["complete"] and live_breakage_context["complete"] and (scope is not None or discovery.get("complete")))
     priority_keys = [(entry["repo"].casefold(), entry["number"]) for entry in [*ranked["candidates"], *discoveries]]
     evidence_keys = dict.fromkeys([*priority_keys, *nodes])
     pull_items = []
     for raw in complete_inventory:
-        if not raw.get("pull_request"):
+        if scope is not None or not raw.get("pull_request"):
             continue
         item = {**compact_list_issue(raw["repo"], raw), "record_type": "pull_request", "source": "repository_discovery",
                 "head_sha": (raw.get("head") or {}).get("sha"), "milestone": next_milestone_context(raw)}
@@ -6002,7 +6012,9 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     reported_parents = [parent for entry in reported_entries for parent in (entry.get("discussion") or {}).get("parents", [])]
     for entry in [*reported_entries, *reported_parents]:
         wait_key = (entry["repo"].casefold(), entry["number"])
-        entry["wait_evidence_complete"] = wait_key in checked_waits and wait_key not in unread_waits
+        entry["wait_evidence_complete"] = (bool((entry.get("discussion") or {}).get("complete"))
+            and (entry.get("queue") or {}).get("wait_review_required") is False) if entry.get("record_type") == "pull_request" else (
+                wait_key in checked_waits and wait_key not in unread_waits)
         evidence = stale.get(wait_key)
         if evidence:
             key = "post_merge_evidence" if "completion_proven" in evidence else "stale_wait_evidence"
@@ -6069,6 +6081,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     if not incidents["context"]["complete"]:
         coverage_warning = ("Incident-path coverage is partial: a native path was truncated, cyclic or unavailable. "
                             "Unseen incident work may outrank milestone and other candidates.")
+    elif not live_breakage_context["complete"]:
+        coverage_warning = "Repository inventory is partial; unread sources may contain higher-priority incidents or work."
     elif candidate_coverage_complete:
         coverage_warning = None
     elif milestone_ranking_complete:

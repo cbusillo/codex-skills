@@ -75,7 +75,8 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
             if not isinstance(pull, dict):
                 return {**row, "error": "pr_ownership_inventory_incomplete"}
             for source in ownership.get("records", []):
-                if source.get("pull_request") or not github_plan_claim.pr_issue_reference(pull, source["number"], repo=item["repo"]):
+                if source.get("pull_request") or not github_plan_claim.pr_issue_reference(pull, source["number"],
+                        repo=source.get("repo") or item["repo"], local_references=(source.get("repo") or item["repo"]).casefold() == item["repo"].casefold()):
                     continue
                 if source.get("_graph_comments_complete") is not True:
                     return {**row, "error": "source_claim_discussion_incomplete"}
@@ -99,6 +100,12 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
                 return {**row, "error": "retained_handoff_unavailable"}
     except (ValueError, KeyError, TypeError) as exc:
         return {**row, "error": "unreadable_ownership_or_wait", "detail": str(exc)}
+    if item.get("record_type") == "pull_request":
+        subject = next((pull for pull in ownership.get("pulls", []) if pull["number"] == item["number"]), {})
+        if not (subject.get("head") or {}).get("ref") or any(
+            (((subject.get(side) or {}).get("repo") or {}).get("full_name") or "").casefold() != item["repo"].casefold()
+            for side in ("head", "base")):
+            return {**row, "error": "pr_canonical_issue_required"}
     branches = github_plan_claim.recorded_claim_branches(status, comments)
     try:
         artifacts = github_plan_claim.artifact_evidence(inventory, ownership.get("pulls") or [], item["number"],

@@ -2212,9 +2212,11 @@ complete paged GraphQL reads per accessible owner repository. It includes full
 discussions, labels, milestones, assignees, native relationships, parent and PR
 head identity. Track, incident, queue and dependency views reuse that inventory.
 An explicitly configured non-GraphQL route uses the same authenticated REST
-reader. Failed or inaccessible sources remain incomplete coverage. Unread live
-priority or Track evidence still returns `live_breakage_unread` or
-`work_graph_unread`; successful partial answers recommend `review_partial_coverage`.
+reader. Failed or inaccessible portfolio sources remain incomplete coverage
+with an unknown-priority warning. Unread known incident paths or Track evidence
+still returns `live_breakage_unread` or `work_graph_unread`; successful partial
+answers recommend `review_partial_coverage`. Explicit milestone selection reads
+its Track graph without inventorying unrelated repositories or PRs.
 
 The goal board and direction audit consume the same native graph and discussion
 reading functions. The board keeps its bounded view of recent
