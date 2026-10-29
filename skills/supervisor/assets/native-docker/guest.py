@@ -36,7 +36,7 @@ def main() -> None:
             [
                 "dockerd",
                 "--host=unix:///var/run/docker.sock",
-                "--storage-driver=overlay2",
+                "--feature=containerd-snapshotter=true",
                 "--userland-proxy-path=/usr/bin/docker-proxy",
             ]
         )

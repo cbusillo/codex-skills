@@ -96,9 +96,22 @@ Its initramfs root uses Docker's documented
 [`DOCKER_RAMDISK` mode](https://docs.docker.com/reference/cli/dockerd/#environment-variables);
 this proves native lifecycle behavior, not production root-filesystem parity.
 Keep tools in that image and frozen source/data in the copied workspace.
-Export the fixture's cached nested images with `docker image save` for the same
-architecture. The copied run script loads these archives with `docker load`,
-then runs the fixture with image pulls disabled. It uses the VM's Unix Docker
+The guest uses Docker's [containerd image store](https://docs.docker.com/engine/storage/containerd/)
+on its disposable ext4 disk. Export cached nested images from a containerd store
+with `docker image save --output images.tar REVIEWED_IMAGE`. Keep the original
+index and its content when the fixture uses a repository@index-digest reference:
+do not pass `--platform`, which replaces that index with a platform manifest.
+All content needed by the export must be cached; an incomplete cache refuses
+export. A platform-filtered archive instead retains the platform-manifest
+reference, not the original index. Classic-store archives cannot supply missing
+original manifests. Do not recreate digest aliases or substitute a mutable tag.
+
+The copied run script loads these archives with `docker load`, verifies the
+required original repository@digest addresses with `docker image inspect`,
+then runs the fixture with image pulls disabled. Inspect `RepoDigests` and the
+created container's `Config.Image` against those original addresses. Importing
+another target under the same tag replaces its earlier reference; prepare the
+archive for the exact target the consumer requires. It uses the VM's Unix Docker
 socket. Compose bind paths refer to the job's `/workspace` shared into the VM,
 so the fixture and its containers can observe the same prepared/serving files.
 Keep databases and writable mmap files on nested ext4 volumes, not the 9p
@@ -147,6 +160,18 @@ This capability adds no global train, deploy or recovery gate. Only work already
 using this heavy-run queue waits on its slot or unresolved custody. It removes
 no existing gate. Long VM runs delay every repository using the same queue,
 and shared storage I/O can delay neighboring host work; this adds no I/O ceiling.
+
+The [native import regression](../scripts/fixtures/native-image-import.py) runs
+as a copied workload through this same entrypoint. Copy it to `/workspace` with
+the reviewed archives and an `images.json` array. Each entry supplies `tag`,
+`archives` (workspace-relative filenames), `references` (original immutable
+addresses expected after import), and `missing_references` (original addresses
+omitted by that export). Run `python3 /workspace/native-image-import.py` as the
+manifest command. Use small AMD64 images that provide `true`. Cover a cached
+registry platform export, a complete local-build index export and a filtered
+local-build export separately. The test checks real execution, `RepoDigests`,
+`Config.Image` and refusal of missing content, without asserting daemon flags,
+versions or configuration text.
 
 ## Host settings and queue
 
