@@ -68,6 +68,26 @@ def test_age_author_state_branch_and_pr_identity():
     assert result["dependabot_context"]["complete"] is True
 
 
+def test_renovate_shares_dependency_candidate_age_bounds_and_enrollment() -> None:
+    module: Any = load_module()
+    result, reads = discover(module, [
+        pull(author="renovate[bot]", hours=72), pull(2),
+        pull(3, author="renovate[bot]", hours=24),
+        pull(4, author="renovate[bot]", base="unlisted"),
+        pull(5, author="renovate[bot]", state="closed"),
+        pull(6, author="renovate-helper"),
+    ], limit=1)
+    assert result["dependabot_candidate_count"] == 2
+    candidate = result["dependabot_candidates"][0]
+    assert candidate["url"] == "https://github.com/owner/repo/pull/1"
+    assert candidate["age_hours"] == 72 and candidate["head_sha"] == "head-1"
+    assert result["dependabot_context"]["result_truncated"] is True
+    assert reads.call_count == 1
+    result, _ = discover(module, [pull(author="renovate[bot]")], status="unknown")
+    assert result["dependabot_candidates"] == []
+    assert result["dependabot_unverified_candidate_count"] == 1
+
+
 def test_enrollment_unknown_preserves_observations_without_claiming_eligibility():
     module: Any = load_module()
     result, reads = discover(module, [pull()], status="not_enrolled")
@@ -219,7 +239,7 @@ def test_global_next_finds_pr_only_repositories_and_respects_holds():
         def collect(path, **kwargs):
             if path.endswith("/pulls"):
                 assert path == "/repos/someone/pr-only/pulls"
-                return "automation-gh", [pull(repo="someone/pr-only")]
+                return "automation-gh", [pull(repo="someone/pr-only", author="renovate[bot]")]
             return original(path, **kwargs)
         with patch.multiple(
             module, collect_paged_rest_items=collect, read_next_train_enrollment=lambda *_: enrolled(),
