@@ -66,12 +66,13 @@ SHELL_KEYWORDS = {"{", "!", "if", "then", "elif", "else", "do", "while", "until"
 SHELLS = {"sh", "bash", "zsh"}
 SCRIPT_INTERPRETERS = re.compile(r"^(?:osascript|python[\d.]*|node|swift|xdotool|xte|cliclick)$")
 SCRIPT_WRAPPERS = {"sudo", "timeout", "xargs"}
-DATA_ARGUMENT_PREFIXES = (
-    ("launchplane",), ("rg",), ("grep",),
-    ("git", "log"), ("git", "grep"), ("git", "status"), ("git", "diff"),
-    ("git", "show"), ("git", "rev-parse"), ("git", "ls-files"), ("git", "ls-tree"),
-    ("git", "for-each-ref"), ("git", "describe"),
-)
+DATA_ARGUMENT_HEADS = {"launchplane", "grep", "echo", "printf", "ls", "which"}
+GIT_DATA_COMMANDS = {"log", "grep", "status", "diff", "show", "rev-parse", "ls-files", "ls-tree", "for-each-ref", "describe"}
+GIT_VALUE_FLAGS = {"-C", "--git-dir", "--work-tree", "--namespace"}
+RG_VALUE_FLAGS = {
+    "-e", "--regexp", "-f", "--file", "-g", "--glob", "--iglob", "--pre-glob", "-r", "--replace",
+    "--context-separator", "--field-context-separator", "--field-match-separator",
+}
 FIND_VALUE_FLAGS = {"-name", "-iname", "-path", "-ipath", "-regex", "-iregex", "-type", "-user", "-group", "-size", "-perm"}
 FIND_EXECUTION_FLAGS = {"-exec", "-execdir", "-ok", "-okdir"}
 STDIN_PROGRAM_PATHS = {"-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"}
@@ -411,11 +412,12 @@ def simple_commands(shell: str) -> list[list[str]]:
     """Return the argv of each simple command a shell line runs, per the module docstring."""
     script = ShellScript(shell)
     unwrapped: list[list[str]] = []
-    for argv in shell_commands(script.text):
+    raw_commands = shell_commands(script.text)
+    for argv in raw_commands:
         unwrapped.extend(unwrap(argv))
     unwrapped.extend(nested_commands(script.substitutions))
     unwrapped.extend(literal_pipeline_programs(script.text))
-    shell_reads_bodies = any(reads_script_from_input(argv) for argv in unwrapped)
+    shell_reads_bodies = any(reads_script_from_input(argv) for argv in [*raw_commands, *unwrapped])
     for body, expands, header, delimiter, occurrence in script.bodies:
         # Language payloads are arguments to their interpreter, not shell
         # commands. Preserve them for regex policies (also for a cat pipeline).
@@ -462,26 +464,64 @@ def executable_arguments(argv: list[str]) -> list[str]:
     return argv
 
 
+def git_data_arguments(argv: list[str]) -> bool:
+    cursor = 1
+    while cursor < len(argv) and argv[cursor].startswith("-"):
+        token = argv[cursor]
+        if token in {"-P", "--no-pager"}:
+            cursor += 1
+        elif token in GIT_VALUE_FLAGS:
+            cursor += 2
+        elif token.startswith("-C") or "=" in token and token.split("=", 1)[0] in GIT_VALUE_FLAGS:
+            cursor += 1
+        else:
+            return False
+    return (
+        cursor < len(argv)
+        and argv[cursor] in GIT_DATA_COMMANDS
+        and not any(
+            token.split("=", 1)[0] in {"--ext-diff", "--textconv", "--open-files-in-pager"}
+            or argv[cursor] == "grep"
+            and token == "-O"
+            for token in argv[cursor + 1 :]
+        )
+    )
+
+
+def rg_program_arguments(argv: list[str]) -> list[list[str]]:
+    programs = []
+    cursor = 1
+    while cursor < len(argv) and argv[cursor] != "--":
+        token = argv[cursor]
+        flag, separator, value = token.partition("=")
+        if flag in {"--pre", "--hostname-bin"}:
+            programs.append([value] if separator else argv[cursor + 1 : cursor + 2])
+        cursor += 2 if token in RG_VALUE_FLAGS else 1
+    return programs
+
+
 def execution_spans(argv: list[str]) -> list[list[str]]:
     arguments = without_redirections(argv)
     executable = executable_arguments(arguments)
     if not executable:
         return []
     prefix = arguments[: len(arguments) - len(executable) + 1]
-    normalized = [Path(executable[0]).name, *executable[1:]]
-    if normalized[0] == "rg" and any(
-        token.split("=", 1)[0] in {"--pre", "--hostname-bin"} for token in normalized[1:]
-    ):
+    head = executable[0]
+    if head == "rg":
+        programs = rg_program_arguments(executable)
+        return [arguments, *programs] if programs else [prefix]
+    if executable[:2] == ["printf", "-v"]:
         return [arguments]
-    if any(tuple(normalized[: len(pattern)]) == pattern for pattern in DATA_ARGUMENT_PREFIXES):
+    if head in DATA_ARGUMENT_HEADS or head == "git" and git_data_arguments(executable):
         return [prefix]
-    if normalized[0] != "find":
+    if head != "find":
         return [arguments]
     spans = [prefix]
     cursor = 1
+    ambiguous = False
     while cursor < len(executable):
         token = executable[cursor]
-        if token in FIND_VALUE_FLAGS:
+        if token in FIND_VALUE_FLAGS and not ambiguous:
             cursor += 2
             continue
         if token in FIND_EXECUTION_FLAGS:
@@ -490,14 +530,15 @@ def execution_spans(argv: list[str]) -> list[list[str]]:
                 (
                     index
                     for index in range(start, len(executable))
-                    if executable[index] == ";"
-                    or executable[index] == "+" and index > start and executable[index - 1] == "{}"
+                    if executable[index] == ";" or executable[index] == "+" and index > start and executable[index - 1] == "{}"
                 ),
                 len(executable),
             )
             spans.extend(execution_spans(executable[start:end]))
-            cursor = end + 1
+            cursor = cursor + 1 if ambiguous else end + 1
             continue
+        if token.startswith("-"):
+            ambiguous = True
         cursor += 1
     return spans
 
@@ -514,13 +555,14 @@ def unwrap(argv: list[str]) -> list[list[str]]:
             return [["gh-with-env-token", *arguments]]
     if Path(argv[0]).name == "eval":
         return nested_commands([" ".join(argv[1:])])
+    executable_argv = argv
     argv = [Path(argv[0]).name, *argv[1:]]
     if argv[0] in SHELLS:
         for index, token in enumerate(argv[1:-1], start=1):
             if SHELL_COMMAND_FLAG.match(token):  # -c, -lc, -ec ...
                 return nested_commands([argv[index + 1]])
     commands = [argv]
-    for span in execution_spans(argv):
+    for span in execution_spans(executable_argv):
         shells = [index for index, token in enumerate(span[:-1]) if Path(token).name in SHELLS]
         if shells:
             flag = next((index for index in range(shells[0] + 1, len(span) - 1) if SHELL_COMMAND_FLAG.match(span[index])), None)
@@ -529,7 +571,7 @@ def unwrap(argv: list[str]) -> list[list[str]]:
     if argv[0] == "ssh":
         # The remote command runs too; the host and option values read as harmless words.
         commands += nested_commands([" ".join(argv[1:])])
-    if reads_script_from_input(argv) and "<<<" in argv[:-1]:
+    if reads_script_from_input(executable_argv) and "<<<" in argv[:-1]:
         commands += nested_commands([argv[argv.index("<<<") + 1]])
     return commands
 
@@ -648,6 +690,8 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
             if wrapper in TRANSPARENT | {"builtin"}:
                 argv = drop_flags(argv)
         if argv and argv[0] in {".", "source", "cd", "pushd", "popd", "eval"}:
+            return None
+        if argv[:2] == ["printf", "-v"]:
             return None
         normalized = unwrap(raw_argv)
         if not normalized or normalized[0][:1] != ["launchplane"]:
