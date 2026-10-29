@@ -22,6 +22,10 @@ import github_plan_closure as closure
 from github_plan_termination import _TerminationProcess
 
 
+class NativeRequestRejected(ValueError):
+    pass
+
+
 @asynccontextmanager
 async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024, deadline_at=None):
     import aiohttp
@@ -46,8 +50,10 @@ async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024, deadli
                             if not isinstance(message, dict):
                                 raise ValueError("native response is unavailable")
                             if message.get("id") == sequence and "method" not in message:
-                                if "error" in message or "result" not in message:
-                                    raise ValueError("native request rejected")
+                                if "error" in message:
+                                    raise NativeRequestRejected("native request rejected")
+                                if "result" not in message:
+                                    raise ValueError("native response is unavailable")
                                 return message["result"]
                     initialized = await request("initialize", {"clientInfo": {"name": "codex_skills_claim", "version": "1"},
                                                                "capabilities": {"experimentalApi": True}})

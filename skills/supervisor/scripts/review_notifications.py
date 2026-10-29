@@ -5,6 +5,7 @@
 """Deliver review notices using the existing exact-session send routes."""
 
 import asyncio
+import json
 import os
 import re
 import subprocess
@@ -40,10 +41,10 @@ def empty_claude_composer(row):
             and not any(rule(text) for text in screen[index + 2:]))
 
 
-def prepare(entry, message):
+def prepare(entry, message, *, supervisor=False):
     # Native transcript identity must agree with the ledger on either harness.
     status = session_status(entry)
-    if entry.get("supervisor_owned") is not True:
+    if entry.get("supervisor_owned") is not True and not (supervisor and entry.get("role") == "supervisor"):
         raise ValueError("notification requires an explicitly Supervisor-owned session")
     if entry["harness"] == "codex":
         home = entry.get("codex_home")
@@ -61,6 +62,12 @@ def prepare(entry, message):
                 env={**os.environ, "CODEX_HOME": str(home)}, stdin=subprocess.DEVNULL,
                 capture_output=True, text=True, timeout=30, check=False)
             if result.returncode:
+                try:
+                    outcome = json.loads(result.stdout)
+                except ValueError:
+                    outcome = None
+                if isinstance(outcome, dict) and outcome.get("ok") is False and outcome.get("not_sent") is True:
+                    raise NotSent(str(outcome.get("error") or "native queue was certainly not sent"))
                 raise ValueError(f"Codex review notification failed: {result.stdout.strip()} {result.stderr.strip()}".strip())
         return queue
     if entry.get("harness") != "claude" or entry.get("backend") != "tmux":
@@ -104,11 +111,11 @@ def prepare(entry, message):
     return lambda: asyncio.run(terminal.send(identity, message))
 
 
-def send(entry, message):
+def send(entry: dict, message: str, *, supervisor: bool = False) -> None:
     from iterm_tab import SendFailure
 
     try:
-        deliver = prepare(entry, message)
+        deliver = prepare(entry, message, supervisor=supervisor)
     except PermissionError:
         # A real permission refusal remains spent, even before delivery.
         raise

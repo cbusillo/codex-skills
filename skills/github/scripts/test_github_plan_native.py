@@ -8,6 +8,7 @@ import copy
 import threading
 import json
 import io
+import importlib
 from contextlib import asynccontextmanager, contextmanager, redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import AsyncIterator
@@ -231,6 +232,23 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeQueueTests(unittest.TestCase):
+    def test_native_refusal_before_queue_is_distinct_from_a_thread_that_is_not_loaded(self) -> None:
+        import sys
+        import uuid
+        for rejected in (False, True):
+            with self.subTest(rejected=rejected), ReceiptFixture(str(uuid.uuid4())) as fixture:
+                session_cli = importlib.import_module("test_codex_session").SESSION
+                if rejected:
+                    fixture.rpc_results["thread/read"] = ValueError("native refusal")
+                else:
+                    fixture.native_state = "notLoaded"
+                output = io.StringIO()
+                with patch.object(sys, "argv", ["codex-session.py", "queue", "--session-id", fixture.session,
+                        "--codex-home", str(fixture.home), "--message", "notice"]), redirect_stdout(output):
+                    self.assertEqual(session_cli.main(), 1)
+                self.assertEqual(json.loads(output.getvalue())["not_sent"], not rejected)
+                self.assertEqual(fixture.mutations, [])
+
     def test_manual_file_deadline_preserves_the_observer_default_and_still_expires(self) -> None:
         from types import SimpleNamespace
         import uuid

@@ -1540,6 +1540,27 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(self.read.call_count, 2)
         self.send.assert_awaited_once_with(self.entry["tmux_session_id"], "Read review")
 
+    def test_native_queue_certainly_unsent_result_remains_distinct_from_uncertainty(self) -> None:
+        for certain in (False, True):
+            result = subprocess.CompletedProcess([], 1, json.dumps({"ok": False, "not_sent": certain, "error": "queue unavailable"}), "")
+            with self.subTest(certain=certain), patch.object(notifications.subprocess, "run", return_value=result):
+                with self.assertRaises(ValueError) as failure:
+                    notifications.send(self.entry, "Read review")
+                self.assertEqual(isinstance(failure.exception, notifications.NotSent), certain)
+
+    def test_explicit_supervisor_binding_does_not_change_worker_ownership_requirement(self) -> None:
+        recipient = {**self.entry, "role": "supervisor"}
+        recipient.pop("supervisor_owned")
+        with patch.object(notifications.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as queue:
+            with self.assertRaises(notifications.NotSent):
+                notifications.send(recipient, "notice")
+            queue.assert_not_called()
+            notifications.send(recipient, "notice", supervisor=True)
+            self.assertEqual(queue.call_count, 1)
+            with self.assertRaises(notifications.NotSent):
+                notifications.send({**recipient, "role": "worker"}, "notice", supervisor=True)
+            self.assertEqual(queue.call_count, 1)
+
     def test_idle_scheduled_wakeup_does_not_suppress_review_but_firing_turn_does(self):
         self.claude()
         status = {"at_turn_end": True, "background_tasks": [{"task_id": "wake", "kind": "scheduled"}]}
