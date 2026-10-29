@@ -1343,6 +1343,17 @@ Current Status, write the handoff to a file and release with the
 `gh-plan.py release <issue> --claim-comment <claim-comment-id> --session <native-id> --handoff-file <handoff.md>`.
 It posts the exact directive with the handoff below it through the same bot
 identity and reads it back; do not hand-write the release comment.
+Supply `--next-actor agent|agent:<session-or-role>|person:<login>|event:<observable>`
+or a `Next actor:` line in the handoff. Release requires an explicit actor,
+updates only that field in the issue's existing Current Status before releasing,
+and reads it back; failure leaves the claim owned. For PRs and issues without
+an editable managed status, the release comment carries Current Status instead.
+An already-released claim's supplemental handoff preserves any successor status.
+Claim writes `agent:<session>` automatically in its status and claim comment.
+For `update-section ... "Current Status"`, supply the actor flag or line;
+omitting both preserves an existing actor, and a legacy status needs a value.
+Other sections do not accept the flag. No actor field changes claim or wait
+authority, or queue selection.
 Release affects that exact comment, not another worker's record.
 Before posting, `release` carries forward the claim's verified inherited
 retained handoff and inventories open PRs on its source branch. It also finds

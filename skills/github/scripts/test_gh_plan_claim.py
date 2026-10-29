@@ -78,6 +78,14 @@ def format_ownership(text: str) -> tuple[str, ...]:
 
 
 class ClaimMarkerTests(unittest.TestCase):
+    def test_actor_ignores_examples_and_replaces_only_the_live_field(self) -> None:
+        from github_plan_status import next_actor
+        text = "```\nNext actor: person:example\n```\nNext actor: agent:old\nNext action: Continue.\n"
+        updated = next_actor.write(text, "event:CI passes")
+        self.assertEqual(next_actor.read(updated), "event:CI passes")
+        self.assertIn("```\nNext actor: person:example\n```", updated)
+        self.assertIn("Next action: Continue.", updated)
+
     def test_record_text_stays_hidden_and_legacy_releases_match(self) -> None:
         record = {**OWNER, "worker": "trial --> @someone --!>"}
         encoded = CLAIM.marker(record)

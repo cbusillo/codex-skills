@@ -44,6 +44,27 @@ class UnreadableStdin(io.StringIO):
 
 
 class SectionTests(unittest.TestCase):
+    def test_status_actor_is_written_preserved_and_validated_before_edit(self) -> None:
+        self.issue["body"] += "\n## Current Status\n\nNext actor: agent:integrator\nNext action: Land source.\n"
+        for actor in ("agent", "agent:successor", "person:someone", "event:CI finishes"):
+            code, _result, edit, errors = self.run_update(
+                "--body", "Next action: Continue.", "--next-actor", actor, section="Current Status")
+            self.assertEqual(code, 0, errors)
+            status = PLAN.section_map(edit.call_args.kwargs["body"])["Current Status"]
+            self.assertEqual(PLAN.github_plan_next_actor.read(status), actor)
+        code, _result, edit, errors = self.run_update("--body", "New action.", section="Current Status")
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(PLAN.github_plan_next_actor.read(
+            PLAN.section_map(edit.call_args.kwargs["body"])["Current Status"]), "agent:integrator")
+        for content in ("Next actor: person:\n", "Next actor: agent\nNext actor: event:CI passes\n"):
+            code, _result, edit, _errors = self.run_update("--body", content, section="Current Status")
+            self.assertNotEqual(code, 0)
+            edit.assert_not_called()
+        self.issue["body"] = "## Current Status\n\nLegacy status.\n"
+        code, _result, edit, _errors = self.run_update("--body", "New action.", section="Current Status")
+        self.assertNotEqual(code, 0)
+        edit.assert_not_called()
+
     def setUp(self) -> None:
         self.issue: dict[str, Any] = {
             "repo": "owner/repo", "number": 42, "title": "Fixture", "state": "open",
@@ -214,7 +235,7 @@ class SectionTests(unittest.TestCase):
 
     def update_status(self, status_tail: str, new_status: str) -> str:
         self.issue["body"] = ("## Objective\n\nKeep this.\n\n## Current Status\n\nState: Active, unclaimed.\n"
-                              f"Waiting for: None.\n\n{status_tail}\n")
+                              f"Next actor: agent\nWaiting for: None.\n\n{status_tail}\n")
         code, _, edit, errors = self.run_update("--body", new_status, section="Current Status")
         self.assertEqual(code, 0, errors)
         return edit.call_args.kwargs["body"]
@@ -231,12 +252,12 @@ class SectionTests(unittest.TestCase):
             "State: Done.\nWaiting for: None.")
         self.assert_records(body, wait)
         self.assertIn(operation, body)
-        self.assertTrue(PLAN.section_map(body)["Current Status"].startswith("State: Done."))
+        self.assertIn("State: Done.", PLAN.section_map(body)["Current Status"])
 
     def test_waiting_status_correction_needs_no_claim_and_preserves_execution_holds(self) -> None:
         wait = PLAN.github_plan_wait.reviewed(evidence="Awaiting answer.", waiting_for="Chris", ends_when="He answers")
         self.issue["labels"] = [{"name": "plan:waiting"}]
-        self.issue["body"] += "\n## Current Status\n\nOld routing.\n\n" + PLAN.github_plan_wait.marker(wait)
+        self.issue["body"] += "\n## Current Status\n\nNext actor: person:owner\nOld routing.\n\n" + PLAN.github_plan_wait.marker(wait)
         code, _, edit, errors = self.run_update("--body", "Next action: Chris answers the existing question.",
                                               section="Current Status")
         self.assertEqual(code, 0, errors)
@@ -262,7 +283,8 @@ class SectionTests(unittest.TestCase):
     def test_fenced_marker_examples_are_not_carried(self) -> None:
         example = PLAN.github_plan_wait.marker(PLAN.github_plan_wait.reviewed(evidence="Example."))
         body = self.update_status(f"```text\n{example}\n```", "State: Done.")
-        self.assertEqual(PLAN.section_map(body)["Current Status"], "State: Done.")
+        self.assertEqual(PLAN.github_plan_next_actor.read(PLAN.section_map(body)["Current Status"]), "agent")
+        self.assertNotIn(example, body)
 
     def test_undecodable_stdin_fails_before_mutation(self) -> None:
         with io.TextIOWrapper(io.BytesIO(b"\xff"), encoding="utf-8") as stream:
