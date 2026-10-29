@@ -45,6 +45,24 @@ def allocate_one(path, ready, results):
 
 
 class QuestionCounterTests(unittest.TestCase):
+    def test_outstanding_reservations_bind_only_to_their_confirmed_source(self) -> None:
+        counter.update(self.path, seed=self.seed, allocate=False)
+        first, second = counter.update(self.path), counter.update(self.path)
+        self.assertNotEqual(first, second)
+        for number in (first, second):
+            counter.verify_number(self.path, number)
+        with self.assertRaises(ValueError):
+            counter.verify_number(self.path, second + 1)
+        source = "https://github.com/owner/repo/issues/1#issuecomment-2"
+        self.assertEqual(counter.update(self.path, question_url=source, question_number=first), first)
+        counter.verify_number(self.path, first, source)
+        self.assertEqual(counter.update(self.path, question_url=source, question_number=first), first)
+        with self.assertRaises(ValueError):
+            counter.verify_number(self.path, first)
+        with self.assertRaises(ValueError):
+            counter.update(self.path, question_url=source + "3", question_number=first)
+        counter.verify_number(self.path, second)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -113,6 +131,22 @@ class QuestionCounterTests(unittest.TestCase):
             high = state["last_id"] + 10
             counter.update(paths[0], seed=(high, ["legacy source no longer readable"]), allocate=False)
             self.assertEqual(counter.update(paths[1]), high + 1)
+            reserved = [counter.update(path) for path in paths]
+            for path, number in zip(paths, reserved):
+                counter.verify_number(path, number)
+                other_path = next(other for other in paths if other != path)
+                with self.assertRaises(ValueError):
+                    counter.verify_number(other_path, number)
+            with self.assertRaises(ValueError):
+                counter.update(paths[1], question_url="https://github.com/owner/repo/issues/3#issuecomment-8", question_number=reserved[0])
+            source = "https://github.com/owner/repo/issues/3#issuecomment-4"
+            self.assertEqual(counter.update(paths[0], question_url=source, question_number=reserved[0]), reserved[0])
+            counter.verify_number(paths[1], reserved[0], source)
+            with self.assertRaises(ValueError):
+                counter.update(paths[1], question_url=source + "5", question_number=reserved[0])
+            with self.assertRaises(ValueError):
+                counter.verify_number(paths[0], reserved[0])
+            counter.verify_number(paths[1], reserved[1])
 
     def test_seed_ignores_foreign_authors_and_incidental_question_references(self) -> None:
         record = {"expected_actor": "bot", "issue": {"body": "Director question: Q95. See another Director's Q455.",
@@ -125,6 +159,32 @@ class QuestionCounterTests(unittest.TestCase):
         with patch.object(counter, "configured_queue", return_value="owner/direction#7"), \
                 patch.object(counter, "read_discussion", return_value=record):
             self.assertEqual(counter.github_seed(["organization/product#1"])[0], 101)
+
+    def test_seed_carries_outstanding_receipts_without_resurrecting_a_bound_number(self) -> None:
+        counter.update(self.path, seed=self.seed, allocate=False)
+        numbers = [counter.update(self.path), counter.update(self.path)]
+        prior = json.loads(self.path.read_text())
+        shared = {"version": 1, "director": "owner", "last_id": self.seed[0], "questions": {}}
+
+        def read(_repo: str, _minimum: int, **_kwargs: object) -> counter.CounterSnapshot:
+            return counter.CounterSnapshot("file", json.loads(json.dumps(shared)), "commit")
+
+        def write(_repo: str, _sha: str, state: dict) -> str:
+            shared.update(state)
+            return "commit"
+
+        with patch.object(counter, "configured_queue", return_value="owner/direction#7"), \
+                patch.object(counter, "read_counter", side_effect=read), patch.object(counter, "write_counter", side_effect=write):
+            counter.update(self.path, seed=self.seed, allocate=False)
+            for number in numbers:
+                counter.verify_number(self.path, number)
+            source = "https://github.com/owner/repo/issues/1#issuecomment-2"
+            counter.update(self.path, question_url=source, question_number=numbers[0])
+            counter.update(self.path, seed=self.seed, allocate=False, include_counters=[prior])
+            with self.assertRaises(ValueError):
+                counter.verify_number(self.path, numbers[0])
+            counter.verify_number(self.path, numbers[0], source)
+            counter.verify_number(self.path, numbers[1])
 
     def test_shared_allocation_requires_seed_and_never_recreates_missing_state(self) -> None:
         counter.update(self.path, seed=self.seed, allocate=False)
@@ -266,7 +326,7 @@ class QuestionCounterTests(unittest.TestCase):
         counter.update(self.path, seed=self.seed, allocate=False)
         keys = []
 
-        def reserve(minimum: int, key: str, repo: str | None) -> counter.Allocation:
+        def reserve(minimum: int, key: str, _repo: str | None, **_kwargs: object) -> counter.Allocation:
             keys.append(key)
             if len(keys) == 1:
                 raise ValueError("unconfirmed write")

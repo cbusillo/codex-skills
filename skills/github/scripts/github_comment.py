@@ -524,6 +524,9 @@ def _canonical_comment_body(body: Any) -> str:
     return OPERATION_MARKER_LINE_RE.sub("", body).rstrip()
 
 
+canonical_comment_body = _canonical_comment_body
+
+
 def _matching_actor_comment(
     comments: list[dict[str, Any]],
     actor: str,
@@ -889,6 +892,7 @@ def _comment_impl(
                     failed_step="validate_question_identity", payload=target,
                 )
             body = question_id.number_heading(body, prior_question)
+        verify_question_number(body, selected.get("html_url"))
         update_step = failed_step or "update_comment"
         result = _call_api(
             "PATCH", path, {"body": body},
@@ -933,6 +937,7 @@ def _comment_impl(
                         failed_step="validate_question_identity",
                     )
                 body = question_id.number_heading(body, prior_question)
+            verify_question_number(body, selected.get("html_url"))
             selected_id = selected.get("id")
             if not isinstance(selected_id, int):
                 raise _local_error(
@@ -1022,6 +1027,7 @@ def _comment_impl(
     if dedupe_body:
         selected = _matching_actor_comment(existing_comments, actor, body)
         if selected is not None:
+            verify_question_number(selected.get("body") or "", selected.get("html_url"))
             steps.append("reuse_existing_comment")
             payload = _comment_payload(
                 selected,
@@ -1043,6 +1049,7 @@ def _comment_impl(
         if isinstance((comment_id := item.get("id")), int)
     }
     create_step = failed_step or "create_comment"
+    verify_question_number(body)
     fingerprint = comment_fingerprint(resolved_repo, number, actor, body)
     operation_id = github_api_core.new_operation_id()
     provider_body = github_api_core.body_with_operation_marker(body, operation_id)
@@ -1133,6 +1140,7 @@ def validate_attachment_request(repo: str, body: str, attachments: list[str]) ->
     validate_question_mentions(requested_body, repo)
     if question_id.QUESTION_HEADING.match(requested_body) and not question_id.heading_id(requested_body):
         raise ValueError("Personal-identity questions need an existing Q ID; allocate with question_id.py next first")
+    verify_question_number(requested_body)
     if not attachments:
         raise ValueError("Own-user attachment comments require an image or video")
     for attachment in attachments:
@@ -1172,14 +1180,24 @@ def validate_own_attachment_command(arguments: list[str], body: str) -> str:
     return args.repo
 
 
+def bind_attachment_source(body: str, url: str) -> None:
+    question = question_id.heading_id(body.removeprefix(AGENT_POSTED_LINE).lstrip())
+    if question is None:
+        return
+    if not re.fullmatch(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/(?:issues|pull)/[1-9][0-9]*#issuecomment-[1-9][0-9]*", url):
+        raise ValueError("Attachment creation returned no exact source URL; reconcile the saved comment")
+    question_id.update(question_id.counter_path(), question_url=url, question_number=int(question[1:]))
+
+
 def attachment_write_outcome(stderr: str, nonce: str) -> str:
     for line in stderr.splitlines():
         try:
             receipt = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if receipt == {"schema_version": 1, "nonce": nonce, "write_outcome": "not_started"}:
-            return "not_started"
+        for outcome in ("not_started", "applied"):
+            if receipt == {"schema_version": 1, "nonce": nonce, "write_outcome": outcome}:
+                return outcome
     return "unknown"
 
 
@@ -1238,6 +1256,13 @@ def attached_comment(
     match = re.fullmatch(
         rf"https://github\.com/{re.escape(resolved_repo)}/(?:issues|pull)/{number}#issuecomment-(\d+)", url, re.IGNORECASE,
     )
+    if result.returncode and match and attachment_write_outcome(result.stderr, receipt_nonce) == "applied":
+        raise _local_error(
+            "Attachment saved, but source-number binding failed; read the saved question before repairing it",
+            operation=operation, cause="question_numbering_failed", actor=actor, expected_actor=actor,
+            completed_steps=["attach_comment"], failed_step="bind_question_source", write_outcome="applied",
+            payload={"url": url},
+        )
     if result.returncode or not match:
         raise _local_error(
             "GitHub CLI attachment comment failed using the opted-in personal account; no replay or identity fallback. "
@@ -1344,12 +1369,31 @@ def comment(
                 before_create=before_create,
                 retry_summaries=collected_retry_summaries,
             )
-        if question_id.QUESTION_HEADING.match(body) and not question_id.heading_id(body):
-            payload = _number_saved_question(payload, body, gh_cmd=gh_cmd, retry_summaries=collected_retry_summaries)
+        question_body = body.removeprefix(AGENT_POSTED_LINE).lstrip()
+        if question_id.QUESTION_HEADING.match(question_body):
+            if assigned := question_id.heading_id(question_body):
+                try:
+                    question_id.update(question_id.counter_path(), question_url=payload["url"], question_number=int(assigned[1:]))
+                except (OSError, ValueError) as error:
+                    raise _local_error(str(error), operation=operation or f"github.comment.{kind}",
+                                       cause="question_numbering_failed", failed_step="bind_question_source",
+                                       write_outcome="applied", payload={"url": payload["url"], "question_id": assigned}) from error
+                payload["question_id"] = assigned
+            else:
+                payload = _number_saved_question(payload, body, gh_cmd=gh_cmd, retry_summaries=collected_retry_summaries)
         return payload
+    except (OSError, ValueError) as error:
+        raise _local_error(str(error), operation=operation or f"github.comment.{kind}",
+                           cause="validation_error", failed_step="validate_question_identity") from error
     except CommentError as error:
         _enrich_error_with_retry_summaries(error, collected_retry_summaries)
         raise
+
+
+def verify_question_number(body: str, source: str | None = None) -> None:
+    question = question_id.heading_id(body.removeprefix(AGENT_POSTED_LINE).lstrip())
+    if question:
+        question_id.verify_number(question_id.counter_path(), int(question[1:]), source)
 
 
 def _number_saved_question(payload: dict[str, Any], requested_body: str, *, gh_cmd: str,
@@ -1375,6 +1419,7 @@ def _number_saved_question(payload: dict[str, Any], requested_body: str, *, gh_c
             raise ValueError("Saved question readback does not match the confirmed comment")
         saved_body = saved["body"]
         if question_id.heading_id(saved_body):
+            verify_question_number(saved_body, payload["url"])
             payload["question_id"] = question_id.heading_id(saved_body)
             return payload
         if _canonical_comment_body(saved_body) != _canonical_comment_body(requested_body):
@@ -1505,6 +1550,9 @@ def _terminal_failure(
         if api_result.get(key) is not None:
             envelope[key] = api_result[key]
     return envelope
+
+
+terminal_failure = _terminal_failure
 
 
 def main() -> int:

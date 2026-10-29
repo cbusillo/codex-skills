@@ -102,7 +102,10 @@ def fetch(item):
     return comments
 
 
-def main():
+def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] in {"create", "show-question"}:
+        from question_record import main as record_main
+        return record_main(sys.argv[1:], fetch)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("items", nargs="*")
     parser.add_argument("--owner", required=True)
