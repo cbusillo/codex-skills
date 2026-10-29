@@ -65,6 +65,77 @@ start a nested host Docker driver outside this interface to claim its slot.
 Translate that driver's disposable services and test command into the manifest.
 Existing frozen input and evidence requirements still apply.
 
+## Native Docker lifecycle qualification
+
+Use the [native Docker image recipe](../assets/native-docker/Dockerfile) when a
+fixture must drive real Compose replacement, inspect/exec/stop/start, coherent
+backup/restore or shared watched directories. It boots a disposable Linux VM
+inside an ordinary job container using QEMU's userspace CPU emulation. The
+existing manifest, caps, internal network, queue, executor and custody stay the
+same. There is no privileged container, host socket, host mount, device access,
+KVM, extra queue or helper option. No runner setting or artifact update is needed.
+
+Prepare the image before submission, using the cached architecture your
+configured executor requires:
+
+```sh
+docker build --platform linux/amd64 --tag native-docker-fixture \
+  <catalog>/skills/supervisor/assets/native-docker
+```
+
+The guest contains Docker, Compose and Python. For additional fixture tools,
+prepare a reviewed Alpine-based image and supply it as `--build-arg GUEST_IMAGE=...`.
+Keep tools in that image and frozen source/data in the copied workspace.
+Export the fixture's cached nested images with `docker image save` for the same
+architecture. The copied run script loads these archives with `docker load`,
+then runs the fixture with image pulls disabled. It uses the VM's Unix Docker
+socket. Compose bind paths refer to the job's `/workspace` shared into the VM,
+so the fixture and its containers can observe the same prepared/serving files.
+Check published HTTP ports from inside the VM: it has no network interface to
+the outer job, runner or outside world. This does not qualify external ingress.
+
+```json
+{
+  "containers": [{
+    "name": "tests",
+    "image": "native-docker-fixture",
+    "command": ["sh", "/workspace/run-native.sh"],
+    "copies": [{"source": "/private/task/native-inputs", "destination": "/workspace"}]
+  }],
+  "job": "tests",
+  "outputs": [{"container": "tests", "source": "/workspace/results", "name": "results"}]
+}
+```
+
+Submit it with the same installed entrypoint:
+
+```sh
+uv run <catalog>/skills/supervisor/scripts/heavy_run.py \
+  --manifest /private/task/native.json --evidence /private/task/new-native-evidence
+```
+
+The VM reserves memory for its outer job and derives vCPUs from that job's
+existing cgroup limits. All its processes stay under those aggregate caps.
+Its fresh ext4 Docker disk lives inside the disposable job; no nested daemon
+state or volume survives outer-job removal. `HEAVY_VM_DISK_GIB` and
+`HEAVY_VM_TIMEOUT_SECONDS` in the container environment select scratch capacity
+and the bounded run deadline; defaults live in the image's [runner](../assets/native-docker/run.py).
+Account for archives, source, filesystem caches, VM memory and output growth
+before intake. CPU emulation is slower than a bare host and proves no production
+timing or capacity. The existing executor's headroom checks still apply.
+Keep result files in `/workspace/results` before the command exits. The image
+returns the guest command's status and fails on missing completion evidence,
+boot failure or timeout. Existing cancellation and predecessor recovery remove
+the whole VM with its owning job; use the original executor request to collect
+or cancel, never submit a replacement after unknown transport results.
+
+This capability adds no global train, deploy or recovery gate. Only work already
+using this heavy-run queue waits on its slot or unresolved custody. It removes
+the need for fixed-container approximations of native lifecycle fixtures and
+for direct host-daemon access.
+
+## Host settings and queue
+
 Host settings live once at `~/.config/codex-skills/heavy-run.json`, independent
 of `HOME`, `CODEX_HOME` and `CLAUDE_CONFIG_DIR`: the helper resolves the OS
 account's actual home directory. Omit it to start with one slot, four CPUs
