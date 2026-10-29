@@ -224,8 +224,8 @@ print(json.dumps({{"items": rows, "total_count": len(rows), "incomplete_results"
         for included in (False, True):
             with self.subTest(included=included):
                 args = PLAN.build_parser().parse_args(["next", *(["--include-archived"] if included else [])])
-                with patch.object(PLAN.github_identity, "github_app_config", return_value={}), patch.object(PLAN, "collect_paged_rest_items", read), patch.object(PLAN, "load_direction", return_value=None):
-                    issues, coverage = PLAN.discover_direction_work("owner/direction", args, selection_context={})
+                with patch_attr(PLAN.github_identity, "github_app_config", return_value={}), patch_attr(PLAN, "next_graph_reader", return_value=None), patch_attr(PLAN, "collect_paged_rest_items", read), patch_attr(PLAN, "load_direction", return_value=None):
+                    issues, coverage = PLAN.discover_direction_work("owner/direction", args)
                 self.assertEqual(len(issues), len(REPOS) if included else 1)
                 self.assertTrue(coverage["complete"])
 

@@ -266,7 +266,7 @@ class CompleteInventoryTests(unittest.TestCase):
             patch.multiple(module, collect_paged_rest_items=collect, load_direction=lambda *_: cli.DIRECTION),
             patch.multiple(module.github_identity, github_app_config=dict),
         ):
-            rows, coverage = module.real_discover_direction_work("owner/direction", cli.next_args(), selection_context={})
+            rows, coverage = module.real_discover_direction_work("owner/direction", cli.next_args())
         self.assertTrue(coverage["complete"])
         self.assertTrue(all(row["_graph_comments_complete"] for row in rows))
         self.assertFalse(any(path == "/repos/owner/pr-only/issues" for path in calls))

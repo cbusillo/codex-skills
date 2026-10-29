@@ -5764,10 +5764,6 @@ class ClaimTests(unittest.TestCase):
         edges = {("someone/direction", 1): selection.relationships(sub_issues=[leaf])}
         with selection.global_fixture([root], [leaf], edges) as (module, result, _reads):
             module.cmd_next(selection.next_args())
-            candidate = next(item for item in result["candidates"] if item["number"] == 42)
-            context = {"issues": {"owner/repo#42": selection.reviewed(candidate, category="milestone")}}
-            with patch.object(module, "next_selection_context", return_value=context):
-                module.cmd_next(selection.next_args())
             self.assertEqual(result["available_candidates"], [])
             self.assertEqual([item["number"] for item in result["candidates"]], [42])
         self.issue.update(leaf)
