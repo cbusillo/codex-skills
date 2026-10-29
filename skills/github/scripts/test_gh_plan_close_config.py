@@ -81,8 +81,7 @@ class CloseConfigTests(unittest.TestCase):
                 milestone_claim_ancestry=Mock(return_value=Mock(nodes=set(), complete=True)),
                 collect_paged_rest_items=Mock(return_value=("fixture-bot", comments)),
                 read_issue_relationships=relationships, wait_authors=Mock(return_value={"fixture"}),
-                claim_snapshot=Mock(return_value=(parent, "", source_comments or [], False)),
-                next_source_delivery=Mock(side_effect=AssertionError("Launch admission must not rank source delivery"))), \
+                claim_snapshot=Mock(return_value=(parent, "", source_comments or [], False))), \
                 patch.object(github_plan_claim, "expired_lease_sessions", return_value=expired_sessions or set()), \
                 patch.object(github_plan_claim, "local_inventory", return_value={
                     "local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}), \

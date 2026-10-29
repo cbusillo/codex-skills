@@ -104,7 +104,6 @@ def run_native_graph(
                 collect_paged_rest_items=list_items,
                 read_next_issue_relationships=relationships,
                 annotate_next_queue=module.real_annotate_next_queue,
-                next_source_delivery=lambda *_args, **_kwargs: {"complete": True, "merged_prs": []},
             ),
             patch.object(
                 module.github_plan_claim,

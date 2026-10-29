@@ -5942,7 +5942,7 @@ class ClaimTests(unittest.TestCase):
 class GraphQLRepositoryIdentityTests(unittest.TestCase):
     def test_source_node_reads_select_its_app_independently_of_command_repository(self):
         for read, source_repo, command_repo in product(
-                ("history", "owner_decision", "delivery"), ("client/data", "owner/repo"), ("client/command", "owner/command")):
+                ("history", "owner_decision", "status_time"), ("client/data", "owner/repo"), ("client/command", "owner/command")):
             with self.subTest(read=read, source_repo=source_repo, command_repo=command_repo), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder)
                 environment = {"HOME": folder, "PATH": os.environ["PATH"], "GH_REPO": command_repo,
@@ -6001,12 +6001,11 @@ class GraphQLRepositoryIdentityTests(unittest.TestCase):
                             "milestone": {"title": "Inventory"}, "created_at": "2026-10-01T00:00:00Z"})
                         self.assertEqual(result["reaction_id"], reactions[0]["id"])
                     else:
-                        result = PLAN.next_source_delivery({"repo": source_repo, "number": 42, "discussion": {
+                        result = PLAN.next_status_body_time({"repo": source_repo, "number": 42, "discussion": {
                             "body": "## Current Status\n\nState: Open.", "comments": [{"author": TEST_BOT,
                                 "body": "## Current Status\n\nState: Waiting.", "created_at": "2026-10-02T00:00:00Z"}]}},
                             {TEST_BOT})
-                        self.assertTrue(result["complete"])
-                        self.assertEqual(result["body_recorded_at"], "2026-10-01T00:00:00Z")
+                        self.assertEqual(result, "2026-10-01T00:00:00Z")
                     self.assertTrue(executions)
                     self.assertTrue(all(execution == (source_repo, expected_actor) for execution in executions))
                     self.assertTrue(all(repository == source_repo for repository in authentications))
