@@ -7,7 +7,6 @@
 
 import copy
 import contextlib
-from concurrent.futures import ThreadPoolExecutor
 import errno
 from io import StringIO
 import json
@@ -15,7 +14,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 from typing import Any
