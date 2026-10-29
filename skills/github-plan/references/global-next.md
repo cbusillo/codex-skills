@@ -168,55 +168,41 @@ Wait proofs run in the final evidence pass so discovery can use its budget first
 The CLI reads current discussions and inventories claims, linked open PRs and
 branches once per repository before projecting the start queue. It uses the
 claim helper's exact authored-release and artifact rules. Each row's `queue`
-reports the recorded current action rather than treating its original title
-as a fresh assignment. `underway` holds observed claims or artifacts, including
-unresolved old ownership marked `current_or_stale`; it does not assert that
-every retained artifact has a running session. `verification_only` reports a
-recorded qualification frontier after delivered source or before a conditionally
-gated later source step. `scope_review` reports delivered slices whose remaining
-scope is routed separately or unclear. Role descriptions do not hide explicit source
-actions. Delivered GUI attachment follow-through remains qualification or scope
-review, while explicit product source diagnosis stays engineering. These reports
-do not close an issue,
-clear a hold, or prove its whole finish line complete. Reconcile qualification-only
-come-back steps under GitHub's
-[issue closing guidance](../../github/references/repo-workflow.md#issue-closing-and-post-merge-proof)
-before selection; brief real remaining engineering and record event waits as waits.
+reads `Next actor:` from the selected Current Status, using the same parser as
+claim, release and status updates. The queue does not infer source delivery or
+remaining scope from prose or merged PRs.
 
-The helper's `candidates` are possible source work and may need review. The CLI
-can populate `available_candidates` without a caller snapshot when the current
-step explicitly names source work, bounded ownership reads found no conflict,
-and established native or exact listed milestone evidence, incident evidence, or the explicit own-project list in
-overall Order establishes eligibility. That list is read from direction, not
-copied into the helper. This is discovery evidence, not an exclusive lock:
-`queue_context` reports partial session coverage, and Choose Work's full review
-and mandatory fresh `claim` still apply before starting. A legacy wait record
-requiring review stays visible as `wait_review_required`; review and record it
-through the existing claim procedure. Unknown reads stay review work.
+- `agent` can enter `available_candidates` when the existing direction,
+  ownership and structured-wait checks pass.
+- `agent:<session or role>` is `underway`. If the latest relevant claim for that
+  session on this record has an exact authored release, the actor needs fresh
+  status instead. A newer unreleased reacquisition by that session remains owned.
+- `person:<login>` and `event:<observable>` are `waiting`.
+- A missing, malformed or duplicate field goes in `needs_status`, unless a wait
+  or observed claim/artifact already determines its disposition. A caller review
+  cannot replace the missing field.
+
+`underway` includes observed claims or artifacts, including unresolved old
+ownership marked `current_or_stale`; it does not assert every retained artifact
+has a running session. `verification_only` and `scope_review`, with their count
+keys, stay present and empty for one release for caller compatibility.
+`needs_status_count` reports the records needing a status update.
+These reports never close an issue, clear a hold or prove its finish line.
+
+The CLI can populate `available_candidates` without a caller snapshot when the
+actor is `agent`, bounded ownership reads found no conflict, and native or exact
+listed milestone evidence, incident evidence, or the explicit own-project list
+in overall Order establishes eligibility. That list is read from direction.
+This is discovery evidence, not an exclusive lock: `queue_context` reports
+partial session coverage, and Choose Work's full review and mandatory fresh
+`claim` still apply. Legacy wait records and unknown reads stay review work.
 Unclassified tooling still requires current caller category/stop evidence and
-the existing capacity admission proof; automatic queue evidence does not
-enable spare-capacity admission or infer a repeated stop.
+the existing capacity admission proof. No admission rule changes here.
 
-Current Status PR references also have bounded `source_delivery` evidence:
-the reader verifies merge time, implementation association and the repository's
-default branch. It reports unavailable or omitted references and never claims
-to have searched every linked PR. When body and trusted comment statuses disagree,
-a bounded GraphQL issue read supplies the body's edit time for choosing the
-current status before looking up its PRs. Historical statuses do not add PR reads.
-That time does not prove the action itself changed. Automatic post-merge source
-availability requires an explicit remainder in a matching trusted Current Status
-comment created after the merge. Other merged-source actions move to `scope_review`.
-A current caller review can establish a body-only engineering remainder or resolve
-a bounded delivery-read gap using its current source-scope evidence, subject to
-the same complete wait and ownership evidence. The helper's incomplete read
-receipt stays visible. Delivered release/recovery follow-through is kept outside the
-source queue even when a legacy wait review is still required. None of these
-classifications closes the issue or proves its full finish line.
-
-`milestone_summary` lists source work, `underway` ownership,
-`verification_only` qualification and `scope_review` separately. Unreviewed legacy holds appear in
-`wait_reviews`; they do not label an entire milestone as waiting on a person.
-Qualification work remains visible even when no source candidate is available.
+`milestone_summary` lists work, `underway`, waits and `needs_status` separately.
+Its old `verification_only` and `scope_review` keys stay empty. Unreviewed legacy
+holds appear in `wait_reviews`; they do not label an entire milestone as waiting
+on a person.
 
 `selection_coverage` counts inventoried/evaluated active issues and exclusion
 reasons. Graph, repository, discussion and ownership bounds remain independent;

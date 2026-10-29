@@ -38,7 +38,7 @@ def node(number: int) -> dict[str, Any]:
         title=f"Work {number}",
         state="OPEN",
         stateReason=None,
-        body="## Current Status\nNext action: Implement the requested work.\n"
+        body="## Current Status\nNext actor: agent\nNext action: Implement the requested work.\n"
         + github_plan_wait.marker(github_plan_wait.reviewed(evidence="Fixture reviewed without holds")),
         url=f"https://github.com/owner/repo/issues/{number}",
         author={"login": "owner"},

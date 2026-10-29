@@ -22,8 +22,7 @@
       "state": "Active; remaining browser-session qualification.",
       "action": "Supervisor routes a browser-capable agent with existing authorized human-session access to read the real Products/incident UI and click Refresh.",
       "waiting_for": "None; Supervisor agent acts next to choose the supported browser interface. No access grant or Director decision is requested.",
-      "wait_state": "review",
-      "queue_state": "verification"
+      "wait_state": "review"
     },
     {
       "number": 3620,

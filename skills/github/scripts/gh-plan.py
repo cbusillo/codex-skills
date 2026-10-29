@@ -688,7 +688,6 @@ NEXT_PROJECT_ITEM_LIMIT = 1000
 NEXT_RELATIONSHIP_LIMIT = 100
 NEXT_PLAN_INVENTORY_LIMIT = 1000
 NEXT_DEFAULT_SCAN_LIMIT = 500
-NEXT_DELIVERY_REFERENCE_LIMIT = 8
 
 
 def classify_project_error(message: str) -> str:
@@ -4971,53 +4970,6 @@ def next_status_body_time(item: dict[str, Any], trusted: set[str]) -> str | None
         raise PlanError(str(exc)) from exc
 
 
-def next_source_delivery(item: dict[str, Any], trusted: set[str], *, repositories: dict[str, Any] | None = None) -> dict[str, Any]:
-    result: dict[str, Any] = {"complete": True, "merged_prs": [], "completion_proven": False,
-                              "scope": "current_status_explicit_pr_references", "all_linked_prs_searched": False}
-    try:
-        body_time = next_status_body_time(item, trusted)
-        if body_time is not None:
-            result["body_recorded_at"] = body_time
-    except PlanError as exc:
-        result["complete"] = False
-        result["body_edit_error"] = next_source_error(exc)
-        return result
-    refs = github_next_queue.delivery_references(item, trusted, body_recorded_at=result.get("body_recorded_at"))
-    if len(refs) > NEXT_DELIVERY_REFERENCE_LIMIT:
-        result.update(complete=False, omitted_reference_count=len(refs) - NEXT_DELIVERY_REFERENCE_LIMIT)
-    repositories = repositories if repositories is not None else {}
-    for repo, number in refs[:NEXT_DELIVERY_REFERENCE_LIMIT]:
-        if NEXT_READS is not None and NEXT_READS.expired:
-            result.update(complete=False, unread_reference_count=len(refs[:NEXT_DELIVERY_REFERENCE_LIMIT]) - refs[:NEXT_DELIVERY_REFERENCE_LIMIT].index((repo, number)))
-            break
-        try:
-            _, pull = api_json("GET", f"/repos/{repo}/pulls/{number}", bucket="rest_core", failed_step="next_delivery_pull")
-            if not isinstance(pull, dict) or "merged_at" not in pull:
-                raise PlanError("Source PR merge evidence unavailable")
-            if not pull["merged_at"]:
-                continue
-            try:
-                merged = datetime.fromisoformat(pull["merged_at"].replace("Z", "+00:00"))
-                if merged.tzinfo is None:
-                    raise ValueError("Merge timestamp lacks timezone")
-            except (TypeError, AttributeError, ValueError) as exc:
-                raise PlanError("Source PR merge timestamp unavailable") from exc
-            if repo.casefold() not in repositories:
-                _, repositories[repo.casefold()] = api_json("GET", f"/repos/{repo}", bucket="rest_core", failed_step="next_delivery_destination")
-            repository = repositories[repo.casefold()]
-            default = repository.get("default_branch") if isinstance(repository, dict) else None
-            if not default or not (pull.get("base") or {}).get("ref"):
-                raise PlanError("Source PR landing destination unavailable")
-            if ((pull.get("base") or {}).get("ref") == default
-                    and github_plan_claim.pr_issue_reference(pull, item["number"], repo=item["repo"],
-                                                            local_references=repo.casefold() == item["repo"].casefold())):
-                result["merged_prs"].append({"url": f"https://github.com/{repo}/pull/{number}",
-                                             "merged_at": pull["merged_at"], "base": default})
-        except PlanError as exc:
-            result["complete"] = False
-            result.setdefault("unavailable", []).append({"repo": repo, "number": number, "reason": next_source_error(exc)})
-    return result
-
 def read_queue_ownership(repo: str) -> dict[str, Any]:
     observed: dict[str, Any] = {"complete": False, "coverage": {}}
     try:
@@ -5048,7 +5000,6 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
                 "all_active_sessions_searched": False,
                 "repositories": {repo: value for result in results for repo, value in result["repositories"].items()}}
     evidence: dict[str, dict[str, Any]] = {}
-    delivery_repositories: dict[str, Any] = {}
     comment_limit = getattr(args, "comment_limit", None) or 100
     # Prepare canonical discussions before batching one native observation per
     # repository. Only this invocation shares it; the next read starts afresh.
@@ -5069,9 +5020,6 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
         trusted = {login.casefold() for login in wait_authors(repo)}
         if repo not in evidence:
             evidence[repo] = read_queue_ownership(repo)
-        preliminary = github_next_queue.classify(item, evidence[repo], trusted=trusted)
-        if preliminary.get("state") not in {"underway", "waiting"} and (item.get("discussion") or {}).get("complete") is True:
-            item["source_delivery"] = next_source_delivery(item, trusted, repositories=delivery_repositories)
         item["queue"] = github_next_queue.classify(item, evidence[repo], trusted=trusted)
     return {"source": "issue_discussion_and_current_claim_pr_branch_reads", "claim_required": True,
             "all_active_sessions_searched": False,
@@ -5079,18 +5027,17 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
 
 
 def project_local_queue(candidates: list[dict[str, Any]], excluded: list[dict[str, Any]], context: dict[str, Any]) -> dict[str, Any]:
-    groups: dict[str, Any] = {"candidates": [], "available_candidates": [], "underway": [], "verification_only": [], "scope_review": [], "excluded": list(excluded)}
+    groups: dict[str, Any] = {"candidates": [], "available_candidates": [], "underway": [], "verification_only": [], "scope_review": [], "needs_status": [], "waiting": [], "excluded": list(excluded)}
     reviews = {key.casefold(): review for key, review in context.get("issues", {}).items()}
     for item in candidates:
         hold = github_direction_next.repository_hold(context, item["repo"])
         state = (item.get("queue") or {}).get("state", "review")
-        review = reviews.get(f"{item['repo']}#{item['number']}".casefold(), {})
         if hold:
             groups["excluded"].append({**item, "exclusion": "repository_held", "review": hold})
-        elif state in {"underway", "verification", "scope_review"} and not (state == "scope_review" and github_direction_next.reviewed_remaining_scope(item, review)):
-            groups[{"verification": "verification_only"}.get(state, state)].append(item)
+        elif state in {"underway", "needs_status"}:
+            groups[state].append(item)
         elif state == "waiting":
-            groups["excluded"].append({**item, "exclusion": "recorded_wait"})
+            groups["waiting"].append(item)
         else:
             review = reviews.get(f"{item['repo']}#{item['number']}".casefold(), {})
             discussion = item.get("discussion") or {}
@@ -5103,17 +5050,11 @@ def project_local_queue(candidates: list[dict[str, Any]], excluded: list[dict[st
                     groups["excluded"].append({**item, "exclusion": "reviewed_wait" if review["state"] == "waiting" else "outside_owner_direction", "review": review})
                     continue
             row = {**item, "availability": "available" if state == "available" else "needs_review"}
-            if (isinstance(complete, bool) and complete and review.get("discussion_digest") == discussion.get("digest")
-                    and review.get("state") == "available" and review.get("ownership_complete") is True
-                    and (item.get("queue") or {}).get("observed_ownership_complete") is True
-                    and ((item.get("queue") or {}).get("reason") in {"current_scope_needs_review", "current_action_not_recorded"}
-                         or github_direction_next.reviewed_remaining_scope(item, review))):
-                row.update(availability="available", review=review)
             groups["candidates"].append(row)
             if row["availability"] == "available":
                 groups["available_candidates"].append(row)
     for field, count in (("candidates", "candidate_count"), ("available_candidates", "available_candidate_count"),
-                         ("underway", "underway_count"), ("verification_only", "verification_only_count"), ("scope_review", "scope_review_count")):
+                         ("underway", "underway_count"), ("verification_only", "verification_only_count"), ("scope_review", "scope_review_count"), ("needs_status", "needs_status_count"), ("waiting", "waiting_count")):
         groups[count] = len(groups[field])
     groups["review_required_count"] = len(groups["candidates"]) - len(groups["available_candidates"])
     return groups
@@ -6081,7 +6022,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     ranked["own_project_context"] = own_project_context
     ranked["selection_coverage"] = github_next_queue.coverage(
         [*list(seeds.values()), *inventory], [seeds[key] for key in nodes if key in seeds], portfolio)
-    graph_active = {(entry["repo"].casefold(), entry["number"]) for entry in [*ranked["candidates"], *ranked["excluded"], *ranked["underway"], *ranked["verification_only"], *ranked["scope_review"]]
+    graph_active = {(entry["repo"].casefold(), entry["number"]) for entry in [*ranked["candidates"], *ranked["excluded"], *ranked["underway"], *ranked["needs_status"]]
                     if entry.get("via") and config["labels"]["active"] in normalize_labels(entry.get("labels"))}
     ranked["selection_coverage"].update(active_in_evaluated_graph_count=len(graph_active),
         active_outside_evaluated_graph_count=ranked["selection_coverage"]["active_inventory_count"] - len(graph_active))
@@ -6099,7 +6040,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     ranked["milestone_summary"] = github_direction_next.milestone_summary(
         titles, completed=ranked.get("completed_milestones", []), candidates=ranked["candidates"],
         graph_waits=[*graph_waits, *ranked["waiting"], *ranked["recorded_waits"]], track_next_actions=track_next_actions,
-        underway=ranked["underway"], verification_only=ranked["verification_only"], scope_review=ranked["scope_review"],
+        underway=ranked["underway"], needs_status=ranked["needs_status"],
         graph_complete=graph_inventory_complete and (not ranked["tracking_roots"] or graph_coverage["complete"]),
     )
     ranked["candidates"] = ranked["candidates"][:args.limit]

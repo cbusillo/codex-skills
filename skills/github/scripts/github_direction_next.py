@@ -465,17 +465,6 @@ def repository_hold(context: dict[str, Any], repo: str) -> dict[str, Any] | None
     return next((value for key, value in context.get("repository_holds", {}).items() if key.casefold() == repo.casefold()), None)
 
 
-def reviewed_remaining_scope(item: dict[str, Any], review: dict[str, Any]) -> bool:
-    """A fresh caller can establish a real remainder without erasing delivery."""
-    queue = item.get("queue") or {}
-    discussion = item.get("discussion") or {}
-    return bool(queue.get("reason") in {"merged_source_needs_finish_line_review", "source_action_predates_merged_pr", "delivered_source_has_followthrough", "source_delivery_reads_incomplete"}
-                and discussion.get("complete") is True and review.get("discussion_digest") == discussion.get("digest")
-                and review.get("state") == "available" and review.get("ownership_complete") is True
-                and queue.get("observed_ownership_complete") is True and not queue.get("wait_review_required")
-                and bool(review.get("reason")) and bool(review.get("evidence")))
-
-
 def whole_plan_wait(parent: dict[str, Any]) -> bool:
     """Preserve an explicit hold on all preparation across prerequisite links."""
     record = parent.get("structured_wait")
@@ -666,6 +655,8 @@ def tooling_capacity_context(
             return {**result, "reason": "milestone_issue_excluded", "issue": f"{entry['repo']}#{entry['number']}", "exclusion": entry["exclusion"]}
         if entry.get("wait_evidence_complete") is False:
             return {**result, "issue": f"{entry['repo']}#{entry['number']}", "required": "current_wait_evidence"}
+        if (entry.get("queue") or {}).get("state") == "needs_status":
+            return {**result, "issue": f"{entry['repo']}#{entry['number']}", "required": "current_next_actor"}
         review = reviews.get(f"{entry['repo']}#{entry['number']}".casefold(), {})
         discussion = entry.get("discussion") or {}
         own_status = section_map(discussion.get("body", "")).get("Current Status", "")
@@ -866,8 +857,8 @@ def rank_portfolio_work(
     candidates: list[dict[str, Any]] = []
     excluded = list(graph.get("excluded", []))
     underway: list[dict[str, Any]] = []
-    verification: list[dict[str, Any]] = []
-    scope_review: list[dict[str, Any]] = []
+    needs_status: list[dict[str, Any]] = []
+    actor_waits: list[dict[str, Any]] = []
     seen = {f"{entry['repo']}#{entry['number']}".casefold() for entry in excluded if entry.get("exclusion") != "outside_direction_tracks"}
     work = [(entry, False) for entry in graph["candidates"]] + [(entry, True) for entry in discoveries]
     for raw, discovered in work:
@@ -893,13 +884,12 @@ def rank_portfolio_work(
         if queue.get("state") == "underway":
             underway.append({**item, "availability": "underway"})
             continue
-        if queue.get("state") == "verification":
-            verification.append(item)
-            continue
-        if queue.get("state") == "scope_review" and not reviewed_remaining_scope(item, review or {}):
-            scope_review.append(item)
+        if queue.get("state") == "needs_status":
+            needs_status.append(item)
             continue
         if queue.get("state") == "waiting":
+            if queue.get("reason") == "recorded_next_actor":
+                actor_waits.append({**item, "waiting_for": queue["next_actor"], "references": [], "source": "next_actor"})
             excluded.append({**item, "exclusion": "recorded_wait"})
             continue
         if discovered and discussion.get("ancestry_complete") is not True:
@@ -922,7 +912,7 @@ def rank_portfolio_work(
         elif review["state"] == "ineligible":
             excluded.append({**item, "exclusion": "outside_owner_direction", "review": review})
             continue
-        elif item.get("wait_review_required") or queue.get("reason") in {"wait_review_required", "unreadable_ownership_or_wait", "incomplete_discussion", "discussion_authorship_unknown"} or (queue.get("reason") == "source_delivery_reads_incomplete" and not reviewed_remaining_scope(item, review)):
+        elif item.get("wait_review_required") or queue.get("reason") in {"wait_review_required", "unreadable_ownership_or_wait", "incomplete_discussion", "discussion_authorship_unknown"}:
             item["review_required"] = queue.get("reason") or "wait_review_required"
         elif review["state"] == "waiting":
             item["review_required"] = "invalid_milestone_wait_needs_current_ownership_review"
@@ -968,7 +958,7 @@ def rank_portfolio_work(
     seen_waits: set[tuple[str, int, str]] = set()
     # Reconstruct from each issue's own status, never a parent's text or a
     # reference used as the identity of a child. Parent exclusions stay intact.
-    entries = [*graph.get("candidates", []), *excluded, *discoveries, *underway, *verification, *scope_review]
+    entries = [*graph.get("candidates", []), *excluded, *discoveries, *underway, *needs_status]
     parents = [parent for entry in entries for parent in (entry.get("discussion") or {}).get("parents", [])]
     invalid_waits = {finding["url"]: finding for finding in findings}
     for entry in [*entries, *parents]:
@@ -1009,15 +999,16 @@ def rank_portfolio_work(
                 current_waits.append(row)
             else:
                 recorded_waits.append({**row, "review_required": True})
-    waiting = current_waits
+    waiting = [*current_waits, *actor_waits]
     available = [item for item in candidates if item["availability"] == "available"]
     return {
         "candidates": candidates, "candidate_count": len(candidates),
         "available_candidates": available, "available_candidate_count": len(available),
         "review_required_count": len(candidates) - len(available),
         "underway": underway, "waiting": waiting, "unowned": unowned,
-        "underway_count": len(underway), "verification_only": verification, "verification_only_count": len(verification),
-        "scope_review": scope_review, "scope_review_count": len(scope_review),
+        "underway_count": len(underway), "verification_only": [], "verification_only_count": 0,
+        "scope_review": [], "scope_review_count": 0,
+        "needs_status": needs_status, "needs_status_count": len(needs_status),
         "recorded_waits": recorded_waits, "stale_waits": stale_waits, "excluded": excluded,
         "tooling_capacity_context": capacity,
         "findings": findings,
@@ -1556,8 +1547,8 @@ def rank_direction_work(
 def milestone_summary(
     milestone_titles: list[str], *, completed: list[str], candidates: list[dict[str, Any]],
     graph_waits: list[dict[str, Any]], track_next_actions: dict[str, dict[str, Any]],
-    underway: list[dict[str, Any]] | None = None, verification_only: list[dict[str, Any]] | None = None,
-    scope_review: list[dict[str, Any]] | None = None, graph_complete: bool = True,
+    underway: list[dict[str, Any]] | None = None, needs_status: list[dict[str, Any]] | None = None,
+    graph_complete: bool = True,
 ) -> list[dict[str, Any]]:
     """Say, for each open listed milestone, what work it offers or who it waits on.
 
@@ -1579,8 +1570,7 @@ def milestone_summary(
                     for row in rows if (row.get("via") and (row.get("milestone") or {}).get("title") == title)
                     or title in (row.get("overall_milestone_context") or {}).get("titles", [])]
         owned = linked(underway or [])
-        qualification = linked(verification_only or [])
-        scoped = linked(scope_review or [])
+        missing = linked(needs_status or [])
         waits: list[dict[str, Any]] = []
         reviews: list[dict[str, Any]] = []
         for row in graph_waits:
@@ -1589,15 +1579,12 @@ def milestone_summary(
             target = reviews if row.get("source") == "legacy_wait_review" and row.get("plan_status") != "waiting" else waits
             if (row.get("milestone") or {}).get("title") == title and record not in target:
                 target.append(record)
-        for row in [*qualification, *scoped]:
-            if row.get("wait_review_required") and not any((entry["repo"], entry["number"]) == (row["repo"], row["number"]) for entry in reviews):
-                reviews.append({**row, "waiting_for": "Legacy wait review required"})
         track = track_next_actions.get(title) or {}
         summary.append({
             "milestone": title,
             "track": track.get("track"),
-            "state": "work_listed" if work or any(not row.get("wait_review_required") for row in qualification) else "underway" if owned else "waiting" if waits else "wait_review_required" if reviews else "scope_review" if scoped else "no_linked_work" if graph_complete else "unknown",
-            "work": work, "underway": owned, "verification_only": qualification, "scope_review": scoped, "wait_reviews": reviews,
+            "state": "work_listed" if work else "underway" if owned else "waiting" if waits else "wait_review_required" if reviews else "needs_status" if missing else "no_linked_work" if graph_complete else "unknown",
+            "work": work, "underway": owned, "verification_only": [], "scope_review": [], "needs_status": missing, "wait_reviews": reviews,
             "waits": waits,
             # Named by the Track's Next action but not reached over native edges.
             "next_action_outside_graph": track.get("references", []),

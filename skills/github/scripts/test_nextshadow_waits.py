@@ -28,7 +28,7 @@ def cases() -> list[dict]:
 
 def source(case: dict) -> tuple[dict, list[dict]]:
     raw = cli.global_issue('cbusillo/launchplane', case['number'], wait_reviewed=False, body=(
-        f"## Current Status\nState: {case['state']}\nNext action: {case['action']}\n"
+        f"## Current Status\nState: {case['state']}\nNext actor: agent\nNext action: {case['action']}\n"
         f"Waiting for: {case['waiting_for']}\n"))
     raw['user'] = {'login': 'cbusillo'}
     comments = []
@@ -83,7 +83,7 @@ def test_live_cases_preserve_available_review_and_underway_states() -> None:
         # Local queue and global graph use the same structured authority.
         item = {**direction.compact_list_issue(raw['repo'], raw), 'discussion': direction.discussion_snapshot(raw, comments, complete=True)}
         projected = queue.classify(item, queue_tests.evidence(), trusted={'cbusillo', 'bot'})
-        expected = case.get('queue_state', 'review' if case['wait_state'] == 'review' else 'underway' if case['claim'] == 'active' else 'available')
+        expected = 'review' if case['wait_state'] == 'review' else 'underway' if case['claim'] == 'active' else 'available'
         assert projected['state'] == expected, projected
 
 
@@ -157,18 +157,6 @@ def test_structured_wait_text_is_data_even_when_it_looks_like_status_fields() ->
     assert not reported['agent_next']
 
 
-def test_milestone_qualification_is_visible_even_without_source_work() -> None:
-    row = {'repo': 'owner/repo', 'number': 1, 'url': 'https://github.com/owner/repo/issues/1', 'milestone': {'title': 'First'}, 'overall_milestone_context': {'titles': ['First']}}
-    summary = direction.milestone_summary(['First'], completed=[], candidates=[], graph_waits=[], track_next_actions={}, verification_only=[row])[0]
-    assert summary['state'] == 'work_listed' and summary['verification_only']
-    assert not summary['waits']
-
-
-    unlinked = {key: value for key, value in row.items() if key != 'overall_milestone_context'}
-    summary = direction.milestone_summary(['First'], completed=[], candidates=[], graph_waits=[], track_next_actions={}, underway=[unlinked], verification_only=[unlinked])[0]
-    assert not summary['underway'] and not summary['verification_only']
-
-
 def test_caller_review_cannot_override_a_required_wait_review() -> None:
     row = queue_tests.item()
     row['discussion']['body'] = row['discussion']['body'].split(wait.PREFIX)[0]
@@ -189,15 +177,6 @@ def test_state_only_legacy_hold_is_visible_for_review() -> None:
     summary = result['milestone_summary'][0]
     assert not result['available_candidates'] and not summary['waits']
     assert summary['wait_reviews'] and 'device decision' in summary['wait_reviews'][0]['waiting_for']
-
-
-def test_completing_qualification_is_not_source_implementation() -> None:
-    for action in ['Complete the storage qualification after deploy.', 'Complete the migration verification after deploy.']:
-        row = queue_tests.item(action, 'Active; source merged')
-        result = queue.classify(row, queue_tests.evidence(), trusted={'owner', 'bot'})
-        assert result['state'] == 'verification', result
-    raw, comments = source({**cases()[0], 'claim': None})
-    assert run_global(raw, comments)['available_candidates']
 
 
 def test_paths_and_pull_request_prose_do_not_invent_repositories() -> None:

@@ -2287,11 +2287,11 @@ of evidence; all unread references and incomplete coverage remain explicit.
   declarations retain the hold. Maintain that evidence with `gh-plan.py wait`,
   preserving every outstanding wait rather than clearing the parent record.
 - Both local and global output separate observed ownership in `underway`,
-  current qualification in `verification_only`, and delivered mixed scope in
-  `scope_review`. Each row exposes `queue.next_action` and the evidence/read
-  limits. Completed-work clauses are not source actions; a merged prerequisite
-  does not prove this issue's delivery. Unstarted integration stays source work,
-  and `readiness` alone is not a read/qualification verb.
+  records without a parseable `Next actor:` in `needs_status`. The old
+  `verification_only` and `scope_review` lists and counts remain empty for one
+  release. Each row exposes `queue.next_actor`, `queue.next_action` and the evidence/read
+  limits. The field records agent work, a named agent, a person or an event;
+  the queue no longer infers remaining scope from prose or merged PRs.
   Reconcile qualification-only come-back steps under
   [issue closing guidance](repo-workflow.md#issue-closing-and-post-merge-proof)
   rather than assigning another verification session.
