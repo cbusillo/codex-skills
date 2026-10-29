@@ -349,7 +349,7 @@ and closure readers retain their strict ledger validation.
 `goal_board.py` consumes the shared `github_work_graph.py` read. The shared
 reader lists the open issues on OWNER/direction (100 per page) and
 keeps those titled `Track:`, whatever their milestone. It then reads one Track per GraphQL query: each Track's body, labels and last 100
-comments (paging through the full Track discussion when truncated), its first 50 native children with their state, body, labels,
+comments, its first 50 native children with their state, body, labels,
 sub-issue counts and last 100 comments, and up to five PRs closing each child with their last
 30 comments. Detail reads are isolated by Track so one failed request cannot
 hide the other Tracks. All requests share the command's deadline.
