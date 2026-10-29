@@ -4,13 +4,14 @@
 # ///
 """Real argv, private sockets and a disposable native client exercise ingress ownership."""
 import asyncio
+from argparse import Namespace
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import unittest
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timezone
 import threading
 import uuid
@@ -34,6 +35,93 @@ class ReceiptFixture(HistoricalReceiptFixture):
 
 
 class IngressTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fresh_thread_publishes_native_identity_for_launch_ledger(self) -> None:
+        import iterm_tab
+        import session_liveness
+        f = ReceiptFixture()
+        f.__enter__()
+        self.addCleanup(f.__exit__)
+        f.rpc_results["thread/start"] = {"thread": {"id": f.session, "path": str(f.transcript)}}
+        native_receipt = f.root / "native-launch.json"
+        task, request, response, _ = await self.start_client(f, external=True, launch_receipt=native_receipt)
+        try:
+            self.assertIn("result", await self.send(task, request, response, "thread/start", None))
+            native = proxy.read_launch_receipt(native_receipt)
+            self.assertEqual(native["transcript"], str(f.transcript))
+            self.assertTrue(native["launch_generation"])
+            self.assertFalse(any(row.get("resumed_generation") for row in closure.log_rows()))
+            processes = [(int(line.split()[0]), "?", line.split(maxsplit=1)[1])
+                         for line in f.commands.splitlines() if line.split()]
+            ledger = f.root / "launch-ledger.json"
+            receipt = {"session_id": "terminal-id", "tty": "/dev/?", "window_id": "window", "tab_id": "tab"}
+            choice = {"provider": "openai", "env": {"CODEX_HOME": str(f.home)}, "native_receipt": str(native_receipt)}
+            transcript_text = f.transcript.read_text()
+            f.transcript.unlink()
+            asyncio.get_running_loop().call_soon(f.transcript.write_text, transcript_text + '{"type":')
+            with patch.object(session_liveness, "inventory", return_value=processes):
+                await iterm_tab.register_fresh_launch(Namespace(ledger=ledger), receipt, choice)
+            entry = json.loads(ledger.read_text())[0]
+            self.assertEqual(entry["session_id"], f.session)
+            self.assertEqual(entry["iterm_session_id"], receipt["session_id"])
+            self.assertEqual(entry["transcript"], str(f.transcript))
+            self.assertTrue(receipt["ledger_recorded"])
+            with self.assertRaises(ValueError):
+                iterm_tab.append_launch_ledger(ledger, entry)
+            self.assertEqual(len(json.loads(ledger.read_text())), 1)
+            recovered = {key: receipt[key] for key in ("session_id", "tty", "window_id", "tab_id", "codex_home", "native_receipt")}
+            recovery_ledger = f.root / "recovery-ledger.json"
+            with patch.object(session_liveness, "inventory", return_value=processes):
+                await iterm_tab.register_fresh_launch(Namespace(ledger=recovery_ledger), recovered, None)
+            self.assertEqual(json.loads(recovery_ledger.read_text())[0]["session_id"], f.session)
+        finally:
+            (f.root / "stop").touch()
+            await asyncio.wait_for(task, 8)
+
+    def test_concurrent_launch_ledger_appends_preserve_both_workers(self) -> None:
+        import iterm_tab
+        f = ReceiptFixture()
+        f.__enter__()
+        self.addCleanup(f.__exit__)
+        ledger = f.root / "launch-ledger.json"
+        unbound = {"iterm_session_id": "unbound-terminal", "supervisor_owned": True}
+        ledger.write_text(json.dumps([unbound]))
+        entries = []
+        for identity in (f.session, OTHER_THREAD):
+            transcript = f.home / "sessions" / (identity + ".jsonl")
+            transcript.write_text(f.transcript.read_text().replace(f.session, identity))
+            entries.append({**f.entry, "session_id": identity, "transcript": str(transcript)})
+        waiting = threading.Event()
+        def append(entry: dict) -> None:
+            waiting.set()
+            iterm_tab.append_launch_ledger(ledger, entry)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            with closure.store_lock(ledger, create=True):
+                first = pool.submit(append, entries[0])
+                self.assertTrue(waiting.wait(1))
+                with self.assertRaises(FutureTimeout):
+                    first.result(timeout=0.1)
+            second = pool.submit(append, entries[1])
+            first.result(timeout=2)
+            second.result(timeout=2)
+        recorded = json.loads(ledger.read_text())
+        self.assertEqual({row.get("session_id") for row in recorded}, {None, f.session, OTHER_THREAD})
+        self.assertIn(unbound, recorded)
+
+    def test_invalid_native_launch_path_reports_once_without_retrying_publication(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            receipt = home / "receipt.json"
+            ingress = proxy.Ingress(home)
+            ingress.launch_metadata = {"launch_pid": 123}
+            for path in (None, str(home / "outside.jsonl")):
+                ingress.launch_receipt = receipt
+                ingress.publish_launch({"id": OTHER_THREAD, "path": path})
+                with self.assertRaises(ValueError) as caught:
+                    proxy.read_launch_receipt(receipt)
+                self.assertEqual(str(caught.exception), json.loads(receipt.read_text())["error"])
+                self.assertIsNone(ingress.launch_receipt)
+
     async def test_tmux_launch_reattachment_finishes_with_or_without_a_queue_nudge(self) -> None:
         import iterm_tab
         import session_liveness
@@ -683,7 +771,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             (f.root / "stop").touch()
             self.assertEqual(await asyncio.wait_for(task, 8), 0)
 
-    async def start_client(self, f, *, resume=None, wrapper=False, external=False, default_unix=False):
+    async def start_client(self, f, *, resume=None, wrapper=False, external=False, default_unix=False, launch_receipt=None):
         ready, request, response, stop = [f.root / name for name in ("ready", "request", "response", "stop")]
         child = f.root / "codex"
         child.write_text(f"#!{sys.executable}\n" +
@@ -717,10 +805,11 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             native += ["--", "task with  repeated spaces\nnext\tline"]
         if external:
             child = await asyncio.create_subprocess_exec(sys.executable, str(Path(proxy.__file__).with_name("codex-session.py")),
-                "launch", "--codex-home", str(f.home), "--", *native)
+                "launch", "--codex-home", str(f.home),
+                *(["--launch-receipt", str(launch_receipt)] if launch_receipt else []), "--", *native)
             task = asyncio.create_task(child.wait())
         else:
-            task = asyncio.create_task(proxy.run_client(f.home, native, session=resume))
+            task = asyncio.create_task(proxy.run_client(f.home, native, session=resume, launch_receipt=launch_receipt))
         async def finish():
             if not task.done():
                 if stop.parent.exists():

@@ -28,6 +28,24 @@ def report(rows, complete=False):
 
 
 class SummaryTests(unittest.TestCase):
+    def test_tooling_measure_reaches_short_message_including_overflow(self) -> None:
+        rows = [("unanswered_question", i, "age unknown", "Chris", "🧭" * 100) for i in range(51)]
+        for findings in ([], rows):
+            for measure in ("Tooling PRs: 5/20 (25%).", "Tooling PRs: unavailable; PR inventory incomplete."):
+                with self.subTest(overflow=bool(findings), measure=measure):
+                    source = report(findings) + measure + "\n"
+                    prepared = digest.presentation(source, FULL)
+                    self.assertIn(measure, prepared.content)
+                    self.assertLess(digest.units(prepared.content), 2000)
+                    if findings:
+                        self.assertEqual(prepared.attachment, source)
+
+    def test_long_unavailable_reason_does_not_stop_delivery(self) -> None:
+        source = report([]) + "Tooling PRs: unavailable; " + "upstream error " * 1000
+        prepared = digest.presentation(source, FULL)
+        self.assertIn("unavailable", prepared.content)
+        self.assertLess(digest.units(prepared.content), 2000)
+
     def test_large_report_sends_one_short_message_with_every_person_wait_and_full_link(self):
         rows = [("merged_link_needs_review", i, f"{i}h", "Supervisor", f"Task {i}") for i in range(1, 501)]
         rows += [("aged_structured_wait", 600 + i, "age unknown", actor, f"Review choice {i}")

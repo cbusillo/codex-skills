@@ -8,6 +8,7 @@ import base64
 import copy
 import datetime as dt
 import json
+import re
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -20,6 +21,7 @@ import direction_audit as audit
 import direction_stranded as sweep
 import digest_summary
 from skills.github.scripts import github_api
+from skills.supervisor import scripts as supervisor_scripts
 
 
 class StrandedTests(unittest.TestCase):
@@ -670,6 +672,110 @@ class InventoryTests(unittest.TestCase):
     def collect(self, **kwargs):
         return sweep.collect(["test/repo"], reader=self.reader, now=self.now, **kwargs)
 
+    def test_daily_collector_computes_tooling_share_and_sender_keeps_it(self) -> None:
+        pulls: dict[int, dict[str, Any]] = {number: {"number": number, "title": "Tool change", "body": "Removed: unused code" if number % 2 else "",
+                          "labels": [{"name": "own-project"}] if number == 23 else [],
+                          "additions": number, "deletions": 10}
+                 for number in range(1, 24)}
+        items: list[dict[str, Any]] = [{**pull, "state": "closed", "comments": 0, "updated_at": self.now.isoformat(),
+                  "pull_request": {"merged_at": (self.now - dt.timedelta(minutes=24 - number)).isoformat()}}
+                 for number, pull in pulls.items()]
+        pulls[21].update({"body": audit.github_plan_claim.TRAIN_BATCH_MARKER + "fixture -->",
+                          "head": {"ref": audit.github_plan_claim.TRAIN_BRANCH_PREFIX + "fixture", "repo": {"full_name": "test/repo"}},
+                          "base": {"repo": {"full_name": "test/repo"}}})
+        pulls[9]["body"] = ""
+        pulls[2]["body"] = "Removed: redundant path"
+        pulls[3]["body"] = "Removed: none"
+        pulls[6]["body"] = "```text\nRemoved: quoted example\n```"
+        pulls[22]["body"] = "Refs outside/private#888"
+        items[9]["comments"] = 1
+        items[3]["comments"] = 1
+        self.reader.pages[("repos/test/repo/issues/10/comments", 1, None)] = [
+            {"id": 100, "html_url": "https://github.com/test/repo/pull/10#issuecomment-100",
+             "created_at": self.now.isoformat(), "body": "**Removed:** redundant helper", "user": {"login": "test"}}]
+        self.reader.pages[("repos/test/repo/issues/4/comments", 1, None)] = [
+            {"id": 101, "html_url": "https://github.com/test/repo/pull/4#issuecomment-101",
+             "created_at": self.now.isoformat(), "body": "Removed: someone else's helper", "user": {"login": "outside"}}]
+        self.reader.pages[("repos/test/repo/issues", 1, "closed")] = list(reversed(items))
+        self.reader.files["repos/test/direction/contents/DIRECTION.md"] = "# Direction\n\n## Order\n\n4. Own projects: fun.\n"
+        self.reader.repositories["repos/test/worktree"] = {"archived": False, "default_branch": "main"}
+        original = self.reader.get_json
+        order: list[str] = []
+        primary_requests: list[int] = []
+        link_failure: str | None = None
+        quota_cause = "quota_reserve"
+
+        def read(path: str, *, step: str) -> Any:
+            if path == "repos/test/direction/contents/DIRECTION.md":
+                order.append("measure")
+            if match := re.fullmatch(r"repos/test/repo/pulls/(\d+)", path):
+                self.assertNotEqual(int(match[1]), 23)
+                return copy.deepcopy(pulls[int(match[1])])
+            if urlsplit(path).path == "repos/test/repo/issues/50/timeline":
+                raise unavailable("not_found")
+            if path == "repos/test/repo/issues/100":
+                return {"labels": []}
+            return original(path, step=step)
+
+        def worktrees(_root: Path, fetch: Any, _gaps: list, _include: Any) -> list:
+            order.append("worktrees")
+            fetch(["api", "repos/test/worktree"])
+            primary_requests.append(len(self.reader.paths))
+            return []
+
+        def links(_query: str, variables: dict, **_kwargs: Any) -> Any:
+            if link_failure:
+                return SimpleNamespace(ok=False, failure=SimpleNamespace(cause=link_failure))
+            nodes = [{"number": 100, "repository": {"nameWithOwner": "test/repo"}}] if variables["number"] == 22 else []
+            return SimpleNamespace(ok=True, body={"data": {"repository": {"pullRequest": {
+                "closingIssuesReferences": {"nodes": nodes, "pageInfo": {"hasNextPage": False}}}}}})
+
+        with patch.object(self.reader, "get_json", side_effect=read), \
+                patch.object(self.reader, "graphql_json", side_effect=links), \
+                patch.object(sweep, "finished_worktrees", side_effect=worktrees), \
+                patch.object(audit, "own_project_label", return_value="own-project"), \
+                patch.object(audit, "tracked_capacity_issues", return_value=({("test/repo", 100)}, [])):
+            result = self.collect(question_queue="test/repo#99", worktree_root=Path("/fixture/worktrees"))
+            self.assertEqual(order, ["worktrees", "measure"])
+            self.reader.paths.clear()
+            exhausted = self.collect(question_queue="test/repo#99", worktree_root=Path("/fixture/worktrees"),
+                                     max_requests=primary_requests[0] + 1)
+            link_failure = quota_cause
+            quota_limited = self.collect(question_queue="test/repo#99")
+            link_failure = None
+            self.reader.pages[("repos/test/repo/issues", 1, "open")] = [
+                {"number": 50, "state": "open", "comments": 0, "title": "Unrelated open item"}]
+            unrelated = self.collect(question_queue="test/repo#99")
+            del self.reader.pages[("repos/test/repo/issues", 1, "open")]
+            pulls[20].pop("additions")
+            incomplete = self.collect(question_queue="test/repo#99")
+            pulls[20]["additions"] = 20
+            self.reader.pages[("repos/test/repo/issues", 1, "closed")].pop()
+            short_sample = self.collect(question_queue="test/repo#99")
+        measure = result["tooling_measure"]
+        self.assertEqual(measure["status"], "complete")
+        self.assertEqual(measure["qualifying"], 5, measure)
+        self.assertEqual(measure["share"], 0.25)
+        self.assertEqual([row["url"].rsplit('/', 1)[1] for row in measure["rows"]], [str(i) for i in range(20, 0, -1)])
+        rendered = sweep.markdown(result)
+        short = digest_summary.presentation(rendered, "https://github.com/test/repo/issues/99").content
+        emitted_measure = next(line for line in rendered.splitlines() if line.startswith("Tooling PRs: "))
+        self.assertIn(emitted_measure, short)
+        self.assertIn(measure["rows"][0]["url"], rendered)
+        self.assertIn("https://github.com/test/repo/pull/10#issuecomment-100", rendered)
+        self.assertEqual(incomplete["tooling_measure"]["status"], "unavailable")
+        self.assertTrue(exhausted["complete"], exhausted)
+        self.assertEqual(exhausted["tooling_measure"]["status"], "unavailable")
+        self.assertTrue(exhausted["tooling_measure"]["reason"])
+        self.assertTrue(quota_limited["complete"])
+        self.assertEqual(quota_limited["tooling_measure"]["reason"], quota_cause)
+        self.assertFalse(unrelated["complete"])
+        self.assertEqual(unrelated["tooling_measure"]["share"], measure["share"])
+        self.assertEqual(short_sample["tooling_measure"]["status"], "unavailable")
+        self.assertNotIn("share", short_sample["tooling_measure"])
+        self.assertIn("unavailable", digest_summary.presentation(sweep.markdown(incomplete),
+            "https://github.com/test/repo/issues/99").content)
+
     def test_track_children_are_read_once_and_only_changed_ones_outside_inventory(self):
         self.reader.repositories["repos/cbusillo/direction"] = {"archived": False, "default_branch": "main"}
         body = "## Current Status\n\nLast verified: 2026-10-15T14:00:00+02:00\n"
@@ -710,7 +816,8 @@ class InventoryTests(unittest.TestCase):
                          "pull": None, "since": "2026-10-15T00:00:00Z"}], [{"source": "work/y", "reason": str(exc)}]
             raise AssertionError("second PR read should exceed the budget")
 
-        with patch.object(sweep.audit, "fetch_paginated", return_value=([], False)):
+        with patch.object(sweep.audit, "fetch_paginated", return_value=([], False)), \
+                patch.object(sweep, "tooling_measure", return_value={}):
             baseline = self.collect()["requests"]
             self.reader.paths.clear()
             # One request beyond the inventory's own reads: the first PR read fits, the second does not.
@@ -923,7 +1030,9 @@ class InventoryTests(unittest.TestCase):
             self.assertEqual(queue[0]["author"], question["user"]["login"])
             return {"complete": True, "questions": []}
         self.reader.pages[("repos/test/repo/issues/123/comments", 1, None)] = [question]
-        with patch.dict(sys.modules, {"skills.supervisor.scripts.question_delivery": SimpleNamespace(inventory=inventory, records=lambda *_: [])}):
+        module = SimpleNamespace(inventory=inventory, records=lambda *_: [])
+        with patch.dict(sys.modules, {"skills.supervisor.scripts.question_delivery": module}), \
+                patch.object(supervisor_scripts, "question_delivery", module, create=True):
             result = self.collect(question_queue="test/repo#123")
         self.assertTrue(result["complete"], result)
 
@@ -1015,7 +1124,8 @@ class InventoryTests(unittest.TestCase):
             for n, url in enumerate(urls[:2], 1):
                 reader.pages[(f"repos/test/repo/issues/{n}/comments", 1, None)] = [{"id": n, "html_url": url,
                     "created_at": "2026-10-14T00:00:00Z", "body": "Owner question: Should we continue?", "user": {"login": "test"}}]
-            with patch.dict(sys.modules, {"skills.supervisor.scripts.question_delivery": module}):
+            with patch.dict(sys.modules, {"skills.supervisor.scripts.question_delivery": module}), \
+                    patch.object(supervisor_scripts, "question_delivery", module, create=True):
                 result = sweep.collect(["test/repo"], reader=reader, now=self.now,
                                        question_queue="test/repo#123", max_requests=budget)
             self.assertTrue(any(row["kind"] == "registered_question" for row in result["findings"]))
