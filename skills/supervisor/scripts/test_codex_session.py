@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 from datetime import datetime, timezone
 import socket
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -26,6 +27,18 @@ import github_plan_native
 
 
 class ResumeTests(unittest.TestCase):
+    def test_queue_cli_preserves_certain_absence_but_never_relabels_permission_or_native_refusal(self) -> None:
+        for cause, not_sent in ((ValueError("not loaded"), True), (PermissionError("denied"), False),
+                                (SESSION.NativeRequestRejected("rejected"), False)):
+            error = SESSION.QueueNotSent(str(cause))
+            error.__cause__ = cause
+            output = io.StringIO()
+            with self.subTest(cause=type(cause)), patch.object(sys, "argv", ["codex-session.py", "queue",
+                    "--session-id", self.native, "--codex-home", str(self.home), "--message", "notice"]), \
+                    patch.dict(SESSION.__dict__, {"run": MagicMock(side_effect=error)}), contextlib.redirect_stdout(output):
+                self.assertEqual(SESSION.main(), 1)
+            self.assertEqual(json.loads(output.getvalue())["not_sent"], not_sent)
+
     def test_generic_launch_and_resume_preserve_the_callers_label(self) -> None:
         observed = []
 

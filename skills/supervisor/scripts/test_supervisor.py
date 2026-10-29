@@ -13,10 +13,12 @@ import errno
 import json
 import subprocess
 import shlex
+import signal
 import socket
 import os
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,6 +35,7 @@ from codex_session_proxy import MEMORY_SETTING
 import oq
 import session_record
 import status
+import services
 
 
 def claude(text, **extra) -> dict[str, Any]:
@@ -577,7 +580,7 @@ class LedgerTests(unittest.TestCase):
         self.enterContext(patch.object(codex_idle_watch.Path, "home", return_value=self.root))
         self.transcript = self.root / "session.jsonl"
         self.ledger = self.root / "ledger.json"
-        self.entry = {
+        self.entry: dict[str, Any] = {
             "session_id": "02b123-new-prefix",
             "harness": "codex",
             "transcript": "session.jsonl",
@@ -884,6 +887,177 @@ class LedgerTests(unittest.TestCase):
             self.assertEqual(codex_idle_watch.watch(self.watch_args(), None), 0)
         notices = [json.loads(line) for line in output.getvalue().splitlines()]
         self.assertEqual(notices[-1]["closeout_request"]["session_id"], self.entry["session_id"])
+
+    def persistent_args(self, **overrides: Any) -> SimpleNamespace:
+        identity = "11111111-2222-4333-8444-555555555555"
+        home = self.root / "recipient"
+        transcript = home / "sessions" / f"{identity}.jsonl"
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        transcript.write_text(self.transcript.read_text().replace(self.entry["session_id"], identity))
+        self.recipient = {"role": "supervisor", "session_id": identity, "harness": "codex",
+                          "transcript": str(transcript), "codex_home": str(home)}
+        config = self.root / "services.json"
+        config.write_text(json.dumps({"uv": sys.executable, "supervisor": self.recipient,
+            "services": {name: {"argv": [sys.executable], "cwd": str(self.root), "restart_seconds": 1}
+                         for name in services.SERVICES}}))
+        return self.watch_args(persistent=True, notify_config=config, **overrides)
+
+    def test_persistent_watch_notifies_immediately_and_keeps_its_watermark_across_restarts(self) -> None:
+        import review_notifications
+        args = self.persistent_args(deadline_seconds=180)
+        sleeps = []
+        with patch.object(review_notifications, "send") as notify:
+            for _ in range(2):
+                clock = iter(range(0, 10_000, 45))
+                with patch.object(codex_idle_watch.time, "monotonic", side_effect=lambda: next(clock)), \
+                        patch.object(codex_idle_watch.time, "sleep", side_effect=sleeps.append), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(codex_idle_watch.watch(args, None), 0)
+                self.assertEqual(notify.call_count, 1)
+            self.assertGreater(len(sleeps), 1)
+        self.assertEqual(notify.call_args.args[0]["session_id"], self.recipient["session_id"])
+
+    def test_uncertain_notification_retains_exact_recipient_and_never_replays(self) -> None:
+        import review_notifications
+        args = self.persistent_args(once=True)
+        with patch.object(review_notifications, "send", side_effect=TimeoutError("unknown delivery")) as notify, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(codex_idle_watch.watch(args, None), 1)
+            config = json.loads(args.notify_config.read_text())
+            config["supervisor"]["session_id"] = "11111111-2222-4333-8444-555555555556"
+            args.notify_config.write_text(json.dumps(config))
+            self.assertEqual(codex_idle_watch.watch(args, None), 0)
+            self.assertEqual(notify.call_count, 1)
+        state = codex_idle_watch.load_delivered(args.delivered_state)
+        attempt = next(json.loads(value.removeprefix(codex_idle_watch.ATTEMPT_NOTIFICATION))
+                       for value in state if value.startswith(codex_idle_watch.ATTEMPT_NOTIFICATION))
+        self.assertEqual(attempt["recipient"], self.recipient)
+        self.assertIn(json.dumps(attempt["notice"], sort_keys=True), state)
+
+    def test_certainly_unsent_busy_recipient_is_rechecked_without_spending_delivery(self) -> None:
+        import review_notifications
+        other_transcript = self.root / "other.jsonl"
+        other_transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": "other-worker"}}) + "\n"
+                                    + json.dumps(event("agent_message", message="Still working.")) + "\n"
+                                    + json.dumps(event("task_complete")) + "\n")
+        os.utime(other_transcript, (1000, 1000))
+        self.ledger.write_text(json.dumps([self.entry, {**self.entry, "session_id": "other-worker", "transcript": str(other_transcript)}]))
+        args = self.persistent_args(deadline_seconds=180)
+        clock = iter(range(0, 10_000, 45))
+        output = io.StringIO()
+        with patch.object(review_notifications, "send", side_effect=[
+                review_notifications.NotSent("recipient busy", needs_attention=False), None]) as notify, \
+                patch.object(codex_idle_watch.time, "monotonic", side_effect=lambda: next(clock)), \
+                patch.object(codex_idle_watch.time, "sleep"), contextlib.redirect_stdout(output):
+            self.assertEqual(codex_idle_watch.watch(args, None), 0)
+        self.assertEqual(notify.call_count, 2)
+        self.assertEqual(sum(json.loads(line).get("session_id") == "other-worker" for line in output.getvalue().splitlines()), 1)
+        self.assertFalse(any(value.startswith(codex_idle_watch.ATTEMPT_NOTIFICATION)
+                             for value in codex_idle_watch.load_delivered(args.delivered_state)))
+
+    def test_notification_rechecks_exact_candidate_before_any_send(self) -> None:
+        import review_notifications
+        args = self.persistent_args(once=True)
+        with patch.object(finished_map, "candidates", return_value=[{"closeout_request": None}]), \
+                patch.object(review_notifications, "send") as notify, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(codex_idle_watch.watch(args, None), 0)
+        notify.assert_not_called()
+
+    def test_removed_worker_during_recheck_does_not_stop_the_watch(self) -> None:
+        import review_notifications
+        args = self.persistent_args(once=True)
+        candidates = finished_map.candidates
+        def remove_worker(ledger: Path, session_id: str) -> list[dict]:
+            ledger.write_text("[]")
+            return candidates(ledger, session_id)
+        with patch.object(finished_map, "candidates", side_effect=remove_worker), \
+                patch.object(review_notifications, "send") as notify, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(codex_idle_watch.watch(args, None), 0)
+        notify.assert_not_called()
+        self.assertFalse(args.delivered_state.exists())
+
+    def test_changing_candidate_transcript_is_rechecked_without_stopping_service(self) -> None:
+        import review_notifications
+        args = self.persistent_args(deadline_seconds=180)
+        read = session_record.read_jsonl
+        calls = 0
+        def append_during_recheck(path: Path) -> list[dict]:
+            nonlocal calls
+            records = read(path)
+            calls += 1
+            if calls == 2:
+                with path.open("a") as stream:
+                    stream.write("\n")
+            return records
+        clock = iter(range(0, 10_000, 45))
+        with patch.object(session_record, "read_jsonl", side_effect=append_during_recheck), \
+                patch.object(review_notifications, "send") as notify, \
+                patch.object(codex_idle_watch.time, "monotonic", side_effect=lambda: next(clock)), \
+                patch.object(codex_idle_watch.time, "sleep"), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(codex_idle_watch.watch(args, None), 0)
+        self.assertEqual(notify.call_count, 1)
+
+    def test_loaded_watch_rereads_current_supervisor_after_takeover(self) -> None:
+        import review_notifications
+        args = self.persistent_args(deadline_seconds=180)
+        original = self.recipient["session_id"]
+        successor = "11111111-2222-4333-8444-555555555556"
+        changed = False
+        def takeover(_delay: float) -> None:
+            nonlocal changed
+            if changed:
+                return
+            changed = True
+            config = json.loads(args.notify_config.read_text())
+            transcript = Path(config["supervisor"]["transcript"])
+            successor_path = transcript.with_name(f"{successor}.jsonl")
+            successor_path.write_text(transcript.read_text().replace(original, successor))
+            config["supervisor"].update(session_id=successor, transcript=str(successor_path))
+            args.notify_config.write_text(json.dumps(config))
+            self.write([event("agent_message", message="Safe to exit: yes"),
+                        {**event("task_complete"), "timestamp": "2026-10-03T00:05:00Z"}])
+        clock = iter(range(0, 10_000, 45))
+        with patch.object(review_notifications, "send") as notify, \
+                patch.object(codex_idle_watch.time, "monotonic", side_effect=lambda: next(clock)), \
+                patch.object(codex_idle_watch.time, "sleep", side_effect=takeover), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(codex_idle_watch.watch(args, None), 0)
+        self.assertEqual([call.args[0]["session_id"] for call in notify.call_args_list], [original, successor])
+
+    def test_permission_refusal_remains_spent_even_before_notification_delivery(self) -> None:
+        import review_notifications
+        args = self.persistent_args(once=True)
+        with patch.object(review_notifications, "send", side_effect=PermissionError("denied")) as notify, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(codex_idle_watch.watch(args, None), 1)
+            self.assertEqual(codex_idle_watch.watch(args, None), 0)
+        self.assertEqual(notify.call_count, 1)
+
+    def test_supervisor_recipient_cannot_be_watched_as_a_worker(self) -> None:
+        args = self.persistent_args()
+        self.ledger.write_text(json.dumps([self.entry, self.recipient]))
+        with self.assertRaises(ValueError):
+            codex_idle_watch.notification_recipient(args)
+
+    def test_persistent_watch_sigterm_exits_cleanly_without_a_pending_send(self) -> None:
+        self.write([event("agent_message", message="Working."), event("task_started")])
+        args = self.persistent_args()
+        command = [sys.executable, str(Path(__file__).with_name("codex_idle_watch.py")), "--ledger", str(self.ledger), "--delivered-state",
+                   str(args.delivered_state), "--persistent", "--notify-config", str(args.notify_config)]
+        child = subprocess.Popen(command, env={**os.environ, "HOME": str(self.root), "CODE_HOME": str(self.root),
+                                 "CODEX_HOME": str(self.root)}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 5
+            lock = args.delivered_state.with_name(args.delivered_state.name + ".lock")
+            while not lock.exists() and child.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(lock.exists())
+            child.send_signal(signal.SIGTERM)
+            _, stderr = child.communicate(timeout=5)
+            self.assertEqual(child.returncode, 0, stderr)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.communicate()
 
     def run_watch_to_deadline(self) -> tuple[int, list[float], list[dict]]:
         clock = iter(range(0, 10_000, 45))
