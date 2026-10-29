@@ -1106,20 +1106,11 @@ Run `catalog_landing.py --config <private-landing.json> --evidence <private-evid
 from the catalog's Supervisor scripts with `uv run`. The private JSON contains
 pointers and exact identities, never copied skill contents:
 
-```json
-{
-  "repo": "OWNER/codex-skills",
-  "pr": 123,
-  "issue": 100,
-  "landing_sha": "<full merged landing SHA>",
-  "source_worktree": "<retained landed source>",
-  "runtime_worktree": "<bound catalog checkout>",
-  "ledger": "<absolute private ledger.json>",
-  "window_id": "<existing Supervisor tmux container>",
-  "supervisor_session": "<current native session ID>",
-  "command_files": {"codex": "<normal fresh Codex launch file>", "claude": "<normal fresh Claude launch file>"}
-}
-```
+Set `repo` to `OWNER/codex-skills`, integer `pr`/`issue`, and the full merged
+`landing_sha`. Supply absolute `source_worktree` (retained landed source),
+`runtime_worktree` (bound checkout) and private `ledger` paths; the existing tmux
+container's `window_id`; and the current native `supervisor_session`.
+`command_files` maps `codex`/`claude` to their normal fresh launch-file paths.
 
 An optional `account_config` selects existing private account mappings.
 Resolve a retired source through the runtime reconciliation procedure, keeping
@@ -1134,7 +1125,7 @@ use no tools and arrive within two minutes; launcher return and echoed input
 alone do not pass. It then sends one targeted handoff request to each idle empty
 prompt, saves its exact native-session issue handoff, and delegates normal closeout.
 A saved handoff reruns closeout directly, preserving its URL and native ID even
-after retirement. A Codex `register_ledger` failure preserves its launch object:
+after retirement. Manual recovery reuses `<catalog-evidence>/<harness>-closeout`. A Codex `register_ledger` failure preserves its launch object:
 save that object as a private receipt, run `iterm_tab.py register --receipt-file
 <retained-launch.json> --ledger <ledger.json>`, then rerun with the same evidence.
 Registration reads the retained native receipt; it never relaunches the worker.
@@ -2070,6 +2061,9 @@ peers stop that source. Use backfill's `--closed-log`, `--checkout-root`,
 Input inventories are never rewritten; PR handoffs stay owned until their route
 succeeds. Original records and timestamps, never output attestations, bind recovery.
 
+If disappearance fails, preserve the journal and reconcile its original close.
+Only after proving a definite no-op, use the guarded terminal-close procedure
+and rerun closeout with that same evidence; never replay an uncertain close.
 Normal finish precedes close; termination recovery precedes interrupted cleanup.
 Native close owns nonce/location, PID/TTY, unsplit and shell/dead-pane proof.
 Physical pane cleanup does not prove a resumed source ended. Preserve uncertain

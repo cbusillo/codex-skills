@@ -204,6 +204,7 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
             "input",
             "nonempty or uncertain input needs preservation and manual verification",
         )
+        ready(entry, args.supervisor_session)
 
     def wait_for_exit() -> None:
         operation.gate = "process_exit"
@@ -217,14 +218,11 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
         verify_handoff()
         require(not retired or session_liveness.process_absent(entry.get("pid")), "process_exit", "retired process identity is live")
         if not session_liveness.process_absent(entry.get("pid")) and not operation.state["steps"].get("quit"):
-            operation.gate = "ownership"
-            prompt("prompt")
-            ready(entry, args.supervisor_session)
             operation.gate = "native_idle"
             asyncio.run(native_idle(entry))
+            prompt("prompt")
             call("clear", "clear", "--verified-target")
             prompt("empty_input")
-            ready(entry, args.supervisor_session)
             operation.gate = "native_idle"
             asyncio.run(native_idle(entry))
             prompt("final")
