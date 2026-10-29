@@ -2313,8 +2313,8 @@ of evidence; all unread references and incomplete coverage remain explicit.
   `available_candidates` can contain source work with no observed
   conflict; it still requires Choose Work and fresh claim preflight, including
   legacy wait review. No complete session inventory is implied. Local next
-  accepts `--comment-limit` and `--selection-context` for current repository
-  holds as well. See [Global Next](../../github-plan/references/global-next.md)
+  accepts `--comment-limit` for partial discussion reads; unresolved holds remain
+  review work. See [Global Next](../../github-plan/references/global-next.md)
   for availability and direction admission; that reference owns the contract.
 - Configured Project Focus and milestone state/due date are advisory ranking and
   context signals only. A closed milestone does not hide an otherwise open,
@@ -2430,7 +2430,7 @@ non-App actor uses `/user/repos`, without switching identities on failure.
 Service adapters using the shared direction module must inventory marked issues
 beyond ordinary repository list bounds, pass their inventory through
 `discovery_scan` before evaluating nodes, and report graph/discovery coverage
-beside the ranked list; `rank_portfolio_work` alone cannot find omitted issues.
+beside the ranked list; ranking alone cannot find omitted issues.
 
 `graph_context` covers native traversal; `discovery_context` covers repository
 inventory and record reads; neither proves active ownership. Global reads are
@@ -2438,7 +2438,8 @@ complete by default. `--repo-limit`, `--repository-issue-limit`, `--comment-limi
 and `--scan-limit` opt into partial evidence, with no family or held-repository
 allowances. `candidate_coverage` reports incomplete source, traversal or ownership
 coverage and known omitted repositories/counts. An explicit milestone scope
-remains a ranking filter and cannot establish portfolio capacity admission.
+remains a ranking filter and keeps the portfolio-wide availability flag null
+unless known available milestone work makes it false.
 Every candidate has `overall_milestone_context` with `matched`, `none_found` or
 `unknown`, titles and its evidence source. Matches require a native Track
 path/ancestry/blocking target or an open issue milestone title listed in both repository and
@@ -2458,72 +2459,35 @@ When a scan allowance leaves issues unchecked, `graph_context.evaluation_note`
 or `discovery_context.evaluation_note` says evaluation stopped early and names
 `--scan-limit` as the way to check more. The discovery note counts inventoried
 issues outside the evaluated graph, including held and other-agent issues;
-`unevaluated_count` and `unevaluated_repositories` still omit held repositories.
-These counts do not claim a complete portfolio inventory. A tooling refusal caused by a listed
-milestone without a Track issue names that milestone in
-`tooling_capacity_context.detail`; the admission rule is unchanged.
+`unevaluated_count` and `unevaluated_repositories` count all omitted records.
+These counts do not claim a complete portfolio inventory.
 For a discovered leaf, up to ten native parent links are read using GitHub's
 [parent issue endpoint](https://docs.github.com/en/rest/issues/sub-issues#get-parent-issue).
 Parent discussions accompany the child, whole-plan waits remain excluded, and
 failed reads, cyclic, or deeper ancestry stays unknown. Parent discussion changes
-also invalidate the review digest. These reads are cached within the invocation.
+are read on the next selection. These reads are cached within the invocation.
 As with repository inventory, coverage is limited to the actor's visible data:
 a parent-endpoint 404 establishes no visible parent, not proof that an
 inaccessible parent cannot exist. Global-only options are rejected by local next.
 
-Candidates carry bounded `discussion` snapshots and a digest. The
+Candidates carry `discussion` snapshots. The
 [global selection procedure](../../github-plan/references/global-next.md) owns
-availability, queue evidence, caller review and the temporary
-`--selection-context FILE` format. No `next` mode mutates planning state or
-authorizes execution.
+availability, queue evidence and the conservative
+`all_listed_milestones_have_no_available_item` flag. No `next` mode mutates
+planning state or authorizes execution. The command and existing top-level
+output names remain; `tooling_capacity_context` and `repository_holds` are empty
+compatibility objects. The capacity proof, `--selection-context`, its Python
+snapshot parameters and capacity-proof entry points are retired. The issue's
+recorded actor and structured wait are the supported status/hold route.
 
-`scripts/github_direction_next.py:rank_direction_work` is the reusable ranking
-entry point for service consumers such as Launchplane. It accepts tracking
-roots, ordered milestone titles, completed milestone titles, a node reader,
-and the scan bound. The same module's `evaluate_direction_node` classifies raw
-issue, relationship and label evidence. Pass `structured_wait` resolved through
-`github_plan_wait.current` (including the managed planning body) from the complete
-bounded discussion and configured automation/Director authors. A clear record
-overrides status prose; a pending record holds the whole issue/subtree. Split
-independent child work from a parent-only hold rather than silently dropping that
-hold. Missing or unreadable records require review. Adapters that omit this
-optional parameter retain legacy reporting and have not adopted structured
-selection authority. Pass known repository identities as `reference_repositories`
-to portfolio reporting to resolve `repo#N` shorthand; full references remain
-readable even outside that inventory. This interface update needs service-adapter
-adoption; a catalog update alone does not prove an installed service upgraded.
-`rank_next_candidates` supplies the common ordering for local and global calls.
-Bounded readers must pass `truncated_relationships` or `relationship_error`
-to the classifier when their evidence is incomplete; it then returns an unknown
-node rather than treating the visible prefix as a complete dependency list.
-Neither classification nor ranking makes network calls or mutations. Adapters
-only collect evidence with their authenticated, bounded readers, mapping
-inaccessible nodes to unknown and preserving provider/auth/quota stop behavior.
-`discussion_snapshot` normalizes bounded comments for both adapters, and
-`include_parent_context` preserves ancestor waits and discussion freshness;
-`rank_portfolio_work` combines graph candidates, discoveries, and caller selection
-evidence with the same holds, review states, and priority. Services must supply
-repository milestone order and bounded parent evidence through those shared
-functions, and report their discovery coverage separately. Capacity callers also
-read bounded ancestry for excluded discoveries, preserving their original wait
-reports while marking capacity ancestry/discussion evidence incomplete. Held
-repositories use the same complete inventory and remain unselectable;
-`discovery_context.capacity_complete` reports discovery evidence completeness
-separately from admission. For capacity admission, pass `coverage_complete=True`
-to `rank_portfolio_work` only for complete milestone graph coverage with no known
-milestone issues left uninspected; its default is false. Portfolio discovery
-bounds or unavailable sources remain explicit coverage warnings, not a blanket
-admission veto. Current milestone staffing and person/event-wait reviews and
-`tooling_admission_rule` outputs follow the linked global selection procedure.
-Supply parsed
-`repository_waypoints` separately from ranking order for waypoint explanations
-and capacity eligibility:
-an absent direction file or empty section maps to `[]`, an unread/unparsed
-source to `None`. Omitted waypoint evidence stays unknown; the ranking map
-alone cannot prove parsing. A repository hold
-filters work in that repository without cutting native paths to independent
-work in another. Calling only `rank_direction_work` proves
-graph coverage, not portfolio discovery.
+The shared direction graph and queue implementation still collects native
+blockers, children, ordered milestones, complete discussions and current
+ownership through the authenticated reader. Unknown/truncated dependencies
+remain unknown. A clear structured wait overrides status prose; a pending wait
+holds the issue/subtree. Independent children retain their own native paths.
+`repository_waypoints` supplies parsed milestone explanations separately from
+repository ranking order: unread or unparsed direction stays unknown. A graph
+read alone cannot prove complete portfolio coverage or establish capacity.
 
 Incident traversal is complete by default; an explicit `--scan-limit` bounds
 descendants. `incident_via` records a path from a freshly marked root over native

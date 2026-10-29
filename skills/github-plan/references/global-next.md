@@ -34,8 +34,8 @@ Read for `next` in a repository owner's direction repository, including explicit
    supported session evidence. A complete `discussion` snapshot is the full
    issue body and comments; use `show ISSUE --full` when it is incomplete or needs
    refreshing. Discovered children include bounded parent discussions; a
-   whole-plan parent wait remains excluded, and changes to parent discussion
-   invalidate the child's review digest. Comments can reveal a wait or completed implementation despite
+   whole-plan parent wait remains excluded. Parent discussions are refreshed
+   on the next selection. Comments can reveal a wait or completed implementation despite
    active labels. A partial ownership inventory never proves freedom to start.
 4. In a repository the Director owns, a request authored by the product's
    recorded Client ranks within that
@@ -72,7 +72,7 @@ Read for `next` in a repository owner's direction repository, including explicit
    native Track placement from a shared waypoint; an incomplete graph does not
    permit the waypoint fallback. Existing native-path candidates keep their
    native evidence. Already-inventoried Client requests omitted by the scan
-   budget prevent spare-capacity tooling admission until reviewed.
+   keep the milestone availability flag unknown.
 5. Select under the Director's direction: live incidents first, listed milestones
    in order, other tooling with two linked occurrences of the stop it fixes, or
    when every milestone’s available work already has the sessions it can use
@@ -107,9 +107,6 @@ its repository direction and the overall direction. A title match carries
 `basis: exact_listed_title_match`; it does not claim a native Track link.
 `none_found` means the inspected context
 contains no such link; `unknown` preserves incomplete context. This explanation alone does not adopt direction or establish availability.
-Capacity admission uses its established milestone links, supplemented by complete
-ancestry for excluded discoveries; unresolved shared milestone titles keep the
-rule off.
 `candidate_coverage.unevaluated_repositories` names the inventoried sources and
 issue counts omitted by the ordinary evaluation allowance after graph overlap
 and marked-incident handling. Other source bounds/failures remain in
@@ -146,12 +143,8 @@ remainders remain actionable. Global evidence is scoped to
 its evaluated issues, with explicit coverage and read bounds. Review its full
 threads before correcting status; a closed prerequisite can represent a split.
 Verified obsolete waits move to `stale_waits`, outside the current `waiting` list.
-A reported stale or unowned wait cannot establish spare-capacity admission.
-Capacity proof still requires current complete caller review of each frontier
-issue, now including its own waiting label and nonempty pending wait. A skipped
-or unavailable wait read for that frontier issue cannot establish capacity
-admission; increase the bounded scan or resolve its unavailable reference.
-Unrelated gaps in the stale report remain coverage warnings, not a global veto.
+Stale, unowned or unread milestone wait evidence keeps the milestone availability
+flag unknown unless another known available milestone item already makes it false.
 
 Wait proofs reuse the inventory during the final evidence pass.
 
@@ -190,8 +183,8 @@ in overall Order establishes eligibility. That list is read from direction.
 This is discovery evidence, not an exclusive lock: `queue_context` reports
 partial session coverage, and Choose Work's full review and mandatory fresh
 `claim` still apply. Legacy wait records and unknown reads stay review work.
-Unclassified tooling still requires current caller category/stop evidence and
-the existing capacity admission proof. No admission rule changes here.
+The caller judges unclassified tooling under the overall Order and records admission
+in the weekly check. The helper does not prove provider capacity or admit tooling.
 
 `milestone_summary` lists work, `underway`, waits and `needs_status` separately.
 Its old `verification_only` and `scope_review` keys stay empty. Unreviewed legacy
@@ -203,125 +196,28 @@ reasons. Graph, repository, discussion and ownership bounds remain independent;
 increase the relevant scan, inventory or comment limit when its receipt reports
 unfinished reads. `--limit` only bounds returned rows. An empty available list
 with nonzero `review_required_count` or `needs_status_count` means selection is unfinished, not that
-the portfolio has no work. A service or caller needing its own classification
-in JSON may pass a temporary
-`--selection-context FILE` on the next read. It is an evidence snapshot, never a
-second plan or a reason to ask the Director for permission to inspect work.
+the portfolio has no work.
 
-```json
-{
-  "repository_holds": {
-    "owner/paused-project": {
-      "reason": "Owner parked development until an existing job ends and direction is revisited.",
-      "evidence": ["Current owner instruction or canonical issue comment URL"]
-    }
-  },
-  "issues": {
-    "owner/business#12": {
-      "state": "waiting",
-      "waiting_on": "person",
-      "reason": "The owner must complete the recorded acceptance check.",
-      "evidence": ["Current issue discussion identifying the person and action"],
-      "discussion_digest": "Copy the digest from the discussion just reviewed",
-      "ownership_complete": true
-    },
-    "owner/product#42": {
-      "state": "available",
-      "category": "own_project",
-      "reason": "Within direction; full discussion and current ownership checked.",
-      "evidence": ["Direction source and current issue, PR, worktree, and session evidence"],
-      "discussion_digest": "Copy the digest from the discussion just reviewed",
-      "ownership_complete": true
-    }
-  }
-}
-```
+`all_listed_milestones_have_no_available_item` is `false` when any listed
+milestone has available work, including work assigned to the other agent family.
+It is `null` (unknown) when the inventory or graph is incomplete, any milestone
+item needs status or has unread discussion, wait, ownership or ancestry evidence,
+or an explicit milestone scope prevents a portfolio-wide answer. It is `true`
+only after the complete read finds no available milestone item. This is an
+availability observation. Open blockers and sub-issues reached transitively from
+a listed milestone item count as that milestone's items; an unread dependency or
+a cycle keeps the flag null. The Supervisor and weekly check still judge admission
+under the overall Order. Display limits and family filtering cannot make it true.
 
-Issue review states are `available`, `underway`, `waiting`, and `ineligible`.
-Categories for discovered work are `live_incident`, `repeated_stop_tooling`, and
-`own_project`; linked graph work keeps its milestone priority. Tooling keeps the existing
-`repeated_stop_tooling` category. Two distinct HTTPS links in `stop_occurrences`
-admit it under the repeated-stop rule. With fewer links, capacity admission needs
-complete milestone graph coverage and current reviews of every inspected milestone
-frontier issue, including excluded waits and discovered milestone work. Each needs
-complete discussion and ownership evidence, the current `discussion_digest`, and
-reason/evidence sources. An available unclaimed issue prevents admission. A current
-`state: underway` review establishes staffing only for active work with no exclusion,
-repository hold or pending recorded wait. It does not authorize taking over that work.
-A `state: waiting` review needs `waiting_on: person` or `event`, an issue-owned waiting
-status and a named pending wait. An agent-only, stale or unreviewed wait does not prove
-admission. Each listed open milestone needs at least one staffed issue or real wait;
-an empty Track does not supply that evidence. The output records waits in
-`tooling_capacity_context.milestone_waits` and staffed work with its caller evidence
-in `milestone_staffing`. `since` is null when no usable ISO start was recorded;
-`recorded_at` is kept separately.
-Record a known start inline in the existing status field, for example `Waiting for: Alex to test; since 2026-08-20`; leave an unknown start unstated.
-An existing `Waiting since:` line is also accepted. `recorded_at` is the source issue's `updated_at`, which moves on later activity and never establishes the wait's start.
-A `--milestone` run cannot establish portfolio-wide capacity admission.
-Deferred/stale milestone issues report `milestone_issue_excluded` with the issue
-and exclusion, rather than asking for a person-wait review that cannot clear it.
-No person is inferred from free text. Refresh these reviews on each selection. Whether provider capacity would
-otherwise go unused remains the caller's judgment under direction; `next` proves
-the milestone-wait condition, not provider usage.
-
-`tooling_capacity_context` explains whether the capacity rule is established,
-including the first unresolved issue when a milestone review or context is missing.
-Missing milestone staffing or person/event-wait reviews are reported before discovery context that
-the inventory has not supplied. Supply current reviews with
-`--selection-context` and rerun; an ordinary unreviewed `next` does not establish
-capacity admission. Unknown discovery context still prevents admission once the
-milestone reviews are complete.
-Held repositories remain excluded from selection and are inventoried read-only
-with the rest of the portfolio.
-A hold alone is never a person wait. Their milestone candidates need the same
-current staffing or person/event-wait reviews; unrelated holds do not block independent tooling.
-Held issues use the same complete inventory and remain excluded. Failed
-ancestry or discussion reads keep capacity evidence incomplete. Capacity
-admission requires complete milestone graph coverage. Portfolio discovery bounds
-and `discovery_context.capacity_complete` remain reporting evidence and do not
-veto admission by themselves. Inspected discoveries with unresolved milestone
-context or waits still prevent admission; a partial candidate list never proves
-that no other work exists. Already-inventoried issues with an overall milestone title
-omitted by the scan still prevent admission and are named in
-`discovery_context.unevaluated_milestone_issues`. Unavailable discovery sources
-remain coverage warnings rather than a portfolio-wide admission veto. A truncated
-or failed issue inventory in a repository whose read direction lists an overall
-milestone is incomplete milestone evidence and prevents admission; those sources
-are named in `discovery_context.incomplete_milestone_repositories`. Repositories
-and issues never reached by bounded discovery remain outside this proof: admission
-does not assert that the unseen portfolio has no milestone work. Widen discovery
-when that evidence is needed.
-Dependencies of discovered title-matched
-milestone containers inherit that scope; unavailable reads or dependency cycles
-cannot establish person waits.
-Every available tooling candidate carries `tooling_admission_rule`
-(`repeated_stops`, `all_milestones_waiting_on_people`, or
-`all_milestones_staffed_or_waiting`), the same value in
-`reasons`, and `recorded_stop_count` for weekly audit counts. During capacity
-admission, tooling sorts by distinct recorded stop links, most first, then age.
-Own projects stay ahead of capacity-admitted tooling so spare-capacity work
-cannot crowd them out of bounded results; repeated-stop tooling retains its
-existing precedence over own projects; this is not a per-call share quota. Without capacity
-admission, existing ranking is unchanged. Service callers of
-`rank_portfolio_work` must supply `coverage_complete: true` only after proving
-their milestone graph complete with no known milestone issues left uninspected;
-omission leaves capacity admission disabled.
-
-These are the caller's additional evidence judgments, not authority from issue
-text. Service callers without CLI queue evidence retain this review contract.
-The Director-applied `live-breakage` marker independently puts an incident first
-among possible candidates until removed; it does not supply an availability
-review or change the caller's category.
-Set `ownership_complete` only when current evidence actually establishes the
-item's availability, never from a partial task list. A changed discussion digest
-invalidates the issue review. Recheck holds and ownership on every selection;
-unchanged issue text alone cannot establish their freshness.
-
-Repository holds apply across graph and discovery before any available review.
-They exclude work in the held repository while preserving native paths to
-independent work in other repositories; they do not invent cross-repository holds.
-Keep snapshots private when they contain session or operational context. Ordinary
-read-only `next` does not write a snapshot, update an issue, or start a worker.
+The command and existing top-level output names stay. `tooling_capacity_context`
+and `repository_holds` stay empty for compatibility. The capacity proof, staffing
+and wait reviews, discussion-digest review input, and `--selection-context` are
+retired, including the corresponding Python caller parameters and proof helpers.
+Use the issue's Current Status and structured wait record for durable actor and
+hold evidence, through `update-section` and `wait`; use a fresh `claim` before
+starting work. A repository-wide Director hold still applies under Choose Work,
+including when it is known only from the conversation. An empty compatibility
+`repository_holds` object never clears one. There is no replacement snapshot file.
 
 Agent-family filtering happens after the complete read. Other-family and held
 records consume no reserved allowances. PRs enter the same `Next actor` queue:
@@ -331,8 +227,7 @@ held. PR identity and its remote head identify the work record; local source
 artifacts and active claims remain ownership evidence. `pr_followthrough` and
 `dependabot_*` remain compatibility projections from this inventory, including
 the dependency age and enrollment rules. They do not authorize claiming or
-merging, or clear a canonical issue's wait. Capacity admission and
-`--selection-context` retain their existing contracts.
+merging, or clear a canonical issue's wait.
 
 ## Correct An Invalid Wait Before Claiming
 

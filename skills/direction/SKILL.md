@@ -121,8 +121,9 @@ Global `next` and audits report invalid milestone waits under
 [global selection](../github-plan/references/global-next.md); use its
 [supported correction procedure](../github-plan/references/global-next.md#correct-an-invalid-wait-before-claiming)
 before a claim. Repo-local selection still preserves recorded waiting state.
-Capacity admission follows the current overall Order and global selection's evidence
-contract; wait output explicitly reports an unknown start when none was recorded.
+The Supervisor and weekly check judge capacity admission under the overall Order.
+Global selection reports the conservative milestone availability flag; wait output
+reports an unknown start when none was recorded.
 
 A proposal that adds a fourth container or a second human gate is the signal
 that the design is getting too complicated. Prefer deleting a concept to adding

@@ -375,13 +375,12 @@ Graph coverage, repository discovery, and active ownership are separate evidence
 Apply repository-wide Director holds before considering any issue there, even
 when labels say active or background work continues. Read full discussions and
 current ownership evidence before recommending discovered work. Raw candidates
-are possible work; `available_candidates` carries current caller review or the
-CLI's observed source-work queue evidence. A queue row still requires Choose
+are possible work; `available_candidates` carries the observed queue evidence. A queue row still requires Choose
 Work and fresh claim preflight; partial peer coverage never establishes an
 exclusive lock.
 The Director’s current overall Order owns work priority and tooling admission.
-The linked global selection procedure defines the required current evidence and
-output admission reasons.
+The linked global selection procedure defines the milestone availability flag;
+the Supervisor and weekly check judge tooling admission.
 Keep the own-project share available when business
 tracks wait. Weekly capacity is audit context, not a per-call quota. Discovery
 grants no write, merge, deployment, or direction-adoption authority under
