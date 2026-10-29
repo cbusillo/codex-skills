@@ -1212,6 +1212,9 @@ legacy review's verified absence on the claim itself. It grants no permission
 to clear a Director/repository hold and must account for the full record.
 Ordinary retained-work successor claims preserve the issue and retained PR
 wait records; scoped prerequisite authority never clears those product holds.
+Only named PRs from the source author, in the target repository and linked to
+the owning record enter retained PR ownership and wait checks; other handoff
+mentions supply no custody.
 Conflict-refresh and ordinary resolved claims record their evidenced absence
 for that step. New wait records on readback stop the claim even with earlier
 resolution evidence. Every route independently rechecks native blockers and
