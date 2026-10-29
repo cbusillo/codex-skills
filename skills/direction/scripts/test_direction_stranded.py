@@ -586,58 +586,6 @@ class OverdueTriggerTests(unittest.TestCase):
         body = ("## Current Status\nState: Active.\nNext action:\nBlocked by: Supervisor decision\n"
                 "Last verified:\n\n<!-- github-plan:wait {\"evidence\": \"Filed Oct 17, 2026\"} -->")
         self.assertIsNone(sweep.supervisor_next_action(body))
-        self.assertIsNone(sweep.verified_at(body))
-
-
-class TrackTests(unittest.TestCase):
-    now = dt.datetime(2026, 10, 16, 23, 0, tzinfo=dt.timezone.utc)
-
-    def track(self, verified, children):
-        status = f"## Current Status\n\nState: live\nLast verified: {verified}\n" if verified else "## Current Status\n\nState: live\n"
-        return {"repo": "cbusillo/direction", "comments": [], "track_children": children,
-                "item": {"number": 3, "state": "open", "title": "Track: CM website live and used", "body": status,
-                         "html_url": "https://github.com/cbusillo/direction/issues/3"}}
-
-    def child(self, *, closed_at=None, comments=()):
-        return {"item": {"number": 91, "state": "closed" if closed_at else "open", "closed_at": closed_at,
-                         "html_url": "https://github.com/cbusillo/odoo-tenant-cm-website/issues/91"},
-                "comments": [{"id": n, "user": {"login": who}, "body": body, "created_at": when,
-                              "html_url": f"https://github.com/cbusillo/odoo-tenant-cm-website/issues/91#issuecomment-{n}"}
-                             for n, (who, body, when) in enumerate(comments)]}
-
-    def flagged(self, record):
-        return [r for r in sweep.report([record], now=self.now, age_hours=2, trusted={"shiny-code-app[bot]"},
-                                        owners={"cbusillo"})["findings"] if r["kind"] == "stale_track_status"]
-
-    def test_director_input_on_a_child_after_last_verified_flags_the_track(self):
-        # The October 16 CM case: verified 2:20 PM ET, Director input on #91 at 3:50 PM ET.
-        later = self.child(comments=[("cbusillo", "G-DLBT1G42QR", "2026-10-16T19:50:00Z")])
-        rows = self.flagged(self.track("October 16, 2026, approximately 2:16–2:20 PM ET, CMLIVE-D1", [later]))
-        self.assertEqual([r["evidence"] for r in rows], [[later["comments"][0]["html_url"]]])
-        self.assertFalse(self.flagged(self.track("October 16, 2026, 4:05 PM ET", [later])))
-
-    def test_child_closure_and_recorded_decisions_count_but_bot_chatter_does_not(self):
-        verified = "2026-10-16T15:00:00Z"
-        self.assertTrue(self.flagged(self.track(verified, [self.child(closed_at="2026-10-16T16:00:00Z")])))
-        decision = self.child(comments=[("shiny-code-app[bot]", "Director decision (Q1): yes", "2026-10-16T16:00:00Z")])
-        self.assertTrue(self.flagged(self.track(verified, [decision])))
-        chatter = self.child(comments=[("shiny-code-app[bot]", "Claimed by worker", "2026-10-16T16:00:00Z"),
-                                       ("someone", "Director decision: no", "2026-10-16T16:00:00Z")])
-        self.assertFalse(self.flagged(self.track(verified, [chatter])))
-
-    def test_recent_changes_and_same_day_bare_dates_stay_quiet(self):
-        recent = self.child(closed_at=(self.now - dt.timedelta(hours=1)).isoformat())
-        self.assertFalse(self.flagged(self.track("2026-10-16T15:00:00Z", [recent])))
-        same_day = self.child(closed_at="2026-10-16T16:00:00Z")
-        self.assertFalse(self.flagged(self.track("October 16, 2026", [same_day])))
-        self.assertTrue(self.flagged(self.track("October 15, 2026", [same_day])))
-        self.assertTrue(self.flagged(self.track(None, [same_day])))
-
-    def test_iso_offsets_and_fractions_are_exact(self):
-        self.assertEqual(sweep.verified_at("Last verified: 2026-10-16T20:00:00.123+02:00"),
-                         dt.datetime(2026, 10, 16, 18, 0, 0, 123000, tzinfo=dt.timezone.utc))
-        child = self.child(closed_at="2026-10-16T19:00:00Z")
-        self.assertTrue(self.flagged(self.track("2026-10-16T20:00:00+02:00", [child])))
 
 
 class FakeReader:
@@ -787,30 +735,6 @@ class InventoryTests(unittest.TestCase):
         self.assertNotIn("share", short_sample["tooling_measure"])
         self.assertIn("unavailable", digest_summary.presentation(sweep.markdown(incomplete),
             "https://github.com/test/repo/issues/99").content)
-
-    def test_track_children_are_read_once_and_only_changed_ones_outside_inventory(self):
-        self.reader.repositories["repos/cbusillo/direction"] = {"archived": False, "default_branch": "main"}
-        body = "## Current Status\n\nLast verified: 2026-10-15T14:00:00+02:00\n"
-        self.reader.pages[("repos/cbusillo/direction/issues", 1, "open")] = [
-            {"number": 3, "state": "open", "title": "Track: CM website live and used", "body": body, "comments": 0},
-            {"number": 4, "state": "open", "title": "Not a track", "body": body, "comments": 0}]
-        child = {"repository_url": "https://api.github.com/repos/cbusillo/odoo-tenant-cm-website", "state": "open",
-                 "html_url": "https://github.com/cbusillo/odoo-tenant-cm-website/issues/91"}
-        self.reader.pages[("repos/cbusillo/direction/issues/3/sub_issues", 1, None)] = [
-            {**child, "number": 91, "comments": 2, "updated_at": "2026-10-15T18:00:00Z"},
-            {**child, "number": 92, "comments": 2, "updated_at": "2026-10-14T18:00:00Z"}]
-        comments = "repos/cbusillo/odoo-tenant-cm-website/issues/91/comments"
-        self.reader.pages[(comments, 1, None)] = [
-            {"id": 1, "user": {"login": "cbusillo"}, "body": "Go live now.", "created_at": "2026-10-15T18:00:00Z",
-             "html_url": "https://github.com/cbusillo/odoo-tenant-cm-website/issues/91#issuecomment-1"}]
-        report = sweep.collect(["cbusillo/direction"], reader=self.reader, now=self.now)
-        rows = [r for r in report["findings"] if r["kind"] == "stale_track_status"]
-        self.assertEqual([(r["number"], r["evidence"]) for r in rows],
-                         [(3, ["https://github.com/cbusillo/odoo-tenant-cm-website/issues/91#issuecomment-1"])])
-        reads = [urlsplit(p) for p in self.reader.paths]
-        self.assertEqual([p.path for p in reads if p.path.endswith("/sub_issues")], ["repos/cbusillo/direction/issues/3/sub_issues"])
-        self.assertEqual([parse_qs(p.query).get("since") for p in reads if "cm-website" in p.path],
-                         [["2026-10-15T12:00:00Z"]])
 
     def test_finished_worktree_pr_reads_share_the_sweep_budget(self):
         self.reader.pages[("repos/test/repo/pulls", 1, "all")] = [

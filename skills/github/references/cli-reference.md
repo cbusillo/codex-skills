@@ -2212,8 +2212,8 @@ retrying until planning stalls.
 
 Global `next` includes `milestone_closure_reviews` independently of selectable
 work. All roots are read before descendant traversal spends its scan allowance.
-These carry recorded proof from the body and the latest trusted Current Status;
-incomplete discussion is explicit. They certify no outcome and change no ranking
+These carry each Track's proof from its body. Track Current Status is not a
+closure-proof source. They certify no outcome and change no ranking
 or claim, wait or train gate. Use the
 [milestone contract](../../github-plan/references/milestones.md) to assess them.
 

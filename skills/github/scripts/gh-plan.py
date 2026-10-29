@@ -5160,7 +5160,7 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
         if repo not in evidence:
             evidence[repo] = read_queue_ownership(repo)
         complete = (item.get("discussion") or {}).get("complete")
-        if isinstance(complete, bool) and complete:
+        if isinstance(complete, bool) and complete and not github_next_queue.is_scoping_track(item):
             try:
                 body_time = next_status_body_time(item, trusted)
                 if body_time is not None:
@@ -5731,8 +5731,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
                 comment_limit=getattr(args, "comment_limit", None),
                 read_comments=lambda count: graph_comments(issue_repo, number, count),
                 read_relationships=lambda: graph_relationships(issue_repo, number, source_issue),
-                resolve_wait=lambda comments: graph_wait(source_issue, comments, issue_repo),
-                resolve_body_time=lambda work_item: next_status_body_time(work_item, github_plan_wait.authors(issue_repo)))
+                resolve_wait=lambda comments: graph_wait(source_issue, comments, issue_repo))
         except PlanError as exc:
             # Inaccessible cross-owner nodes are unknown, not unblocked. Quota,
             # auth and provider failures retain the shared helper's stop policy.

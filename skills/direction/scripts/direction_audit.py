@@ -32,7 +32,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_read, github_work_graph
-from skills.github.scripts import github_next_queue, github_plan_wait
 from skills.github.scripts import github_repository_scope as repository_scope
 from skills.direction.scripts import direction_mark, direction_reporting
 
@@ -1434,28 +1433,8 @@ def milestone_outcomes(
                     key = (direction_repo, int(root["number"]))
                     nodes[key] = root
                     row["tracks"].append(f"https://github.com/{direction_repo}/issues/{root['number']}")
-                    try:
-                        comments, comments_cut = fetch_paginated(
-                            f"repos/{direction_repo}/issues/{root['number']}/comments", fetch=fetch)
-                    except AuditError:
-                        comments, comments_cut = [], True
-                    discussion = github_direction_next.discussion_snapshot(root, comments, complete=not comments_cut)
-                    trusted = github_plan_wait.authors(direction_repo)
-                    def read_edit() -> Any:
-                        owner, name = direction_repo.split("/")
-                        return fetch(["api", "graphql", "-f", f"query={github_work_graph.STATUS_BODY_TIME_QUERY}",
-                            "-f", f"owner={owner}", "-f", f"name={name}", "-F", f"number={root['number']}"])
-                    try:
-                        body_time = github_work_graph.status_body_time(discussion, trusted, read_edit) if not comments_cut else None
-                    except (AuditError, ValueError):
-                        comments_cut, body_time = True, None
-                    status = github_next_queue.current_status(discussion, trusted,
-                        body_recorded_at=body_time) if not comments_cut else ""
                     row.setdefault("closure_reviews", []).append({"url": row["tracks"][-1],
-                        **github_direction_next.milestone_closure_review(root.get("body") or "", status),
-                        "discussion_complete": not comments_cut})
-                    if comments_cut:
-                        row["unavailable"].append(f"proof_discussion:{root['number']}")
+                        **github_direction_next.milestone_closure_review(root.get("body") or "")})
         except AuditError:
             row["unavailable"].append("tracks")
         graph = read_audit_graph([{**node, "repo": key[0], "number": key[1]} for key, node in nodes.items()],

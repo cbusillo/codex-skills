@@ -241,19 +241,24 @@ against the original launch receipt rather than guessing or silently skipping.
 Decision authors and current-head handoffs use shared authority parsers. Only
 open PRs closing a child appear; the auto-enqueue watcher routes other PRs.
 Truncated Track discussions use the shared planning paginator; failed/changing
-reads keep UNKNOWN and the original newest-comment window. Child/PR windows stay bounded.
+reads keep UNKNOWN and the original newest-comment window. Child discussions use the same paginator; PR windows stay bounded.
 
 Use `--format json` for full rows/diagnostics, `markdown` for titles and actions,
 or `links` to omit those Client details. Closed children remain closed despite
-stale labels. Current Status and decisions use shared planning authority;
-missing status/action is explicit, never guessed. Assess each Track's own
+stale labels. Child Current Status and decisions use shared planning authority;
+missing child status/action is explicit, never guessed. Track state comes only
+from native descendants: unreleased claims (including verified release receipts
+and locally observed lease expiry), structured waits with their end
+conditions, open PRs and unanswered Director questions. Descendants are grouped
+as running, waiting or available; closed, held and unknown records stay explicit.
+Track Current Status is neither read nor maintained. Assess each Track's own
 closure proof under the milestone contract, opening the linked source.
 `--changes-state <private-state.json>` prints changed record pointers and fresh
 coverage, storing only fingerprints. Every call still rebuilds current sources.
 
 Coverage reports discovered/read/complete and per-field `unread` details.
 Partial discovery cannot reuse old status or remove missing records. Truncated
-children, PRs, labels/comments, missing authoritative status in a bounded window,
+children, PRs, labels/comments, missing authoritative child status in a bounded window,
 field conversion errors and GraphQL failures remain unknown, not refreshed.
 Any unread Track or field makes coverage incomplete and exits nonzero; open the
 source rather than treating an empty diff as a pass.

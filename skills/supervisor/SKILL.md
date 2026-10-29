@@ -379,7 +379,7 @@ Page checks are headless; explicit GUI tasks use the linked GUI/browser route.
 Desktop IDE closure does not establish that headless inspection is unavailable.
 Before batches, compare recent opened/merged PRs; when merges lag without an
 available merge-path repair, launch finishing work only. Workers report on child
-issues; parents hold in-place Current Status and decisions. Local heavy Docker
+issues; Track parents hold proof, decisions and their finish line. Local heavy Docker
 runs use [one locked entrypoint](references/heavy-runs.md).
 
 Director questions live on their item's issue and the shared queue. Write from
@@ -437,8 +437,7 @@ use `goal_board.py --owner OWNER --changes-state <private-board-state.json>`
 for routine output and the full board for takeover. Coverage gaps stay unknown.
 Open the linked decision and Current Status before repeating a hold or briefing
 work. PR handoffs stay open until merged; read current head, mergeability and
-train reason. Correct conflicting Track summaries under `github-plan`, naming
-the governing decision and reason. Assess each Track's `closure_review` under
+train reason. Assess each Track's `closure_review` under
 the [milestone contract](../github-plan/references/milestones.md); the pointer
 reader is not proof that a Track's own exit criteria passed.
 

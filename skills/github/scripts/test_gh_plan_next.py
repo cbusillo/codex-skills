@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import importlib.util
+import copy
 import random
 import re
 import sys
@@ -2377,7 +2378,6 @@ def test_milestone_agent_work_behind_bookkeeping_blocker_ranks_first() -> None:
     summary = {entry["milestone"]: entry for entry in result["milestone_summary"]}
     assert summary["First"]["state"] == "work_listed"
     assert [wait["number"] for wait in summary["First"]["waits"]] == [91]
-    assert [ref["number"] for ref in summary["First"]["next_action_outside_graph"]] == [99]
     assert [item["number"] for item in summary["Second"]["work"]] == [2]
     assert result["candidate_coverage"]["milestone_ranking_complete"] is True
 
@@ -2392,16 +2392,41 @@ def test_milestone_summary_names_each_wait_when_no_milestone_work_is_listed() ->
     summary = {entry["milestone"]: entry for entry in result["milestone_summary"]}
     assert summary["First"]["state"] == "waiting"
     assert summary["First"]["waits"][0]["waiting_for"] == "Justin's release acceptance."
-    assert summary["First"]["next_action_outside_graph"] == []
     assert summary["Second"]["state"] == "no_linked_work"
 
 
-def test_track_whose_next_action_belongs_to_a_person_is_not_agent_work() -> None:
-    track_issue = active_track("someone/direction", 1, "First", "State: Active.\nNext action: Director selects the launch date.\nWaiting for: None; next actor is an agent.")
-    with global_fixture([track_issue], [], {}) as (module, result, _reads):
-        module.cmd_next(next_args())
-    assert result["candidates"] == []
-    assert result["excluded"][0]["exclusion"] == "tracking_without_open_work"
+def test_empty_track_scoping_uses_reviewed_records_instead_of_summary() -> None:
+    observed = {"complete": True, "pulls": [], "inventory": {"local_branches": [], "remote_branches": [], "worktrees": []},
+                "coverage": {"source": "fixture"}}
+    for actor in ("", "person:director", "event:deployment", "agent:old-session"):
+        track_issue = active_track("someone/direction", 1, "First", f"State: Waiting.\nNext actor: {actor}\n")
+        if not actor:
+            track_issue["body"] = "## Objective\nProve the milestone.\n"
+        with global_fixture([track_issue], [], {}, clear_waits=[track_issue]) as (module, result, _reads):
+            with patch.multiple(module, annotate_next_queue=module.real_annotate_next_queue,
+                read_queue_ownership=lambda _: observed, wait_authors=lambda _: {"someone"},
+                next_status_body_time=Mock(side_effect=AssertionError("Track prose ordering is not needed"))):
+                module.cmd_next(next_args())
+        assert [(item["repo"], item["number"]) for item in result["available_candidates"]] == [(track_issue["repo"], track_issue["number"])]
+        assert not result["needs_status"] and not result["underway"]
+    scoped = result["available_candidates"][0]
+    for condition, expected in (("claim", "underway"), ("wait", "waiting"), ("incomplete", "review")):
+        row = copy.deepcopy(scoped)
+        row.pop("queue")
+        evidence = {**observed, "complete": condition != "incomplete"}
+        if condition == "claim":
+            body = module.github_plan_claim.marker({"worker": "worker", "session": "another-session",
+                "branch": "work/scoping", "claimed_at": "2026-10-29T12:00:00Z"})
+        else:
+            body = module.github_plan_wait.marker(module.github_plan_wait.reviewed(evidence="Device result needed",
+                waiting_for="Director device test", ends_when="Director posts the result")) if condition == "wait" else "Progress"
+        row["discussion"]["comments"].append({"id": 10001, "author": "someone", "body": body,
+            "created_at": "2026-10-29T12:00:00Z", "updated_at": "2026-10-29T12:00:00Z"})
+        with patch.multiple(module, read_queue_ownership=lambda _: evidence, wait_authors=lambda _: {"someone"},
+            next_status_body_time=Mock(side_effect=AssertionError("Track prose ordering is not needed"))):
+            module.real_annotate_next_queue([row], next_args())
+        assert row["queue"]["state"] == expected
+        assert not module.project_local_queue([row], [])["available_candidates"]
 
 
 def test_named_next_actor_or_absence_keeps_a_stated_precondition() -> None:
@@ -2424,7 +2449,7 @@ TESTS.extend([
     test_global_scan_diagnostic_counts_all_allowances_and_limit_only_caps_results,
     test_milestone_summary_names_each_wait_when_no_milestone_work_is_listed,
     test_named_next_actor_or_absence_keeps_a_stated_precondition,
-    test_track_whose_next_action_belongs_to_a_person_is_not_agent_work,
+    test_empty_track_scoping_uses_reviewed_records_instead_of_summary,
 ])
 
 
@@ -3126,7 +3151,6 @@ def test_global_next_reads_milestone_proofs_before_a_descendant_uses_the_scan_bu
         reviews = result["milestone_closure_reviews"]
         assert len(reviews) == 2, result
         assert reviews[0]["track_proof"] == proof, reviews
-        assert reviews[1]["recorded_status"] == comments[("someone/direction", 102)][0]["body"].split("\n", 1)[1], reviews
         assert result["graph_context"]["truncated"], result
 
 
