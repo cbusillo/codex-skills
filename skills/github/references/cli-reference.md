@@ -2435,7 +2435,7 @@ beyond ordinary repository list bounds, pass their inventory through
 beside the ranked list; ranking alone cannot find omitted issues.
 
 `graph_context` covers native traversal; `discovery_context` covers repository
-inventory and record reads; neither proves active workership. Global reads are
+inventory and record reads; neither proves active ownership. Global reads are
 complete by default. `--repo-limit`, `--repository-issue-limit`, `--comment-limit`
 and `--scan-limit` opt into partial evidence, with no family or held-repository
 allowances. `candidate_coverage` reports incomplete source, traversal or ownership
