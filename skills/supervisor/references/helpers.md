@@ -250,7 +250,6 @@ missing status/action is explicit, never guessed. Assess each Track's own
 closure proof under the milestone contract, opening the linked source.
 `--changes-state <private-state.json>` prints changed record pointers and fresh
 coverage, storing only fingerprints. Every call still rebuilds current sources.
-Use the full board at takeover and handoff.
 
 Coverage reports discovered/read/complete and per-field `unread` details.
 Partial discovery cannot reuse old status or remove missing records. Truncated

@@ -681,6 +681,7 @@ class TmuxFixture(unittest.TestCase):
         self.agent.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
 print("READY:" + json.dumps({"brief": sys.argv[-1], "home": os.getenv("CLAUDE_CONFIG_DIR"), "codex_home": os.getenv("CODEX_HOME"), "move": os.getenv("CLAUDE_ACCOUNT_MOVE_ENABLED"), "cwd": os.getcwd(), "code_home": os.getenv("CODE_HOME"), "uv_cache": os.getenv("UV_CACHE_DIR"), "shell_startup": os.getenv("ZDOTDIR")}), flush=True)
 print("Working (0s • esc to interrupt)", flush=True)
+print("› ", end="", flush=True)
 for line in sys.stdin:
     if line.strip() in {"/exit", "/quit"}:
         break
