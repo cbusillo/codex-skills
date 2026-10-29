@@ -1268,17 +1268,21 @@ class ClaimTests(unittest.TestCase):
         claim_log.record(OTHER["session"], "owner/other", 43)
         claim_log.record(OTHER["session"], "owner/finished", 41)
         remaining = [{"id": 71, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]}]
+        histories = {"owner/other": remaining, "owner/finished": copy.deepcopy(remaining),
+                     "owner/contested": [*copy.deepcopy(remaining),
+                         {"id": 72, "body": CLAIM.marker(OWNER), "user": {"login": TEST_BOT}, "created_at": OWNER["claimed_at"]}]}
+        claim_log.record(OTHER["session"], "owner/contested", 45)
 
         def reader(**options: Any) -> Mock:
             return Mock(expected_actor=TEST_BOT, get_json=Mock(return_value={"state": "closed" if options["repository"] == "owner/finished" else "open"}),
                         paged_json=Mock(side_effect=lambda *_args, **_kwargs: copy.deepcopy(
-                            remaining if options["repository"] == "owner/other" else self.comments
-                            if options["repository"] == "owner/repo" else [])))
+                            histories.get(options["repository"], []))))
 
         self.enterContext(patch.object(github_read, "GitHubReader", side_effect=reader))
         self.ended_holder_fixture()
         self.args.resume_from = 71
         self.run_claim()
+        histories["owner/repo"] = copy.deepcopy(self.comments)
         closure.resume_record(OTHER["session"], [])
         sent = []
 
@@ -1316,8 +1320,8 @@ class ClaimTests(unittest.TestCase):
                 self.fail("fully transferred source resumed")
         self.assertIsNone(refused.exception.__cause__)
 
-        self.comments[:] = []
-        remaining[:] = [{"id": 90, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]}]
+        claim_log.record(OTHER["session"], "owner/new", 46)
+        histories["owner/new"] = [{"id": 90, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]}]
         with closure.resume_guard(OTHER["session"]):
             pass
 
