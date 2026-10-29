@@ -184,7 +184,7 @@ class OperationTests(unittest.TestCase):
         original = {"state": "turn_ended", "size": 5, "last_text": "landing", "safe_verdict": False}
         final = {**original, "size": 10, "safe_verdict": True, "last_text": "Posted the handoff. Safe to exit: yes"}
         with (
-            patch.object(catalog_landing, "session_status", side_effect=[original, final]),
+            patch("catalog_landing.session_status", side_effect=[original, final]),
             patch.object(catalog_landing.time, "sleep"),
         ):
             self.assertEqual(catalog_landing.observe({}, "landing", after_size=5, final=True), final)
@@ -209,6 +209,7 @@ class OperationTests(unittest.TestCase):
 
     def test_managed_proxy_and_dim_suggestions_use_shared_native_rules(self) -> None:
         proxy = codex_session_proxy.__file__
+        assert isinstance(proxy, str)
         self.assertTrue(session_liveness.source_harness([proxy, "native"], "codex"))
         self.assertFalse(session_liveness.source_harness([proxy, "native"], "claude"))
         self.assertTrue(iterm_tab.empty_agent_input({"input_line": {"style": "dim", "text": "a different suggestion"}}))
@@ -247,7 +248,7 @@ class OperationTests(unittest.TestCase):
         operation.state["steps"]["codex_launch"] = {"complete": False}
         check_operation.save_state(self.root / "codex_launch.json", {"stdout": json.dumps({"failed_launch": {"phase": "register_ledger", "launch": launch}})})
         config: dict[str, Any] = {"repo": "owner/catalog", "issue": 1, "landing_sha": "a" * 40, "ledger": str(ledger)}
-        with (patch.object(catalog_landing, "read_launch_receipt", return_value=native),
+        with (patch("catalog_landing.read_launch_receipt", return_value=native),
               patch.object(subprocess, "run") as run,
               patch.object(catalog_landing, "observe", side_effect=check_operation.GateFailed("response", "fixture"))):
             with self.assertRaises(check_operation.GateFailed) as failure:
@@ -260,7 +261,7 @@ class OperationTests(unittest.TestCase):
         comments = [{"id": number, "created_at": "2026-01-01T00:00:00Z", "user": {"login": "agent[bot]"},
                      "body": "Session: native " + config["landing_sha"], "html_url": "comment-" + str(number)} for number in (1, 2)]
         with (patch.object(catalog_landing, "observe"),
-              patch.object(catalog_landing, "GitHubReader", return_value=SimpleNamespace(paged_json=lambda *_, **__: comments)),
+              patch("catalog_landing.GitHubReader", return_value=SimpleNamespace(paged_json=lambda *_, **__: comments)),
               patch.object(catalog_landing.github_identity, "automation_login", return_value="agent[bot]"),
               patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, '{"ok":true}', "")) as close):
             self.assertEqual(catalog_landing.verify_smoke(config, operation, "codex", "openai", self.root), "comment-2")

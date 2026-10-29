@@ -1099,8 +1099,7 @@ interval as unverified. If several landings accumulated, report each missed
 earlier SHA on its owning issue and in the Supervisor report as
 **Catalog landing verification NOT VERIFIED: `<skipped-sha>`**, naming the later
 landing that superseded it, then check the latest landing. A later runtime
-passing does not prove an earlier revision passed. Keep a link to the latest
-verification in the next handoff so takeover can repeat this check.
+passing does not prove an earlier revision passed.
 
 Run `catalog_landing.py --config <private-landing.json> --evidence <private-evidence>`
 from the catalog's Supervisor scripts with `uv run`. The private JSON contains
