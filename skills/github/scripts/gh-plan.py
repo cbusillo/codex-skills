@@ -5027,7 +5027,9 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
                 if body_time is not None:
                     item["discussion"]["body_recorded_at"] = body_time
             except PlanError as exc:
-                item["queue"] = {"state": "review", "reason": "incomplete_discussion", "detail": next_source_error(exc)}
+                detail = next_source_error(exc)
+                item["queue"] = {**github_next_queue.classify(item, evidence[repo], trusted=trusted, status_known=False),
+                                 "detail": detail}
                 continue
         item["queue"] = github_next_queue.classify(item, evidence[repo], trusted=trusted)
     return {"source": "issue_discussion_and_current_claim_pr_branch_reads", "claim_required": True,

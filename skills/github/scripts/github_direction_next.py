@@ -989,7 +989,7 @@ def rank_portfolio_work(
                                    "waiting_for": entry["review"]["reason"], "reported_by": entry["url"],
                                    "reported_at": entry.get("updated_at"), "last_verified": None,
                                    "references": [], "review": entry["review"], "source": "caller_review", "milestone": entry.get("milestone"), "overall_milestone_context": milestone_context})
-        if not rows and (entry.get("plan_status") == "waiting" or entry.get("exclusion") == "wait_review_required" or (entry.get("queue") or {}).get("wait_review_required")):
+        if not rows and (entry.get("plan_status") == "waiting" or entry.get("exclusion") == "wait_review_required"):
             rows = [{"repo": entry["repo"], "number": entry["number"], "url": entry["url"],
                      "waiting_for": "Waiting party or condition not recorded", "reported_by": entry["url"],
                      "reported_at": entry.get("updated_at"), "last_verified": None,
@@ -1591,7 +1591,7 @@ def milestone_summary(
         for row in graph_waits:
             record = {"repo": row["repo"], "number": row["number"], "url": row["url"],
                       "waiting_for": row.get("waiting_for")}
-            target = reviews if row.get("source") == "legacy_wait_review" and row.get("plan_status") != "waiting" else waits
+            target = reviews if (row.get("source") == "legacy_wait_review" or row.get("wait_review_required")) and row.get("plan_status") != "waiting" else waits
             if ((row.get("milestone") or {}).get("title") == title or title in (row.get("overall_milestone_context") or {}).get("titles", [])) and record not in target:
                 target.append(record)
         for row in [*owned, *missing]:

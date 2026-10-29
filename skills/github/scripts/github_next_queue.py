@@ -103,9 +103,9 @@ def released_actor(actor: str, discussion: dict[str, Any], trusted: set[str]) ->
     return bool(relevant and relevant[-1] in {index for index, _, _ in github_plan_claim.exact_released_sources(comments)})
 
 
-def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[str]) -> dict[str, Any]:
+def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[str], status_known: bool = True) -> dict[str, Any]:
     discussion = item.get("discussion") or {}
-    status = current_status(discussion, trusted, body_recorded_at=discussion.get("body_recorded_at"))
+    status = current_status(discussion, trusted, body_recorded_at=discussion.get("body_recorded_at")) if status_known else ""
     row = {"next_action": status_field(status, "Next action"), "recorded_state": status_field(status, "State"),
            "claim_required": True, "ownership_complete": False,
            "ownership_source": "current_reads", "ownership_coverage": ownership.get("coverage", {}),
@@ -127,6 +127,8 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
     if conflicts or artifacts:
         return {**row, "state": "underway", "reason": "existing_claim_or_artifact",
                 "ownership_evidence": [*conflicts, *artifacts], "certainty": "current_or_stale"}
+    if not status_known:
+        return {**row, "state": "review", "reason": "incomplete_discussion"}
     if actor is None:
         return {**row, "state": "needs_status", "reason": "next_actor_missing_or_invalid"}
     if actor.startswith("agent:"):

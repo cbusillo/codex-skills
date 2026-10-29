@@ -2287,7 +2287,8 @@ of evidence; all unread references and incomplete coverage remain explicit.
   declarations retain the hold. Maintain that evidence with `gh-plan.py wait`,
   preserving every outstanding wait rather than clearing the parent record.
 - Both local and global output separate observed ownership in `underway`,
-  records without a parseable `Next actor:` in `needs_status`. The old
+  records without a parseable `Next actor:` in `needs_status`, unless a wait or
+  observed claim/artifact already determines their disposition. The old
   `verification_only` and `scope_review` lists and counts remain empty for one
   release. Each row exposes `queue.next_actor`, `queue.next_action` and the evidence/read
   limits. The field records agent work, a named agent, a person or an event;

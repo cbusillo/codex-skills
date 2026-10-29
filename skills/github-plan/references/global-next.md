@@ -170,8 +170,8 @@ branches once per repository before projecting the start queue. It uses the
 claim helper's exact authored-release and artifact rules. Each row's `queue`
 reads `Next actor:` from the selected Current Status, using the same parser as
 claim, release and status updates. Body-edit timestamps resolve disagreements
-between the body and trusted status comments; unrelated activity cannot make an
-older actor current. The queue does not infer source delivery or remaining scope
+between the body and trusted status comments; unrelated comments cannot make an
+older actor current. A body edit dates the whole status, not each field. The queue does not infer source delivery or remaining scope
 from prose or merged PRs.
 
 - `agent` can enter `available_candidates` when the existing direction,

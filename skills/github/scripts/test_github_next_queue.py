@@ -398,6 +398,18 @@ def test_adapter_uses_body_edit_time_for_the_current_actor() -> None:
         module.real_annotate_next_queue([row], cli.next_args(repo="owner/repo"))
     assert row["queue"]["state"] == "review"
     assert not module.project_local_queue([row], [], {})["available_candidates"]
+    source = {"worker": "worker", "session": "session", "branch": "work/source", "claimed_at": "2026-10-29T01:10:00Z"}
+    for state, marker in [
+        ("waiting", wait.marker(wait.reviewed(evidence="Owner test needed", waiting_for="Owner test", ends_when="Owner records result"))),
+        ("underway", claim.marker(source)),
+    ]:
+        protected = item()
+        protected["discussion"]["comments"] = [*row["discussion"]["comments"],
+            {"id": 8, "author": "owner", "created_at": "2026-10-29T01:10:00Z", "body": marker}]
+        with patch.multiple(module, read_queue_ownership=lambda *_: evidence(), wait_authors=lambda *_: {"owner"},
+                            api_json=Mock(return_value=("bot", {}))):
+            module.real_annotate_next_queue([protected], cli.next_args(repo="owner/repo"))
+        assert protected["queue"]["state"] == state
 
 
 def test_inherited_actor_waits_are_compact_and_visible_in_milestones() -> None:
@@ -423,7 +435,7 @@ def test_inherited_actor_waits_are_compact_and_visible_in_milestones() -> None:
 
 
 def test_actor_buckets_preserve_legacy_wait_review_visibility() -> None:
-    for actor in ["", "agent:integrator"]:
+    for actor in ["", "agent:integrator", "person:owner", "event:deployment"]:
         row = item(actor=actor)
         row["discussion"]["body"] = row["discussion"]["body"].split(wait.PREFIX)[0]
         row.update(queue=classify(row), plan_status="active")
@@ -433,7 +445,7 @@ def test_actor_buckets_preserve_legacy_wait_review_visibility() -> None:
         graph = {"candidates": [], "excluded": [], "dependency_context": {"complete": True}}
         result = direction.rank_portfolio_work(graph, [row], milestone_titles=["First"],
             repository_waypoints={"owner/repo": ["First"]})
-        summary = direction.milestone_summary(["First"], completed=[], candidates=[], graph_waits=result["unowned"],
+        summary = direction.milestone_summary(["First"], completed=[], candidates=[], graph_waits=[*result["unowned"], *result["waiting"]],
             underway=result["underway"], needs_status=result["needs_status"], track_next_actions={})
         assert summary[0]["wait_reviews"]
 
