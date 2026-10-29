@@ -666,39 +666,10 @@ through the desktop IDE's Inspection API plugin. The
 
 ## Reviews By Another Model
 
-The `model-review` skill asks a model from another provider to review a change
-read-only. It drives whichever of the OpenAI (`codex`), Anthropic (`claude`), and
-Google (`agy`) CLIs are installed. The helper follows the Director's private
-[standing review decisions](skills/model-review/references/provider-selection.md),
-then Context Panel's account choice, excluding the author's provider. Record
-those decisions before the first run; missing policy or capacity is reported
-before inference. To check the allowed providers for work authored by OpenAI:
-
-```bash
-uv run skills/model-review/scripts/review_with_model.py check --author-provider openai --repo .
-```
-
-All reviews use Context Panel's account choice through the
-[shared Supervisor reader](skills/supervisor/scripts/account_choice.py), with the
-same private [account mappings](skills/supervisor/references/helpers.md). Each
-review sets only its child's home, removes inherited provider auth/routing overrides,
-and writes a count-only launch receipt before starting. Its JSON names the
-chosen account and receipt. If the choice or receipt storage is unavailable,
-the review fails before starting; it does not fall back to the caller's account.
-Google uses its one configured existing agy login, without an account override.
-
-`agy` also needs tool permissions. Run headless it stops at the first tool that
-needs permission and returns an empty answer with exit code 0, which looks like
-a reviewer that found nothing. The helper reports that as a failure and prints
-the exact read-only allow rules to add to your own `agy` settings. They name
-the repository being reviewed; point them at a directory that holds your
-repositories to cover them all, and never at your home directory, because the
-rule applies to every `agy` session. The helper changes that file only through
-its `configure` and `repair` subcommands, and refuses to start `agy` at all
-when your settings allow more than reading. When the only excess is a `find` or
-`rg` command grant that an earlier version of the helper asked for, `repair`
-backs the file up and removes just those grants; anything else, including
-grants you added for your own sessions, it refuses to touch.
+Use the canonical [`model-review` skill](skills/model-review/SKILL.md) for the
+complete read-only review procedure and its linked standing provider decisions.
+If an `agy` read rule should cover several repositories, scope it to their
+containing directory, never the home directory; the rule affects every session.
 
 ## Direction
 
