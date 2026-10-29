@@ -4,14 +4,16 @@
 # dependencies = []
 # ///
 import argparse
+import asyncio
 import json
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from contextlib import nullcontext
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import catalog_landing
 import check_changes
@@ -21,6 +23,7 @@ import iterm_tab
 import oq
 import session_closeout
 import session_liveness
+import tmux_terminal
 
 
 def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
@@ -94,41 +97,74 @@ class OperationTests(unittest.TestCase):
                     operation.run("quit", ["native"], once=True)
                 self.assertEqual(run.call_count, 1)
 
-    def test_failed_finish_keeps_terminal_and_returns_first_gate(self) -> None:
-        entry: dict[str, Any] = {
-            "session_id": "native-session",
-            "backend": "tmux",
-            "tmux_session_id": "terminal",
-            "transcript": "fixture",
-            "pid": 8,
-        }
-        args = argparse.Namespace(
-            ledger=Path("ledger"), session_id=entry["session_id"], supervisor_session="supervisor", owner="owner", exit_seconds=1
-        )
-        operation = check_operation.Operation(self.root, [entry["session_id"]])
-        operation.state["steps"]["quit"] = {"complete": True}
-        run = Mock(
-            side_effect=[
-                {"claims_clear": True, "coverage": {"complete": True}},
-                {"ok": False, "needs_reconciliation": True},
-            ]
-        )
-        with (
-            patch.object(operation, "run", run),
-            patch_attr(session_closeout, "load_ledger", return_value=[entry]),
-            patch.object(session_closeout, "ready"),
-            patch.object(session_closeout.release, "handoff", return_value={"body": "Session: " + entry["session_id"]}),
-            patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]"),
-            patch.object(session_closeout.session_liveness, "process_absent", return_value=True),
-        ):
-            with self.assertRaises(check_operation.GateFailed) as failure:
-                session_closeout.closeout(args, operation)
-            entry["pid"] += 1
-            with self.assertRaises(check_operation.GateFailed) as changed:
-                session_closeout.closeout(args, operation)
-            self.assertEqual(changed.exception.gate, "identity")
-        self.assertEqual(failure.exception.gate, "finish")
-        self.assertFalse(any(call.args[0] == "close" for call in run.call_args_list))
+    def test_closeout_uses_native_shapes_and_retires_only_verified_closures(self) -> None:
+        for outcome in ("complete", "finish_refused", "uncertain_exit", "close_uncertain", "resumed"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                entry: dict[str, Any] = {"session_id": "native", "harness": "claude", "supervisor_owned": True,
+                         "backend": "tmux", "tmux_session_id": "terminal", "transcript": "relative.jsonl",
+                         "pid": 8, "tty": "ttys001", "handoff_url": "https://github.com/owner/repo/issues/1#issuecomment-2"}
+                ledger = root / "ledger.json"
+                ledger.write_text(json.dumps([entry]))
+                normalized = {**entry, "transcript": str(root / entry["transcript"])}
+                closed = {**normalized, "process_exit_verified": True, "ended_at": "2026-01-01T00:00:00Z"}
+                args = argparse.Namespace(ledger=ledger, session_id="native", supervisor_session="supervisor",
+                                          owner="owner", exit_seconds=1, handoff_url=entry["handoff_url"])
+                live, present, calls = True, True, []
+
+                def command(argv: list[str], **_: Any) -> subprocess.CompletedProcess:
+                    nonlocal live, present
+                    action = argv[argv.index("--backend") + 2] if "--backend" in argv else "claims" if any(
+                        str(word).endswith("check_claims.py") for word in argv) else "finish"
+                    calls.append(action)
+                    payload: Any = {"sent": True}
+                    code = 0
+                    if action == "claims":
+                        payload = {"claims_clear": True, "coverage": {"complete": True}}
+                    elif action == "finish":
+                        payload = {"ok": outcome != "finish_refused", "needs_reconciliation": outcome == "finish_refused"}
+                    elif action == "list":
+                        payload = [{"session_id": "terminal", "tty": "/dev/ttys001"}] if present else []
+                    elif action == "read":
+                        payload = {"dead": False, "screen": [], "input_line": {"style": "dim", "text": "suggestion"}}
+                    elif action == "send":
+                        live = False
+                        if outcome == "uncertain_exit":
+                            payload, code = {"status": "send_failed"}, 1
+                    elif action == "close":
+                        present = outcome == "close_uncertain"
+                        if outcome == "resumed":
+                            closed["resumed_at"] = "2026-01-01T00:01:00Z"
+                    return subprocess.CompletedProcess(argv, code, json.dumps(payload), "")
+
+                operation = check_operation.Operation(root / "evidence", ["native"])
+                with (patch.object(subprocess, "run", side_effect=command),
+                      patch.object(session_closeout, "ready"),
+                      patch.object(session_closeout.release, "handoff", return_value={"body": "Session: native"}),
+                      patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]"),
+                      patch.object(session_liveness, "process_absent", side_effect=lambda _: not live),
+                      patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", "claude")]),
+                      patch.object(session_closeout.closure, "ownership", return_value=nullcontext()),
+                      patch.object(session_closeout.closure, "store_lock", side_effect=lambda *_, **__: nullcontext()),
+                      patch.object(session_closeout.closure, "source_records", return_value={"native": closed}),
+                      patch.object(session_closeout.release, "validate_closure")):
+                    if outcome == "uncertain_exit":
+                        with self.assertRaises(check_operation.GateFailed):
+                            session_closeout.closeout(args, operation)
+                        session_closeout.closeout(args, check_operation.Operation(root / "evidence", ["native"]))
+                    elif outcome in {"finish_refused", "close_uncertain", "resumed"}:
+                        with self.assertRaises(check_operation.GateFailed):
+                            session_closeout.closeout(args, operation)
+                        self.assertEqual(json.loads(ledger.read_text()), [entry])
+                    else:
+                        session_closeout.closeout(args, operation)
+                    if outcome in {"complete", "uncertain_exit"}:
+                        self.assertEqual(json.loads(ledger.read_text()), [])
+                        session_closeout.closeout(args, check_operation.Operation(root / "evidence", ["native"]))
+                    self.assertLess(calls.index("clear"), calls.index("send"))
+                    self.assertEqual(calls.count("send"), 1)
+                    if outcome == "finish_refused":
+                        self.assertNotIn("close", calls)
 
     def test_handoff_observation_requires_a_new_completed_turn(self) -> None:
         original = {"state": "turn_ended", "size": 5, "last_text": "landing", "safe_verdict": False}
@@ -160,29 +196,88 @@ class OperationTests(unittest.TestCase):
     def test_managed_proxy_and_dim_suggestions_use_shared_native_rules(self) -> None:
         proxy = str(Path(__file__).with_name("codex-session.py"))
         self.assertTrue(session_liveness.source_harness([proxy, "native"], "codex"))
+        self.assertFalse(session_liveness.source_harness([proxy, "native"], "claude"))
         self.assertTrue(iterm_tab.empty_agent_input({"input_line": {"style": "dim", "text": "a different suggestion"}}))
         self.assertFalse(iterm_tab.empty_agent_input({"input_line": {"style": "mixed", "text": "draft"}}))
 
-    def test_smoke_brief_satisfies_launcher_rules_and_read_only_ownership(self) -> None:
+    def test_single_launch_result_reaches_acknowledgement_without_relaunch(self) -> None:
+        ledger = self.root / "ledger.json"
+        entry = {"session_id": "native", "harness": "codex", "transcript": "fixture", "tmux_session_id": "terminal"}
+        ledger.write_text(json.dumps([entry]))
+        config = {"repo": "owner/catalog", "issue": 1, "landing_sha": "a" * 40, "ledger": str(ledger),
+                  "command_files": {"codex": str(self.root / "command.txt")}, "window_id": "container"}
+        launches = 0
+
+        def command(argv: list[str], **_: Any) -> subprocess.CompletedProcess:
+            nonlocal launches
+            launches += 1
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"session_id": "terminal", "native_session_id": "native"}), "")
+
+        with (patch.object(subprocess, "run", side_effect=command),
+              patch.object(catalog_landing, "observe", side_effect=check_operation.GateFailed("response", "fixture"))):
+            for _ in range(2):
+                with self.assertRaises(check_operation.GateFailed) as failure:
+                    catalog_landing.verify_smoke(config, check_operation.Operation(self.root, ["landing"]), "codex", "openai", self.root)
+                self.assertEqual(failure.exception.gate, "response")
+        self.assertEqual(launches, 1)
+        iterm_tab.validate_brief_rules((self.root / "codex-brief.txt").read_text())
+
+    def test_native_request_and_registered_launch_resolve_without_replay(self) -> None:
+        ledger = self.root / "ledger.json"
+        native: dict[str, Any] = {"session_id": "native", "transcript": str(self.root / "native.jsonl"), "pid": 8, "tty": "ttys001",
+                  "codex_home": str(self.root), "launch_pid": 8, "launch_generation": "generation", "launch_started_at": "birth"}
+        launch = {"session_id": "terminal", "native_receipt": str(self.root / "receipt"), **{k: v for k, v in native.items() if k != "session_id"}}
+        entry = {**native, "harness": "codex", "supervisor_owned": True, "tmux_session_id": "terminal"}
+        ledger.write_text(json.dumps([entry]))
         operation = check_operation.Operation(self.root, ["landing"])
-        config = {
-            "repo": "owner/catalog",
-            "issue": 1,
-            "landing_sha": "a" * 40,
-            "ledger": str(self.root / "ledger.json"),
-            "command_files": {"codex": str(self.root / "command.txt")},
-            "window_id": "container",
-        }
-        (self.root / "command.txt").write_text("exec codex --remote unix://")
-        with patch.object(operation, "rows", side_effect=check_operation.GateFailed("launch", "fixture")):
-            with self.assertRaises(check_operation.GateFailed):
+        operation.state["steps"]["codex_launch"] = {"complete": False}
+        check_operation.save_state(self.root / "codex_launch.json", {"stdout": json.dumps({"failed_launch": {"phase": "register_ledger", "launch": launch}})})
+        config: dict[str, Any] = {"repo": "owner/catalog", "issue": 1, "landing_sha": "a" * 40, "ledger": str(ledger)}
+        with (patch_attr(catalog_landing, "read_launch_receipt", return_value=native),
+              patch.object(subprocess, "run") as run,
+              patch.object(catalog_landing, "observe", side_effect=check_operation.GateFailed("response", "fixture"))):
+            with self.assertRaises(check_operation.GateFailed) as failure:
                 catalog_landing.verify_smoke(config, operation, "codex", "openai", self.root)
-        brief = (self.root / "codex-brief.txt").read_text()
-        iterm_tab.validate_brief_rules(brief)
-        payload = {"ok": True, "issue": {"launch_check": {"allowed": True}}}
-        with patch.object(subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout=json.dumps(payload))) as run:
-            iterm_tab.check_launch_issue(brief)
-        self.assertIn("--read-only", run.call_args.args[0])
+            self.assertEqual(failure.exception.gate, "response")
+            run.assert_not_called()
+        operation.state["steps"].update(codex_handoff_request={"complete": True}, codex_acknowledgement={"size": 1},
+                                        codex_request_time={"value": 0})
+        config["supervisor_session"] = "supervisor"
+        comments = [{"id": number, "created_at": "2026-01-01T00:00:00Z", "user": {"login": "agent[bot]"},
+                     "body": "Session: native " + config["landing_sha"], "html_url": "comment-" + str(number)} for number in (1, 2)]
+        with (patch.object(catalog_landing, "observe"),
+              patch_attr(catalog_landing, "GitHubReader", return_value=SimpleNamespace(paged_json=lambda *_, **__: comments)),
+              patch.object(catalog_landing.github_identity, "automation_login", return_value="agent[bot]"),
+              patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, '{"ok":true}', "")) as close):
+            self.assertEqual(catalog_landing.verify_smoke(config, operation, "codex", "openai", self.root), "comment-2")
+            self.assertEqual(close.call_count, 1)
+        for harness, row in (("codex", {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "request"}]}}),
+                             ("claude", {"type": "user", "message": {"role": "user", "content": "request"}})):
+            with self.subTest(harness=harness):
+                Path(native["transcript"]).write_text(json.dumps({**row, "timestamp": "2026-01-01T00:00:00Z"}) + "\n")
+                self.assertTrue(catalog_landing.request_seen(entry, "request", 0))
+                self.assertFalse(catalog_landing.request_seen(entry, "different request", 0))
+
+    def test_send_preflight_is_distinct_from_partial_delivery(self) -> None:
+        class Terminal:
+            dead = True
+            writes: list = []
+
+            def select(self, _: str) -> dict:
+                return {"dead": self.dead, "tty": "ttys001", "pane_id": "pane"}
+
+            def send_keys(self, *_: Any) -> None:
+                self.writes.append("attempt")
+                raise ValueError("native write outcome unknown")
+
+        terminal = Terminal()
+        with self.assertRaises(iterm_tab.InputRefused):
+            asyncio.run(tmux_terminal.Terminal.send(terminal, "terminal", "/exit"))
+        self.assertFalse(terminal.writes)
+        terminal.dead = False
+        with self.assertRaises(iterm_tab.SendFailure):
+            asyncio.run(tmux_terminal.Terminal.send(terminal, "terminal", "/exit"))
+        self.assertTrue(terminal.writes)
 
     def test_claude_registration_is_idempotent_and_preserves_other_terminal_identity(self) -> None:
         native = {"session_id": "native-claude", "home": str(self.root)}

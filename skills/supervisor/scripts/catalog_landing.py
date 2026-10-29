@@ -17,19 +17,22 @@ import account_choice
 import iterm_tab
 import session_liveness
 from capacity_retry import save_state
+from codex_session_proxy import read_launch_receipt
 from check_operation import (
     GateFailed,
     GitHubReader,
     GitHubReadError,
     GitHubReadShapeError,
     Operation,
+    receipt,
     automation_only_gh_prefix_args,
     claim_release,
     closure,
     github_identity,
+    release,
 )
 from session_closeout import explicit_session, require
-from session_record import load_ledger, read_jsonl, session_status
+from session_record import load_ledger, read_jsonl, session_status, terminal_entry, text_content
 
 
 def observe(entry: dict, landing: str, *, after_size: int = 0, final: bool = False) -> dict:
@@ -56,6 +59,19 @@ def observe(entry: dict, landing: str, *, after_size: int = 0, final: bool = Fal
         time.sleep(0.5)
 
 
+def request_seen(entry: dict, text: str, after: int) -> bool:
+    for row in read_jsonl(Path(entry["transcript"])):
+        if not row.get("timestamp") or claim_release.stamp(row["timestamp"]).timestamp() < after:
+            continue
+        payload = row.get("payload", {})
+        message = payload if row.get("type") == "response_item" else row.get("message", {})
+        if (message.get("role") == "user" or row.get("type") == "user") and text_content(message.get("content")) == text:
+            return True
+        if row.get("type") == "event_msg" and payload.get("type") == "user_message" and payload.get("message") == text:
+            return True
+    return False
+
+
 def verify(config: dict, operation: Operation) -> dict:
     repo, pr, landing = config["repo"], config["pr"], config["landing_sha"]
     require(len(landing) == 40 and all(char in "0123456789abcdef" for char in landing), "landing", "requires a full landing SHA")
@@ -63,22 +79,19 @@ def verify(config: dict, operation: Operation) -> dict:
     pull = reader.get_json(f"/repos/{repo}/pulls/{pr}", step="catalog_landing")
     require(pull.get("merged") is True and pull.get("merge_commit_sha") == landing, "landing", "PR does not prove this landing SHA")
     source, runtime = Path(config["source_worktree"]), Path(config["runtime_worktree"])
-    receipt = operation.run(
+    runtime_receipt = operation.run(
         "runtime",
         [
-            "uv",
-            "run",
+            "uv", "run",
             str(source / "skills/github/scripts/reconcile-runtime-checkout.py"),
-            "--repo",
-            repo,
-            "--merged-worktree",
-            str(source),
-            "--landing-sha",
-            landing,
+            "--repo", repo,
+            "--merged-worktree", str(source),
+            "--landing-sha", landing,
         ],
+        timeout=660,
     )
     require(
-        receipt.get("status") in {"synchronized", "already_current"},
+        runtime_receipt.get("status") in {"synchronized", "already_current"},
         "runtime",
         "runtime reconciliation did not prove an updated binding",
     )
@@ -93,13 +106,13 @@ def verify(config: dict, operation: Operation) -> dict:
     bindings = [
         reconciler.inspect_binding(path, common)[2]
         for path, label, _ in reconciler.runtime_skills_paths()
-        if label == receipt["runtime_home_source"]
+        if label == runtime_receipt["runtime_home_source"]
     ]
     require(runtime.resolve() in bindings, "runtime", "configured runtime is not the reconciled binding")
     head = subprocess.run(
         ["git", "-C", str(runtime), "rev-parse", "HEAD"], capture_output=True, text=True, check=True, timeout=10
     ).stdout.strip()
-    require(head == receipt.get("after_sha"), "runtime", "configured runtime differs from the reconciliation receipt")
+    require(head == runtime_receipt.get("after_sha"), "runtime", "configured runtime differs from the reconciliation receipt")
     ancestry = subprocess.run(["git", "-C", str(runtime), "merge-base", "--is-ancestor", landing, "HEAD"], timeout=10)
     require(ancestry.returncode == 0, "runtime", "runtime does not contain the landing")
     handoffs, results, failures = [], {}, []
@@ -142,10 +155,26 @@ def verify_smoke(config: dict, operation: Operation, harness: str, provider: str
         "Use no tools, change no files, take no claims, post nothing. Remain idle afterward. "
         "Keep working through compaction. Keep this brief and landing SHA."
     )
-    saved = operation.state["steps"].get(phase)
+    saved: dict = operation.state["steps"].get(phase, {})
     if saved:
-        require(saved.get("complete") is True, phase, "launch is uncertain; inspect evidence without relaunching")
-        launch = saved["result"][0]
+        if not saved.get("complete"):
+            operation.gate = phase
+            failure = json.loads(json.loads((operation.evidence / (phase + ".json")).read_text())["stdout"])
+            retained = failure.get("failed_launch", {})
+            require(harness == "codex" and retained.get("phase") == "register_ledger", phase,
+                    "launch is uncertain; inspect its retained receipt without relaunching")
+            launch = retained["launch"]
+            entry = terminal_entry(ledger, "tmux_session_id", launch["session_id"])
+            native = read_launch_receipt(Path(launch["native_receipt"]))
+            expected = {**launch, **native, "harness": "codex", "supervisor_owned": True,
+                        "tmux_session_id": launch["session_id"]}
+            identity = lambda row: {key: value for key, value in release.closure_identity(row).items() if key != "handoff_url"}
+            require(entry["session_id"] == native["session_id"] and identity(entry) == identity(expected), phase,
+                    "registered source differs from the retained launch generation")
+            saved = {"complete": True, "result": {**launch, "native_session_id": native["session_id"]}}
+            operation.state["steps"][phase] = saved
+            save_state(operation.path, operation.state)
+        launch = saved["result"]
     else:
         command = Path(config["command_files"][harness])
         extra = ["--ledger", str(ledger)] if harness == "codex" else []
@@ -171,30 +200,21 @@ def verify_smoke(config: dict, operation: Operation, harness: str, provider: str
             save_state(operation.evidence / "claude-native.json", {"session_id": native, "home": str(home)})
         if config.get("account_config"):
             extra += ["--account-config", config["account_config"]]
-        launched = operation.rows(
+        launch = operation.run(
             phase,
             [
-                "uv",
-                "run",
+                "uv", "run",
                 str(scripts / "iterm_tab.py"),
-                "--backend",
-                "tmux",
+                "--backend", "tmux",
                 "new",
-                "--window-id",
-                config["window_id"],
-                "--command-file",
-                str(command),
-                "--brief-file",
-                str(brief),
-                "--account-provider",
-                provider,
-                "--without-browser",
-                *extra,
+                "--window-id", config["window_id"],
+                "--command-file", str(command),
+                "--brief-file", str(brief),
+                "--account-provider", provider,
+                "--without-browser", *extra,
             ],
             once=True,
         )
-        require(len(launched) == 1, phase, "expected one terminal launch")
-        launch = launched[0]
     if harness == "claude":
         native = json.loads((operation.evidence / "claude-native.json").read_text())
         entry = iterm_tab.register_claude_launch(launch, native, ledger)
@@ -219,26 +239,27 @@ def verify_smoke(config: dict, operation: Operation, harness: str, provider: str
         operation.state["steps"][harness + "_acknowledgement"] = {"size": acknowledgement["size"]}
         save_state(operation.path, operation.state)
     terminal = ["uv", "run", str(scripts / "iterm_tab.py"), "--backend", "tmux"]
-    screen = operation.run(harness + "_screen", [*terminal, "read", "--session-id", entry["tmux_session_id"]])
-    require(not screen.get("dead"), phase, "fresh smoke terminal ended prematurely")
     request = operation.evidence / (harness + "-handoff.txt")
     request.write_text(
-        f"Post one final issue handoff comment on https://github.com/{repo}/issues/{config['issue']} "
+        f"Complete normal work-closeout, using its final issue handoff comment on https://github.com/{repo}/issues/{config['issue']} "
         f"naming landing SHA {landing} and your native Session: {entry['session_id']}. "
-        "Take no claims and change no files. Complete normal work-closeout, then give an unqualified Safe to exit: yes."
+        "Take no claims and change no files. Then give an unqualified Safe to exit: yes."
     )
-    require(
-        iterm_tab.empty_agent_input(screen),
-        "smoke_input",
-        "nonempty or uncertain smoke input; preserve it",
-    )
-    operation.state["steps"].setdefault(harness + "_request_time", {"value": math.floor(time.time())})
-    save_state(operation.path, operation.state)
-    operation.run(
-        harness + "_handoff_request",
-        [*terminal, "send", "--session-id", entry["tmux_session_id"], "--text-file", str(request), "--verified-target"],
-        once=True,
-    )
+    request_gate = harness + "_handoff_request"
+    sent = operation.state["steps"].get(request_gate)
+    if sent and sent.get("complete") is not True:
+        require(request_seen(entry, request.read_text(), operation.state["steps"][harness + "_request_time"]["value"]),
+                request_gate, "request submission remains uncertain; inspect the exact source without replay")
+        operation.state["steps"][request_gate] = {"complete": True, "result": {"delivery": "native_request_observed"}}
+        save_state(operation.path, operation.state)
+    if not sent:
+        screen = operation.run(harness + "_screen", [*terminal, "read", "--session-id", entry["tmux_session_id"]])
+        require(not screen.get("dead") and iterm_tab.empty_agent_input(screen), "smoke_input", "requires a live empty idle prompt")
+        operation.state["steps"].setdefault(harness + "_request_time", {"value": math.floor(time.time())})
+        save_state(operation.path, operation.state)
+        operation.run(request_gate,
+                      [*terminal, "send", "--session-id", entry["tmux_session_id"], "--text-file", str(request), "--verified-target"],
+                      once=True)
     observe(entry, landing, after_size=operation.state["steps"][harness + "_acknowledgement"]["size"], final=True)
     operation.gate = harness + "_handoff"
     reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
@@ -251,28 +272,21 @@ def verify_smoke(config: dict, operation: Operation, harness: str, provider: str
         and explicit_session(row.get("body", ""), entry["session_id"])
         and claim_release.stamp(row["created_at"]).timestamp() >= operation.state["steps"][harness + "_request_time"]["value"]
     ]
-    require(len(matches) == 1, "smoke_handoff", "requires one exact native-session issue handoff")
-    entry["handoff_url"] = matches[0]["html_url"]
+    require(bool(matches), "smoke_handoff", "requires an exact native-session issue handoff")
+    entry["handoff_url"] = max(matches, key=lambda row: (row["created_at"], row["id"]))["html_url"]
     operation.state["steps"][harness + "_handoff"] = {"url": entry["handoff_url"]}
     save_state(operation.path, operation.state)
     close = operation.run(
         harness + "_closeout",
         [
-            "uv",
-            "run",
+            "uv", "run",
             str(scripts / "session_closeout.py"),
-            "--ledger",
-            str(ledger),
-            "--session-id",
-            entry["session_id"],
-            "--supervisor-session",
-            config["supervisor_session"],
-            "--owner",
-            owner,
-            "--evidence",
-            str(operation.evidence / (harness + "-closeout")),
-            "--handoff-url",
-            entry["handoff_url"],
+            "--ledger", str(ledger),
+            "--session-id", entry["session_id"],
+            "--supervisor-session", config["supervisor_session"],
+            "--owner", owner,
+            "--evidence", str(operation.evidence / (harness + "-closeout")),
+            "--handoff-url", entry["handoff_url"],
         ],
         timeout=3600,
     )
@@ -294,15 +308,10 @@ def main() -> int:
         with closure.store_lock(args.evidence / "verification", create=True):
             operation = Operation(args.evidence, [config["repo"], identity])
             proof = verify(config, operation)
-        result = {**operation.receipt(identity), **proof}
+        result = {**receipt(identity, args.evidence), **proof}
     except (OSError, ValueError, KeyError, TypeError, SubprocessError, GitHubReadError, GitHubReadShapeError) as error:
-        result = {
-            "ok": False,
-            "identity": identity,
-            "gate": error.gate if isinstance(error, GateFailed) else operation.gate if "operation" in locals() else "identity",
-            "reason": str(error),
-            "evidence": str(args.evidence),
-        }
+        result = receipt(identity, args.evidence, error,
+                         gate=operation.gate if "operation" in locals() else "identity")
     print(json.dumps(result, separators=(",", ":")))
     return int(not result["ok"])
 

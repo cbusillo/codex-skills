@@ -39,6 +39,7 @@ __all__ = [
     "automation_only_gh_prefix_args",
     "Operation",
     "GateFailed",
+    "receipt",
 ]
 
 
@@ -59,22 +60,10 @@ class Operation:
             raise GateFailed("identity", "evidence belongs to another target or launch generation")
         self.state: dict[str, Any] = state
 
-    def run(self, gate: str, command: list[str], *, once: bool = False, timeout: int = 120) -> dict:
-        result = self._run(gate, command, once=once, timeout=timeout)
-        if not isinstance(result, dict):
-            raise GateFailed(gate, "helper result must be an object")
-        return result
-
-    def rows(self, gate: str, command: list[str], *, once: bool = False, timeout: int = 120) -> list[dict]:
-        result = self._run(gate, command, once=once, timeout=timeout)
-        if not isinstance(result, list) or not all(isinstance(row, dict) for row in result):
-            raise GateFailed(gate, "helper result must be an array of objects")
-        return result
-
-    def _run(self, gate: str, command: list[str], *, once: bool, timeout: int) -> dict | list:
+    def run(self, gate: str, command: list[str], *, once: bool = False, timeout: int = 120) -> Any:
         self.gate = gate
         saved = self.state["steps"].get(gate)
-        if once and saved and not saved.get("retryable"):
+        if once and saved:
             if saved.get("complete") is not True:
                 raise GateFailed(gate, "previous mutation requires reconciliation; inspect evidence before any retry")
             return saved["result"]
@@ -95,7 +84,7 @@ class Operation:
             payload = None
         if result.returncode:
             if once and isinstance(payload, dict) and payload.get("mutation_started") is False:
-                self.state["steps"][gate] = {"complete": False, "retryable": True}
+                self.state["steps"].pop(gate, None)
                 save_state(self.path, self.state)
             raise GateFailed(gate, f"helper exited {result.returncode}; inspect {gate}.json")
         if not isinstance(payload, (dict, list)):
@@ -105,11 +94,7 @@ class Operation:
             save_state(self.path, self.state)
         return payload
 
-    def receipt(self, identity: str, error: GateFailed | None = None) -> dict:
-        return {
-            "ok": error is None,
-            "identity": identity,
-            "gate": error.gate if error else "complete",
-            "reason": str(error) if error else None,
-            "evidence": str(self.evidence),
-        }
+def receipt(identity: str, evidence: Path, error: Exception | None = None, *, gate: str = "complete") -> dict:
+    return {"ok": error is None, "identity": identity,
+            "gate": error.gate if isinstance(error, GateFailed) else gate,
+            "reason": str(error) if error else None, "evidence": str(evidence.resolve())}

@@ -276,11 +276,12 @@ class Terminal:
         return {**row, "screen": screen, "input_line": iterm_tab.input_line(screen, styles)}
 
     async def send(self, identity, text, submit=True, allow_tabs=False):
-        iterm_tab.validate_text(text, allow_tabs=allow_tabs)
-        row = self.select(identity)
-        iterm_tab.validate_resume_input(text, tty=row.get("tty"))
-        if row["dead"]:
-            raise ValueError("agent process has exited; no input was sent")
+        with iterm_tab.input_preflight():
+            iterm_tab.validate_text(text, allow_tabs=allow_tabs)
+            row = self.select(identity)
+            iterm_tab.validate_resume_input(text, tty=row.get("tty"))
+            if row["dead"]:
+                raise ValueError("agent process has exited; no input was sent")
         if "\n" in text or "\t" in text:
             text = "\x1b[200~" + text + "\x1b[201~"
         try:
@@ -387,16 +388,17 @@ async def operate(args):
         return terminal.close(args.session_id, args.ledger)
     if args.command in {"send", "clear"}:
         if not args.verified_target:
-            raise ValueError("verify the target, input line and prompt before --verified-target")
+            raise iterm_tab.InputRefused("verify the target, input line and prompt before --verified-target")
         if args.command == "clear":
             row = terminal.select(args.session_id)
             if row["dead"]:
                 raise ValueError("agent process has exited; no input was sent")
             terminal.send_keys(row["pane_id"], "C-u")
         else:
-            text = args.text_file.read_text(encoding="utf-8") if args.text_file else args.text
-            row = terminal.select(args.session_id)
-            ended = iterm_tab.exit_observer(text, row.get("tty")) if not args.no_submit else None
+            with iterm_tab.input_preflight():
+                text = args.text_file.read_text(encoding="utf-8") if args.text_file else args.text
+                row = terminal.select(args.session_id)
+                ended = iterm_tab.exit_observer(text, row.get("tty")) if not args.no_submit else None
             await terminal.send(args.session_id, text, submit=False)
 
             async def read_message() -> dict:

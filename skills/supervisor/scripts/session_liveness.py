@@ -90,7 +90,7 @@ def process_absent(pid):
 
 def source_harness(argv: list[str] | None, harness: str | None = None) -> bool:
     return bool(argv and (harness_family(argv[0]) in ({harness} if harness else {"codex", "claude"})
-                         or Path(argv[0]).name in {"codex-session.py", "codex_session_proxy.py"}))
+                         or harness in {None, "codex"} and Path(argv[0]).name in {"codex-session.py", "codex_session_proxy.py"}))
 
 
 def idle_terminal_command(command):

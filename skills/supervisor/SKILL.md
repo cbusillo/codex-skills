@@ -490,16 +490,11 @@ train polling and other sessions. Aim for two minutes from the verdict; on any
 failed check preserve the session and report the missing proof and next actor.
 A deadline never waives a gate; missed targets remain in the next handoff.
 
-Before exit, run the session-scoped claim check on its claiming host. Require
-`claims_clear: true` and complete coverage; otherwise nudge the exact worker
-once to release through work-closeout, preserving retained work, then check
-again. If it cannot, it records conditional/no, blocker and next actor on its
-issue and stays open. Live background/Monitor tasks and scheduled jobs are
-blockers. Ask that worker to check completion, stop only obsolete native tasks,
-reconcile missing IDs with native lists, and give a fresh verdict. Do not send
-exit or stop another session's tasks to clear the list. Missing task notices
-are not completion. Scheduled jobs alone do not suppress an idle review notice;
-active turns or background Bash/Monitor work still do.
+Before exit, follow [claim checks](references/helpers.md#claim-checks-at-close-out)
+and the registry's [background-task rules](references/helpers.md#local-state-and-the-session-registry).
+Require complete clear claims, resolve required reviews, and have the worker
+reconcile its own tasks and supply a fresh verdict; never stop another session's
+tasks or treat missing notices as completion. Preserve an unresolved source.
 
 Inspect full screen and input before keys. Styles are evidence, never authorship.
 Dim suggestions are not Director decisions. Preserve confirmed Director drafts
@@ -523,24 +518,13 @@ empty readback and another send. Never append a second command blindly.
 Prove matched process exit in a bounded wait; an uncertain identity or remaining
 process stays open with its next action in the ledger.
 
-Only after actual exit, run `release_session_claims.py finish` with the owning
-GitHub/planning skills loaded. It verifies source/native proof and discovers
-canonical releases across the owner. Incomplete discovery, unresolved claims,
-uncertain writes or planning reconciliation stay in the ledger. Reconcile exact
-IDs through the existing evidence-backed release-claim path, then rerun finish;
-never report release without readback or write a fixed safe verdict after an
-attempted close. Preserve status, waits, blockers, retained PRs/worktrees and
-original verified times. Historical closed sessions use explicit backfill.
-
-Finally list terminals. If this exact terminal is gone, record disappearance.
-Otherwise use the owned backend's non-force `close` once and list again. iTerm
-rechecks unsplit location, PID/TTY and native editing-shell empty-input proof
-twice; missing proof or a retained session with no TTY jobs preserves it. Use
-the documented shell-integration setup without changing the Director's profile.
-tmux proves owned nonce/location and actual process exit, rejects live shells
-and split/linked windows, and removes only the still-dead matching pane.
-Uncertain closure is retained, never retried or forced. Physical pane cleanup
-does not prove a source resumed elsewhere has ended.
+After actual exit, follow [finish and reconciliation](references/helpers.md#release-a-verified-finished-session),
+then the backend's guarded non-force close and exact disappearance readback.
+Incomplete discovery, source uncertainty, unknown writes, release/review waits
+or terminal uncertainty preserve the active row. Never force or replay closure;
+physical cleanup is no proof that a source resumed elsewhere has ended.
+Normal closeout retains custody in the canonical closed log and removes only
+the verified unchanged active row. Reuse its evidence for interrupted retirement.
 
 ## Handoff Shape
 

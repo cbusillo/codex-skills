@@ -191,6 +191,18 @@ class StartupFailure(ValueError):
         super().__init__(reason)
 
 
+class InputRefused(ValueError):
+    pass
+
+
+@contextmanager
+def input_preflight():
+    try:
+        yield
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        raise InputRefused(str(error)) from error
+
+
 class CloseUncertain(ValueError):
     pass
 
@@ -452,9 +464,10 @@ def append_brief(command_text, brief):
 
 
 async def send(session, text, submit=True, allow_tabs=False):
-    if resume_input(text):
-        validate_resume_input(text, tty=await session.async_get_variable("tty"))
-    validate_text(text, allow_tabs=allow_tabs)
+    with input_preflight():
+        if resume_input(text):
+            validate_resume_input(text, tty=await session.async_get_variable("tty"))
+        validate_text(text, allow_tabs=allow_tabs)
     if "\n" in text or "\t" in text:
         text = "\x1b[200~" + text + "\x1b[201~"
     try:
@@ -1762,19 +1775,20 @@ async def operate(app, args):
         if args.command == "read":
             return await read_session(session)
         if not args.verified_target:
-            raise ValueError(
+            raise InputRefused(
                 "verify the target, input line and prompt before --verified-target"
             )
         if args.command == "clear":
             await session.async_send_text("\x15", suppress_broadcast=True)
         else:
-            text = (
-                args.text_file.read_text(encoding="utf-8")
-                if args.text_file
-                else args.text
-            )
-            ended = exit_observer(text, await session.async_get_variable("tty")) if (
-                not args.no_submit and text in {"/quit", "/exit"}) else None
+            with input_preflight():
+                text = (
+                    args.text_file.read_text(encoding="utf-8")
+                    if args.text_file
+                    else args.text
+                )
+                ended = exit_observer(text, await session.async_get_variable("tty")) if (
+                    not args.no_submit and text in {"/quit", "/exit"}) else None
             await send(session, text, submit=False)
 
             async def read_message() -> dict[str, Any]:
@@ -2068,7 +2082,7 @@ def main():
             print(json.dumps(error.detail, indent=2))
             parser.exit(1, f"SEND FAILED: {error}; read and clear verified input before another send\n")
         except (ValueError, OSError, subprocess.SubprocessError) as error:
-            if args.command in {"new", "close"}:
+            if args.command in {"new", "close"} or isinstance(error, InputRefused):
                 print(json.dumps({"ok": False, "mutation_started": isinstance(error, CloseUncertain), "error": str(error)}))
             parser.exit(1, f"refused: {error}\n")
         return
@@ -2085,7 +2099,7 @@ def main():
             print(json.dumps(error.detail, indent=2))
             parser.exit(1, f"SEND FAILED: {error}; read and clear verified input before another send\n")
         except (ValueError, OSError, subprocess.SubprocessError) as error:
-            if args.command in {"new", "close"}:
+            if args.command in {"new", "close"} or isinstance(error, InputRefused):
                 print(json.dumps({"ok": False, "mutation_started": isinstance(error, CloseUncertain), "error": str(error)}))
             parser.exit(1, f"refused: {error}\n")
         except iterm2.rpc.RPCException:

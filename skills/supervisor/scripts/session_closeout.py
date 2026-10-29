@@ -21,6 +21,7 @@ from check_operation import (
     GitHubReadError,
     GitHubReadShapeError,
     Operation,
+    receipt,
     automation_only_gh_prefix_args,
     claim_release,
     closure,
@@ -29,7 +30,7 @@ from check_operation import (
     observation_homes,
     release,
 )
-from session_record import load_ledger, session_status
+from session_record import load_ledger, normalize_ledger_entry, session_status
 
 SCRIPTS = Path(__file__).resolve().parent
 
@@ -80,13 +81,22 @@ def ready(entry: dict, supervisor: str) -> dict:
 
 def closeout(args: argparse.Namespace, operation: Operation) -> None:
     entries = [entry for entry in load_ledger(args.ledger) if entry["session_id"] == args.session_id]
-    require(len(entries) == 1, "identity", "native session must match exactly one ledger entry")
+    retired = not entries and bool(operation.state.get("retired_generation"))
+    if retired:
+        with closure.ownership(args.session_id, create=True):
+            saved = closure.source_records({args.session_id}).get(args.session_id)
+            require(bool(saved), "identity", "retired source has no canonical closure")
+            release.validate_closure(saved, args.supervisor_session)
+            entries = [saved]
+    require(len(entries) == 1, "identity", "native session must match exactly one ledger entry or verified retirement")
     entry = entries[0]
     selected_handoff = getattr(args, "handoff_url", None)
     if selected_handoff:
+        require(not entry.get("handoff_url") or entry["handoff_url"] == selected_handoff, "handoff", "recorded handoff differs; preserve it")
         entry["handoff_url"] = selected_handoff
     generation = fingerprint({key: value for key, value in release.closure_identity(entry).items() if key != "handoff_url"})
     require(operation.state.get("generation", generation) == generation, "identity", "journal belongs to another launch generation")
+    require(not retired or operation.state["retired_generation"] == generation, "identity", "retired source generation changed")
     operation.state["generation"] = generation
     save_state(operation.path, operation.state)
     ready(entry, args.supervisor_session)
@@ -109,13 +119,13 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
             "handoff",
             "handoff must name this native session",
         )
-        if selected_handoff:
+        if selected_handoff and not retired:
             with closure.store_lock(args.ledger, create=True):
                 rows = json.loads(args.ledger.read_text())
                 matches = [row for row in rows if row.get("session_id") == args.session_id]
                 require(
                     len(matches) == 1
-                    and release.closure_identity({**matches[0], "handoff_url": selected_handoff}) == release.closure_identity(entry),
+                    and release.closure_identity(normalize_ledger_entry(args.ledger, {**matches[0], "handoff_url": selected_handoff})) == release.closure_identity(entry),
                     "identity",
                     "ledger generation changed before handoff update",
                 )
@@ -126,15 +136,11 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
         result = operation.run(
             "claims",
             [
-                "uv",
-                "run",
+                "uv", "run",
                 str(SCRIPTS.parents[1] / "work-closeout/scripts/check_claims.py"),
-                "--owner",
-                args.owner,
-                "--session",
-                args.session_id,
-                "--transcript",
-                entry["transcript"],
+                "--owner", args.owner,
+                "--session", args.session_id,
+                "--transcript", entry["transcript"],
             ],
             timeout=660,
         )
@@ -164,6 +170,8 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
 
     def prompt(gate: str) -> None:
         pane = call(gate, "read")
+        preservation = operation.evidence / (gate + "-" + str(time.time_ns()) + ".json")
+        save_state(preservation, {"identity": release.closure_identity(entry), "readback": pane})
         terminals = operation.run(gate + "_identity", [*terminal, "list"])
         matches = [row for row in terminals if row["session_id"] == terminal_id]
         require(len(matches) == 1, "identity", "terminal identity is not unique")
@@ -205,7 +213,8 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
             time.sleep(0.25)
         require(session_liveness.process_absent(entry.get("pid")), "process_exit", "process remains; terminal kept")
 
-    if not operation.state["steps"].get("quit") and not session_liveness.process_absent(entry.get("pid")):
+    require(not retired or session_liveness.process_absent(entry.get("pid")), "process_exit", "retired process identity is live")
+    if not session_liveness.process_absent(entry.get("pid")) and not operation.state["steps"].get("quit"):
         operation.gate = "ownership"
         with closure.ownership(args.session_id, create=True):
             prompt("prompt")
@@ -221,7 +230,7 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
             asyncio.run(native_idle(entry))
             call("quit", "send", "--text", "/quit" if entry["harness"] == "codex" else "/exit", "--verified-target", once=True)
             wait_for_exit()
-    elif operation.state["steps"].get("quit"):
+    elif not session_liveness.process_absent(entry.get("pid")):
         require(
             operation.state["steps"]["quit"].get("complete") is True,
             "quit",
@@ -230,36 +239,45 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
         wait_for_exit()
     require(session_liveness.process_absent(entry.get("pid")), "process_exit", "process remains; terminal kept")
     ready(entry, args.supervisor_session)
-    finish = operation.run(
-        "finish",
-        [
-            "uv",
-            "run",
-            str(SCRIPTS / "release_session_claims.py"),
+    if not retired:
+        finish = operation.run(
             "finish",
-            "--ledger",
-            str(args.ledger),
-            "--session-id",
-            args.session_id,
-            "--supervisor-session",
-            args.supervisor_session,
-            "--owner",
-            args.owner,
-            "--confirm-session-ended",
-            "--apply",
-        ],
-        timeout=660,
-    )
-    require(
-        finish.get("ok") is True and finish.get("needs_reconciliation") is False,
-        "finish",
-        "claim discovery or release needs reconciliation; terminal kept",
-    )
-    panes = operation.rows("terminals", [*terminal, "list"])
+            [
+                "uv", "run",
+                str(SCRIPTS / "release_session_claims.py"),
+                "finish",
+                "--ledger", str(args.ledger),
+                "--session-id", args.session_id,
+                "--supervisor-session", args.supervisor_session,
+                "--owner", args.owner,
+                "--confirm-session-ended", "--apply",
+            ],
+            timeout=660,
+        )
+        require(
+            finish.get("ok") is True and finish.get("needs_reconciliation") is False,
+            "finish",
+            "claim discovery or release needs reconciliation; terminal kept",
+        )
+    panes = operation.run("terminals", [*terminal, "list"])
     if any(pane["session_id"] == terminal_id for pane in panes):
         call("close", "close", "--ledger", str(args.ledger), once=True)
-    panes = operation.rows("disappearance", [*terminal, "list"])
+    panes = operation.run("disappearance", [*terminal, "list"])
     require(not any(pane["session_id"] == terminal_id for pane in panes), "disappearance", "terminal closure is uncertain")
+    operation.gate = "retirement"
+    with closure.ownership(args.session_id, create=True):
+        saved = closure.source_records({args.session_id})[args.session_id]
+        require(not saved.get("resumed_at") and release.closure_identity(saved) == release.closure_identity(entry),
+                "retirement", "canonical closure does not preserve this finished generation")
+        release.validate_closure(saved, args.supervisor_session)
+        with closure.store_lock(args.ledger, create=True):
+            active_rows = iterm_tab.read_launch_ledger(args.ledger)
+            active_matches = [normalize_ledger_entry(args.ledger, row) for row in active_rows if row.get("session_id") == args.session_id]
+            require(active_matches == ([] if retired else [entry]), "retirement", "active source changed; preserve the ledger")
+            operation.state["retired_generation"] = generation
+            save_state(operation.path, operation.state)
+            if not retired:
+                save_state(args.ledger, [row for row in active_rows if row.get("session_id") != args.session_id])
 
 
 def main() -> int:
@@ -277,15 +295,10 @@ def main() -> int:
         with closure.store_lock(args.ledger.with_name(args.ledger.name + ".closeout-" + args.session_id), create=True):
             operation = Operation(args.evidence, [str(args.ledger.resolve()), args.session_id])
             closeout(args, operation)
-        result = operation.receipt(args.session_id)
+        result = receipt(args.session_id, args.evidence)
     except (OSError, ValueError, KeyError, TypeError, SubprocessError, GitHubReadError, GitHubReadShapeError) as error:
-        result = {
-            "ok": False,
-            "identity": args.session_id,
-            "gate": error.gate if isinstance(error, GateFailed) else operation.gate if "operation" in locals() else "identity",
-            "reason": str(error),
-            "evidence": str(args.evidence),
-        }
+        result = receipt(args.session_id, args.evidence, error,
+                         gate=operation.gate if "operation" in locals() else "identity")
     print(json.dumps(result, separators=(",", ":")))
     return int(not result["ok"])
 
