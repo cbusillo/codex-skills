@@ -538,10 +538,11 @@ current default-branch checkout to read its product section.
    `skill-data/supervisor.toml` for the running-worker target and one-minute load
    limit. If unset, report the missing values and continue staffing available
    work. Keep that OpenAI target staffed below the limit, refilling in the same
-   turn a worker closes; at higher load, add CPU-light work (analysis, reviews,
-   docs, small suites). When `next` is thin, look for actionable work in
-   unclaimed `plan:active` issues and findings from Cloud-driven passes, following
-   the overall Order and existing claim and launch rules. Add no
+   turn a worker closes. At high load, even without a configured limit, add
+   CPU-light work (analysis, reviews, docs, small suites). When `next` is thin,
+   look at actionable unclaimed `plan:active` issues and issues filed from
+   Cloud-driven passes, following the overall Order and existing claim and
+   launch rules. Add no
    staffing label and do not depend on a buried staffing-request comment.
 
    Workers report on their child issues. Parents hold in-place Current Status
