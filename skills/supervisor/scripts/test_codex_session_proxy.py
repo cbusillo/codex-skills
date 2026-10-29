@@ -12,10 +12,12 @@ import subprocess
 import sys
 import unittest
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from contextlib import AbstractContextManager
 from datetime import datetime, timezone
 import threading
 import uuid
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
@@ -37,7 +39,7 @@ class ReceiptFixture(HistoricalReceiptFixture):
 class IngressTests(unittest.IsolatedAsyncioTestCase):
     async def test_partial_resume_reads_leave_other_clients_and_closure_publication_responsive(self) -> None:
         from websockets.asyncio.client import unix_connect
-        with ReceiptFixture() as f:
+        with cast(AbstractContextManager[HistoricalReceiptFixture], ReceiptFixture()) as f:
             with closure.resume_guard(f.session):
                 pass
             closure.admit_sources({f.session})
@@ -52,7 +54,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             task, request, response, _ = await self.start_client(f)
             pending = None
             try:
-                with patch("github_plan_closure.has_current_claim", side_effect=slow_claim_read):
+                with patch.object(closure, "has_current_claim", side_effect=slow_claim_read):
                     pending = asyncio.create_task(self.send(task, request, response, "turn/start", f.session))
                     self.assertTrue(await asyncio.to_thread(entered.wait, 3), response.read_text() if response.exists() else "no RPC reply")
                     unrelated = {"session_id": OTHER_THREAD, "closure_evidence": None}
@@ -67,7 +69,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     proceed.set()
                     self.assertIn("result", await pending)
                 self.assertIn(unrelated, closure.log_rows())
-                with patch("github_plan_closure.has_current_claim", side_effect=ValueError("fixture GitHub read unavailable")):
+                with patch.object(closure, "has_current_claim", side_effect=ValueError("fixture GitHub read unavailable")):
                     self.assertIn("result", await self.send(task, request, response, "turn/start", f.session))
             finally:
                 proceed.set()
