@@ -12,7 +12,6 @@ import subprocess
 import sys
 import unittest
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
-from contextlib import AbstractContextManager
 from datetime import datetime, timezone
 import threading
 import uuid
@@ -29,7 +28,7 @@ import codex_session_proxy as proxy
 OTHER_THREAD = "01970242-7941-7f0c-b461-16aa5723fb51"
 
 
-class ReceiptFixture(HistoricalReceiptFixture, AbstractContextManager):
+class ReceiptFixture(HistoricalReceiptFixture):
     """Native RPC fixtures use native UUIDs; historical receipt tests keep opaque IDs."""
     def __init__(self, session=None, **kwargs):
         super().__init__(str(uuid.uuid4()) if session is None else session, **kwargs)
@@ -38,44 +37,46 @@ class ReceiptFixture(HistoricalReceiptFixture, AbstractContextManager):
 class IngressTests(unittest.IsolatedAsyncioTestCase):
     async def test_partial_resume_reads_leave_other_clients_and_closure_publication_responsive(self) -> None:
         from websockets.asyncio.client import unix_connect
-        with ReceiptFixture() as f:
-            with closure.resume_guard(f.session):
-                pass
-            closure.admit_sources({f.session})
-            entered, proceed = threading.Event(), threading.Event()
+        f = ReceiptFixture()
+        f.__enter__()
+        self.addCleanup(f.__exit__)
+        with closure.resume_guard(f.session):
+            pass
+        closure.admit_sources({f.session})
+        entered, proceed = threading.Event(), threading.Event()
 
-            def slow_claim_read(_session: str) -> bool:
-                entered.set()
-                if not proceed.wait(8):
-                    raise TimeoutError("fixture claim read was not released")
-                return True
+        def slow_claim_read(_session: str) -> bool:
+            entered.set()
+            if not proceed.wait(8):
+                raise TimeoutError("fixture claim read was not released")
+            return True
 
-            task, request, response, _ = await self.start_client(f)
-            pending = None
-            try:
-                with patch.dict(closure.__dict__, {"has_current_claim": slow_claim_read}):
-                    pending = asyncio.create_task(self.send(task, request, response, "turn/start", f.session))
-                    self.assertTrue(await asyncio.to_thread(entered.wait, 3), response.read_text() if response.exists() else "no RPC reply")
-                    unrelated = {"session_id": OTHER_THREAD, "closure_evidence": None}
-                    with closure.store_lock(f.log):
-                        closure.replace_rows([*closure.log_rows(), unrelated])
-                    endpoint = next(row["endpoint"] for row in closure.log_rows() if row.get("record_kind") == "managed_proxy")
-                    async with unix_connect(endpoint) as client:
-                        await client.send(json.dumps({"id": 77, "method": "thread/read", "params": {"threadId": OTHER_THREAD}}))
-                        result = json.loads(await asyncio.wait_for(client.recv(), 3))
-                    self.assertIn("result", result)
-                    self.assertFalse(pending.done())
-                    proceed.set()
-                    self.assertIn("result", await pending)
-                self.assertIn(unrelated, closure.log_rows())
-                with patch.dict(closure.__dict__, {"has_current_claim": Mock(side_effect=ValueError("fixture GitHub read unavailable"))}):
-                    self.assertIn("result", await self.send(task, request, response, "turn/start", f.session))
-            finally:
+        task, request, response, _ = await self.start_client(f)
+        pending = None
+        try:
+            with patch.dict(closure.__dict__, {"has_current_claim": slow_claim_read}):
+                pending = asyncio.create_task(self.send(task, request, response, "turn/start", f.session))
+                self.assertTrue(await asyncio.to_thread(entered.wait, 3), response.read_text() if response.exists() else "no RPC reply")
+                unrelated = {"session_id": OTHER_THREAD, "closure_evidence": None}
+                with closure.store_lock(f.log):
+                    closure.replace_rows([*closure.log_rows(), unrelated])
+                endpoint = next(row["endpoint"] for row in closure.log_rows() if row.get("record_kind") == "managed_proxy")
+                async with unix_connect(endpoint) as client:
+                    await client.send(json.dumps({"id": 77, "method": "thread/read", "params": {"threadId": OTHER_THREAD}}))
+                    result = json.loads(await asyncio.wait_for(client.recv(), 3))
+                self.assertIn("result", result)
+                self.assertFalse(pending.done())
                 proceed.set()
-                if pending is not None:
-                    await asyncio.gather(pending, return_exceptions=True)
-                (f.root / "stop").touch()
-                await asyncio.wait_for(task, 8)
+                self.assertIn("result", await pending)
+            self.assertIn(unrelated, closure.log_rows())
+            with patch.dict(closure.__dict__, {"has_current_claim": Mock(side_effect=ValueError("fixture GitHub read unavailable"))}):
+                self.assertIn("result", await self.send(task, request, response, "turn/start", f.session))
+        finally:
+            proceed.set()
+            if pending is not None:
+                await asyncio.gather(pending, return_exceptions=True)
+            (f.root / "stop").touch()
+            await asyncio.wait_for(task, 8)
 
     async def test_fresh_thread_publishes_native_identity_for_launch_ledger(self) -> None:
         import iterm_tab
