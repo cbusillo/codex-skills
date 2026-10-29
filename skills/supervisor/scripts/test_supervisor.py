@@ -63,8 +63,7 @@ def event(kind, **extra):
 class CloudPassTests(unittest.TestCase):
     def test_cloud_launch_example_keeps_logs_out_of_repository(self) -> None:
         template = (Path(__file__).parents[1] / "references" / "brief-rules.md").read_text()
-        cloud_pass = template.split("## Codex Cloud pass briefs", 1)[1]
-        examples = re.findall(r"`([^`\n]*codex cloud[^`\n]*)`", cloud_pass)
+        examples = re.findall(r"```sh\n(.*?)\n```", template, re.S)
         self.assertTrue(examples, "Cloud pass needs an executable scratch-directory example")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -77,9 +76,9 @@ class CloudPassTests(unittest.TestCase):
             binary.chmod(0o700)
             environment = {**os.environ, "PATH": f"{root}{os.pathsep}{os.environ['PATH']}", "TMPDIR": str(scratch)}
             for example in examples:
-                result = subprocess.run(["sh", "-c", example.replace("__TASK_ARGS__", "fixture")],
+                result = subprocess.run(["sh", "-c", example],
                                         cwd=checkout, env=environment, capture_output=True, text=True, check=True)
-                log_directory = Path(result.stdout.strip()).resolve()
+                log_directory = Path(result.stdout.strip().splitlines()[-1]).resolve()
                 self.assertTrue(log_directory.is_relative_to(scratch))
                 self.assertEqual((log_directory / "error.log").read_text(), "fixture")
                 self.assertEqual(list(checkout.iterdir()), [])

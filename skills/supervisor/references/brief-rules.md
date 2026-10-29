@@ -224,6 +224,16 @@ Cloud environment IDs in private configuration or the private handoff record,
 never in this catalog. The linked shared rules own claims, worktrees, checks,
 review and PR handoff; this template adds only the Cloud pass specifics.
 
+For each launch, set `cloud_environment` and `task_prompt` from the resolved
+private configuration and bounded task. Keep the printed path with its task ID;
+separate shell calls must use that path as their working directory.
+
+```sh
+task_scratch=$(mktemp -d "${TMPDIR:-/tmp}/codex-cloud.XXXXXX") &&
+printf '%s\n' "$task_scratch" &&
+cd "$task_scratch" && codex cloud exec --env "$cloud_environment" "$task_prompt"
+```
+
 ```text
 Brief from the Supervisor (__HANDOFF_RECORD__), __DATE__. Trial token: __TOKEN__. Codex Cloud pass brief.
 
@@ -234,7 +244,7 @@ Goal and finish line: __BOUNDED_PASS_GOAL_AND_OBSERVABLE_FINISH__
 Cloud environment: resolve __REPOSITORIES__ through __PRIVATE_CONFIG_OR_HANDOFF_REFERENCE__.
 
 1. Read the anchor and pass issue in full. Leave the anchor unclaimed; claim the pass issue with the admission and evidence above under the shared rules before launching work.
-2. Launch several bounded, independent tasks at once from a task scratch directory outside every repository checkout: `task_scratch=$(mktemp -d "${TMPDIR:-/tmp}/codex-cloud.XXXXXX") && cd "$task_scratch" && codex cloud exec __TASK_ARGS__`. Run all later Cloud commands there too: codex cloud writes error.log in its current directory. Send only public-safe source and task instructions, never private data, credentials or local evidence. Keep private environment mappings out of Cloud prompts and public results.
+2. Launch several bounded, independent tasks at once using the scratch launch example above, with cloud_environment and task_prompt set for each task. Record each printed scratch path and set every later Cloud command's workdir to it, including status and diff: codex cloud writes error.log in its current directory. Apply accepted diffs with git -C <owning-task-worktree> apply after step 3; do not use codex cloud apply from a checkout. Send only public-safe source and task instructions, never private data, credentials or local evidence. Keep private environment mappings out of Cloud prompts and public results.
 3. Check each result against current code and the pass goal. Discard wrong results with a short reason. For each accepted result, use an owning issue linked to the pass and its own claim in that repository before creating its linked task worktree under the shared rules.
 4. Run only the affected tests locally, plus the shared rules' required safety modules, lint, type checks and inspection. Get and weigh another provider's review through model-review. Within the shared PR cap and pace, hand each PR off through its repository's merge path. Close result issues with their completing PRs; link the pass as context, without closing it from a result PR.
 5. Prefer removal: net maintained lines must go down, or report the growth and why it is needed. Report Removed: and Net lines: for each result.

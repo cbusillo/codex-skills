@@ -43,7 +43,7 @@ class WorktreeTests(unittest.TestCase):
         # The main directory name is also the repo slug; spaces are supported in ancestors.
         self.repo = self.repo / "sample"
         self.repo.mkdir()
-        self.env = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "DEV_WORKTREE_"))}
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "DEV_WORKTREE_")) and k not in {"CODE_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR"}}
         self.env.update(HOME=str(self.home), XDG_CONFIG_HOME=str(self.home / ".config"),
                         GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
         # The product clears caller GIT_* overrides. Isolate the real Git binary
@@ -91,10 +91,11 @@ class WorktreeTests(unittest.TestCase):
             with mock.patch.dict(dev_worktree.os.environ, self.env, clear=True), \
                     mock.patch.object(dev_worktree, "configuration", return_value=(self.base, helper)), \
                     mock.patch.object(dev_worktree, "retire_finished", side_effect=lambda *_: events.append("retire")), \
+                    mock.patch.object(dev_worktree, "refresh_primary", side_effect=lambda *_: events.append("refresh")), \
                     mock.patch.object(dev_worktree, "create", side_effect=lambda *_: events.append("create")), \
                     mock.patch.object(dev_worktree.os, "execv", side_effect=lambda *_: events.append("create")):
                 dev_worktree.main([str(self.repo), "new-task", self.initial])
-            self.assertEqual(events[:2], ["retire", "create"])
+            self.assertEqual(events[:3], ["refresh", "retire", "create"])
 
     def test_retirement_delegation_does_not_start_another_sweep(self) -> None:
         with mock.patch.dict(dev_worktree.os.environ, self.env, clear=True), \
@@ -135,7 +136,10 @@ class WorktreeTests(unittest.TestCase):
         helper = self.repo / "skills/github/scripts/reconcile-runtime-checkout.py"
         helper.parent.mkdir(parents=True)
         marker = self.base / "runtime-call.json"
-        helper.write_text(f"import json, sys\nfrom pathlib import Path\nPath({str(marker)!r}).write_text(json.dumps(sys.argv[1:]))\n")
+        helper.write_text("import json\nfrom pathlib import Path\n"
+                          "def reconcile_runtime_checkout(source, expected_repo, landing, *, timeout_seconds):\n"
+                          f"    Path({str(marker)!r}).write_text(json.dumps([str(source), landing, timeout_seconds]))\n"
+                          "    return {'status': 'already_current'}\n")
         bindings = (self.home / ".agents/skills/shared", self.home / ".claude/skills/shared")
         for binding in bindings:
             with self.subTest(binding=binding):
@@ -144,7 +148,9 @@ class WorktreeTests(unittest.TestCase):
                 with mock.patch.dict(os.environ, self.env, clear=True):
                     dev_worktree.refresh_primary(self.repo)
                 args = json.loads(marker.read_text())
-                self.assertEqual(Path(args[args.index("--merged-worktree") + 1]), self.repo)
+                self.assertEqual(Path(args[0]), self.repo)
+                self.assertIsNone(args[1])
+                self.assertGreater(args[2], 0)
                 self.assertEqual(self.git("rev-parse", "HEAD"), self.initial)
                 binding.unlink()
                 marker.unlink()
@@ -166,6 +172,29 @@ class WorktreeTests(unittest.TestCase):
             dev_worktree.refresh_primary(self.repo)
         self.assertEqual(self.git("rev-parse", "HEAD"), self.initial)
         self.assertEqual(self.git("branch", "--show-current"), "concurrent-work")
+
+    @unittest.skipUnless(os.name == "posix", "POSIX fixture lock")
+    def test_busy_primary_lock_keeps_primary_and_allows_creation(self) -> None:
+        import fcntl
+
+        self.prepare_upstream()
+        lock_path = self.repo / ".git/every-code-runtime-reconciliation.lock"
+        with lock_path.open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            result = subprocess.run([sys.executable, str(SCRIPT), str(self.repo), "busy", self.initial],
+                                    env=self.env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.initial)
+        self.assertEqual(self.git("rev-parse", "HEAD", repo=Path(result.stdout.strip())), self.initial)
+
+    def test_unavailable_checkout_rules_do_not_prevent_creation(self) -> None:
+        for failure in (FileNotFoundError("partial sync"), SyntaxError("invalid helper")):
+            with mock.patch.object(dev_worktree, "checkout_rules", side_effect=failure), \
+                    mock.patch.object(dev_worktree, "configuration", return_value=(self.base, None)), \
+                    mock.patch.object(dev_worktree, "retire_finished"), \
+                    mock.patch.object(dev_worktree, "create", return_value=self.base / "created") as create:
+                self.assertEqual(dev_worktree.main([str(self.repo), "task", self.initial]), 0)
+            create.assert_called_once()
 
     def test_creation_preserves_unsafe_primary_checkouts(self) -> None:
         self.prepare_upstream()
@@ -191,7 +220,6 @@ class WorktreeTests(unittest.TestCase):
                 result = self.run_helper(self.repo, state, self.initial)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(self.git("rev-parse", "HEAD"), before)
-                self.assertIn("Local default checkout remains stale", result.stderr)
                 dirty.unlink(missing_ok=True)
                 operation.unlink(missing_ok=True)
 

@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 from types import ModuleType
 
 
@@ -151,8 +152,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
-def checkout_rules() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("checkout_rules", Path(__file__).with_name("reconcile-runtime-checkout.py"))
+def checkout_rules(source: Path | None = None) -> ModuleType:
+    spec = importlib.util.spec_from_file_location("checkout_rules", source or Path(__file__).with_name("reconcile-runtime-checkout.py"))
     if spec is None or spec.loader is None:
         raise Refused("Checkout rules unavailable")
     module = importlib.util.module_from_spec(spec)
@@ -170,7 +171,12 @@ def require_clean_default(rules: ModuleType, primary: Path, branch: str) -> None
 
 
 def refresh_primary(checkout: Path) -> None:
-    rules = checkout_rules()
+    try:
+        rules = checkout_rules()
+    except (OSError, SyntaxError, ValueError) as exc:
+        print(f"dev-worktree: checkout refresh unavailable; primary kept: {exc}", file=sys.stderr)
+        return
+    deadline = rules.RECONCILIATION_DEADLINE.set(time.monotonic() + 30)
     try:
         common = rules.git_common_dir(checkout)
         if common.name != ".git":
@@ -183,10 +189,10 @@ def refresh_primary(checkout: Path) -> None:
             if bound_root == primary:
                 helper = primary / rules.HELPER_IN_CATALOG
                 expected_repo = rules.repository_from_remote_url(rules.git_text(checkout, "config", "--get", "remote.origin.url"))
-                result = subprocess.run([sys.executable, str(helper), "--merged-worktree", str(primary), "--repo", expected_repo],
-                                        capture_output=True, text=True, env=git_environment())
-                print(result.stdout.strip() or result.stderr.strip(), file=sys.stderr)
-                if result.returncode:
+                runtime_rules = checkout_rules(helper)
+                receipt = runtime_rules.reconcile_runtime_checkout(primary, expected_repo, None, timeout_seconds=max(0, rules.RECONCILIATION_DEADLINE.get() - time.monotonic()))
+                print(json.dumps(receipt), file=sys.stderr)
+                if receipt["status"] not in {"synchronized", "already_current"}:
                     raise Refused("Runtime reconciler did not refresh the primary checkout")
                 return
         with rules.reconciliation_lock(common):
@@ -208,15 +214,20 @@ def refresh_primary(checkout: Path) -> None:
             require_clean_default(rules, primary, branch)
             if rules.git_text(primary, "rev-parse", "HEAD") != head or not rules.git_is_ancestor(primary, head, tip):
                 raise Refused("Primary checkout changed before fast-forward")
+            if rules.RECONCILIATION_DEADLINE.get() - time.monotonic() < 1:
+                raise Refused("Checkout read budget exhausted before fast-forward")
+            rules.RECONCILIATION_DEADLINE.set(None)
             if head != tip:
                 rules.run_git(primary, "merge", "--ff-only", "--no-autostash", "--no-overwrite-ignore", tip)
             require_clean_default(rules, primary, branch)
             if rules.git_text(primary, "rev-parse", "HEAD") != tip:
                 raise Refused("Primary checkout did not reach the pinned upstream commit")
             print(f"dev-worktree: primary default checkout current: {primary} ({tip})", file=sys.stderr)
-    except (Refused, OSError, ValueError, rules.GitCommandError, rules.ReconciliationBusy) as exc:
+    except (Refused, OSError, SyntaxError, ValueError, rules.GitCommandError, rules.ReconciliationBusy) as exc:
         print(f"dev-worktree: Local default checkout remains stale; fast-forward it before default-branch work or audits. {exc}",
               file=sys.stderr)
+    finally:
+        rules.RECONCILIATION_DEADLINE.reset(deadline)
 
 
 def retire_finished(checkout: Path) -> None:
