@@ -534,11 +534,11 @@ def no_available_milestone_item(
     milestone_titles: list[str], repository_waypoints: dict[str, list[str] | None],
     coverage_complete: bool,
 ) -> bool | None:
-    def matched(item: dict[str, Any]) -> bool:
-        return overall_milestone_context(item, graph, milestone_titles, repository_waypoints)["state"] == "matched"
+    def matched(candidate: dict[str, Any]) -> bool:
+        return overall_milestone_context(candidate, graph, milestone_titles, repository_waypoints)["state"] == "matched"
 
-    def key(item: dict[str, Any]) -> tuple[str, int]:
-        return item["repo"].casefold(), item["number"]
+    def key(candidate: dict[str, Any]) -> tuple[str, int]:
+        return candidate["repo"].casefold(), candidate["number"]
 
     indexed: dict[tuple[str, int], dict[str, Any]] = {}
     for item in entries:
@@ -562,10 +562,11 @@ def no_available_milestone_item(
     if missing or not coverage_complete or not graph.get("dependency_context", {}).get("complete"):
         return None
     remaining = set(scope)
-    while leaves := {ident for ident in remaining if not edges[ident].intersection(remaining)}:
+    while remaining:
+        leaves = {ident for ident in remaining if not edges[ident].intersection(remaining)}
+        if not leaves:
+            return None
         remaining.difference_update(leaves)
-    if remaining:
-        return None
     for item in indexed.values():
         if item.get("exclusion") in {"completed", "outside_direction_tracks"}:
             continue
