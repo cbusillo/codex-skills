@@ -12,7 +12,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import github_identity
 import github_plan_wait
 
 SKILLS = Path(__file__).resolve().parents[2]
@@ -63,7 +62,7 @@ def is_director_record(comment: dict[str, Any], owner: str, trusted: set[str]) -
 
     author = comment_author(comment)
     return author == owner.casefold() or (
-        author in trusted and comment_text(comment).startswith(question_delivery.oq.DECISION_PREFIXES))
+        author in trusted and question_delivery.oq.DECISION_HEADING.match(comment_text(comment)) is not None)
 
 
 def is_numbered_question(comment: dict[str, Any], trusted: set[str]) -> bool:
@@ -87,9 +86,8 @@ def registered_question_ids(queue: str, read_pages: Callable[[str], list[dict[st
 
 def unasked_message(owner: str, director_waits: list[str], queue: str | None, unreadable: list[str]) -> str:
     waits = "; ".join(f'"{text}"' for text in director_waits)
-    bot = github_identity.automation_login() or "TRUSTED_BOT"
     register = (f"register it with `uv run {SKILLS}/supervisor/scripts/oq.py QUESTION_URL --owner {owner} "
-                f"--decision-author {bot} --queue {queue} --register`, " if queue else "")
+                f"--queue {queue} --register`, " if queue else "")
     unread = f" These linked comments could not be read; fix the link or retry: {', '.join(unreadable)}." if unreadable else ""
     return (f"The wait {waits} is on the Director, and it links no numbered Director question"
             f"{f' registered in {queue}' if queue else ''}. Ask first: post a comment starting `Director question:` "

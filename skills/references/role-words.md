@@ -42,3 +42,8 @@ New question and decision comments use `Director question:` and
 `Director decision:`. Readers continue accepting `Owner question:` and
 `Owner decision:` as read-only legacy spellings forever. Never edit existing
 GitHub comments to migrate them.
+Queue readers also accept recorded numbered headings such as
+`Director decision Q123:` and legacy `Director decision (Q123):`, including
+when their explanation mentions other Q IDs;
+an exact numbered heading identifies its question, while a status note such as
+`Director decision Q123 pending` does not record a decision.

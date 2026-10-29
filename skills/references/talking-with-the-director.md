@@ -52,7 +52,7 @@ changes on yes.
 ## Director Questions
 
 Create a structured question with
-`uv run <supervisor-skill-dir>/scripts/oq.py create --record-file FILE --owner OWNER --decision-author TRUSTED_BOT`.
+`uv run <supervisor-skill-dir>/scripts/oq.py create --record-file FILE --owner OWNER`.
 The JSON record has `version: 1`, `issue` (exact owning issue URL), `decision`,
 `basis`, `options`, `recommendation`, `comparison` (what an experienced developer
 would do and why), and `manual` (the Director's work, including "answer only").
@@ -195,7 +195,7 @@ When asking, follow [Director Questions](#director-questions).
   who brings the next one; it does not ask them all at once.
 - **Posting is not delivery.** After posting an Owner/Director question, register
   its original link in the existing Supervisor question discussion with
-  `uv run <supervisor-skill-dir>/scripts/oq.py ORIGINAL_QUESTION_URL --owner OWNER --decision-author TRUSTED_BOT --queue OWNER/REPO#QUEUE --register`.
+  `uv run <supervisor-skill-dir>/scripts/oq.py ORIGINAL_QUESTION_URL --owner OWNER --queue OWNER/REPO#QUEUE --register`.
   Use the queue discussion named by the brief or current Supervisor handoff;
   when none is recorded, retain the source link in the handoff and explicitly
   name who must receive it. Do not silently claim it reached the Director.
@@ -203,7 +203,7 @@ When asking, follow [Director Questions](#director-questions).
   shared-counter Q ID on repeat presentations; registering does not allocate
   another number. The original comment owns the question text.
 - At every Supervisor check and takeover, read
-  `oq.py --queue OWNER/REPO#QUEUE --owner OWNER --decision-author TRUSTED_BOT`, including source items from
+  `oq.py --queue OWNER/REPO#QUEUE --owner OWNER`, including source items from
   worker handoffs to catch missed registrations. Bring the oldest applicable
   question under the queue rules above. Only after actually presenting it,
   acknowledge delivery with `--ack ORIGINAL_QUESTION_URL --delivery-url RECEIPT_URL`;
@@ -212,8 +212,9 @@ When asking, follow [Director Questions](#director-questions).
   or unknown send remains unacknowledged and resurfaces at the next check.
   Acknowledgement is delivery, never approval: unanswered questions stay queued,
   including "later". A linked reply is a candidate for the Supervisor to
-  reconcile; the queue resolves only an explicit linked Owner/Director decision,
-  authored by the Director or a trusted recorder. Read the entire oldest-first
+  reconcile; the queue resolves only an explicit Owner/Director decision linked
+  to the original question or naming its unique Q ID, authored by the Director
+  or a trusted recorder. Read the entire oldest-first
   unresolved queue, including acknowledged items; `resurface` only identifies
   missing delivery receipts. Queue records, not hand-applied labels, own delivery state.
 - Before asking the Director to approve an admin path (deploy, promotion,

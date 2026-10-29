@@ -904,8 +904,9 @@ def response_targets(
 
 
 def is_director_record(comment: Comment) -> bool:
-    prefixes = director_questions.QUESTION_PREFIXES + director_questions.DECISION_PREFIXES
-    return comment.kind == "issue_comment" and comment.body.strip().lstrip("*").startswith(prefixes)
+    body = comment.body.strip().lstrip("*")
+    return comment.kind == "issue_comment" and (
+        body.startswith(director_questions.QUESTION_PREFIXES) or director_questions.DECISION_HEADING.match(body) is not None)
 
 
 def is_bookkeeping(comment: Comment) -> bool:

@@ -334,9 +334,9 @@ presentation under the shared [question queue rules](../../references/talking-wi
 These commands use the configured automation identity and read back their writes:
 
 ```sh
-uv run skills/supervisor/scripts/oq.py ORIGINAL_QUESTION_URL --owner OWNER --decision-author TRUSTED_BOT --queue OWNER/CATALOG#QUEUE --register
-uv run skills/supervisor/scripts/oq.py --owner OWNER --decision-author TRUSTED_BOT --queue OWNER/CATALOG#QUEUE
-uv run skills/supervisor/scripts/oq.py --owner OWNER --decision-author TRUSTED_BOT --queue OWNER/CATALOG#QUEUE --ack ORIGINAL_QUESTION_URL --delivery-url PRESENTATION_RECEIPT_URL
+uv run skills/supervisor/scripts/oq.py ORIGINAL_QUESTION_URL --owner OWNER --queue OWNER/CATALOG#QUEUE --register
+uv run skills/supervisor/scripts/oq.py --owner OWNER --queue OWNER/CATALOG#QUEUE
+uv run skills/supervisor/scripts/oq.py --owner OWNER --queue OWNER/CATALOG#QUEUE --ack ORIGINAL_QUESTION_URL --delivery-url PRESENTATION_RECEIPT_URL
 ```
 
 Name the queue once in the private `skill-data/supervisor.toml`, beside
@@ -349,7 +349,8 @@ whose question is not registered there
 queue = "OWNER/CATALOG#QUEUE"
 ```
 
-Pass each trusted decision/registration author's login with `--decision-author`.
+The configured automation login and previously trusted automation logins are
+trusted by default. Use `--decision-author` only for an additional trusted recorder.
 The read-only queue view recovers registered source discussions on takeover and
 also accepts source items from the worker ledger/handoffs. Normal queue reads
 select registered URLs; explicit question URLs select just those questions,
@@ -373,9 +374,7 @@ do not count. No label is delivery state.
 
 The view reports `queue_length`, position, original age, registration link,
 delivery receipt and `resurface`. An unacknowledged question is emitted every
-check, even after successful registration. A delivery receipt leaves it queued
-until an explicit linked Owner/Director decision from the Director or trusted
-recorder; `candidate_answers` preserves plain replies for Supervisor reconciliation and
+check, even after successful registration. `candidate_answers` preserves plain replies for Supervisor reconciliation and
 "later" never erases it. Read acknowledged unanswered rows too: `resurface`
 means missing delivery acknowledgement, not the only questions to present. Source reads
 also reconcile decisions on another supplied discussion or the queue. A failed
