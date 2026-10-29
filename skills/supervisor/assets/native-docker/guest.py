@@ -7,10 +7,26 @@ import time
 from pathlib import Path
 
 
+def wait_for_docker(daemon: subprocess.Popen[bytes], environment: dict[str, str]) -> None:
+    deadline = time.monotonic() + 60
+    while daemon.poll() is None and time.monotonic() < deadline:
+        try:
+            result = subprocess.run(["docker", "info"], env=environment, capture_output=True, timeout=5)
+        except subprocess.TimeoutExpired:
+            continue
+        if result.returncode == 0:
+            return
+        time.sleep(0.2)
+    raise RuntimeError("Native Docker did not become ready")
+
+
 def main() -> None:
-    control = Path("/workspace/.heavy-vm")
+    control = Path("/native/control")
     request = json.loads((control / "request.json").read_text())
-    environment = {key: value for key, value in request["environment"].items() if not key.startswith("DOCKER_")}
+    (control / "request.json").unlink()
+    environment = dict(request["environment"])
+    for key in ("DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
+        environment.pop(key, None)
     environment["DOCKER_HOST"] = "unix:///var/run/docker.sock"
     code = 1
     try:
@@ -23,11 +39,7 @@ def main() -> None:
             ]
         )
         try:
-            deadline = time.monotonic() + 60
-            while subprocess.run(["docker", "info"], env=environment, capture_output=True, timeout=5).returncode:
-                if daemon.poll() is not None or time.monotonic() >= deadline:
-                    raise RuntimeError("Native Docker did not become ready")
-                time.sleep(0.2)
+            wait_for_docker(daemon, environment)
             code = subprocess.run(request["command"], env=environment, cwd="/workspace").returncode
         finally:
             daemon.terminate()
@@ -36,6 +48,8 @@ def main() -> None:
             except subprocess.TimeoutExpired:
                 daemon.kill()
                 daemon.wait()
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f"Native Docker guest failed: {error}", flush=True)
     finally:
         (control / "exit-code").write_text(str(code if code >= 0 else 128 - code))
         os.sync()

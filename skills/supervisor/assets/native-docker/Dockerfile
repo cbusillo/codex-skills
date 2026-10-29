@@ -3,7 +3,7 @@ FROM ${GUEST_IMAGE} AS guest
 RUN apk add --no-cache linux-virt docker docker-cli-compose python3 iptables
 COPY init /init
 COPY guest.py /native/guest.py
-RUN chmod 755 /init && mkdir -p /workspace /var/lib/docker /sys/fs/cgroup
+RUN chmod 755 /init && mkdir -p /workspace /var/lib/docker /sys/fs/cgroup /native/control
 
 FROM alpine:3.24 AS packed
 RUN apk add --no-cache cpio gzip

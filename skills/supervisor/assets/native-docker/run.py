@@ -10,14 +10,15 @@ from pathlib import Path
 def vm_limits(cgroup: Path) -> tuple[int, int]:
     memory = int((cgroup / "memory.max").read_text())
     quota, period = (cgroup / "cpu.max").read_text().split()
-    memory_mib = memory * 3 // (4 * 1024**2)
-    if memory_mib < 512:
-        raise ValueError("Native Docker VM needs at least 512 MiB after reserving outer-job memory")
+    memory_mib = (memory - 256 * 1024**2) * 3 // (4 * 1024**2)
+    if memory_mib < 2048:
+        raise ValueError("Native Docker VM needs at least 2 GiB after reserving outer-job memory")
     return memory_mib, max(1, int(quota) // int(period))
 
 
-def run_vm(workspace: Path, cgroup: Path, command: list[str], environment: dict[str, str]) -> int:
-    control = workspace / ".heavy-vm"
+def run_vm(state: Path, cgroup: Path, command: list[str], environment: dict[str, str]) -> int:
+    state.mkdir(mode=0o700)
+    control = state / "control"
     control.mkdir(mode=0o700)
     (control / "request.json").write_text(json.dumps({"command": command, "environment": environment}))
     memory, cpus = vm_limits(cgroup)
@@ -25,10 +26,10 @@ def run_vm(workspace: Path, cgroup: Path, command: list[str], environment: dict[
     timeout = int(environment.get("HEAVY_VM_TIMEOUT_SECONDS", "3600"))
     if disk_gib < 1 or timeout < 1:
         raise ValueError("VM disk GiB and timeout seconds must be positive")
-    disk = control / "data.raw"
+    disk = state / "data.raw"
     with disk.open("wb") as stream:
         stream.truncate(disk_gib * 1024**3)
-    subprocess.run(["mkfs.ext4", "-q", str(disk)], check=True)
+    subprocess.run(["mkfs.ext4", "-q", "-E", "lazy_itable_init=0,lazy_journal_init=0", str(disk)], check=True)
     result = subprocess.run(
         [
             "qemu-system-x86_64",
@@ -36,7 +37,7 @@ def run_vm(workspace: Path, cgroup: Path, command: list[str], environment: dict[
             "-machine",
             "q35",
             "-accel",
-            "tcg,thread=multi",
+            "tcg,thread=multi,tb-size=64",
             "-cpu",
             "max",
             "-smp",
@@ -62,6 +63,8 @@ def run_vm(workspace: Path, cgroup: Path, command: list[str], environment: dict[
             f"file={disk},if=virtio,format=raw",
             "-virtfs",
             "local,path=/workspace,mount_tag=workspace,security_model=none",
+            "-virtfs",
+            f"local,path={control},mount_tag=control,security_model=none",
         ],
         timeout=timeout,
     )
@@ -71,4 +74,4 @@ def run_vm(workspace: Path, cgroup: Path, command: list[str], environment: dict[
 
 
 if __name__ == "__main__":
-    raise SystemExit(run_vm(Path("/workspace"), Path("/sys/fs/cgroup"), sys.argv[1:], dict(os.environ)))
+    raise SystemExit(run_vm(Path("/native/state"), Path("/sys/fs/cgroup"), sys.argv[1:], dict(os.environ)))
