@@ -1076,6 +1076,22 @@ with `session_not_native` and names the native ID, because `release-claim` can
 only release a session that exists. A harness that exposes no native ID claims
 as before.
 
+After successor admission, resume and queue check the source's journaled work
+against current GitHub claim history. A still-open record held only by the
+source lets it continue its other work, including after an idle capacity stop.
+Finished records, failed attempts and records with a competing successor do not.
+With no remaining claim, or a recorded full closure or handoff, the session refuses. Unavailable reads retain
+the refusal; retry the supported resume or queue command once reads recover.
+Successful resume renews the source lease. Successor admission holds source
+ownership through publication for expiry-based takeovers and rechecks expiry
+under that lock. An acknowledged queued action renews the lease; it is not a
+promise that deferred execution will finish within that lease.
+An unresolved claim POST keeps its prepared original operation fenced, including
+after a caller crash. Repeating the original claim invocation reads that exact
+operation back before execution gates; it never reposts after an empty or failed
+read. Another authorized agent can reconcile the same saved event during its
+own claim invocation, but still needs its own ownership and hold checks.
+
 For PR-only work, including Dependabot fixes and bare PRs, pass the PR number,
 `OWNER/REPO#N`, or its exact `https://github.com/OWNER/REPO/pull/N` URL to the same
 command. A PR claim uses the same structured comment, ownership/readback,

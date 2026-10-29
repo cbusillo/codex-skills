@@ -14,7 +14,8 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from contextlib import ExitStack
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import pathlib
@@ -2878,6 +2879,9 @@ def claim_once(args: argparse.Namespace) -> None:
     ended_owners: list[dict[str, Any]] = []
     resume_source_number: int | None = None
     retained_ended_sources: set[str] = set()
+    expired_sources: set[str] = set()
+    source_ownership = ExitStack()
+    owned_sources: set[str] = set()
     planning_checkout = getattr(args, "planning_checkout", None)
     config = load_config(issue_repo, checkout=planning_checkout) if planning_checkout else load_config(issue_repo)
     phase_records = {}
@@ -2925,10 +2929,13 @@ def claim_once(args: argparse.Namespace) -> None:
             raise PlanError("Claim requires an open issue or pull request")
         return snapshot
 
-    def ended_ownership(owner_comments: list[dict[str, Any]], owner_inventory: dict[str, Any]) -> list[dict[str, Any]]:
+    def ended_ownership(owner_comments: list[dict[str, Any]], owner_inventory: dict[str, Any], *, takeover: bool = True) -> list[dict[str, Any]]:
         ended = github_plan_claim.ended_ownership(owner_comments, owner_inventory,
                                                   github_plan_claim.expired_lease_sessions(owner_comments) - {claim["session"]})
         retained_ended_sources.update(entry["session"] for entry in ended if entry["session"] != claim["session"])
+        if takeover:
+            expired_sources.update(entry["session"] for entry in ended
+                                   if entry["session"] != claim["session"] and entry["evidence"] == "lease_expired")
         return ended
 
     def ownership_snapshot(current_status: str, current_comments: list[dict[str, Any]]):
@@ -2994,7 +3001,7 @@ def claim_once(args: argparse.Namespace) -> None:
         peer_repo: str, peer_number: int, peer_status: str, peer_comments: list[dict[str, Any]],
         source_inventory: dict[str, Any],
     ) -> None:
-        ended = ended_ownership(peer_comments, source_inventory)
+        ended = ended_ownership(peer_comments, source_inventory, takeover=False)
         peer_conflicts, peer_owned = github_plan_claim.discussion_evidence(
             peer_status, peer_comments, claim, ended_claims={entry["claim_id"] for entry in ended})
         competing = list(peer_conflicts)
@@ -3002,8 +3009,108 @@ def claim_once(args: argparse.Namespace) -> None:
         if competing:
             refuse(competing, owner_comments=peer_comments, owner_repo=peer_repo, owner_number=peer_number)
 
+    def unknown_admission_error(session: str, pending: Any) -> ClassifiedPlanError:
+        message = "Original claim publication is unresolved; rerun its original gh-plan.py claim for readback without reposting"
+        return ClassifiedPlanError("claim_mutation_reconciliation_required", message,
+            failure=github_api_core.FailureDetail(cause="claim_mutation_reconciliation_required", message=message,
+                retryable=False, fallback_eligible=False, disposition="stop", write_outcome="unknown",
+                failed_step="reconcile_claim_admission"),
+            payload={"source_session": session, "original_admission": pending,
+                     "reconciliation": {"required_before_retry": True, "strategy": "read_original_claim_operation"}})
+
+    def reconcile_source_admission(session: str) -> bool:
+        nonlocal claim, claim_comment, comment_recorded
+        if "claim_admission_unknown" not in github_plan_closure.lease_state(session):
+            return False
+        with github_plan_closure.ownership(session, create=True):
+            state = github_plan_closure.lease_state(session)
+            if "claim_admission_unknown" not in state:
+                return False
+            pending = state["claim_admission_unknown"]
+            if not isinstance(pending, dict):
+                raise unknown_admission_error(session, pending)
+            if (isinstance(pending.get("repo"), str) and type(pending.get("number")) is int
+                    and (pending["repo"] != issue_repo or pending["number"] != number)):
+                if session in expired_sources:
+                    raise unknown_admission_error(session, pending)
+                return False
+            marker = pending.get("operation_marker")
+            original = pending.get("claim")
+            if not isinstance(original, dict) or not isinstance(marker, dict):
+                raise unknown_admission_error(session, pending)
+            candidate = {**claim, "resume_from": str(args.resume_from) if args.resume_from else None,
+                         "retained_handoff": original.get("retained_handoff")}
+            if (not isinstance(pending.get("repo"), str) or type(pending.get("number")) is not int
+                    or pending["number"] <= 0 or not isinstance(pending.get("actor"), str) or not pending["actor"]
+                    or not all(isinstance(original.get(key), str) and original[key] for key in ("worker", "session", "branch", "claimed_at"))
+                    or not isinstance(marker.get("operation_id"), str)
+                    or not marker["operation_id"] or not isinstance(marker.get("value"), str) or not marker["value"]):
+                raise unknown_admission_error(session, pending)
+            started = github_comment_core.parse_timestamp(marker.get("started_at"))
+            if started is None:
+                raise unknown_admission_error(session, pending)
+            try:
+                _, _, operation_comments, _ = claim_snapshot(str(pending["number"]), pending["repo"], allow_closed=True)
+            except PlanError:
+                raise unknown_admission_error(session, pending)
+            matched = []
+            for operation_comment in operation_comments:
+                if (type(operation_comment.get("id")) is not int or (operation_comment.get("user") or {}).get("login") != pending["actor"]
+                        or not github_api_core.body_has_operation_marker(operation_comment.get("body"), marker["operation_id"])
+                        or github_plan_claim.records(operation_comment.get("body") or "") != [original]):
+                    continue
+                suffix = github_api_core.operation_marker_comment(marker["operation_id"]) + "\n"
+                operation_body = operation_comment.get("body") or ""
+                if not operation_body.endswith(suffix):
+                    continue
+                prefix = operation_body.removesuffix(suffix)
+                if not prefix.endswith("\n"):
+                    continue
+                body_with_separator = prefix[:-1]
+                if not any(github_comment_core.comment_fingerprint(pending["repo"], pending["number"], pending["actor"], candidate_body) == marker["value"]
+                           for candidate_body in (body_with_separator, body_with_separator.removesuffix("\n"))):
+                    continue
+                created = github_comment_core.parse_timestamp(operation_comment.get("created_at"))
+                if created is not None and created >= started - timedelta(seconds=github_comment_core.RECONCILIATION_CLOCK_SKEW_SECONDS):
+                    matched.append(operation_comment)
+            if len(matched) != 1:
+                raise unknown_admission_error(session, pending)
+            state.pop("claim_admission_unknown")
+            github_plan_closure.write_lease_state(session, state)
+            if pending["repo"] == issue_repo and pending["number"] == number and github_plan_claim.same_owner(original, candidate):
+                claim = dict(original)
+                comment_recorded = True
+                claim_comment = {"comment_action": "existing", "operation_marker": marker,
+                                 "comment": {"id": matched[0]["id"], "url": matched[0].get("html_url")
+                                             or github_plan_claim.handoff_url(issue_repo, number, matched[0]["id"])}}
+                completed.append("reconcile_claim_admission")
+            return True
+
+    def reconcile_observed_admissions(current_comments: list[dict[str, Any]]) -> bool:
+        sources = retained_ended_sources | {record["session"] for admission_comment in current_comments
+                                            for record in github_plan_claim.records(admission_comment.get("body") or "")
+                                            if record["session"] != claim["session"]}
+        pending = {session for session in sources if "claim_admission_unknown" in github_plan_closure.lease_state(session)}
+        if not pending:
+            return False
+        reconciled = False
+        for session in sorted(pending):
+            reconciled = reconcile_source_admission(session) or reconciled
+        return reconciled
+
     def admit_observed_sources() -> None:
         try:
+            for session in sorted(expired_sources - owned_sources):
+                source_ownership.enter_context(github_plan_closure.ownership(session, create=True))
+                owned_sources.add(session)
+            for session in sorted(retained_ended_sources):
+                reconcile_source_admission(session)
+            if not comment_recorded and "post_claim" not in completed:
+                resumed = {session for session in expired_sources if github_plan_lease.state(session) != github_plan_lease.EXPIRED}
+                if resumed:
+                    raise ClassifiedPlanError("claim_conflict",
+                        "Source session resumed before successor admission; recheck current ownership before taking over",
+                        payload={"resumed_sources": sorted(resumed)})
             github_plan_closure.admit_sources(retained_ended_sources)
         except (OSError, ValueError) as error:
             raise ClassifiedPlanError("claim_closure_unavailable",
@@ -3485,7 +3592,7 @@ def claim_once(args: argparse.Namespace) -> None:
             raise PlanError("Retained PR waits changed during claim readback; verify the new evidence before recovery")
         retained_waits = observed_waits
         target_inventory = inventory
-        source_ended = ended_ownership(source_comments, target_inventory)
+        source_ended = ended_ownership(source_comments, target_inventory, takeover=source_number == number)
         if source_number != number:
             # The parent's wait remains there; only its ownership is inherited.
             # Check its full discussion/status, not just the selected release.
@@ -3556,7 +3663,7 @@ def claim_once(args: argparse.Namespace) -> None:
     def claim_recovery() -> dict[str, Any]:
         recovery = {}
         comment_id = (claim_comment.get("comment") or {}).get("id")
-        if "post_claim" in completed and comment_id:
+        if ("post_claim" in completed or "reconcile_claim_admission" in completed) and comment_id:
             recovery = {"release_own_claim": {"comment_id": comment_id,
                                              "body": f"Released claim {comment_id}"},
                         "then": "Post this exact release through the same bot, preserve competing ownership, and recheck before any retry"}
@@ -3626,8 +3733,12 @@ def claim_once(args: argparse.Namespace) -> None:
                 refuse(conflicts, owner_comments=[], owner_repo=checked_repo, owner_number=checked_number)
 
     try:
-        issue, status, comments, can_update = claim_snapshot(args.issue, repo)
+        issue, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True)
         record_kind = "pr" if "pull_request" in issue else "issue"
+        if reconcile_observed_admissions(comments):
+            issue, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True)
+        if issue.get("state") != "open":
+            raise PlanError("Claim requires an open issue or pull request")
         if record_kind == "issue" and args.resume_from:
             target_repo = repo
         previous_status = status
@@ -3712,14 +3823,36 @@ def claim_once(args: argparse.Namespace) -> None:
         github_plan_claim_log.record(claim["session"], issue_repo, number)
         admit_observed_sources()
         if not comment_recorded:
-            claim_comment = github_comment_core.comment(
-                record_kind, number, text, repo=issue_repo, gh_cmd=gh_cmd,
-                expected_actor=expected_actor, operation=CURRENT_OPERATION,
-                completed_steps=completed, failed_step="post_claim", dedupe_body=True,
-            )
+            prepared_admission = None
+
+            def before_create(intent: dict[str, Any]) -> None:
+                nonlocal prepared_admission
+                prepared_admission = {**intent, "claim": dict(claim)}
+                for preparing_session in sorted(owned_sources):
+                    preparing_state = github_plan_closure.lease_state(preparing_session)
+                    preparing_state["claim_admission_unknown"] = prepared_admission
+                    github_plan_closure.write_lease_state(preparing_session, preparing_state)
+
+            try:
+                claim_comment = github_comment_core.comment(
+                    record_kind, number, text, repo=issue_repo, gh_cmd=gh_cmd,
+                    expected_actor=expected_actor, operation=CURRENT_OPERATION,
+                    completed_steps=completed, failed_step="post_claim", dedupe_body=True, before_create=before_create,
+                )
+            except github_comment_core.CommentError as error:
+                if error.failure.write_outcome in {"rejected", "not_started"} and prepared_admission is not None:
+                    for source_session in sorted(owned_sources):
+                        source_state = github_plan_closure.lease_state(source_session)
+                        if source_state.get("claim_admission_unknown") == prepared_admission:
+                            source_state.pop("claim_admission_unknown")
+                            github_plan_closure.write_lease_state(source_session, source_state)
+                raise
             completed.append("post_claim")
         # Check the discussion again before touching status or labels.
-        issue, status, comments, can_update = claim_snapshot(args.issue, repo)
+        issue, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True)
+        reconcile_observed_admissions(comments)
+        if issue.get("state") != "open":
+            raise PlanError("Claim requires an open issue or pull request")
         check_agent(issue)
         _, prepared_handoff = prepare_phase((issue, status, comments, can_update))
         conflicts, observed = ownership_snapshot(status, comments)
@@ -3842,6 +3975,8 @@ def claim_once(args: argparse.Namespace) -> None:
                 write_outcome="unknown", completed_steps=completed,
             )
         raise
+    finally:
+        source_ownership.close()
     claim_id = (claim_comment.get("comment") or {}).get("id")
     # Name the supported release here so a finishing worker never hand-writes the directive.
     release_route = (

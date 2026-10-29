@@ -565,7 +565,7 @@ def parse_timestamp(value: Any) -> Optional[dt.datetime]:
         return None
 
 
-def _comment_fingerprint(repo: str, number: int, actor: str, body: str) -> str:
+def comment_fingerprint(repo: str, number: int, actor: str, body: str) -> str:
     canonical = json.dumps(
         {"repo": repo, "number": number, "actor": actor.casefold(), "body": body},
         sort_keys=True,
@@ -749,6 +749,7 @@ def _comment_impl(
     completed_steps: Optional[list[str]] = None,
     failed_step: Optional[str] = None,
     dedupe_body: bool = False,
+    before_create: Callable[[dict[str, Any]], None] | None = None,
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
 ) -> dict[str, Any]:
     operation = operation or f"github.comment.{kind}"
@@ -1042,7 +1043,7 @@ def _comment_impl(
         if isinstance((comment_id := item.get("id")), int)
     }
     create_step = failed_step or "create_comment"
-    fingerprint = _comment_fingerprint(resolved_repo, number, actor, body)
+    fingerprint = comment_fingerprint(resolved_repo, number, actor, body)
     operation_id = github_api_core.new_operation_id()
     provider_body = github_api_core.body_with_operation_marker(body, operation_id)
     marker = {
@@ -1059,6 +1060,12 @@ def _comment_impl(
         "started_at": started_at,
         "actor": actor,
     }
+    if before_create is not None:
+        try:
+            before_create({"repo": resolved_repo, "number": number, "actor": actor, "operation_marker": dict(marker)})
+        except (ValueError, OSError) as error:
+            raise _local_error(str(error), operation=operation, cause="comment_preparation_failed", actor=actor,
+                               expected_actor=expected_actor, failed_step="prepare_comment_create") from error
     result = _call_api(
         "POST",
         f"/repos/{resolved_repo}/issues/{number}/comments",
@@ -1290,6 +1297,7 @@ def comment(
     completed_steps: Optional[list[str]] = None,
     failed_step: Optional[str] = None,
     dedupe_body: bool = False,
+    before_create: Callable[[dict[str, Any]], None] | None = None,
     attachments: list[str] | None = None,
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
 ) -> dict[str, Any]:
@@ -1307,7 +1315,7 @@ def comment(
                 ) from error
         if attachments:
             if (kind not in ("issue", "pr") or number <= 0 or edit_last or edit_comment is not None
-                    or expected_body is not None or expected_updated_at is not None or create_if_none or dedupe_body):
+                    or expected_body is not None or expected_updated_at is not None or create_if_none or dedupe_body or before_create is not None):
                 raise _local_error(
                     "--attach requires a new issue or PR comment with a positive target; editing and deduplication are unsupported",
                     operation=operation or f"github.comment.{kind}", cause="validation_error", failed_step="input_validation",
@@ -1333,6 +1341,7 @@ def comment(
                 completed_steps=completed_steps,
                 failed_step=failed_step,
                 dedupe_body=dedupe_body,
+                before_create=before_create,
                 retry_summaries=collected_retry_summaries,
             )
         if question_id.QUESTION_HEADING.match(body) and not question_id.heading_id(body):
