@@ -24,6 +24,9 @@ sys.path.insert(0, str(CATALOG))
 sys.path.insert(0, str(CATALOG / "skills/github/scripts"))
 from skills.github.scripts import github_direction_next, github_next_queue, github_plan_status, github_plan_wait, github_work_graph
 import github_read
+import oq
+from skills.direction.scripts import question_id
+from skills.github.scripts import github_plan_claim, github_plan_graph, github_plan_release
 from skills.github.scripts.github_identity import automation_login
 from skills.github.scripts.ready_handoff import HEAD, READY, WAITING, handoff_line, timestamp
 
@@ -195,20 +198,59 @@ def issue_row(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | 
         **read_part("status", unread,
             lambda: derived_status(node, wait_trusted if wait_trusted is not None else trusted, unread),
             {"status": UNKNOWN, "blocked_by": [], "waits": [], "structured_wait": None}),
-        "next_action": read_part("next action", unread, lambda: next_action(node, trusted, unread)),
+        "next_action": ("Track proof and child records" if node["title"].startswith("Track:") else
+                        read_part("next action", unread, lambda: next_action(node, trusted, unread))),
         "latest_decision": read_part("latest decision", unread,
             lambda: latest_decision(node["comments"], trusted, unread), None)}
 
 
 def child_row(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | None = None) -> dict[str, Any]:
-    unread: list[str] = []
-    return {**issue_row(node, trusted, wait_trusted, unread),
+    unread: list[str] = list(node.get("_unread", []))
+    row = {**issue_row(node, trusted, wait_trusted, unread),
         "repository": read_part("repository", unread, lambda: node["repository"]["nameWithOwner"]),
         "state": read_part("state", unread, lambda: node["state"].lower()),
         "recorded_status": read_part("status label", unread, lambda: status_label(node["labels"], unread)),
+        "parent_url": node.get("parent_url"),
         "sub_issues": read_part("sub-issue summary", unread, lambda: node["subIssuesSummary"], None),
         "open_prs": read_part("closing PRs", unread, lambda: open_prs(node, trusted, unread), []),
         "unread": unread}
+    row.update(read_part("claims and questions", unread, lambda: child_activity(node, trusted, unread),
+                         {"claims": [], "open_questions": [], "group": "unknown"}))
+    return row
+
+
+def child_activity(node: dict[str, Any], trusted: set[str], unread: list[str], *, read_claims: bool = True) -> dict[str, Any]:
+    if truncated(node["comments"]):
+        unread.append("claims and questions")
+        return {"claims": [], "open_questions": [], "group": "unknown"}
+    comments = node.get("_claim_comments") or [github_work_graph.graphql_comment(comment) for comment in node["comments"]["nodes"]]
+    claims = []
+    if read_claims and node["state"] != "CLOSED":
+        ended = github_plan_claim.ended_ownership(comments, {"worktrees": []}, github_plan_claim.expired_lease_sessions(comments))
+        conflicts, _ = github_plan_claim.discussion_evidence("", comments,
+            {"worker": "", "session": "", "branch": "", "claimed_at": ""},
+            ended_claims={record["claim_id"] for record in ended})
+        claims = [entry["record"] for entry in conflicts if "record" in entry]
+        if any("record" not in entry for entry in conflicts):
+            unread.append("legacy claim ownership")
+    normalized = [{"id": comment["id"], "url": comment["html_url"], "body": comment["body"],
+                   "author": comment["user"]["login"], "created_at": comment["created_at"]} for comment in comments]
+    owner = node.get("_director") or node["repository"]["nameWithOwner"].split("/", 1)[0]
+    questions = [question for question in oq.questions(normalized, owner, trusted,
+                 node.get("_question_answers", ()), recorded_decisions_only=True) if question["status"] != "answered"]
+    return {"claims": claims, "open_questions": questions}
+
+
+def activity_group(row: dict[str, Any]) -> str:
+    if row["state"] == "closed":
+        return "closed"
+    if row["unread"] or row["status"] == UNKNOWN:
+        return "unknown"
+    if row["claims"]:
+        return "running"
+    if row["waits"] or row["blocked_by"] or row["open_questions"] or row["open_prs"]:
+        return "waiting"
+    return "available" if row["status"] == github_plan_status.DEFAULT_STATUS_LABELS["active"] else "held"
 
 
 def child_rows(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | None, unread: list[str]) -> list[dict[str, Any]]:
@@ -225,15 +267,111 @@ def child_rows(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] |
 
 def track_row(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | None = None) -> dict[str, Any]:
     unread: list[str] = []
-    status = read_part("milestone proof status", unread, lambda: current_status(node, trusted, unread))
-    return {**issue_row(node, trusted, wait_trusted, unread),
-        "closure_review": {**read_part("milestone proof", unread,
-            lambda: github_direction_next.milestone_closure_review(node.get("body") or "",
-                "" if status == UNKNOWN else status), {"track_proof": None, "recorded_status": None}),
-            "discussion_complete": status != UNKNOWN},
+    if truncated(node["comments"]):
+        unread.append("Track discussion")
+    own = read_part("Track holds", unread, lambda: derived_status(node, wait_trusted or trusted, unread),
+                    {"status": UNKNOWN, "blocked_by": [], "waits": []})
+    activity = read_part("Track questions", unread, lambda: child_activity(node, trusted, unread, read_claims=False),
+                         {"open_questions": []})
+    children = read_part("children", unread, lambda: child_rows(node, trusted, wait_trusted, unread), [])
+    groups: dict[str, list[dict[str, Any]]] = {name: [] for name in ("running", "waiting", "available", "closed", "unknown", "held")}
+    for child in children:
+        child["group"] = activity_group(child)
+        groups[child["group"]].append(child)
+    state = ", ".join(f"{name}: {len(rows)}" for name, rows in groups.items() if rows) or "no child issues"
+    decision = read_part("latest decision", unread, lambda: latest_decision(node["comments"], trusted, unread), None)
+    return {"number": node["number"], "title": node["title"], "url": node["url"],
+        "status": UNKNOWN if unread or groups["unknown"] else state,
+        "blocked_by": own["blocked_by"], "waits": own["waits"], "hold_status": own["status"],
+        "open_questions": activity["open_questions"], "latest_decision": decision,
+        "closure_review": github_direction_next.milestone_closure_review(node.get("body") or ""),
         "milestone": read_part("milestone", unread, lambda: (node.get("milestone") or {}).get("title"), None),
-        "children": read_part("children", unread, lambda: child_rows(node, trusted, wait_trusted, unread), []),
-        "unread": list(dict.fromkeys(unread))}
+        "children": children, "groups": groups, "unread": list(dict.fromkeys(unread))}
+
+
+def complete_comments(reader: github_read.GitHubReader, node: dict[str, Any]) -> None:
+    if not truncated(node["comments"]):
+        return
+    owner, name = node["repository"]["nameWithOwner"].split("/", 1)
+    query = (f"query {{ repository(owner:{json.dumps(owner)}, name:{json.dumps(name)}) "
+             f"{{ issue(number:{node['number']}) {{ number updatedAt repository {{ nameWithOwner }} "
+             f"{github_plan_graph.connection_query('comments')} }} }} }}")
+    first = github_plan_graph.query_data(reader, query, step="board_comments")["repository"]["issue"]
+    if node.get("updatedAt") and first["updatedAt"] != node["updatedAt"]:
+        raise ValueError("issue changed before comment pagination")
+    completed = github_plan_graph.complete_issue(reader, first, comments=True, fields=("comments",))
+    node["comments"] = {"totalCount": len(completed["comments"]), "nodes": completed["comments"]}
+
+
+def claim_evidence(reader: github_read.GitHubReader, repo: str, identifier: int) -> dict[str, Any] | None:
+    try:
+        return reader.get_json(f"/repos/{repo}/issues/comments/{identifier}", step="board_claim_evidence")
+    except github_read.GitHubReadError as error:
+        if error.result is not None and error.result.status in {403, 404}:
+            return None
+        raise
+
+
+def descendants(reader: github_read.GitHubReader, node: dict[str, Any], errors: list[str],
+                answers: list[dict[str, Any]], director: str) -> None:
+    if not isinstance(node.get("subIssues"), dict):
+        return
+    rows: dict[tuple[str, int], dict[str, Any]] = {}
+    malformed: list[Any] = []
+
+    def register(source: dict[str, Any]) -> list[tuple[str, int]]:
+        children = source["subIssues"]
+        if truncated(children):
+            errors.append(f"{source['url']} direct children incomplete")
+        refs = []
+        for child in children["nodes"]:
+            if not isinstance(child, dict):
+                malformed.append(child)
+                continue
+            key = github_plan_graph.native_issue_key({"html_url": child["url"]})
+            if child["url"] == node["url"]:
+                errors.append(f"Track descendant cycle at {node['url']}")
+                continue
+            if key not in rows:
+                child = dict(child)
+                child.update(parent_url=source["url"], _question_answers=answers, _director=director)
+                rows[key] = child
+            refs.append(key)
+        return refs
+
+    def read_edges(repo: str, number: int) -> list[tuple[str, int]]:
+        child = rows[repo, number]
+        try:
+            refs = []
+            if child["subIssuesSummary"]["total"]:
+                owner, name = repo.split("/", 1)
+                result = reader.graphql_json(github_work_graph.detail_query([number]),
+                    {"owner": owner, "name": name}, step="board_descendants")
+                if not result.ok or not isinstance(result.body, dict) or result.body.get("errors"):
+                    raise ValueError("descendant issue read failed")
+                expanded = result.body["data"]["repository"][f"t{number}"]
+                if expanded["url"] != child["url"]:
+                    raise ValueError("descendant identity changed")
+                child.update(expanded)
+                refs = register(child)
+            complete_comments(reader, child)
+            comments = [github_work_graph.graphql_comment(comment) for comment in child["comments"]["nodes"]]
+            if child["state"] != "CLOSED":
+                child["_claim_comments"] = github_plan_release.verified_comments(comments,
+                    lambda evidence_repo, _number, identifier: claim_evidence(reader, evidence_repo, identifier))
+            return refs
+        except (github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError, KeyError, TypeError, AttributeError) as error:
+            reason = f"descendants or discussion unread: {error}"
+            child.setdefault("_unread", []).append(reason)
+            errors.append(f"{child['url']} {reason}")
+            return []
+
+    graph = github_plan_graph.walk_native_issues(register(node), read_edges=read_edges, max_nodes=2000)
+    if not graph.complete:
+        errors.append("Track descendants exceeded 2000 issue bound")
+        for unread_key in rows.keys() - graph.nodes:
+            rows[unread_key].setdefault("_unread", []).append("descendant issue bound")
+    node["subIssues"] = {"totalCount": len(rows) + len(malformed), "nodes": [*rows.values(), *malformed]}
 
 
 def goal_board(reader, owner, *, repo="direction", trusted, wait_trusted=None, max_pages=10):
@@ -242,12 +380,38 @@ def goal_board(reader, owner, *, repo="direction", trusted, wait_trusted=None, m
         wait_trusted = github_plan_wait.authors(f"{owner}/{repo}")
     graph = github_work_graph.read_tracks(reader, owner, repo, max_pages=max_pages)
     tracks, errors = graph["tracks"], graph["errors"]
+    answers: list[dict[str, Any]] = []
+    queue = None
+    try:
+        queue = question_id.configured_queue()
+    except ValueError as error:
+        errors.append(f"Question queue configuration unread: {error}")
+    if queue and queue.split("/", 1)[0].casefold() != owner.casefold():
+        errors.append("Configured question queue belongs to a different Director")
+        queue = None
+    if queue:
+        queue_repo, number = queue.rsplit("#", 1)
+        queue_node: dict[str, Any] = {"number": int(number), "repository": {"nameWithOwner": queue_repo},
+                      "comments": {"totalCount": 1, "nodes": []}}
+        try:
+            complete_comments(reader, queue_node)
+            answers = [{"id": comment["databaseId"], "url": comment["url"], "body": comment["body"],
+                        "author": login(comment["author"]), "created_at": comment["createdAt"]}
+                       for comment in queue_node["comments"]["nodes"]]
+        except (github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError, KeyError, TypeError) as error:
+            errors.append(f"Question queue unread: {error}")
     rows = []
     for track in tracks:
         try:
             node = graph["nodes"][track["number"]]
-            rows.append({**track_row(node, trusted, wait_trusted), "read": True})
-        except (KeyError, TypeError) as error:
+            node.update(_question_answers=answers, _director=owner)
+            before = len(errors)
+            descendants(reader, node, errors, answers, owner)
+            row = track_row(node, trusted, wait_trusted)
+            if len(errors) > before:
+                row["status"] = UNKNOWN
+            rows.append({**row, "read": True})
+        except (ValueError, KeyError, TypeError) as error:
             if track["number"] in graph["nodes"]:
                 errors.append(f"Track #{track['number']} unread: {type(error).__name__}: {error}")
             rows.append({**track, "url": f"https://github.com/{owner}/{repo}/issues/{track['number']}",
@@ -279,7 +443,7 @@ def blocking_text(row, links_only):
     refs = ", ".join(item["html_url"] for item in row["blocked_by"])
     result = f"; blocked by: {refs or ('unknown' if row['status'] == UNKNOWN else 'none')}"
     if row["waits"] and not links_only:
-        result += "; waiting for: " + "; ".join(wait["waiting_for"] for wait in row["waits"])
+        result += "; waiting for: " + "; ".join(f"{wait['waiting_for']}; ends when: {wait['ends_when']}" for wait in row["waits"])
     return result
 
 
@@ -294,22 +458,24 @@ def markdown(board, *, links_only=False):
             lines.append(f"\n- {track['url']}{name}: {UNKNOWN}")
             continue
         decision = f"; decision {track['latest_decision']}" if track["latest_decision"] else ""
+        questions = "".join(f"; question needs review {question['url']}" for question in track["open_questions"])
         review = track["closure_review"]
+        hold = f"; Track hold: {track['hold_status']}" if track["hold_status"] != github_plan_status.DEFAULT_STATUS_LABELS["active"] else ""
         lines.append(f"\n- {track['url']}{name}: {track['status'] or 'no status label'}"
-                     f"{blocking_text(track, links_only)}{action_text(track, links_only)}{decision}{unread_text(track)}")
+                     f"{hold}{blocking_text(track, links_only)}{questions}{decision}{unread_text(track)}")
         if not links_only:
             proof = " ".join((review["track_proof"] or UNKNOWN).split())
-            state = " ".join(github_next_queue.status_field(review["recorded_status"] or "", "State").split()) or UNKNOWN
             proof = proof[:NEXT_ACTION_CHARS] + "…" if len(proof) > NEXT_ACTION_CHARS else proof
-            state = state[:NEXT_ACTION_CHARS] + "…" if len(state) > NEXT_ACTION_CHARS else state
-            lines.append(f"  - Proof to assess: {proof}; recorded state: {state}")
-        for child in track["children"]:
+            lines.append(f"  - Proof to assess: {proof}")
+        for child in sorted(track["children"], key=lambda row: tuple(track["groups"]).index(row["group"])):
             title = "" if links_only else f" {child['title']}"
             decision = f"; decision {child['latest_decision']}" if child["latest_decision"] else ""
             prs = "".join(f"; PR {pr['url']} {'draft, ' if pr['draft'] else ''}{pr['handoff']}, mergeable {pr['mergeable']}"
                           for pr in child["open_prs"])
-            lines.append(f"  - {child['url']}{title}: {child_state(child)}"
-                         f"{blocking_text(child, links_only)}{action_text(child, links_only)}{decision}{prs}{unread_text(child)}")
+            questions = "".join(f"; question needs review {question['url']}" for question in child["open_questions"])
+            claims = "" if links_only else "".join(f"; worker {claim['worker']}" for claim in child["claims"])
+            lines.append(f"  - {child['group']}: {child['url']}{title}: {child_state(child)}"
+                         f"{blocking_text(child, links_only)}{action_text(child, links_only)}{decision}{prs}{questions}{claims}{unread_text(child)}")
     for error in board["errors"]:
         lines.append(f"\nError: {error}")
     return "\n".join(lines)
@@ -337,7 +503,7 @@ def main():
     checked_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     try:
         board = goal_board(reader, args.owner, repo=args.repo, trusted=trusted)
-    except (github_read.GitHubReadError, ValueError, KeyError, TypeError) as error:
+    except (github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError, KeyError, TypeError) as error:
         board = {"tracks": [], "coverage": {"discovered": None, "read": 0, "complete": False},
             "errors": [f"Track discovery failed, every Track is {UNKNOWN}: {error}"]}
     board = {"ok": board["coverage"]["complete"], "owner": args.owner, "repository": f"{args.owner}/{args.repo}",
@@ -357,7 +523,7 @@ def board_changes(board: dict, state: Path, trusted: list[str]) -> dict:
         for record in (track, *track.get("children", [])):
             source = {key: value for key, value in record.items() if key != "children"}
             rows.append({"url": record["url"], "track_url": track["url"],
-                         **{key: record[key] for key in ("status", "state", "latest_decision", "open_prs", "unread", "read") if key in record},
+                         **{key: record[key] for key in ("status", "hold_status", "state", "latest_decision", "open_prs", "unread", "read") if key in record},
                          "revision": fingerprint(source)})
     return {"records": changes(rows, state, [board["repository"], *trusted], key="url", complete=board["coverage"]["complete"]),
             "coverage": board["coverage"], "checked_at": board["checked_at"], "errors": board["errors"]}

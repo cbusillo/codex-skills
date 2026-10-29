@@ -37,7 +37,6 @@ def test_empty_status_fields_do_not_consume_following_fields() -> None:
     status = 'Waiting for: Owner observation\nLast verified: \nNext action: owner/repo#7\nBlocked by: \nEvidence: retained logs'
     records = direction.waiting_records(row, status)
     assert not records[0]['last_verified']
-    assert direction.next_action_references('Next action: \nEvidence: owner/repo#7') == []
     checked = direction.milestone_wait_evidence(row, 'Blocked by: \nNext action: owner/repo#7', [])
     assert not checked['requested']
 

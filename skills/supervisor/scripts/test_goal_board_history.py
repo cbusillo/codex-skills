@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import copy
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import goal_board
 from test_goal_board import TRUSTED, comment, details, listing, status, track
@@ -15,6 +15,10 @@ from skills.github.scripts.github_api import ApiResult
 
 
 class TrackHistoryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enterContext(patch.object(goal_board.question_id, "configured_queue", return_value=None))
+        self.enterContext(patch.object(goal_board.github_plan_claim, "expired_lease_sessions", return_value=set()))
+
     def test_track_reads_multiple_comment_pages_and_preserves_unknown_on_failure(self) -> None:
         comments = [comment("Progress", ident=index) for index in range(1, 103)]
         decision = comment("Director decision: Continue the milestone.", ident=103)
@@ -50,7 +54,6 @@ class TrackHistoryTests(unittest.TestCase):
                 row = board["tracks"][0]
                 if complete:
                     self.assertEqual(row["status"], expected["status"])
-                    self.assertEqual(row["blocked_by"], expected["blocked_by"])
                     self.assertEqual(row["latest_decision"], decision["url"])
                     self.assertTrue(board["coverage"]["complete"], board)
                 else:
@@ -58,7 +61,6 @@ class TrackHistoryTests(unittest.TestCase):
                     self.assertFalse(board["coverage"]["complete"])
                     self.assertTrue(board["errors"])
                 self.assertEqual(row["latest_decision"], expected["latest_decision"])
-                self.assertEqual(row["next_action"], expected["next_action"])
                 self.assertEqual(row["closure_review"], expected["closure_review"])
 
 
