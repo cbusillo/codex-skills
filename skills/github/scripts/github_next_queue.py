@@ -169,8 +169,6 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
         return {**row, "state": "waiting", "reason": "recorded_wait", "wait": wait}
     if actor and actor.startswith(("person:", "event:")):
         return {**row, "state": "waiting", "reason": "recorded_next_actor"}
-    if projected.get("reason") == "client_acceptance_unavailable":
-        return {**row, "state": "review", "reason": projected["reason"]}
     if projected.get("reason") in {"current_head_ready", "current_head_client_wait"}:
         return {**row, "state": projected["state"], "reason": projected["reason"]}
     if item.get("record_type") == "pull_request":
@@ -179,6 +177,8 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
     if conflicts or artifacts:
         return {**row, "state": "underway", "reason": "existing_claim_or_artifact",
                 "ownership_evidence": [*conflicts, *artifacts], "certainty": "current_or_stale"}
+    if projected.get("reason") == "client_acceptance_unavailable":
+        return {**row, "state": "review", "reason": projected["reason"]}
     if not status_known:
         return {**row, "state": "review", "reason": "incomplete_discussion"}
     if (actor == "agent" or not next_actor.fields(status)) and projected.get("next_actor") == "agent":

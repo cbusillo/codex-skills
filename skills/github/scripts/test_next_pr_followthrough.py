@@ -77,6 +77,15 @@ def test_non_dependency_followthrough_preserves_conditions_and_current_head_hand
     assert observation["author"] == long_comment["user"]["login"] and observation["url"]
 
 
+def pr_evidence(row: dict) -> dict:
+    observed = evidence()
+    observed["pulls"] = [{**pull(author="bot"), "number": row["number"], "body": row["discussion"]["body"],
+                          "head": {"sha": HEAD, "ref": "work/source", "repo": {"full_name": row["repo"]}},
+                          "base": {"repo": {"full_name": row["repo"]}}}]
+    observed["inventory"]["local_branches"] = [observed["pulls"][0]["head"]["ref"]]
+    return observed
+
+
 def test_saved_current_head_acceptance_ends_only_the_client_handoff_wait() -> None:
     comments = [comment(1, ready_handoff.handoff_body(HEAD, waiting_for_client=True))]
     for decision, expected in [
@@ -97,12 +106,7 @@ def test_saved_current_head_acceptance_ends_only_the_client_handoff_wait() -> No
                 row["discussion"]["body"] = row["discussion"]["body"].split(wait.PREFIX)[0]
                 row["discussion"]["comments"] = [
                     {**entry, "author": entry["user"]["login"]} for entry in comments]
-                observed = evidence()
-                pr = {**pull(author="bot"), "number": row["number"], "body": row["discussion"]["body"],
-                      "head": {"sha": HEAD, "ref": "work/source", "repo": {"full_name": row["repo"]}},
-                      "base": {"repo": {"full_name": row["repo"]}}}
-                observed["pulls"] = [pr]
-                observed["inventory"]["local_branches"] = [pr["head"]["ref"]]
+                observed = pr_evidence(row)
                 queued = github_next_queue.classify(row, observed, trusted={"owner", "bot"})
                 if actor == "person:owner":
                     assert queued["state"] == "waiting"
@@ -131,13 +135,11 @@ def test_saved_current_head_acceptance_ends_only_the_client_handoff_wait() -> No
             row = item(actor="person:owner")
             row["record_type"] = "pull_request"
             row["discussion"]["comments"] = [{**entry, "author": entry["user"]["login"]} for entry in comments]
-            pr = {**pull(author="bot"), "number": row["number"], "body": row["discussion"]["body"],
-                  "head": {"sha": HEAD, "ref": "work/source", "repo": {"full_name": row["repo"]}},
-                  "base": {"repo": {"full_name": row["repo"]}}}
-            assert github_next_queue.classify(row, {**evidence(), "pulls": [pr]}, trusted={"owner", "bot"})["state"] == "waiting"
+            observed = pr_evidence(row)
+            assert github_next_queue.classify(row, observed, trusted={"owner", "bot"})["state"] == "waiting"
             module = load_module()
             with patch.multiple(module, wait_authors=lambda *_: {"bot", "owner"}):
-                result, _ = discover(module, [{**pr, "_graph_comments": comments}])
+                result, _ = discover(module, [{**observed["pulls"][0], "_graph_comments": comments}])
             assert not result["pr_followthrough_context"]["complete"]
 
 

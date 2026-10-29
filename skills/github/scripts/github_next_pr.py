@@ -64,7 +64,7 @@ def project(repo: str, pull: dict[str, Any], comments: list[dict[str, Any]], *, 
         return {**row, "state": "underway", "reason": "train_batch"}
     if pull.get("draft"):
         return {**row, "state": "waiting", "reason": "draft_park"}
-    if not complete or not head:
+    if not complete or not isinstance(head, str) or not head:
         return {**row, "state": "unknown", "reason": "incomplete_pr_evidence"}
     trusted_comments = [comment for comment in comments if str((comment.get("user") or {}).get("login") or "").casefold() in trusted]
     try:
