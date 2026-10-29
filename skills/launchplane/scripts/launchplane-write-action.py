@@ -6630,7 +6630,9 @@ def summarize_config_authority_publisher(provider_payload: dict[str, Any]) -> di
         raise LaunchplaneSafetyError("invalid_response")
     selector_key = "LAUNCHPLANE_ADVISORY_GITHUB_APP_ID"
     app_id: int | None = None
-    selected = next((record for record in [*contexts, *shared] if selector_key in record["keys"]), None)
+    selected: dict[str, Any] | None = next(
+        (record for record in [*contexts, *shared] if selector_key in record["keys"]), None
+    )
     if contexts and selected is not None and selector_key not in selected["withheld_keys"]:
         values = _require_dict(selected.get("values"))
         value = values.get(selector_key)
