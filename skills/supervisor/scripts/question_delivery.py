@@ -20,9 +20,8 @@ from typing import Any
 import oq
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
-import github_comment
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from skills.github.scripts import github_comment
 from skills.direction.scripts.question_id import counter_path, heading_id
 
 COMMENT_URL = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(?:issues|pull)/([1-9][0-9]*)#issuecomment-([1-9][0-9]*)")

@@ -3202,7 +3202,8 @@ schedule must all match this permission; requests to use the App, requests for
 the Director to search by hand, one-time and repository-limited permissions
 cannot grant unattended searches. Optional trailing terms are `unattended`,
 `read-only`, and `on every/each pass/run`. Body prose cannot supply permission.
-Same-ID reminders must all ask for that permission, and the question must not
-have been edited after approval. Unsupported wording or a later question edit
+New reminders link and re-present the original question without reposting its
+heading. Historical same-ID headings must all ask for that permission, and the
+question must not have been edited after approval. Unsupported wording or a later question edit
 reports a coverage gap: use a supported heading and link a fresh unqualified
 Director approval to resume. The helper never edits the question or config.

@@ -1034,8 +1034,27 @@ except (ValueError, OSError, github_comment.CommentError) as error:
     raise SystemExit(1)
 PY
 	) || exit $?
-	act_as_own_user "$attachment_repository" "$@"
-	exit $?
+	act_as_own_user "$attachment_repository" "$@" >"$stdout_file" || exit $?
+	attachment_result=$(cat "$stdout_file")
+	printf '%s\n' "$attachment_result"
+	run_python - "$script_dir" "$stdin_file" "$attachment_result" <<'PY'
+import json
+import os
+import pathlib
+import re
+import sys
+sys.path.insert(0, sys.argv[1])
+import github_comment
+try:
+    github_comment.bind_attachment_source(pathlib.Path(sys.argv[2]).read_text(), sys.argv[3])
+except (ValueError, OSError) as error:
+    print(f"error: saved attachment at {sys.argv[3]}; source binding failed: {error}", file=sys.stderr)
+    nonce = os.environ.get("GH_WITH_ENV_TOKEN_RECEIPT_NONCE", "")
+    if re.fullmatch(r"[0-9a-f]{32}", nonce):
+        print(json.dumps({"schema_version": 1, "nonce": nonce, "write_outcome": "applied"}), file=sys.stderr)
+    raise SystemExit(1)
+PY
+	exit 0
 fi
 
 # Under the caller's opt-in, a read only the person's account can answer and a

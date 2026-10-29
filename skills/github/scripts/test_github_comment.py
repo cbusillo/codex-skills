@@ -1313,22 +1313,60 @@ def test_concurrent_numbering_reconciles_the_same_saved_body() -> None:
         with_call_stub(callback, run)
 
 
-def test_numbered_questions_are_unchanged_without_counter_access() -> None:
-    for markdown in ("Owner question: Q12. Continue?", "**Director question:** Q13. Continue?",
-                     "***Owner question:*** Q14. Continue?"):
-        def callback(method: str, endpoint: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
-            if endpoint == "/user":
-                return success({"login": "fixture-automation"})
-            if method == "GET":
-                return success([])
-            assert github_comment._canonical_comment_body(body["body"]) == markdown
-            return success(comment_body(1001, body=body["body"]))
+def test_numbered_questions_require_owned_source_or_unbound_reservation() -> None:
+    with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"CODE_HOME": directory}), \
+            patch.object(question_counter, "configured_queue", return_value=None):
+        path = question_counter.counter_path()
+        question_counter.update(path, seed=(10, ["fixture"]), allocate=False)
+        for kind in ("issue", "pr"):
+            number = question_counter.update(path)
+            markdown = f"**Director question:** Q{number}. Continue?"
+
+            def callback(method: str, endpoint: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+                if endpoint == "/user":
+                    return success({"login": "fixture-automation"})
+                if method == "GET":
+                    return success([])
+                return success(comment_body(number, body=body["body"]))
+
+            def run(calls: list[dict[str, Any]]) -> None:
+                result = github_comment.comment(kind, 42, markdown, repo="owner/repo", gh_cmd="fake-gh")
+                question_counter.verify_number(path, number, result["url"])
+                for text in (markdown, "Director question: Q9999. Invented?"):
+                    before = len([c for c in calls if c["method"] in {"POST", "PATCH"}])
+                    try:
+                        github_comment.comment(kind, 42, text, repo="owner/repo", gh_cmd="fake-gh")
+                    except github_comment.CommentError as error:
+                        assert error.failure.write_outcome == "not_started"
+                    else:
+                        raise AssertionError("invented or reused numbers must fail before publication")
+                    assert len([c for c in calls if c["method"] in {"POST", "PATCH"}]) == before
+
+            with_call_stub(callback, run)
+
+
+def test_unowned_deduplicated_question_refuses_without_claiming_a_write() -> None:
+    with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"CODE_HOME": directory}), \
+            patch.object(question_counter, "configured_queue", return_value=None):
+        path = question_counter.counter_path()
+        legacy = question_counter.update(path, seed=(11, ["fixture"]), allocate=False)
+        body = f"Director question: Q{legacy}. Continue?"
+        prior = json.loads(path.read_text())
+
+        def callback(method: str, endpoint: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            assert method == "GET"
+            return success({"login": "fixture-automation"} if endpoint == "/user" else [comment_body(1001, body=body)])
 
         def run(_calls: list[dict[str, Any]]) -> None:
-            github_comment.comment("issue", 42, markdown, repo="owner/repo", gh_cmd="fake-gh")
+            try:
+                github_comment.comment("issue", 42, body, repo="owner/repo", dedupe_body=True, gh_cmd="fake-gh")
+            except github_comment.CommentError as error:
+                assert error.failure.write_outcome == "not_started"
+            else:
+                raise AssertionError("a reused legacy heading does not prove source ownership")
+            assert json.loads(path.read_text()) == prior
 
-        with patch.object(question_counter, "update", side_effect=AssertionError("already numbered")):
-            with_call_stub(callback, run)
+        with_call_stub(callback, run)
 
 
 def recording_callback(posted: list[str]) -> Callable[..., github_api.ApiResult]:
@@ -1344,7 +1382,7 @@ def recording_callback(posted: list[str]) -> Callable[..., github_api.ApiResult]
 
 
 def test_question_refuses_live_mentions_of_anyone_but_the_owner() -> None:
-    quiet = ("Owner question: Q15. Post this?\n\n> <code>@mike-b</code> Fixed, thanks @Owner.\n\n"
+    quiet = ("Owner question: Post this?\n\n> <code>@mike-b</code> Fixed, thanks @Owner.\n\n"
              "Mail a@b.com.")
     posted: list[str] = []
 
@@ -1359,7 +1397,8 @@ def test_question_refuses_live_mentions_of_anyone_but_the_owner() -> None:
         assert not calls, calls
         github_comment.comment("issue", 42, quiet, repo="owner/repo", gh_cmd="fake-gh")
 
-    with_call_stub(recording_callback(posted), run)
+    with patch.object(github_comment, "_number_saved_question", side_effect=lambda payload, *a, **k: payload):
+        with_call_stub(recording_callback(posted), run)
     assert posted == [quiet]
 
 
@@ -1463,7 +1502,7 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
         modes = (
             "success", "old_cli", "failed_upload", "bad_readback", "wrong_author", "missing_author",
             "canonical_case", "prewrite_refusal", "forged_receipt", "help_failure", "crlf_body", "readback_failure",
-            "attributed_question",
+            "attributed_question", "bind_failure",
         )
         successful_modes = {"success", "canonical_case", "crlf_body", "attributed_question"}
         for kind in ("issue", "pr"):
@@ -1479,10 +1518,10 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                     assert command[command.index("--repo") + 1].casefold() == f"{github_comment.ATTACHMENT_OWNER}/repo"
                     assert [command[index + 1] for index, value in enumerate(command) if value == "--attach"] == attachments
                     assert kwargs["input"].splitlines()[0] == github_comment.AGENT_POSTED_LINE
-                    if mode in ("prewrite_refusal", "forged_receipt"):
-                        nonce = kwargs["env"]["GH_WITH_ENV_TOKEN_RECEIPT_NONCE"] if mode == "prewrite_refusal" else "forged"
-                        receipt = {"schema_version": 1, "nonce": nonce, "write_outcome": "not_started"}
-                        return subprocess.CompletedProcess(command, 1, "", json.dumps(receipt))
+                    if mode in ("prewrite_refusal", "forged_receipt", "bind_failure"):
+                        nonce = kwargs["env"]["GH_WITH_ENV_TOKEN_RECEIPT_NONCE"] if mode != "forged_receipt" else "forged"
+                        receipt = {"schema_version": 1, "nonce": nonce, "write_outcome": "applied" if mode == "bind_failure" else "not_started"}
+                        return subprocess.CompletedProcess(command, 1, url if mode == "bind_failure" else "", json.dumps(receipt))
                     return subprocess.CompletedProcess(command, 1 if mode == "failed_upload" else 0, url, "upload failed")
 
                 readback: dict[str, Any] = dict(saved)
@@ -1504,11 +1543,19 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
 
                 requested = (github_comment.AGENT_POSTED_LINE + "\r\n\r\nproof") if mode == "crlf_body" else "proof"
                 if mode == "attributed_question":
-                    requested = github_comment.AGENT_POSTED_LINE + "\n\nOwner question: Q123. Decide about <code>@outside</code>?"
+                    counter_file = pathlib.Path(directory) / f"question-{kind}-{mode}.json"
+                    with patch.object(question_counter, "configured_queue", return_value=None):
+                        question_counter.update(counter_file, seed=(10, ["fixture"]), allocate=False)
+                        reserved = question_counter.update(counter_file)
+                    requested = github_comment.AGENT_POSTED_LINE + f"\n\nOwner question: Q{reserved}. Decide about <code>@outside</code>?"
+                    readback["body"] = requested + "\n\n![proof](https://github.com/user-attachments/assets/example)"
                 requested_repo = f"{github_comment.ATTACHMENT_OWNER}/repo"
                 if mode == "canonical_case":
                     requested_repo = requested_repo.upper()
-                with patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}), patch.object(
+                counter_file = pathlib.Path(directory) / f"question-{kind}-{mode}.json"
+                with patch.object(question_counter, "counter_path", return_value=counter_file), \
+                        patch.object(question_counter, "configured_queue", return_value=None), \
+                        patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}), patch.object(
                     github_comment.subprocess, "run", side_effect=run
                 ), patch.object(github_comment, "_call_api", side_effect=read_api):
                     try:
@@ -1552,7 +1599,8 @@ TESTS: list[Callable[[], None]] = [
     test_attachment_passthrough_and_failures_never_replay,
     test_concurrent_numbering_reconciles_the_same_saved_body,
     test_question_numbering_follows_confirmed_write_and_repairs_same_assignment,
-    test_numbered_questions_are_unchanged_without_counter_access,
+    test_numbered_questions_require_owned_source_or_unbound_reservation,
+    test_unowned_deduplicated_question_refuses_without_claiming_a_write,
     test_question_refuses_live_mentions_of_anyone_but_the_owner,
     test_only_an_unescaped_code_tag_quiets_a_mention,
     test_ordinary_comment_keeps_its_mentions,

@@ -51,12 +51,25 @@ changes on yes.
 
 ## Director Questions
 
-Every question to the Director states its ongoing cost and what an experienced
-professional developer would do instead, and says plainly when the Director's
-premise or an earlier choice is wrong. Ask a direct question that says what is
-being decided, your recommendation, and what each choice changes. Separate what
-the Director must do by hand from what you will do after the answer.
-Never end on a bare "say yes" or a context-free list.
+Create a structured question with
+`uv run <supervisor-skill-dir>/scripts/oq.py create --record-file FILE --owner OWNER --decision-author TRUSTED_BOT`.
+The JSON record has `version: 1`, `issue` (exact owning issue URL), `decision`,
+`basis`, `options`, `recommendation`, `comparison` (what an experienced developer
+would do and why), and `manual` (the Director's work, including "answer only").
+Each option has `answer`, `changes`, `cost` (ongoing cost; explicit zero is valid),
+and `next` (the agent's action after that answer). Recommendation names one answer.
+State a wrong premise or prior choice plainly in the basis; completeness does
+not prove the premise. Validation reports all field errors before posting.
+
+The command posts, numbers, registers in the configured queue, and returns
+numbered terminal text and the original link. `--queue OWNER/REPO#NUMBER` must
+agree with configured `[questions].queue`; without either, the result names the
+recipient and says `not_configured`, never queued or delivered. `--dry-run`
+validates and renders without writes or allocation. Read the same source with
+`oq.py show-question ORIGINAL_URL`; it returns the validated record, text and
+source author without local counter state.
+Keep the number hook until the Discord card adopts this source too. Existing
+prose comment, queue and acknowledgement commands remain available.
 
 ## Decisions, Holds, And Work State
 
@@ -71,7 +84,15 @@ When asking, follow [Director Questions](#director-questions).
 - Every new question has a shared-counter Q ID in chat and on GitHub.
   GitHub's `gh-comment`, `gh-pr.py comment`, and `gh-issue` comment paths number
   bodies starting with `Owner question:` or `Director question:` automatically;
-  an existing heading ID stays unchanged, including on edits and repeat delivery.
+  an existing heading ID must be reserved or already owned by that exact source.
+  Invented numbers and another source's number are refused, including on edits,
+  deduplication and attachments. Same-source edits and repeat delivery keep its ID.
+  A historical question without a retained source assignment stays unchanged;
+  re-present its original Q ID and link through the existing queue flow. For a
+  new, never-posted question whose legacy allocation has no usable receipt,
+  allocate with `question_id.py next` and repeat exact-text approval if the
+  previously approved text contained the old number. This does not renumber
+  an existing question or decision.
   Write the heading ID as `Q300.` or `Q300 —` so it is distinct from question
   content such as `Q4 budget`. A Q ID mentioned only in the context is not the
   question's own ID.
