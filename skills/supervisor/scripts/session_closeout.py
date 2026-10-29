@@ -13,8 +13,7 @@ from subprocess import SubprocessError
 import iterm_tab
 import pending_reviews
 import session_liveness
-from capacity_retry import save_state
-from check_changes import fingerprint
+from check_changes import fingerprint, save_state
 from check_operation import (
     GateFailed,
     GitHubReader,
@@ -50,8 +49,11 @@ async def native_idle(entry: dict) -> None:
 
     home = Path(entry["codex_home"]).expanduser().resolve(strict=True)
     action = closure.lease_state(entry["session_id"])
-    homes = {home, *(Path(value) for value in closure.action_homes(action)["known"])}
+    homes = {home, *(Path(value).resolve() for value in closure.action_homes(action)["known"])}
     snapshots = closure.transcripts(entry["session_id"], entry["transcript"], include_status=True, additional_homes=homes)
+    require(not any(row["status"].get("background_tasks") or row["status"].get("active_realtime_sessions")
+                    or row["status"].get("realtime_coverage") is False for row in snapshots.values()),
+            "native_idle", "an authenticated source copy has background work or incomplete lifecycle coverage")
     paths = native.authenticated_paths(snapshots, observation_homes(strict=True, additional_homes=homes))
     homes.update(Path(value) for value in paths)
     snapshot = {"path": entry["transcript"], "transcripts": snapshots, "home_paths": paths}
@@ -203,9 +205,6 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
             "nonempty or uncertain input needs preservation and manual verification",
         )
 
-    verify_handoff()
-    claims()
-
     def wait_for_exit() -> None:
         operation.gate = "process_exit"
         deadline = time.monotonic() + args.exit_seconds
@@ -213,10 +212,12 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
             time.sleep(0.25)
         require(session_liveness.process_absent(entry.get("pid")), "process_exit", "process remains; terminal kept")
 
-    require(not retired or session_liveness.process_absent(entry.get("pid")), "process_exit", "retired process identity is live")
-    if not session_liveness.process_absent(entry.get("pid")) and not operation.state["steps"].get("quit"):
-        operation.gate = "ownership"
-        with closure.ownership(args.session_id, create=True):
+    with closure.ownership(args.session_id, create=True):
+        claims()
+        verify_handoff()
+        require(not retired or session_liveness.process_absent(entry.get("pid")), "process_exit", "retired process identity is live")
+        if not session_liveness.process_absent(entry.get("pid")) and not operation.state["steps"].get("quit"):
+            operation.gate = "ownership"
             prompt("prompt")
             ready(entry, args.supervisor_session)
             operation.gate = "native_idle"
@@ -224,19 +225,18 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
             call("clear", "clear", "--verified-target")
             prompt("empty_input")
             ready(entry, args.supervisor_session)
-            verify_handoff()
-            claims()
             operation.gate = "native_idle"
             asyncio.run(native_idle(entry))
+            prompt("final")
             call("quit", "send", "--text", "/quit" if entry["harness"] == "codex" else "/exit", "--verified-target", once=True)
             wait_for_exit()
-    elif not session_liveness.process_absent(entry.get("pid")):
-        require(
-            operation.state["steps"]["quit"].get("complete") is True,
-            "quit",
-            "previous send is uncertain; preserve the session for reconciliation",
-        )
-        wait_for_exit()
+        elif not session_liveness.process_absent(entry.get("pid")):
+            require(
+                operation.state["steps"]["quit"].get("complete") is True,
+                "quit",
+                "previous send is uncertain; preserve the session for reconciliation",
+            )
+            wait_for_exit()
     require(session_liveness.process_absent(entry.get("pid")), "process_exit", "process remains; terminal kept")
     ready(entry, args.supervisor_session)
     if not retired:
@@ -296,7 +296,7 @@ def main() -> int:
             operation = Operation(args.evidence, [str(args.ledger.resolve()), args.session_id])
             closeout(args, operation)
         result = receipt(args.session_id, args.evidence)
-    except (OSError, ValueError, KeyError, TypeError, SubprocessError, GitHubReadError, GitHubReadShapeError) as error:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, SubprocessError, GitHubReadError, GitHubReadShapeError) as error:
         result = receipt(args.session_id, args.evidence, error,
                          gate=operation.gate if "operation" in locals() else "identity")
     print(json.dumps(result, separators=(",", ":")))

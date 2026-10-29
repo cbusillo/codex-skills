@@ -110,24 +110,26 @@ class OperationTests(unittest.TestCase):
                 closed = {**normalized, "process_exit_verified": True, "ended_at": "2026-01-01T00:00:00Z"}
                 args = argparse.Namespace(ledger=ledger, session_id="native", supervisor_session="supervisor",
                                           owner="owner", exit_seconds=1, handoff_url=entry["handoff_url"])
-                live, present, calls = True, True, []
+                live, present, calls, draft = True, True, [], False
 
                 def command(argv: list[str], **_: Any) -> subprocess.CompletedProcess:
-                    nonlocal live, present
+                    nonlocal live, present, draft
                     action = argv[argv.index("--backend") + 2] if "--backend" in argv else "claims" if any(
                         str(word).endswith("check_claims.py") for word in argv) else "finish"
                     calls.append(action)
                     payload: Any = {"sent": True}
                     code = 0
                     if action == "claims":
+                        draft = "read" in calls
                         payload = {"claims_clear": True, "coverage": {"complete": True}}
                     elif action == "finish":
                         payload = {"ok": outcome != "finish_refused", "needs_reconciliation": outcome == "finish_refused"}
                     elif action == "list":
                         payload = [{"session_id": "terminal", "tty": "/dev/ttys001"}] if present else []
                     elif action == "read":
-                        payload = {"dead": False, "screen": [], "input_line": {"style": "dim", "text": "suggestion"}}
+                        payload = {"dead": False, "screen": [], "input_line": {"style": "non_dim" if draft else "dim", "text": "draft" if draft else "suggestion"}}
                     elif action == "send":
+                        self.assertFalse(draft, "exit command appended to input changed during claim reads")
                         live = False
                         if outcome == "uncertain_exit":
                             payload, code = {"status": "send_failed"}, 1
@@ -160,9 +162,12 @@ class OperationTests(unittest.TestCase):
                         session_closeout.closeout(args, operation)
                     if outcome in {"complete", "uncertain_exit"}:
                         self.assertEqual(json.loads(ledger.read_text()), [])
+                        self.assertEqual(calls.count("send"), 1)
+                        calls.clear()
                         session_closeout.closeout(args, check_operation.Operation(root / "evidence", ["native"]))
-                    self.assertLess(calls.index("clear"), calls.index("send"))
-                    self.assertEqual(calls.count("send"), 1)
+                    if outcome not in {"complete", "uncertain_exit"}:
+                        self.assertLess(calls.index("clear"), calls.index("send"))
+                        self.assertEqual(calls.count("send"), 1)
                     if outcome == "finish_refused":
                         self.assertNotIn("close", calls)
 
@@ -251,12 +256,23 @@ class OperationTests(unittest.TestCase):
               patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, '{"ok":true}', "")) as close):
             self.assertEqual(catalog_landing.verify_smoke(config, operation, "codex", "openai", self.root), "comment-2")
             self.assertEqual(close.call_count, 1)
+            operation.state["steps"].pop("codex_closeout")
+            ledger.write_text("[]")
+            self.assertEqual(catalog_landing.verify_smoke(config, operation, "codex", "openai", self.root), "comment-2")
+            self.assertEqual(close.call_count, 2)
         for harness, row in (("codex", {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "request"}]}}),
                              ("claude", {"type": "user", "message": {"role": "user", "content": "request"}})):
             with self.subTest(harness=harness):
                 Path(native["transcript"]).write_text(json.dumps({**row, "timestamp": "2026-01-01T00:00:00Z"}) + "\n")
                 self.assertTrue(catalog_landing.request_seen(entry, "request", 0))
                 self.assertFalse(catalog_landing.request_seen(entry, "different request", 0))
+
+    def test_native_idle_refuses_work_in_another_authenticated_copy(self) -> None:
+        with (patch.object(session_closeout.closure, "lease_state", return_value={}),
+              patch.object(session_closeout.closure, "transcripts", return_value={"other": {"status": {"background_tasks": ["task"]}}})):
+            with self.assertRaises(check_operation.GateFailed):
+                asyncio.run(session_closeout.native_idle({"harness": "codex", "codex_home": str(self.root),
+                                                          "session_id": "native", "transcript": "source"}))
 
     def test_send_preflight_is_distinct_from_partial_delivery(self) -> None:
         class Terminal:

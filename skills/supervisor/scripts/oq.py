@@ -12,10 +12,10 @@ import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
-from check_changes import changes, fingerprint
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from skills.direction.scripts.question_id import QUESTION, heading_id
+from skills.supervisor.scripts.check_changes import changes, fingerprint
 
 ITEM = re.compile(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)")
 QUESTION_PREFIXES = ("Director question:", "Owner question:")

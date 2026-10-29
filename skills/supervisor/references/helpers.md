@@ -60,12 +60,9 @@ Everything else is read from GitHub when needed. The session registry is the
 private JSON file every helper takes as `--ledger`; it identifies sessions and
 holds no status.
 
-To retire a narrative Markdown log, do it once: move it beside the other
-private files under a name that says it is historical (for example
-`archive-ledger-through-2026-10-16.md`), add a first line saying it is
-historical and not authority, and stop writing to it. Start one recovery note
-in its place and overwrite it whenever a pending local action starts or ends.
-Neither file is a recovery source for status, decisions or lessons.
+Retire a narrative log once: mark/archive it as historical, stop writing it,
+and keep one overwritten recovery note for pending local actions. Neither is
+status, decision or lesson authority.
 
 Create the session registry as a private JSON array from the handoff's actual session identities. Paths
 are relative to that ledger file; never commit transcripts, account names,
@@ -75,53 +72,33 @@ labels, not identity. Match the harness process's PID and transcript yourself. T
 normalizes iTerm's `/dev/` TTY prefix for `ps` matching.
 Exclude the Director's sessions or set `supervisor_owned` to false.
 
-```json
-[
-  {
-    "session_id": "native-thread-or-session-id",
-    "harness": "codex",
-    "transcript": "sessions/task.jsonl",
-    "supervisor_owned": true,
-    "repository": "OWNER/REPO",
-    "issue": 123,
-    "brief": "brief-task.md",
-    "iterm_session_id": "exact-iterm-session-id",
-    "pid": 12345,
-    "tty": "ttys123",
-    "handoff_url": "https://github.com/OWNER/REPO/issues/123#issuecomment-456"
-  }
-]
-```
+Each object needs native `session_id`, `harness` and `transcript` pointers.
+Keep `repository`, `issue` and `brief` from the actual brief, and the verified
+launch's backend, terminal/PID/TTY and generation fields. Explicit
+`supervisor_owned: true` grants only the ownership already established at launch;
+never infer it from a title. Save the actual `handoff_url` after verification.
 
-Each native session id is unique. Codex UUIDs have no date-prefix restriction.
-Missing/malformed or changing transcripts are errors, never idle/finished
-proof. The watcher reports an error for that session and keeps watching the
-other sessions; a malformed ledger itself ends the watch. Transcript errors
-include malformed nested payload, message, content and identity fields; they
-supply no completion proof for that session.
-Status output includes the latest response and can be private; keep it
-out of public comments. For Claude, `background_tasks` lists unresolved Bash
-background and Monitor tasks plus native scheduled jobs. Before exit, these
-tasks block finished-session candidates, including jobs waiting for a future
-wakeup. A "waiting" message at a turn end with no tasks is a stall to nudge.
-A listed task is a live wait;
-check that its condition can still end it, for example CI already settled
-under a `--watch` that never exits on green, before waiting on it. Context
-counts may be absent and are not a reason to hand off. For Claude, the count
-includes cached input. After independently verified process exit, closure
-retains its final-verdict and process checks; a leftover task record adds no
-new closure condition. Review notifications may reach an idle empty Claude
-prompt with scheduled jobs, while an active firing turn or Bash/Monitor task
-still prevents the notification.
+Native IDs are unique; Codex UUIDs have no date-prefix restriction. Missing,
+malformed (including nested fields) or changing transcripts prove no idle or
+finished state. Watchers isolate a session's error; malformed ledgers stop them.
+Full status responses can be private and stay out of public comments.
 
-For an unknown `cron-create:<tool-id>` placeholder or a scheduled job that
-native CronDelete reports absent, ask that worker to run native CronList.
-A successful matched list result replaces the recorded schedule inventory,
-including clearing placeholders; a failed, replay-only or ambiguous result
-does not. Stop only jobs the worker confirms are obsolete, then request a
-fresh verdict. Native schedule-error, recurring-job expiry, restart and
-durable-job receipt shapes have not been observed; do not infer them from time
-or transcript age.
+Claude `background_tasks` covers unresolved Bash/Monitor work and native jobs,
+including future wakeups: these block pre-exit candidates. Only the worker
+reconciles them. A turn-ended "waiting" message without tasks is a stall to
+nudge; a listed task needs its wait condition checked, including already-settled
+CI under a non-exiting watch. Missing context counts never justify handoff;
+Claude counts include cached input. After independently proved exit, leftover
+task records add no condition beyond the final-verdict/process checks. Scheduled
+jobs alone allow idle empty-prompt review notices; active turns or Bash/Monitor
+work still block them.
+
+Unknown `cron-create:<tool-id>` or CronDelete-absent jobs need that worker's
+native CronList. Only a successful matched result replaces schedule inventory
+or clears placeholders; failed, replay-only or ambiguous results do not. Stop
+only worker-confirmed obsolete jobs, then require a fresh verdict. Unobserved
+schedule-error, expiry, restart and durable receipt shapes remain UNKNOWN;
+transcript age/time never supplies them.
 
 For tmux entries, replace `iterm_session_id` with `tmux_session_id` from launch
 output and record `backend: "tmux"`, `tmux_socket`, `window_id`, `tab_id`, `tty`
@@ -284,56 +261,39 @@ source rather than treating an empty diff as a pass.
 
 ### Codex provider capacity stops
 
-`status.py` and idle notices report `state: provider_capacity` only for the
-recorded Codex `task_complete` capacity error, including a first-turn failure
-with no response text. A quote of that error, another provider error, an abort
-or new task activity is not a capacity stop.
-
-The Supervisor may enable bounded retries after landing. Add each watched
-Codex session's existing absolute `codex_home` to its ledger entry and verify
-its native UUID, transcript and `supervisor_owned: true`. The transcript must
-be inside that home's live `sessions` directory and its existing daemon socket
-must be available. No helper starts a daemon or changes login settings.
+`provider_capacity` requires the actual Codex `task_complete` capacity error,
+including a first turn without response text; quotes, other errors, aborts and
+new activity do not qualify. Bounded retries are optional after landing. The
+owned native UUID/transcript must match an existing absolute `codex_home`, its
+live `sessions` directory and available daemon socket. No login/daemon changes.
 
 ```sh
 uv run skills/supervisor/scripts/codex_idle_watch.py --ledger <private-ledger.json> --delivered-state <private-codex-delivered.json> --capacity-state <private-capacity-state.json> --resume-capacity --deadline-seconds 1800
 uv run skills/supervisor/scripts/compact_check.py --ledger <private-ledger.json> --state <private-check-state.json> --capacity-state <private-capacity-state.json>
 ```
 
-Use the same retry-state path in every watcher restart, check and morning
-digest; retain it through takeover. Only one watcher may operate on it at a
-time. Without `--resume-capacity`, the watcher remains read-only. The exact
-thread nudge uses the coordinated queue path described under
-[launching and nudging](#launching-and-nudging), with the verified home's
-explicit Unix endpoint. It queues only `continue` after 1, 3 and 10 minutes
-of backoff, at most three attempts per native session across restarts. The
-budget never resets automatically after a successful turn or a later capacity
-error. Do not rotate/delete the state to retry an exhausted session.
+Keep one watcher and the same retry-state path across checks, digests, restarts
+and takeovers; without `--resume-capacity` it only reads. The coordinated
+[exact-thread queue](#launching-and-nudging) uses that home's Unix endpoint,
+sending only `continue` after 1, 3 and 10 minutes, at most three attempts per
+native session. A successful turn or later error never resets the budget;
+never rotate/delete state to retry an exhausted source.
 
-The attempt is durably reserved before sending; transcript readback must show
-a new `continue` user message. A crash, command failure or absent readback
-reports `capacity_retry.state: reconciliation_required` and permits no more
-automatic sends. A queue refused before its lease, such as a home whose
-daemon has not loaded the thread, sent nothing: the watcher reports the error,
-restores the reservation and tries again on a later check. Inspect the exact thread and queued messages before any
-manual intervention; never replay an uncertain send. A changed home or
-transcript reports `target_changed` and also stops automatic sends.
-After the Supervisor verifies queued messages and the current native thread,
-manual nudges use the existing [exact-thread queue procedure](#launching-and-nudging).
-Keep automatic retries halted for an uncertain native session and retain its
-budget; retire the session from the active ledger through normal closeout when
-its work finishes. There is no automatic clearing of uncertain-send evidence.
-Checks and the morning digest use the state-aware status command above and
-include every `provider_capacity` session, even without automatic retries,
-and every `exhausted`, `blocked`, `reconciliation_required` or `target_changed`
-retry record. `blocked` names unavailable ownership/identity/home/socket
-verification, so a missing ledger field or daemon cannot look like ordinary
-backoff forever. Eligible sessions expose `retry_at`; `retry_due` means that
-time has arrived. If it persists, verify the bounded watcher is still running
-and re-arm it with the same state file under the existing check procedure.
-`exhausted` means the session remains at capacity after using its
-three attempts; it needs Supervisor attention. These states establish no
-completion or safe-to-exit verdict.
+Reserve durably before sending and require a new native `continue` user message.
+A crash, failed command or missing readback leaves `reconciliation_required`
+and stops automatic sends. A proved refusal before the lease sent nothing:
+report it, restore the reservation and recheck later. Changed home/transcript
+means `target_changed`, also stopping sends. Before manual intervention inspect
+that exact thread and queue; uncertain sends are never replayed or cleared
+automatically. After verification, use the linked queue route for manual nudges,
+retain the automatic halt/budget, and retire only through normal closeout.
+
+Checks/digests include every capacity stop even without retry, plus every
+`exhausted`, `blocked`, `reconciliation_required` and `target_changed` record.
+`blocked` means ownership/native UUID/home/socket proof is unavailable;
+`exhausted` means still stopped after three attempts. Both need attention.
+`retry_at` and `retry_due` expose eligible timing; a persistent due state needs
+the bounded watcher checked/re-armed with the same state. None proves completion.
 
 The question helper reads every comment via the maintained GitHub helper and
 returns every question, not just the newest. Successful complete reads,
@@ -1172,7 +1132,12 @@ the existing dedicated container. It never restarts a daemon or answers a trust
 prompt. Each initial completed native acknowledgement must name the landing,
 use no tools and arrive within two minutes; launcher return and echoed input
 alone do not pass. It then sends one targeted handoff request to each idle empty
-prompt, finds its exact native-session issue comment, and invokes normal closeout.
+prompt, saves its exact native-session issue handoff, and delegates normal closeout.
+A saved handoff reruns closeout directly, preserving its URL and native ID even
+after retirement. A Codex `register_ledger` failure preserves its launch object:
+save that object as a private receipt, run `iterm_tab.py register --receipt-file
+<retained-launch.json> --ledger <ledger.json>`, then rerun with the same evidence.
+Registration reads the retained native receipt; it never relaunches the worker.
 A delayed handoff or shutdown leaves a passed launch distinct from incomplete
 cleanup. Failed or uncertain sessions remain preserved for the normal recovery.
 
@@ -1897,14 +1862,10 @@ owning issue.
 
 ## Finished-session shutdown stages
 
-A final unfenced exit verdict may follow completed backtick or tilde fenced
-blocks. A verdict inside an open block does not qualify. Shorter, mismatched,
-trailing-text or over-indented closing fences do not close it; list-item
-fences close relative to the list's content column. Recognition still supplies
-only a candidate; the shutdown procedure owns every verification before terminal input or closure.
-A final verdict indented four columns, including a nested verdict bullet, stays
-unrecognized. Use a standalone unindented final `Safe to exit: yes` instead.
-
+The shared parser accepts only a final unindented unfenced verdict after fully
+closed blocks. Open, mismatched or indented fences/verdicts never qualify.
+Recognition supplies a candidate, not authority; use a standalone final
+`Safe to exit: yes` and keep every shutdown gate below.
 
 ### Native shell-input proof
 
@@ -1928,10 +1889,8 @@ contain it in a subshell. The Director's profile governs automatic tab closure.
 
 ### Verify and close
 
-Follow [shutdown](../SKILL.md#close-finished-sessions-on-every-notice-and-check)
-for all transcript, handoff, pending-prompt, input preservation and process gates.
-Use `session_closeout.py` for normal sessions; candidates alone grant no authority.
-Unrecognized verdicts need a fresh standalone verdict, never a parser override.
+Use [shutdown](../SKILL.md#close-finished-sessions-on-every-notice-and-check)
+for every verification; `session_closeout.py` handles only its normal path.
 
 ### Recovery after a host or terminal crash
 
@@ -2059,10 +2018,30 @@ current exit. Other owners/Apps never authorize identity switching. Disposable
 an action barrier/freeze; never delete leases or restart running/draining daemons.
 A stopped daemon may use its exact configured-home native `daemon start` route.
 
-An exited Codex source resumes only through guarded `new --resume-session-id`
-with its original owned ledger/account and no command/brief/browser files.
-Inspect idle input before a fresh safe turn; preserve native identity/handoff
-and record this recovery's verified terminal, PID/TTY and generation. A frozen
+An exited Codex source resumes through guarded `new --resume-session-id` on
+its original account. After retirement, verify its exact canonical closed-log
+source row and export that unchanged row to private JSON, preserving absolute
+native paths and original custody. Re-register it with `iterm_tab.py register
+--entry-file <verified-closed-source.json> --ledger <original-ledger.json>`.
+Then use the original owned ledger, with no command/brief/browser files:
+
+```sh
+uv run skills/supervisor/scripts/iterm_tab.py --backend tmux new --window-id <container-id> --resume-session-id <native-id> --ledger <original-ledger.json> --account-provider openai
+uv run skills/supervisor/scripts/iterm_tab.py --backend tmux read --session-id <returned-terminal-id>
+uv run skills/supervisor/scripts/iterm_tab.py --backend tmux send --session-id <returned-terminal-id> --text-file <fresh-safe-turn.txt> --verified-target
+uv run skills/supervisor/scripts/codex-session.py status --session-id <native-id>
+```
+
+Preserve input and inspect the idle prompt before a fresh safe turn. Keep native
+`session_id`, transcript and handoff; store the terminal ID only in
+`tmux_session_id`/`iterm_session_id`, with this recovery's verified PID/TTY and
+generation. Missing launch identity needs `status` and PID/TTY verification,
+never old metadata. A partially completed native resume retains its connection
+and invalidation; retry that exact resume for metadata, preserving the source.
+Keep actual recovery exit times and earlier evidence; uncertain launches keep
+their exact pane without replay, account switching or daemon restart.
+Retained direct-binding Codex sessions without native daemon proof use the full
+manual shutdown procedure, never a skipped native gate. A frozen
 predecessor needs a new claimed thread. Stale queued input uses `queue-cancel`
 preview on the original owned ledger/source-host termination record, then one
 observed ID/full digest apply to **NotLoaded** only. Never unload/archive/drain

@@ -110,6 +110,8 @@ def check(ledger: Path, state: Path, capacity_state: Path | None = None) -> dict
                 background_tasks=result["background_tasks"],
                 capacity_retry=result.get("capacity_retry"),
             )
+            if (result.get("capacity_retry") or {}).get("state") in {"exhausted", "blocked", "reconciliation_required", "target_changed"}:
+                row["action"] = "inspect_capacity_retry"
             if result.get("realtime_coverage") is False:
                 row.update(error="native realtime history coverage is incomplete", action="inspect_coverage_gap")
         rows.append(row)

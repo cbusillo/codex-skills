@@ -199,7 +199,7 @@ class InputRefused(ValueError):
 def input_preflight():
     try:
         yield
-    except (ValueError, OSError, subprocess.SubprocessError) as error:
+    except Exception as error:
         raise InputRefused(str(error)) from error
 
 
@@ -1678,7 +1678,12 @@ def register_claude_launch(launch: dict, native: dict, ledger: Path) -> dict:
         raise ValueError("exact fresh Claude transcript is unavailable; preserve its terminal")
     processes = [row for row in session_liveness.inventory() if row[1] == launch["tty"].removeprefix("/dev/")
                  and session_liveness.harness_family((session_liveness.harness_arguments(row[2]) or [""])[0]) == "claude"]
-    processes = [row for row in processes if row[0] == launch["pid"]] or processes
+    exact = [row for row in processes if row[0] == launch["pid"]]
+    if not exact:
+        import tmux_terminal
+        parents = tmux_terminal.process_parents()
+        exact = [row for row in processes if tmux_terminal.belongs_to(row[0], launch["pid"], parents)]
+    processes = exact
     if len(processes) != 1:
         raise ValueError("fresh Claude process identity is ambiguous")
     entry = {**launch, "session_id": native["session_id"], "tmux_session_id": launch["session_id"],
@@ -1771,7 +1776,8 @@ async def operate(app, args):
                     )
         return result
     if args.command in {"send", "read", "clear"}:
-        session = select_session(app, args.session_id)
+        with input_preflight():
+            session = select_session(app, args.session_id)
         if args.command == "read":
             return await read_session(session)
         if not args.verified_target:
@@ -2089,8 +2095,9 @@ def main():
     import iterm2
 
     async def connected(connection):
-        app = await iterm2.async_get_app(connection)
         try:
+            with input_preflight():
+                app = await iterm2.async_get_app(connection)
             print(json.dumps(await operate(app, args), indent=2))
         except LaunchFailure as error:
             print(json.dumps(error.detail, indent=2))

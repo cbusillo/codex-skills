@@ -16,7 +16,7 @@ from subprocess import SubprocessError
 import account_choice
 import iterm_tab
 import session_liveness
-from capacity_retry import save_state
+from check_changes import save_state
 from codex_session_proxy import read_launch_receipt
 from check_operation import (
     GateFailed,
@@ -120,7 +120,7 @@ def verify(config: dict, operation: Operation) -> dict:
         try:
             handoffs.append(verify_smoke(config, operation, harness, provider, runtime))
             results[harness] = {"ok": True, "launch_passed": True}
-        except (OSError, ValueError, KeyError, TypeError, SubprocessError, GitHubReadError, GitHubReadShapeError) as error:
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, SubprocessError, GitHubReadError, GitHubReadShapeError) as error:
             failure = error if isinstance(error, GateFailed) else GateFailed(operation.gate, str(error))
             failures.append(failure)
             results[harness] = {
@@ -142,10 +142,9 @@ def verify(config: dict, operation: Operation) -> dict:
 
 def verify_smoke(config: dict, operation: Operation, harness: str, provider: str, runtime: Path) -> str:
     repo, landing = config["repo"], config["landing_sha"]
-    scripts, ledger, owner = runtime / "skills/supervisor/scripts", Path(config["ledger"]), repo.split("/")[0]
-    completed = operation.state["steps"].get(harness + "_closeout")
-    if completed and completed.get("complete") is True and completed["result"].get("ok") is True:
-        return operation.state["steps"][harness + "_handoff"]["url"]
+    scripts, ledger = runtime / "skills/supervisor/scripts", Path(config["ledger"])
+    if operation.state["steps"].get(harness + "_handoff"):
+        return close_smoke(config, operation, harness, runtime)
     phase = harness + "_launch"
     brief = operation.evidence / (harness + "-brief.txt")
     brief.write_text(
@@ -274,26 +273,26 @@ def verify_smoke(config: dict, operation: Operation, harness: str, provider: str
     ]
     require(bool(matches), "smoke_handoff", "requires an exact native-session issue handoff")
     entry["handoff_url"] = max(matches, key=lambda row: (row["created_at"], row["id"]))["html_url"]
-    operation.state["steps"][harness + "_handoff"] = {"url": entry["handoff_url"]}
+    operation.state["steps"][harness + "_handoff"] = {"url": entry["handoff_url"], "session_id": entry["session_id"]}
     save_state(operation.path, operation.state)
-    close = operation.run(
-        harness + "_closeout",
-        [
-            "uv", "run",
-            str(scripts / "session_closeout.py"),
-            "--ledger", str(ledger),
-            "--session-id", entry["session_id"],
-            "--supervisor-session", config["supervisor_session"],
-            "--owner", owner,
-            "--evidence", str(operation.evidence / (harness + "-closeout")),
-            "--handoff-url", entry["handoff_url"],
-        ],
-        timeout=3600,
-    )
+    return close_smoke(config, operation, harness, runtime)
+
+
+def close_smoke(config: dict, operation: Operation, harness: str, runtime: Path) -> str:
+    handoff = operation.state["steps"][harness + "_handoff"]
+    completed = operation.state["steps"].get(harness + "_closeout")
+    if completed and completed.get("complete") is True and completed["result"].get("ok") is True:
+        return handoff["url"]
+    close = operation.run(harness + "_closeout", [
+        "uv", "run", str(runtime / "skills/supervisor/scripts/session_closeout.py"),
+        "--ledger", config["ledger"], "--session-id", handoff["session_id"],
+        "--supervisor-session", config["supervisor_session"], "--owner", config["repo"].split("/")[0],
+        "--evidence", str(operation.evidence / (harness + "-closeout")), "--handoff-url", handoff["url"],
+    ], timeout=3600)
     require(close.get("ok") is True, "smoke_closeout", "smoke launch passed; normal shutdown remains incomplete")
     operation.state["steps"][harness + "_closeout"] = {"complete": True, "result": close}
     save_state(operation.path, operation.state)
-    return entry["handoff_url"]
+    return handoff["url"]
 
 
 def main() -> int:
@@ -309,7 +308,7 @@ def main() -> int:
             operation = Operation(args.evidence, [config["repo"], identity])
             proof = verify(config, operation)
         result = {**receipt(identity, args.evidence), **proof}
-    except (OSError, ValueError, KeyError, TypeError, SubprocessError, GitHubReadError, GitHubReadShapeError) as error:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, SubprocessError, GitHubReadError, GitHubReadShapeError) as error:
         result = receipt(identity, args.evidence, error,
                          gate=operation.gate if "operation" in locals() else "identity")
     print(json.dumps(result, separators=(",", ":")))

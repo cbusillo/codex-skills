@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import release_session_claims as release
-from capacity_retry import save_state
+from check_changes import save_state
 
 if TYPE_CHECKING:
     from skills.github.scripts import github_identity

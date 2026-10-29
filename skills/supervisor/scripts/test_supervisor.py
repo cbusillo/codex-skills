@@ -798,6 +798,13 @@ class LedgerTests(unittest.TestCase):
         self.write([event("task_started", turn_id="working")])
         self.assertTrue(compact_check.check(self.ledger, state)["sessions"])
         self.assertEqual(compact_check.check(self.ledger, state)["sessions"], [])
+        capacity = self.root / "capacity.json"
+        capacity.write_text(json.dumps({self.entry["session_id"]: {
+            "attempts": 1, "last_attempt": 0, "phase": "pending", "target": [str(self.transcript.resolve()), ""]}}))
+        for _ in range(2):
+            report = compact_check.check(self.ledger, state, capacity)
+            self.assertTrue(report["sessions"])
+            self.assertTrue(report["sessions"][0]["action"])
         self.transcript.unlink()
         for _ in range(2):
             report = compact_check.check(self.ledger, state)

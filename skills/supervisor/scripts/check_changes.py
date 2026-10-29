@@ -4,9 +4,28 @@
 # ///
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 
-from capacity_retry import save_state
+
+
+def save_state(path: Path, state: dict | list) -> None:
+    descriptor, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(state, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
 
 
 def fingerprint(value: object) -> str:

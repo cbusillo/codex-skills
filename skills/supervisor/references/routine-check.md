@@ -1,15 +1,11 @@
 # Routine check
 
-Use this entry for the existing ~23-minute check and immediate worker notices.
-An established check means the already scheduled readers and one named normal
-closeout, within the existing run's scope. Load the full skill at takeover; for rare events load only their
-owning skill and linked section. This entry covers the established check readers
-and normal closeout, without reloading skills every scheduled turn.
-
-Keep absolute pointers to the run's private ledger, one recovery note,
-reader state files, handoff record, question queue and latest catalog landing
-receipt. Keep no copied rules, decisions, statuses or board contents in context
-or a private narrative. Read a linked record when it needs action.
+Use this for the existing ~23-minute check and immediate notices: established
+readers and one named normal closeout within the run's scope need no reload.
+Read the full skill at takeover; load owning skills/sections for rare events.
+Keep absolute pointers to the private ledger, one recovery note, reader state,
+handoff, question queue and latest landing receipt. Keep no copied rules,
+decisions, statuses, board contents or narrative; open linked records for action.
 
 1. Read the recovery note and reconcile pending local actions at their source.
 2. Run `goal_board.py --owner OWNER --changes-state <board-state.json>`, then
@@ -23,14 +19,16 @@ or a private narrative. Read a linked record when it needs action.
    for the queue, and source anchors outside watcher coverage with their own
    state file. Open full new comments before acting. Register/present questions
    through the existing queue rules; changes mode never writes delivery records.
-4. For one normal finished session, run `session_closeout.py --ledger <ledger.json>
-   --session-id <native-id> --supervisor-session <supervisor-id> --owner OWNER
-   --evidence <private-session-evidence>`. Supply `--handoff-url <actual-comment>`
-   when the ledger has none; the helper verifies and saves it. It preserves every claim, handoff,
-   verdict, process, input and terminal gate. Keep the receipt or first failed
-   gate; open detailed private evidence only on failure. Never replay uncertain
-   mutation steps with another evidence directory. Nonempty input, prompts and
-   interrupted sources use [shutdown and recovery](helpers.md#finished-session-shutdown-stages).
+4. For one normal finished session, run:
+
+   ```sh
+   uv run skills/supervisor/scripts/session_closeout.py --ledger <ledger.json> --session-id <native-id> --supervisor-session <supervisor-id> --owner OWNER --evidence <private-session-evidence>
+   ```
+
+   Add `--handoff-url <actual-comment>` only when absent. Keep its receipt or
+   first failed gate; inspect private details on failure and reuse its evidence.
+   Never replay uncertain mutations with another directory. Nonempty input,
+   prompts and interrupted sources use [shutdown/recovery](helpers.md#finished-session-shutdown-stages).
 5. Catch up merged catalog PRs against the latest verification link, including
    service-led landings. Use [catalog landing verification](helpers.md#catalog-landing-verification)
    for an unverified SHA; retain earlier missed-SHA gaps explicitly.
@@ -43,12 +41,10 @@ or a private narrative. Read a linked record when it needs action.
    Director waits. Nudge stalls with exact evidence and process finished
    notices immediately. Re-arm bounded watchers; do not duplicate live services.
 
-Every check links the Director's question queue and reports unknown coverage.
-Changes readers rebuild current sources; fingerprints suppress output only.
-An empty diff is not a new pass for an unread record. Assess changed Track proof
-at its source; use the full goal board at takeover and handoff. Preserve real
-holds, pending reviews, active work and uncertain operations.
-Compare workers with DIRECTION.md and escalate mismatches. After compaction or
-an interrupted/truncated check, rebuild the full board and question inventory
-before continuing changes-only reads; their fingerprints are check watermarks,
-not delivery acknowledgements. Unpresented queue questions stay outstanding.
+Every check links the question queue and reports unknown coverage. Readers
+rebuild current sources; fingerprints suppress output, never attest unread proof.
+Assess changed Track proof at source; preserve holds, reviews and active work.
+Compare workers with DIRECTION.md and escalate mismatches. Use the full board
+at takeover/handoff; after compaction or a truncated/interrupted check, rebuild
+full board/questions before changes mode. Watermarks are not delivery records;
+unpresented queue questions stay outstanding.
