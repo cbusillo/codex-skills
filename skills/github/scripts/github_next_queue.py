@@ -158,7 +158,7 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
         comments = [{**comment, "user": {"login": comment.get("author") or ""}} for comment in discussion.get("comments", [])]
         projected = github_next_pr.project(item["repo"], pull, comments, trusted=trusted, complete=discussion.get("complete") is True,
                                             acceptance_reader=acceptance_reader)
-        if projected["reason"] in {"train_batch", "draft_park"} or projected["state"] == "unknown" and projected["reason"] != "client_acceptance_unavailable":
+        if projected["reason"] in {"train_batch", "draft_park"} or (projected["state"] == "unknown" and projected["reason"] != "client_acceptance_unavailable"):
             return {**row, "state": "review" if projected["state"] == "unknown" else projected["state"], "reason": projected["reason"]}
     facts = ownership_facts(item, ownership, trusted=trusted)
     if facts.get("error"):

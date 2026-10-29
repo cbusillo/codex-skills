@@ -11,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import github_api
 import github_plan_claim
 import github_plan_wait
 import ready_handoff
@@ -21,9 +22,12 @@ DISCUSSION_EXCERPT_LIMIT = 1000
 
 def read_acceptance(repo: str, number: int, head: str) -> bool:
     helper = Path(__file__).resolve().parents[2] / "launchplane/scripts/launchplane-owner-review.py"
+    timeout = min(20, github_api.remaining_retry_timeout_seconds())
+    if timeout <= 0:
+        raise ValueError("client_acceptance_unavailable")
     result = subprocess.run(
-        [sys.executable, str(helper), "--repo", repo, "--pr", str(number)],
-        capture_output=True, text=True, timeout=20,
+        [sys.executable, str(helper), "--repo", repo, "--pr", str(number), "--timeout", str(timeout)],
+        capture_output=True, text=True, timeout=timeout,
     )
     payload = json.loads(result.stdout)
     if result.returncode or not isinstance(payload, dict) or payload.get("ok") is not True:
@@ -90,11 +94,13 @@ def project(repo: str, pull: dict[str, Any], comments: list[dict[str, Any]], *, 
     if ready:
         return {**row, "state": "underway", "reason": "current_head_ready"}
     if client_wait:
+        if wait["state"] != "clear" and source is not None:
+            return {**row, "state": "waiting", "reason": "current_head_client_wait"}
         try:
             accepted = (acceptance_reader or read_acceptance)(repo, pull["number"], head)
         except (ValueError, OSError, subprocess.SubprocessError):
             return {**row, "state": "unknown", "reason": "client_acceptance_unavailable"}
-        if accepted and (wait["state"] == "clear" or source is None):
+        if accepted:
             return {**row, "state": "review", "reason": "pr_followthrough_needs_fresh_readiness", "next_actor": "agent",
                     "next_action": "Post checked Ready for the accepted current head after fresh readiness and custody checks."}
         return {**row, "state": "waiting", "reason": "current_head_client_wait"}

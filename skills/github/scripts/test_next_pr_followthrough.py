@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import json
 import subprocess
+from concurrent.futures import CancelledError
 from unittest.mock import Mock, patch
 
+import github_api
 import github_next_pr
 import github_next_queue
 import github_plan_claim as claim
@@ -143,6 +145,46 @@ def test_saved_current_head_acceptance_ends_only_the_client_handoff_wait() -> No
             assert not result["pr_followthrough_context"]["complete"]
 
 
+def test_acceptance_reads_preserve_deadline_coverage_and_bound_the_child() -> None:
+    module = load_module()
+    row = item()
+    row["record_type"] = "pull_request"
+    comments = [comment(1, ready_handoff.handoff_body(HEAD, waiting_for_client=True))]
+    row["discussion"]["comments"] = [{**entry, "author": entry["user"]["login"]} for entry in comments]
+    observed = pr_evidence(row)
+    for error in (module.github_next_reads.ReadDeadline("Expired"), CancelledError()):
+        with module.github_next_reads.NextReads(workers=1, seconds=0) as reads:
+            module.NEXT_READS = reads
+            with patch.object(reads, "request", side_effect=error), patch("subprocess.run") as child:
+                queued = github_next_queue.classify(row, observed, trusted={"owner", "bot"},
+                                                   acceptance_reader=module.next_pr_acceptance)
+                assert queued["state"] == "review"
+                with patch.multiple(module, wait_authors=lambda *_: {"owner", "bot"}):
+                    result, _ = discover(module, [{**observed["pulls"][0], "_graph_comments": comments}])
+                assert not result["pr_followthrough_context"]["complete"]
+                assert sum(reads.budget_stops.values()) == 1
+                assert reads.reused
+                child.assert_not_called()
+        module.NEXT_READS = None
+    for remaining in (0, 0.25):
+        response = subprocess.CompletedProcess([], 0, json.dumps({"ok": True, "decision": None}), "")
+        with patch.object(github_api, "remaining_retry_timeout_seconds", return_value=remaining), \
+                patch("subprocess.run", return_value=response) as child:
+            if remaining:
+                assert not github_next_pr.read_acceptance(row["repo"], row["number"], HEAD)
+                assert 0 < child.call_args.kwargs["timeout"] <= remaining
+                command = child.call_args.args[0]
+                assert float(command[command.index("--timeout") + 1]) <= child.call_args.kwargs["timeout"]
+            else:
+                try:
+                    github_next_pr.read_acceptance(row["repo"], row["number"], HEAD)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("Expired budget started an acceptance read")
+                child.assert_not_called()
+
+
 def test_existing_inventory_supplies_pr_followthrough_without_dependency_age_rule() -> None:
     module = load_module()
     pr = {**pull(author="bot", hours=1), "head": {"sha": HEAD}}
@@ -177,4 +219,5 @@ if __name__ == "__main__":
     test_non_dependency_followthrough_preserves_conditions_and_current_head_handoffs()
     test_existing_inventory_supplies_pr_followthrough_without_dependency_age_rule()
     test_saved_current_head_acceptance_ends_only_the_client_handoff_wait()
+    test_acceptance_reads_preserve_deadline_coverage_and_bound_the_child()
     print("PR follow-through tests passed")

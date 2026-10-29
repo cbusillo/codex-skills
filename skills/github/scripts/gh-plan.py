@@ -5079,7 +5079,12 @@ def cmd_next(args: argparse.Namespace) -> None:
 def next_pr_acceptance(repo: str, number: int, head: str) -> bool:
     def read() -> bool:
         return github_next_pr.read_acceptance(repo, number, head)
-    return NEXT_READS.observe(f"client_acceptance:{repo.casefold()}#{number}:{head}", read) if NEXT_READS else read()
+    try:
+        return NEXT_READS.observe(f"client_acceptance:{repo.casefold()}#{number}:{head}", read) if NEXT_READS else read()
+    except (github_next_reads.ReadDeadline, github_next_reads.CancelledError) as exc:
+        if NEXT_READS is not None:
+            NEXT_READS.budget_stop("read_budget_exhausted", error=exc)
+        raise ValueError("client_acceptance_unavailable") from exc
 
 
 def next_status_body_time(item: dict[str, Any], trusted: set[str]) -> str | None:
