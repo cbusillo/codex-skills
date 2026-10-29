@@ -60,13 +60,20 @@ CLAIM_LEASE = CATALOG / "github" / "scripts" / "github_plan_lease.py"
 CODE_HOME_SKILLS = "$CODE_HOME/skills/"
 OPERATORS = re.compile(r"^[;&|()\n]+$")
 REDIRECTION = re.compile(r"[<>][<>&|]*|&>>?")
-REPOSITORY_SLUG = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*/launchplane")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 TRANSPARENT = {"command", "exec", "time", "nohup"}
 SHELL_KEYWORDS = {"{", "!", "if", "then", "elif", "else", "do", "while", "until"}
 SHELLS = {"sh", "bash", "zsh"}
 SCRIPT_INTERPRETERS = re.compile(r"^(?:osascript|python[\d.]*|node|swift|xdotool|xte|cliclick)$")
 SCRIPT_WRAPPERS = {"sudo", "timeout", "xargs"}
+DATA_ARGUMENT_PREFIXES = (
+    ("launchplane",), ("rg",), ("grep",),
+    ("git", "log"), ("git", "grep"), ("git", "status"), ("git", "diff"),
+    ("git", "show"), ("git", "rev-parse"), ("git", "ls-files"), ("git", "ls-tree"),
+    ("git", "for-each-ref"), ("git", "describe"),
+)
+FIND_VALUE_FLAGS = {"-name", "-iname", "-path", "-ipath", "-regex", "-iregex", "-type", "-user", "-group", "-size", "-perm"}
+FIND_EXECUTION_FLAGS = {"-exec", "-execdir", "-ok", "-okdir"}
 STDIN_PROGRAM_PATHS = {"-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"}
 SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
 GH_WRAPPER_FLAGS = {"--print-auth-account", "--require-automation-auth"}
@@ -268,8 +275,11 @@ def reads_script_from_input(argv: list[str]) -> bool:
     """A shell without `-c`, even behind a wrapper such as `sudo`, or ssh may run heredoc text."""
     if argv[0] == "ssh":
         return True
-    shells = [index for index, token in enumerate(argv) if Path(token).name in SHELLS]
-    return bool(shells) and not any(SHELL_COMMAND_FLAG.match(token) for token in argv[shells[0] + 1:])
+    return any(
+        Path(token).name in SHELLS and not any(SHELL_COMMAND_FLAG.match(argument) for argument in span[index + 1 :])
+        for span in execution_spans(argv)
+        for index, token in enumerate(span)
+    )
 
 
 def without_redirections(argv: list[str]) -> list[str]:
@@ -438,8 +448,7 @@ def drop_flags(argv: list[str], value_flags: set[str] | None = None) -> list[str
     return argv
 
 
-def unwrap(argv: list[str]) -> list[list[str]]:
-    """Return the command or commands an argv really runs, per the module docstring."""
+def executable_arguments(argv: list[str]) -> list[str]:
     while argv:
         head = Path(argv[0]).name
         if ASSIGNMENT.match(argv[0]) or head in TRANSPARENT | SHELL_KEYWORDS:
@@ -448,32 +457,75 @@ def unwrap(argv: list[str]) -> list[list[str]]:
             argv = drop_flags(argv[1:], ENV_VALUE_FLAGS)
         elif head == "uv" and argv[1:2] == ["run"]:
             argv = drop_flags(argv[2:], UV_VALUE_FLAGS)
-        elif head == "gh-with-env-token":
-            arguments = argv[1:]
-            while arguments and arguments[0] in GH_WRAPPER_FLAGS:
-                arguments = arguments[1:]
-            if arguments[:1] == ["--check"]:
-                break  # Auth preflight exits without executing gh.
-            return [["gh-with-env-token", *arguments]]
-        elif head == "eval":
-            # Its quoted arguments are the command, not data.
-            return nested_commands([" ".join(argv[1:])])
         else:
             break
+    return argv
+
+
+def execution_spans(argv: list[str]) -> list[list[str]]:
+    arguments = without_redirections(argv)
+    executable = executable_arguments(arguments)
+    if not executable:
+        return []
+    prefix = arguments[: len(arguments) - len(executable) + 1]
+    normalized = [Path(executable[0]).name, *executable[1:]]
+    if normalized[0] == "rg" and any(
+        token.split("=", 1)[0] in {"--pre", "--hostname-bin"} for token in normalized[1:]
+    ):
+        return [arguments]
+    if any(tuple(normalized[: len(pattern)]) == pattern for pattern in DATA_ARGUMENT_PREFIXES):
+        return [prefix]
+    if normalized[0] != "find":
+        return [arguments]
+    spans = [prefix]
+    cursor = 1
+    while cursor < len(executable):
+        token = executable[cursor]
+        if token in FIND_VALUE_FLAGS:
+            cursor += 2
+            continue
+        if token in FIND_EXECUTION_FLAGS:
+            start = cursor + 1
+            end = next(
+                (
+                    index
+                    for index in range(start, len(executable))
+                    if executable[index] == ";"
+                    or executable[index] == "+" and index > start and executable[index - 1] == "{}"
+                ),
+                len(executable),
+            )
+            spans.extend(execution_spans(executable[start:end]))
+            cursor = end + 1
+            continue
+        cursor += 1
+    return spans
+
+
+def unwrap(argv: list[str]) -> list[list[str]]:
+    argv = executable_arguments(argv)
     if not argv:
         return []
+    if Path(argv[0]).name == "gh-with-env-token":
+        arguments = argv[1:]
+        while arguments and arguments[0] in GH_WRAPPER_FLAGS:
+            arguments = arguments[1:]
+        if arguments[:1] != ["--check"]:
+            return [["gh-with-env-token", *arguments]]
+    if Path(argv[0]).name == "eval":
+        return nested_commands([" ".join(argv[1:])])
     argv = [Path(argv[0]).name, *argv[1:]]
     if argv[0] in SHELLS:
         for index, token in enumerate(argv[1:-1], start=1):
             if SHELL_COMMAND_FLAG.match(token):  # -c, -lc, -ec ...
                 return nested_commands([argv[index + 1]])
     commands = [argv]
-    shells = [index for index, token in enumerate(argv[1:-1], start=1) if Path(token).name in SHELLS]
-    if shells:
-        # A wrapper left in place (`sudo sh -c`, `xargs bash -c`) still runs the script.
-        flag = next((index for index in range(shells[0] + 1, len(argv) - 1) if SHELL_COMMAND_FLAG.match(argv[index])), None)
-        if flag is not None:
-            commands += nested_commands([argv[flag + 1]])
+    for span in execution_spans(argv):
+        shells = [index for index, token in enumerate(span[:-1]) if Path(token).name in SHELLS]
+        if shells:
+            flag = next((index for index in range(shells[0] + 1, len(span) - 1) if SHELL_COMMAND_FLAG.match(span[index])), None)
+            if flag is not None:
+                commands += nested_commands([span[flag + 1]])
     if argv[0] == "ssh":
         # The remote command runs too; the host and option values read as harmless words.
         commands += nested_commands([" ".join(argv[1:])])
@@ -581,7 +633,7 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
                     return None
                 return exception_cwd(tokens[index + 1], cwd)
         return None
-    for token in tokens:
+    for token in (token for argv in commands for span in execution_spans(argv) for token in span):
         if Path(token).name in SHELLS:
             return None
         if token.startswith(POSTGRES_URL_VARIABLE) and loopback_database(token.removeprefix(POSTGRES_URL_VARIABLE)):
@@ -600,18 +652,8 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
         normalized = unwrap(raw_argv)
         if not normalized or normalized[0][:1] != ["launchplane"]:
             continue
-        consumer_command = (
-            normalized[0][:2] == ["launchplane", "local-consumer"]
-            and normalized[0][2:3] in (["prepare"], ["deliver"], ["receive"])
-        )
         executable_position = len(raw_argv) - len(normalized[0])
-        for position, token in enumerate(raw_argv):
-            if (
-                consumer_command
-                and position > executable_position + 2
-                and token.split("=", 1)[0] == "--directory"
-            ):
-                continue
+        for token in raw_argv[:executable_position + 1]:
             if (
                 token in {"--active", "--no-project"}
                 or token.startswith("-C")
@@ -619,13 +661,9 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
                 in {"--chdir", "--directory", "--project", "--with", "--with-editable", "--with-requirements", "--env-file"}
             ):
                 return None
-            repository = token.removeprefix("--repository=") if raw_argv[position - 1 : position] != ["--repository"] else token
-            repository_slug = repository != token or raw_argv[position - 1 : position] == ["--repository"]
             if (
                 Path(token).name == "launchplane"
                 and token != "launchplane"
-                and (not consumer_command or position <= executable_position)
-                and not (repository_slug and REPOSITORY_SLUG.fullmatch(repository))
             ):
                 return None
         if normalized[0][:3] == POSTGRES_GATE and not names_loopback_database(raw_argv):

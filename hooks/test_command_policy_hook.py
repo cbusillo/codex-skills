@@ -68,6 +68,19 @@ def linked_worktree(checkout: Path, linked: Path) -> Path:
     return linked
 
 
+def repository_exception_commands() -> list[tuple[str, str]]:
+    commands = []
+    for policy in SIMULATOR.policy_catalog():
+        if policy["skill"] != "launchplane":
+            continue
+        for exception in policy.get("exceptions", []):
+            arguments = [*exception["argv_prefix"], "--help"]
+            if arguments[: len(command_policy_hook.POSTGRES_GATE)] == command_policy_hook.POSTGRES_GATE:
+                arguments += ["--database-url", "postgresql://fixture@127.0.0.1/postgres"]
+            commands.append((exception["repository"], shlex.join(arguments)))
+    return commands
+
+
 class CommandPolicyHookTests(unittest.TestCase):
     def test_each_harness_tool_call_renews_its_claim_lease_without_skipping_policy(self) -> None:
         payloads = {
@@ -403,28 +416,13 @@ class CommandPolicyHookTests(unittest.TestCase):
             subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True)
             frontend = checkout / "frontend"
             frontend.mkdir()
-            commands = (
-                "launchplane service export-openapi --output generated/openapi.json",
-                "launchplane service export-agent-contract --output contracts/agent.json",
-                "launchplane service export-owner-control-contract --output contracts/owner.json",
-                "launchplane ci unittest-shard local",
-                "launchplane ci unittest-shard plan --shard-count 2 --timings-file timings.json",
-                "launchplane ci unittest-shard run --shard-count 2 --shard-index 0",
-                "launchplane service audit-config-authority --control-plane-root .",
-                "launchplane service plan-config-authority-transition --base-branch main --required-checks-file checks.json",
-                "launchplane local-consumer --help",
-                "launchplane local-consumer prepare --directory recipient",
-                "launchplane local-consumer prepare --directory /private/launchplane",
-                "launchplane local-consumer deliver --directory recipient --service-url https://launchplane.example",
-                "launchplane local-consumer receive --directory recipient --package-file package.json",
-                "launchplane odoo-ownership check --workspace-root ..",
-                "launchplane action-pins check --repo-root . --revision HEAD --repository cbusillo/launchplane",
-                "launchplane action-pins update --release-sha 0123abc",
-                "launchplane action-pins check --repo-root . --revision HEAD --repository=cbusillo/launchplane",
-            )
-            for command in commands:
+            commands = repository_exception_commands()
+            linked = linked_worktree(checkout, root / "linked")
+            for repository, command in commands:
+                subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", f"git@github.com:{repository}.git"], check=True)
                 with self.subTest(command=command):
                     self.assertEqual(bash("uv run " + command, checkout).returncode, 0)
+                    self.assertEqual(bash("uv run " + command, linked).returncode, 0)
                     self.assertEqual(bash("uv run " + command, frontend).returncode, 0)
                     self.assertEqual(bash("uv run --extra dev " + command, checkout).returncode, 0)
                     self.assertEqual(bash("uv run " + command, root).returncode, 2)
@@ -440,17 +438,15 @@ class CommandPolicyHookTests(unittest.TestCase):
             self.assertEqual(bash("pnpm --dir frontend generate:openapi", checkout).returncode, 0)
             self.assertEqual(bash("launchplane merge-train run-once", checkout).returncode, 2)
             self.assertEqual(bash("launchplane service start", checkout).returncode, 2)
-            self.assertEqual(bash("uv run " + commands[0] + " && launchplane service start", checkout).returncode, 2)
-            # A real linked worktree, not a mocked directory name or host runtime.
-            linked = linked_worktree(checkout, root / "linked")
-            self.assertEqual(bash("uv run " + commands[0], linked).returncode, 0)
+            command = commands[0][1]
+            self.assertEqual(bash("uv run " + command + " && launchplane service start", checkout).returncode, 2)
             for origin in (
                 "https://github.com/cbusillo/launchplane.git",
                 "ssh://git@github.com/cbusillo/launchplane.git",
                 "https://github.com/cbusillo/launchplane",
             ):
                 subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", origin], check=True)
-                self.assertEqual(bash("uv run " + commands[0], checkout).returncode, 0)
+                self.assertEqual(bash("uv run " + command, checkout).returncode, 0)
             for origin in (
                 "https://github.com/other/launchplane.git",
                 "https://github.com/cbusillo/launchplane-other.git",
@@ -458,9 +454,9 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "https://evil.invalid/cbusillo/launchplane.git",
             ):
                 subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", origin], check=True)
-                self.assertEqual(bash("uv run " + commands[0], checkout).returncode, 2)
+                self.assertEqual(bash("uv run " + command, checkout).returncode, 2)
             subprocess.run(["git", "-C", str(checkout), "config", "--unset", "remote.origin.url"], check=True)
-            self.assertEqual(bash("uv run " + commands[0], checkout).returncode, 2)
+            self.assertEqual(bash("uv run " + command, checkout).returncode, 2)
 
     def test_repository_exception_cannot_follow_unverified_command_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -565,9 +561,11 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "launchplane local-consumer --help-other",
                 "launchplane odoo-ownership other-command",
                 "launchplane odoo-targets replacement-plan",
+                "launchplane ingress route-apply",
+                "launchplane ingress private-testing-plan",
+                "launchplane ingress private-testing-activate",
+                "launchplane ingress health-history-summary-other",
                 "launchplane action-pins report --revision HEAD --repository cbusillo/launchplane",
-                "launchplane action-pins check --repo-root . --revision HEAD --repository /global/bin/launchplane",
-                "launchplane action-pins check --repo-root . --revision HEAD --repository=/global/bin/launchplane",
                 "launchplane merge-train run-once",
                 "launchplane service start",
             ):
@@ -576,6 +574,70 @@ class CommandPolicyHookTests(unittest.TestCase):
             self.assertEqual(bash("launchplane ci unittest-shard local", checkout).returncode, 2)
             self.assertEqual(bash("uv run --project /other launchplane ci unittest-shard local", checkout).returncode, 2)
             self.assertEqual(bash("echo --repository; tools/launchplane action-pins check --revision HEAD", checkout).returncode, 2)
+
+    def test_gate_data_arguments_and_sibling_reads_do_not_change_execution_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkout = root / "checkout"
+            checkout.mkdir()
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            subprocess.run(
+                ["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True
+            )
+            gate = "uv run launchplane service export-openapi --output artifact.json"
+            for command in (
+                "uv run launchplane ingress health-history-summary --page captures/launchplane --check private_http:private-runtime --identity-check private_http:private-runtime",
+                "uv run launchplane ingress health-history-summary --page=captures/launchplane --help",
+                "uv run --no-sync launchplane ingress health-history-summary --help",
+                "uv run launchplane ingress health-history-summary --page bash --page FOO=bar --help",
+                "uv run launchplane service export-openapi --output generated/launchplane",
+                "uv run launchplane service export-openapi --output artifact.json > evidence/launchplane",
+                "uv run launchplane local-consumer prepare --directory /private/launchplane",
+                "uv run launchplane action-pins check --repo-root ../launchplane --revision HEAD --repository /global/bin/launchplane",
+                "uv run launchplane action-pins check --repo-root=../launchplane --revision HEAD --repository=/global/bin/launchplane",
+                "rg -n bash . && " + gate,
+                "rg -n bash -c . && " + gate,
+                "rg 'FOO=bar' . && " + gate,
+                "git log --grep FOO=bar && " + gate,
+                "git grep bash && " + gate,
+                "find . -name bash && " + gate,
+                "find . -name FOO=bar && " + gate,
+                "find . -name -exec -name bash && " + gate,
+                "find . -exec rg -n bash {} + && " + gate,
+            ):
+                with self.subTest(command=command):
+                    result = bash(command, checkout)
+                    self.assertEqual((result.returncode, result.stderr), (0, ""))
+                    self.assertEqual(bash("cd " + shlex.quote(str(checkout)) + " && " + command, root).returncode, 0)
+
+    def test_opaque_child_shells_and_named_scripts_cannot_supply_gate_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            subprocess.run(
+                ["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True
+            )
+            gate = "uv run launchplane service export-openapi --output artifact.json"
+            for command in (
+                "sudo sh -c 'cd /other && " + gate + "'",
+                "xargs sh -c 'cd /other && " + gate + "'",
+                "find . -exec sh -c 'cd /other && " + gate + "' {} +",
+                "nice sh -c 'cd /other && " + gate + "'",
+                "env sh -c 'cd /other && " + gate + "'",
+                "sudo sh /opaque/script.sh && " + gate,
+                "xargs sh /opaque/script.sh && " + gate,
+                "find . -exec sh /opaque/script.sh {} + && " + gate,
+                "find . -exec custom-wrapper + sh /opaque/script.sh {} + && " + gate,
+                "find . -execdir sh /opaque/script.sh {} + && " + gate,
+                "find . -ok sh /opaque/script.sh {} + && " + gate,
+                "find . -okdir sh /opaque/script.sh {} + && " + gate,
+                "custom-wrapper sh /opaque/script.sh && " + gate,
+                "custom-wrapper FOO=bar && " + gate,
+                "rg --pre sh pattern . && " + gate,
+                "rg --hostname-bin bash --hyperlink-format default pattern . && " + gate,
+            ):
+                with self.subTest(command=command):
+                    self.assertEqual(bash(command, checkout).returncode, 2)
 
     def test_local_gate_chains_and_redirections_keep_the_verified_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

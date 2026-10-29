@@ -757,6 +757,8 @@ policy:
         argv_prefix: ["launchplane"]
       exceptions:
         - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "ingress", "health-history-summary"]
+        - repository: cbusillo/launchplane
           argv_prefix: ["launchplane", "service", "export-openapi"]
         - repository: cbusillo/launchplane
           argv_prefix: ["launchplane", "service", "export-agent-contract"]
@@ -817,11 +819,8 @@ policy:
 
 # Launchplane Expert
 
-The source-only `service export-openapi`, `service export-agent-contract`,
-`service export-owner-control-contract`, `service audit-config-authority`,
-`service plan-config-authority-transition`, `local-consumer --help`,
-`odoo-ownership check`, `action-pins check|update`, and
-`ci unittest-shard local|plan|run` gates may run through
+The repository-scoped `exceptions` in this skill's
+`prefer-launchplane-helpers-over-global-cli` policy name the commands that may run through
 `uv run [--extra dev] launchplane` in a verified `cbusillo/launchplane`
 checkout or linked worktree, including frontend contract generation.
 `ci postgres-integration` may run there too when the command itself names a
