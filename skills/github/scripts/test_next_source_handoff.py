@@ -40,7 +40,19 @@ def test_released_no_pr_source_stays_with_its_integrator() -> None:
         assert result["state"] == "underway", result
         handoff = next(entry for entry in result["ownership_evidence"] if entry.get("release_id") == 11)
         assert handoff["branch"] == branch and handoff["release_id"] == 11
-        assert handoff["next_action"] == (release.split("Next action: ")[-1] if "Next action:" in release else action)
+        assert handoff["next_action"]
+        sentence = copy.deepcopy(row)
+        sentence["discussion"]["body"] = sentence["discussion"]["body"].replace(f"Branch: {branch}", f"Branch: {branch}.")
+        assert classify(sentence, observed)["state"] == "underway"
+        other_branch = copy.deepcopy(row)
+        other_branch["discussion"]["body"] = other_branch["discussion"]["body"].replace(
+            f"Branch: {branch}", f"Branch: {branch}-other"
+        )
+        assert classify(other_branch, observed)["state"] != "underway"
+        local_only = copy.deepcopy(observed)
+        local_only["inventory"]["remote_branches"] = []
+        local_only["inventory"]["local_branches"] = [branch]
+        assert classify(row, local_only)["state"] != "underway"
         disposed = copy.deepcopy(observed)
         disposed["inventory"]["remote_branches"] = []
         assert classify(row, disposed)["state"] != "underway"
@@ -53,9 +65,18 @@ def test_released_no_pr_source_stays_with_its_integrator() -> None:
             "The next worker integrates source.",
             "Whoever resumes integrates source.",
             "Implement the remaining parser.",
+            "Rebase on main and open the PR.",
+            "Fix CI and open a PR.",
+            "Add tests, then land.",
+            "The next session integrates source.",
+            "A successor adopts the branch.",
+            "Someone opens the PR.",
         ]:
             adoptable = copy.deepcopy(row)
             adoptable["discussion"]["comments"][-1]["body"] = f"Released claim 10\n\nPushed WIP.\nNext action: {adoption_action}"
+            assert classify(adoptable, observed)["state"] != "underway", adoption_action
+            adoptable["discussion"]["comments"][-1]["body"] = "Released claim 10\n\nPushed WIP."
+            adoptable["discussion"]["body"] = item(adoption_action, f"Branch: {branch}")["discussion"]["body"]
             assert classify(adoptable, observed)["state"] != "underway", adoption_action
 
 
