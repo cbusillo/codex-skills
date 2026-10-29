@@ -5,6 +5,7 @@
 """Host-local closure evidence. A receipt alone never proves an idle thread ended."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import fcntl
 import json
@@ -15,7 +16,8 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
+from collections.abc import AsyncIterator, Iterator
 from contextvars import ContextVar
 from datetime import datetime, timezone
 
@@ -333,39 +335,102 @@ def replace_rows(rows: list[dict]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def resume_record(session: str, rows: list[dict]) -> dict | None:
+def has_current_claim(session: str) -> bool:
+    from github_plan_claim import discussion_evidence
+    from github_plan_claim_log import read
+    from github_plan_release import verified_comments
+    from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError
+    import github_identity
+
+    deadline = time.time() + 30
+    first_error: Exception | None = None
+    for repo, number in sorted(read(session)):
+        try:
+            reader = GitHubReader(repository=repo, expected_actor=github_identity.automation_login(),
+                                  gh_prefix_args=["--require-automation-auth"], deadline_at=deadline, include_archived=True)
+            issue = reader.get_json(f"/repos/{repo}/issues/{number}", step="resume_claim_record")
+            if not isinstance(issue, dict) or issue.get("state") not in {"open", "closed"}:
+                raise GitHubReadShapeError("source work record state is unavailable")
+            if issue["state"] == "closed":
+                continue
+            def read_release_evidence(source_repo: str, _number: int, identifier: int) -> dict:
+                return reader.get_json(f"/repos/{source_repo}/issues/comments/{identifier}", step="resume_release_evidence")
+
+            comments = verified_comments(reader.paged_json(
+                f"/repos/{repo}/issues/{number}/comments", step_prefix="resume_claim_history"), read_release_evidence)
+            if any(type(comment.get("id")) is not int or not isinstance(comment.get("user"), dict) for comment in comments):
+                raise GitHubReadShapeError("source claim comment identity is unavailable")
+            conflicts, _ = discussion_evidence("", comments, {"session": "", "worker": "", "branch": "", "claimed_at": ""})
+            authors = {comment["id"]: (comment.get("user") or {}).get("login") for comment in comments}
+            if (not reader.expected_actor or any("record" not in record for record in conflicts)
+                    or any(record.get("record", {}).get("session") == session
+                           and authors.get(record.get("id")) != reader.expected_actor for record in conflicts)):
+                raise GitHubReadShapeError("source claim ownership cannot be authenticated")
+            if reader.expected_actor and conflicts and all(record.get("record", {}).get("session") == session
+                                 and authors.get(record.get("id")) == reader.expected_actor for record in conflicts):
+                return True
+        except (GitHubReadError, GitHubReadShapeError, OSError, ValueError) as error:
+            if first_error is None:
+                first_error = error
+    if first_error is not None:
+        raise ValueError("source claim coverage is unavailable; preserve the session and retry the read") from first_error
+    return False
+
+
+def resume_record(session: str, rows: list[dict], *, check_claims: bool = True) -> dict | None:
     """Check known source refusals without leases, invalidation or publication."""
     require_canonical_identity(session)
     matches = [r for r in rows if r.get("session_id") == session]
     if len(matches) > 1:
         raise ValueError("duplicate closed generations; preserve the source")
     row = matches[0] if matches else None
-    if lease_state(session).get("successor_admitted") or row is not None and row.get("successor_admitted"):
+    state = lease_state(session)
+    if "claim_admission_unknown" in state:
+        raise ValueError("claim admission outcome is unknown; rerun the original gh-plan.py claim for reconciliation before resuming")
+    handed_off = state.get("successor_admitted") or row is not None and row.get("successor_admitted")
+    if not handed_off:
+        return row
+    from github_plan_release import stamp
+    closed = row is not None and row.get("ended_at") and (
+        not row.get("resumed_at") or stamp(row["resumed_at"]) <= stamp(row["ended_at"]))
+    if row is not None and row.get("successor_admitted") or closed or check_claims and not has_current_claim(session):
         raise ValueError("this generation handed off its work; start a new thread and claim through gh-plan.py")
     return row
 
 
+def record_resume(session: str, row: dict | None, *, method: str | None, home: str | Path | None) -> None:
+    from github_plan_lease import renew
+
+    if row is not None:
+        with store_lock(closed_log(), create=True):
+            rows = log_rows()
+            current = [source for source in rows if source.get("session_id") == session]
+            if current != [row]:
+                raise ValueError("source closure changed during resume verification; preserve the current generation")
+            current[0]["closure_evidence"] = None
+            current[0]["resumed_at"] = datetime.now(timezone.utc).isoformat()
+            replace_rows(rows)
+    renew(session)
+    set_action_pending(session, True, method=method, home=home)
+    state = lease_state(session)
+    if state.pop("successor_admitted", None):
+        write_lease_state(session, state)
+
+
 @contextmanager
-def resume_guard(session: str, *, method: str | None = None, home: str | Path | None = None):
-    """Invalidate the closed generation before an exact native resume/queue."""
+def resume_guard(session: str, *, method: str | None = None, home: str | Path | None = None) -> Iterator[None]:
     with ownership(session, create=True):
-        if lease_state(session).get("successor_admitted"):
-            raise ValueError("this generation handed off its work; start a new thread and claim through gh-plan.py")
-        path = closed_log()
-        # The source lease also serializes closure publication for this ID.
-        # A new thread has no receipt to invalidate and need not wait behind
-        # unrelated store mutations before its first turn.
-        if path.exists() and any(r.get("session_id") == session for r in log_rows()):
-            with store_lock(path, create=True):
-                rows = log_rows()
-                row = resume_record(session, rows)
-                if row is not None:
-                    row["closure_evidence"] = None
-                    row["resumed_at"] = datetime.now(timezone.utc).isoformat()
-                    replace_rows(rows)
-        # Native acknowledgement may precede deferred execution or transcript
-        # persistence. Authored releases must not bypass this invalidation.
-        set_action_pending(session, True, method=method, home=home)
+        row = resume_record(session, log_rows() if closed_log().exists() else [])
+        record_resume(session, row, method=method, home=home)
+        yield
+
+
+@asynccontextmanager
+async def async_resume_guard(session: str, *, method: str | None = None, home: str | Path | None = None) -> AsyncIterator[None]:
+    with ownership(session, create=True):
+        rows = log_rows() if closed_log().exists() else []
+        row = await asyncio.to_thread(resume_record, session, rows)
+        record_resume(session, row, method=method, home=home)
         yield
 
 

@@ -4,7 +4,7 @@
 # ///
 """Fake native daemon evidence, including refusal and read-only transport."""
 import asyncio
-from contextlib import ExitStack, redirect_stdout
+from contextlib import AbstractContextManager, ExitStack, redirect_stdout
 import io
 import inspect
 import json
@@ -18,6 +18,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from typing import Self
 import unittest
 from unittest.mock import Mock, patch
 
@@ -25,7 +26,7 @@ from aiohttp import web
 import github_plan_sessions as SESSIONS
 import github_plan_closure as CLOSURE
 
-class ReceiptFixture:
+class ReceiptFixture(AbstractContextManager):
     """A real read-only Unix daemon plus an actual shared closure receipt."""
     def __init__(self, session="holder", *, archived=False):
         self.session = session
@@ -50,7 +51,7 @@ class ReceiptFixture:
         self.approval_results = []
         self.approval_on_resume = False
 
-    def __enter__(self):
+    def __enter__(self) -> Self:
         self.stack = ExitStack()
         self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory(prefix="lease-", dir="/tmp"))).resolve()
         self.home = self.root / "account"
@@ -194,7 +195,7 @@ class ReceiptFixture:
         self.homes.append(home)
         return copy
 
-    def __exit__(self, *_):
+    def __exit__(self, *_) -> None:
         self.loop.call_soon_threadsafe(self.stop.set_result, None)
         self.thread.join(3)
         self.stack.close()
@@ -847,6 +848,26 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
 
 
 class IdleReceiptIntegrationTests(unittest.TestCase):
+    def test_full_closure_and_legacy_handoff_override_partial_claims(self) -> None:
+        from github_plan_claim_log import record
+        for kind in ("closed", "legacy", "proof_unavailable"):
+            with self.subTest(kind=kind), ReceiptFixture() as f:
+                record(f.session, "owner/repo", 1)
+                record(f.session, "owner/other", 2)
+                if kind == "legacy":
+                    CLOSURE.replace_rows([{"session_id": f.session, "successor_admitted": True}])
+                elif kind == "proof_unavailable":
+                    row = CLOSURE.log_rows()[0]
+                    row.pop("closure_evidence", None)
+                    CLOSURE.replace_rows([{**row, "closure_proof_unavailable": True}])
+                CLOSURE.admit_sources({f.session})
+                with patch.object(CLOSURE, "has_current_claim", return_value=True):
+                    with self.assertRaises(ValueError):
+                        CLOSURE.resume_record(f.session, CLOSURE.log_rows())
+                    with self.assertRaises(ValueError):
+                        with CLOSURE.resume_guard(f.session):
+                            self.fail("full closure resumed after a partial transfer")
+
     def test_source_without_closed_row_is_frozen_and_action_clear_preserves_freeze(self):
         with ReceiptFixture() as f:
             CLOSURE.replace_rows([])
