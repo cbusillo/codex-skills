@@ -144,7 +144,7 @@ def milestone_wait_evidence(item: dict[str, Any], status_text: str, milestone_ti
     valid_pending = [row for row in pending
                      if not unnamed_wait_reason(row["waiting_for"])
                      and not milestone_order_wait(row["waiting_for"], milestone_titles)]
-    other_holds = [match[1].strip() for match in re.finditer(r"(?im)^\s*(?:[-*]\s+)?Blocked by:\s*([^\n]+)", status_text)
+    other_holds = [match[1].strip() for match in re.finditer(r"(?im)^\s*(?:[-*]\s+)?Blocked by:[ \t]*([^\n]+)", status_text)
                    if not github_plan_claim.no_wait_reason(match[1], field="Blocked by")]
     if rows:
         other_holds.extend(match[1].strip() for match in re.finditer(
@@ -1114,7 +1114,7 @@ def waiting_records(issue: dict[str, Any], status_text: str, *, reference_reposi
     records: list[dict[str, Any]] = []
     status_text = re.sub(r"<!--.*?-->", "", status_text, flags=re.S)
     status_text = re.sub(r"\*\*(Waiting for|Parked until|Blocked by|Waiting since|Last verified)(:?)\*\*(:?)", r"\1\2\3", status_text, flags=re.I)
-    verified = re.search(r"(?im)^\s*(?:[-*]\s+)?Last verified:\s*(.+)$", status_text)
+    verified = re.search(r"(?im)^\s*(?:[-*]\s+)?Last verified:[ \t]*(.+)$", status_text)
     fields = re.split(
         r"(?im)(?=^[ \t]*(?:[-*]\s+)?(?:State|Next action|Blocked by|Waiting for|"
         r"Parked until|Waiting since|Last verified|Validation|Evidence|Retention|Recovery|Worker|Session|Branch|Notes):)|\n[ \t]*\n",
@@ -1163,7 +1163,7 @@ def next_action_references(status_text: str) -> list[dict[str, Any]]:
 
     A Track names work across repositories, so a bare #N is ambiguous and skipped.
     """
-    match = re.search(r"(?im)^\s*(?:[-*]\s+)?Next action:\s*(.+)$", status_text)
+    match = re.search(r"(?im)^\s*(?:[-*]\s+)?Next action:[ \t]*(.+)$", status_text)
     if not match:
         return []
     return issue_references(match[1], repo=None)

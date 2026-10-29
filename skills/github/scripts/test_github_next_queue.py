@@ -70,12 +70,30 @@ def test_role_descriptions_preserve_actions_and_supervisor_followthrough() -> No
         'Supervisor diagnoses the Computer Use timeout (error code -10005).',
         'Supervisor repairs the Computer Use attachment, then retries captures.',
         'Supervisor fixes the GUI route.',
+        'Next GUI agent diagnoses the continuing timeout on the existing opt-in GUI route.',
     ]:
-        assert classify(item(action, 'Active; source merged'))['state'] == 'scope_review'
+        assert classify(item(action, 'Supported delivery of reviewed main is complete; Computer Use attachment failed'))['state'] != 'available'
     for action in ['An observation worker captures light/dark screenshots of the delivered build.',
-                   'Test worker runs the smoke on the deployed image.']:
+                   'Test worker runs the smoke on the deployed image.',
+                   'An observation worker captures screenshots of the latest build.',
+                   'Test worker smokes the app update.']:
         assert classify(item(action, 'Active; source merged'))['state'] == 'verification'
+    for action in ['Supervisor fixes the merge-train wedge.',
+                   'Supervisor-launched source agent implements the remaining parser.',
+                   'Supervisor lands PR #71, then an agent implements the remaining parser.']:
+        assert classify(item(action))['state'] == 'available'
+    assert classify(item('Diagnose the importer timeout.', 'Source delivery is complete. Computer Use selection failed.'))['state'] == 'available'
     assert classify(item('Implement the canonical parser.', 'Source delivery remains blocked; design review is complete'))['state'] == 'available'
+
+
+def test_empty_status_fields_do_not_consume_following_fields() -> None:
+    row = item()
+    status = 'Waiting for: Owner observation\nLast verified: \nNext action: owner/repo#7\nBlocked by: \nEvidence: retained logs'
+    records = direction.waiting_records(row, status)
+    assert not records[0]['last_verified']
+    assert direction.next_action_references('Next action: \nEvidence: owner/repo#7') == []
+    checked = direction.milestone_wait_evidence(row, 'Blocked by: \nNext action: owner/repo#7', [])
+    assert not checked['requested']
 
 
 def test_source_work_is_visible_without_caller_snapshot_but_requires_claim() -> None:

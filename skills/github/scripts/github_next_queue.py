@@ -85,6 +85,8 @@ def remaining_work(status: str) -> dict[str, Any]:
     delivery_state = ";".join(re.split(r"\bprerequisites?\b", clause, maxsplit=1, flags=re.I)[0]
                               for clause in clauses(state))
     delivered = bool(re.search(r"\b(?:landed|merged|delivered|source landing confirmed|source engineering is complete|completed .*slices)\b", delivery_state, re.I))
+    delivered |= any(re.search(r"\bdelivery(?:\s+of\b.*?)?\s+is complete\b", clause, re.I) for clause in clauses(state))
+    gui_context = bool(re.search(r"\b(?:Computer Use|GUI)\b", state + " " + action, re.I))
     if re.search(r"\b(?:not|never|yet to be|needs to be|must be|will be|to be|awaiting|pending)\s+(?:\w+\s+){0,2}(?:merged|landed|delivered)\b", state, re.I):
         delivered = False
     # Work explicitly routed to a separate canonical issue is no fresh source
@@ -109,6 +111,11 @@ def remaining_work(status: str) -> dict[str, Any]:
         return following[1] if following else ""
     def source_step(text: str) -> bool:
         for match in re.finditer(source_verbs, text, re.I):
+            target = re.split(r";|[.]\s+", text[match.end():], maxsplit=1)[0]
+            if (delivered and gui_context and re.fullmatch(r"(?:diagnose|investigate|repair|fix)(?:s|es|ing)?", match[0], re.I)
+                    and re.search(r"\b(?:Computer Use|GUI|app-selection|exact-path selection|attachment)\b|^\s*(?:(?:the|this|continuing)\s+)*timeout\w*\b", target, re.I)
+                    and not re.search(r"\b(?:source|implementation|(?:product|application) code)\b", target, re.I)):
+                continue
             if re.fullmatch(r"(?:diagnose|investigate)(?:s|es|ing)?", match[0], re.I) and re.search(
                     r"\b(?:retained|historical)\b.*\b(?:evidence|logs?|trace\w*)\b", re.split(r";|[.]\s+", text[match.end():], maxsplit=1)[0], re.I):
                 continue
@@ -117,14 +124,16 @@ def remaining_work(status: str) -> dict[str, Any]:
                 if (re.search(qualification_words, completion, re.I) or not re.search(
                         r"\b(?:source|implementation|migration|contracts|storage|refactor)\b", completion, re.I)):
                     continue
-            prefix = re.sub(r"\b(?:[\w-]+/)*(?:qualification|verification|observation|test)(?:/[\w-]+)*\s+(?:agent|worker|lead)\b",
-                            "agent", text[:match.start()], flags=re.I)
+            prefix = text[:match.start()]
+            if re.search(r"\b(?:agent|worker|lead)\s+(?:\w+ly\s+)?$|,\s*(?:(?:and|or)\s+)?$", prefix, re.I):
+                prefix = re.sub(r"\b(?:[\w-]+/)*(?:qualification|verification|observation|test)(?:/[\w-]+)*\s+(?:agent|worker|lead)\b",
+                                "agent", prefix, flags=re.I)
             if re.search(qualification_words, prefix, re.I) and not re.search(r"(?:\b(?:and|or)\s+(?:\w+ly\s+)?|[.;]\s*)$", prefix, re.I):
                 continue
             if match.start() and text[match.start() - 1] in "/-":
                 continue
             before = re.findall(r"\w+", text[:match.start()].casefold())
-            if before and before[-1] in {"the", "a", "an", "candidate", "contract", "source", "record", "bounded", "missing", "prerequisite", "their", "its", "old", "new", "existing", "current", "installed", "version", "genuine", "successful", "failed", "delivered", "deployed"}:
+            if before and before[-1] in {"the", "a", "an", "candidate", "contract", "source", "record", "bounded", "missing", "prerequisite", "their", "its", "old", "new", "existing", "current", "installed", "version", "genuine", "successful", "failed"}:
                 continue
             if re.match(r"(?:correct|fix|repair)\s+only\s+(?:a\s+)?reproduced\b", text[match.start():], re.I):
                 continue
@@ -154,8 +163,6 @@ def remaining_work(status: str) -> dict[str, Any]:
         return {**result, "state": "scope_review", "reason": "delivered_scope_lacks_current_action"}
     if not action:
         return {**result, "state": "review", "reason": "current_action_not_recorded"}
-    if engineering and re.match(r"(?:the\s+)?Supervisor\b", action, re.I):
-        return {**result, "state": "scope_review", "reason": "current_action_assigned_to_supervisor"}
     return {**result, "state": "engineering" if engineering else "review",
             "reason": "current_source_action" if engineering else "current_scope_needs_review"}
 
