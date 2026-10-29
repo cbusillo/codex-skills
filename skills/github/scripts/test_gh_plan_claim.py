@@ -1438,27 +1438,22 @@ class ClaimTests(unittest.TestCase):
         self.ended_holder_fixture()
         self.run_claim()
         claim_log.record(OTHER["session"], "owner/repo", 42)
-        malformed = {"body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}}
-        for issue, comments in (([], []), ({"state": "unknown"}, []), ({"state": "open"}, [malformed])):
-            with self.subTest(issue=issue, comments=comments):
-                reader = Mock(expected_actor=TEST_BOT, get_json=Mock(return_value=issue), paged_json=Mock(return_value=comments))
-                with patch.object(github_read, "GitHubReader", return_value=reader):
-                    with self.assertRaises(ValueError) as unavailable:
-                        with closure.resume_guard(OTHER["session"]):
-                            self.fail("malformed ownership resumed")
-                self.assertIsInstance(unavailable.exception.__cause__, github_read.GitHubReadShapeError)
-                self.assertFalse(closure.action_pending(OTHER["session"]))
         held = {"id": 81, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]}
         legacy = {"id": 80, "body": "Claimed by legacy-worker", "user": {"login": TEST_BOT}}
-        for actor, comments in ((None, [held]), (TEST_BOT, [legacy, held]),
-                                (TEST_BOT, [{**held, "user": {"login": "unverified-user"}}])):
-            with self.subTest(actor=actor, comments=comments):
-                reader = Mock(expected_actor=actor, get_json=Mock(return_value={"state": "open"}), paged_json=Mock(return_value=comments))
+        for issue, actor, comments in (
+            ([], TEST_BOT, []), ({"state": "unknown"}, TEST_BOT, []),
+            ({"state": "open"}, TEST_BOT, [{key: value for key, value in held.items() if key != "id"}]),
+            ({"state": "open"}, None, [held]), ({"state": "open"}, TEST_BOT, [legacy, held]),
+            ({"state": "open"}, TEST_BOT, [{**held, "user": {"login": "unverified-user"}}]),
+        ):
+            with self.subTest(issue=issue, actor=actor, comments=comments):
+                reader = Mock(expected_actor=actor, get_json=Mock(return_value=issue), paged_json=Mock(return_value=comments))
                 with patch.object(github_read, "GitHubReader", return_value=reader):
                     with self.assertRaises(ValueError) as unknown:
                         with closure.resume_guard(OTHER["session"]):
                             self.fail("unauthenticated source ownership resumed")
                 self.assertIsInstance(unknown.exception.__cause__, github_read.GitHubReadShapeError)
+                self.assertFalse(closure.action_pending(OTHER["session"]))
 
     def unknown_takeover_fixture(self, *, crash: bool = False) -> dict[str, Any]:
         self.ended_holder_fixture(released=False)
@@ -1497,42 +1492,31 @@ class ClaimTests(unittest.TestCase):
 
     def test_unknown_takeover_requires_exact_original_readback_without_reposting(self) -> None:
         import github_plan_closure as closure
-        pending = self.unknown_takeover_fixture()
-        for branch in (self.args.branch, "work/different-claim"):
-            with self.subTest(branch=branch):
-                original_branch = self.args.branch
-                self.args.branch = branch
-                with self.assertRaises(PLAN.ClassifiedPlanError) as unresolved:
-                    self.run_claim()
-                self.assertEqual(unresolved.exception.code, "claim_mutation_reconciliation_required")
-                self.assertEqual(unresolved.exception.failure.write_outcome, "unknown")
-                self.args.branch = original_branch
-        self.assertEqual(pending["publisher"].call_count, 1)
-        with patch.object(closure, "has_current_claim", side_effect=AssertionError("unknown admission queried ownership")):
-            with self.assertRaises(ValueError):
-                with closure.resume_guard(OTHER["session"]):
-                    self.fail("unknown admission resumed")
-        self.comments.append(self.delayed_takeover(pending))
-        self.run_claim()
-        result = self.emitted.call_args.args[0]
-        self.assertEqual(result["claim_comment"]["comment"]["id"], self.comments[-1]["id"])
-        self.assertEqual(result["claim"], pending["claim"])
-        self.assertEqual(pending["publisher"].call_count, 1)
-        self.assertNotIn("claim_admission_unknown", closure.lease_state(OTHER["session"]))
-
-    def test_crash_after_takeover_post_keeps_the_prepared_operation_fenced(self) -> None:
-        import github_plan_closure as closure
-        pending = self.unknown_takeover_fixture(crash=True)
-        with self.assertRaises(ValueError):
-            with closure.resume_guard(OTHER["session"]):
-                self.fail("crashed publication resumed its old source")
-        with self.assertRaises(PLAN.ClassifiedPlanError) as unknown:
-            self.run_claim()
-        self.assertEqual(unknown.exception.code, "claim_mutation_reconciliation_required")
-        self.comments.append(self.delayed_takeover(pending))
-        self.run_claim()
-        self.assertEqual(pending["publisher"].call_count, 1)
-        self.assertEqual(self.emitted.call_args.args[0]["claim"], pending["claim"])
+        for crash in (False, True):
+            with self.subTest(crash=crash):
+                self.setUp()
+                pending = self.unknown_takeover_fixture(crash=crash)
+                for branch in (self.args.branch, "work/different-claim"):
+                    with self.subTest(branch=branch):
+                        original_branch = self.args.branch
+                        self.args.branch = branch
+                        with self.assertRaises(PLAN.ClassifiedPlanError) as unresolved:
+                            self.run_claim()
+                        self.assertEqual(unresolved.exception.code, "claim_mutation_reconciliation_required")
+                        self.assertEqual(unresolved.exception.failure.write_outcome, "unknown")
+                        self.args.branch = original_branch
+                self.assertEqual(pending["publisher"].call_count, 1)
+                with patch.object(closure, "has_current_claim", side_effect=AssertionError("unknown admission queried ownership")):
+                    with self.assertRaises(ValueError):
+                        with closure.resume_guard(OTHER["session"]):
+                            self.fail("unknown admission resumed")
+                self.comments.append(self.delayed_takeover(pending))
+                self.run_claim()
+                result = self.emitted.call_args.args[0]
+                self.assertEqual(result["claim_comment"]["comment"]["id"], self.comments[-1]["id"])
+                self.assertEqual(result["claim"], pending["claim"])
+                self.assertEqual(pending["publisher"].call_count, 1)
+                self.assertNotIn("claim_admission_unknown", closure.lease_state(OTHER["session"]))
 
     def test_another_agent_can_reconcile_the_exact_original_operation_without_claiming_its_work(self) -> None:
         import github_plan_closure as closure
