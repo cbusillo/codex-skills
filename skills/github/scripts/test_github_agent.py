@@ -207,8 +207,6 @@ class AgentTests(unittest.TestCase):
             self.assertTrue(any(row.get("number") == 4 and row["exclusion"] == "parent_waiting" for row in result["excluded"]))
             self.assertFalse(result["discovery_context"]["unevaluated_count"])
 
-
-
     def test_unknown_and_conflicting_assignment_require_resolution(self):
         self.assertIsNone(agent.exclusion({"labels": []}, None))
         self.assertIsNotNone(agent.exclusion({"labels": ["agent:codex"]}, None))

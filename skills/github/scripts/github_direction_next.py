@@ -525,7 +525,7 @@ def overall_milestone_context(
         return {"state": "matched", "titles": [local_title], "source": f"{repo}:DIRECTION.md", "basis": "exact_listed_title_match"}
     known_repo = any(key.casefold() == repo.casefold() for key in repository_milestones)
     ancestry_complete = (item.get("discussion") or {}).get("ancestry_complete")
-    complete = known_repo and repository_titles is not None and ancestry_complete and graph.get("dependency_context", {}).get("complete", False)
+    complete = known_repo and repository_titles is not None and ancestry_complete and not item.get("blocking") and graph.get("dependency_context", {}).get("complete", False)
     return {"state": "none_found" if complete else "unknown", "titles": [], "source": "checked_native_ancestry_and_repository_direction" if complete else "incomplete_context"}
 
 
@@ -566,9 +566,14 @@ def no_available_milestone_item(
         remaining.difference_update(leaves)
     if remaining:
         return None
-    if any(overall_milestone_context(item, graph, milestone_titles, repository_waypoints)["state"] == "unknown"
-           for item in indexed.values() if item.get("exclusion") not in {"completed", "outside_direction_tracks"}):
-        return None
+    for item in indexed.values():
+        if item.get("exclusion") in {"completed", "outside_direction_tracks"}:
+            continue
+        context = overall_milestone_context(item, graph, milestone_titles, repository_waypoints)
+        if context["state"] == "unknown":
+            ancestry = overall_milestone_context({**item, "blocking": []}, graph, milestone_titles, repository_waypoints)
+            if ancestry["state"] != "none_found":
+                return None
     for ident in scope:
         item = indexed[ident]
         discussion = item.get("discussion") or {}

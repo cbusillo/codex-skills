@@ -157,8 +157,6 @@ def test_structured_wait_text_is_data_even_when_it_looks_like_status_fields() ->
     assert not reported['agent_next']
 
 
-
-
 def test_state_only_legacy_hold_is_visible_for_review() -> None:
     raw, comments = source(cases()[2])
     raw['body'] = '## Current Status\nState: Waiting on the device decision.\nNext action: Implement export.'
@@ -180,8 +178,6 @@ def test_malformed_contributor_envelope_requires_wait_review() -> None:
     assert not result['available_candidates']
     row = next(row for row in result['excluded'] if row['number'] == raw['number'])
     assert row['exclusion'] == 'wait_review_required'
-
-
 
 
 def test_unspecified_state_only_holds_remain_visible_for_wait_review() -> None:
@@ -219,8 +215,6 @@ def test_short_references_need_observed_repository_identity() -> None:
     known = {'cbusillo/launchplane', 'cbusillo/123'}
     refs = direction.issue_references('launchplane#2792 123#15 Zendesk#48213', repo='cbusillo/direction', known_repositories=known)
     assert {(ref['repo'], ref['number']) for ref in refs} == {('cbusillo/launchplane', 2792), ('cbusillo/123', 15)}
-
-
 
 
 def test_bold_legacy_wait_keeps_its_invalid_milestone_finding() -> None:

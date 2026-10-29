@@ -527,7 +527,7 @@ def test_milestone_flag_follows_open_dependencies_without_assuming_their_status(
     module = cli.load_module()
     flag = 'all_listed_milestones_have_no_available_item'
     for relation in ['blocked_by', 'sub_issues']:
-        for state in ['available', 'underway', 'needs_status', 'waiting', 'missing', 'cycle', 'transitive']:
+        for state in ['available', 'own_project', 'underway', 'needs_status', 'waiting', 'missing', 'cycle', 'transitive']:
             raws = [cli.global_issue('owner/repo', number,
                 body='## Current Status\nNext actor: agent\nNext action: Complete the item.') for number in [1, 2, 3]]
             raws[0]['milestone'] = cli.milestone_data(1, 'First', created_at='2026-01-01T00:00:00Z')
@@ -535,6 +535,8 @@ def test_milestone_flag_follows_open_dependencies_without_assuming_their_status(
             for index, raw in enumerate(raws):
                 raw['user'] = {'login': 'bot'}
                 links = cli.relationships(**{relation: [raws[1]]}) if index == 0 else cli.relationships()
+                if index == 1 and relation == 'blocked_by':
+                    links = cli.relationships(blocking=[raws[0]])
                 if index == 1 and state in ['cycle', 'transitive']:
                     links = cli.relationships(**{relation: [raws[0] if state == 'cycle' else raws[2]]})
                 actor = 'agent:worker' if state == 'underway' else '' if state == 'needs_status' else 'agent'
@@ -551,16 +553,23 @@ def test_milestone_flag_follows_open_dependencies_without_assuming_their_status(
                 row['discussion']['ancestry_complete'] = True
                 row['queue'] = classify(row)
                 row['wait_evidence_complete'] = True
+                if index == 1 and state == 'own_project':
+                    row['direction_category'] = 'own_project'
                 rows.append(row)
             if state == 'missing':
                 rows = rows[:1]
             graph = {'candidates': [], 'excluded': [], 'dependency_context': {'complete': True}}
             result = direction.rank_portfolio_work(graph, rows, milestone_titles=['First'],
                 repository_waypoints={'owner/repo': ['First']}, coverage_complete=True)
-            if state in ['underway', 'waiting']:
+            if state == 'own_project':
+                assert result[flag] is False, (relation, state, result)
+            elif state in ['underway', 'waiting']:
                 assert result[flag] is True, (relation, state, result)
             elif state in ['available', 'transitive']:
                 assert result[flag] in [False, None], (relation, state, result)
+                blocker = next(row for row in result['candidates'] if row['number'] == raws[1 if state == 'available' else 2]['number'])
+                if relation == 'blocked_by' and state == 'available':
+                    assert blocker['overall_milestone_context']['state'] == 'unknown'
             else:
                 assert result[flag] is None, (relation, state, result)
 
