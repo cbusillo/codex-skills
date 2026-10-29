@@ -17,8 +17,7 @@ from datetime import datetime, timezone
 import threading
 import uuid
 from types import SimpleNamespace
-from typing import cast
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 from test_github_plan_sessions import ReceiptFixture as HistoricalReceiptFixture
@@ -30,7 +29,7 @@ import codex_session_proxy as proxy
 OTHER_THREAD = "01970242-7941-7f0c-b461-16aa5723fb51"
 
 
-class ReceiptFixture(HistoricalReceiptFixture):
+class ReceiptFixture(HistoricalReceiptFixture, AbstractContextManager):
     """Native RPC fixtures use native UUIDs; historical receipt tests keep opaque IDs."""
     def __init__(self, session=None, **kwargs):
         super().__init__(str(uuid.uuid4()) if session is None else session, **kwargs)
@@ -39,7 +38,7 @@ class ReceiptFixture(HistoricalReceiptFixture):
 class IngressTests(unittest.IsolatedAsyncioTestCase):
     async def test_partial_resume_reads_leave_other_clients_and_closure_publication_responsive(self) -> None:
         from websockets.asyncio.client import unix_connect
-        with cast(AbstractContextManager[HistoricalReceiptFixture], ReceiptFixture()) as f:
+        with ReceiptFixture() as f:
             with closure.resume_guard(f.session):
                 pass
             closure.admit_sources({f.session})
@@ -54,7 +53,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             task, request, response, _ = await self.start_client(f)
             pending = None
             try:
-                with patch.object(closure, "has_current_claim", side_effect=slow_claim_read):
+                with patch.dict(closure.__dict__, {"has_current_claim": slow_claim_read}):
                     pending = asyncio.create_task(self.send(task, request, response, "turn/start", f.session))
                     self.assertTrue(await asyncio.to_thread(entered.wait, 3), response.read_text() if response.exists() else "no RPC reply")
                     unrelated = {"session_id": OTHER_THREAD, "closure_evidence": None}
@@ -69,7 +68,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     proceed.set()
                     self.assertIn("result", await pending)
                 self.assertIn(unrelated, closure.log_rows())
-                with patch.object(closure, "has_current_claim", side_effect=ValueError("fixture GitHub read unavailable")):
+                with patch.dict(closure.__dict__, {"has_current_claim": Mock(side_effect=ValueError("fixture GitHub read unavailable"))}):
                     self.assertIn("result", await self.send(task, request, response, "turn/start", f.session))
             finally:
                 proceed.set()

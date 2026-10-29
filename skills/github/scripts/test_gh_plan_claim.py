@@ -1397,6 +1397,40 @@ class ClaimTests(unittest.TestCase):
                 self.fail("fully handed-off source resumed")
         self.assertNotIsInstance(handed_off.exception, closure.LeaseBusy)
 
+    def test_current_custody_checks_all_records_without_guessing_uncertain_ownership(self) -> None:
+        import github_plan_closure as closure
+        import github_plan_claim_log as claim_log
+        import github_read
+
+        for held_number in (1, 2):
+            with self.subTest(held_number=held_number):
+                self.setUp()
+                for number in (1, 2):
+                    claim_log.record(OTHER["session"], "owner/repo", number)
+                held = {"id": 81, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]}
+                legacy = {"id": 80, "body": "Claimed by old-worker", "user": {"login": TEST_BOT}}
+                histories = {held_number: [held], 3 - held_number: [legacy]}
+                def read_history(path: str, **_kwargs: Any) -> list[dict[str, Any]]:
+                    return copy.deepcopy(histories[int(path.split("/")[-2])])
+
+                reader = Mock(expected_actor=TEST_BOT, get_json=Mock(return_value={"state": "open"}),
+                              paged_json=Mock(side_effect=read_history))
+                with patch.object(github_read, "GitHubReader", return_value=reader):
+                    self.assertTrue(closure.has_current_claim(OTHER["session"]))
+                    histories[held_number] = []
+                    with self.assertRaises(ValueError) as uncertain:
+                        closure.has_current_claim(OTHER["session"])
+                    self.assertIsInstance(uncertain.exception.__cause__, github_read.GitHubReadShapeError)
+                    histories[held_number] = [held]
+                    with closure.ownership(OTHER["session"], create=True):
+                        closure.write_lease_state(OTHER["session"], {"successor_admitted": True,
+                            "claim_admission_unknown": {"repo": "owner/repo", "number": 1}})
+                    with self.assertRaises(ValueError) as fenced:
+                        with closure.resume_guard(OTHER["session"]):
+                            self.fail("unknown publication resumed despite its fence")
+                    self.assertIsNone(fenced.exception.__cause__)
+                    self.assertFalse(closure.action_pending(OTHER["session"]))
+
     def test_malformed_source_claim_reads_refuse_without_starting_an_action(self) -> None:
         import github_plan_closure as closure
         import github_plan_claim_log as claim_log

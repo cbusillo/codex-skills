@@ -343,6 +343,7 @@ def has_current_claim(session: str) -> bool:
     import github_identity
 
     deadline = time.time() + 30
+    first_error: Exception | None = None
     for repo, number in sorted(read(session)):
         try:
             reader = GitHubReader(repository=repo, expected_actor=github_identity.automation_login(),
@@ -369,7 +370,10 @@ def has_current_claim(session: str) -> bool:
                                  and authors.get(record.get("id")) == reader.expected_actor for record in conflicts):
                 return True
         except (GitHubReadError, GitHubReadShapeError, OSError, ValueError) as error:
-            raise ValueError("source claim coverage is unavailable; preserve the session and retry the read") from error
+            if first_error is None:
+                first_error = error
+    if first_error is not None:
+        raise ValueError("source claim coverage is unavailable; preserve the session and retry the read") from first_error
     return False
 
 
