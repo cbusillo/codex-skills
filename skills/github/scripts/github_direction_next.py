@@ -484,6 +484,8 @@ def overall_milestone_context(
     repository_milestones: dict[str, list[str] | None],
 ) -> dict[str, Any]:
     """Resolve established waypoint links used for eligibility and ranking."""
+    if item.get("exclusion") == "completed":
+        return {"state": "none_found", "titles": [], "source": "completed"}
     if item.get("client_request"):
         return {"state": "matched", "titles": [item["client_request"]["milestone"]], "source": "recorded_product_client", "basis": "client_request"}
     if item.get("via") and (item.get("milestone") or {}).get("title") in milestone_titles:
@@ -491,10 +493,13 @@ def overall_milestone_context(
     parent_keys = {(p["repo"].casefold(), p["number"]) for p in (item.get("discussion") or {}).get("parents", [])}
     blocking_keys = {(p["repo"].casefold(), p["number"]) for p in item.get("blocking", []) if p.get("state") == "open"}
     tracking_keys = {(p["repo"].casefold(), p["number"]) for p in graph.get("tracking_milestones", [])}
+    completed_keys = {(entry["repo"].casefold(), entry["number"]) for entry in graph.get("excluded", [])
+                      if entry.get("exclusion") == "completed"}
     linked_entries = [
         entry
         for entry in [*graph.get("candidates", []), *graph.get("excluded", []), *graph.get("tracking_milestones", [])]
         if (entry.get("milestone") or {}).get("title") in milestone_titles
+        and (entry["repo"].casefold(), entry["number"]) not in completed_keys
         and (entry.get("via") or (entry["repo"].casefold(), entry["number"]) in tracking_keys)
         and (entry["repo"].casefold(), entry["number"]) in parent_keys | blocking_keys
     ]
@@ -507,7 +512,8 @@ def overall_milestone_context(
         parent_milestone = parent.get("milestone") or {}
         parent_titles = next((value for key, value in repository_milestones.items()
                               if key.casefold() == parent["repo"].casefold()), None)
-        if (parent_milestone.get("state") == "open" and parent_milestone.get("title") in milestone_titles
+        if (parent.get("exclusion") != "completed" and str(parent.get("state", "open")).casefold() == "open"
+                and parent_milestone.get("state") == "open" and parent_milestone.get("title") in milestone_titles
                 and parent_milestone.get("title") in (parent_titles or [])):
             inherited.add(parent_milestone["title"])
     if inherited:
@@ -560,12 +566,14 @@ def resolve_milestone_scope(
             if dependency not in indexed:
                 missing = True
                 continue
+            if indexed[dependency].get("exclusion") == "completed":
+                continue
             context = contexts[dependency]
             titles = set(context["titles"]) | set(contexts[ident]["titles"])
             if titles == set(context["titles"]):
                 continue
-            contexts[dependency] = {"state": "matched", "titles": [title for title in milestone_titles if title in titles],
-                                    "source": "native_milestone_scope"}
+            contexts[dependency] = {**context, "state": "matched", "titles": [title for title in milestone_titles if title in titles],
+                                    "source": "milestone_scope"}
             pending.append(dependency)
     return MilestoneScope(contexts, edges, missing)
 
