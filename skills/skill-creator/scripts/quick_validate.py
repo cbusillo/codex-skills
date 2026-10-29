@@ -24,7 +24,6 @@ MAX_COMMAND_POLICY_REGEX_LENGTH = 512
 MAX_COMMAND_POLICY_PURPOSE_LENGTH = 256
 MAX_COMMAND_POLICIES_PER_SKILL = 64
 MAX_COMMAND_POLICY_PREFERRED = 8
-MAX_COMMAND_POLICY_EXCEPTIONS = 16
 MAX_COMMAND_POLICY_ARGV_TOKENS = 32
 MAX_STRUCTURED_ITEMS_PER_SKILL = 128
 ALLOWED_PROPERTIES = {
@@ -359,8 +358,8 @@ def validate_command_policies(command_policies, skill_dir=None):
         if matcher_error:
             return matcher_error
         exceptions = command_policy.get("exceptions", [])
-        if not isinstance(exceptions, list) or len(exceptions) > MAX_COMMAND_POLICY_EXCEPTIONS:
-            return f"{path}.exceptions must be a list of at most {MAX_COMMAND_POLICY_EXCEPTIONS} entries"
+        if not isinstance(exceptions, list) or len(exceptions) > MAX_STRUCTURED_ITEMS_PER_SKILL:
+            return f"{path}.exceptions must be a list of at most {MAX_STRUCTURED_ITEMS_PER_SKILL} entries"
         for exception in exceptions:
             if not isinstance(exception, dict) or set(exception) != {"repository", "argv_prefix"}:
                 return f"{path}.exceptions entries must set repository and argv_prefix only"
