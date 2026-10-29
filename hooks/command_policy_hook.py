@@ -265,6 +265,9 @@ class ShellScript:
 
 def reads_script_from_input(argv: list[str]) -> bool:
     """A shell without `-c`, even behind a wrapper such as `sudo`, or ssh may run heredoc text."""
+    argv = executable_arguments(argv)
+    if not argv:
+        return False
     if argv[0] == "ssh":
         return True
     return any(
