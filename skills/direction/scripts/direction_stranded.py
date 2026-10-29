@@ -535,9 +535,9 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
         names = ", ".join(r["task"] for r in rows[:5]) + (f" and {len(rows) - 5} more" if len(rows) > 5 else "")
         dirty = sum(1 for r in rows if r["dirty"])
         add("finished_worktree", {"repo": repo, "item": {"number": None, "title": f"{len(rows)} finished task worktrees in {repo}"}},
-            f"https://github.com/{repo}", rows[0].get("since"), "Supervisor / landing step",
-            f"Work landed or was closed but its task worktree is still on this host: {names}. Retire each with the "
-            "command its lock names; the host helper keeps any that are in use or unpublished."
+            f"https://github.com/{repo}", rows[0].get("since"), "Next repository worktree creation",
+            f"Work landed or was closed but its task worktree is still on this host: {names}. The next catalog worktree creation checks these "
+            "through guarded retirement; retained exceptions need their reported proof or content resolved."
             + (f" {dirty} have local changes to preserve first." if dirty else ""),
             evidence=[{key: r[key] for key in ("task", "branch", "basis", "dirty", "pull")} for r in rows], immediate=True)
     reported_questions = {row["url"] for row in findings if row["kind"] == "unanswered_question"}
