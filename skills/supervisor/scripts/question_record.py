@@ -214,7 +214,7 @@ def main(argv: list[str], fetch: DiscussionReader) -> int:
     new = commands.add_parser("create")
     new.add_argument("--record-file", type=Path, required=True)
     new.add_argument("--owner", required=True)
-    new.add_argument("--decision-author", action="append", default=[])
+    new.add_argument("--decision-author", action="append", default=delivery.oq.default_decision_authors())
     new.add_argument("--queue")
     new.add_argument("--dry-run", action="store_true")
     show = commands.add_parser("show-question")

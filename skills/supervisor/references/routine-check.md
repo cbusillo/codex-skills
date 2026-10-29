@@ -17,7 +17,9 @@ decisions, statuses, board contents or narrative; open linked records for action
 3. Read existing foreign/watch notices and their coverage gaps. Use
    `oq.py --owner OWNER --queue OWNER/direction#NUMBER --changes-state <question-state.json>`
    for the queue, and source anchors outside watcher coverage with their own
-   state file. Open full new comments before acting. Register/present questions
+   state file. The reader trusts the configured automation identity by default;
+   recorded decisions remove their matching questions. Open full new comments
+   before acting. Register/present questions
    through the existing queue rules; changes mode never writes delivery records.
 4. For one normal finished session, run:
 
@@ -41,7 +43,8 @@ decisions, statuses, board contents or narrative; open linked records for action
    Director waits. Nudge stalls with exact evidence and process finished
    notices immediately. Re-arm bounded watchers; do not duplicate live services.
 
-Every check links the question queue and reports unknown coverage. Readers
+Every check links the question queue and reports source errors and untrusted
+record warnings alongside unknown coverage. Readers
 rebuild current sources; fingerprints suppress output, never attest unread proof.
 Assess changed Track proof at source; preserve holds, reviews and active work.
 Compare workers with DIRECTION.md and escalate mismatches. Use the full board

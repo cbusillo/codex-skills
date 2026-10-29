@@ -131,7 +131,7 @@ class QuestionRecordTests(unittest.TestCase):
                 self.create(value)
         self.storage.create.assert_not_called()
 
-    def test_real_storage_numbers_and_registers_once_with_readback(self) -> None:
+    def test_create_and_default_routine_reader_agree_on_open_questions(self) -> None:
         self.args.queue = "example/direction#9"
         counter = record.question_id.counter_path()
         record.question_id.update(counter, seed=(300, ["fixture"]), allocate=False)
@@ -174,13 +174,43 @@ class QuestionRecordTests(unittest.TestCase):
         def run(calls: list[dict]) -> None:
             storage = record.GitHubComments(fetch)
             first = record.create(question(), self.args, storage, fetch)
-            second = record.create(question(), self.args, storage, fetch)
-            self.assertEqual(first, second)
+            path = Path(self.temporary.name) / "question.json"
+            path.write_text(json.dumps(question()))
+            created_output = StringIO()
+            with redirect_stdout(created_output):
+                self.assertEqual(record.main(["create", "--record-file", str(path), "--owner", self.args.owner,
+                                               "--queue", self.args.queue], fetch), 0)
+            self.assertIn(first["url"], created_output.getvalue())
             self.assertEqual(sum(c["method"] == "POST" for c in calls), 2)
             record.question_id.verify_number(counter, int(first["question_id"][1:]), first["url"])
             self.assertEqual(record.read_record(storage.read(first["url"]))["text"], first["text"])
             self.assertIsNone(record.RECORD.search(first["text"]))
             self.assertIsNone(guard.missing_context(first["text"]))
+            state = Path(self.temporary.name) / "questions-state.json"
+
+            def routine_check() -> dict:
+                output = StringIO()
+                with (
+                    patch.object(record.delivery.oq, "fetch", side_effect=fetch),
+                    patch.object(sys, "argv", ["oq.py", "--owner", self.args.owner, "--queue", self.args.queue,
+                                               "--changes-state", str(state)]),
+                    redirect_stdout(output),
+                ):
+                    self.assertEqual(record.delivery.oq.main(), 0)
+                return json.loads(output.getvalue())
+
+            queued = routine_check()
+            self.assertEqual(queued["queue_length"], 1)
+            self.assertEqual(queued["untrusted_records"], [])
+            self.assertIn(first["url"], json.dumps(queued["questions"]))
+            threads[record.delivery.source_item(first["url"])].append({
+                "id": 100, "author": AUTHOR, "url": question()["issue"] + "#issuecomment-100",
+                "body": f"Director decision {first['question_id']}: reuse the runner. This answers {first['url']}",
+                "created_at": "2026-10-29T17:00:00Z",
+            })
+            decided = routine_check()
+            self.assertEqual(decided["queue_length"], 0)
+            self.assertEqual(decided["questions"], [{"url": first["url"], "removed": True}])
 
         with patch.dict(os.environ, {"CODEX_SKILLS_ENV_FILE": "/missing/fixture.env"}):
             with_call_stub(api, run)

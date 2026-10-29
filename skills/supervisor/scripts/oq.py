@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from skills.direction.scripts.question_id import QUESTION, heading_id
+from skills.github.scripts import github_identity
 from skills.supervisor.scripts.check_changes import changes, fingerprint
 
 ITEM = re.compile(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)")
@@ -42,7 +43,9 @@ def questions(comments, owner, decision_authors, related_comments=(), *, recorde
         for answer in [*comments[i + 1 :], *related_comments]:
             author = (answer.get("author") or "").casefold()
             text = answer.get("body", "").lstrip().lstrip("*")
-            recorded = text.startswith(DECISION_PREFIXES)
+            recorded = text.startswith(DECISION_PREFIXES) or bool(
+                re.match(r"^(?:Director|Owner) decision Q[1-9][0-9]*\b", text.replace("*", ""))
+            )
             authorized = author == owner or (
                 author in decision_authors and recorded
             )
@@ -103,6 +106,11 @@ def fetch(item):
     return comments
 
 
+def default_decision_authors() -> list[str]:
+    author = github_identity.automation_login()
+    return [author] if author else []
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] in {"create", "show-question"}:
         from question_record import main as record_main
@@ -110,7 +118,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("items", nargs="*")
     parser.add_argument("--owner", required=True)
-    parser.add_argument("--decision-author", action="append", default=[])
+    parser.add_argument("--decision-author", action="append", default=default_decision_authors())
     parser.add_argument("--queue", help="Existing Supervisor question discussion, OWNER/REPO#NUMBER")
     parser.add_argument("--register", action="store_true", help="Register exact positional question URLs in that queue, with readback")
     parser.add_argument("--ack", metavar="QUESTION_URL", help="Acknowledge actual presentation to the Director")

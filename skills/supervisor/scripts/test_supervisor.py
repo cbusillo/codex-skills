@@ -1220,6 +1220,12 @@ class QuestionTests(unittest.TestCase):
         cases = (
             ("bot", "Director decision: Q906. Chris: Q906 I agree", True),
             ("director", "**Director decision:** Q906, yes.", True),
+            ("bot", "Director decision Q906: yes.", True),
+            ("bot", "**Director decision Q906:** yes.", True),
+            ("bot", "Director decision Q906: yes, refining Q905.", False),
+            ("bot", "Director decision Q906: yes, refining Q905. https://example.test/questions/101", True),
+            ("bot", "Director decision Q906: later", False),
+            ("outsider", "Director decision Q906: yes.", False),
             ("outsider", "Director decision: Q906, yes.", False),
             ("bot", "Q906 I agree", False),
             ("director", "Q906 I agree", False),
