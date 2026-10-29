@@ -10,10 +10,12 @@ catalog's helper by its absolute path; no PATH installation is needed:
 
 Here `<catalog>` is the checkout containing the loaded skills, not a literal
 directory name. The command creates `work/task-slug` at the explicit starting
-commit and prints the new path. Before creation it runs the existing guarded
+commit and prints the new path. Before creation it runs the guarded
 `landed_worktrees.py --all --apply` for that repository, reporting retired and
 kept trees with reasons on stderr. Unavailable cleanup evidence keeps trees and
-creation continues; it never weakens a retirement guard. It accepts a main checkout or a linked worktree;
+creation continues; it never weakens a retirement guard. A per-start
+read budget stops new checks, while any guarded retirement already in progress
+finishes without a timeout interrupting its lock restoration. It accepts a main checkout or a linked worktree;
 both use the main repository's directory name. The default destination is
 `~/Developer/worktrees/<repo>/task-slug`. Existing destinations (including empty
 directories and dangling symlinks), branches and registered worktrees are never
@@ -94,10 +96,9 @@ with this configuration:
 }
 ```
 
-This is a configuration example, not a claim that it has been applied. Until
-that host setting is provisioned, continue using its existing host-local
-command under the host's instructions. Do not run the portable default on that
-host. The existing helper verifies the volume identity before creating anything,
+Verify this per-host setting before creation; the catalog entry delegates to
+the configured host helper. If it is absent, provision the setting for the
+host's existing helper first. Do not use the portable default on Chris-Studio. The existing helper verifies the volume identity before creating anything,
 locks registrations against unmounted-volume pruning, and names its guarded
 retirement command in the lock reason. Use the catalog entry above with this host configuration, so creation also
 runs repository retirement. Keep the host helper unchanged; never make a
@@ -109,16 +110,16 @@ does not provision host storage or change runtime configuration.
 Use `work-closeout` to verify ownership, live use, contents and publication
 before cleanup. Portable worktrees are ordinary unlocked Git worktrees: remove
 an eligible finished one with `git worktree remove /exact/task/path`, without
-force, then apply the normal branch cleanup policy. This helper adds no
-portable deletion command. When a registration's lock names a retirement
+force, then apply the normal branch cleanup policy. Kept trees follow `work-closeout` before retrying automatic retirement. When a registration's lock names a retirement
 command, use that exact command. With `hostHelper` configured, the catalog entry
 also forwards `retire [--dry-run] /exact/task/path` to the host helper; it never
 unlocks or deletes a worktree itself. Preserve active, dirty or ambiguous work.
 
 Creation checks each registered linked worktree through `landed_worktrees.py`.
-A closed PR uses the existing PR-head, claim and publication checks; a branch
+A closed PR uses the existing PR-head, claim and publication checks;
+commit-associated PRs cover detached review and separate refresh branches; a branch
 without a PR uses the default-history, fresh-start and account-wide claim
-checks. Active source/calling checkouts, detached trees without exact PR
+checks. Active source/calling checkouts, trees without exact PR or default-history
 provenance, foreign locks, dirty or unpublished work and incomplete evidence
 are kept with reasons. The host command still owns volume, publication,
 ignored-file, live-use and IDE checks. No lock is rewritten or bypassed.
@@ -126,7 +127,9 @@ ignored-file, live-use and IDE checks. No lock is rewritten or bypassed.
 Portable unlocked trees use live origin publication of HEAD and its reflog,
 clean tracked/untracked/ignored state, live-use checks and the existing offline
 IDE retirement proof. Missing tools or unsupported local proof keep the tree;
-no force removal or fallback is used. The same creation route runs on both
+no force removal or fallback is used. Use `work-closeout` to resolve retained
+contents or unavailable proof before retrying. Portable local branches remain
+subject to the normal work-closeout branch policy. The same creation route runs on both
 harnesses, without a scheduler or a host-specific landing handoff.
 
 For an explicit repository pass, preview with:
@@ -135,7 +138,8 @@ For an explicit repository pass, preview with:
 uv run <catalog>/skills/github/scripts/landed_worktrees.py --repo OWNER/REPO --checkout /absolute/checkout --all
 ```
 
-Add `--apply` to retire eligible trees. Existing `--pr N` and
+Add `--apply` to retire eligible trees. `--preserve /exact/path` keeps explicit
+artifact custody during a bulk pass. Existing `--pr N` and
 `--branch work/task` commands remain available for exact provenance. The
 [daily stranded-work sweep](../../direction/references/stranded-work.md)
 reports work that remains.

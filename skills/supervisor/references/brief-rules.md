@@ -72,13 +72,13 @@ Rules for this brief (every Supervisor brief carries them):
   `<catalog>/skills/github/scripts/dev-worktree /absolute/repository <slug> origin/main`
   ([task worktrees](../../github/references/worktrees.md)). Never edit a
   primary checkout. Commit and push with
-  `/Users/cbusillo/Developer/codex-skills/skills/github/scripts/git-commit-as-bot`
+  `<catalog>/skills/github/scripts/git-commit-as-bot`
   and `git-push-as-bot`, with `--worktree /absolute/task/path` first on both.
   Name your intended task path, never the result of `pwd` or Git discovery
   ([bot helpers](../../github/SKILL.md#helpers-and-identity)). Never
   force-push or use `git stash`.
 - PRs land only through the merge train. When a PR is green and reviewed,
-  hand off with `uv run /Users/cbusillo/Developer/codex-skills/skills/github/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
+  hand off with `uv run <catalog>/skills/github/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
   under the [ready handoff contract](../../github/references/cli-reference.md#ready-handoffs);
   a later push needs a fresh `ready`. A PR that needs the Client's acceptance
   hands off with `--waiting-for-client` ("Engineering ready; waiting for the

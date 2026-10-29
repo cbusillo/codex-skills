@@ -9,9 +9,12 @@ import argparse
 from dataclasses import dataclass
 import datetime as dt
 import json
+import math
 from pathlib import Path
 import subprocess
 import sys
+import time
+from collections.abc import Iterable, Iterator
 from urllib.parse import urlencode
 from typing import Any
 
@@ -41,9 +44,9 @@ class Worktree:
         return self.lock is not None and RETIRE_MARKER in self.lock
 
 
-def git(checkout: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def git(checkout: Path, *args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["git", "-C", str(checkout), *args], capture_output=True, text=True,
-                          env=dev_worktree.git_environment())
+                          env=dev_worktree.git_environment(), input=input_text, timeout=30)
 
 
 def registered(checkout: Path) -> list[Worktree]:
@@ -119,18 +122,24 @@ def run_retire(path: str, *, dry_run: bool) -> subprocess.CompletedProcess[str]:
 
 def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess[str]:
     def kept(reason: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess([], 1, "", reason)
+        return subprocess.CompletedProcess([], 1, "", f"{reason}; follow work-closeout before retrying")
 
     status = git(path, "status", "--porcelain", "--ignored", "--untracked-files=all")
     if status.returncode or status.stdout.strip():
         return kept("uncommitted, untracked or ignored files remain")
-    history = git(path, "reflog", "show", "--format=%H", "HEAD")
-    remote = git(path, "ls-remote", "origin", "refs/heads/*", "refs/tags/*")
+    try:
+        history = git(path, "reflog", "show", "--format=%H", "HEAD")
+        remote = git(path, "ls-remote", "origin", "refs/heads/*", "refs/tags/*")
+    except subprocess.TimeoutExpired:
+        return kept("live publication or reflog read timed out")
     if history.returncode or remote.returncode or not remote.stdout.strip():
         return kept("live publication or reflog evidence unavailable")
     tips = [line.split()[0] for line in remote.stdout.splitlines()]
     heads = {git(path, "rev-parse", "HEAD").stdout.strip(), *history.stdout.split()}
-    if any(not any(contained(path, head, tip) for tip in tips) for head in heads):
+    objects = git(path, "cat-file", "--batch-check=%(objectname) %(objecttype)", input_text="\n".join(tips) + "\n")
+    available = [line.split()[0] for line in objects.stdout.splitlines() if line.split()[-1] in {"commit", "tag"}]
+    unpublished = git(path, "rev-list", "--stdin", input_text="\n".join([*heads, *(f"^{tip}" for tip in available)]) + "\n")
+    if objects.returncode or unpublished.returncode or unpublished.stdout.strip():
         return kept("HEAD or reflog history is unpublished")
     try:
         users = subprocess.run(["lsof", "-nP", "-t", "+D", str(path)], capture_output=True, text=True, timeout=10)
@@ -144,10 +153,13 @@ def portable_retire(path: Path, *, dry_run: bool) -> subprocess.CompletedProcess
                           env=dev_worktree.git_environment())
 
 
-def retire(rows: list[dict], *, apply: bool, runner=None) -> list[dict]:
-    """Preview every candidate with the host helper, then retire it when applying."""
+def retire(rows: Iterable[dict], *, apply: bool, runner=None, deadline: float | None = None) -> list[dict]:
     runner = runner or run_retire
+    results = []
     for row in rows:
+        results.append(row)
+        if row["decision"] == "candidate" and deadline is not None and time.monotonic() >= deadline:
+            row.update(decision="kept", reason="creation cleanup time budget exhausted; checked on the next start")
         if row["decision"] != "candidate":
             continue
         preview = runner(row["path"], dry_run=True)
@@ -158,13 +170,16 @@ def retire(rows: list[dict], *, apply: bool, runner=None) -> list[dict]:
         if not apply:
             row["decision"] = "would_retire"
             continue
+        if deadline is not None and time.monotonic() >= deadline:
+            row.update(decision="kept", reason="creation cleanup time budget exhausted; checked on the next start")
+            continue
         result = runner(row["path"], dry_run=False)
         if result.returncode:
             row.update(decision="kept", reason="retire refused",
                        detail=result.stderr.strip().splitlines()[-1:] or [""])
         else:
             row["decision"] = "retired"
-    return rows
+    return results
 
 
 def finished_pull(pull: dict) -> bool:
@@ -356,72 +371,88 @@ def branch_rows(reader, github_read, repo: str, branch: str, checkout: Path, roo
 
 
 def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, root: Path, *,
-                    preserve: set[Path] | frozenset[Path] = frozenset()) -> list[dict]:
-    rows = {}
+                    preserve: set[Path] | frozenset[Path] = frozenset(),
+                    deadline: float | None = None) -> Iterator[dict]:
     for tree in registered(checkout):
         row = {"path": str(tree.path), "branch": tree.branch, "head": tree.head, "decision": "kept"}
         if any(is_under(path, tree.path) for path in preserve):
             row["reason"] = "source checkout or calling session uses this tree"
         elif not is_under(tree.path, root):
             row["reason"] = "outside the configured worktree root"
-        elif not tree.branch:
-            row["reason"] = "detached HEAD; requires exact PR provenance"
         elif not tree.names_retire_command and (tree.lock is not None or dev_worktree.configuration()[1] is not None):
-            row["reason"] = "lock names no retire command; follow work-closeout"
+            row["reason"] = "no supported retirement lock; follow work-closeout"
+        elif deadline is not None and time.monotonic() >= deadline:
+            row["reason"] = "creation cleanup time budget exhausted; checked on the next start"
         else:
             try:
                 pulls = reader.paged_json(f"repos/{repo}/pulls", step_prefix="retirement_repository_pulls",
-                                          params={"state": "all", "head": f"{repo.split('/')[0]}:{tree.branch}"})
+                                          params={"state": "all", "head": f"{repo.split('/')[0]}:{tree.branch}"}) if tree.branch else []
+                if not pulls:
+                    pulls = reader.paged_json(f"repos/{repo}/commits/{tree.head}/pulls",
+                                              step_prefix="retirement_commit_pulls")
                 if any(pull.get("state") != "closed" for pull in pulls):
-                    row["reason"] = "branch has an open PR"
+                    row["reason"] = "branch or commit has an open PR"
+                elif pulls and tree.branch and tree.branch in claims_on(reader, github_read,
+                        issues_naming(reader, repo.split("/")[0], tree.branch)):
+                    row["reason"] = "an open claim names this branch"
                 else:
                     if pulls:
                         pull = max(pulls, key=lambda item: item.get("closed_at") or "")
                         _, decisions = pull_rows(reader, github_read, repo, pull["number"], checkout, root)
-                    else:
+                    elif tree.branch:
                         _, decisions = branch_rows(reader, github_read, repo, tree.branch, checkout, root)
+                    else:
+                        decisions = []
+                    decisions = keep_fresh_starts(decisions, dt.datetime.now(dt.timezone.utc))
                     row = next((decision for decision in decisions if decision["path"] == str(tree.path)),
-                               {**row, "reason": "no covered worktree found"})
-            except (LookupError, ValueError, OSError) as exc:
+                               {**row, "reason": "no covered worktree found; use --pr with exact provenance"})
+            except (LookupError, ValueError, OSError, TypeError, KeyError, subprocess.TimeoutExpired) as exc:
                 row["reason"] = str(exc)
             except (github_read.GitHubReadError, github_read.GitHubReadShapeError) as exc:
                 row["reason"] = f"retirement evidence unavailable: {exc}"
-        rows[str(tree.path)] = row
-    return list(rows.values())
+        yield row
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Retire a landed PR's worktrees with the command each lock names.")
-    parser.add_argument("--repo", required=True, help="OWNER/REPO of the landed work")
+    parser = argparse.ArgumentParser(description="Guarded retirement of finished repository worktrees.")
+    parser.add_argument("--repo", help="OWNER/REPO of the landed work")
     landed = parser.add_mutually_exclusive_group(required=True)
     landed.add_argument("--all", action="store_true", help="check every linked worktree of this repository")
     landed.add_argument("--pr", type=int)
     landed.add_argument("--branch", help="a task branch that never had a PR and is in the default branch")
     parser.add_argument("--checkout", required=True, type=Path, help="any local checkout of that repository")
     parser.add_argument("--apply", action="store_true", help="retire; the default only previews")
+    parser.add_argument("--budget-seconds", type=float, help="stop starting checks after this many seconds; finish any guarded retirement in progress")
+    parser.add_argument("--preserve", type=Path, action="append", default=[], help="retain an explicitly preserved path")
     args = parser.parse_args(argv)
+    if args.budget_seconds is not None and (args.budget_seconds <= 0 or not math.isfinite(args.budget_seconds)):
+        return refuse("budget-seconds must be positive and finite")
+    deadline = time.monotonic() + args.budget_seconds if args.budget_seconds else None
     try:
         root, _helper = dev_worktree.configuration()
     except (dev_worktree.Refused, OSError, json.JSONDecodeError) as exc:
         return refuse(f"worktree configuration: {exc}")
     checkout_slug = github_slug(args.checkout)
-    if not same_repository(checkout_slug, args.repo):
+    if not checkout_slug or (args.repo and not same_repository(checkout_slug, args.repo)):
         return refuse(f"checkout origin is {checkout_slug or 'not GitHub'}, not {args.repo}")
+    repo = checkout_slug
     import github_read
 
-    reader = github_read.GitHubReader(operation="github.worktree.retire_landed", include_archived=True)
+    reader = github_read.GitHubReader(operation="github.worktree.retire_landed", include_archived=True,
+                                      deadline_at=time.time() + args.budget_seconds if args.budget_seconds else None)
     try:
         if args.all:
             summary = {}
-            rows = repository_rows(reader, github_read, args.repo, args.checkout, root,
-                                   preserve={args.checkout.resolve(), Path.cwd().resolve(), Path(__file__).resolve()})
+            rows = repository_rows(reader, github_read, repo, args.checkout, root,
+                                   preserve={args.checkout.resolve(), Path.cwd().resolve(), Path(__file__).resolve(),
+                                             *(path.resolve() for path in args.preserve)}, deadline=deadline)
         elif args.branch:
-            summary, rows = branch_rows(reader, github_read, args.repo, args.branch, args.checkout, root)
+            summary, rows = branch_rows(reader, github_read, repo, args.branch, args.checkout, root)
         else:
-            summary, rows = pull_rows(reader, github_read, args.repo, args.pr, args.checkout, root)
+            summary, rows = pull_rows(reader, github_read, repo, args.pr, args.checkout, root)
     except (LookupError, ValueError, OSError) as exc:
         return refuse(str(exc))
-    rows = retire(rows, apply=args.apply)
+    rows = retire(rows, apply=args.apply, deadline=deadline)
     print(json.dumps({"ok": True, **summary, "worktrees": rows}, indent=2))
     return 0
 

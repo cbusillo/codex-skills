@@ -9,6 +9,7 @@
 - For GitHub-backed repos, assume the default branch and shared/release/production branches are protected no-direct-work zones unless the user explicitly says otherwise.
 - Before editing or committing, identify the current branch and repo default branch. If currently on the default branch, create and switch to a focused task branch first.
 - Push only task branches for implementation work and open or update a PR. Do not attempt direct pushes to the default branch as a probe; branch protection failures are avoidable noise, not useful discovery.
+- Create task worktrees through the catalog's `skills/github/scripts/dev-worktree` with its per-host configuration, so guarded retirement runs before creation. A configured host helper still enforces its storage and retirement policy.
 
 ## Direction sessions
 

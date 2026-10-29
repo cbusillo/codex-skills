@@ -149,15 +149,13 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def retire_finished(checkout: Path) -> None:
-    import landed_worktrees
-
-    repo = landed_worktrees.github_slug(checkout)
-    if not repo:
-        print("dev-worktree: retirement kept existing trees: origin is not a supported GitHub repository", file=sys.stderr)
+    try:
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name("landed_worktrees.py")),
+                                 "--checkout", str(checkout), "--all", "--apply", "--budget-seconds", "30"],
+                                capture_output=True, text=True, env=git_environment())
+    except OSError as exc:
+        print(f"dev-worktree: retirement unavailable; existing trees kept: {exc}", file=sys.stderr)
         return
-    result = subprocess.run([sys.executable, str(Path(__file__).with_name("landed_worktrees.py")),
-                             "--repo", repo, "--checkout", str(checkout), "--all", "--apply"],
-                            capture_output=True, text=True, env=git_environment())
     print(result.stdout.strip() or result.stderr.strip() or "dev-worktree: retirement evidence unavailable; trees kept",
           file=sys.stderr)
 

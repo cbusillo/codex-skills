@@ -100,6 +100,14 @@ class WorktreeTests(unittest.TestCase):
                 dev_worktree.main(["retire", "--dry-run", str(self.base / "old")])
         sweep.assert_not_called()
 
+    def test_unavailable_sweep_does_not_prevent_creation(self) -> None:
+        for outcome in (subprocess.CompletedProcess([], 2, "", "unavailable"), FileNotFoundError("missing helper")):
+            with mock.patch.object(dev_worktree, "configuration", return_value=(self.base, None)), \
+                    mock.patch.object(dev_worktree.subprocess, "run", side_effect=[outcome]), \
+                    mock.patch.object(dev_worktree, "create", return_value=self.base / "created") as create:
+                self.assertEqual(dev_worktree.main([str(self.repo), "new-task", self.initial]), 0)
+            create.assert_called_once()
+
     def test_default_creates_branch_at_explicit_start_outside_source(self):
         result = self.run_helper(self.repo, "task", self.initial)
         self.assertEqual(result.returncode, 0, result.stderr)

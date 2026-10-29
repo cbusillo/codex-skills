@@ -162,23 +162,56 @@ class RetireTests(unittest.TestCase):
             self.assertEqual((rows[0]["decision"], rows[0]["detail"]), ("kept", ["Retire refused: dirty"]))
             self.assertEqual(calls, expected_calls)
 
+    def test_expired_budget_keeps_a_candidate_without_starting_removal(self) -> None:
+        calls, run = self.runner()
+        with mock.patch.object(landed_worktrees.time, "monotonic", side_effect=[0, 2]):
+            rows = landed_worktrees.retire([{"path": "/a", "decision": "candidate"}], apply=True,
+                                           runner=run, deadline=1)
+        self.assertEqual(calls, [("/a", True)])
+        self.assertEqual(rows[0]["decision"], "kept")
+
+    @staticmethod
+    def test_unlocked_portable_retirement_uses_the_portable_guard() -> None:
+        with mock.patch.object(landed_worktrees.dev_worktree, "configuration", return_value=(Path("/tasks"), None)), \
+                mock.patch.object(landed_worktrees, "portable_retire") as portable:
+            landed_worktrees.run_retire("/tasks/project/task", dry_run=True)
+        portable.assert_called_once_with(Path("/tasks/project/task"), dry_run=True)
+
 
 class RepositoryTests(Fixture):
+    def test_commit_association_recovers_detached_and_separate_review_trees(self) -> None:
+        for detached in (False, True):
+            path = self.worktree(f"review-{detached}")
+            head = self.commit(path, "Reviewed source")
+            if detached:
+                self.git(path, "checkout", "--detach", head)
+            os.utime(Path(self.git(path, "rev-parse", "--absolute-git-dir")) / "HEAD", (0, 0))
+            reader = mock.Mock()
+            reader.paged_json.side_effect = lambda route, **_: (
+                [{"state": "closed", "number": 7}] if route.endswith(f"commits/{head}/pulls") else [])
+            with mock.patch.object(landed_worktrees, "issues_naming", return_value=[]), \
+                    mock.patch.object(landed_worktrees, "pull_rows", side_effect=lambda *_: ({},
+                    landed_worktrees.landed_decisions(self.repo, "work/source", head, self.root, pr_commits={head}))):
+                rows = list(landed_worktrees.repository_rows(reader, mock.Mock(), "o/sample", self.repo, self.root))
+            self.assertEqual(next(row for row in rows if row["path"] == str(path))["decision"], "candidate")
+
     def test_repository_scan_reuses_pr_and_branch_guards_and_reports_every_tree(self) -> None:
         done = self.worktree("done")
+        os.utime(Path(self.git(done, "rev-parse", "--absolute-git-dir")) / "HEAD", (0, 0))
         active = self.worktree("active")
         fresh = self.worktree("fresh")
         foreign = self.worktree("foreign", lock="Another job")
         reader = mock.Mock()
         reader.paged_json.side_effect = lambda _path, **options: (
-            [{"number": 7, "state": "closed"}] if options["params"]["head"].endswith(":work/done") else []
+            [{"number": 7, "state": "closed"}] if options.get("params", {}).get("head", "").endswith(":work/done") else []
         )
-        with mock.patch.object(landed_worktrees, "pull_rows", return_value=({}, [
+        with mock.patch.object(landed_worktrees, "issues_naming", return_value=[]), \
+                mock.patch.object(landed_worktrees, "pull_rows", return_value=({}, [
             {"path": str(done), "decision": "candidate"}])) as pull, \
                 mock.patch.object(landed_worktrees, "branch_rows", side_effect=lambda *_args: ({}, [
                     {"path": str(fresh), "decision": "kept", "reason": "fresh start"}])) as branch:
-            rows = landed_worktrees.repository_rows(reader, mock.Mock(), "o/sample", self.repo, self.root,
-                                                    preserve={active})
+            rows = list(landed_worktrees.repository_rows(reader, mock.Mock(), "o/sample", self.repo, self.root,
+                                                         preserve={active}))
         self.assertEqual({row["path"]: row["decision"] for row in rows}, {
             str(done): "candidate", str(active): "kept", str(fresh): "kept", str(foreign): "kept"})
         pull.assert_called_once()
@@ -188,7 +221,7 @@ class RepositoryTests(Fixture):
         path = self.worktree("unread")
         reader = mock.Mock()
         reader.paged_json.side_effect = LookupError("offline")
-        rows = landed_worktrees.repository_rows(reader, mock.Mock(), "o/sample", self.repo, self.root)
+        rows = list(landed_worktrees.repository_rows(reader, mock.Mock(), "o/sample", self.repo, self.root))
         self.assertEqual([(row["path"], row["decision"]) for row in rows], [(str(path), "kept")])
         self.assertIn("offline", rows[0]["reason"])
 
@@ -222,7 +255,6 @@ class RepositoryTests(Fixture):
             self.assertEqual(result.returncode == 0, cause == "eligible", result)
             removals = [call.args[0] for call in calls.call_args_list if "remove-worktree" in call.args[0]]
             self.assertEqual(len(removals), int(cause == "eligible"))
-            self.assertTrue(path.exists())
 
 
 class MainTests(Fixture):
@@ -231,7 +263,7 @@ class MainTests(Fixture):
         self.git(self.repo, "remote", "set-url", "origin", "https://github.com/o/sample.git")
 
     def run_main(self, pull, repo="o/sample", commits=(), discussions=None, bodies=None, branch=None, branch_pulls=(),
-                 claim_issues=(), search=None, archived_claim=False):
+                 claim_issues=(), search=None, archived_claim=False, all_trees=False, checkout=None):
         config = self.base / "worktrees.json"
         config.write_text(json.dumps({"root": str(self.root), "hostHelper": str(self.base / "host-helper")}))
         discussions = discussions or {}
@@ -271,8 +303,8 @@ class MainTests(Fixture):
                 mock.patch.dict("sys.modules", {"github_read": read_errors}), \
                 mock.patch.object(landed_worktrees, "run_retire") as run, redirect_stdout(out):
             run.return_value = subprocess.CompletedProcess([], 0, "", "")
-            landed = ["--branch", branch] if branch else ["--pr", "7"]
-            code = landed_worktrees.main(["--repo", repo, *landed, "--checkout", str(self.repo), "--apply"])
+            landed = ["--all"] if all_trees else (["--branch", branch] if branch else ["--pr", "7"])
+            code = landed_worktrees.main(["--repo", repo, *landed, "--checkout", str(checkout or self.repo), "--apply"])
         return code, json.loads(out.getvalue()), run
 
     def test_open_pr_retires_nothing(self):
@@ -280,6 +312,14 @@ class MainTests(Fixture):
         code, result, run = self.run_main({"state": "open", "head": {"ref": "work/open", "sha": self.git(path, "rev-parse", "HEAD"),
                                                                       "repo": {"full_name": "o/sample"}}})
         self.assertEqual((code, result["ok"]), (2, False))
+        run.assert_not_called()
+
+    def test_repository_mode_preserves_source_checkout_and_nested_calling_directory(self) -> None:
+        source = self.settled_worktree("source-checkout")
+        calling = self.settled_worktree("calling")
+        with mock.patch.object(landed_worktrees.Path, "cwd", return_value=calling / "nested"):
+            code, result, run = self.run_main(None, all_trees=True, checkout=source)
+        self.assertEqual((code, [row["decision"] for row in result["worktrees"]]), (0, ["kept", "kept"]))
         run.assert_not_called()
 
     def test_merged_pr_retires_its_source_worktree(self):
