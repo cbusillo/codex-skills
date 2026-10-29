@@ -130,9 +130,9 @@ def connection_query(name: str, cursor: str | None = None) -> str:
 
 
 def complete_issue(
-    reader: github_read.GitHubReader, node: dict[str, Any], *, comments: bool
+    reader: github_read.GitHubReader, node: dict[str, Any], *, comments: bool, fields: tuple[str, ...] | None = None
 ) -> dict[str, Any]:
-    names = [name for name in CONNECTIONS if comments or name != "comments"]
+    names = fields if fields is not None else tuple(name for name in CONNECTIONS if comments or name != "comments")
     repo = node["repository"]["nameWithOwner"]
     number = node["number"]
     owner, name = repo.split("/", 1)
