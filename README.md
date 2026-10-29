@@ -667,8 +667,9 @@ through the desktop IDE's Inspection API plugin. The
 ## Reviews By Another Model
 
 Use the canonical [`model-review` skill](skills/model-review/SKILL.md) for the
-complete read-only review procedure and its linked standing provider decisions.
-If an `agy` read rule should cover several repositories, scope it to their
+complete read-only review procedure using the `codex`, `claude`, or `agy` CLI,
+including its linked standing provider decisions. For the `agy` tool-permission
+setup it describes, scope a read rule covering several repositories to their
 containing directory, never the home directory; the rule affects every session.
 
 ## Direction
