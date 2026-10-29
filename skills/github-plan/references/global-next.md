@@ -166,12 +166,13 @@ from prose or merged PRs.
   branch disappearance does not end that assignment.
 - `person:<login>` and `event:<observable>` are `waiting`.
 - A missing, malformed or duplicate field goes in `needs_status`, unless a wait
-  or observed claim/artifact already determines its disposition. A caller review
+  or observed claim already determines its disposition. A caller review
   cannot replace the missing field.
 
-`underway` includes observed claims or artifacts, including unresolved old
-ownership marked `current_or_stale`; it does not assert every retained artifact
-has a running session. `verification_only` and `scope_review`, with their count
+`underway` includes observed claims and issue-linked artifacts. For a PR, an
+old branch or worktree alone does not establish an active owner: its recorded
+actor decides, or it enters `needs_status`. Artifacts remain custody evidence
+for mandatory claim preflight. `verification_only` and `scope_review`, with their count
 keys, stay present and empty for one release for caller compatibility.
 `needs_status_count` reports the records needing a status update.
 These reports never close an issue, clear a hold or prove its finish line.
@@ -224,7 +225,11 @@ records consume no reserved allowances. PRs enter the same `Next actor` queue:
 missing actors need status, named agents/claims/current Ready remain underway,
 and drafts, Client-wait handoffs, structured waits and person/event actors stay
 held. PR identity and its remote head identify the work record; local source
-artifacts and active claims remain ownership evidence. `pr_followthrough` and
+issue-linked artifacts and active claims remain ownership evidence. A current-head
+Client handoff wait is checked against the latest saved Launchplane decision.
+Acceptance offers checked-Ready follow-through to an agent; a changed head,
+changes requested or no decision keeps the Client wait, and an unavailable read
+requires review. Other recorded waits and actors still apply. `pr_followthrough` and
 `dependabot_*` remain compatibility projections from this inventory, including
 the dependency age and enrollment rules. They do not authorize claiming or
 merging, or clear a canonical issue's wait.

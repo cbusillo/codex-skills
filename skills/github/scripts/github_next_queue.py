@@ -168,11 +168,18 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
         return {**row, "state": "waiting", "reason": "recorded_next_actor"}
     if projected.get("reason") in {"current_head_ready", "current_head_client_wait"}:
         return {**row, "state": projected["state"], "reason": projected["reason"]}
+    if item.get("record_type") == "pull_request":
+        artifacts = [artifact for artifact in artifacts if artifact["source"] == "open_pr"]
     if conflicts or artifacts:
         return {**row, "state": "underway", "reason": "existing_claim_or_artifact",
                 "ownership_evidence": [*conflicts, *artifacts], "certainty": "current_or_stale"}
     if not status_known:
         return {**row, "state": "review", "reason": "incomplete_discussion"}
+    if actor in {None, "agent"} and projected.get("next_actor") == "agent":
+        actor = row["next_actor"] = "agent"
+        row["next_action"] = row["next_action"] or projected["next_action"]
+        row["wait_review_required"] = False
+        wait = github_plan_wait.reviewed(evidence="Saved Client acceptance ends the current-head Client handoff wait.")
     if actor is None:
         return {**row, "state": "needs_status", "reason": "next_actor_missing_or_invalid"}
     if actor.startswith("agent:"):

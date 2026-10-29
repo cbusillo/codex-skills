@@ -4,13 +4,17 @@
 # ///
 from __future__ import annotations
 
+import json
+import subprocess
 from unittest.mock import Mock, patch
 
 import github_next_pr
+import github_next_queue
 import github_plan_claim as claim
 import github_plan_wait as wait
 import ready_handoff
 from test_gh_plan_dependabot import discover, load_module, pull
+from test_github_next_queue import evidence, item
 
 HEAD = "a" * 40
 
@@ -39,8 +43,9 @@ def test_non_dependency_followthrough_preserves_conditions_and_current_head_hand
     assert result["state"] == "review" and result["discussion"][-1]["body"] == accepted["body"]
     assert project([accepted], head={"sha": "b" * 40})["review_required"]
     client_wait = comment(2, ready_handoff.handoff_body(HEAD, waiting_for_client=True))
-    assert project([client_wait])["state"] == "waiting"
-    assert project([*comments, {**client_wait, "id": 4, "created_at": "2026-10-28T18:04:00Z"}])["state"] == "waiting"
+    with patch.object(github_next_pr, "read_acceptance", return_value=False):
+        assert project([client_wait])["state"] == "waiting"
+        assert project([*comments, {**client_wait, "id": 4, "created_at": "2026-10-28T18:04:00Z"}])["state"] == "waiting"
     assert project([client_wait, comment(3, clear)])["state"] == "review"
     held = [comment(1, "A 24-hour watch is running. Controls need the owner watching the TV. This PR stays unmarked until then.")]
     assert project(held)["state"] == "scope_review"
@@ -70,6 +75,53 @@ def test_non_dependency_followthrough_preserves_conditions_and_current_head_hand
     observation = project([long_comment])["discussion"][0]
     assert observation["body_truncated"] and len(observation["body"]) < len(long_comment["body"])
     assert observation["author"] == long_comment["user"]["login"] and observation["url"]
+
+
+def test_saved_current_head_acceptance_ends_only_the_client_handoff_wait() -> None:
+    comments = [comment(1, ready_handoff.handoff_body(HEAD, waiting_for_client=True))]
+    for decision, expected in [
+        ({"decision": "accepted", "head_sha": HEAD}, "review"),
+        ({"decision": "accepted", "head_sha": "b" * 40}, "waiting"),
+        ({"decision": "changes_requested", "head_sha": HEAD}, "waiting"),
+        (None, "waiting"),
+    ]:
+        response = subprocess.CompletedProcess([], 0, json.dumps({"ok": True, "decision": decision}), "")
+        with patch("subprocess.run", return_value=response):
+            result = project(comments)
+            assert result["state"] == expected
+            for actor in ("", "agent", "person:owner", "agent:integrator"):
+                row = item(actor=actor)
+                row["record_type"] = "pull_request"
+                row["discussion"]["body"] = row["discussion"]["body"].split(wait.PREFIX)[0]
+                row["discussion"]["comments"] = [
+                    {**entry, "author": entry["user"]["login"]} for entry in comments]
+                observed = evidence()
+                pr = {**pull(author="bot"), "number": row["number"], "body": row["discussion"]["body"],
+                      "head": {"sha": HEAD, "ref": "work/source", "repo": {"full_name": row["repo"]}},
+                      "base": {"repo": {"full_name": row["repo"]}}}
+                observed["pulls"] = [pr]
+                observed["inventory"]["local_branches"] = [pr["head"]["ref"]]
+                queued = github_next_queue.classify(row, observed, trusted={"owner", "bot"})
+                if actor == "person:owner":
+                    assert queued["state"] == "waiting"
+                elif expected == "review":
+                    assert queued["state"] == ("underway" if actor == "agent:integrator" else "available")
+                    assert queued["next_actor"] == (actor or "agent")
+                    assert queued["claim_required"] and not queued["ownership_complete"]
+                else:
+                    assert queued["state"] == "waiting"
+            if expected == "review":
+                assert result["next_actor"] == "agent"
+                assert result["review_required"]
+                held = comment(2, wait.marker(wait.reviewed(
+                    evidence="Hardware observation still required", waiting_for="Owner hardware check",
+                    ends_when="Owner records the check")))
+                assert project([*comments, held])["state"] == "waiting"
+                assert project([*comments, comment(2, ready_handoff.handoff_body(HEAD))])["state"] == "underway"
+    for response in [subprocess.CompletedProcess([], 1, "{}", ""),
+                     subprocess.CompletedProcess([], 0, "not json", "")]:
+        with patch("subprocess.run", return_value=response):
+            assert project(comments)["state"] == "unknown"
 
 
 def test_existing_inventory_supplies_pr_followthrough_without_dependency_age_rule() -> None:
@@ -105,4 +157,5 @@ def test_existing_inventory_supplies_pr_followthrough_without_dependency_age_rul
 if __name__ == "__main__":
     test_non_dependency_followthrough_preserves_conditions_and_current_head_handoffs()
     test_existing_inventory_supplies_pr_followthrough_without_dependency_age_rule()
+    test_saved_current_head_acceptance_ends_only_the_client_handoff_wait()
     print("PR follow-through tests passed")

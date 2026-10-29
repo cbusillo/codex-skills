@@ -4,6 +4,10 @@
 # ///
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 import github_plan_claim
@@ -12,6 +16,19 @@ import ready_handoff
 from github_plan_status.waits import current_source
 
 DISCUSSION_EXCERPT_LIMIT = 1000
+
+
+def read_acceptance(repo: str, number: int, head: str) -> bool:
+    helper = Path(__file__).resolve().parents[2] / "launchplane/scripts/launchplane-owner-review.py"
+    result = subprocess.run(
+        [sys.executable, str(helper), "--repo", repo, "--pr", str(number)],
+        capture_output=True, text=True, timeout=20,
+    )
+    payload = json.loads(result.stdout)
+    if result.returncode or not isinstance(payload, dict) or payload.get("ok") is not True:
+        raise ValueError("client_acceptance_unavailable")
+    decision = payload.get("decision")
+    return bool(isinstance(decision, dict) and decision.get("decision") == "accepted" and decision.get("head_sha") == head)
 
 
 def project(repo: str, pull: dict[str, Any], comments: list[dict[str, Any]], *, trusted: set[str], complete: bool) -> dict[str, Any]:
@@ -71,6 +88,13 @@ def project(repo: str, pull: dict[str, Any], comments: list[dict[str, Any]], *, 
     if ready:
         return {**row, "state": "underway", "reason": "current_head_ready"}
     if client_wait:
+        try:
+            accepted = read_acceptance(repo, pull["number"], head)
+        except (ValueError, OSError, subprocess.SubprocessError):
+            return {**row, "state": "unknown", "reason": "client_acceptance_unavailable"}
+        if accepted:
+            return {**row, "state": "review", "reason": "pr_followthrough_needs_fresh_readiness", "next_actor": "agent",
+                    "next_action": "Post checked Ready for the accepted current head after fresh readiness and custody checks."}
         return {**row, "state": "waiting", "reason": "current_head_client_wait"}
     if wait["state"] != "clear":
         return {**row, "state": "scope_review", "reason": "wait_review_required"}

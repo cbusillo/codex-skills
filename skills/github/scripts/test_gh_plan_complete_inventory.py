@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 
 import github_api
 import github_next_inventory as inventory
+import github_next_pr
 import github_next_queue as queue
 import github_plan_claim as claim
 import ready_handoff
@@ -124,53 +125,60 @@ class CompleteInventoryTests(unittest.TestCase):
         ]
         self.assertEqual(queue.classify(row, observed, trusted={"owner"})["state"], "underway")
         row["discussion"]["comments"][0]["body"] = ready_handoff.handoff_body(row["head_sha"], waiting_for_client=True)
-        self.assertEqual(queue.classify(row, observed, trusted={"owner"})["state"], "waiting")
+        with patch.object(github_next_pr, "read_acceptance", return_value=False):
+            self.assertEqual(queue.classify(row, observed, trusted={"owner"})["state"], "waiting")
         row["discussion"]["complete"] = False
         self.assertEqual(queue.classify(row, observed, trusted={"owner"})["state"], "review")
 
-    def test_global_pr_is_available_from_the_same_complete_inventory(self) -> None:
-        with cli.global_fixture([], [], {}) as (module, result, _reads):
-            raw = cli.global_issue("someone/pr-only", 11, labels=["live-breakage"])
-            raw.update(
-                user={"login": "someone"},
-                body="## Current Status\nNext actor: agent\n"
-                + module.github_plan_wait.marker(module.github_plan_wait.reviewed(evidence="Full fixture reviewed")),
-                pull_request={"url": "https://github.com/someone/pr-only/pull/11"},
-                html_url="https://github.com/someone/pr-only/pull/11",
-                _graph_comments=[],
-                head={
-                    "sha": "a" * 40,
-                    "ref": "work/source",
-                    "repo": {"full_name": "someone/pr-only"},
-                },
-                base={"repo": {"full_name": "someone/pr-only"}},
-            )
-
-            def discover(*_args: object, **_kwargs: object) -> tuple[list[dict], dict]:
-                module.NEXT_READS.inventory = {"someone/pr-only": [raw], "someone/direction": []}
-                return [raw], {
-                    "complete": True,
-                    "repositories": [
-                        {"repo": "someone/pr-only", "direction": None},
-                        {"repo": "someone/direction", "complete": True, "direction": None},
-                    ],
-                }
-
-            with patch.multiple(
-                module,
-                discover_direction_work=discover,
-                annotate_next_queue=module.real_annotate_next_queue,
-                load_direction=lambda *_: "# Direction\n## Order\n4. Own projects: pr-only.\n## Milestones\n",
-                read_queue_ownership=lambda *_: {**evidence(), "pulls": [raw]},
-                wait_authors=lambda *_: {"someone"},
-            ):
-                module.cmd_next(module.build_parser().parse_args(["--repo", "someone/direction", "next"]))
-            self.assertEqual(
-                [row["number"] for row in result["available_candidates"]],
-                [raw["number"]],
-            )
-            self.assertEqual(result["available_candidates"][0]["record_type"], "pull_request")
-            self.assertTrue(result["available_candidates"][0]["queue"]["claim_required"])
+    def test_global_pr_artifacts_never_hide_followthrough_or_missing_status(self) -> None:
+        for actor, accepted, bucket in [("agent", False, "available_candidates"), ("", False, "needs_status"),
+                                         ("", True, "available_candidates")]:
+            with cli.global_fixture([], [], {}) as (module, result, _reads):
+                raw = cli.global_issue("someone/pr-only", 11, labels=["live-breakage"])
+                raw.update(
+                    user={"login": "someone"},
+                    body=f"## Current Status\nNext actor: {actor}\n"
+                    + module.github_plan_wait.marker(module.github_plan_wait.reviewed(evidence="Full fixture reviewed")),
+                    pull_request={"url": "https://github.com/someone/pr-only/pull/11"},
+                    html_url="https://github.com/someone/pr-only/pull/11",
+                    _graph_comments=[{
+                        "id": 1, "user": {"login": "someone"}, "created_at": "2026-10-29T01:00:00Z",
+                        "body": ready_handoff.handoff_body("a" * 40, waiting_for_client=True)}] if accepted else [],
+                    head={
+                        "sha": "a" * 40,
+                        "ref": "work/source",
+                        "repo": {"full_name": "someone/pr-only"},
+                    },
+                    base={"repo": {"full_name": "someone/pr-only"}},
+                )
+    
+                def discover(*_args: object, **_kwargs: object) -> tuple[list[dict], dict]:
+                    module.NEXT_READS.inventory = {"someone/pr-only": [raw], "someone/direction": []}
+                    return [raw], {
+                        "complete": True,
+                        "repositories": [
+                            {"repo": "someone/pr-only", "direction": None},
+                            {"repo": "someone/direction", "complete": True, "direction": None},
+                        ],
+                    }
+    
+                with patch.multiple(
+                    module,
+                    discover_direction_work=discover,
+                    annotate_next_queue=module.real_annotate_next_queue,
+                    load_direction=lambda *_: "# Direction\n## Order\n4. Own projects: pr-only.\n## Milestones\n",
+                    read_queue_ownership=lambda *_: {**evidence(), "pulls": [raw], "inventory": {
+                        "local_branches": [raw["head"]["ref"]], "remote_branches": [],
+                        "worktrees": [{"branch": raw["head"]["ref"], "path": "/workspace/old-source"}]}},
+                    wait_authors=lambda *_: {"someone"},
+                ), patch.object(github_next_pr, "read_acceptance", return_value=accepted):
+                    module.cmd_next(module.build_parser().parse_args(["--repo", "someone/direction", "next"]))
+                self.assertEqual(
+                    [row["number"] for row in result[bucket]],
+                    [raw["number"]],
+                )
+                self.assertEqual(result[bucket][0]["record_type"], "pull_request")
+                self.assertTrue(result[bucket][0]["queue"]["claim_required"])
 
     def test_partial_source_inventory_keeps_ranked_work_and_reports_the_gap(self) -> None:
         root = cli.track("someone/direction", 1, "First")

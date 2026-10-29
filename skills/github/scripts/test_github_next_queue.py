@@ -130,6 +130,29 @@ def test_existing_artifacts_and_partial_reads_stay_out_of_start_queue() -> None:
     assert classify(row)['state'] == 'review'
 
 
+
+def test_pr_artifacts_cannot_hide_the_recorded_actor_or_missing_owner() -> None:
+    for actor, expected in [("", "needs_status"), ("agent", "available"),
+                            ("agent:integrator", "underway"), ("person:owner", "waiting")]:
+        row = item(actor=actor)
+        row["record_type"] = "pull_request"
+        observed = evidence()
+        pull = {"number": row["number"], "state": "open", "title": row["title"], "body": row["discussion"]["body"],
+                "html_url": row["url"], "head": {"sha": "a" * 40, "ref": "work/old-source", "repo": {"full_name": row["repo"]}},
+                "base": {"repo": {"full_name": row["repo"]}}}
+        observed["pulls"] = [pull]
+        observed["inventory"]["local_branches"] = [pull["head"]["ref"]]
+        observed["inventory"]["worktrees"] = [{"branch": pull["head"]["ref"], "path": "/workspace/old-source"}]
+        result = classify(row, observed)
+        assert result["state"] == expected
+        assert result["next_actor"] == (actor or None)
+        assert result["claim_required"] and not result["ownership_complete"]
+        source = {"worker": "worker", "session": "native-session", "branch": "work/old-source", "claimed_at": "2026-10-01T00:00:00Z"}
+        row["discussion"]["comments"] = [{"id": 1, "author": "bot", "created_at": source["claimed_at"],
+                                          "body": claim.marker(source)}]
+        assert classify(row, observed)["state"] == ("waiting" if actor == "person:owner" else "underway")
+
+
 def test_direction_list_is_authoritative_and_holds_override_automatic_review() -> None:
     patterns = ['repo', 'family*']
     assert queue.own_project('owner/repo', patterns, 'owner')
