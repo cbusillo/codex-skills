@@ -17,7 +17,9 @@ def wait_for_docker(daemon: subprocess.Popen[bytes], environment: dict[str, str]
         if result.returncode == 0:
             return
         time.sleep(0.2)
-    raise RuntimeError("Native Docker did not become ready")
+    if (status := daemon.poll()) is not None:
+        raise RuntimeError(f"Native Docker daemon exited with status {status}")
+    raise RuntimeError("Native Docker startup deadline expired")
 
 
 def main() -> None:

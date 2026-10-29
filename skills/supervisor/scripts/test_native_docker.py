@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -85,9 +87,13 @@ class NativeDockerTests(unittest.TestCase):
                         )
 
     def test_vm_failure_or_timeout_cannot_report_success(self) -> None:
-        for failure in (subprocess.CompletedProcess([], 1), subprocess.TimeoutExpired("qemu", 1)):
+        for failure in (subprocess.CompletedProcess([], -9), subprocess.TimeoutExpired("qemu", 1)):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory(dir=self.workspace) as temporary:
-                with patch.object(subprocess, "run", side_effect=[subprocess.CompletedProcess([], 0), failure]):
+                diagnostics = io.StringIO()
+                with (
+                    redirect_stderr(diagnostics),
+                    patch.object(subprocess, "run", side_effect=[subprocess.CompletedProcess([], 0), failure]),
+                ):
                     if isinstance(failure, subprocess.TimeoutExpired):
                         with self.assertRaises(subprocess.TimeoutExpired):
                             native.run_vm(Path(temporary) / "state", self.cgroup, ["fixture"], {"HEAVY_VM_DISK_GIB": "1"})
@@ -95,6 +101,7 @@ class NativeDockerTests(unittest.TestCase):
                         self.assertNotEqual(
                             native.run_vm(Path(temporary) / "state", self.cgroup, ["fixture"], {"HEAVY_VM_DISK_GIB": "1"}), 0
                         )
+                        self.assertIn(str(failure.returncode), diagnostics.getvalue())
 
 
 if __name__ == "__main__":

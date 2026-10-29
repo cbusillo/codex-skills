@@ -81,11 +81,13 @@ namespace. ARM execution is unqualified. Build the AMD64 image before submission
 ```sh
 docker build --platform linux/amd64 --tag native-docker-fixture \
   <catalog>/skills/supervisor/assets/native-docker
+docker image inspect --format '{{.Id}}' native-docker-fixture
 ```
 
 The configured executor's existing image/provenance transfer carries the cached
-image; no registry credentials are forwarded. Use the resulting reviewed image
-digest in a retained qualification manifest. Base tags in the recipe are build
+image; no registry credentials are forwarded. Use the resulting reviewed local
+`sha256:...` image ID in a retained qualification manifest. A local build need
+not have a registry digest. Base tags in the recipe are build
 inputs, not immutable qualification evidence.
 
 The guest contains Docker, Compose and Python. For additional fixture tools,
@@ -109,7 +111,7 @@ the outer job, runner or outside world. This does not qualify external ingress.
 {
   "containers": [{
     "name": "tests",
-    "image": "native-docker-fixture",
+    "image": "sha256:REVIEWED_LOCAL_IMAGE_ID",
     "command": ["sh", "/workspace/run-native.sh"],
     "copies": [{"source": "/private/task/native-inputs", "destination": "/workspace"}]
   }],
@@ -143,10 +145,8 @@ or cancel, never submit a replacement after unknown transport results.
 
 This capability adds no global train, deploy or recovery gate. Only work already
 using this heavy-run queue waits on its slot or unresolved custody. It removes
-no existing code. Long VM runs delay every repository using the same queue,
+no existing gate. Long VM runs delay every repository using the same queue,
 and shared storage I/O can delay neighboring host work; this adds no I/O ceiling.
-Native fixtures can now use a separate engine without direct host-daemon access
-or fixed-container approximations. The extra image code provides that boundary.
 
 ## Host settings and queue
 

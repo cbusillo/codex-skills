@@ -69,6 +69,7 @@ def run_vm(state: Path, cgroup: Path, command: list[str], environment: dict[str,
         timeout=timeout,
     )
     if result.returncode:
+        print(f"Native Docker VM exited with status {result.returncode}", file=sys.stderr)
         return 1
     return int((control / "exit-code").read_text())
 
