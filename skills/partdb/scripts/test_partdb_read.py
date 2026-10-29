@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
 import urllib.error
 from pathlib import Path
