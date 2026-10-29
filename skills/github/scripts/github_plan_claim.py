@@ -110,7 +110,7 @@ def records(text: str) -> list[dict[str, str]]:
     return found
 
 
-def same_owner(record: dict[str, str], claim: dict[str, str]) -> bool:
+def same_owner(record: dict[str, Any], claim: dict[str, Any]) -> bool:
     return (all(record.get(key) == claim[key] for key in ("worker", "session", "branch"))
             and all(record.get(key) == claim.get(key)
                     for key in ("refresh_pr", "retained_handoff", "resume_from")))
@@ -506,7 +506,7 @@ def attested_handoff_note(text: str, index: int, comments: list[dict[str, Any]])
 def takeover_sources(comments: list[dict[str, Any]]) -> dict[int, int]:
     from github_plan_release import stamp
     from github_plan_status.waits import live_lines as live_directives
-    sources = {}
+    sources: dict[int, dict[str, Any]] = {}
     superseded = {}
     for comment in comments:
         parsed = records(comment.get("body") or "")

@@ -192,28 +192,28 @@ class Ingress:
         # keep overlapping operations protected even when replies arrive out of order.
         leases, requests, approvals = {}, {}, {}
 
-        async def release(targets: set[str]) -> None:
-            for target in targets:
-                guard, count = leases[target]
-                if count == 1:
-                    del leases[target]
-                    await guard.__aexit__(None, None, None)
+        async def release(released_targets: set[str]) -> None:
+            for lease_target in released_targets:
+                lease_guard, lease_count = leases[lease_target]
+                if lease_count == 1:
+                    del leases[lease_target]
+                    await lease_guard.__aexit__(None, None, None)
                 else:
-                    leases[target] = guard, count - 1
+                    leases[lease_target] = lease_guard, lease_count - 1
 
-        async def acquire(targets: set[str], method: str) -> set[str]:
+        async def acquire(acquired_targets: set[str], action_name: str | None) -> set[str]:
             entered = set()
             try:
-                for target in sorted(targets):
-                    if target in leases:
-                        guard, count = leases[target]
-                        closure.set_action_pending(target, True, method=method, home=self.home)
-                        leases[target] = guard, count + 1
+                for lease_target in sorted(acquired_targets):
+                    if lease_target in leases:
+                        lease_guard, lease_count = leases[lease_target]
+                        closure.set_action_pending(lease_target, True, method=action_name, home=self.home)
+                        leases[lease_target] = lease_guard, lease_count + 1
                     else:
-                        guard = closure.async_resume_guard(target, method=method, home=self.home)
-                        await guard.__aenter__()
-                        leases[target] = guard, 1
-                    entered.add(target)
+                        lease_guard = closure.async_resume_guard(lease_target, method=action_name, home=self.home)
+                        await lease_guard.__aenter__()
+                        leases[lease_target] = lease_guard, 1
+                    entered.add(lease_target)
                 return entered
             except BaseException:
                 await release(entered)

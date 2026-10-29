@@ -209,7 +209,8 @@ class ClaimTests(unittest.TestCase):
         if path == "/repos/other/plans/pulls": items = []
         return "bot", copy.deepcopy(items)
 
-    def prepare_comment(self, number: int, body: str, *, repo: str, actor: str = TEST_BOT,
+    @staticmethod
+    def prepare_comment(number: int, body: str, *, repo: str, actor: str = TEST_BOT,
                         marker: dict[str, Any] | None = None) -> tuple[dict[str, Any], str]:
         marker = marker if marker is not None else {"operation_id": PLAN.github_api_core.new_operation_id(),
             "started_at": datetime.now().astimezone().isoformat(), "kind": "request_fingerprint"}
@@ -1444,13 +1445,17 @@ class ClaimTests(unittest.TestCase):
                 payload={"operation_marker": marker, "reconciliation": {"result": "no_match"}})
 
         publisher = self.enterContext(patch.object(self, "post", side_effect=publish))
-        with self.assertRaises(SystemExit if crash else PLAN.PlanError) as unknown:
-            self.run_claim()
-        if not crash:
+        if crash:
+            with self.assertRaises(SystemExit):
+                self.run_claim()
+        else:
+            with self.assertRaises(PLAN.PlanError) as unknown:
+                self.run_claim()
             self.assertEqual(unknown.exception.failure.write_outcome, "unknown")
         return {"marker": marker, "body": bodies[0], "claim": CLAIM.records(bodies[0])[0], "publisher": publisher}
 
-    def delayed_takeover(self, pending: dict[str, Any], *, identifier: int = 90, actor: str = TEST_BOT,
+    @staticmethod
+    def delayed_takeover(pending: dict[str, Any], *, identifier: int = 90, actor: str = TEST_BOT,
                          operation_id: str | None = None) -> dict[str, Any]:
         return {"id": identifier, "user": {"login": actor}, "created_at": datetime.now().astimezone().isoformat(),
                 "body": PLAN.github_api_core.body_with_operation_marker(

@@ -298,7 +298,7 @@ async def queue_input(home: Path, session: str, text: str, *, transcript: Path |
     allowance = max(1024 * 1024, len(json.dumps(params, ensure_ascii=True).encode()) + 65536)
     leased = False
     try:
-        await asyncio.to_thread(source_endpoint, session, home, transcript=transcript)
+        await asyncio.to_thread(lambda: source_endpoint(session, home, transcript=transcript))
         with _queue_outcome("submission") as mark_sent:
             async with connection(home, max_msg_size=allowance) as request:
                 await require_loaded_thread(request, session, home)

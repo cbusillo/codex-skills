@@ -52,7 +52,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             task, request, response, _ = await self.start_client(f)
             pending = None
             try:
-                with patch.object(closure, "has_current_claim", side_effect=slow_claim_read):
+                with patch("github_plan_closure.has_current_claim", side_effect=slow_claim_read):
                     pending = asyncio.create_task(self.send(task, request, response, "turn/start", f.session))
                     self.assertTrue(await asyncio.to_thread(entered.wait, 3), response.read_text() if response.exists() else "no RPC reply")
                     unrelated = {"session_id": OTHER_THREAD, "closure_evidence": None}
@@ -67,7 +67,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     proceed.set()
                     self.assertIn("result", await pending)
                 self.assertIn(unrelated, closure.log_rows())
-                with patch.object(closure, "has_current_claim", side_effect=ValueError("fixture GitHub read unavailable")):
+                with patch("github_plan_closure.has_current_claim", side_effect=ValueError("fixture GitHub read unavailable")):
                     self.assertIn("result", await self.send(task, request, response, "turn/start", f.session))
             finally:
                 proceed.set()

@@ -3009,9 +3009,9 @@ def claim_once(args: argparse.Namespace) -> None:
         if competing:
             refuse(competing, owner_comments=peer_comments, owner_repo=peer_repo, owner_number=peer_number)
 
-    def refuse_unknown_admission(session: str, pending: Any) -> NoReturn:
+    def unknown_admission_error(session: str, pending: Any) -> ClassifiedPlanError:
         message = "Original claim publication is unresolved; rerun its original gh-plan.py claim for readback without reposting"
-        raise ClassifiedPlanError("claim_mutation_reconciliation_required", message,
+        return ClassifiedPlanError("claim_mutation_reconciliation_required", message,
             failure=github_api_core.FailureDetail(cause="claim_mutation_reconciliation_required", message=message,
                 retryable=False, fallback_eligible=False, disposition="stop", write_outcome="unknown",
                 failed_step="reconcile_claim_admission"),
@@ -3028,52 +3028,53 @@ def claim_once(args: argparse.Namespace) -> None:
                 return False
             pending = state["claim_admission_unknown"]
             if not isinstance(pending, dict):
-                refuse_unknown_admission(session, pending)
+                raise unknown_admission_error(session, pending)
             if (isinstance(pending.get("repo"), str) and type(pending.get("number")) is int
                     and (pending["repo"] != issue_repo or pending["number"] != number)):
                 if session in expired_sources:
-                    refuse_unknown_admission(session, pending)
+                    raise unknown_admission_error(session, pending)
                 return False
             marker = pending.get("operation_marker")
             original = pending.get("claim")
+            if not isinstance(original, dict) or not isinstance(marker, dict):
+                raise unknown_admission_error(session, pending)
             candidate = {**claim, "resume_from": str(args.resume_from) if args.resume_from else None,
-                         "retained_handoff": original.get("retained_handoff") if isinstance(original, dict) else None}
+                         "retained_handoff": original.get("retained_handoff")}
             if (not isinstance(pending.get("repo"), str) or type(pending.get("number")) is not int
                     or pending["number"] <= 0 or not isinstance(pending.get("actor"), str) or not pending["actor"]
-                    or not isinstance(original, dict)
                     or not all(isinstance(original.get(key), str) and original[key] for key in ("worker", "session", "branch", "claimed_at"))
-                    or not isinstance(marker, dict) or not isinstance(marker.get("operation_id"), str)
+                    or not isinstance(marker.get("operation_id"), str)
                     or not marker["operation_id"] or not isinstance(marker.get("value"), str) or not marker["value"]):
-                refuse_unknown_admission(session, pending)
+                raise unknown_admission_error(session, pending)
             started = github_comment_core.parse_timestamp(marker.get("started_at"))
             if started is None:
-                refuse_unknown_admission(session, pending)
+                raise unknown_admission_error(session, pending)
             try:
-                _, _, observed, _ = claim_snapshot(str(pending["number"]), pending["repo"], allow_closed=True)
+                _, _, operation_comments, _ = claim_snapshot(str(pending["number"]), pending["repo"], allow_closed=True)
             except PlanError:
-                refuse_unknown_admission(session, pending)
+                raise unknown_admission_error(session, pending)
             matched = []
-            for comment in observed:
-                if (type(comment.get("id")) is not int or (comment.get("user") or {}).get("login") != pending["actor"]
-                        or not github_api_core.body_has_operation_marker(comment.get("body"), marker["operation_id"])
-                        or github_plan_claim.records(comment.get("body") or "") != [original]):
+            for operation_comment in operation_comments:
+                if (type(operation_comment.get("id")) is not int or (operation_comment.get("user") or {}).get("login") != pending["actor"]
+                        or not github_api_core.body_has_operation_marker(operation_comment.get("body"), marker["operation_id"])
+                        or github_plan_claim.records(operation_comment.get("body") or "") != [original]):
                     continue
                 suffix = github_api_core.operation_marker_comment(marker["operation_id"]) + "\n"
-                body = comment.get("body") or ""
-                if not body.endswith(suffix):
+                operation_body = operation_comment.get("body") or ""
+                if not operation_body.endswith(suffix):
                     continue
-                prefix = body.removesuffix(suffix)
+                prefix = operation_body.removesuffix(suffix)
                 if not prefix.endswith("\n"):
                     continue
                 body_with_separator = prefix[:-1]
                 if not any(github_comment_core.comment_fingerprint(pending["repo"], pending["number"], pending["actor"], candidate_body) == marker["value"]
                            for candidate_body in (body_with_separator, body_with_separator.removesuffix("\n"))):
                     continue
-                created = github_comment_core.parse_timestamp(comment.get("created_at"))
+                created = github_comment_core.parse_timestamp(operation_comment.get("created_at"))
                 if created is not None and created >= started - timedelta(seconds=github_comment_core.RECONCILIATION_CLOCK_SKEW_SECONDS):
-                    matched.append(comment)
+                    matched.append(operation_comment)
             if len(matched) != 1:
-                refuse_unknown_admission(session, pending)
+                raise unknown_admission_error(session, pending)
             state.pop("claim_admission_unknown")
             github_plan_closure.write_lease_state(session, state)
             if pending["repo"] == issue_repo and pending["number"] == number and github_plan_claim.same_owner(original, candidate):
@@ -3086,8 +3087,8 @@ def claim_once(args: argparse.Namespace) -> None:
             return True
 
     def reconcile_observed_admissions(current_comments: list[dict[str, Any]]) -> bool:
-        sources = retained_ended_sources | {record["session"] for comment in current_comments
-                                            for record in github_plan_claim.records(comment.get("body") or "")
+        sources = retained_ended_sources | {record["session"] for admission_comment in current_comments
+                                            for record in github_plan_claim.records(admission_comment.get("body") or "")
                                             if record["session"] != claim["session"]}
         pending = {session for session in sources if "claim_admission_unknown" in github_plan_closure.lease_state(session)}
         if not pending:
@@ -3827,10 +3828,10 @@ def claim_once(args: argparse.Namespace) -> None:
             def before_create(intent: dict[str, Any]) -> None:
                 nonlocal prepared_admission
                 prepared_admission = {**intent, "claim": dict(claim)}
-                for source_session in sorted(owned_sources):
-                    source_state = github_plan_closure.lease_state(source_session)
-                    source_state["claim_admission_unknown"] = prepared_admission
-                    github_plan_closure.write_lease_state(source_session, source_state)
+                for preparing_session in sorted(owned_sources):
+                    preparing_state = github_plan_closure.lease_state(preparing_session)
+                    preparing_state["claim_admission_unknown"] = prepared_admission
+                    github_plan_closure.write_lease_state(preparing_session, preparing_state)
 
             try:
                 claim_comment = github_comment_core.comment(
