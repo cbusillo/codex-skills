@@ -1817,10 +1817,12 @@ class OwnReleaseTests(ReleaseHarness):
 
     def test_release_keeps_legacy_actor_narrative(self) -> None:
         self.f.issue["body"] += "\nNext actor: Supervisor routes the remaining source.\n"
+        self.handoff.write_text("Next actor: Supervisor takes the next source step.")
         self.run_own_release()
         status = PLAN.section_map(self.f.issue["body"])["Current Status"]
         self.assertEqual(PLAN.github_plan_next_actor.read(status), self.args.next_actor)
         self.assertIn("Supervisor routes the remaining source.", status)
+        self.assertIn("Supervisor takes the next source step.", self.f.comments[-1]["body"])
 
     def test_release_requires_actor_and_updates_status_before_releasing(self) -> None:
         self.args.next_actor = None

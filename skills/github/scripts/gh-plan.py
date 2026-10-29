@@ -7450,8 +7450,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("update-section", help="Patch one markdown section")
     p.add_argument("issue")
     p.add_argument("section")
-    p.add_argument("--body", help="Section text; an empty string intentionally clears the section")
-    p.add_argument("--body-file", help="Read section text from a file, or '-' for stdin; empty input clears the section")
+    p.add_argument("--body", help="Section text; empty input clears prose but preserves Current Status actor and machine records")
+    p.add_argument("--body-file", help="Read section text from a file, or '-' for stdin; same empty-input behavior as --body")
     p.add_argument("--next-actor", help="Current Status actor; otherwise supply its line or preserve the existing actor")
     p.set_defaults(func=cmd_update_section)
 

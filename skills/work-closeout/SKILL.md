@@ -292,6 +292,9 @@ successor at once. It releases ownership only. Never release another session's
 claim. Read the [claim contract](../github/references/cli-reference.md#planning-claim)
 before releasing or repairing a retained-PR handoff.
 
+Include `Next actor:` in the handoff, or pass `--next-actor` to release;
+updating Current Status alone does not supply the required release actor.
+
 Then read the record back:
 
 ```bash

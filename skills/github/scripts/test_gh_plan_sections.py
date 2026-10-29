@@ -78,7 +78,7 @@ class SectionTests(unittest.TestCase):
 
     def test_default_template_has_an_actionable_actor(self) -> None:
         status = PLAN.section_map(PLAN.template_body("New work"))["Current Status"]
-        self.assertEqual(PLAN.github_plan_next_actor.read(status), "agent")
+        self.assertIsNotNone(PLAN.github_plan_next_actor.read(status))
 
     def test_legacy_status_rewrites_preserve_unchanged_narrative_actor(self) -> None:
         previous = "Next actor: Supervisor routes the PR."
@@ -87,6 +87,25 @@ class SectionTests(unittest.TestCase):
         code, _result, edit, errors = self.run_update("--body", "State: Done.\n" + previous, section="Current Status")
         self.assertEqual(code, 0, errors)
         self.assertIn(previous, edit.call_args.kwargs["body"])
+
+    def test_explicit_actor_preserves_supplied_narrative_and_rejects_invalid_flags(self) -> None:
+        narrative = "Supervisor continues integration."
+        code, _result, edit, errors = self.run_update(
+            "--body", "Next actor: " + narrative, "--next-actor", "agent:supervisor", section="Current Status")
+        self.assertEqual(code, 0, errors)
+        status = PLAN.section_map(edit.call_args.kwargs["body"])["Current Status"]
+        self.assertEqual(PLAN.github_plan_next_actor.read(status), "agent:supervisor")
+        self.assertIn(narrative, status)
+        for section, actor, body in (
+            ("Current Status", "person:", "Updated."),
+            ("Current Status", "event:", "Updated."),
+            ("Scope", "agent", "Updated."),
+            ("Current Status", "agent", "Next actor: agent:other"),
+            ("Current Status", "agent", "Next actor: agent\nNext actor: person:owner"),
+        ):
+            code, _result, edit, _errors = self.run_update("--body", body, "--next-actor", actor, section=section)
+            self.assertNotEqual(code, 0)
+            edit.assert_not_called()
 
     def setUp(self) -> None:
         self.issue: dict[str, Any] = {

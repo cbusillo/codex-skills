@@ -425,20 +425,13 @@ Size implementation issues and record event waits under GitHub's
 Keep Current Status concise:
 
 ```text
-Next actor: agent | agent:<session or role> | person:<login> | event:<observable>
+Next actor:
 Next action:
 Last verified:
 ```
 
-`claim` writes `agent:<session>`. `release` requires `--next-actor` or a
-`Next actor:` line in its handoff; name the receiving agent on a source
-handoff. `update-section ... "Current Status"` accepts the same flag or line,
-preserving the existing actor when omitted. Use only `--next-actor` to change
-that field while preserving old text and records. Legacy updates without a
-value remain supported and leave the field absent for later status review.
-Generated new-plan templates start with `agent`. Other sections keep their existing behavior.
-This field records the next step's actor; it changes no ownership, wait,
-admission or queue-selection rules.
+Follow the [actor write contract](../github/references/cli-reference.md#planning-claim)
+for claim, release and field-only status edits.
 
 Maintain dependencies with `link`/`unlink` and person/event holds with `wait`;
 `show` projects their current state and blockers. Record decisive evidence and

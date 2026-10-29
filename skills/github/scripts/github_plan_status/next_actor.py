@@ -52,13 +52,19 @@ def write(text: str, actor: str) -> str:
     return "".join(lines)
 
 
-def resolve(text: str, explicit: str | None, previous: str = "") -> str:
-    supplied = read(text)
+def resolve(text: str, explicit: str | None) -> str:
     if explicit is not None:
         validate(explicit)
+    try:
+        supplied = read(text)
+    except ValueError:
+        if explicit is None or len(fields(text)) != 1:
+            raise
+        return explicit
+    if explicit is not None:
         if supplied is not None and supplied != explicit:
             raise ValueError("--next-actor conflicts with the supplied Next actor line")
-    actor = explicit or supplied or read(previous)
+    actor = explicit or supplied
     if actor is None:
         raise ValueError("Supply --next-actor or a Next actor line in Current Status or the release handoff")
     return actor
