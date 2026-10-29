@@ -62,6 +62,11 @@ def label(text: str, length: int) -> str:
     return text if len(text) <= length else text[:length - 1] + "…"
 
 
+def header(report: str, date: str, coverage: str) -> list[str]:
+    measure = next((line for line in report.splitlines() if line.startswith("Tooling PRs: ")), None)
+    return [f"Daily digest · {date} · {coverage}", *([measure[:240]] if measure else [])]
+
+
 def summary(report: str, full_list_url: str) -> str:
     date, coverage, rows = parse(report)
     groups: dict[str, list[dict]] = defaultdict(list)
@@ -72,7 +77,7 @@ def summary(report: str, full_list_url: str) -> str:
         group.sort(key=lambda r: (r["age"] is None, -(r["age"] or 0), r["url"]))
 
     for name_length in (72, 48, 32, 20):
-        lines = [f"Daily digest · {date} · {coverage}"]
+        lines = header(report, date, coverage)
         for kind, group in sorted(groups.items()):
             lines.append(f"{kind}: {len(group)}")
         waiting = [r for r in rows if r["person"]]
@@ -98,7 +103,7 @@ def presentation(report: str, full_list_url: str) -> Presentation:
         counts: dict[str, int] = defaultdict(int)
         for row in rows:
             counts[row["kind"]] += 1
-        lines = [f"Daily digest · {date} · {coverage}"]
+        lines = header(report, date, coverage)
         lines.extend(f"{kind}: {count}" for kind, count in sorted(counts.items()))
         waiting = sum(row["person"] for row in rows)
         lines.append(f"Waiting on Chris: {waiting} (all waits in attached full report)" if waiting else "Waiting on Chris: none")

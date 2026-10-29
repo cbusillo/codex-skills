@@ -1616,6 +1616,19 @@ def _within(value: Any, since: dt.datetime, until: dt.datetime, *, end_exclusive
             and (moment < until if end_exclusive else moment <= until))
 
 
+def capacity_rank(
+    repo: str, pull: dict[str, Any], *, own_projects: list[str], tracked_issues: set[tuple[str, int]],
+    own_label: str, own_issues: set[tuple[str, int]] | frozenset[tuple[str, int]],
+) -> str:
+    refs = pull_issue_refs(repo, pull)
+    if refs & tracked_issues:
+        return "milestone"
+    if (own_repository(repo, own_projects) or own_label.casefold() in _labels(pull)
+            or refs & own_issues or any(own_repository(ref, own_projects) for ref, _ in refs)):
+        return "own"
+    return "tooling"
+
+
 def capacity_summary(
     *, own_projects: list[str], tracked_issues: set[tuple[str, int]], direction_source: str,
     pulls: dict[str, list[dict[str, Any]]], milestones: dict[str, list[dict[str, Any]]],
@@ -1645,13 +1658,8 @@ def capacity_summary(
         counts = dict.fromkeys(RANKS, 0)
         for pull in merged:
             refs = pull_issue_refs(repo, pull)
-            if refs & tracked_issues:
-                rank = "milestone"
-            elif (own_repository(repo, own_projects) or own_label.casefold() in _labels(pull)
-                  or refs & set(own_issues) or any(own_repository(ref, own_projects) for ref, _ in refs)):
-                rank = "own"
-            else:
-                rank = "tooling"
+            rank = capacity_rank(repo, pull, own_projects=own_projects, tracked_issues=tracked_issues,
+                                 own_label=own_label, own_issues=own_issues)
             reporting_rows.append((repo, pull, rank == "milestone",
                                    own_repository(repo, own_projects) or own_label.casefold() in _labels(pull)
                                    or own_label.casefold() in (pull.get("_report_labels") or set())
