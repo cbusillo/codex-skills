@@ -25,17 +25,19 @@ they are updated, and what validation prevents silent drift.
 
 The system `/bin/bash` lacks `mapfile`. Install Homebrew's
 [Bash formula](https://formulae.brew.sh/formula/bash) if needed, then select its
-binary directory for this command from the repository root:
+binary directory and verify the selected Bash:
 
 ```sh
 brew install bash  # only if Homebrew Bash is not installed
-PATH="$(brew --prefix bash)/bin:$PATH" ./scripts/validate-skills.sh
+PATH="$(brew --prefix bash)/bin:$PATH" bash --version
 ```
 
-The command uses Homebrew's prefix on both Apple Silicon and Intel Macs and
-passes the selected `PATH` to child helpers. It leaves `/bin/bash`, the login
-shell, and persistent shell configuration unchanged. Selecting only an absolute
-interpreter for the parent does not select Bash for child commands.
+Use the same `PATH` prefix when a selected command needs Bash 4+; see the
+[test command contract](config-schema.md#workflow-metadata) for local and CI test scope.
+The prefix works on both Apple Silicon and Intel Macs and passes the selected
+`PATH` to child helpers. It leaves `/bin/bash`, the login shell, and persistent
+shell configuration unchanged. Selecting only an absolute interpreter for the
+parent does not select Bash for child commands.
 
 The [GNU Bash builtin reference](https://www.gnu.org/software/bash/manual/html_node/Bash-Builtins.html#index-mapfile)
 documents `mapfile`. On October 5, 2026, the supported command selected
