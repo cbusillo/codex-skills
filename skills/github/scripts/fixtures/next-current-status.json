@@ -23,5 +23,15 @@
     "state": "Active; prerequisite #3266 merged via PR #3310; generic-web driver integration remains unstarted.",
     "action": "An assigned agent integrates generic-web private readiness and atomic switching for application and Compose targets.",
     "expected_work_state": "engineering"
+  },
+  "5272": {
+    "state": "",
+    "action": "Next Codex source/qualification agent audits the existing service-owned instance comparison and page, implements the missing full private resolver/overlay comparison where needed, then consumes the deployed fleet metadata and immutable findings before any final removal review. The eight scope reads already establish selected-name presence with complete local coverage, not equality; do not repeat them as a substitute. Return the complete comparison/disposition to cbusillo/launchplane#5262 and cbusillo/launchplane#5254. Unstarted closeout follow-up; this worker does not begin it.",
+    "expected_work_state": "engineering"
+  },
+  "600": {
+    "state": "Supported delivery of reviewed main 09192c17b1faa6a62493c7296ba9832ee67f5bc8 is complete. MF600GUI3-1028 still could not select `/Applications/Mediaforce.app`: both exact-path Computer Use selections returned `Computer Use server error -10005: timeoutReached`. No native sample observation or light/dark captures were obtained. Match result: UNKNOWN; finish line remains unmet.",
+    "action": "Supervisor diagnoses this continuing timeout on the existing opt-in GUI route after its reported debug-copy cleanup. Once selection works, continue normal real-sample comparison and both app-only appearance captures. Keep the issue open; no Director decision or permission change is requested.",
+    "expected_work_state": "scope_review"
   }
 }

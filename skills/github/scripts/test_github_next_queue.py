@@ -46,7 +46,7 @@ def test_october_16_delivered_and_unstarted_status_shapes() -> None:
         else:
             assert result['state'] != 'engineering', (number, result)
             assert classify(row)['state'] != 'available', (number, classify(row))
-    for state in ['Active; prerequisite #3266 merged via PR #3310.', 'Active; integration remains unstarted.']:
+    for state in ['Active; prerequisite #3266 merged via PR #3310.', 'Active; integration remains unstarted.', 'Delivery of prerequisite #3266 is complete; integration remains unstarted.']:
         assert classify(item(fixtures['3267']['action'], state))['state'] == 'available'
     assert classify(item('Verify deployed export.', 'Active; first source slice merged and prerequisite #10 landed'))['state'] == 'verification'
     # Finished clauses cannot create or erase a genuine present source step.
@@ -61,6 +61,43 @@ def test_october_16_delivered_and_unstarted_status_shapes() -> None:
                    'Implement the remaining parser because the earlier repair is merged.',
                    'Diagnose the importer timeout; historical traces are attached.']:
         assert classify(item(action, 'Active; first slice merged'))['state'] == 'available'
+
+
+def test_role_descriptions_preserve_actions_and_supervisor_followthrough() -> None:
+    for action in [
+        'Supervisor diagnoses the continuing app-selection timeout.',
+        'Supervisor investigates why exact-path selection of /Applications/Mediaforce.app times out.',
+        'Supervisor diagnoses the Computer Use timeout (error code -10005).',
+        'Supervisor repairs the Computer Use attachment, then retries captures.',
+        'Supervisor fixes the GUI route.',
+        'Next GUI agent diagnoses the continuing timeout on the existing opt-in GUI route.',
+    ]:
+        assert classify(item(action, 'Supported delivery of reviewed main is complete; Computer Use attachment failed'))['state'] != 'available'
+    for action in ['An observation worker captures light/dark screenshots of the delivered build.',
+                   'Test worker runs the smoke on the deployed image.',
+                   'An observation worker captures screenshots of the latest build.',
+                   'Test worker smokes the app update.']:
+        assert classify(item(action, 'Active; source merged'))['state'] == 'verification'
+    for action in ['Supervisor fixes the merge-train wedge.',
+                   'Supervisor-launched source agent implements the remaining parser.',
+                   'Supervisor lands PR #71, then an agent implements the remaining parser.']:
+        assert classify(item(action))['state'] == 'available'
+    assert classify(item('Diagnose the importer timeout.', 'Source delivery is complete. Computer Use selection failed.'))['state'] == 'available'
+    for action in ['Fix the GUI bug in the sidebar toolbar.', 'Repair the email attachment upload.',
+                   'Diagnose the timeout in the CSV importer.',
+                   'Next agent compares the instances, implements the missing resolver.']:
+        assert classify(item(action, 'Source delivery is complete. Computer Use selection failed.'))['state'] == 'available'
+    assert classify(item('Implement the canonical parser.', 'Source delivery remains blocked; design review is complete'))['state'] == 'available'
+
+
+def test_empty_status_fields_do_not_consume_following_fields() -> None:
+    row = item()
+    status = 'Waiting for: Owner observation\nLast verified: \nNext action: owner/repo#7\nBlocked by: \nEvidence: retained logs'
+    records = direction.waiting_records(row, status)
+    assert not records[0]['last_verified']
+    assert direction.next_action_references('Next action: \nEvidence: owner/repo#7') == []
+    checked = direction.milestone_wait_evidence(row, 'Blocked by: \nNext action: owner/repo#7', [])
+    assert not checked['requested']
 
 
 def test_source_work_is_visible_without_caller_snapshot_but_requires_claim() -> None:
@@ -132,6 +169,8 @@ def test_current_qualification_does_not_hide_a_mixed_engineering_remainder() -> 
     assert classify(mixed)['state'] == 'available'
     assert classify(item('An executing agent repairs the controller response projection.', 'Active; first source PR landed'))['state'] == 'available'
     assert classify(item('Implement a feature that verifies TLS certificates.'))['state'] == 'available'
+    assert classify(item('Diagnose the source bug in Computer Use attachment.'))['state'] == 'available'
+    assert queue.status_field('State: \nNext action: Implement export.', 'State') == ''
     assert classify(item('Verify export and fix the reproduced fault.', 'Active; earlier source merged'))['state'] == 'available'
     assert classify(item('Verify the next deployed candidate update preserves the request.'))['state'] == 'review'
     assert classify(item('Supervisor verifies deployed web drill support.'))['state'] == 'review'
