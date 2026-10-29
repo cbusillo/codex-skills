@@ -169,14 +169,18 @@ The CLI reads current discussions and inventories claims, linked open PRs and
 branches once per repository before projecting the start queue. It uses the
 claim helper's exact authored-release and artifact rules. Each row's `queue`
 reads `Next actor:` from the selected Current Status, using the same parser as
-claim, release and status updates. The queue does not infer source delivery or
-remaining scope from prose or merged PRs.
+claim, release and status updates. Body-edit timestamps resolve disagreements
+between the body and trusted status comments; unrelated activity cannot make an
+older actor current. The queue does not infer source delivery or remaining scope
+from prose or merged PRs.
 
 - `agent` can enter `available_candidates` when the existing direction,
   ownership and structured-wait checks pass.
 - `agent:<session or role>` is `underway`. If the latest relevant claim for that
   session on this record has an exact authored release, the actor needs fresh
   status instead. A newer unreleased reacquisition by that session remains owned.
+  A role is a recorded assignment and stays underway until its actor is updated;
+  branch disappearance does not end that assignment.
 - `person:<login>` and `event:<observable>` are `waiting`.
 - A missing, malformed or duplicate field goes in `needs_status`, unless a wait
   or observed claim/artifact already determines its disposition. A caller review
@@ -208,7 +212,7 @@ on a person.
 reasons. Graph, repository, discussion and ownership bounds remain independent;
 increase the relevant scan, inventory or comment limit when its receipt reports
 unfinished reads. `--limit` only bounds returned rows. An empty available list
-with nonzero `review_required_count` means selection is unfinished, not that
+with nonzero `review_required_count` or `needs_status_count` means selection is unfinished, not that
 the portfolio has no work. A service or caller needing its own classification
 in JSON may pass a temporary
 `--selection-context FILE` on the next read. It is an evidence snapshot, never a

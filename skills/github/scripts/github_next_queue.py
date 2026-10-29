@@ -119,6 +119,7 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
     if facts.get("error"):
         return {**row, "state": "review", "reason": facts["error"], **({"detail": facts["detail"]} if "detail" in facts else {})}
     conflicts, artifacts, wait = facts["conflicts"], facts["artifacts"], facts["wait"]
+    row["wait_review_required"] = wait["state"] == "review"
     if wait["state"] == "waiting":
         return {**row, "state": "waiting", "reason": "recorded_wait", "wait": wait}
     if actor and actor.startswith(("person:", "event:")):

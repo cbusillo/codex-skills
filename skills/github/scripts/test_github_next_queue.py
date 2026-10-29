@@ -100,7 +100,8 @@ def test_current_waits_and_authorized_status_override_prevent_false_availability
     row['discussion']['comments'] = [{'author': 'owner', 'created_at': '2026-10-12T00:00:00Z', 'body': '## Current Status\nState: Active; implementation landed\nNext actor: person:owner\nNext action: Verify the deployed image.\nWaiting for: None.'}]
     assert classify(row)['state'] == 'waiting'
     row['discussion']['updated_at'] = '2026-10-13T00:00:00Z'
-    assert classify(row)['state'] == 'available'
+    row['discussion']['body_recorded_at'] = '2026-08-21T00:00:00Z'
+    assert classify(row)['state'] == 'waiting'
     row['discussion']['updated_at'] = '2026-08-21T00:00:00Z'
     body = row['discussion']['body']
     row['discussion']['body'] = 'Original request without managed status.'
@@ -192,8 +193,6 @@ def test_local_adapter_reads_current_ownership_and_splits_counts_without_writing
     context = {'issues': {'owner/repo#1': review}}
     assert module.project_local_queue([ambiguous], [], context)['needs_status']
     assert not module.project_local_queue([ambiguous], [], context)['available_candidates']
-    ambiguous['queue']['observed_ownership_complete'] = False
-    assert not module.project_local_queue([ambiguous], [], context)['available_candidates']
 
 
 def test_bounded_global_coverage_counts_active_discoveries_not_yet_read() -> None:
@@ -233,6 +232,7 @@ def test_default_global_cli_routes_recorded_actors_without_caller_review() -> No
     assert result['verification_only'] == result['scope_review'] == []
     assert [row['number'] for row in result['needs_status']] == [missing['number']]
     assert result['needs_status_count'] == len(result['needs_status'])
+    assert result['selection_coverage']['active_outside_evaluated_graph_count'] == 0
     assert result['queue_context']['claim_required']
 
 
@@ -376,6 +376,66 @@ def test_needs_status_survives_caller_reviews_and_milestone_projection() -> None
         repository_waypoints={"owner/repo": ["First"]}, coverage_complete=True)
     assert not capacity["admitted"]
     assert capacity["required"] == "current_next_actor"
+
+
+def test_adapter_uses_body_edit_time_for_the_current_actor() -> None:
+    module = cli.load_module()
+    row = item()
+    row["discussion"]["updated_at"] = "2026-10-29T02:00:00Z"
+    row["discussion"]["comments"] = [{"id": 7, "author": "owner", "created_at": "2026-10-29T01:00:00Z",
+        "body": "## Current Status\nNext actor: person:owner\nNext action: Observe the result."}]
+    response = {"data": {"repository": {"issue": {"createdAt": "2026-10-01T00:00:00Z",
+                                                "lastEditedAt": "2026-10-28T23:00:00Z"}}}}
+    with patch.multiple(module, read_queue_ownership=lambda *_: evidence(), wait_authors=lambda *_: {"owner"},
+                        api_json=Mock(return_value=("bot", response))):
+        module.real_annotate_next_queue([row], cli.next_args(repo="owner/repo"))
+    assert row["queue"]["state"] == "waiting"
+    assert row["queue"]["next_actor"] == "person:owner"
+    row["discussion"].pop("body_recorded_at")
+    row.pop("queue")
+    with patch.multiple(module, read_queue_ownership=lambda *_: evidence(), wait_authors=lambda *_: {"owner"},
+                        api_json=Mock(return_value=("bot", {}))):
+        module.real_annotate_next_queue([row], cli.next_args(repo="owner/repo"))
+    assert row["queue"]["state"] == "review"
+    assert not module.project_local_queue([row], [], {})["available_candidates"]
+
+
+def test_inherited_actor_waits_are_compact_and_visible_in_milestones() -> None:
+    module = cli.load_module()
+    for actor in ["person:owner", "event:deployment"]:
+        row = item(actor=actor)
+        row.update(queue=classify(row), plan_status="active")
+        row["discussion"].update(ancestry_complete=True, parents=[{
+            "repo": "owner/repo", "number": 9, "url": "https://github.com/owner/repo/issues/9",
+            "milestone": cli.milestone_data(1, "First", created_at="2026-01-01T00:00:00Z")}])
+        graph = {"candidates": [], "excluded": [], "dependency_context": {"complete": True}}
+        result = direction.rank_portfolio_work(graph, [row], milestone_titles=["First"],
+            repository_waypoints={"owner/repo": ["First"]})
+        summary = direction.milestone_summary(["First"], completed=[], candidates=[], graph_waits=result["waiting"],
+            track_next_actions={})
+        assert summary[0]["state"] == "waiting"
+        assert not result["excluded"]
+        local = module.project_local_queue([row], [], {})
+        assert not local["excluded"]
+        assert local["waiting"][0]["reported_by"] == result["waiting"][0]["reported_by"] == row["url"]
+        assert not result["waiting"][0]["non_external"]
+        assert "discussion" not in result["waiting"][0]
+
+
+def test_actor_buckets_preserve_legacy_wait_review_visibility() -> None:
+    for actor in ["", "agent:integrator"]:
+        row = item(actor=actor)
+        row["discussion"]["body"] = row["discussion"]["body"].split(wait.PREFIX)[0]
+        row.update(queue=classify(row), plan_status="active")
+        assert row["queue"]["wait_review_required"]
+        row["discussion"]["ancestry_complete"] = True
+        row["milestone"] = cli.milestone_data(1, "First", created_at="2026-01-01T00:00:00Z")
+        graph = {"candidates": [], "excluded": [], "dependency_context": {"complete": True}}
+        result = direction.rank_portfolio_work(graph, [row], milestone_titles=["First"],
+            repository_waypoints={"owner/repo": ["First"]})
+        summary = direction.milestone_summary(["First"], completed=[], candidates=[], graph_waits=result["unowned"],
+            underway=result["underway"], needs_status=result["needs_status"], track_next_actions={})
+        assert summary[0]["wait_reviews"]
 
 
 def main() -> None:

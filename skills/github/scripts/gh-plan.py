@@ -4956,11 +4956,11 @@ def next_status_body_time(item: dict[str, Any], trusted: set[str]) -> str | None
     def read_edit() -> Any:
         owner, name = item["repo"].split("/")
         def read() -> tuple[str, Any]:
-            return api_json("POST", "/graphql", bucket="graphql", failed_step="next_delivery_body_edit",
+            return api_json("POST", "/graphql", bucket="graphql", failed_step="next_status_body_edit",
                 payload={"query": github_work_graph.STATUS_BODY_TIME_QUERY,
                          "variables": {"owner": owner, "name": name, "number": item["number"]}},
                 is_write=False, repository=item["repo"])
-        _, edited = (NEXT_READS.observe(f"graphql:delivery_body_edit:{item['repo']}#{item['number']}", read)
+        _, edited = (NEXT_READS.observe(f"graphql:status_body_edit:{item['repo']}#{item['number']}", read)
                      if NEXT_READS is not None else read())
         return edited
 
@@ -5020,6 +5020,15 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
         trusted = {login.casefold() for login in wait_authors(repo)}
         if repo not in evidence:
             evidence[repo] = read_queue_ownership(repo)
+        complete = (item.get("discussion") or {}).get("complete")
+        if isinstance(complete, bool) and complete:
+            try:
+                body_time = next_status_body_time(item, trusted)
+                if body_time is not None:
+                    item["discussion"]["body_recorded_at"] = body_time
+            except PlanError as exc:
+                item["queue"] = {"state": "review", "reason": "incomplete_discussion", "detail": next_source_error(exc)}
+                continue
         item["queue"] = github_next_queue.classify(item, evidence[repo], trusted=trusted)
     return {"source": "issue_discussion_and_current_claim_pr_branch_reads", "claim_required": True,
             "all_active_sessions_searched": False,
@@ -5037,7 +5046,10 @@ def project_local_queue(candidates: list[dict[str, Any]], excluded: list[dict[st
         elif state in {"underway", "needs_status"}:
             groups[state].append(item)
         elif state == "waiting":
-            groups["waiting"].append(item)
+            if item["queue"].get("reason") == "recorded_next_actor":
+                groups["waiting"].append(github_direction_next.actor_wait_record(item))
+            else:
+                groups["excluded"].append({**item, "exclusion": "recorded_wait"})
         else:
             review = reviews.get(f"{item['repo']}#{item['number']}".casefold(), {})
             discussion = item.get("discussion") or {}
@@ -6022,7 +6034,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     ranked["own_project_context"] = own_project_context
     ranked["selection_coverage"] = github_next_queue.coverage(
         [*list(seeds.values()), *inventory], [seeds[key] for key in nodes if key in seeds], portfolio)
-    graph_active = {(entry["repo"].casefold(), entry["number"]) for entry in [*ranked["candidates"], *ranked["excluded"], *ranked["underway"], *ranked["needs_status"]]
+    graph_active = {(entry["repo"].casefold(), entry["number"]) for entry in [*queue_items, *ranked["excluded"]]
                     if entry.get("via") and config["labels"]["active"] in normalize_labels(entry.get("labels"))}
     ranked["selection_coverage"].update(active_in_evaluated_graph_count=len(graph_active),
         active_outside_evaluated_graph_count=ranked["selection_coverage"]["active_inventory_count"] - len(graph_active))

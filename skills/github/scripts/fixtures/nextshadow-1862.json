@@ -1,6 +1,6 @@
 {
   "source": "https://github.com/cbusillo/codex-skills/issues/1862#issuecomment-6183137081",
-  "notes": "Minimal status replay from NEXTSHADOW-D1. Actions shortened; claim identities and wait evidence are synthetic. No live reads.",
+  "notes": "Minimal status replay from NEXTSHADOW-D1. Actions shortened; claim identities and wait evidence are synthetic. Wait/claim authority replay adds an explicit agent actor; source wording stays historical. No live reads.",
   "cases": [
     {
       "number": 2437,

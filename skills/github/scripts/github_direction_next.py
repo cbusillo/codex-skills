@@ -780,6 +780,17 @@ def with_client_milestone(
                                       "basis": "native_track" if native_titles else "exact_listed_title_match"}}
 
 
+def actor_wait_record(item: dict[str, Any]) -> dict[str, Any]:
+    return {"repo": item["repo"], "number": item["number"], "url": item["url"],
+            "state": item.get("state"), "plan_status": item.get("plan_status"),
+            "waiting_for": item["queue"]["next_actor"], "reported_by": item["url"],
+            "reported_at": item.get("updated_at"), "last_verified": None, "references": [],
+            "no_current_wait": False, "agent_next": False, "non_external": False, "unowned": False,
+            "source": "next_actor", "milestone": item.get("milestone"),
+            "overall_milestone_context": item.get("overall_milestone_context"),
+            "wait_review_required": item["queue"].get("wait_review_required", False)}
+
+
 def rank_portfolio_work(
     graph: dict[str, Any], discoveries: list[dict[str, Any]], *,
     milestone_titles: list[str], selection_context: dict[str, Any] | None = None,
@@ -881,6 +892,8 @@ def rank_portfolio_work(
         discussion = item.get("discussion") or {}
         review = reviews.get(key)
         queue = item.get("queue") or {}
+        if queue.get("wait_review_required"):
+            item["wait_review_required"] = True
         if queue.get("state") == "underway":
             underway.append({**item, "availability": "underway"})
             continue
@@ -889,7 +902,8 @@ def rank_portfolio_work(
             continue
         if queue.get("state") == "waiting":
             if queue.get("reason") == "recorded_next_actor":
-                actor_waits.append({**item, "waiting_for": queue["next_actor"], "references": [], "source": "next_actor"})
+                actor_waits.append(actor_wait_record(item))
+                continue
             excluded.append({**item, "exclusion": "recorded_wait"})
             continue
         if discovered and discussion.get("ancestry_complete") is not True:
@@ -964,8 +978,9 @@ def rank_portfolio_work(
     for entry in [*entries, *parents]:
         if entry.get("url") in invalid_waits:
             entry = {**entry, "wait_finding": invalid_waits[entry["url"]]}
-        if entry.get("exclusion") in {"completed", "stale_needs_review", "outside_direction_tracks"}:
+        if entry.get("exclusion") in {"completed", "stale_needs_review", "outside_direction_tracks"} or (entry.get("queue") or {}).get("reason") == "recorded_next_actor":
             continue
+        milestone_context = overall_milestone_context(entry, graph, milestone_titles, repository_waypoints or {})
         body = (entry.get("discussion") or {}).get("body", "")
         status = section_map(body).get("Current Status", "")
         rows = waiting_records(entry, status, reference_repositories=reference_repositories)
@@ -973,15 +988,15 @@ def rank_portfolio_work(
             recorded_waits.append({"repo": entry["repo"], "number": entry["number"], "url": entry["url"],
                                    "waiting_for": entry["review"]["reason"], "reported_by": entry["url"],
                                    "reported_at": entry.get("updated_at"), "last_verified": None,
-                                   "references": [], "review": entry["review"], "source": "caller_review", "milestone": entry.get("milestone")})
-        if not rows and (entry.get("plan_status") == "waiting" or entry.get("exclusion") == "wait_review_required"):
+                                   "references": [], "review": entry["review"], "source": "caller_review", "milestone": entry.get("milestone"), "overall_milestone_context": milestone_context})
+        if not rows and (entry.get("plan_status") == "waiting" or entry.get("exclusion") == "wait_review_required" or (entry.get("queue") or {}).get("wait_review_required")):
             rows = [{"repo": entry["repo"], "number": entry["number"], "url": entry["url"],
                      "waiting_for": "Waiting party or condition not recorded", "reported_by": entry["url"],
                      "reported_at": entry.get("updated_at"), "last_verified": None,
                      "references": [], "non_external": True,
-                     **({"source": "legacy_wait_review"} if entry.get("wait_review_required") else {})}]
+                     **({"source": "legacy_wait_review"} if entry.get("wait_review_required") or (entry.get("queue") or {}).get("wait_review_required") else {})}]
         for row in rows:
-            row = {**row, "milestone": entry.get("milestone")}
+            row = {**row, "milestone": entry.get("milestone"), "overall_milestone_context": milestone_context}
             key = (row["repo"].casefold(), row["number"], row["waiting_for"])
             if key in seen_waits:
                 continue
@@ -1577,13 +1592,16 @@ def milestone_summary(
             record = {"repo": row["repo"], "number": row["number"], "url": row["url"],
                       "waiting_for": row.get("waiting_for")}
             target = reviews if row.get("source") == "legacy_wait_review" and row.get("plan_status") != "waiting" else waits
-            if (row.get("milestone") or {}).get("title") == title and record not in target:
+            if ((row.get("milestone") or {}).get("title") == title or title in (row.get("overall_milestone_context") or {}).get("titles", [])) and record not in target:
                 target.append(record)
+        for row in [*owned, *missing]:
+            if row.get("wait_review_required") and not any((entry["repo"], entry["number"]) == (row["repo"], row["number"]) for entry in reviews):
+                reviews.append({**row, "waiting_for": "Legacy wait review required"})
         track = track_next_actions.get(title) or {}
         summary.append({
             "milestone": title,
             "track": track.get("track"),
-            "state": "work_listed" if work else "underway" if owned else "waiting" if waits else "wait_review_required" if reviews else "needs_status" if missing else "no_linked_work" if graph_complete else "unknown",
+            "state": "work_listed" if work else "needs_status" if missing else "wait_review_required" if reviews else "underway" if owned else "waiting" if waits else "no_linked_work" if graph_complete else "unknown",
             "work": work, "underway": owned, "verification_only": [], "scope_review": [], "needs_status": missing, "wait_reviews": reviews,
             "waits": waits,
             # Named by the Track's Next action but not reached over native edges.
