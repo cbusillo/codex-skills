@@ -401,7 +401,7 @@ def literal_pipeline_programs(shell: str) -> list[list[str]]:
         if len(producers) != 1 or producers[0][0] not in {"echo", "printf"}:
             continue
         producer = producers[0]
-        if producer[:2] == ["printf", "-v"]:
+        if writes_shell_variable(producer):
             continue  # This writes a shell variable, not stdout.
         payload = "\n".join(producer[1:]).replace("\\n", "\n").replace("\\t", "\t")
         programs.extend([*reader, payload] for reader in script_readers(pipeline[-1:]))
@@ -464,7 +464,11 @@ def executable_arguments(argv: list[str]) -> list[str]:
     return argv
 
 
-def git_data_arguments(argv: list[str]) -> bool:
+def writes_shell_variable(argv: list[str]) -> bool:
+    return len(argv) > 1 and argv[0] == "printf" and argv[1].startswith("-v")
+
+
+def git_program_arguments(argv: list[str]) -> list[list[str]] | None:
     cursor = 1
     while cursor < len(argv) and argv[cursor].startswith("-"):
         token = argv[cursor]
@@ -475,17 +479,27 @@ def git_data_arguments(argv: list[str]) -> bool:
         elif token.startswith("-C") or "=" in token and token.split("=", 1)[0] in GIT_VALUE_FLAGS:
             cursor += 1
         else:
-            return False
-    return (
-        cursor < len(argv)
-        and argv[cursor] in GIT_DATA_COMMANDS
-        and not any(
-            token.split("=", 1)[0] in {"--ext-diff", "--textconv", "--open-files-in-pager"}
-            or argv[cursor] == "grep"
-            and token == "-O"
-            for token in argv[cursor + 1 :]
-        )
-    )
+            return None
+    if cursor >= len(argv) or argv[cursor] not in GIT_DATA_COMMANDS:
+        return None
+    command = argv[cursor]
+    programs = []
+    cursor += 1
+    while cursor < len(argv) and argv[cursor] != "--":
+        token = argv[cursor]
+        if command == "grep" and token in {"-e", "--regexp", "-f", "--file"}:
+            cursor += 2
+            continue
+        flag, separator, value = token.partition("=")
+        if flag in {"--ext-diff", "--textconv"}:
+            return None
+        pager = re.match(r"^-[^-O]*O(.*)$", token) if command == "grep" else None
+        if pager:
+            programs.append([pager[1]] if pager[1] else [])
+        elif command == "grep" and flag.startswith("--") and "--open-files-in-pager".startswith(flag):
+            programs.append([value] if separator else [])
+        cursor += 1
+    return programs
 
 
 def rg_program_arguments(argv: list[str]) -> list[list[str]]:
@@ -504,15 +518,20 @@ def execution_spans(argv: list[str]) -> list[list[str]]:
     arguments = without_redirections(argv)
     executable = executable_arguments(arguments)
     if not executable:
-        return []
+        return [arguments]
     prefix = arguments[: len(arguments) - len(executable) + 1]
     head = executable[0]
     if head == "rg":
         programs = rg_program_arguments(executable)
         return [arguments, *programs] if programs else [prefix]
-    if executable[:2] == ["printf", "-v"]:
+    if head == "git":
+        programs = git_program_arguments(executable)
+        if programs is None:
+            return [arguments]
+        return [arguments, *programs] if programs else [prefix]
+    if writes_shell_variable(executable):
         return [arguments]
-    if head in DATA_ARGUMENT_HEADS or head == "git" and git_data_arguments(executable):
+    if head in DATA_ARGUMENT_HEADS:
         return [prefix]
     if head != "find":
         return [arguments]
@@ -691,7 +710,7 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
                 argv = drop_flags(argv)
         if argv and argv[0] in {".", "source", "cd", "pushd", "popd", "eval"}:
             return None
-        if argv[:2] == ["printf", "-v"]:
+        if writes_shell_variable(argv):
             return None
         normalized = unwrap(raw_argv)
         if not normalized or normalized[0][:1] != ["launchplane"]:
