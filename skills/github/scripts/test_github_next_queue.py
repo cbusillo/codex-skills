@@ -248,6 +248,7 @@ def test_repository_inventory_bound_can_be_widened_without_losing_held_work() ->
         if kwargs['query'].get('labels'):
             return 'bot', []
         return 'bot', raw[:kwargs.get('limit')]
+    raw[-1]["updated_at"] = "2026-08-22T00:00:00Z"
     args = cli.next_args()
     with patch.multiple(module, collect_paged_rest_items=read, load_direction=lambda *_: cli.DIRECTION), patch.multiple(module.github_identity, github_app_config=lambda: {}):
         complete, context = module.real_discover_direction_work('someone/direction', args, selection_context={})
@@ -255,6 +256,7 @@ def test_repository_inventory_bound_can_be_widened_without_losing_held_work() ->
         limited, partial = module.real_discover_direction_work('someone/direction', args, selection_context={})
     assert len(complete) == len(raw) and context['complete']
     assert len(limited) < len(complete) and not partial['complete']
+    assert limited[0]['number'] == raw[-1]['number']
     assert any('plan:active' in direction.normalize_labels(row['labels']) for row in complete)
 
 

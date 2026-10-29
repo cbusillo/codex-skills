@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import unittest
 from typing import Any
 from unittest.mock import Mock, patch
@@ -42,7 +43,7 @@ class CompleteInventoryTests(unittest.TestCase):
     ) -> None:
         module = cli.load_module()
         args = module.build_parser().parse_args(["next"])
-        with module.github_next_reads.NextReads(workers=1, seconds=args.time_budget) as reads:
+        with patch.dict(os.environ, clear=True), module.github_next_reads.NextReads(workers=1, seconds=args.time_budget) as reads:
             self.assertIsNone(reads.deadline)
         assert_default_global_next_evaluates_every_inventoried_record()
 
@@ -87,7 +88,14 @@ class CompleteInventoryTests(unittest.TestCase):
         source["_graph_comments"].pop()
         pull["body"] = "Closes https://github.com/owner/source/issues/7"
         self.assertEqual(queue.classify(row, observed, trusted={"owner"})["state"], "underway")
+        source["body"] = "## Current Status\nNext actor: agent\n" + claim.marker(record)
+        source["_graph_comments"] = []
+        self.assertEqual(queue.classify(row, observed, trusted={"owner"})["state"], "available")
         observed["records"] = []
+        missing = queue.classify(row, observed, trusted={"owner"})
+        self.assertEqual(missing["reason"], "source_custody_unread")
+        self.assertFalse(missing["observed_ownership_complete"])
+        pull["body"] = ""
         original_head = pull["head"]["repo"]
         for head in ({"full_name": "outside/fork"}, {"full_name": None}):
             pull["head"]["repo"] = head
@@ -122,7 +130,7 @@ class CompleteInventoryTests(unittest.TestCase):
 
     def test_global_pr_is_available_from_the_same_complete_inventory(self) -> None:
         with cli.global_fixture([], [], {}) as (module, result, _reads):
-            raw = cli.global_issue("someone/pr-only", 11, labels=[])
+            raw = cli.global_issue("someone/pr-only", 11, labels=["live-breakage"])
             raw.update(
                 user={"login": "someone"},
                 body="## Current Status\nNext actor: agent\n"
@@ -139,10 +147,13 @@ class CompleteInventoryTests(unittest.TestCase):
             )
 
             def discover(*_args: object, **_kwargs: object) -> tuple[list[dict], dict]:
-                module.NEXT_READS.inventory = {"someone/pr-only": [raw]}
+                module.NEXT_READS.inventory = {"someone/pr-only": [raw], "someone/direction": []}
                 return [raw], {
                     "complete": True,
-                    "repositories": [{"repo": "someone/pr-only", "direction": None}],
+                    "repositories": [
+                        {"repo": "someone/pr-only", "direction": None},
+                        {"repo": "someone/direction", "complete": True, "direction": None},
+                    ],
                 }
 
             with patch.multiple(
@@ -170,7 +181,7 @@ class CompleteInventoryTests(unittest.TestCase):
 
             def check_parent_evidence(issues: list[dict], **kwargs: Any) -> dict:
                 parent = next(row for row in issues if row["repo"] == root["repo"] and row["number"] == root["number"])
-                self.assertTrue(parent.get("body"))
+                self.assertEqual(parent["body"], root["body"])
                 self.assertTrue(parent.get("labels"))
                 return original_wait(issues, **kwargs)
 
@@ -352,7 +363,14 @@ class CompleteInventoryTests(unittest.TestCase):
             "hasNextPage": False,
             "endCursor": None,
         }
-        reader.graphql_json.side_effect = responses
+
+        def respond(query: str, _variables: dict, **_kwargs: Any) -> github_api.ApiResult:
+            response = (
+                responses[1] if "issue(number:1)" in query else responses[2] if 'after:"issue-page"' in query else responses[0]
+            )
+            return copy.deepcopy(response)
+
+        reader.graphql_json.side_effect = respond
         rows = inventory.read_repository(reader, "owner/repo")
         self.assertEqual([row["number"] for row in rows], [1, 2, 3])
         self.assertEqual(len(rows[0]["_graph_comments"]), 2)

@@ -5170,7 +5170,8 @@ def discover_direction_work(
             issues = [item for item in listed if not item.get("pull_request")]
             pulls = [item for item in listed if item.get("pull_request")]
             truncated = issue_limit is not None and len(issues) > issue_limit
-            issues = list({item["number"]: item for item in [*issues[:issue_limit],
+            limited_issues = sorted(issues, key=lambda item: str(item.get("updated_at") or ""), reverse=True)[:issue_limit] if issue_limit is not None else issues
+            issues = list({item["number"]: item for item in [*limited_issues,
                 *(item for item in issues if github_direction_next.is_live_breakage(item))]}.values())
             listed = [{**item, "repo": name} for item in [*issues, *pulls]]
             source.update(issue_count=len(issues), pull_request_count=len(pulls), truncated=truncated, complete=not truncated)
@@ -5535,7 +5536,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             root_issues = [item for item in NEXT_READS.inventory[repo.casefold()] if not item.get("pull_request")
                            and (scope_number is None or (item.get("milestone") or {}).get("number") == scope_number)]
             root_inventory = github_work_graph.TrackInventory(EXPECTED_ACTOR, root_issues,
-                {(item["repo"].casefold(), item["number"]): item for item in complete_inventory}, next((source.get("complete") is True for source in inventory_context.get("repositories", []) if source.get("repo", "").casefold() == repo.casefold()), False))
+                {(item["repo"].casefold(), item["number"]): item for item in complete_inventory if not item.get("pull_request")}, next((source.get("complete") is True for source in inventory_context.get("repositories", []) if source.get("repo", "").casefold() == repo.casefold()), False))
         else:
             root_inventory = github_work_graph.track_inventory(graph_reader(repo), collect_paged_rest_items, repo,
                 limit=NEXT_PLAN_INVENTORY_LIMIT, milestone=scope_number)
@@ -5932,7 +5933,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     # Marked incidents can be decomposed outside both the ordinary scan and
     # the milestone graph. Their native leaves retain the marker's provenance.
     incident_roots = [compact_list_issue(raw["repo"], raw) for raw in [*list(seeds.values()), *inventory]
-                      if github_direction_next.is_live_breakage(raw)] if scope is None else []
+                      if not raw.get("pull_request") and github_direction_next.is_live_breakage(raw)] if scope is None else []
     def read_incident_node(issue_repo: str, number: int) -> dict[str, Any]:
         incident_node = read_node(issue_repo, number)
         incident_item = incident_node["item"]
