@@ -12,6 +12,10 @@ from dataclasses import dataclass
 
 FINDING = re.compile(r"^- (\w+) \((age unknown|[0-9.]+h)\): (https://github\.com/\S+) — (.*)$")
 PERSON = re.compile(r"\b(?:Chris|cbusillo|Director|Owner)\b", re.IGNORECASE)
+TOOLING_PR = re.compile(
+    r"Tooling PR: (https://github\.com/[\w.-]+/[\w.-]+/pull/[1-9][0-9]*) additions=([0-9]+) deletions=([0-9]+) removed=(yes|no)"
+)
+TOOLING_SAMPLE_SIZE = 20
 
 
 class DigestError(ValueError):
@@ -62,6 +66,22 @@ def label(text: str, length: int) -> str:
     return text if len(text) <= length else text[:length - 1] + "…"
 
 
+def tooling_measure(report: str) -> str:
+    unavailable = next((line for line in report.splitlines() if line.startswith("Tooling PRs: unavailable;")), None)
+    if unavailable:
+        return unavailable
+    evidence = [TOOLING_PR.fullmatch(line) for line in report.splitlines() if line.startswith("Tooling PR:")]
+    if (len(evidence) != TOOLING_SAMPLE_SIZE or not all(evidence)
+            or len({row[1].casefold() for row in evidence if row}) != TOOLING_SAMPLE_SIZE):
+        return "Tooling PRs: unavailable; need 20 distinct tooling PR evidence rows."
+    qualifying = sum(int(row[2]) <= int(row[3]) and row[4] == "yes" for row in evidence if row)
+    return f"Tooling PRs: {qualifying}/{len(evidence)} ({qualifying / len(evidence):.0%}); net lines <= 0 and Removed:."
+
+
+def header(report: str, date: str, coverage: str) -> list[str]:
+    return [f"Daily digest · {date} · {coverage}", tooling_measure(report)]
+
+
 def summary(report: str, full_list_url: str) -> str:
     date, coverage, rows = parse(report)
     groups: dict[str, list[dict]] = defaultdict(list)
@@ -72,7 +92,7 @@ def summary(report: str, full_list_url: str) -> str:
         group.sort(key=lambda r: (r["age"] is None, -(r["age"] or 0), r["url"]))
 
     for name_length in (72, 48, 32, 20):
-        lines = [f"Daily digest · {date} · {coverage}"]
+        lines = header(report, date, coverage)
         for kind, group in sorted(groups.items()):
             lines.append(f"{kind}: {len(group)}")
         waiting = [r for r in rows if r["person"]]
@@ -98,7 +118,7 @@ def presentation(report: str, full_list_url: str) -> Presentation:
         counts: dict[str, int] = defaultdict(int)
         for row in rows:
             counts[row["kind"]] += 1
-        lines = [f"Daily digest · {date} · {coverage}"]
+        lines = header(report, date, coverage)
         lines.extend(f"{kind}: {count}" for kind, count in sorted(counts.items()))
         waiting = sum(row["person"] for row in rows)
         lines.append(f"Waiting on Chris: {waiting} (all waits in attached full report)" if waiting else "Waiting on Chris: none")

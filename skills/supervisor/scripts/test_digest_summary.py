@@ -28,6 +28,33 @@ def report(rows, complete=False):
 
 
 class SummaryTests(unittest.TestCase):
+    def test_tooling_measure_reaches_short_message_including_overflow(self) -> None:
+        rows = [("unanswered_question", i, "age unknown", "Chris", "🧭" * 100) for i in range(51)]
+        evidence = "\n".join(
+            f"Tooling PR: https://github.com/example/tools/pull/{i + 1} additions={i} deletions=10 removed={'yes' if i % 2 else 'no'}"
+            for i in range(20)
+        )
+        for findings in ([], rows):
+            for notes, measure in ((evidence, "5/20 (25%)"),
+                                   (evidence + "\nTooling PRs: unavailable; PR inventory incomplete.",
+                                    "Tooling PRs: unavailable; PR inventory incomplete.")):
+                with self.subTest(overflow=bool(findings), notes=notes):
+                    source = report(findings) + notes + "\n"
+                    prepared = digest.presentation(source, FULL)
+                    self.assertIn(measure, prepared.content)
+                    self.assertLess(digest.units(prepared.content), 2000)
+                    if findings:
+                        self.assertEqual(prepared.attachment, source)
+
+    def test_missing_malformed_and_duplicate_tooling_evidence_never_claims_a_share(self) -> None:
+        valid = [f"Tooling PR: https://github.com/example/tools/pull/{i + 1} additions=0 deletions=0 removed=yes"
+                 for i in range(20)]
+        for evidence in ([], valid[:-1], valid + [valid[0]], valid[:-1] + [valid[0]],
+                         valid[:-1] + [valid[-1].replace("additions=0", "additions=unknown")]):
+            with self.subTest(evidence=evidence):
+                self.assertIn("unavailable", digest.tooling_measure("\n".join(evidence)))
+        self.assertIn("100%", digest.tooling_measure("\n".join(valid)))
+
     def test_large_report_sends_one_short_message_with_every_person_wait_and_full_link(self):
         rows = [("merged_link_needs_review", i, f"{i}h", "Supervisor", f"Task {i}") for i in range(1, 501)]
         rows += [("aged_structured_wait", 600 + i, "age unknown", actor, f"Review choice {i}")
