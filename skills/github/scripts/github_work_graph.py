@@ -74,7 +74,8 @@ LIST_QUERY = """query WorkGraphTrackList($owner: String!, $name: String!, $curso
 COMMENT = "url createdAt updatedAt databaseId body author { __typename login }"
 BLOCKERS = f"""blockedBy(first: {BLOCKER_LIMIT}) {{ totalCount nodes {{
     number state url repository {{ nameWithOwner }} }} }}"""
-TRACK_FIELDS = f"""number title url state stateReason body createdAt lastEditedAt
+TRACK_FIELDS = f"""number title url state stateReason body createdAt lastEditedAt updatedAt
+      repository {{ nameWithOwner }}
       author {{ __typename login }}
       {BLOCKERS}
       milestone {{ title }}
@@ -173,6 +174,21 @@ def read_tracks(
                 errors.append(f"Track #{number} read failed at {path}: {error.get('message', 'GraphQL error')}")
         node = repository.get(f"t{number}")
         if isinstance(node, dict) and node.get("state") == "OPEN":
+            try:
+                comments = node["comments"]
+                if comments["totalCount"] > len(comments["nodes"]):
+                    query = (
+                        f"query {{ repository(owner:{json.dumps(owner)}, name:{json.dumps(name)}) "
+                        f"{{ issue(number:{number}) {{ number updatedAt repository {{ nameWithOwner }} "
+                        f"{github_plan_graph.connection_query('comments')} }} }} }}"
+                    )
+                    first = github_plan_graph.query_data(reader, query, step=f"work_graph_track_{number}_comments")["repository"]["issue"]
+                    if first["updatedAt"] != node["updatedAt"]:
+                        raise github_read.GitHubReadShapeError("issue changed before comment pagination")
+                    completed = github_plan_graph.complete_issue(reader, first, comments=True, fields=("comments",))
+                    node["comments"] = {"totalCount": len(completed["comments"]), "nodes": completed["comments"]}
+            except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError) as error:
+                errors.append(f"Track #{number} comment history unread: {error}")
             nodes[number] = node
         elif len(errors) == before:
             reason = f"state changed to {node.get('state')} since discovery" if isinstance(node, dict) else "issue data missing"
