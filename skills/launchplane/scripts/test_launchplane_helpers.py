@@ -11010,6 +11010,92 @@ def test_merge_policy_invalid_record_cannot_prove_absence(record: dict[str, obje
         )
 
 
+@pytest.mark.parametrize("enabled,settings_error,include_metadata", [
+    (True, "", True), (False, "", True), (None, "", True),
+    (True, "denied", True), (True, "invalid", True), (True, "", False),
+])
+def test_config_authority_policy_read_uses_existing_reads_without_disclosing_values(enabled: bool | None, settings_error: str, include_metadata: bool) -> None:
+    policy: Any = _active_merge_train_policy_read({"owner/alpha": []})
+    policy["record"]["policy"]["policies"][0]["enqueue_label"] = "ship"
+    if enabled is not None:
+        policy["record"]["policy"]["policies"][0]["config_authority_events_enabled"] = enabled
+    settings = {
+        "status": "ok", "trace_id": "launchplane_req_settings", "context": "launchplane", "instance": "",
+        "settings": [{"scope": "context", "context": "launchplane", "instance": "",
+                      "keys": ["LAUNCHPLANE_ADVISORY_GITHUB_APP_ID", "OTHER_SETTING"], "withheld_keys": [],
+                      "values": {"LAUNCHPLANE_ADVISORY_GITHUB_APP_ID": "41234", "OTHER_SETTING": "do-not-disclose"}}],
+    }
+    calls = []
+    def read(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        if len(calls) == 2 and settings_error == "denied":
+            raise urllib.error.HTTPError("https://service.example.invalid", 403, "Denied", Message(), io.BytesIO(b'{}'))
+        if len(calls) == 2 and settings_error == "invalid":
+            settings["context"] = "different"
+        return policy if len(calls) == 1 else settings
+    output = io.StringIO()
+    with temporary_attribute(write_action, "prepare_operator_settings", Mock(return_value={"service_url": "https://service.example.invalid"})), temporary_attribute(
+        write_action, "request_launchplane_read", read,
+    ), temporary_attribute(write_action, "request_launchplane", Mock(side_effect=AssertionError("write attempted"))), redirect_stdout(output):
+        status = write_action.main(["merge-train-policy-read", "--repo", "owner/alpha", *(["--include-config-authority"] if include_metadata else [])])
+    if settings_error:
+        assert status != 0
+        failure = json.loads(output.getvalue())
+        assert failure["status"] == settings_error
+        assert failure["operation"] == "context-runtime-settings-read"
+        assert failure["result"] == {}
+        if settings_error == "invalid":
+            assert failure["summary"]["trace_id"] == settings["trace_id"]
+        return
+    assert status == 0, output.getvalue()
+    result = json.loads(output.getvalue())["result"]
+    if not include_metadata:
+        assert len(calls) == 1
+        assert "configAuthorityPublisher" not in result
+        assert "configAuthorityEventsEnabled" not in result["targets"][0]
+        return
+    assert result["targets"][0]["configAuthorityEventsEnabled"] is bool(enabled)
+    assert result["configAuthorityPublisher"]["app_id"] == 41234
+    assert result["configAuthorityPublisher"]["trace_id"] == settings["trace_id"]
+    assert [call["path"] for call in calls] == [contract.helper_command_path("merge-train-policy-read"), contract.helper_command_path("context-runtime-settings-read").format(context="launchplane")]
+    assert "do-not-disclose" not in output.getvalue()
+
+
+@pytest.mark.parametrize("value", [None, "", "no", "0", True])
+def test_config_authority_publisher_metadata_keeps_unavailable_identity_unknown(value: object) -> None:
+    settings = {
+        "status": "ok", "trace_id": "launchplane_req_settings", "context": "launchplane", "instance": "",
+        "settings": [{"scope": "context", "context": "launchplane", "instance": "", "keys": ["LAUNCHPLANE_ADVISORY_GITHUB_APP_ID"], "withheld_keys": [],
+                      "values": {"LAUNCHPLANE_ADVISORY_GITHUB_APP_ID": value}}],
+    }
+    result = write_action.summarize_config_authority_publisher(settings)
+    assert result["app_id"] is None
+    assert result["status"] == "unknown"
+
+
+def test_config_authority_publisher_requires_one_unwithheld_service_context() -> None:
+    record = {"scope": "context", "context": "launchplane", "instance": "",
+              "keys": ["LAUNCHPLANE_ADVISORY_GITHUB_APP_ID"], "withheld_keys": [],
+              "values": {"LAUNCHPLANE_ADVISORY_GITHUB_APP_ID": "41234"}}
+    settings = {"status": "ok", "trace_id": "launchplane_req_settings", "context": "launchplane", "instance": "", "settings": [record]}
+    assert write_action.summarize_config_authority_publisher(settings)["app_id"] == 41234
+    record["withheld_keys"] = record["keys"]
+    assert write_action.summarize_config_authority_publisher(settings)["app_id"] is None
+    record["scope"], record["context"] = "global", ""
+    assert write_action.summarize_config_authority_publisher(settings)["app_id"] is None
+    context = {"scope": "context", "context": "launchplane", "instance": "", "keys": [], "withheld_keys": [], "values": {}}
+    record["withheld_keys"] = []
+    settings["settings"] = [record, context]
+    assert write_action.summarize_config_authority_publisher(settings)["app_id"] == 41234
+    context["keys"] = record["keys"]
+    context["values"] = {"LAUNCHPLANE_ADVISORY_GITHUB_APP_ID": "51234"}
+    assert write_action.summarize_config_authority_publisher(settings)["app_id"] == 51234
+    record["scope"], record["context"] = "context", "launchplane"
+    settings["settings"] = [record, record]
+    with pytest.raises(safety.LaunchplaneSafetyError):
+        write_action.summarize_config_authority_publisher(settings)
+
+
 @pytest.mark.parametrize("operation, arguments", [
     ("merge-train-policy-read", ["--repo", "example/repo"]),
     ("governance-projection-read", ["--repository", "example/repo", "--base-branch", "main", "--pr", "42"]),
