@@ -80,7 +80,7 @@ TRACK_FIELDS = f"""number title url state stateReason body createdAt lastEditedA
       {BLOCKERS}
       milestone {{ title }}
       labels(first: {LABEL_LIMIT}) {{ totalCount nodes {{ name }} }}
-      comments(first: {TRACK_COMMENTS}) {{ totalCount nodes {{ {COMMENT} }} pageInfo {{ hasNextPage endCursor }} }}
+      comments(last: {TRACK_COMMENTS}) {{ totalCount nodes {{ {COMMENT} }} }}
       subIssues(first: {CHILD_LIMIT}) {{
         totalCount
         nodes {{
@@ -177,7 +177,15 @@ def read_tracks(
             try:
                 comments = node["comments"]
                 if comments["totalCount"] > len(comments["nodes"]):
-                    completed = github_plan_graph.complete_issue(reader, copy.deepcopy(node), comments=True, fields=("comments",))
+                    query = (
+                        f"query {{ repository(owner:{json.dumps(owner)}, name:{json.dumps(name)}) "
+                        f"{{ issue(number:{number}) {{ number updatedAt repository {{ nameWithOwner }} "
+                        f"{github_plan_graph.connection_query('comments')} }} }} }}"
+                    )
+                    first = github_plan_graph.query_data(reader, query, step=f"work_graph_track_{number}_comments")["repository"]["issue"]
+                    if first["updatedAt"] != node["updatedAt"]:
+                        raise github_read.GitHubReadShapeError("issue changed before comment pagination")
+                    completed = github_plan_graph.complete_issue(reader, first, comments=True, fields=("comments",))
                     node["comments"] = {"totalCount": len(completed["comments"]), "nodes": completed["comments"]}
             except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError) as error:
                 errors.append(f"Track #{number} comment history unread: {error}")
