@@ -54,7 +54,8 @@ def child(number, prs=(), comments=(), total_prs=None, state="OPEN", label="plan
 
 def track(number, children=(), comments=(), total_children=None) -> dict[str, Any]:
     return {"number": number, "title": f"Track: {number}", "url": f"https://github.com/owner/direction/issues/{number}",
-            "state": "OPEN", "milestone": {"title": f"Milestone {number}"},
+            "state": "OPEN", "repository": {"nameWithOwner": "owner/direction"},
+            "milestone": {"title": f"Milestone {number}"},
             "body": status(f"Track {number} step."), "createdAt": "2026-10-01T00:00:00Z", "lastEditedAt": None,
             "author": BOT, "blockedBy": {"totalCount": 0, "nodes": []},
             "labels": {"totalCount": 2, "nodes": [{"name": "plan"}, {"name": "plan:waiting"}]},
@@ -75,7 +76,15 @@ def details(**tracks) -> dict[str, Any]:
 
 class GoalBoardTests(unittest.TestCase):
     def test_track_proof_stays_visible_without_using_a_recorded_summary(self) -> None:
-        node = track(3)
+        node = track(3, children=[child(10)])
+        held = github_plan_wait.reviewed(evidence="Track acceptance remains", waiting_for="Client acceptance",
+                                        ends_when="Client accepts the result")
+        question = comment("Director question: Q2: Choose the result?", ident=53)
+        node["comments"]["nodes"].extend([comment(github_plan_wait.marker(held), ident=52), question])
+        node["comments"]["totalCount"] = len(node["comments"]["nodes"])
+        blocker = {"number": 2, "state": "OPEN", "url": "https://github.com/owner/direction/issues/2",
+                   "repository": {"nameWithOwner": "owner/direction"}}
+        node["blockedBy"] = {"totalCount": 1, "nodes": [blocker]}
         proof = "The site serves visitors after backup and tested rollback."
         node["body"] = f"## Objective\n{proof}\n\n{status('Wait forever.', 'Waiting')}"
         first = goal_board.track_row(node, TRUSTED, TRUSTED)
@@ -83,6 +92,10 @@ class GoalBoardTests(unittest.TestCase):
         second = goal_board.track_row(node, TRUSTED, TRUSTED)
         self.assertEqual(first, second)
         self.assertEqual(second["closure_review"]["track_proof"], proof)
+        self.assertEqual(second["waits"], held["waits"])
+        self.assertEqual(second["blocked_by"][0]["number"], blocker["number"])
+        self.assertEqual(second["open_questions"][0]["url"], question["url"])
+        self.assertEqual([row["number"] for row in second["groups"]["available"]], [10])
 
     def test_child_records_group_claims_waits_and_questions_without_track_summary(self) -> None:
         claim = {"worker": "worker", "session": "native-session", "branch": "work/task",
@@ -178,15 +191,19 @@ class GoalBoardTests(unittest.TestCase):
         row = child(10, comments=comments)
         row["url"] = "https://github.com/owner/repo/issues/42"
         row["repository"] = {"nameWithOwner": "owner/repo"}
-        for valid in (True, False):
-            with self.subTest(valid=valid):
+        for valid, closed in ((True, False), (False, False), (False, True)):
+            with self.subTest(valid=valid, closed=closed):
+                row["state"] = "CLOSED" if closed else "OPEN"
+                self.reader.get_json.reset_mock()
                 evidence = fixture.evidence if valid else {**fixture.evidence, "updated_at": "2026-10-03T00:00:00Z"}
                 self.reader.get_json.return_value = evidence
                 board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[row])))
                 self.assertTrue(board["coverage"]["complete"], board)
                 observed = board["tracks"][0]["children"][0]
-                self.assertEqual(bool(observed["claims"]), not valid)
-                self.assertEqual(observed["group"], "available" if valid else "running")
+                self.assertEqual(bool(observed["claims"]), not valid and not closed)
+                self.assertEqual(observed["group"], "closed" if closed else "available" if valid else "running")
+                if closed:
+                    self.reader.get_json.assert_not_called()
 
     def test_recursive_failure_preserves_siblings_and_reports_unknown(self) -> None:
         parent = child(10)
@@ -202,14 +219,17 @@ class GoalBoardTests(unittest.TestCase):
     def test_recorded_queue_answers_resolve_child_questions(self) -> None:
         question = comment("Director question: Q1: Choose the result?", ident=51)
         answer = comment(f"Director decision: Q1: Yes. {question['url']}", ident=52)
+        root_question = comment("Director question: Q2: Choose the result?", ident=53)
+        root_answer = comment(f"Director decision: Q2: Yes. {root_question['url']}", ident=54)
         queue = {"number": 98, "updatedAt": "2026-10-16T12:00:00Z", "repository": {"nameWithOwner": "owner/direction"},
-                 "comments": {"nodes": [answer], "totalCount": 1, "pageInfo": {"hasNextPage": False, "endCursor": None}}}
+                 "comments": {"nodes": [answer, root_answer], "totalCount": 2, "pageInfo": {"hasNextPage": False, "endCursor": None}}}
         self.reader.graphql_json.side_effect = [ApiResult(ok=True, status=200, body=body) for body in (
-            listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[child(10, comments=[question])])),
+            listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, comments=[root_question], children=[child(10, comments=[question])])),
             {"data": {"repository": {"issue": queue}}})]
         with patch.object(goal_board.question_id, "configured_queue", return_value="owner/direction#98"):
             board = goal_board.goal_board(self.reader, "owner", trusted=TRUSTED, wait_trusted=TRUSTED)
         self.assertTrue(board["coverage"]["complete"], board)
+        self.assertFalse(board["tracks"][0]["open_questions"])
         self.assertFalse(board["tracks"][0]["children"][0]["open_questions"])
         self.assertEqual(board["tracks"][0]["children"][0]["group"], "available")
 

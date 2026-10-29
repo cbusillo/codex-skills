@@ -139,8 +139,6 @@ def test_adjacent_reference_boundaries_preserve_supported_context_and_numeric_na
     ordinary = 'owner/project#12 https://github.com/other/project/pull/13 206/123#14 123#15 #16'
     refs = direction.waiting_records(item, 'Waiting for: ' + ordinary, reference_repositories={'cbusillo/123'})[0]['references']
     assert {(row['repo'], row['number']) for row in refs} == {('owner/project', 12), ('other/project', 13), ('206/123', 14), ('cbusillo/123', 15), ('cbusillo/direction', 16)}
-    # Track next-action prose has no established shorthand context.
-    assert direction.next_action_references('Next action: owner/project#12')[0]['repo'] == 'owner/project'
 
 
 def test_structured_wait_text_is_data_even_when_it_looks_like_status_fields() -> None:

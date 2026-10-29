@@ -224,13 +224,15 @@ def child_activity(node: dict[str, Any], trusted: set[str], unread: list[str]) -
         unread.append("claims and questions")
         return {"claims": [], "open_questions": [], "group": "unknown"}
     comments = node.get("_claim_comments") or [github_work_graph.graphql_comment(comment) for comment in node["comments"]["nodes"]]
-    ended = github_plan_claim.ended_ownership(comments, {"worktrees": []}, github_plan_claim.expired_lease_sessions(comments))
-    conflicts, _ = github_plan_claim.discussion_evidence("", comments,
-        {"worker": "", "session": "", "branch": "", "claimed_at": ""},
-        ended_claims={record["claim_id"] for record in ended})
-    claims = [entry["record"] for entry in conflicts if "record" in entry]
-    if any("record" not in entry for entry in conflicts):
-        unread.append("legacy claim ownership")
+    claims = []
+    if node["state"] != "CLOSED":
+        ended = github_plan_claim.ended_ownership(comments, {"worktrees": []}, github_plan_claim.expired_lease_sessions(comments))
+        conflicts, _ = github_plan_claim.discussion_evidence("", comments,
+            {"worker": "", "session": "", "branch": "", "claimed_at": ""},
+            ended_claims={record["claim_id"] for record in ended})
+        claims = [entry["record"] for entry in conflicts if "record" in entry]
+        if any("record" not in entry for entry in conflicts):
+            unread.append("legacy claim ownership")
     normalized = [{"id": comment["id"], "url": comment["html_url"], "body": comment["body"],
                    "author": comment["user"]["login"], "created_at": comment["created_at"]} for comment in comments]
     owner = node.get("_director") or node["repository"]["nameWithOwner"].split("/", 1)[0]
@@ -267,6 +269,10 @@ def track_row(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | 
     unread: list[str] = []
     if truncated(node["comments"]):
         unread.append("Track discussion")
+    own = read_part("Track holds", unread, lambda: derived_status(node, wait_trusted or trusted, unread),
+                    {"status": UNKNOWN, "blocked_by": [], "waits": []})
+    activity = read_part("Track questions", unread, lambda: child_activity(node, trusted, unread),
+                         {"open_questions": []})
     children = read_part("children", unread, lambda: child_rows(node, trusted, wait_trusted, unread), [])
     groups: dict[str, list[dict[str, Any]]] = {name: [] for name in ("running", "waiting", "available", "closed", "unknown", "held")}
     for child in children:
@@ -276,7 +282,8 @@ def track_row(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | 
     decision = read_part("latest decision", unread, lambda: latest_decision(node["comments"], trusted, unread), None)
     return {"number": node["number"], "title": node["title"], "url": node["url"],
         "status": UNKNOWN if unread or groups["unknown"] else state,
-        "latest_decision": decision,
+        "blocked_by": own["blocked_by"], "waits": own["waits"], "hold_status": own["status"],
+        "open_questions": activity["open_questions"], "latest_decision": decision,
         "closure_review": github_direction_next.milestone_closure_review(node.get("body") or "", ""),
         "milestone": read_part("milestone", unread, lambda: (node.get("milestone") or {}).get("title"), None),
         "children": children, "groups": groups, "unread": list(dict.fromkeys(unread))}
@@ -349,8 +356,9 @@ def descendants(reader: github_read.GitHubReader, node: dict[str, Any], errors: 
                 refs = register(child)
             complete_comments(reader, child)
             comments = [github_work_graph.graphql_comment(comment) for comment in child["comments"]["nodes"]]
-            child["_claim_comments"] = github_plan_release.verified_comments(comments,
-                lambda evidence_repo, _number, identifier: claim_evidence(reader, evidence_repo, identifier))
+            if child["state"] != "CLOSED":
+                child["_claim_comments"] = github_plan_release.verified_comments(comments,
+                    lambda evidence_repo, _number, identifier: claim_evidence(reader, evidence_repo, identifier))
             return refs
         except (github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError, KeyError, TypeError, AttributeError) as error:
             reason = f"descendants or discussion unread: {error}"
@@ -396,13 +404,14 @@ def goal_board(reader, owner, *, repo="direction", trusted, wait_trusted=None, m
     for track in tracks:
         try:
             node = graph["nodes"][track["number"]]
+            node.update(_question_answers=answers, _director=owner)
             before = len(errors)
             descendants(reader, node, errors, answers, owner)
             row = track_row(node, trusted, wait_trusted)
             if len(errors) > before:
                 row["status"] = UNKNOWN
             rows.append({**row, "read": True})
-        except (KeyError, TypeError) as error:
+        except (ValueError, KeyError, TypeError) as error:
             if track["number"] in graph["nodes"]:
                 errors.append(f"Track #{track['number']} unread: {type(error).__name__}: {error}")
             rows.append({**track, "url": f"https://github.com/{owner}/{repo}/issues/{track['number']}",
@@ -449,9 +458,10 @@ def markdown(board, *, links_only=False):
             lines.append(f"\n- {track['url']}{name}: {UNKNOWN}")
             continue
         decision = f"; decision {track['latest_decision']}" if track["latest_decision"] else ""
+        questions = "".join(f"; question needs review {question['url']}" for question in track["open_questions"])
         review = track["closure_review"]
         lines.append(f"\n- {track['url']}{name}: {track['status'] or 'no status label'}"
-                     f"{decision}{unread_text(track)}")
+                     f"{blocking_text(track, links_only)}{questions}{decision}{unread_text(track)}")
         if not links_only:
             proof = " ".join((review["track_proof"] or UNKNOWN).split())
             proof = proof[:NEXT_ACTION_CHARS] + "…" if len(proof) > NEXT_ACTION_CHARS else proof
@@ -461,7 +471,7 @@ def markdown(board, *, links_only=False):
             decision = f"; decision {child['latest_decision']}" if child["latest_decision"] else ""
             prs = "".join(f"; PR {pr['url']} {'draft, ' if pr['draft'] else ''}{pr['handoff']}, mergeable {pr['mergeable']}"
                           for pr in child["open_prs"])
-            questions = "".join(f"; question {question['url']}" for question in child["open_questions"])
+            questions = "".join(f"; question needs review {question['url']}" for question in child["open_questions"])
             claims = "" if links_only else "".join(f"; worker {claim['worker']}" for claim in child["claims"])
             lines.append(f"  - {child['group']}: {child['url']}{title}: {child_state(child)}"
                          f"{blocking_text(child, links_only)}{action_text(child, links_only)}{decision}{prs}{questions}{claims}{unread_text(child)}")

@@ -2377,7 +2377,6 @@ def test_milestone_agent_work_behind_bookkeeping_blocker_ranks_first() -> None:
     summary = {entry["milestone"]: entry for entry in result["milestone_summary"]}
     assert summary["First"]["state"] == "work_listed"
     assert [wait["number"] for wait in summary["First"]["waits"]] == [91]
-    assert [ref["number"] for ref in summary["First"]["next_action_outside_graph"]] == [99]
     assert [item["number"] for item in summary["Second"]["work"]] == [2]
     assert result["candidate_coverage"]["milestone_ranking_complete"] is True
 
@@ -2392,7 +2391,6 @@ def test_milestone_summary_names_each_wait_when_no_milestone_work_is_listed() ->
     summary = {entry["milestone"]: entry for entry in result["milestone_summary"]}
     assert summary["First"]["state"] == "waiting"
     assert summary["First"]["waits"][0]["waiting_for"] == "Justin's release acceptance."
-    assert summary["First"]["next_action_outside_graph"] == []
     assert summary["Second"]["state"] == "no_linked_work"
 
 
@@ -3126,7 +3124,6 @@ def test_global_next_reads_milestone_proofs_before_a_descendant_uses_the_scan_bu
         reviews = result["milestone_closure_reviews"]
         assert len(reviews) == 2, result
         assert reviews[0]["track_proof"] == proof, reviews
-        assert reviews[1]["recorded_status"] == comments[("someone/direction", 102)][0]["body"].split("\n", 1)[1], reviews
         assert result["graph_context"]["truncated"], result
 
 

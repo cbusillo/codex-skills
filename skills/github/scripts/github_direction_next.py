@@ -1014,17 +1014,6 @@ def waiting_records(issue: dict[str, Any], status_text: str, *, reference_reposi
     return records
 
 
-def next_action_references(status_text: str) -> list[dict[str, Any]]:
-    """Issues a Track's Next action names with their repository.
-
-    A Track names work across repositories, so a bare #N is ambiguous and skipped.
-    """
-    match = re.search(r"(?im)^\s*(?:[-*]\s+)?Next action:[ \t]*(.+)$", status_text)
-    if not match:
-        return []
-    return issue_references(match[1], repo=None)
-
-
 def issue_references(text: str, *, repo: str | None, known_repositories: set[str] | None = None) -> list[dict[str, Any]]:
     """Resolve repository shorthand only within its reporting owner's context."""
     plain = re.sub(r"\[([^]]+)]\(([^)]+)\)", r"\2", text)
@@ -1226,7 +1215,6 @@ def rank_direction_work(
     degraded = 0
     truncated = False
     track_next_actions: dict[str, dict[str, Any]] = {}
-    from github_next_queue import current_status
     closure_reviews: list[dict[str, Any]] = []
     for index, root in enumerate(tracks):
         if prefetch_nodes is not None:
@@ -1234,10 +1222,8 @@ def rank_direction_work(
         key = root["repo"].casefold(), root["number"]
         node_cache[key] = read_node(root["repo"], root["number"])
         discussion = node_cache[key]["item"].get("discussion") or {}
-        status = current_status(discussion, github_plan_wait.authors(root["repo"]),
-            body_recorded_at=discussion.get("body_recorded_at")) if discussion.get("complete") else ""
         closure_reviews.append({"url": root["url"], "milestone": root["milestone"]["title"],
-            **milestone_closure_review(discussion.get("body", ""), status),
+            **milestone_closure_review(discussion.get("body", ""), ""),
             "discussion_complete": bool(discussion.get("complete"))})
     # A stack keeps even a deep dependency chain within the explicit scan bound.
     pending: list[tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], bool, list[dict[str, Any]]]] = [
@@ -1321,7 +1307,6 @@ def rank_direction_work(
         if tracking:
             track_next_actions[milestone["title"]] = {
                 "track": item["url"],
-                "references": next_action_references(status_text or ""),
             }
         if reason == "label_blocked_without_native_edge":
             item["label_finding"] = {"kind": "stale_blocked_label", **step}
@@ -1386,11 +1371,7 @@ def rank_direction_work(
         "tracking_milestones": [{"repo": root["repo"], "number": root["number"], "milestone": root["milestone"]} for root in tracks],
         "evaluated": len(seen),
         "truncated": truncated,
-        "track_next_actions": {
-            title: {**entry, "references": [ref for ref in entry["references"]
-                                            if (ref["repo"].casefold(), ref["number"]) not in seen]}
-            for title, entry in track_next_actions.items()
-        },
+        "track_next_actions": track_next_actions,
         "dependency_context": {
             "complete": not (degraded or truncated or missing),
             "degraded_count": degraded,
@@ -1445,7 +1426,5 @@ def milestone_summary(
             "state": "work_listed" if work else "needs_status" if missing else "wait_review_required" if reviews else "underway" if owned else "waiting" if waits else "no_linked_work" if graph_complete else "unknown",
             "work": work, "underway": owned, "verification_only": [], "scope_review": [], "needs_status": missing, "wait_reviews": reviews,
             "waits": waits,
-            # Named by the Track's Next action but not reached over native edges.
-            "next_action_outside_graph": track.get("references", []),
         })
     return summary

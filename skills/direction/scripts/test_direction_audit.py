@@ -2111,7 +2111,6 @@ def test_milestone_outcomes_report_closures_links_and_checked_finish_line_items(
     assert thin["milestone"] == "Thin fork decision" and thin["complete"], thin
     assert thin["tracks"] == ["https://github.com/o/direction/issues/1"]
     assert thin["closure_reviews"][0]["track_proof"] == "Ship the spike."
-    assert thin["closure_reviews"][0]["recorded_status"] is None
     assert [item["url"] for item in thin["issues_closed"]] == ["https://github.com/x/product/issues/9"]
     assert thin["links_added"] == [{"to": "https://github.com/o/direction/issues/1", "kind": "sub_issue",
                                     "issue": "https://github.com/x/product/issues/9", "added_at": inside}]
@@ -2140,25 +2139,6 @@ def test_milestone_outcomes_report_closures_links_and_checked_finish_line_items(
         fetch=module.github_work_graph.cached_reads(minimal_edges))[0]
     assert projected["complete"] and projected["issues_closed"] == thin["issues_closed"]
     assert set(hydrated) == set(full_nodes)
-
-    def unread_proof_comments(args: list[str]) -> Any:
-        if args[1].split("?")[0].endswith("/comments"):
-            raise module.AuditError("Proof discussion unavailable")
-        return fetch(args)
-
-    unread_proof = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=unread_proof_comments)[0]
-    assert not unread_proof["complete"]
-    assert not unread_proof["closure_reviews"][0]["discussion_complete"]
-    assert unread_proof["closure_reviews"][0]["recorded_status"] is None
-
-    def unread_body_time(args: list[str]) -> Any:
-        if any("lastEditedAt" in arg for arg in args):
-            return {"data": {"repository": {"issue": {"createdAt": before}}}}
-        return fetch(args)
-
-    unordered = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=unread_body_time)[0]
-    assert unordered["complete"]
-    assert unordered["closure_reviews"][0]["recorded_status"] is None
 
     for response in (None, {}):
         def unread_node(args: list[str], response: dict[str, Any] | None = response) -> Any:
@@ -2832,6 +2812,7 @@ def test_overall_audit_reads_current_structured_wait_before_prose() -> None:
 
 def test_local_audit_resolves_six_structured_waits_without_status_prose() -> None:
     module = load()
+    from skills.github.scripts import github_plan_wait
     waits = [
         ("Director's decision", "Director records the decision"),
         ("Client's acceptance", "Client accepts the candidate"),
@@ -2848,8 +2829,8 @@ def test_local_audit_resolves_six_structured_waits_without_status_prose() -> Non
     ]
     comments = {
         f"repos/owner/product/issues/{item['number']}/comments": [
-            {"user": {"login": "owner"}, "body": module.github_plan_wait.marker(
-                module.github_plan_wait.reviewed(evidence="Reviewed the discussion", waiting_for=actor, ends_when=ending))}
+            {"user": {"login": "owner"}, "body": github_plan_wait.marker(
+                github_plan_wait.reviewed(evidence="Reviewed the discussion", waiting_for=actor, ends_when=ending))}
         ]
         for item, (actor, ending) in zip(issues, waits)
     }
@@ -2877,9 +2858,10 @@ def test_local_audit_resolves_six_structured_waits_without_status_prose() -> Non
 
 def test_local_wait_resolution_preserves_authority_and_incomplete_coverage() -> None:
     module = load()
-    wait = module.github_plan_wait.reviewed(evidence="Reviewed discussion", waiting_for="Director", ends_when="Decision recorded")
-    clear = module.github_plan_wait.reviewed(evidence="Decision recorded")
-    trusted = {"user": {"login": "owner"}, "body": module.github_plan_wait.marker(wait)}
+    from skills.github.scripts import github_plan_wait
+    wait = github_plan_wait.reviewed(evidence="Reviewed discussion", waiting_for="Director", ends_when="Decision recorded")
+    clear = github_plan_wait.reviewed(evidence="Decision recorded")
+    trusted = {"user": {"login": "owner"}, "body": github_plan_wait.marker(wait)}
     for scenario in ("body", "cleared", "review", "untrusted", "unavailable", "truncated", "malformed"):
         item: dict[str, Any] = {
             **issue(120, "Pending work", labels=("plan:waiting",), body="## Current Status\nState: Waiting."),
@@ -2887,20 +2869,20 @@ def test_local_wait_resolution_preserves_authority_and_incomplete_coverage() -> 
         }
         comments = [trusted]
         if scenario == "body":
-            item["body"] += "\n" + module.github_plan_wait.marker(wait)
+            item["body"] += "\n" + github_plan_wait.marker(wait)
             comments = []
         elif scenario == "cleared":
-            comments.append({**trusted, "body": module.github_plan_wait.marker(clear)})
+            comments.append({**trusted, "body": github_plan_wait.marker(clear)})
         elif scenario == "review":
-            review, _ = module.github_plan_wait.resolve({}, [], {"owner"})
-            comments = [{**trusted, "body": module.github_plan_wait.marker(review)}]
+            review, _ = github_plan_wait.resolve({}, [], {"owner"})
+            comments = [{**trusted, "body": github_plan_wait.marker(review)}]
         elif scenario == "untrusted":
             item["body"] += "\nWaiting for: nothing."
             comments = [{**trusted, "user": {"login": "stranger"}}]
         elif scenario == "truncated":
             comments *= 100
         elif scenario == "malformed":
-            comments = [{**trusted, "body": module.github_plan_wait.PREFIX + "invalid -->"}]
+            comments = [{**trusted, "body": github_plan_wait.PREFIX + "invalid -->"}]
 
         def fetch(_args: list[str]) -> Any:
             if scenario == "unavailable":
