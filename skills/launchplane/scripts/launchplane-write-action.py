@@ -6624,10 +6624,15 @@ def summarize_config_authority_publisher(provider_payload: dict[str, Any]) -> di
     ]
     if len(contexts) > 1:
         raise LaunchplaneSafetyError("invalid_response")
+    shared = [record for record in provider_payload["settings"]
+              if record.get("scope") == "global" and record.get("context") == "" and record.get("instance") == ""]
+    if len(shared) > 1:
+        raise LaunchplaneSafetyError("invalid_response")
     selector_key = "LAUNCHPLANE_ADVISORY_GITHUB_APP_ID"
     app_id: int | None = None
-    if contexts and selector_key in contexts[0]["keys"] and selector_key not in contexts[0]["withheld_keys"]:
-        values = _require_dict(contexts[0].get("values"))
+    selected = next((record for record in [*contexts, *shared] if selector_key in record["keys"]), None)
+    if contexts and selected is not None and selector_key not in selected["withheld_keys"]:
+        values = _require_dict(selected.get("values"))
         value = values.get(selector_key)
         if isinstance(value, str) and value.strip().isdecimal() and int(value) > 0:
             app_id = int(value)
@@ -6653,6 +6658,7 @@ def execute_product_read(
     if settings is None:
         return 2
     provider_payload = None
+    read_operation = operation
     try:
         provider_payload = request_launchplane_read(
             service_url=settings["service_url"],
@@ -6663,25 +6669,27 @@ def execute_product_read(
         )
         payload = summarize(request=request, provider_payload=provider_payload)
         if operation == "merge-train-policy-read" and request.get("include_config_authority"):
-            publisher = request_launchplane_read(
+            read_operation = "context-runtime-settings-read"
+            provider_payload = None
+            provider_payload = request_launchplane_read(
                 service_url=settings["service_url"],
                 path=helper_command_path("context-runtime-settings-read").format(context="launchplane"),
                 settings=settings, query={}, timeout=args.timeout,
             )
-            _require_dict(payload["result"])["configAuthorityPublisher"] = summarize_config_authority_publisher(publisher)
+            _require_dict(payload["result"])["configAuthorityPublisher"] = summarize_config_authority_publisher(provider_payload)
         emit(payload)
         return 0
     except urllib.error.HTTPError as exc:
-        emit_http_error_payload(operation=operation, request=request, exc=exc)
+        emit_http_error_payload(operation=read_operation, request=request, exc=exc)
         return 1
     except LaunchplaneSafetyError as exc:
         emit_safety_error_payload(
-            operation=operation, request=request, exc=exc, provider_payload=provider_payload
+            operation=read_operation, request=request, exc=exc, provider_payload=provider_payload
         )
         return 1
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         emit_read_transport_error(
-            operation=operation, request=request, timeout=args.timeout, exc=exc,
+            operation=read_operation, request=request, timeout=args.timeout, exc=exc,
         )
         return 1
 

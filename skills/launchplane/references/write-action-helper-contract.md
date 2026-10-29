@@ -330,9 +330,11 @@ event flag follows the service policy contract: an omitted optional flag is
 disabled. This option also reads the existing service-context runtime-settings
 endpoint and projects only its nonsecret checks App selector and that read's
 trace id. It does not resolve credentials or verify an installation, parser,
-subscription or event execution. Missing, withheld or invalid selector evidence
-stays `unknown`; an inherited global selector alone also stays unknown. A
-denied settings read remains denied. Other setting values and repositories
+subscription or event execution. Missing, withheld or invalid selector values
+stay `unknown`. Context settings override inherited global settings, as in the
+service; a service context record is required. Malformed or truncated response
+structure fails the read. A failed settings read names that operation and its
+own trace when available; a denied read remains denied. Other setting values and repositories
 are withheld. The two reads have separate traces and are not an atomic snapshot;
 refresh them before binding a transition to current policy.
 
