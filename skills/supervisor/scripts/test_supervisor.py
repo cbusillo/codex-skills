@@ -917,26 +917,22 @@ class LedgerTests(unittest.TestCase):
             self.assertGreater(len(sleeps), 1)
         self.assertEqual(notify.call_args.args[0]["session_id"], self.recipient["session_id"])
 
-    def test_uncertain_notification_stops_and_cannot_replay_after_restart(self) -> None:
+    def test_uncertain_notification_retains_exact_recipient_and_never_replays(self) -> None:
         import review_notifications
-        args = self.persistent_args()
+        args = self.persistent_args(once=True)
         with patch.object(review_notifications, "send", side_effect=TimeoutError("unknown delivery")) as notify, \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(codex_idle_watch.watch(args, None), 1)
-            self.assertEqual(codex_idle_watch.watch(args, None), 1)
+            config = json.loads(args.notify_config.read_text())
+            config["supervisor"]["session_id"] = "11111111-2222-4333-8444-555555555556"
+            args.notify_config.write_text(json.dumps(config))
+            self.assertEqual(codex_idle_watch.watch(args, None), 0)
             self.assertEqual(notify.call_count, 1)
-        state = args.delivered_state.read_text()
-        reconciliation = SimpleNamespace(delivered_state=args.delivered_state, delivery_outcome=None, evidence=None)
-        with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(codex_idle_watch.reconcile_notification(reconciliation), 0)
-        self.assertEqual(args.delivered_state.read_text(), state)
-        reconciliation.delivery_outcome = "delivered"
-        reconciliation.evidence = "Exact recipient readback confirms the retained notice."
-        with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(codex_idle_watch.reconcile_notification(reconciliation), 0)
-            with patch.object(review_notifications, "send") as notify:
-                self.assertEqual(codex_idle_watch.watch(self.persistent_args(once=True), None), 0)
-        notify.assert_not_called()
+        state = codex_idle_watch.load_delivered(args.delivered_state)
+        attempt = next(json.loads(value.removeprefix(codex_idle_watch.ATTEMPT_NOTIFICATION))
+                       for value in state if value.startswith(codex_idle_watch.ATTEMPT_NOTIFICATION))
+        self.assertEqual(attempt["recipient"], self.recipient)
+        self.assertIn(json.dumps(attempt["notice"], sort_keys=True), state)
 
     def test_certainly_unsent_busy_recipient_is_rechecked_without_spending_delivery(self) -> None:
         import review_notifications
@@ -956,7 +952,7 @@ class LedgerTests(unittest.TestCase):
             self.assertEqual(codex_idle_watch.watch(args, None), 0)
         self.assertEqual(notify.call_count, 2)
         self.assertEqual(sum(json.loads(line).get("session_id") == "other-worker" for line in output.getvalue().splitlines()), 1)
-        self.assertFalse(any(value.startswith(codex_idle_watch.PENDING_NOTIFICATION)
+        self.assertFalse(any(value.startswith(codex_idle_watch.ATTEMPT_NOTIFICATION)
                              for value in codex_idle_watch.load_delivered(args.delivered_state)))
 
     def test_notification_rechecks_exact_candidate_before_any_send(self) -> None:
@@ -966,6 +962,19 @@ class LedgerTests(unittest.TestCase):
                 patch.object(review_notifications, "send") as notify, contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(codex_idle_watch.watch(args, None), 0)
         notify.assert_not_called()
+
+    def test_removed_worker_during_recheck_does_not_stop_the_watch(self) -> None:
+        import review_notifications
+        args = self.persistent_args(once=True)
+        candidates = finished_map.candidates
+        def remove_worker(ledger: Path, session_id: str) -> list[dict]:
+            ledger.write_text("[]")
+            return candidates(ledger, session_id)
+        with patch.object(finished_map, "candidates", side_effect=remove_worker), \
+                patch.object(review_notifications, "send") as notify, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(codex_idle_watch.watch(args, None), 0)
+        notify.assert_not_called()
+        self.assertFalse(args.delivered_state.exists())
 
     def test_changing_candidate_transcript_is_rechecked_without_stopping_service(self) -> None:
         import review_notifications
@@ -1016,11 +1025,11 @@ class LedgerTests(unittest.TestCase):
 
     def test_permission_refusal_remains_spent_even_before_notification_delivery(self) -> None:
         import review_notifications
-        args = self.persistent_args()
+        args = self.persistent_args(once=True)
         with patch.object(review_notifications, "send", side_effect=PermissionError("denied")) as notify, \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(codex_idle_watch.watch(args, None), 1)
-            self.assertEqual(codex_idle_watch.watch(args, None), 1)
+            self.assertEqual(codex_idle_watch.watch(args, None), 0)
         self.assertEqual(notify.call_count, 1)
 
     def test_supervisor_recipient_cannot_be_watched_as_a_worker(self) -> None:

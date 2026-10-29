@@ -102,7 +102,7 @@ def poll(ledger: Path, seen: dict, idle_seconds: float, now: float,
     return notices
 
 
-PENDING_NOTIFICATION = "pending-notification:"
+ATTEMPT_NOTIFICATION = "notification-attempt:"
 
 
 def load_delivered(path: Path) -> set[str]:
@@ -116,30 +116,6 @@ def save_delivered(path: Path, delivered: set[str]) -> None:
     pending = path.with_name(f"{path.name}.tmp")
     pending.write_text(json.dumps(sorted(delivered)), encoding="utf-8")
     pending.replace(path)
-
-
-def reconcile_notification(args: Any) -> int:
-    delivered = load_delivered(args.delivered_state)
-    pending = [value for value in delivered if value.startswith(PENDING_NOTIFICATION)]
-    if len(pending) != 1:
-        raise ValueError("reconciliation needs exactly one retained notification attempt")
-    attempt = json.loads(pending[0].removeprefix(PENDING_NOTIFICATION))
-    if (not isinstance(attempt, dict) or not isinstance(attempt.get("notice"), dict)
-            or not isinstance(attempt.get("recipient"), dict)):
-        raise ValueError("retained notification identity is malformed; preserve it for reconciliation")
-    if not args.delivery_outcome:
-        print(json.dumps({"notification": attempt, "reconciliation_required": True}), flush=True)
-        return 0
-    if not args.evidence or not args.evidence.strip():
-        raise ValueError("delivery outcome needs evidence from the exact recipient's readback")
-    delivered.remove(pending[0])
-    if args.delivery_outcome == "delivered":
-        delivered.add(json.dumps(attempt["notice"], sort_keys=True))
-    delivered.add("reconciled-notification:" + json.dumps({**attempt, "outcome": args.delivery_outcome,
-                  "evidence": args.evidence}, sort_keys=True))
-    save_delivered(args.delivered_state, delivered)
-    print(json.dumps({"reconciled": True, "outcome": args.delivery_outcome}), flush=True)
-    return 0
 
 
 def notification_recipient(args: Any) -> dict:
@@ -169,7 +145,12 @@ def notify_requests(args: Any, notices: list[dict], delivered: set[str], seen: d
             continue
         message = json.dumps(notice)
         if notice.get("closeout_request"):
-            candidate = finished_map.candidates(args.ledger, request["session_id"])[0]
+            try:
+                candidate = finished_map.candidates(args.ledger, request["session_id"])[0]
+            except finished_map.SessionAbsent:
+                defer_notice(notice, seen)
+                notice["closeout_request"] = None
+                continue
             if "error" in candidate or candidate.get("closeout_request") != request:
                 defer_notice(notice, seen)
                 notice["closeout_request"] = None
@@ -188,14 +169,14 @@ def notify_requests(args: Any, notices: list[dict], delivered: set[str], seen: d
                 defer_notice(notice, seen)
                 continue
             recipient = notification_recipient(args)
-            pending = PENDING_NOTIFICATION + json.dumps({"notice": request, "recipient": recipient}, sort_keys=True)
-            save_delivered(args.delivered_state, delivered | {pending})
+            attempt = ATTEMPT_NOTIFICATION + json.dumps({"notice": request, "recipient": recipient}, sort_keys=True)
+            save_delivered(args.delivered_state, delivered | {identity, attempt})
             try:
                 review_notifications.send(recipient, message, supervisor=True)
             except review_notifications.NotSent as error:
-                save_delivered(args.delivered_state, delivered)
                 if error.needs_attention:
                     raise ValueError(str(error)) from error
+                save_delivered(args.delivered_state, delivered)
                 defer_notice(notice, seen)
                 continue
             delivered.add(identity)
@@ -206,9 +187,6 @@ def watch(args, state: dict | None, stopped: threading.Event | None = None) -> i
     deadline = time.monotonic() + args.deadline_seconds
     seen = {}
     delivered = load_delivered(args.delivered_state) if args.delivered_state else set()
-    if any(value.startswith(PENDING_NOTIFICATION) for value in delivered):
-        print(json.dumps({"error": "notification outcome requires reconciliation; inspect the exact recipient before any retry"}), flush=True)
-        return 1
     homes = {}
     if args.harness == "codex":
         try:
@@ -265,9 +243,6 @@ def main() -> int:
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--persistent", action="store_true", help="deliver notices immediately and keep watching within the deadline")
     parser.add_argument("--notify-config", type=Path, help="existing service configuration with the current Supervisor binding")
-    parser.add_argument("--reconcile-notification", action="store_true", help="inspect the retained attempt; record an outcome only with readback evidence")
-    parser.add_argument("--delivery-outcome", choices=("delivered", "not-sent"))
-    parser.add_argument("--evidence", help="exact-recipient readback evidence for an explicit reconciliation")
     parser.add_argument("--delivered-state", type=Path,
                         help="closeout requests already delivered; the watch exits on any other")
     parser.add_argument("--capacity-state", type=Path,
@@ -281,10 +256,6 @@ def main() -> int:
         parser.error("--persistent needs --notify-config and --delivered-state, without --once")
     if not args.persistent and args.notify_config:
         parser.error("notification targets require --persistent")
-    if (args.delivery_outcome or args.evidence) and not args.reconcile_notification:
-        parser.error("delivery outcomes and evidence require --reconcile-notification")
-    if args.reconcile_notification and (not args.delivered_state or args.persistent or args.resume_capacity):
-        parser.error("reconciliation needs --delivered-state, without --persistent or --resume-capacity")
     if not args.once and not args.delivered_state:
         parser.error("a continuous watch requires --delivered-state PATH, one private file per harness")
     if args.resume_capacity and not args.capacity_state:
@@ -299,8 +270,6 @@ def main() -> int:
         with ExitStack() as stack:
             if args.delivered_state:
                 stack.enter_context(watch_lock(args.delivered_state))
-            if args.reconcile_notification:
-                return reconcile_notification(args)
             if args.persistent:
                 notification_recipient(args)
             state = stack.enter_context(locked_state(args.capacity_state)) if args.capacity_state else None

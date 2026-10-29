@@ -1564,25 +1564,6 @@ class NotificationTests(unittest.TestCase):
                 notifications.send({**recipient, "role": "worker"}, "notice", supervisor=True)
             self.assertEqual(queue.call_count, 1)
 
-    def test_claude_recipient_is_locked_across_validation_and_delivery(self) -> None:
-        self.claude()
-        entered, release = threading.Event(), threading.Event()
-        def deliver() -> None:
-            entered.set()
-            if not release.wait(5):
-                raise TimeoutError("fixture delivery not released")
-        with ThreadPoolExecutor(max_workers=1) as pool, patch.object(notifications, "prepare", return_value=deliver) as prepare:
-            first = pool.submit(notifications.send, self.entry, "first")
-            try:
-                self.assertTrue(entered.wait(2))
-                with self.assertRaises(notifications.NotSent) as failure:
-                    notifications.send(self.entry, "second")
-                self.assertFalse(failure.exception.needs_attention)
-                self.assertEqual(prepare.call_count, 1)
-            finally:
-                release.set()
-                first.result(timeout=2)
-
     def test_idle_scheduled_wakeup_does_not_suppress_review_but_firing_turn_does(self):
         self.claude()
         status = {"at_turn_end": True, "background_tasks": [{"task_id": "wake", "kind": "scheduled"}]}

@@ -12,14 +12,14 @@ service for reconciliation rather than replaying a possibly uncertain write.
 from __future__ import annotations
 
 import argparse
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import ExitStack, contextmanager
 import fcntl
 import json
 import importlib
 import math
 import os
 from pathlib import Path
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any
 import plistlib
 import re
@@ -143,8 +143,14 @@ def validate_supervisor(recipient: Any) -> None:
         raise ValueError("Claude Supervisor binding requires its exact managed tmux route")
 
 
-def supervisor_lock(config_path: Path) -> AbstractContextManager[None]:
-    return service_lock(config_path.resolve(), "notifications")
+@contextmanager
+def supervisor_lock(config_path: Path) -> Iterator[None]:
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(service_lock(config_path.resolve(), "notifications"))
+        except ValueError as error:
+            raise ValueError("notification or binding in progress; retry bind after it finishes") from error
+        yield
 
 
 def supervisor_recipient(config_path: Path) -> dict:

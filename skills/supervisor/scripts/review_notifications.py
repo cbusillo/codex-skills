@@ -5,8 +5,6 @@
 """Deliver review notices using the existing exact-session send routes."""
 
 import asyncio
-from contextlib import ExitStack
-import hashlib
 import json
 import os
 import re
@@ -114,21 +112,6 @@ def prepare(entry, message, *, supervisor=False):
 
 
 def send(entry: dict, message: str, *, supervisor: bool = False) -> None:
-    if entry.get("harness") != "claude":
-        send_locked(entry, message, supervisor=supervisor)
-        return
-    from foreign_watch import watch_lock
-    identity = hashlib.sha256((entry.get("harness", "") + ":" + entry.get("session_id", "")).encode()).hexdigest()
-    path = Path(os.environ.get("CODE_HOME", Path.home() / ".code")) / "skill-data/session-notification-locks" / identity
-    with ExitStack() as stack:
-        try:
-            stack.enter_context(watch_lock(path))
-        except ValueError as error:
-            raise NotSent("another notification owns this recipient", needs_attention=False) from error
-        send_locked(entry, message, supervisor=supervisor)
-
-
-def send_locked(entry: dict, message: str, *, supervisor: bool = False) -> None:
     from iterm_tab import SendFailure
 
     try:

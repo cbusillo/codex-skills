@@ -12,6 +12,10 @@ from pathlib import Path
 from session_record import load_ledger, session_status
 
 
+class SessionAbsent(ValueError):
+    pass
+
+
 def closeout_request(entry: dict, status: dict) -> dict | None:
     """Route a completed response to verification, never grant exit authority."""
     if (entry.get("supervisor_owned") is not True or not status["safe_verdict"]
@@ -33,7 +37,7 @@ def candidates(ledger: Path, session_id: str | None = None) -> list[dict]:
     if session_id is not None:
         entries = [entry for entry in entries if entry["session_id"] == session_id]
         if len(entries) != 1:
-            raise ValueError("notice must match exactly one native ledger session")
+            raise SessionAbsent("notice must match exactly one native ledger session")
     for entry in entries:
         try:
             status = session_status(entry)

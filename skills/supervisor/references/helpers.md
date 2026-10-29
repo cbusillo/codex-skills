@@ -1089,7 +1089,8 @@ re-arming, add an optional entry to that same `services` object:
 `--delivered-state`. Reuse the existing worker ledger and delivered-state files.
 The notification target is one current-Supervisor binding in that same service
 configuration, never a second session registry or a Supervisor-owned worker row.
-At initial setup and every takeover, the current Supervisor runs:
+At initial setup, before bootstrapping either idle job, and at every takeover,
+the current Supervisor runs:
 
 ```sh
 uv run /runtime/catalog/skills/supervisor/scripts/services.py bind --config /private/supervisor-services.json
@@ -1108,16 +1109,17 @@ Keep the Supervisor out of the watched worker ledger.
 Loaded jobs reread this binding for every notice. Binding replacement and final
 recipient selection through submission share one configuration lock, so after a
 successful takeover future sends cannot use a cached predecessor. A busy lock
-defers an unsent notice. A retained uncertain attempt stays bound to its original
-recipient and still needs reconciliation; changing the current binding never
-replays it. Reuse healthy loaded jobs without rerendering their plists at takeover.
+defers an unsent notice. A spent uncertain attempt stays bound to its original
+recipient for reconciliation; changing the current binding never replays it. Reuse healthy loaded jobs without rerendering their plists at takeover.
 A held or failed job still follows the existing reconciliation and restart steps;
 `bind` changes only the current address and never clears a hold or starts a job.
+Before a successor binds, the previous address remains current. A dead or
+unavailable recipient can hold the job for reconciliation; bind the successor
+and follow the existing recovery steps rather than deleting delivery state.
 
 Codex delivery uses the existing native queue helper. Claude delivery uses the
 existing guarded tmux route, including idle, empty-composer and identity checks.
-Claude notifications share a per-recipient lock across both watches and review
-notifications. Native queue results distinguish a certainly unsent attempt from
+Both idle watches serialize sends under the configuration lock. Native queue results distinguish a certainly unsent attempt from
 a permission or RPC refusal. Unsupported routes and identity errors stop for
 reconciliation. A certainly unsent busy recipient is rechecked on the next poll;
 uncertain or denied sends are never automatically replayed.
@@ -1130,31 +1132,29 @@ parsers. Notice delivery grants no exit authority: every existing handoff, input
 task, process-exit and claim verification still applies. The watcher keeps its
 existing deadline; the service restarts clean deadline exits automatically.
 Normal SIGTERM/SIGINT stops let an idle watch exit cleanly. A process-group stop during a
-notification retains its pending attempt; the existing runner
+notification retains its attempted notice and recipient evidence; the existing runner
 keeps its bounded child-exit and reconciliation checks.
 Keep the idle service restart delay short, as in the example. If using capacity
 retry, keep exactly one watcher for its existing state file; status and digest
 readers retain their current read-only route. Logging notices
 until the next scheduled check does not meet the immediate-handling rule.
 
-The same delivered-state file retains an attempt before calling the notification
-sender and marks it delivered only after success. A pending attempt blocks any
-watcher restart, including bounded mode. Inspect it without changing state:
+The same delivered-state file marks each attempt spent before calling the
+sender and retains its exact notice and recipient binding until success. The
+watermark records an attempted notice, not proof of delivery. A certainly unsent,
+deferrable attempt removes that reservation so the next poll can recheck it.
+Other failures keep the reservation and evidence, exit nonzero and use the
+existing service reconciliation hold. Read that evidence and the original
+recipient's readback, then handle the candidate through normal finished-session
+verification. Resolve any refusal on its supported route before using the
+existing service `clear` command below. Clearing the service hold or changing
+the binding never removes a spent notice or replays its uncertain delivery.
+Never delete delivery state to make a send run again.
 
-```sh
-uv run /runtime/catalog/skills/supervisor/scripts/codex_idle_watch.py --ledger /private/existing-worker-ledger.json --delivered-state /private/codex-delivered.json --reconcile-notification
-```
-
-Read the retained exact recipient and reconcile that original delivery. Only
-once readback proves the outcome, repeat with `--delivery-outcome delivered`
-or `--delivery-outcome not-sent` and `--evidence <readback-evidence>`. This records
-the result in the same state file; it never sends a message or changes authority.
-A refusal still needs its underlying cause resolved on the supported route.
-Then use the existing service `clear` command below. Never delete state or clear
-an uncertain attempt to make a send run again. One lock per delivered-state file
-prevents two watches using it concurrently, including bounded watches. At
-takeover, reuse a loaded service or verify the prior bounded watch ended before
-re-arming; a lock refusal never authorizes a duplicate watcher.
+One lock per delivered-state file prevents two watches using it concurrently,
+including bounded watches. At takeover, reuse a loaded service or verify the
+prior bounded watch ended before re-arming; a lock refusal never authorizes a
+duplicate watcher.
 
 Replace the example paths and scope with the current Supervisor handoff's
 commands. The drive entry runs the existing bounded loop calling the maintained
