@@ -18,8 +18,8 @@ import tempfile
 import time
 import unittest
 from argparse import Namespace
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from itertools import product
 from pathlib import Path
@@ -1283,6 +1283,7 @@ class ClaimTests(unittest.TestCase):
         self.args.resume_from = 71
         self.run_claim()
         histories["owner/repo"] = copy.deepcopy(self.comments)
+        self.lease_fixture("expired")
         closure.resume_record(OTHER["session"], [])
         sent = []
 
@@ -1300,6 +1301,7 @@ class ClaimTests(unittest.TestCase):
             receipt = asyncio.run(native.queue_input(Path.home(), OTHER["session"], "continue other work"))
         self.assertEqual(receipt["queuedSubmissionId"], "queued")
         self.assertEqual([row["threadId"] for row in sent], [OTHER["session"]])
+        self.assertEqual(LEASE.state(OTHER["session"]), LEASE.LIVE)
 
         self.args.session, self.args.worker = OTHER["session"], OTHER["worker"]
         self.args.branch, self.args.resume_from = "work/source-reclaim", None
@@ -1325,18 +1327,80 @@ class ClaimTests(unittest.TestCase):
         with closure.resume_guard(OTHER["session"]):
             pass
 
-        self.lease_fixture("expired")
-        with self.assertRaises(ValueError) as expired:
-            with closure.resume_guard(OTHER["session"]):
-                self.fail("expired source resumed before successor publication")
-        self.assertIsNone(expired.exception.__cause__)
-        LEASE.renew(OTHER["session"])
-
+        closure.admit_sources({OTHER["session"]})
         with patch.object(github_read, "GitHubReader", side_effect=github_read.GitHubReadShapeError("unavailable")):
             with self.assertRaises(ValueError) as unavailable:
                 with closure.resume_guard(OTHER["session"]):
                     self.fail("unknown ownership resumed")
         self.assertIsInstance(unavailable.exception.__cause__, github_read.GitHubReadShapeError)
+
+    def test_resume_after_takeover_preflight_renews_ownership_before_publication(self) -> None:
+        import github_plan_closure as closure
+        self.ended_holder_fixture(released=False)
+        self.lease_fixture("expired")
+        entered = False
+        ownership = closure.ownership
+
+        @contextmanager
+        def source_wins(session: str, *, create: bool = False) -> Iterator[bool]:
+            nonlocal entered
+            if session == OTHER["session"] and not entered:
+                entered = True
+                with closure.resume_guard(session):
+                    pass
+            with ownership(session, create=create) as held:
+                yield held
+
+        with patch.object(closure, "ownership", side_effect=source_wins):
+            with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+        self.assertEqual(LEASE.state(OTHER["session"]), LEASE.LIVE)
+        self.assert_no_writes()
+
+    def test_takeover_holds_source_ownership_through_publication_and_readback(self) -> None:
+        import github_plan_closure as closure
+        from concurrent.futures import ThreadPoolExecutor
+        self.ended_holder_fixture(released=False)
+        self.lease_fixture("expired")
+        blocked = []
+
+        def attempt_resume() -> None:
+            with closure.resume_guard(OTHER["session"]):
+                self.fail("source resumed while its successor was being published")
+
+        def source_waits() -> None:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                with self.assertRaises(closure.LeaseBusy):
+                    pool.submit(attempt_resume).result()
+            blocked.append(True)
+
+        self.after_post = source_waits
+        self.after_status = source_waits
+        self.run_claim()
+        self.assertEqual(len(blocked), 2)
+        with self.assertRaises(ValueError) as handed_off:
+            with closure.resume_guard(OTHER["session"]):
+                self.fail("fully handed-off source resumed")
+        self.assertNotIsInstance(handed_off.exception, closure.LeaseBusy)
+
+    def test_malformed_source_claim_reads_refuse_without_starting_an_action(self) -> None:
+        import github_plan_closure as closure
+        import github_plan_claim_log as claim_log
+        import github_read
+        self.ended_holder_fixture()
+        self.run_claim()
+        claim_log.record(OTHER["session"], "owner/repo", 42)
+        malformed = {"body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}}
+        for issue, comments in (([], []), ({"state": "unknown"}, []), ({"state": "open"}, [malformed])):
+            with self.subTest(issue=issue, comments=comments):
+                reader = Mock(expected_actor=TEST_BOT, get_json=Mock(return_value=issue), paged_json=Mock(return_value=comments))
+                with patch.object(github_read, "GitHubReader", return_value=reader):
+                    with self.assertRaises(ValueError) as unavailable:
+                        with closure.resume_guard(OTHER["session"]):
+                            self.fail("malformed ownership resumed")
+                self.assertIsInstance(unavailable.exception.__cause__, github_read.GitHubReadShapeError)
+                self.assertFalse(closure.action_pending(OTHER["session"]))
 
     def test_live_or_unknown_holder_returns_coordination_before_any_write(self):
         for state in ("unknown", "live"):

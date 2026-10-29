@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 from datetime import datetime, timezone
 import json
 import os
@@ -2878,6 +2879,9 @@ def claim_once(args: argparse.Namespace) -> None:
     ended_owners: list[dict[str, Any]] = []
     resume_source_number: int | None = None
     retained_ended_sources: set[str] = set()
+    expired_sources: set[str] = set()
+    source_ownership = ExitStack()
+    owned_sources: set[str] = set()
     planning_checkout = getattr(args, "planning_checkout", None)
     config = load_config(issue_repo, checkout=planning_checkout) if planning_checkout else load_config(issue_repo)
     phase_records = {}
@@ -2929,6 +2933,8 @@ def claim_once(args: argparse.Namespace) -> None:
         ended = github_plan_claim.ended_ownership(owner_comments, owner_inventory,
                                                   github_plan_claim.expired_lease_sessions(owner_comments) - {claim["session"]})
         retained_ended_sources.update(entry["session"] for entry in ended if entry["session"] != claim["session"])
+        expired_sources.update(entry["session"] for entry in ended
+                               if entry["session"] != claim["session"] and entry["evidence"] == "lease_expired")
         return ended
 
     def ownership_snapshot(current_status: str, current_comments: list[dict[str, Any]]):
@@ -3004,6 +3010,15 @@ def claim_once(args: argparse.Namespace) -> None:
 
     def admit_observed_sources() -> None:
         try:
+            for session in sorted(retained_ended_sources - owned_sources):
+                source_ownership.enter_context(github_plan_closure.ownership(session, create=True))
+                owned_sources.add(session)
+            if not comment_recorded and "post_claim" not in completed:
+                resumed = {session for session in expired_sources if github_plan_lease.state(session) != github_plan_lease.EXPIRED}
+                if resumed:
+                    raise ClassifiedPlanError("claim_conflict",
+                        "Source session resumed before successor admission; recheck current ownership before taking over",
+                        payload={"resumed_sources": sorted(resumed)})
             github_plan_closure.admit_sources(retained_ended_sources)
         except (OSError, ValueError) as error:
             raise ClassifiedPlanError("claim_closure_unavailable",
@@ -3842,6 +3857,8 @@ def claim_once(args: argparse.Namespace) -> None:
                 write_outcome="unknown", completed_steps=completed,
             )
         raise
+    finally:
+        source_ownership.close()
     claim_id = (claim_comment.get("comment") or {}).get("id")
     # Name the supported release here so a finishing worker never hand-writes the directive.
     release_route = (

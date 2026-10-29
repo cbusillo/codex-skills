@@ -192,16 +192,16 @@ class Ingress:
         # keep overlapping operations protected even when replies arrive out of order.
         leases, requests, approvals = {}, {}, {}
 
-        def release(targets):
+        async def release(targets: set[str]) -> None:
             for target in targets:
                 guard, count = leases[target]
                 if count == 1:
                     del leases[target]
-                    guard.__exit__(None, None, None)
+                    await guard.__aexit__(None, None, None)
                 else:
                     leases[target] = guard, count - 1
 
-        def acquire(targets, method):
+        async def acquire(targets: set[str], method: str) -> set[str]:
             entered = set()
             try:
                 for target in sorted(targets):
@@ -210,13 +210,13 @@ class Ingress:
                         closure.set_action_pending(target, True, method=method, home=self.home)
                         leases[target] = guard, count + 1
                     else:
-                        guard = closure.resume_guard(target, method=method, home=self.home)
-                        guard.__enter__()
+                        guard = closure.async_resume_guard(target, method=method, home=self.home)
+                        await guard.__aenter__()
                         leases[target] = guard, 1
                     entered.add(target)
                 return entered
             except BaseException:
-                release(entered)
+                await release(entered)
                 raise
 
         async with unix_connect(str(self.upstream), max_size=None) as native:
@@ -239,7 +239,7 @@ class Ingress:
                                 for target in targets:
                                     closure.set_action_pending(target, True, method=approval_method, home=self.home)
                                 await native.send(raw)
-                                release(targets)
+                                await release(targets)
                                 reads[asyncio.create_task(client.recv())] = "client"
                                 continue
                             try:
@@ -259,7 +259,7 @@ class Ingress:
                                     raw = json.dumps(without_memory_generation(message))
                                 if method == "thread/resume":
                                     session = message["params"]["threadId"]
-                                guarded = acquire(targets, method)
+                                guarded = await acquire(targets, method)
                             except (OSError, ValueError) as error:
                                 await client.send(json.dumps({"id": identity, "error": {
                                     "code": -32600, "message": str(error)}}))
@@ -277,7 +277,7 @@ class Ingress:
                                     targets = set(thread_targets(message.get("params", {})))
                                     if method not in NON_ACTION_REQUESTS and not targets:
                                         raise ValueError("native approval source is unavailable")
-                                    approvals[identity] = acquire(set() if method in NON_ACTION_REQUESTS else targets, method), method
+                                    approvals[identity] = await acquire(set() if method in NON_ACTION_REQUESTS else targets, method), method
                                 except (OSError, ValueError) as error:
                                     await native.send(json.dumps({"id": identity, "error": {"code": -32600, "message": str(error)}}))
                                     reads[asyncio.create_task(native.recv())] = "native"
@@ -297,7 +297,7 @@ class Ingress:
                                         if not isinstance(target, str) or not target:
                                             raise ValueError("started native thread identity is unavailable")
                                         require_native_identity(target)
-                                        owned = acquire({target}, "thread/start")
+                                        owned = await acquire({target}, "thread/start")
                                     except (OSError, ValueError) as error:
                                         raw = json.dumps({"id": identity, "error": {"code": -32603,
                                             "message": "native thread start succeeded but its ownership lease was not created: " + str(error)}})
@@ -327,8 +327,8 @@ class Ingress:
                                             "message": "native resume succeeded but launch metadata was not recorded; preserve this source and retry the exact resume: " + str(error)}})
                                 await client.send(raw)
                             finally:
-                                release(guarded)
-                                release(owned)
+                                await release(guarded)
+                                await release(owned)
                             reads[asyncio.create_task(native.recv())] = "native"
             except ConnectionClosed:
                 pass
@@ -337,7 +337,7 @@ class Ingress:
                     task.cancel()
                 await asyncio.gather(*reads, return_exceptions=True)
                 for guard, _count in list(leases.values()):
-                    guard.__exit__(None, None, None)
+                    await guard.__aexit__(None, None, None)
                 leases.clear()
 
 
@@ -418,7 +418,7 @@ async def run_client(home: Path, native: list[str], *, session: str | None = Non
             # The ingress reacquires ownership for every RPC before it acts.
             try:
                 if session:
-                    with closure.resume_guard(session, method="thread/resume", home=home):
+                    async with closure.async_resume_guard(session, method="thread/resume", home=home):
                         pass
                 with subprocess.Popen(boot, env={**os.environ, "CODEX_HOME": str(home)}) as child:
                     try:

@@ -1078,11 +1078,13 @@ as before.
 
 After successor admission, resume and queue check the source's journaled work
 against current GitHub claim history. A still-open record held only by the
-source, without an expired session lease, lets it continue its other work.
+source lets it continue its other work, including after an idle capacity stop.
 Finished records, failed attempts and records with a competing successor do not.
-With no remaining claim, or a
-recorded full closure or handoff, the session refuses. Unavailable reads retain
+With no remaining claim, or a recorded full closure or handoff, the session refuses. Unavailable reads retain
 the refusal; retry the supported resume or queue command once reads recover.
+Successful resume renews the source lease. Successor admission holds source
+ownership through publication and rechecks expired takeovers under that lock,
+so a resumed source and its successor cannot both win the same takeover.
 
 For PR-only work, including Dependabot fixes and bare PRs, pass the PR number,
 `OWNER/REPO#N`, or its exact `https://github.com/OWNER/REPO/pull/N` URL to the same

@@ -860,13 +860,12 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                     row.pop("closure_evidence", None)
                     CLOSURE.replace_rows([{**row, "closure_proof_unavailable": True}])
                 CLOSURE.admit_sources({f.session})
-                with patch.object(CLOSURE, "has_current_claim", return_value=True) as current:
+                with patch.object(CLOSURE, "has_current_claim", return_value=True):
                     with self.assertRaises(ValueError):
                         CLOSURE.resume_record(f.session, CLOSURE.log_rows())
                     with self.assertRaises(ValueError):
                         with CLOSURE.resume_guard(f.session):
                             self.fail("full closure resumed after a partial transfer")
-                    current.assert_not_called()
 
     def test_source_without_closed_row_is_frozen_and_action_clear_preserves_freeze(self):
         with ReceiptFixture() as f:
