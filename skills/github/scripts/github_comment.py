@@ -1027,6 +1027,7 @@ def _comment_impl(
     if dedupe_body:
         selected = _matching_actor_comment(existing_comments, actor, body)
         if selected is not None:
+            verify_question_number(selected.get("body") or "", selected.get("html_url"))
             steps.append("reuse_existing_comment")
             payload = _comment_payload(
                 selected,

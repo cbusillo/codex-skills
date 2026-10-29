@@ -87,6 +87,12 @@ When asking, follow [Director Questions](#director-questions).
   an existing heading ID must be reserved or already owned by that exact source.
   Invented numbers and another source's number are refused, including on edits,
   deduplication and attachments. Same-source edits and repeat delivery keep its ID.
+  A historical question without a retained source assignment stays unchanged;
+  re-present its original Q ID and link through the existing queue flow. For a
+  new, never-posted question whose legacy allocation has no usable receipt,
+  allocate with `question_id.py next` and repeat exact-text approval if the
+  previously approved text contained the old number. This does not renumber
+  an existing question or decision.
   Write the heading ID as `Q300.` or `Q300 —` so it is distinct from question
   content such as `Q4 budget`. A Q ID mentioned only in the context is not the
   question's own ID.

@@ -28,6 +28,9 @@ COUNTER_BRANCH = "state/director-questions"
 COUNTER_FILE = "counter.json"
 RESERVED_RANGE = re.compile(r"^\s*(?:Reserved|Reserving)\s+Q([1-9][0-9]*)\s*(?:[-–—]|through|to)\s*Q([1-9][0-9]*)\b", re.IGNORECASE)
 QUESTION_HEADING = re.compile(r"^\s*\**(?:Owner|Director) question:[ \t*]*")
+NUMBER_HELP = ("Keep an existing question's source unchanged and re-present its original Q ID and link. "
+               "For a new, never-posted question without a usable receipt, use question_id.py next; "
+               "obtain exact-text approval again if the previously approved text contained the old number.")
 
 
 def heading_id(body: str) -> str | None:
@@ -180,8 +183,7 @@ def require_number(state: dict[str, Any], number: int, source: str | None = None
     owners = {key for key, value in state.get("questions", {}).items() if value == number and key not in reservations}
     if owners == {source} or (not owners and number in reservations.values()):
         return
-    raise ValueError(f"Q{number} has no reservation or belongs to another source; use question_id.py next "
-                     "before exact-text approval for a new question; reconcile historical ownership from its trusted source")
+    raise ValueError(f"Q{number} has no reservation or belongs to another source. {NUMBER_HELP}")
 
 
 def reservation_key(state: dict[str, Any], number: int | None) -> str | None:
@@ -191,7 +193,7 @@ def reservation_key(state: dict[str, Any], number: int | None) -> str | None:
 def require_receipt(state: dict[str, Any], number: int, receipt: str | None) -> None:
     key = hashlib.sha256(receipt.encode()).hexdigest() if receipt else None
     if key is None or state.get("reservations", {}).get(key) != number:
-        raise ValueError("This machine has no allocation receipt for that unbound number; use question_id.py next for a new question")
+        raise ValueError(f"This machine has no allocation receipt for that unbound number. {NUMBER_HELP}")
 
 
 def verify_number(path: Path, number: int, source: str | None = None) -> None:

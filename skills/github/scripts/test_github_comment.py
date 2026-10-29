@@ -1345,6 +1345,30 @@ def test_numbered_questions_require_owned_source_or_unbound_reservation() -> Non
             with_call_stub(callback, run)
 
 
+def test_unowned_deduplicated_question_refuses_without_claiming_a_write() -> None:
+    with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"CODE_HOME": directory}), \
+            patch.object(question_counter, "configured_queue", return_value=None):
+        path = question_counter.counter_path()
+        legacy = question_counter.update(path, seed=(11, ["fixture"]), allocate=False)
+        body = f"Director question: Q{legacy}. Continue?"
+        prior = json.loads(path.read_text())
+
+        def callback(method: str, endpoint: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            assert method == "GET"
+            return success({"login": "fixture-automation"} if endpoint == "/user" else [comment_body(1001, body=body)])
+
+        def run(_calls: list[dict[str, Any]]) -> None:
+            try:
+                github_comment.comment("issue", 42, body, repo="owner/repo", dedupe_body=True, gh_cmd="fake-gh")
+            except github_comment.CommentError as error:
+                assert error.failure.write_outcome == "not_started"
+            else:
+                raise AssertionError("a reused legacy heading does not prove source ownership")
+            assert json.loads(path.read_text()) == prior
+
+        with_call_stub(callback, run)
+
+
 def recording_callback(posted: list[str]) -> Callable[..., github_api.ApiResult]:
     def callback(method: str, endpoint: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if endpoint == "/user":
@@ -1576,6 +1600,7 @@ TESTS: list[Callable[[], None]] = [
     test_concurrent_numbering_reconciles_the_same_saved_body,
     test_question_numbering_follows_confirmed_write_and_repairs_same_assignment,
     test_numbered_questions_require_owned_source_or_unbound_reservation,
+    test_unowned_deduplicated_question_refuses_without_claiming_a_write,
     test_question_refuses_live_mentions_of_anyone_but_the_owner,
     test_only_an_unescaped_code_tag_quiets_a_mention,
     test_ordinary_comment_keeps_its_mentions,
