@@ -4,8 +4,14 @@
 # ///
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
+import github_api
 import github_plan_claim
 import github_plan_wait
 import ready_handoff
@@ -14,7 +20,24 @@ from github_plan_status.waits import current_source
 DISCUSSION_EXCERPT_LIMIT = 1000
 
 
-def project(repo: str, pull: dict[str, Any], comments: list[dict[str, Any]], *, trusted: set[str], complete: bool) -> dict[str, Any]:
+def read_acceptance(repo: str, number: int, head: str) -> bool:
+    helper = Path(__file__).resolve().parents[2] / "launchplane/scripts/launchplane-owner-review.py"
+    timeout = min(20, github_api.remaining_retry_timeout_seconds())
+    if timeout <= 0:
+        raise ValueError("client_acceptance_unavailable")
+    result = subprocess.run(
+        [sys.executable, str(helper), "--repo", repo, "--pr", str(number), "--timeout", str(timeout)],
+        capture_output=True, text=True, timeout=timeout,
+    )
+    payload = json.loads(result.stdout)
+    if result.returncode or not isinstance(payload, dict) or payload.get("ok") is not True:
+        raise ValueError("client_acceptance_unavailable")
+    decision = payload.get("decision")
+    return bool(isinstance(decision, dict) and decision.get("decision") == "accepted" and decision.get("head_sha") == head)
+
+
+def project(repo: str, pull: dict[str, Any], comments: list[dict[str, Any]], *, trusted: set[str], complete: bool,
+            acceptance_reader: Callable[[str, int, str], bool] | None = None) -> dict[str, Any]:
     head = (pull.get("head") or {}).get("sha")
     row = {
         "repo": repo,
@@ -45,7 +68,7 @@ def project(repo: str, pull: dict[str, Any], comments: list[dict[str, Any]], *, 
         return {**row, "state": "underway", "reason": "train_batch"}
     if pull.get("draft"):
         return {**row, "state": "waiting", "reason": "draft_park"}
-    if not complete or not head:
+    if not complete or not isinstance(head, str) or not head:
         return {**row, "state": "unknown", "reason": "incomplete_pr_evidence"}
     trusted_comments = [comment for comment in comments if str((comment.get("user") or {}).get("login") or "").casefold() in trusted]
     try:
@@ -71,6 +94,15 @@ def project(repo: str, pull: dict[str, Any], comments: list[dict[str, Any]], *, 
     if ready:
         return {**row, "state": "underway", "reason": "current_head_ready"}
     if client_wait:
+        if wait["state"] != "clear" and source is not None:
+            return {**row, "state": "waiting", "reason": "current_head_client_wait"}
+        try:
+            accepted = (acceptance_reader or read_acceptance)(repo, pull["number"], head)
+        except (ValueError, OSError, subprocess.SubprocessError):
+            return {**row, "state": "unknown", "reason": "client_acceptance_unavailable"}
+        if accepted:
+            return {**row, "state": "review", "reason": "pr_followthrough_needs_fresh_readiness", "next_actor": "agent",
+                    "next_action": "Post checked Ready for the accepted current head after fresh readiness and custody checks."}
         return {**row, "state": "waiting", "reason": "current_head_client_wait"}
     if wait["state"] != "clear":
         return {**row, "state": "scope_review", "reason": "wait_review_required"}

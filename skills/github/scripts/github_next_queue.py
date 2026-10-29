@@ -13,6 +13,7 @@ import fnmatch
 import re
 from datetime import datetime
 from collections import Counter
+from collections.abc import Callable
 from typing import Any
 
 import github_plan_claim
@@ -138,7 +139,8 @@ def released_actor(actor: str, discussion: dict[str, Any], trusted: set[str]) ->
     return bool(relevant and relevant[-1] in {index for index, _, _ in github_plan_claim.exact_released_sources(comments)})
 
 
-def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[str], status_known: bool = True) -> dict[str, Any]:
+def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[str], status_known: bool = True,
+             acceptance_reader: Callable[[str, int, str], bool] | None = None) -> dict[str, Any]:
     discussion = item.get("discussion") or {}
     status = current_status(discussion, trusted, body_recorded_at=discussion.get("body_recorded_at")) if status_known else ""
     row = {"next_action": status_field(status, "Next action"), "recorded_state": status_field(status, "State"),
@@ -154,8 +156,9 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
     projected: dict[str, Any] = {}
     if isinstance(pull, dict):
         comments = [{**comment, "user": {"login": comment.get("author") or ""}} for comment in discussion.get("comments", [])]
-        projected = github_next_pr.project(item["repo"], pull, comments, trusted=trusted, complete=discussion.get("complete") is True)
-        if projected["reason"] in {"train_batch", "draft_park"} or projected["state"] == "unknown":
+        projected = github_next_pr.project(item["repo"], pull, comments, trusted=trusted, complete=discussion.get("complete") is True,
+                                            acceptance_reader=acceptance_reader)
+        if projected["reason"] in {"train_batch", "draft_park"} or (projected["state"] == "unknown" and projected["reason"] != "client_acceptance_unavailable"):
             return {**row, "state": "review" if projected["state"] == "unknown" else projected["state"], "reason": projected["reason"]}
     facts = ownership_facts(item, ownership, trusted=trusted)
     if facts.get("error"):
@@ -168,11 +171,21 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
         return {**row, "state": "waiting", "reason": "recorded_next_actor"}
     if projected.get("reason") in {"current_head_ready", "current_head_client_wait"}:
         return {**row, "state": projected["state"], "reason": projected["reason"]}
+    if item.get("record_type") == "pull_request":
+        row["ownership_evidence"] = artifacts
+        artifacts = [artifact for artifact in artifacts if artifact["source"] not in {"local_branches", "worktree"}]
     if conflicts or artifacts:
         return {**row, "state": "underway", "reason": "existing_claim_or_artifact",
                 "ownership_evidence": [*conflicts, *artifacts], "certainty": "current_or_stale"}
+    if projected.get("reason") == "client_acceptance_unavailable":
+        return {**row, "state": "review", "reason": projected["reason"]}
     if not status_known:
         return {**row, "state": "review", "reason": "incomplete_discussion"}
+    if (actor == "agent" or not next_actor.fields(status)) and projected.get("next_actor") == "agent":
+        actor = row["next_actor"] = "agent"
+        row["next_action"] = row["next_action"] or projected["next_action"]
+        row["wait_review_required"] = False
+        wait = github_plan_wait.reviewed(evidence="Saved Client acceptance ends the current-head Client handoff wait.")
     if actor is None:
         return {**row, "state": "needs_status", "reason": "next_actor_missing_or_invalid"}
     if actor.startswith("agent:"):

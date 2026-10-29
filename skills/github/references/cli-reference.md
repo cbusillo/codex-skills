@@ -2357,8 +2357,10 @@ hold or available ownership. Issue ranking and claim behavior are unchanged.
 Global PRs enter the same queue and ranking as issues. `Next actor: agent` can
 be available after direction and ownership checks; absent actors need status.
 Current claims, named agents and current-head Ready remain underway; drafts,
-Client-wait handoffs and structured waits remain held. The PR and remote head
-are its work record, while local source artifacts remain competing ownership.
+Client-wait handoffs remain held until Launchplane records acceptance for that
+head; other structured waits still hold. The PR and remote head are its work
+record. Retained local artifacts require custody checks at claim time; by
+themselves they do not establish an active worker or replace a missing actor.
 `pr_followthrough` preserves the non-dependency compatibility view. A stale
 canonical issue wait never hides that PR; fresh claim/readiness and Client
 authority checks still apply. Repository-local PR projections retain their
