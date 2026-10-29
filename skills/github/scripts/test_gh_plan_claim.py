@@ -1769,6 +1769,70 @@ class ClaimTests(unittest.TestCase):
                 self.assertNotIn("successor_route", caught.exception.payload)
                 self.assert_no_writes()
 
+    def test_plain_recovery_requirements_follow_the_original_guards(self) -> None:
+        for route in ("missing_handoff", "no_pr", "unrelated_pr"):
+            with self.subTest(route=route):
+                self.setUp()
+                source = self.no_pr_resume_fixture()
+                self.args.branch = source["branch"]
+                if route in {"missing_handoff", "unrelated_pr"}:
+                    branch = source["branch"] if route == "missing_handoff" else "work/unrelated"
+                    self.pulls = [{"number": 199, "state": "open", "user": {"login": TEST_BOT},
+                                   "body": "Unrelated", "title": "Unrelated",
+                                   "head": {"ref": branch, "repo": {"full_name": self.args.repo}},
+                                   "base": {"repo": {"full_name": self.args.repo}}}]
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                requirements = caught.exception.payload["recovery_requirements"]["requirements"]
+                kinds = {requirement["kind"] for requirement in requirements}
+                excluded = next(requirement["branches"] for requirement in requirements
+                                if requirement["kind"] == "branch_exclusion")
+                self.assertEqual(excluded, [source["branch"]])
+                self.assertEqual(len(requirements), len(kinds))
+                if route == "missing_handoff":
+                    self.assertEqual(caught.exception.code, "claim_handoff_pr_required")
+                    self.assertEqual(kinds, {"retained_handoff", "branch_exclusion"})
+                else:
+                    self.assertEqual(caught.exception.code, "claim_ended_branch_reused")
+                    self.assertEqual(kinds, {"branch_exclusion"})
+                self.assert_no_writes()
+
+    def test_retained_branch_refusal_aggregates_verified_waits(self) -> None:
+        self.ordinary_handoff_fixture()
+        self.args.branch = self.pulls[0]["head"]["ref"]
+        for target in ("99", "100"):
+            self.record_wait(target=target)
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.run_claim()
+        requirements = caught.exception.payload["recovery_requirements"]["requirements"]
+        self.assertEqual({requirement["kind"] for requirement in requirements},
+                         {"branch_exclusion", "wait_review"})
+        waits = next(requirement for requirement in requirements if requirement["kind"] == "wait_review")
+        self.assertEqual({record["number"] for record in waits["records"]}, {99, 100})
+        self.assertEqual(caught.exception.payload["recovery_requirements"]["admission"], "UNKNOWN")
+        self.assert_no_writes()
+
+    def test_retained_owner_and_wait_refusals_keep_the_original_order(self) -> None:
+        for waiting_number, owner_number, expected in ((99, 100, "claim_wait_unresolved"), (100, 99, "claim_conflict")):
+            with self.subTest(waiting_number=waiting_number):
+                self.setUp()
+                self.ordinary_handoff_fixture()
+                self.record_wait(target=str(waiting_number))
+                retained_pulls = {pull["number"]: pull for pull in [*self.pulls, *self.closed_pulls.values()]}
+                rival = {**OTHER, "session": "other-owner", "branch": retained_pulls[owner_number]["head"]["ref"]}
+                self.target_comments[f"/repos/owner/repo/issues/{owner_number}/comments"].append(
+                    {"id": 177, "body": CLAIM.marker(rival), "user": {"login": TEST_BOT},
+                     "created_at": rival["claimed_at"]})
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, expected)
+                if expected == "claim_wait_unresolved":
+                    records = caught.exception.payload["recovery_requirements"]["requirements"][0]["records"]
+                    self.assertEqual([record["number"] for record in records], [waiting_number])
+                else:
+                    self.assertNotIn("recovery_requirements", caught.exception.payload)
+                self.assert_no_writes()
+
     def test_no_pr_handoff_edit_after_publication_offers_only_claim_recovery(self):
         for phase in ("after_post", "after_status"):
             with self.subTest(phase=phase):
