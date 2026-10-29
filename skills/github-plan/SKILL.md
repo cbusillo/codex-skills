@@ -425,9 +425,13 @@ Size implementation issues and record event waits under GitHub's
 Keep Current Status concise:
 
 ```text
+Next actor:
 Next action:
 Last verified:
 ```
+
+Follow the [actor write contract](../github/references/cli-reference.md#planning-claim)
+for claim, release and field-only status edits.
 
 Maintain dependencies with `link`/`unlink` and person/event holds with `wait`;
 `show` projects their current state and blockers. Record decisive evidence and

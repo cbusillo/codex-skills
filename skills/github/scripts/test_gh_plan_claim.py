@@ -78,6 +78,14 @@ def format_ownership(text: str) -> tuple[str, ...]:
 
 
 class ClaimMarkerTests(unittest.TestCase):
+    def test_actor_ignores_examples_and_replaces_only_the_live_field(self) -> None:
+        from github_plan_status import next_actor
+        text = "```\nNext actor: person:example\n```\nNext actor: agent:old\nNext action: Continue.\n"
+        updated = next_actor.write(text, "event:CI passes")
+        self.assertEqual(next_actor.read(updated), "event:CI passes")
+        self.assertIn("```\nNext actor: person:example\n```", updated)
+        self.assertIn("Next action: Continue.", updated)
+
     def test_record_text_stays_hidden_and_legacy_releases_match(self) -> None:
         record = {**OWNER, "worker": "trial --> @someone --!>"}
         encoded = CLAIM.marker(record)
@@ -309,6 +317,16 @@ class ClaimTests(unittest.TestCase):
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
         self.assertEqual(self.issue, original)
         self.assertEqual(self.post_route[0], "pr")
+
+    def test_pr_claim_preserves_prior_status_context_and_writes_its_actor(self) -> None:
+        self.pr_fixture()
+        previous = "State: Source retained.\nNext action: Preserve the existing integration hold."
+        self.comments = [{"id": 1, "body": "## Current Status\n\n" + previous, "user": {"login": TEST_BOT}}]
+        self.run_claim()
+        status = PLAN.section_map(self.comments[-1]["body"])["Current Status"]
+        self.assertEqual(PLAN.github_plan_next_actor.read(status), f"agent:{self.args.session}")
+        self.assertIn(previous.splitlines()[-1], status)
+        self.assertEqual(len(CLAIM.records(self.comments[-1]["body"])), 1)
 
     def test_pr_competing_claim_and_source_worktree_refuse_before_writing(self):
         for competing in ("claim", "worktree"):

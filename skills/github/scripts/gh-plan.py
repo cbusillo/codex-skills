@@ -66,6 +66,7 @@ import github_plan_trigger
 import github_plan_release
 import github_plan_landing
 import github_plan_status
+from github_plan_status import next_actor as github_plan_next_actor
 import github_agent
 from github_direction_next import (
     normalize_labels,
@@ -1743,6 +1744,7 @@ point is captured.
 ## Current Status
 
 State: Active
+Next actor: agent
 Next action: Decide the first concrete implementation step.
 Last verified: Not yet verified.
 
@@ -2581,7 +2583,7 @@ def cmd_release(args: argparse.Namespace) -> None:
     posted_comment = None
 
     def snapshot() -> dict[str, Any]:
-        record, _status, comments, _can_update = claim_snapshot(args.issue, repo, allow_closed=True)
+        work_record, status, comments, can_update = claim_snapshot(args.issue, repo, allow_closed=True)
         source = next((c for c in comments if c.get("id") == args.claim_comment), None)
         records = github_plan_claim.records((source or {}).get("body") or "")
         if (source is None or (source.get("user") or {}).get("login") != expected_actor
@@ -2590,7 +2592,8 @@ def cmd_release(args: argparse.Namespace) -> None:
                             "an ended session's claim uses release-claim")
         confirmed = next((c for c in comments if c.get("id") != source["id"]
                           and github_plan_release.exact_source_release(source["id"], c, comments)), None)
-        return {"issue": record, "release": confirmed, "source": source, "comments": comments}
+        return {"issue": work_record, "status": status, "can_update": can_update,
+                "release": confirmed, "source": source, "comments": comments}
 
     preflight = snapshot()
     issue, existing = preflight["issue"], preflight["release"]
@@ -2601,6 +2604,14 @@ def cmd_release(args: argparse.Namespace) -> None:
         emit({"ok": True, "release_state": "already_released", "source_claim": args.claim_comment,
               "release_comment": {"id": existing["id"], "url": existing.get("html_url")}, "completed_steps": completed})
         return
+    next_actor = None
+    if existing is None:
+        try:
+            next_actor = github_plan_next_actor.resolve(handoff, getattr(args, "next_actor", None))
+        except ValueError as exc:
+            raise PlanError(str(exc)) from exc
+        if not preflight["can_update"]:
+            body = f"Released claim {args.claim_comment}\n\n## Current Status\n\n" + github_plan_next_actor.write(handoff, next_actor)
     if {url.casefold() for url in declared} & {url.casefold() for url in excluded} or any(not re.fullmatch(r"https://github\.com/[\w.-]+/[\w.-]+/pull/[1-9]\d*", url)
                                   for url in declared | excluded):
         raise PlanError("Retained and excluded PRs require distinct exact GitHub PR URLs")
@@ -2628,10 +2639,30 @@ def cmd_release(args: argparse.Namespace) -> None:
     except ValueError as error:
         raise ClassifiedPlanError("release_excluded_pr_mentioned", str(error),
                                   payload={"completed_steps": list(completed)}) from error
+    status_body = None
+    if existing is None:
+        assert next_actor is not None
+        current = preflight if args.dry_run else snapshot()
+        if current["release"] is not None:
+            raise PlanError("Release changed during preflight; read the record before retrying")
+        try:
+            if current["can_update"]:
+                status_text = github_plan_next_actor.write(current["status"], next_actor)
+                status_body = replace_issue_plan_section(current["issue"], "Current Status", status_text)
+        except ValueError as exc:
+            raise PlanError(str(exc)) from exc
     if args.dry_run:
         emit({"ok": True, "dry_run": True, "release_body": body, "release_state": "not_started",
+              "next_actor": next_actor, "status_body": status_body,
               "source_claim": args.claim_comment, "completed_steps": completed})
         return
+    if status_body is not None:
+        rest_edit_issue(issue["repo"], issue["number"], body=status_body)
+        completed.append("update_current_status")
+        if github_plan_next_actor.read(snapshot()["status"]) != next_actor:
+            raise PlanError("Next actor was not visible on status readback; claim remains owned",
+                            payload={"completed_steps": completed})
+        completed.append("status_readback")
     result = github_comment_core.comment("pr" if "pull_request" in issue else "issue", issue["number"], body,
         repo=issue["repo"], gh_cmd=gh_cmd, operation=CURRENT_OPERATION, expected_actor=expected_actor,
         completed_steps=completed, failed_step="post_release", dedupe_body=True)
@@ -3658,7 +3689,9 @@ def claim_once(args: argparse.Namespace) -> None:
             f"PR #{pr}:\n" + "\n".join("> " + line for line in wait.splitlines())
             for pr, wait in sorted(retained_waits.items())) if retained_waits else "")
         text = (
-            f"Claimed by {claim['worker']}\n\nSession: {claim['session']}\nBranch: {claim['branch']}\n"
+            f"Claimed by {claim['worker']}\n\n"
+            + (f"## Current Status\n\nNext actor: agent:{claim['session']}\n" if not can_update else "")
+            + f"Session: {claim['session']}\nBranch: {claim['branch']}\n"
             f"Claimed at: {claim['claimed_at']}\nNext action: {args.next_action}\n\n"
             + (f"Agent override (Director-authorized): {override}\n\n" if override else "")
             + admission_record
@@ -3673,6 +3706,8 @@ def claim_once(args: argparse.Namespace) -> None:
             + f"\n\n[Work record](https://github.com/{issue_repo}/"
               f"{'pull' if record_kind == 'pr' else 'issues'}/{number})"
         )
+        if not can_update and status:
+            text += "\n\n### Previous Current Status\n\n" + "\n".join("> " + line for line in status.splitlines())
         # Freeze the source before any external claim write. If publication
         # fails, the closed source stays frozen for supported claim recovery.
         github_plan_claim_log.record(claim["session"], issue_repo, number)
@@ -3704,6 +3739,7 @@ def claim_once(args: argparse.Namespace) -> None:
         completed.append("claim_readback")
         status_text = (
             f"State: Active; owned by {claim['worker']}.\nSession: {claim['session']}\n"
+            f"Next actor: agent:{claim['session']}\n"
             f"Branch: {claim['branch']}\nNext action: {args.next_action}\n"
             + f"Last verified: {claim['claimed_at']}\n\n"
             + (f"Wait resolution: {args.wait_resolved}\n\n" if retained_mode and args.wait_resolved else "")
@@ -4229,14 +4265,38 @@ def cmd_update_section(args: argparse.Namespace) -> None:
         raise PlanError(message, failure=failure)
     preparation_step = "read_body"
     try:
-        if args.body is None and not args.body_file:
+        actor_only = (args.section.casefold() == "current status" and getattr(args, "next_actor", None) is not None
+                      and args.body is None and not args.body_file)
+        if actor_only:
+            new_text = issue_plan_sections(issue).get("Current Status", "")
+        elif args.body is None and not args.body_file:
             raise ValueError(
                 "Section text requires --body TEXT or --body-file FILE; use --body-file - for stdin. "
                 "To intentionally clear the section, pass --body ''."
             )
-        new_text = read_body(args)
+        else:
+            new_text = read_body(args)
         preparation_step = "input_validation"
-        github_comment_core.validate_planning_references(new_text, issue_repo)
+        if args.section.casefold() == "current status":
+            previous_status = issue_plan_sections(issue).get("Current Status", "")
+            unchanged_actor = ([value for _, value in github_plan_next_actor.fields(new_text)] ==
+                               [value for _, value in github_plan_next_actor.fields(previous_status)])
+            if actor_only:
+                next_actor = github_plan_next_actor.validate(args.next_actor)
+            elif getattr(args, "next_actor", None) is None and unchanged_actor:
+                next_actor = None
+            elif getattr(args, "next_actor", None) is not None or github_plan_next_actor.read(new_text) is not None:
+                next_actor = github_plan_next_actor.resolve(new_text, getattr(args, "next_actor", None))
+            else:
+                try:
+                    next_actor = github_plan_next_actor.read(previous_status)
+                except ValueError:
+                    next_actor = None
+            if next_actor is not None:
+                new_text = github_plan_next_actor.write(new_text, next_actor)
+        elif getattr(args, "next_actor", None) is not None:
+            raise ValueError("--next-actor applies only to Current Status")
+        github_comment_core.validate_planning_references(args.next_actor if actor_only else new_text, issue_repo)
         preparation_step = "section_replacement"
         updated = replace_issue_plan_section(issue, args.section, new_text)
         before, after = (
@@ -7325,6 +7385,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--claim-comment", type=int, required=True)
     p.add_argument("--session", required=True, help="This session's native ID, as claimed")
     p.add_argument("--handoff-file", help="Handoff narrative posted below the directive; - reads stdin")
+    p.add_argument("--next-actor", help="Required here or as a Next actor line in the handoff")
     p.add_argument("--retained-pr", action="append", default=[], help="This session's other-branch PR to name in the retained handoff")
     p.add_argument("--exclude-pr", action="append", default=[], help="Another session's discovered PR to preserve without adopting")
     p.add_argument("--agent", choices=github_agent.FAMILIES, help="Running family; defaults to harness detection")
@@ -7390,8 +7451,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("update-section", help="Patch one markdown section")
     p.add_argument("issue")
     p.add_argument("section")
-    p.add_argument("--body", help="Section text; an empty string intentionally clears the section")
-    p.add_argument("--body-file", help="Read section text from a file, or '-' for stdin; empty input clears the section")
+    p.add_argument("--body", help="Section text; empty input clears prose but preserves Current Status actor and machine records")
+    p.add_argument("--body-file", help="Read section text from a file, or '-' for stdin; same empty-input behavior as --body")
+    p.add_argument("--next-actor", help="Current Status actor; otherwise supply its line or preserve the existing actor")
     p.set_defaults(func=cmd_update_section)
 
     p = sub.add_parser("link", help="Create native issue relationships")

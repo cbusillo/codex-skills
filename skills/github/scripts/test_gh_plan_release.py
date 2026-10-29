@@ -1784,15 +1784,15 @@ class OwnReleaseTests(ReleaseHarness):
         super().setUp()
         self.handoff = Path(self.enterContext(tempfile.TemporaryDirectory())) / "handoff.md"
         # LP4214-C1 put this summary on the directive line by hand.
-        self.handoff.write_text("LP4214-C1 Finish Line met: reviewed, tested and landed.\n\nSafe to exit: yes\n")
+        self.handoff.write_text("LP4214-C1 Finish Line met: reviewed, tested and landed.\n\nNext actor: agent:integrator\n\nSafe to exit: yes\n")
         # The releasing worker runs as the claim's own native session.
         os.environ["CLAUDE_CODE_SESSION_ID"] = fixtures.OTHER["session"]
         self.args = Namespace(repo="owner/repo", issue="42", claim_comment=1, session=fixtures.OTHER["session"],
-                              handoff_file=str(self.handoff), agent="claude", dry_run=False)
+                              handoff_file=str(self.handoff), agent="claude", dry_run=False, next_actor="agent:integrator")
 
     def run_own_release(self):
         with patch.multiple(PLAN, default_repo=lambda _: "owner/repo", get_issue=self.f.get_issue,
-                            EXPECTED_ACTOR=BOT, collect_paged_rest_items=self.f.read_pages,
+                            EXPECTED_ACTOR=BOT, collect_paged_rest_items=self.f.read_pages, rest_edit_issue=self.f.edit,
                             comment_route=lambda: ("bot", "bot-gh", BOT), emit=self.f.emitted), \
                 patch.object(github_identity, "configured_bot_logins", return_value=[BOT]), \
                 patch.object(github_comment, "comment", autospec=True, side_effect=self.post):
@@ -1809,9 +1809,61 @@ class OwnReleaseTests(ReleaseHarness):
         self.assertEqual(result["release_comment"]["id"], posted["id"])
         # A second run finds the confirmed release and writes nothing.
         posts = self.f.events.count("post")
+        self.args.next_actor = None
+        self.handoff.write_text("No new handoff.")
         self.run_own_release()
         self.assertEqual(self.f.events.count("post"), posts)
         self.assertEqual(self.f.emitted.call_args.args[0]["release_state"], "already_released")
+
+    def test_release_keeps_legacy_actor_narrative(self) -> None:
+        self.f.issue["body"] += "\nNext actor: Supervisor routes the remaining source.\n"
+        self.handoff.write_text("Next actor: Supervisor takes the next source step.")
+        self.run_own_release()
+        status = PLAN.section_map(self.f.issue["body"])["Current Status"]
+        self.assertEqual(PLAN.github_plan_next_actor.read(status), self.args.next_actor)
+        self.assertIn("Supervisor routes the remaining source.", status)
+        self.assertIn("Supervisor takes the next source step.", self.f.comments[-1]["body"])
+
+    def test_release_requires_actor_and_updates_status_before_releasing(self) -> None:
+        self.args.next_actor = None
+        self.handoff.write_text("Next action: Continue source work.")
+        with self.assertRaises(PLAN.PlanError):
+            self.run_own_release()
+        self.assertNotIn("post", self.f.events)
+        self.args.next_actor = "agent:integrator"
+        original = self.f.issue["body"]
+        self.run_own_release()
+        status = PLAN.section_map(self.f.issue["body"])["Current Status"]
+        self.assertEqual(PLAN.github_plan_next_actor.read(status), self.args.next_actor)
+        self.assertEqual(PLAN.github_plan_next_actor.write(status, "agent:integrator"), status)
+        self.assertIn(original.split("## Current Status")[0], self.f.issue["body"])
+        self.assertLess(self.f.events.index("status"), self.f.events.index("post"))
+
+    def test_status_failure_keeps_claim_owned(self) -> None:
+        with patch.object(self.f, "edit", side_effect=PLAN.PlanError("Status write failed")):
+            with self.assertRaises(PLAN.PlanError):
+                self.run_own_release()
+        self.assertNotIn("post", self.f.events)
+
+    def test_pr_release_keeps_body_and_publishes_status_with_actor(self) -> None:
+        self.f.issue["pull_request"] = {}
+        self.f.issue["body"] += "\nNext actor: agent:old-owner\n"
+        original = self.f.issue["body"]
+        self.run_own_release()
+        self.assertEqual(self.f.issue["body"], original)
+        status = PLAN.section_map(self.f.comments[-1]["body"])["Current Status"]
+        self.assertEqual(PLAN.github_plan_next_actor.read(status), "agent:integrator")
+        self.assertEqual(CLAIM.records(self.f.comments[-1]["body"]), [])
+        self.assertEqual(self.f.comments[-1]["body"].count("LP4214-C1 Finish Line met"), 1)
+
+    def test_release_dry_run_previews_status_without_writing(self) -> None:
+        self.args.dry_run = True
+        self.run_own_release()
+        result = self.f.emitted.call_args.args[0]
+        status = PLAN.section_map(result["status_body"])["Current Status"]
+        self.assertEqual(PLAN.github_plan_next_actor.read(status), self.args.next_actor)
+        self.assertNotIn("status", self.f.events)
+        self.assertNotIn("post", self.f.events)
 
     def test_supplement_does_not_claim_later_successor_prs(self) -> None:
         self.run_own_release()
@@ -1847,6 +1899,8 @@ class OwnReleaseTests(ReleaseHarness):
         self.assertIs(parsed.func, PLAN.cmd_release)
         self.assertEqual((parsed.claim_comment, parsed.session),
                          (result["claim_comment"]["comment"]["id"], result["claim"]["session"]))
+        status = PLAN.section_map(self.f.issue["body"])["Current Status"]
+        self.assertEqual(PLAN.github_plan_next_actor.read(status), f"agent:{result['claim']['session']}")
 
     def test_claim_comment_is_searchable_by_its_session_outside_markup(self):
         self.f.comments = []
