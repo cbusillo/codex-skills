@@ -17,6 +17,8 @@ import tempfile
 import time
 import unittest
 from typing import Any
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import services
 
@@ -197,6 +199,115 @@ class ServicesTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 with services.service_lock(self.config, "drive"):
                     self.fail("duplicate service acquired the lock")
+
+    def codex_source(self, identity: str) -> tuple[Path, dict[str, str]]:
+        home = self.root / "account"
+        transcript = home / "sessions" / f"{identity}.jsonl"
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": identity}}) + "\n")
+        return transcript, {"CODEX_HOME": str(home), "CODEX_THREAD_ID": identity, "CODEX_SESSION_ID": identity}
+
+    def test_bind_records_actual_source_and_takeover_preserves_services(self) -> None:
+        import codex_session_proxy
+        self.save()
+        identities = ("01970242-7941-7f0c-b461-16aa5723fb51", "01970242-7941-7f0c-b461-16aa5723fb52")
+        with patch.object(codex_session_proxy, "source_endpoint") as source:
+            for identity in identities:
+                transcript, env = self.codex_source(identity)
+                bound = services.bind_supervisor(self.config, transcript, environ=env)
+                self.assertEqual(bound["session_id"], identity)
+                self.assertNotIn("supervisor_owned", bound)
+                self.assertEqual(services.supervisor_recipient(self.config), bound)
+                self.assertEqual(services.load_config(self.config)["services"], self.data["services"])
+        self.assertEqual(services.supervisor_recipient(self.config)["session_id"], identities[-1])
+        self.assertEqual(self.config.stat().st_mode & 0o077, 0)
+
+    def test_bind_refuses_codex_child_without_replacing_recipient(self) -> None:
+        self.save()
+        transcript, env = self.codex_source("01970242-7941-7f0c-b461-16aa5723fb51")
+        env["CODEX_SESSION_ID"] = "01970242-7941-7f0c-b461-16aa5723fb52"
+        before = self.config.read_bytes()
+        with self.assertRaises(ValueError):
+            services.bind_supervisor(self.config, transcript, environ=env)
+        self.assertEqual(self.config.read_bytes(), before)
+
+    def test_bind_refuses_another_native_transcript(self) -> None:
+        import codex_session_proxy
+        self.save()
+        transcript, env = self.codex_source("01970242-7941-7f0c-b461-16aa5723fb51")
+        env["CODEX_THREAD_ID"] = env["CODEX_SESSION_ID"] = "01970242-7941-7f0c-b461-16aa5723fb52"
+        with patch.object(codex_session_proxy, "source_endpoint"):
+            with self.assertRaises(ValueError):
+                services.bind_supervisor(self.config, transcript, environ=env)
+        self.assertNotIn("supervisor", services.load_config(self.config))
+
+    def test_failed_takeover_source_validation_preserves_previous_binding(self) -> None:
+        import codex_session_proxy
+        self.save()
+        transcript, env = self.codex_source("01970242-7941-7f0c-b461-16aa5723fb51")
+        with patch.object(codex_session_proxy, "source_endpoint"):
+            bound = services.bind_supervisor(self.config, transcript, environ=env)
+        transcript, env = self.codex_source("01970242-7941-7f0c-b461-16aa5723fb52")
+        with patch.object(codex_session_proxy, "source_endpoint", side_effect=ValueError("source unavailable")):
+            with self.assertRaises(ValueError):
+                services.bind_supervisor(self.config, transcript, environ=env)
+        self.assertEqual(services.supervisor_recipient(self.config), bound)
+
+    def test_takeover_cannot_replace_recipient_during_notification(self) -> None:
+        import codex_session_proxy
+        self.save()
+        transcript, env = self.codex_source("01970242-7941-7f0c-b461-16aa5723fb51")
+        with patch.object(codex_session_proxy, "source_endpoint"):
+            before = services.bind_supervisor(self.config, transcript, environ=env)
+            with services.supervisor_lock(self.config):
+                with self.assertRaises(ValueError):
+                    services.bind_supervisor(self.config, transcript, environ=env)
+        self.assertEqual(services.supervisor_recipient(self.config), before)
+
+    def claude_source(self) -> SimpleNamespace:
+        identity = "01970242-7941-7f0c-b461-16aa5723fb51"
+        home = self.root / "claude"
+        transcript = home / "projects" / "repository" / f"{identity}.jsonl"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text(json.dumps({"sessionId": identity, "type": "user", "message": {"content": "work"}}) + "\n")
+        pane = {"session_id": "tmux:supervisor:" + "a" * 32, "window_id": "$1", "tab_id": "@2",
+                "tty": "/dev/ttys001", "pid": 20, "dead": False, "backend": "tmux", "tmux_socket": "supervisor"}
+        env = {"CLAUDE_CODE_SESSION_ID": identity, "CLAUDE_CONFIG_DIR": str(home)}
+        return SimpleNamespace(transcript=transcript, env=env, pane=pane)
+
+    def test_bind_claude_matches_callers_harness_ancestor_and_managed_pane(self) -> None:
+        import session_liveness
+        import tmux_terminal
+        self.save()
+        source = self.claude_source()
+        transcript, env, pane = source.transcript, source.env, source.pane
+        parents = {100: 50, 50: 30, 30: 20, 20: 1}
+        processes = [(50, "ttys001", "/usr/local/bin/claude"), (30, "ttys001", "/usr/local/bin/claude")]
+        with patch.object(services.os, "getppid", return_value=100), \
+                patch.object(session_liveness, "inventory", return_value=processes), \
+                patch.object(tmux_terminal, "process_parents", return_value=parents), \
+                patch.object(tmux_terminal.Terminal, "list", return_value=[pane]):
+            bound = services.bind_supervisor(self.config, transcript, environ=env)
+        self.assertEqual(bound["pid"], processes[0][0])
+        self.assertEqual(bound["tmux_session_id"], pane["session_id"])
+        self.assertEqual(bound["session_id"], env["CLAUDE_CODE_SESSION_ID"])
+        self.assertNotIn("supervisor_owned", bound)
+
+    def test_bind_claude_refuses_unmanaged_or_ambiguous_terminal(self) -> None:
+        import session_liveness
+        import tmux_terminal
+        self.save()
+        source = self.claude_source()
+        transcript, env, pane = source.transcript, source.env, source.pane
+        with patch.object(services.os, "getppid", return_value=100), \
+                patch.object(session_liveness, "inventory", return_value=[(50, "ttys001", "/usr/local/bin/claude")]), \
+                patch.object(tmux_terminal, "process_parents", return_value={100: 50, 50: 20, 20: 1}):
+            for rows in ([{**pane, "session_id": "tmux:supervisor:restored:%1"}],
+                         [{**pane, "dead": True}], [pane, dict(pane)]):
+                with self.subTest(rows=rows), patch.object(tmux_terminal.Terminal, "list", return_value=rows):
+                    with self.assertRaises(ValueError):
+                        services.bind_supervisor(self.config, transcript, environ=env)
+        self.assertNotIn("supervisor", services.load_config(self.config))
 
     def test_invalid_config_cannot_render_or_run(self):
         for change in (

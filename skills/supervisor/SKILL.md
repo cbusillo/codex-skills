@@ -729,7 +729,11 @@ for recovery or repeat them as fact.
    before you rely on a background driver or watcher the handoff says is
    running.
 5. Recreate the ~23-minute check and morning digest with the harness's own
-   scheduling feature. Start the bounded
+   scheduling feature. When the existing [persistent idle services](references/helpers.md#persistent-supervisor-services)
+   are configured, run `services.py bind --config <existing-service-config>`
+   from this Supervisor at setup and takeover, then reuse the loaded jobs. Their
+   current binding supplies immediate notices without per-notice re-arming.
+   Otherwise start the bounded
    `skills/supervisor/scripts/codex_idle_watch.py` watch as a background job
    once per harness (`--harness codex` and `--harness claude`), each with its
    own `--delivered-state` file. A background job wakes you only when it

@@ -1551,6 +1551,19 @@ class NotificationTests(unittest.TestCase):
                     notifications.send(self.entry, "Read review")
                 self.assertEqual(isinstance(failure.exception, notifications.NotSent), certain)
 
+    def test_explicit_supervisor_binding_does_not_change_worker_ownership_requirement(self) -> None:
+        recipient = {**self.entry, "role": "supervisor"}
+        recipient.pop("supervisor_owned")
+        with patch.object(notifications.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as queue:
+            with self.assertRaises(notifications.NotSent):
+                notifications.send(recipient, "notice")
+            queue.assert_not_called()
+            notifications.send(recipient, "notice", supervisor=True)
+            self.assertEqual(queue.call_count, 1)
+            with self.assertRaises(notifications.NotSent):
+                notifications.send({**recipient, "role": "worker"}, "notice", supervisor=True)
+            self.assertEqual(queue.call_count, 1)
+
     def test_claude_recipient_is_locked_across_validation_and_delivery(self) -> None:
         self.claude()
         entered, release = threading.Event(), threading.Event()

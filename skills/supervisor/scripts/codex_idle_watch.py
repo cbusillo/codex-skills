@@ -22,6 +22,7 @@ from finished_map import closeout_request
 from foreign_watch import watch_lock
 import finished_map
 import review_notifications
+import services
 import account_choice
 import codex_auth_health
 
@@ -142,13 +143,17 @@ def reconcile_notification(args: Any) -> int:
 
 
 def notification_recipient(args: Any) -> dict:
-    recipients = [entry for entry in load_ledger(args.notify_ledger)
-                  if entry["session_id"] == args.notify_session_id]
-    if len(recipients) != 1 or recipients[0].get("supervisor_owned") is not True:
-        raise ValueError("notification must name exactly one owned native recipient in its existing ledger")
-    if any(entry["session_id"] == args.notify_session_id for entry in load_ledger(args.ledger)):
+    recipient = services.supervisor_recipient(args.notify_config)
+    if any(entry["session_id"] == recipient["session_id"] for entry in load_ledger(args.ledger)):
         raise ValueError("the Supervisor recipient must not be in the watched worker ledger")
-    return recipients[0]
+    return recipient
+
+
+def defer_notice(notice: dict, seen: dict) -> None:
+    if notice.get("session_id"):
+        seen.pop(notice["session_id"], None)
+    else:
+        seen.pop(json.dumps(notice, sort_keys=True), None)
 
 
 def notify_requests(args: Any, notices: list[dict], delivered: set[str], seen: dict,
@@ -162,34 +167,39 @@ def notify_requests(args: Any, notices: list[dict], delivered: set[str], seen: d
         identity = json.dumps(request, sort_keys=True)
         if identity in delivered:
             continue
-        recipient = notification_recipient(args)
         message = json.dumps(notice)
         if notice.get("closeout_request"):
             candidate = finished_map.candidates(args.ledger, request["session_id"])[0]
-            if "error" in candidate:
-                raise ValueError(candidate["error"])
-            if candidate.get("closeout_request") != request:
+            if "error" in candidate or candidate.get("closeout_request") != request:
+                defer_notice(notice, seen)
+                notice["closeout_request"] = None
+                if "error" in candidate:
+                    notice["error"] = candidate["error"]
                 continue
             command = shlex.join(["uv", "run", str(Path(__file__).with_name("finished_map.py").resolve()),
                                   "--ledger", str(args.ledger.resolve()), "--session-id", request["session_id"]])
             message = ("Closeout request: " + json.dumps({"closeout_request": candidate["closeout_request"],
                        "needs_verification": candidate["needs_verification"]}) + "\nRead the exact candidate with: " + command
                        + "\nImmediately follow the existing finished-session verification. This notice is not exit authority.")
-        pending = PENDING_NOTIFICATION + json.dumps({"notice": request, "recipient": recipient}, sort_keys=True)
-        save_delivered(args.delivered_state, delivered | {pending})
-        try:
-            review_notifications.send(recipient, message)
-        except review_notifications.NotSent as error:
+        with ExitStack() as stack:
+            try:
+                stack.enter_context(services.supervisor_lock(args.notify_config))
+            except ValueError:
+                defer_notice(notice, seen)
+                continue
+            recipient = notification_recipient(args)
+            pending = PENDING_NOTIFICATION + json.dumps({"notice": request, "recipient": recipient}, sort_keys=True)
+            save_delivered(args.delivered_state, delivered | {pending})
+            try:
+                review_notifications.send(recipient, message, supervisor=True)
+            except review_notifications.NotSent as error:
+                save_delivered(args.delivered_state, delivered)
+                if error.needs_attention:
+                    raise ValueError(str(error)) from error
+                defer_notice(notice, seen)
+                continue
+            delivered.add(identity)
             save_delivered(args.delivered_state, delivered)
-            if error.needs_attention:
-                raise ValueError(str(error)) from error
-            if notice.get("session_id"):
-                seen.pop(notice["session_id"], None)
-            else:
-                seen.pop(json.dumps(notice, sort_keys=True), None)
-            continue
-        delivered.add(identity)
-        save_delivered(args.delivered_state, delivered)
 
 
 def watch(args, state: dict | None, stopped: threading.Event | None = None) -> int:
@@ -254,8 +264,7 @@ def main() -> int:
     parser.add_argument("--deadline-seconds", type=float, default=1800)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--persistent", action="store_true", help="deliver notices immediately and keep watching within the deadline")
-    parser.add_argument("--notify-session-id", help="exact native Supervisor recipient in the existing ledger")
-    parser.add_argument("--notify-ledger", type=Path, help="existing recipient ledger, separate from watched workers")
+    parser.add_argument("--notify-config", type=Path, help="existing service configuration with the current Supervisor binding")
     parser.add_argument("--reconcile-notification", action="store_true", help="inspect the retained attempt; record an outcome only with readback evidence")
     parser.add_argument("--delivery-outcome", choices=("delivered", "not-sent"))
     parser.add_argument("--evidence", help="exact-recipient readback evidence for an explicit reconciliation")
@@ -268,9 +277,9 @@ def main() -> int:
     args = parser.parse_args()
     if any(not math.isfinite(value) or value <= 0 for value in (args.idle_seconds, args.interval, args.deadline_seconds)):
         parser.error("timings must be finite and positive")
-    if args.persistent and (not args.notify_session_id or not args.notify_ledger or not args.delivered_state or args.once):
-        parser.error("--persistent needs --notify-session-id, --notify-ledger and --delivered-state, without --once")
-    if not args.persistent and (args.notify_session_id or args.notify_ledger):
+    if args.persistent and (not args.notify_config or not args.delivered_state or args.once):
+        parser.error("--persistent needs --notify-config and --delivered-state, without --once")
+    if not args.persistent and args.notify_config:
         parser.error("notification targets require --persistent")
     if (args.delivery_outcome or args.evidence) and not args.reconcile_notification:
         parser.error("delivery outcomes and evidence require --reconcile-notification")

@@ -43,10 +43,10 @@ def empty_claude_composer(row):
             and not any(rule(text) for text in screen[index + 2:]))
 
 
-def prepare(entry, message):
+def prepare(entry, message, *, supervisor=False):
     # Native transcript identity must agree with the ledger on either harness.
     status = session_status(entry)
-    if entry.get("supervisor_owned") is not True:
+    if entry.get("supervisor_owned") is not True and not (supervisor and entry.get("role") == "supervisor"):
         raise ValueError("notification requires an explicitly Supervisor-owned session")
     if entry["harness"] == "codex":
         home = entry.get("codex_home")
@@ -113,9 +113,9 @@ def prepare(entry, message):
     return lambda: asyncio.run(terminal.send(identity, message))
 
 
-def send(entry: dict, message: str) -> None:
+def send(entry: dict, message: str, *, supervisor: bool = False) -> None:
     if entry.get("harness") != "claude":
-        send_locked(entry, message)
+        send_locked(entry, message, supervisor=supervisor)
         return
     from foreign_watch import watch_lock
     identity = hashlib.sha256((entry.get("harness", "") + ":" + entry.get("session_id", "")).encode()).hexdigest()
@@ -125,14 +125,14 @@ def send(entry: dict, message: str) -> None:
             stack.enter_context(watch_lock(path))
         except ValueError as error:
             raise NotSent("another notification owns this recipient", needs_attention=False) from error
-        send_locked(entry, message)
+        send_locked(entry, message, supervisor=supervisor)
 
 
-def send_locked(entry: dict, message: str) -> None:
+def send_locked(entry: dict, message: str, *, supervisor: bool = False) -> None:
     from iterm_tab import SendFailure
 
     try:
-        deliver = prepare(entry, message)
+        deliver = prepare(entry, message, supervisor=supervisor)
     except PermissionError:
         # A real permission refusal remains spent, even before delivery.
         raise

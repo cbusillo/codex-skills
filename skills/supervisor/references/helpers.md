@@ -1070,26 +1070,48 @@ re-arming, add an optional entry to that same `services` object:
 
 ```json
 "idle-codex": {
-  "argv": ["/absolute/path/to/uv", "run", "/runtime/catalog/skills/supervisor/scripts/codex_idle_watch.py", "--ledger", "/private/existing-worker-ledger.json", "--delivered-state", "/private/codex-delivered.json", "--persistent", "--notify-session-id", "EXACT-SUPERVISOR-NATIVE-ID", "--notify-ledger", "/private/existing-session-ledger.json"],
+  "argv": ["/absolute/path/to/uv", "run", "/runtime/catalog/skills/supervisor/scripts/codex_idle_watch.py", "--ledger", "/private/existing-worker-ledger.json", "--delivered-state", "/private/codex-delivered.json", "--persistent", "--notify-config", "/private/supervisor-services.json"],
   "cwd": "/runtime/catalog",
   "restart_seconds": 1
 }
 ```
 
 `idle-claude` uses the same watcher with `--harness claude` and its own
-`--delivered-state`. Reuse existing ledgers and delivered-state files. The
-recipient must be one exact Supervisor-owned native entry in an existing
-recipient ledger supplied with `--notify-ledger`. It must not be in the watched
-worker ledger, including mixed-harness ledgers; the service refuses that setup
-so it cannot watch or wake itself. Reuse the existing ledger format and helpers. Codex delivery
-uses the existing native queue helper. Claude delivery uses the existing guarded
-tmux notification route, including idle, empty-composer and identity checks.
+`--delivered-state`. Reuse the existing worker ledger and delivered-state files.
+The notification target is one current-Supervisor binding in that same service
+configuration, never a second session registry or a Supervisor-owned worker row.
+At initial setup and every takeover, the current Supervisor runs:
+
+```sh
+uv run /runtime/catalog/skills/supervisor/scripts/services.py bind --config /private/supervisor-services.json
+```
+
+`bind` derives the caller's actual root native ID and account home, finds its
+transcript only in that home, and validates its identity. It rejects Codex child
+contexts. If its own source is ambiguous, pass the exact `--transcript` path.
+Claude additionally needs its existing managed tmux pane; use `--tmux-socket`
+when that existing route uses another socket. Unsupported routes refuse without
+terminal input, account changes or automatic migration. No handwritten recipient
+JSON is needed. The binding is explicitly the Supervisor, not worker ownership;
+ordinary review notifications keep their existing ownership requirements.
+Keep the Supervisor out of the watched worker ledger.
+
+Loaded jobs reread this binding for every notice. Binding replacement and final
+recipient selection through submission share one configuration lock, so after a
+successful takeover future sends cannot use a cached predecessor. A busy lock
+defers an unsent notice. A retained uncertain attempt stays bound to its original
+recipient and still needs reconciliation; changing the current binding never
+replays it. Reuse healthy loaded jobs without rerendering their plists at takeover.
+A held or failed job still follows the existing reconciliation and restart steps;
+`bind` changes only the current address and never clears a hold or starts a job.
+
+Codex delivery uses the existing native queue helper. Claude delivery uses the
+existing guarded tmux route, including idle, empty-composer and identity checks.
 Claude notifications share a per-recipient lock across both watches and review
-notifications, covering validation and typing through submission. Native queue
-results distinguish a certainly unsent attempt from a permission or RPC refusal.
-Unsupported routes and identity errors stop for reconciliation. A certainly
-unsent busy recipient is rechecked on the next poll; uncertain or denied sends
-are never automatically replayed.
+notifications. Native queue results distinguish a certainly unsent attempt from
+a permission or RPC refusal. Unsupported routes and identity errors stop for
+reconciliation. A certainly unsent busy recipient is rechecked on the next poll;
+uncertain or denied sends are never automatically replayed.
 
 Persistent mode immediately sends each new closeout request and authentication
 failure at the next poll, then keeps watching. It rechecks closeout requests with
@@ -1098,10 +1120,12 @@ failure at the next poll, then keeps watching. It rechecks closeout requests wit
 parsers. Notice delivery grants no exit authority: every existing handoff, input,
 task, process-exit and claim verification still applies. The watcher keeps its
 existing deadline; the service restarts clean deadline exits automatically.
-Normal SIGTERM/SIGINT stops let an idle watch exit cleanly. A stop during a
-notification still finishes or retains its pending attempt; the existing runner
+Normal SIGTERM/SIGINT stops let an idle watch exit cleanly. A process-group stop during a
+notification retains its pending attempt; the existing runner
 keeps its bounded child-exit and reconciliation checks.
-Keep the idle service restart delay short, as in the example. Logging notices
+Keep the idle service restart delay short, as in the example. If using capacity
+retry, keep exactly one watcher for its existing state file; status and digest
+readers retain their current read-only route. Logging notices
 until the next scheduled check does not meet the immediate-handling rule.
 
 The same delivered-state file retains an attempt before calling the notification
@@ -1119,7 +1143,9 @@ the result in the same state file; it never sends a message or changes authority
 A refusal still needs its underlying cause resolved on the supported route.
 Then use the existing service `clear` command below. Never delete state or clear
 an uncertain attempt to make a send run again. One lock per delivered-state file
-prevents two watches using it concurrently.
+prevents two watches using it concurrently, including bounded watches. At
+takeover, reuse a loaded service or verify the prior bounded watch ended before
+re-arming; a lock refusal never authorizes a duplicate watcher.
 
 Replace the example paths and scope with the current Supervisor handoff's
 commands. The drive entry runs the existing bounded loop calling the maintained

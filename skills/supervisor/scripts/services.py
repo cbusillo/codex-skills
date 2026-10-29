@@ -12,15 +12,21 @@ service for reconciliation rather than replaying a possibly uncertain write.
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 import fcntl
 import json
+import importlib
 import math
 import os
 from pathlib import Path
+from collections.abc import Mapping
+from typing import Any
 import plistlib
+import re
 import signal
 import subprocess
+import sys
+import tempfile
 import threading
 import time
 
@@ -28,10 +34,13 @@ SERVICES = ("enqueue", "drive", "foreign", "throughput")
 IDLE_SERVICES = ("idle-codex", "idle-claude")
 LABEL_PREFIX = "com.codex-skills.supervisor"
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
+
 
 def load_config(path):
     config = json.loads(path.read_text())
-    if not isinstance(config, dict) or set(config) != {"uv", "services"}:
+    if (not isinstance(config, dict) or not {"uv", "services"} <= set(config)
+            or set(config) - {"uv", "services", "supervisor"}):
         raise ValueError("configuration requires uv and services")
     absolute_path(config["uv"])
     if (not isinstance(config["services"], dict) or not set(SERVICES) <= set(config["services"])
@@ -50,6 +59,8 @@ def load_config(path):
         delay = value["restart_seconds"]
         if isinstance(delay, bool) or not isinstance(delay, (int, float)) or not math.isfinite(delay) or delay <= 0:
             raise ValueError("restart_seconds must be finite and positive")
+    if "supervisor" in config:
+        validate_supervisor(config["supervisor"])
     return config
 
 
@@ -106,6 +117,126 @@ def service_lock(config_path, name):
             yield
         finally:
             fcntl.flock(stream, fcntl.LOCK_UN)
+
+
+def validate_supervisor(recipient: Any) -> None:
+    from session_liveness import native_uuid
+
+    if (not isinstance(recipient, dict) or recipient.get("role") != "supervisor"
+            or recipient.get("harness") not in {"codex", "claude"}
+            or not isinstance(recipient.get("session_id"), str)
+            or native_uuid(recipient["session_id"]) != recipient["session_id"]
+            or "supervisor_owned" in recipient):
+        raise ValueError("Supervisor binding requires its actual native identity and explicit role")
+    absolute_path(recipient.get("transcript"))
+    if recipient["harness"] == "codex":
+        absolute_path(recipient.get("codex_home"))
+        return
+    socket = recipient.get("tmux_socket")
+    if (recipient.get("backend") != "tmux" or not isinstance(socket, str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]+", socket)
+            or not isinstance(recipient.get("tmux_session_id"), str)
+            or not re.fullmatch(rf"tmux:{re.escape(socket)}:[0-9a-f]{{32}}", recipient["tmux_session_id"])
+            or type(recipient.get("pid")) is not int or recipient["pid"] <= 0
+            or any(not isinstance(recipient.get(key), str) or not recipient[key]
+                   for key in ("tty", "window_id", "tab_id"))):
+        raise ValueError("Claude Supervisor binding requires its exact managed tmux route")
+
+
+def supervisor_lock(config_path: Path) -> AbstractContextManager[None]:
+    return service_lock(config_path.resolve(), "notifications")
+
+
+def supervisor_recipient(config_path: Path) -> dict:
+    recipient = load_config(config_path).get("supervisor")
+    if recipient is None:
+        raise ValueError("bind the current Supervisor before starting idle notifications")
+    return dict(recipient)
+
+
+def claude_supervisor_route(tmux_socket: str) -> dict:
+    from session_liveness import harness_arguments, harness_family, inventory
+    from tmux_terminal import Terminal, belongs_to, process_parents
+
+    parents, processes = process_parents(), inventory()
+    pid, visited = os.getppid(), set()
+    source = None
+    while pid in parents and pid not in visited:
+        visited.add(pid)
+        matches = [row for row in processes if row[0] == pid]
+        if len(matches) > 1:
+            raise ValueError("caller process identity is ambiguous")
+        if matches:
+            arguments = harness_arguments(matches[0][2])
+            if arguments and harness_family(arguments[0]) == "claude":
+                source = matches[0]
+                break
+        pid = parents[pid]
+    if source is None:
+        raise ValueError("current Claude harness ancestor is unavailable")
+    panes = [row for row in Terminal(tmux_socket).list()
+             if not row["dead"] and isinstance(row.get("session_id"), str)
+             and re.fullmatch(rf"tmux:{re.escape(tmux_socket)}:[0-9a-f]{{32}}", row["session_id"])
+             and row["tty"].removeprefix("/dev/") == source[1].removeprefix("/dev/")
+             and belongs_to(source[0], row["pid"], parents)]
+    if len(panes) != 1:
+        raise ValueError("current Claude Supervisor needs exactly one live managed tmux pane")
+    pane = panes[0]
+    return {**{key: pane[key] for key in ("backend", "tmux_socket", "tty", "window_id", "tab_id")},
+            "pid": source[0], "tmux_session_id": pane["session_id"]}
+
+
+def bind_supervisor(config_path: Path, transcript: Path | None = None, tmux_socket: str = "supervisor",
+                    environ: Mapping[str, str] = os.environ) -> dict:
+    github_agent = importlib.import_module("github_agent")
+    from session_record import session_status
+
+    agent = github_agent.running_agent(environ=None if environ is os.environ else environ)
+    native = github_agent.native_sessions(agent, environ=environ)
+    identity = (native.get("CODEX_THREAD_ID") or native.get("CODEX_SESSION_ID")
+                if agent == "codex" else native.get("CLAUDE_CODE_SESSION_ID"))
+    if not identity:
+        raise ValueError("current harness native identity is unavailable; bind from the Supervisor session")
+    if agent == "codex" and native.get("CODEX_SESSION_ID", identity) != identity:
+        raise ValueError("a Codex child cannot bind itself as the root Supervisor")
+    home_root = Path(environ.get("HOME", str(Path.home())))
+    variable, fallback, directory = (("CODEX_HOME", ".codex", "sessions") if agent == "codex"
+                                     else ("CLAUDE_CONFIG_DIR", ".claude", "projects"))
+    home = Path(environ.get(variable) or home_root / fallback).expanduser().resolve(strict=True)
+    if transcript is None:
+        paths = {path.resolve() for path in (home / directory).rglob(f"*{identity}*.jsonl")}
+        if len(paths) != 1:
+            raise ValueError("current Supervisor transcript is not unique; supply its exact --transcript path")
+        transcript = paths.pop()
+    recipient: dict = {"role": "supervisor", "harness": agent, "session_id": identity,
+                       "transcript": str(transcript.expanduser().resolve(strict=True))}
+    if agent == "codex":
+        from codex_session_proxy import source_endpoint
+        source_endpoint(identity, home, transcript=Path(recipient["transcript"]))
+        recipient["codex_home"] = str(home)
+    else:
+        if not Path(recipient["transcript"]).is_relative_to((home / "projects").resolve()):
+            raise ValueError("current Claude transcript must be in its account's projects directory")
+        recipient.update(claude_supervisor_route(tmux_socket))
+    session_status(recipient)
+    validate_supervisor(recipient)
+    config_path = config_path.resolve()
+    with supervisor_lock(config_path):
+        config = load_config(config_path)
+        config["supervisor"] = recipient
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile("w", dir=config_path.parent, delete=False) as stream:
+                temporary = Path(stream.name)
+                os.fchmod(stream.fileno(), 0o600)
+                json.dump(config, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(config_path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+    return recipient
 
 
 def stop_child(child):
@@ -176,8 +307,16 @@ def main(argv=None):
     clear = sub.add_parser("clear", help="clear a stop marker after reconciliation")
     clear.add_argument("--config", type=Path, required=True)
     clear.add_argument("--service", choices=SERVICES + IDLE_SERVICES, required=True)
+    bind = sub.add_parser("bind", help="bind notifications to this actual Supervisor session")
+    bind.add_argument("--config", type=Path, required=True)
+    bind.add_argument("--transcript", type=Path, help="exact source path when own-account discovery is ambiguous")
+    bind.add_argument("--tmux-socket", default="supervisor")
     args = parser.parse_args(argv)
     try:
+        if args.command == "bind":
+            recipient = bind_supervisor(args.config, args.transcript, args.tmux_socket)
+            emit("supervisor_bound", harness=recipient["harness"], session_id=recipient["session_id"])
+            return 0
         if args.command == "render":
             emit("rendered", directory=str(render(args.config, args.catalog, args.output)))
             return 0
