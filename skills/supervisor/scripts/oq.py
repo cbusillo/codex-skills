@@ -43,7 +43,7 @@ def questions(comments, owner, decision_authors, related_comments=(), *, recorde
             decision = DECISION_HEADING.match(text)
             recorded = decision is not None
             heading_number = (decision["number"] or decision["parenthetical_number"]) if decision else None
-            if heading_number and number and heading_number != number:
+            if heading_number and heading_number != number:
                 continue
             authorized = author == owner or (
                 author in decision_authors and recorded
@@ -58,7 +58,7 @@ def questions(comments, owner, decision_authors, related_comments=(), *, recorde
             decision_number = heading_number or (number_match[0] if number_match else None)
             content = re.sub(r"^Q[1-9][0-9]*\s*[:=,.—-]?\s*", "", content)
             content = re.sub(r"https://\S+", "", content).strip()
-            if recorded_decisions_only and re.fullmatch(r"(?i)(?:later|not now|not yet|waiting|pending)[\s.;!—-]*", content):
+            if recorded and re.fullmatch(r"(?i)(?:later|not now|not yet|waiting|pending)[\s.;!—-]*", content):
                 continue
             numbered = (
                 recorded and number is not None and numbers[number] == 1

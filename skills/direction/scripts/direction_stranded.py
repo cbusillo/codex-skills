@@ -346,13 +346,13 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                          "next_actor": actor, "detail": detail, "evidence": evidence or [],
                          "review_required": True})
 
-    def answered(question, candidates):
-        heading = question_body(question).partition("\n")[0]
+    def promise_completed(promise: dict[str, Any], candidates: list[dict[str, Any]]) -> bool:
+        heading = question_body(promise).partition("\n")[0]
         own_id = (QUESTION.match(heading.partition(":")[2].strip().lstrip("*"))
                   if heading.startswith(PREFIXES) else QUESTION.search(heading))
         qids = {own_id[0]} if own_id else set()
-        url = question.get("html_url") or question.get("url")
-        asked = stamp(question.get("created_at"))
+        url = promise.get("html_url") or promise.get("url")
+        asked = stamp(promise.get("created_at"))
         if asked is None:
             return False
         return any((at := stamp(c.get("created_at"))) is not None and at > asked
@@ -363,8 +363,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
     open_questions = {c["html_url"] for r in records if not r.get("trigger_only") and r["item"].get("state") == "open"
                       for c in r.get("comments", []) if c.get("html_url") and login(c) in trusted
                       and question_view.get(c["html_url"], {}).get("status") == "needs_review"
-                      and c["html_url"] not in supervisor_settled
-                      and not answered(c, decisions)}
+                      and c["html_url"] not in supervisor_settled}
     open_questions |= {url for url, row in deliveries.items()
                        if row.get("registration_url") and row.get("status") != "unread_source"}
     decision_urls = {c.get("html_url") for c in decisions}
@@ -397,8 +396,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
             body = question_body(comment)
             question = question_view.get(comment.get("html_url"), {})
             if (open_item and question.get("status") == "needs_review"
-                    and comment.get("html_url") not in supervisor_settled
-                    and not answered(comment, decisions)):
+                    and comment.get("html_url") not in supervisor_settled):
                 delivery = deliveries.get(comment["html_url"])
                 add("unanswered_question", record, comment["html_url"], comment.get("created_at"),
                     "Director / Supervisor presenter", "Owner/Director question has no matching recorded decision in covered discussions.",
@@ -418,7 +416,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                     # Only a linked completion record from a trusted receiver settles the promise.
                     completions = [c for c in comments if login(c) in trusted and
                                    re.search(r"\b(?:report|comparison|promise)\b.{0,80}\b(?:posted|complete[sd]?|delivered)\b", c.get("body") or "", re.I | re.S)]
-                    if not answered(comment, completions):
+                    if not promise_completed(comment, completions):
                         add("overdue_promise", record, comment["html_url"], due_at.isoformat(),
                             "Supervisor", "Recorded due time passed without a linked completion in covered discussions.")
 

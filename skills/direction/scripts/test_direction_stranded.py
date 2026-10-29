@@ -57,6 +57,18 @@ class StrandedTests(unittest.TestCase):
         answer["body"] = f"Done: {q['html_url']}"
         self.assertNotIn(3604, {r["number"] for r in self.report()["findings"]})
 
+    def test_recorded_deferral_or_other_numbered_decision_keeps_question_stranded(self) -> None:
+        question = self.records[0]["comments"][0]
+        for body in ("Director decision Q327: later",
+                     f"Director decision Q907: no. See {question['html_url']} for comparison."):
+            with self.subTest(body=body):
+                answer = {"id": 99, "created_at": "2026-10-15T18:00:00Z", "body": body,
+                          "user": {"login": "shiny-code-app[bot]"},
+                          "html_url": "https://github.com/cbusillo/direction/issues/1#issuecomment-99"}
+                self.records[1]["comments"].append(answer)
+                self.assertIn(3604, {row["number"] for row in self.report()["findings"]})
+                self.records[1]["comments"].pop()
+
     def test_presentation_names_questions_and_issues_from_their_sources(self):
         for record in self.records:
             record["item"]["title"] = f"Task {record['item']['number']}"

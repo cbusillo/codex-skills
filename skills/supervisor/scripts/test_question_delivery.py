@@ -159,6 +159,15 @@ class DeliveryTests(unittest.TestCase):
         self.comments.append(decision)
         self.assertEqual(self.run_queue()["queue_length"], len(self.questions) - 1)
 
+    def test_other_numbered_decision_does_not_skip_registered_source_read(self) -> None:
+        self.run_queue(register=True)
+        target = self.questions[0]["url"]
+        self.comments.append({"author": self.authors[0], "body": f"Director decision Q907: no. See {target} for comparison.",
+                              "url": "https://github.com/example/direction/issues/1#issuecomment-102"})
+        report = self.run_queue(items=[])
+        self.assertTrue(report["complete"])
+        self.assertEqual({row["url"] for row in report["questions"]}, {question["url"] for question in self.questions})
+
     def test_no_ack_from_quoted_forged_or_incomplete_records(self):
         target = self.questions[0]["url"]
         self.run_queue(register=True)
