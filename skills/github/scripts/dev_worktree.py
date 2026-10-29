@@ -131,6 +131,9 @@ def main(argv: list[str] | None = None) -> int:
                 raise Refused("Host helper delegated back to the catalog; configure the actual host executable.")
             if helper.resolve() in {Path(__file__).resolve(), Path(__file__).with_name("dev-worktree").resolve()}:
                 raise Refused("hostHelper must not refer to the catalog helper itself.")
+        if len(args) == 3 and args[0] != "retire":
+            retire_finished(Path(args[0]))
+        if helper:
             # The host owns volume identity, locks and retirement; do not mkdir or fall back.
             # Preserve the host's signal traps, including relocking during interrupted retirement.
             os.environ["DEV_WORKTREE_DELEGATED"] = f"{os.getpid()}:{json.dumps(args)}"
@@ -143,6 +146,18 @@ def main(argv: list[str] | None = None) -> int:
         detail = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
         print(f"dev-worktree: {detail}", file=sys.stderr)
         return 1
+
+
+def retire_finished(checkout: Path) -> None:
+    try:
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name("landed_worktrees.py")),
+                                 "--checkout", str(checkout), "--all", "--apply", "--budget-seconds", "30"],
+                                capture_output=True, text=True, env=git_environment())
+    except OSError as exc:
+        print(f"dev-worktree: retirement unavailable; existing trees kept: {exc}", file=sys.stderr)
+        return
+    print(result.stdout.strip() or result.stderr.strip() or "dev-worktree: retirement evidence unavailable; trees kept",
+          file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,9 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
+import dev_worktree
 from dev_worktree import DEFAULT_CONFIG_RELATIVE
 
 
@@ -77,6 +79,34 @@ class WorktreeTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertNotIn(f"refs/heads/work/{task}", self.git("for-each-ref", "--format=%(refname)").splitlines())
         self.assertEqual(self.git("rev-parse", "HEAD"), self.source_head)
+
+    def test_creation_retires_finished_work_before_portable_or_host_creation(self) -> None:
+        for helper in (None, self.base / "host"):
+            events = []
+            with mock.patch.dict(dev_worktree.os.environ, self.env, clear=True), \
+                    mock.patch.object(dev_worktree, "configuration", return_value=(self.base, helper)), \
+                    mock.patch.object(dev_worktree, "retire_finished", side_effect=lambda *_: events.append("retire")), \
+                    mock.patch.object(dev_worktree, "create", side_effect=lambda *_: events.append("create")), \
+                    mock.patch.object(dev_worktree.os, "execv", side_effect=lambda *_: events.append("create")):
+                dev_worktree.main([str(self.repo), "new-task", self.initial])
+            self.assertEqual(events[:2], ["retire", "create"])
+
+    def test_retirement_delegation_does_not_start_another_sweep(self) -> None:
+        with mock.patch.dict(dev_worktree.os.environ, self.env, clear=True), \
+                mock.patch.object(dev_worktree, "configuration", return_value=(self.base, self.base / "host")), \
+                mock.patch.object(dev_worktree, "retire_finished") as sweep, \
+                mock.patch.object(dev_worktree.os, "execv", side_effect=SystemExit):
+            with self.assertRaises(SystemExit):
+                dev_worktree.main(["retire", "--dry-run", str(self.base / "old")])
+        sweep.assert_not_called()
+
+    def test_unavailable_sweep_does_not_prevent_creation(self) -> None:
+        for outcome in (subprocess.CompletedProcess([], 2, "", "unavailable"), FileNotFoundError("missing helper")):
+            with mock.patch.object(dev_worktree, "configuration", return_value=(self.base, None)), \
+                    mock.patch.object(dev_worktree.subprocess, "run", side_effect=[outcome]), \
+                    mock.patch.object(dev_worktree, "create", return_value=self.base / "created") as create:
+                self.assertEqual(dev_worktree.main([str(self.repo), "new-task", self.initial]), 0)
+            create.assert_called_once()
 
     def test_default_creates_branch_at_explicit_start_outside_source(self):
         result = self.run_helper(self.repo, "task", self.initial)
