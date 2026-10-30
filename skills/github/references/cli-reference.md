@@ -1119,6 +1119,23 @@ own claim. Use a new task branch separate from every retained source branch.
 The source-family checks cover every qualified retained sibling, so process
 these PR-only claims sequentially. Release preserves that inherited custody;
 it does not claim that this session changed every sibling PR.
+
+When the retained PR also links an open canonical issue and its source is that
+issue's completed native child, claim the canonical issue with the child's exact
+source claim URL in `--resume-from`. The child must be closed as completed in the
+same repository. Its exact authored, timestamp-proved release must qualify an
+open retained PR that links both records. Every retained open PR must link the
+canonical issue and have no other open canonical issue;
+closed references retain their ownership checks. All retained identities and
+heads, the native relationship and selected source are checked again on both
+claim readbacks. Source
+family and sibling ownership checks still apply. Use a new task branch and
+preserve the retained source branches and worktrees. Existing target and PR
+holds still apply; `--wait-resolved` records existing authority for the named
+engineering step without clearing Client acceptance or authorizing Ready,
+merge, release or disposal. No placeholder issue or completed-child reopening
+is required.
+
 `release-claim` accepts the same PR references and attestation URLs on either
 issue or PR timeline comments. It checks the claimed source branch against the closed-session attestation. A
 later update to a separate Dependabot work-record branch does not count as
