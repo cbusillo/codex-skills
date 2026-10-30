@@ -435,7 +435,8 @@ use only the messaging authority already granted for this run.
 ## Foreign-post notices
 
 For ongoing runs, use the [persistent services](#persistent-supervisor-services)
-below and read their logs during checks. The bounded invocation here remains
+below; [Routine check](routine-check.md) owns notice handling and log reading.
+The bounded invocation here remains
 available for a one-off check.
 
 ```sh
@@ -477,11 +478,12 @@ the wall-clock deadline. It uses the shared bulk quota reserve, identity,
 conditional cache and retry policy; no separate quota probe or history scan.
 A failed, partial or malformed read preserves that repository's watermark.
 The bounded invocation reports an error and exits for Supervisor reconciliation.
-Notices always end the run after saving its watermark, so a harness completion
-notice reaches the Supervisor immediately. Restart with the same state file;
-the persistent service runner does this automatically. With `--persistent`,
-retryable reads recover after the normal interval or the reported quota retry
-time, whichever is later.
+A successful pass with notices ends the run after saving its watermark, so a
+harness background completion wakes the Supervisor. The persistent service
+runner instead saves output in its log and restarts successful runs with the
+same state file. With `--persistent`, retryable errors keep the run alive even
+when another lane produced notices, preserving the normal interval or reported
+quota retry time, whichever is later. Those notices remain readable in live output.
 Authentication, malformed-response and other nonretryable failures still stop.
 Wait until a reported quota retry time before a manual restart; increase the bounded deadline when a historical
 catch-up cannot finish. Partial pages never advance past a failed read.

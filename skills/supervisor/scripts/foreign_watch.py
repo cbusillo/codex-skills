@@ -348,7 +348,7 @@ def watch(args, repos, initial, deadline):
                           "untrusted": True}), flush=True)
         save_state(args.state, watermarks, seen, dispatched)
         persistent = getattr(args, "persistent", False)
-        if args.once or notices or (not persistent and errors) or any(
+        if args.once or (notices and not errors) or (not persistent and errors) or any(
             not error["retryable"] for error in errors
         ):
             return int(bool(errors))

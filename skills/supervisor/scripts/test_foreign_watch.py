@@ -85,7 +85,7 @@ class WatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             now = [0.0]
             reader = Mock()
-            reader.paged_json.side_effect = feeds(foreign_watch.GitHubReadError(
+            reader.paged_json.side_effect = feeds([comment()], getattr(foreign_watch, "GitHubReadError")(
                 "provider unavailable", result=ApiResult(ok=False, status=503, body=None,
                     failure=FailureDetail(cause="network_provider_failure", message="unavailable",
                                           retryable=True, fallback_eligible=False, disposition="retry")),
@@ -103,11 +103,13 @@ class WatchTests(unittest.TestCase):
                   patch.object(foreign_watch.time, "sleep", side_effect=sleep) as sleeps,
                   patch.object(foreign_watch, "utc_now", return_value=STARTED),
                   redirect_stdout(io.StringIO())):
-                self.assertEqual(foreign_watch.watch(args, [REPO], SINCE, 100), 1)
+                self.assertEqual(foreign_watch.watch(args, ["director/healthy", REPO], SINCE, 100), 1)
             self.assertEqual(sleeps.call_args_list[0].args, (20,))
-            self.assertEqual(reader.paged_json.call_args_list[0].kwargs["params"],
-                             reader.paged_json.call_args_list[1].kwargs["params"])
-            self.assertEqual(json.loads(args.state.read_text())["watermarks"][REPO], STARTED)
+            failed_reads = [call for call in reader.paged_json.call_args_list if call.args[0] == f"repos/{REPO}/issues/comments"]
+            self.assertEqual(failed_reads[0].kwargs["params"], failed_reads[1].kwargs["params"])
+            state = json.loads(args.state.read_text())
+            self.assertEqual(state["watermarks"][REPO], SINCE)
+            self.assertEqual(state["watermarks"]["director/healthy"], STARTED)
 
     def scan(self, reader):
         return foreign_watch.scan([REPO], {REPO: SINCE}, ["director", "agent[bot]"],
