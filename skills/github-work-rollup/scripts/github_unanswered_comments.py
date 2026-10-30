@@ -420,12 +420,6 @@ def github_logins(person: dict[str, Any]) -> tuple[list[str], list[str]]:
 
 
 def people_identities(self_logins: set[str], index_path: Path | None) -> dict[str, Any]:
-    """Read who acts for whom from the people index.
-
-    Index entries only label accounts: they never exclude anyone from the
-    report, since the Director is inferred from scanned repository owners.
-    Only configured automation (--bot-login and its sources) is excluded.
-    """
     empty = {"director_names": [], "director_ambiguous": False, "automation": {}}
     if index_path is not None and not index_path.expanduser().is_file():
         # An index someone named must exist; only the default index is optional.
@@ -471,14 +465,16 @@ def is_github_bot(author: str, author_type: str) -> bool:
     return normalize_login(author_type) == "bot" or login.endswith("[bot]")
 
 
-def is_external_comment(comment: Comment, self_logins: set[str], bot_logins: set[str]) -> bool:
+def is_external_comment(
+    comment: Comment, self_logins: set[str], bot_logins: set[str], automation_logins: dict[str, str] | None = None,
+) -> bool:
     author = normalize_login(comment.author)
     # Opening an issue or PR needs attention even with an empty description.
     if not author or (not comment.body.strip() and comment.kind != OPENING_POST):
         return False
     if author in self_logins or author in bot_logins:
         return False
-    return not is_github_bot(comment.author, comment.author_type)
+    return not is_github_bot(comment.author, comment.author_type) or author in (automation_logins or {})
 
 
 def comment_timestamp(value: str) -> datetime:
@@ -625,6 +621,7 @@ def repository_activity(
     until: datetime,
     self_logins: set[str],
     bot_logins: set[str],
+    automation_logins: dict[str, str] | None = None,
 ) -> tuple[dict[tuple[str, int], set[tuple[str, int]]], list[dict[str, str]]]:
     query = urlencode(
         {
@@ -651,7 +648,7 @@ def repository_activity(
             if (
                 comment is None
                 or not comment_in_window(comment, since, until)
-                or not is_external_comment(comment, self_logins, bot_logins)
+                or not is_external_comment(comment, self_logins, bot_logins, automation_logins)
             ):
                 continue
             candidate_ids.setdefault(comment.thread_key, set()).add(comment.key)
@@ -662,7 +659,7 @@ def repository_activity(
         threads = []
     for item in threads:
         opening = normalize_opening_post(repo, item)
-        if opening is not None and is_external_comment(opening, self_logins, bot_logins):
+        if opening is not None and is_external_comment(opening, self_logins, bot_logins, automation_logins):
             candidate_ids.setdefault(opening.thread_key, set()).add(opening.key)
     return candidate_ids, errors
 
@@ -1040,7 +1037,7 @@ def comment_states_for_thread(
     external_comments = [
         comment
         for comment in comments
-        if is_external_comment(comment, owner_logins, bot_logins)
+        if is_external_comment(comment, owner_logins, bot_logins, automation_logins)
     ]
     results = []
     for comment in sorted(external_comments, key=event_sort_key):
@@ -1451,7 +1448,7 @@ def outbound_states_for_thread(
     results = []
     for comment in sorted(comments, key=event_sort_key):
         if (
-            not is_external_comment(comment, self_logins, bot_logins)
+            not is_external_comment(comment, self_logins, bot_logins, automation)
             or not comment_in_window(comment, settings["since"], settings["until"])
             or comment_activity_through(comment, settings["until"]) <= latest
         ):
@@ -1510,6 +1507,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
                     settings["until"],
                     self_logins,
                     bot_logins,
+                    people["automation"],
                 ): repo
                 for repo in repositories
             }
@@ -1588,7 +1586,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
                 effective_ids = {
                     comment.key
                     for comment in comments_through_until
-                    if is_external_comment(comment, self_logins, bot_logins)
+                    if is_external_comment(comment, self_logins, bot_logins, people["automation"])
                 }
             collected_threads.append((thread, comments_through_until, effective_ids))
             reaction_candidates.extend(
@@ -1600,7 +1598,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
                     )
                 ) or (
                     (repo, number) not in outbound_scope and comment.key in effective_ids
-                    and is_external_comment(comment, self_logins, bot_logins)
+                    and is_external_comment(comment, self_logins, bot_logins, people["automation"])
                 )
             )
         coverage_errors.extend(
@@ -1723,7 +1721,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
         "limitations": [
             "Repository scans cover issues and PRs opened in the window, issue/PR conversation comments and inline PR review comments; full-history --thread scans also cover the opening post and non-empty PR review bodies.",
             "An edit to an issue or PR description is caught only by a full-history --thread scan or when the thread is opened in the window.",
-            "Only configured automation is excluded; people-index automation accounts (contacts.github.bot_usernames) are labeled with who they act for, and unlisted logins ending in bot or automation are marked possible_automation.",
+            "Configured own automation is excluded. People-index agents (contacts.github.bot_usernames) remain eligible even as GitHub Bot accounts and are labeled with who they act for. Other GitHub bots stay filtered; unlisted human-account logins ending in bot or automation are marked possible_automation.",
             "Waits on the Director are open plan:waiting issues, and open issues whose comments GitHub search finds with a structured wait, whose current wait (the trusted structured record when one is readable, otherwise the Current Status prose marked for review) names the Director's login, a people-index name, or the Director role, with no Director or Owner question still open; an unreadable trusted record is listed as an unresolved wait for review, whether or not a question is open; negated mentions are left out, and waits worded as the Director's own hold (resume, park, hold, select, revisit) are listed as director_hold without raising attention; repository scans only.",
             "A targeted public reply from the Director or configured automation handles a comment after its latest edit. Exact comment links or an inline-review thread with one eligible external comment target a reply; automation may also use an unambiguous single-author mention.",
             "Director reactions and question/decision records are diagnostic awareness evidence, not public replies or requirements for clearing attention. Unanswered comments remain flagged even on closed threads; edits and new comments reopen attention.",

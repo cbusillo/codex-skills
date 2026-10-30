@@ -14,7 +14,13 @@ decisions, statuses, board contents or narrative; open linked records for action
    `--capacity-state` when configured. Each session is read once; changed
    sessions and outstanding actions/errors print one JSON line each, followed
    by current coverage. These are candidates, never shutdown authority.
-3. Read existing foreign/watch notices and their coverage gaps. Use
+3. Read existing foreign/watch output, including live service logs, and its
+   coverage gaps on every check; never wait for a process to exit to read it.
+   Route each Client comment, including one posted by their agent, to the PR's
+   owning session for an answer. Use the existing
+   [comment radar](../../github-work-rollup/SKILL.md#external-comment-radar)
+   to retain unanswered comments; a watch watermark proves collection only.
+   Use
    `oq.py --owner OWNER --queue OWNER/direction#NUMBER --changes-state <question-state.json>`
    for the queue, and source anchors outside watcher coverage with their own
    state file. The reader trusts the configured automation identity by default;

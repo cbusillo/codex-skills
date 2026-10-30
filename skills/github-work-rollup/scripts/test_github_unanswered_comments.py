@@ -130,11 +130,14 @@ def patch_radar(monkeypatch: pytest.MonkeyPatch, name: str, value: Any) -> None:
 
 @pytest.mark.parametrize("state", ["open", "closed"])
 @pytest.mark.parametrize("reply_author", ["cbusillo", "fixture-automation"])
+@pytest.mark.parametrize("author,author_type", [("outside-user", "User"), ("client-agent[bot]", "Bot")])
 def test_radar_flags_only_comments_without_a_targeted_reply(
-    monkeypatch: pytest.MonkeyPatch, state: str, reply_author: str,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, state: str, reply_author: str, author: str, author_type: str,
 ) -> None:
-    answered = comment(comment_id=1, author="outside-user", body="Can I send a sheet?", created_at="2026-07-25T10:00:00Z")
-    unanswered = comment(comment_id=2, author="outside-user", body="Which format?", created_at="2026-07-25T10:30:00Z")
+    answered = comment(comment_id=1, author=author, author_type=author_type, body="Can I send a sheet?",
+                       created_at="2026-07-25T10:00:00Z")
+    unanswered = comment(comment_id=2, author=author, author_type=author_type, body="Which format?",
+                         created_at="2026-07-25T10:30:00Z")
     reply = comment(comment_id=3, author=reply_author, body=f"Yes, please: {answered.url}",
                     created_at="2026-07-25T11:00:00Z")
     patch_radar(monkeypatch, "authenticated_login", lambda: "fixture-automation")
@@ -147,7 +150,7 @@ def test_radar_flags_only_comments_without_a_targeted_reply(
     ))
     settings = github_unanswered_comments.resolve_settings(
         args(thread=["example/repo#42"], self_login=["cbusillo"], bot_login=["fixture-automation"],
-             until="2026-07-26T20:00:00Z", include_handled=True), {},
+             until="2026-07-26T20:00:00Z", include_handled=True, people_index=people_index(tmp_path)), {},
     )
 
     payload = github_unanswered_comments.collect_payload(settings)
@@ -963,7 +966,7 @@ people:
     contacts:
       github:
         username: casey-client
-        bot_usernames: [client-code-bot]
+        bot_usernames: [client-code-bot, 'client-agent[bot]']
 """
 
 
@@ -1048,6 +1051,46 @@ def portfolio_settings(**overrides: object) -> dict[str, object]:
     )
 
 
+@pytest.mark.parametrize("scope", ["portfolio", "thread", "outbound"])
+def test_held_accept_from_client_agent_stays_visible_until_targeted_answer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, scope: str,
+) -> None:
+    pull = opening(number=290, author="cbusillo", created_at="2026-10-30T18:00:00Z")
+    feedback = api_comment(1, "client-agent[bot]", "2026-10-30T19:38:54Z",
+        "Inventory and Helpdesk are missing. Holding Accept. Posted on the Client's behalf.",
+        user={"login": "client-agent[bot]", "type": "Bot"},
+        issue_url="https://api.github.com/repos/example/repo/issues/290",
+        html_url="https://github.com/example/repo/pull/290#issuecomment-1")
+    comments = [feedback, api_comment(2, "fixture-automation", "2026-10-30T19:45:00Z", "CI is green.")]
+    fake = FakeGitHub({
+        "repos/example/repo/issues/comments": [feedback],
+        "repos/example/repo/issues/290": pull,
+        "repos/example/repo/issues/290/comments": comments,
+    })
+    patch_radar(monkeypatch, "run_json", fake)
+    patch_radar(monkeypatch, "outbound_threads", lambda *_: ([("example/repo", 290)], []))
+    patch_radar(monkeypatch, "outbound_mentions", lambda *_: ([], []))
+    settings = github_unanswered_comments.resolve_settings(args(
+        repo=["example/repo"] if scope == "portfolio" else [],
+        thread=["example/repo#290"] if scope == "thread" else [], outbound=scope == "outbound",
+        self_login=["cbusillo"], bot_login=["fixture-automation"],
+        people_index=people_index(tmp_path),
+        since="2026-10-30T18:00:00Z", until="2026-10-30T22:00:00Z",
+    ), {})
+    payload = github_unanswered_comments.collect_payload(settings)
+    assert payload["status"] == "attention"
+    [pending] = payload["attention"]
+    assert pending["comment_url"] == feedback["html_url"]
+    assert pending["publicly_addressed"] is False
+    assert (pending["author_class"], pending["automation_for"]) == ("automation", "Casey")
+
+    comments.append(api_comment(3, "cbusillo" if scope == "outbound" else "fixture-automation", "2026-10-30T20:00:00Z",
+        f"The menus are installed; your preview login lacks their groups. {feedback['html_url']}"))
+    payload = github_unanswered_comments.collect_payload(settings)
+    assert payload["status"] == "clear"
+    assert payload["attention"] == []
+
+
 def test_outside_pull_request_opened_in_window_needs_attention(monkeypatch) -> None:
     # Reproduces BD_to_AVP#880: an outside contributor opens a PR and nobody comments.
     pull = opening()
@@ -1064,10 +1107,10 @@ def test_outside_pull_request_opened_in_window_needs_attention(monkeypatch) -> N
     assert "opened it" in github_unanswered_comments.render_markdown(payload)
 
 
-def test_owner_or_automation_opened_threads_are_not_external(monkeypatch) -> None:
+def test_owner_or_unrecognized_automation_opened_threads_are_not_external(monkeypatch) -> None:
     own = opening(number=1, author="cbusillo", pull_request=False)
     automation = opening(number=2, author="fixture-automation")
-    app = opening(number=3, author="some-app[bot]", author_type="Bot")
+    app = opening(number=3, author="dependency-updates[bot]", author_type="Bot")
     fake = FakeGitHub({"repos/example/repo/issues": [own, automation, app]})
     monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
 
@@ -1197,9 +1240,10 @@ def test_people_index_classifies_automation_accounts(tmp_path: Path) -> None:
     assert github_unanswered_comments.author_class("casey-client", automation) == ("person", None)
 
 
-def test_people_index_automation_is_labeled_never_excluded(monkeypatch, tmp_path: Path) -> None:
-    by_director_bot = opening(number=1, author="director-code-bot")
-    by_client_bot = opening(number=2, author="client-code-bot")
+@pytest.mark.parametrize("author_type", ["User", "Bot"])
+def test_people_index_automation_is_labeled_never_excluded(monkeypatch, tmp_path: Path, author_type: str) -> None:
+    by_director_bot = opening(number=1, author="director-code-bot", author_type=author_type)
+    by_client_bot = opening(number=2, author="client-code-bot", author_type=author_type)
     fake = FakeGitHub({
         "repos/example/repo/issues": [by_director_bot, by_client_bot],
         "repos/example/repo/issues/1": by_director_bot,

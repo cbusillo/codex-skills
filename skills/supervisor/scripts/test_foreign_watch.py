@@ -14,6 +14,7 @@ from pathlib import Path
 import tempfile
 import tomllib
 import unittest
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 from unittest.mock import Mock, patch
 
@@ -52,7 +53,34 @@ def feeds(*comment_pages, opened_items=(), repositories=()):
     return read
 
 
+def patch_attr(target: object, name: str, **kwargs: Any) -> Any:
+    return patch.object(target, name, **kwargs)
+
+
 class WatchTests(unittest.TestCase):
+    def test_client_comment_returns_to_supervisor_before_another_poll(self) -> None:
+        for author in ("client", "client-agent[bot]"):
+            for persistent in (False, True):
+                with self.subTest(author=author, persistent=persistent), tempfile.TemporaryDirectory() as directory:
+                    reader = Mock()
+                    feedback = comment(author, "Inventory and Helpdesk are missing. Holding Accept.", "2026-10-30T19:38:54Z")
+                    reader.paged_json.side_effect = feeds([feedback])
+                    args = argparse.Namespace(state=Path(directory) / "state.json", since=None,
+                        own_login=["director", "agent[bot]"], launchplane_login=[], interval=300,
+                        once=False, persistent=persistent)
+                    output = io.StringIO()
+                    with (patch_attr(foreign_watch, "GitHubReader", return_value=reader),
+                          patch.object(foreign_watch, "utc_now", return_value="2026-10-30T19:40:00Z"),
+                          patch.object(foreign_watch.time, "sleep", side_effect=AssertionError("notice must return before sleep")),
+                          redirect_stdout(output)):
+                        result = foreign_watch.watch(args, [REPO], "2026-10-30T19:35:00Z", foreign_watch.time.monotonic() + 60)
+                    self.assertEqual(result, 0)
+                    [notice] = json.loads(output.getvalue())["notices"]
+                    self.assertEqual(notice["url"], feedback["html_url"])
+                    self.assertEqual(notice["author"], author)
+                    state = json.loads(args.state.read_text())
+                    self.assertEqual(state["watermarks"][REPO], "2026-10-30T19:40:00Z")
+
     def test_persistent_read_retry_preserves_watermark_and_provider_cooldown(self):
         with tempfile.TemporaryDirectory() as directory:
             now = [0.0]
@@ -62,7 +90,7 @@ class WatchTests(unittest.TestCase):
                     failure=FailureDetail(cause="network_provider_failure", message="unavailable",
                                           retryable=True, fallback_eligible=False, disposition="retry")),
                 diagnostics={"requests": [{"retryAt": 20}]},
-            ), [comment()], foreign_watch.GitHubReadShapeError("terminal"))
+            ), [], ValueError("terminal"))
             args = argparse.Namespace(state=Path(directory) / "state.json", since=None,
                 own_login=["director"], launchplane_login=[], interval=5, once=False, persistent=True)
 

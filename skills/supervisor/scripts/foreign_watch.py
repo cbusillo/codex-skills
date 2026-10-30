@@ -303,7 +303,7 @@ def main() -> int:
     parser.add_argument("--deadline-seconds", type=float, default=1800)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--persistent", action="store_true",
-                        help="keep watching notices and recover retryable reads within the deadline")
+                        help="recover retryable reads within the deadline; return on notices")
     args = parser.parse_args()
     if any(not math.isfinite(v) or v <= 0 for v in (args.interval, args.deadline_seconds)):
         parser.error("timings must be finite and positive")
@@ -348,7 +348,7 @@ def watch(args, repos, initial, deadline):
                           "untrusted": True}), flush=True)
         save_state(args.state, watermarks, seen, dispatched)
         persistent = getattr(args, "persistent", False)
-        if args.once or (not persistent and (notices or errors)) or any(
+        if args.once or notices or (not persistent and errors) or any(
             not error["retryable"] for error in errors
         ):
             return int(bool(errors))
