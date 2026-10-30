@@ -89,11 +89,12 @@ class GuardTests(unittest.TestCase):
         guidance = Path(self.home.name, "guidance.md")
         for rule in ("Explain the recurring work and the alternative.", "Explain the upkeep and your recommendation."):
             guidance.write_text(f"# Guidance\n\n{guard.QUESTION_SECTION}\n\n{rule}\n\n## Other Guidance\n\nUnrelated instructions.\n")
-            with mock.patch.object(guard, "QUESTION_GUIDANCE", guidance):
-                decision = json.loads(self.run_hook(stop(last_assistant_message="**Q855** Should I move the sync?")))
-            self.assertEqual(decision["decision"], "block")
-            self.assertIn(rule, decision["reason"])
-            self.assertNotIn("Unrelated instructions.", decision["reason"])
+            for message in ("**Q855** Should I move the sync?", "Should I move the sync?"):
+                with mock.patch.object(guard, "QUESTION_GUIDANCE", guidance):
+                    decision = json.loads(self.run_hook(stop(last_assistant_message=message)))
+                self.assertEqual(decision["decision"], "block")
+                self.assertIn(rule, decision["reason"])
+                self.assertNotIn("Unrelated instructions.", decision["reason"])
 
     def test_context_accepts_common_phrasings(self):
         for cost, developer in (("No ongoing cost.", "A senior dev would keep it."),
