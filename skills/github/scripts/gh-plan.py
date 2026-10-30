@@ -2968,16 +2968,21 @@ def claim_once(args: argparse.Namespace) -> None:
     def resume_source(
         current_comments: list[dict[str, Any]], current_status: str,
     ) -> tuple[int, list[dict[str, Any]], str]:
-        """Resolve proof on this record or its native parent, never a prose link."""
         nonlocal resume_source_number
         explicit_issue = getattr(args, "resume_issue", None)
         if explicit_issue is not None:
             source_repo, source_number = explicit_issue
-            if record_kind != "pr" or source_repo.casefold() != issue_repo.casefold() or source_number == number:
-                raise PlanError("A source issue claim URL requires a PR-only claim in that same repository")
+            if source_repo.casefold() != issue_repo.casefold() or source_number == number:
+                raise PlanError("A source issue claim URL requires a different issue in that same repository")
             source, source_status, source_comments, _ = read_record(source_number, source_repo, allow_closed=True)
             if "pull_request" in source:
                 raise PlanError("Resume source must be an issue")
+            if record_kind == "issue":
+                parent = read_next_parent(source_repo, source_number)
+                if parent is None or parent["repo"].casefold() != issue_repo.casefold() or parent["number"] != number:
+                    raise ClassifiedPlanError("claim_native_parent_required", "Explicit issue resume requires the source's native parent as the claim target")
+                if source.get("state") != "closed" or source.get("state_reason") != "completed":
+                    raise ClassifiedPlanError("claim_resume_source_incomplete", "Canonical issue resume requires a completed source child")
             resume_source_number = source_number
             return source_number, source_comments, source_status
         if resume_source_number is None and any(c.get("id") == args.resume_from for c in current_comments):
@@ -3125,6 +3130,7 @@ def claim_once(args: argparse.Namespace) -> None:
         source_repo: str | None = None, source_issue: dict[str, Any] | None = None,
         source_status: str | None = None,
         traversal: dict[tuple[str, int], set[str]] | None = None,
+        sibling_parent: int | None = None,
     ) -> None:
         """Released intermediates still connect the complete native handoff family."""
         source_repo = issue_repo if source_repo is None else source_repo
@@ -3135,9 +3141,11 @@ def claim_once(args: argparse.Namespace) -> None:
             if source_handoff_url is None and handoff_id is not None:
                 source_handoff_url = github_plan_claim.handoff_url(source_repo, source_number, handoff_id)
         directions = traversal.setdefault((source_repo.casefold(), source_number), set())
-        if "children" in directions:
+        if "children" in directions and (sibling_parent is None or "siblings" in directions):
             return
         directions.add("children")
+        if sibling_parent is not None:
+            directions.add("siblings")
         if source_issue is None:
             source_issue, source_status, source_comments, _ = read_record(
                 str(source_number), source_repo, allow_closed=True)
@@ -3150,6 +3158,13 @@ def claim_once(args: argparse.Namespace) -> None:
         _, history = collect_paged_rest_items(
             f"/repos/{source_repo}/issues/{source_number}/timeline", query={},
             bucket="rest_core", step_prefix="claim_handoff_child_history")
+        if sibling_parent is not None:
+            _, siblings = collect_paged_rest_items(f"/repos/{source_repo}/issues/{sibling_parent}/sub_issues", query={},
+                                                  bucket="rest_core", step_prefix="claim_handoff_siblings")
+            _, sibling_history = collect_paged_rest_items(f"/repos/{source_repo}/issues/{sibling_parent}/timeline", query={},
+                                                         bucket="rest_core", step_prefix="claim_handoff_sibling_history")
+            children.extend(siblings)
+            history.extend(sibling_history)
         for event in history:
             if event.get("event") != "sub_issue_added":
                 continue
@@ -3289,7 +3304,7 @@ def claim_once(args: argparse.Namespace) -> None:
                               and github_plan_release.exact_source_release(source["comment"]["id"], release, source_comments)), None)
                 if exact is None:
                     raise github_plan_claim.ClaimProofError("claim_resume_source_unreleased",
-                        "PR-only source requires an exact authored, timestamp-proved release")
+                        "Explicit source requires an exact authored, timestamp-proved release")
                 source["release"] = exact
             # Canonical native releases are freshly validated again by the
             # observer's owner callback. Equivalent replacement receipts may
@@ -3414,6 +3429,17 @@ def claim_once(args: argparse.Namespace) -> None:
                 raise github_plan_claim.ClaimProofError("claim_handoff_pr_required", "Released retained work has no qualified handoff")
             if record_kind == "pr" and not any(pull["number"] == number for pull in handoff["qualified"]):
                 raise github_plan_claim.ClaimProofError("claim_handoff_pr_required", "Source release must retain the claimed PR")
+            if record_kind == "issue" and getattr(args, "resume_issue", None):
+                canonical_pulls = [pull for pull in handoff["qualified"] if pull.get("state") == "open"
+                                   and github_plan_claim.pr_issue_reference(pull, number, repo=issue_repo)]
+                if not canonical_pulls:
+                    raise github_plan_claim.ClaimProofError("claim_handoff_pr_required", "Source child must retain an open PR linked to the canonical issue")
+                artifacts = sorted((pull["number"], pull["head"]["ref"], pull["head"].get("sha")) for pull in canonical_pulls)
+                if any(not artifact[2] for artifact in artifacts):
+                    raise github_plan_claim.ClaimProofError("claim_handoff_changed", "Canonical retained PR head is unavailable")
+                if "canonical_pulls" in selection and selection["canonical_pulls"] != artifacts:
+                    raise github_plan_claim.ClaimProofError("claim_handoff_changed", "Canonical retained PR changed during claim readback")
+                selection["canonical_pulls"] = artifacts
             claim["resume_from"] = str(args.resume_from)
             claim["retained_handoff"] = handoff["url"]
             prepared.update(permitted=handoff["permitted"],
@@ -3473,7 +3499,8 @@ def claim_once(args: argparse.Namespace) -> None:
                     source_number, source_comments, source_status = source_info
                     source_issue = read_record(source_number, issue_repo, allow_closed=True)[0]
                     check_handoff_successors(source_number, source_comments=source_comments,
-                                             source_status=source_status, source_issue=source_issue, traversal=traversal)
+                                             source_status=source_status, source_issue=source_issue, traversal=traversal,
+                                             sibling_parent=number if record_kind == "issue" and getattr(args, "resume_issue", None) else None)
             except ClassifiedPlanError as error:
                 if error.code not in {"claim_resume_lineage_invalid", "claim_child_history_invalid"}:
                     raise
@@ -7457,7 +7484,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--session", required=True)
     p.add_argument("--branch", required=True, help="Exact branch for this claim; create or continue its verified worktree only after claim succeeds")
     p.add_argument("--next-action", required=True)
-    p.add_argument("--resume-from", help="Original released claim comment ID, or its exact source issue claim URL for PR-only work")
+    p.add_argument("--resume-from", help="Original released claim comment ID, or its exact source issue claim URL for retained PR or canonical-parent work")
     p.add_argument("--planning-checkout", help="Canonical planning repository checkout for cross-repository ownership inventory")
     p.add_argument("--wait-resolved", help="Existing resolution evidence for a recorded wait/hold; grants no new authority")
     p.add_argument("--admission", choices=github_plan_claim.ADMISSIONS,
