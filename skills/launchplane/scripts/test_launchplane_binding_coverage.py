@@ -384,7 +384,7 @@ def test_selected_preview_keeps_bounded_scan_facts_and_refusal_without_raw_repor
     for field, value in (
         ("fixed_version", "https://example.invalid/fix"),
         ("package_name", "/private/customer/file"),
-        ("installed_version", "1" * 161),
+        ("installed_version", "1" * (write_action.RECONCILE_SCAN_MAX_FIELD_LENGTH + 1)),
         ("vulnerability_id", "provider output"),
         ("severity", "MEDIUM"),
     ):
@@ -394,10 +394,14 @@ def test_selected_preview_keeps_bounded_scan_facts_and_refusal_without_raw_repor
         assert payload["result"]["requests"][0]["last_plan"]["artifact_scan"]["findings"] == []
         assert payload["result"]["dropped_field_count"] > 0
 
-    scan["findings"] = [{**finding, "package_name": "ghp_abcdefghijklmnopqrstuvwxyz0123456789"}]
-    status, payload, _ = _run_product_read(args, body)
-    assert status != 0
-    assert "ghp_abcdefghijklmnopqrstuvwxyz0123456789" not in json.dumps(payload)
+    secret = "ghp_" + "a" * 36
+    for package in (secret, "sk-video", "@scope/sk-foo"):
+        scan["findings"] = [{**finding, "package_name": package}, finding]
+        status, payload, _ = _run_product_read(args, body)
+        assert status == 0, payload
+        assert payload["result"]["requests"][0]["last_plan"]["artifact_scan"]["findings"] == [finding]
+        assert payload["result"]["dropped_field_count"] > 0
+        assert secret not in json.dumps(payload)
 
 
 if __name__ == "__main__":

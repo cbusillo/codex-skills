@@ -650,11 +650,13 @@ installed local helper bindings.
   (CVE or GHSA), `package_name`, `installed_version`, `fixed_version` and
   HIGH/CRITICAL `severity`, bounded to 160 characters per field. Invalid rows
   and excess rows are omitted and counted in the projection's dropped fields;
-  the service's omission count and gate counts stay unchanged. Match the plan's
+  a secret-shaped diagnostic row is omitted without losing the other rows or
+  the existing reconcile decision. Secret handling elsewhere is unchanged.
+  The service's omission count and gate counts stay unchanged. Match the plan's
   `head_sha` and `desired_image_digest` before using these diagnostics, and use
   `--target-key <product>:preview:<PR>` to select the exact preview before
   bounding. Old scan records remain readable without findings.
-  Its `image_reference` is withheld
+  `artifact_scan.image_reference` is withheld
   and counted by name; other nested fields are dropped under `<unlisted field>`.
   Missing scan fields stay missing. `held_reservations` and
   `testing_deploy_recovery` carry original-operation or provider evidence.

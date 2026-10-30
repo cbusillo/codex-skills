@@ -2743,8 +2743,9 @@ PREVIEW_MAX_SOURCES = 10
 RECONCILE_MAX_REQUESTS = 50
 RECONCILE_MAX_PLAN_LIST_ITEMS = 20
 RECONCILE_MAX_SCAN_FINDINGS = 50
+RECONCILE_SCAN_MAX_FIELD_LENGTH = 160
 RECONCILE_SCAN_FINDING_VALIDATORS = {
-    key: partial(public_identifier, pattern=re.compile(r"(?=.{1,160}\Z)" + pattern))
+    key: partial(public_identifier, pattern=re.compile(rf"(?=.{{1,{RECONCILE_SCAN_MAX_FIELD_LENGTH}}}\Z)" + pattern))
     for key, pattern in {
         "vulnerability_id": r"(?:CVE-[0-9]{4}-[0-9]{4,19}|GHSA-[a-z0-9]{4}(?:-[a-z0-9]{4}){2})",
         "package_name": r"(?:@[a-zA-Z0-9._-]+/)?[a-zA-Z0-9][a-zA-Z0-9.+_-]*",
@@ -3581,9 +3582,13 @@ def _project_scan_findings(value: object, drops: _FieldDrops) -> list[dict[str, 
         return []
     findings: list[dict[str, object]] = []
     for item in value[:RECONCILE_MAX_SCAN_FINDINGS]:
-        kept = _project_retained_provenance_value(
-            item, RECONCILE_SCAN_FINDING_VALIDATORS, path=f"{path}[]", drops=drops
-        )
+        try:
+            kept = _project_retained_provenance_value(
+                item, RECONCILE_SCAN_FINDING_VALIDATORS, path=f"{path}[]", drops=drops
+            )
+        except LaunchplaneSafetyError:
+            drops.drop(f"{path}[]")
+            continue
         if isinstance(kept, dict) and kept.keys() == RECONCILE_SCAN_FINDING_VALIDATORS.keys():
             findings.append(kept)
     if len(value) > RECONCILE_MAX_SCAN_FINDINGS:
