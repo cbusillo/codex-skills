@@ -1340,9 +1340,7 @@ reviewed-inspect procedure and verify the situation.
   action, reason, commit, digests and ids. When testing keeps an older build,
   `rejected_builds` lists newer commits, selected run ids and bounded rejection
   codes. `pr_feedback` retains delivery decisions and record identity while
-  dropping error prose. `artifact_scan` retains status, reason, HIGH/CRITICAL
-  counts and scan time while withholding its image reference and other fields;
-  missing legacy fields remain unknown. See the
+  dropping error prose. See the
   [reconcile read contract](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads)
   for retained evidence and deliberately withheld objects. Use `--target-key <exact-target-key>`
   to select a target from the service response before the helper's output bound;
