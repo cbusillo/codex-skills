@@ -2525,6 +2525,7 @@ def owner_decision_close(
 def owner_comment(login: str, created_at: str) -> dict[str, Any]:
     return {
         "user": {"login": login},
+        "body": "Close #10 as not planned.",
         "created_at": created_at,
         "html_url": f"https://github.com/owner/repo/issues/10#issuecomment-{created_at}",
     }
