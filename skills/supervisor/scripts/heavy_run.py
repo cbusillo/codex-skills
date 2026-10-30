@@ -308,11 +308,13 @@ def local_endpoint(home: Path, log: TextIO) -> str:
     return endpoint
 
 
+def container_input_mode(mode: int, *, directory: bool) -> int:
+    return 0o777 if directory or mode & 0o111 else 0o666
+
+
 def container_copy_mode(info: tarfile.TarInfo) -> tarfile.TarInfo:
-    if info.isdir():
-        info.mode = 0o777
-    elif info.isfile():
-        info.mode = 0o777 if info.mode & 0o111 else 0o666
+    if info.isdir() or info.isfile():
+        info.mode = container_input_mode(info.mode, directory=info.isdir())
     return info
 
 
@@ -377,10 +379,7 @@ class Docker:
             if not stat.S_ISDIR(mode) and not stat.S_ISREG(mode):
                 raise ValueError("Overlay input staging refuses links and special files")
         for path in paths:
-            member = tarfile.TarInfo(str(path))
-            member.mode = path.stat().st_mode
-            member.type = tarfile.DIRTYPE if path.is_dir() else tarfile.REGTYPE
-            path.chmod(container_copy_mode(member).mode)
+            path.chmod(container_input_mode(path.stat().st_mode, directory=path.is_dir()))
 
     def cleanup_overlay_volumes(self) -> None:
         names = self.call("volume", "ls", "-q", "--filter", f"label={self.label}").split()
