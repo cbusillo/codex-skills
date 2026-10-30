@@ -197,6 +197,10 @@ class ReviewWithModelTests(unittest.TestCase):
         code, result = self.review("google", **env)
         self.assertEqual((code, result["ok"]), (1, False))
         self.assertIn("primary: anthropic; supplementary: google", result["error"])
+        code, result = self.run_helper("run", "--author-provider", "anthropic", "--provider", "anthropic",
+                                       "--repo", str(self.repo), "--prompt-file", str(self.prompt), **env)
+        self.assertEqual(code, 1)
+        self.assertNotIn("standing review decision", result["error"])
         self.assertFalse(cwd_file.exists())
         self.assertFalse((self.storage / "Launch Receipts").exists())
         code, result = self.run_helper(
