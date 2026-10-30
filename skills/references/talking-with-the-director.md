@@ -75,9 +75,9 @@ prose comment, queue and acknowledgement commands remain available.
 
 When asking, follow [Director Questions](#director-questions).
 
-- The Discord session channel relays only the Director's messages. Those are their
-  own words, just like chat or GitHub messages, regardless of a harness label on
-  mid-turn delivery. Record `via Discord` before the quote.
+- Messages from the Director delivered through a Discord session channel that
+  relays only their messages count as their own words, regardless of a harness
+  label on mid-turn delivery. Record `via Discord` in source prose before the quote.
 - Record a `Director decision:` as the link to the question it answers, when
   one exists, and the Director's exact operative answer, including every
   condition, limit and scope, with nothing after the quote. In audience-visible
