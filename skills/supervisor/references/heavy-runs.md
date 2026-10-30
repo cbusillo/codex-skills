@@ -259,3 +259,35 @@ evidence delivery runs after cleanup and receipt creation, while the same slot
 is still held. Keep all transfer children within that process and preserve the
 slot descriptor for Docker operations. This keeps staging and collection from
 overlapping another execution without adding a scheduler.
+
+## Immutable directory overlays
+
+An existing directory copy can opt into `"overlay": true`. On a local Linux
+Docker engine this attaches a Docker local overlay volume at that copy's
+absolute destination instead of copying the directory into the container.
+There are no caller-supplied volume names, host mount flags or driver options.
+Symlinks, special files, aliased lower paths, mount-option delimiters and
+input destinations overlapping another copy are refused. Unsupported engines
+fail explicitly; they never silently select the ordinary-copy path.
+
+Containers in the same run with the same source and destination share their
+writable layer. Each different destination or run gets a private upper/work in
+a labeled backing volume. Lower data is read-only through the overlay. The
+lower must already have permissions usable by the image user; the private
+receiver normalizes newly transported overlay inputs just like container
+copies, without changing host originals or existing retained inputs.
+
+Cleanup stops/removes containers, verifies lower content and filesystem
+identity, removes the labeled overlay volumes before their backing volumes,
+then removes the owned network. Recovery performs the same checks. A remaining
+volume, failed unmount or changed lower retains cleanup custody and prevents a
+successor. Writable file-store state is not exported into evidence automatically.
+Normal outputs remain explicit. Omit `overlay` for the existing independent
+copy behavior when a run needs its own base.
+
+A private executor may resolve a copy's `retained_from` to an existing original
+input under its own custody and frozen-transfer verification. It must preserve
+local input/image bindings and the original owner's retirement boundary. This
+is not a host path supplied to the generic queue; local execution refuses that
+field without an executor. The receiver's own runbook owns its reference schema,
+installation and adoption. Do not add a second cache, queue or provenance system.
