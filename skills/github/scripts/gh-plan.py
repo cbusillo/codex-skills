@@ -3430,10 +3430,11 @@ def claim_once(args: argparse.Namespace) -> None:
             if record_kind == "pr" and not any(pull["number"] == number for pull in handoff["qualified"]):
                 raise github_plan_claim.ClaimProofError("claim_handoff_pr_required", "Source release must retain the claimed PR")
             if record_kind == "issue" and getattr(args, "resume_issue", None):
-                canonical_pulls = [pull for pull in handoff["qualified"] if pull.get("state") == "open"
-                                   and github_plan_claim.pr_issue_reference(pull, number, repo=issue_repo)]
-                if not canonical_pulls:
-                    raise github_plan_claim.ClaimProofError("claim_handoff_pr_required", "Source child must retain an open PR linked to the canonical issue")
+                open_retained = [pull for pull in handoff["qualified"] if pull.get("state") == "open"]
+                canonical_pulls = [pull for pull in open_retained
+                                   if github_plan_claim.pr_issue_reference(pull, number, repo=issue_repo)]
+                if not canonical_pulls or len(canonical_pulls) != len(open_retained):
+                    raise github_plan_claim.ClaimProofError("claim_handoff_pr_required", "Every retained open PR must link the canonical issue")
                 artifacts = sorted((pull["number"], pull["head"]["ref"], pull["head"].get("sha")) for pull in canonical_pulls)
                 if any(not artifact[2] for artifact in artifacts):
                     raise github_plan_claim.ClaimProofError("claim_handoff_changed", "Canonical retained PR head is unavailable")

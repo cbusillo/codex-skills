@@ -2451,6 +2451,9 @@ class ClaimTests(unittest.TestCase):
 
     def test_canonical_issue_admits_completed_child_exact_handoff_without_changing_source_or_holds(self) -> None:
         self.completed_child_handoff_fixture()
+        sibling = self.closed_pulls.pop(100)
+        sibling["state"] = self.targets["100"]["state"] = "open"
+        self.pulls.append(sibling)
         self.record_wait(target="99")
         self.args.wait_resolved = "Existing Director authorization covers source integration; Client acceptance stays pending."
         before = copy.deepcopy((self.targets, self.target_comments, self.inventory, self.pulls))
@@ -2465,7 +2468,7 @@ class ClaimTests(unittest.TestCase):
 
     def test_canonical_child_handoff_preserves_proof_ownership_and_wait_refusals(self) -> None:
         for change in ("no_release", "foreign_release", "old_release", "open_source", "not_completed", "wrong_parent",
-                       "foreign_source", "wrong_artifact", "live_source", "live_sibling", "earlier_sibling", "unknown_artifact",
+                       "foreign_source", "wrong_artifact", "mixed_artifact", "live_source", "live_sibling", "earlier_sibling", "unknown_artifact",
                        "source_branch", "target_wait", "retained_wait", "unknown_inventory"):
             with self.subTest(change=change):
                 self.setUp()
@@ -2479,6 +2482,11 @@ class ClaimTests(unittest.TestCase):
                 elif change == "wrong_parent": self.parent["number"] = 43; self.parent["html_url"] = "https://github.com/owner/repo/issues/43"
                 elif change == "foreign_source": self.args.resume_from = "https://github.com/other/repo/issues/41#issuecomment-1"
                 elif change == "wrong_artifact": self.pulls[0]["body"] = "Refs #41\nRefs #43"
+                elif change == "mixed_artifact":
+                    sibling = self.closed_pulls.pop(100)
+                    sibling.update(state="open", body="Refs #41\nRefs #43")
+                    self.targets["100"].update(state="open", body=sibling["body"])
+                    self.pulls.append(sibling)
                 elif change == "live_source": source_comments.append({"id": 80, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}})
                 elif change in {"live_sibling", "earlier_sibling"}:
                     rival = {**OTHER, "resume_from": "1", "retained_handoff": CLAIM.handoff_url("owner/repo", 41, self.handoff_id)}
@@ -2495,20 +2503,33 @@ class ClaimTests(unittest.TestCase):
                     def unavailable() -> None:
                         raise PLAN.PlanError("Ownership inventory unavailable")
                     self.during_inventory = unavailable
-                with self.assertRaises(PLAN.PlanError):
+                with self.assertRaises(PLAN.PlanError) as caught:
                     self.run_claim()
+                expected = {"no_release": "claim_resume_source_unreleased", "foreign_release": "claim_resume_source_unreleased",
+                            "old_release": "claim_resume_source_unreleased", "open_source": "claim_resume_source_incomplete",
+                            "not_completed": "claim_resume_source_incomplete", "wrong_parent": "claim_native_parent_required",
+                            "wrong_artifact": "claim_handoff_pr_required", "mixed_artifact": "claim_handoff_pr_required",
+                            "live_source": "claim_conflict", "live_sibling": "claim_conflict", "earlier_sibling": "claim_conflict",
+                            "unknown_artifact": "claim_conflict", "target_wait": "claim_wait_unresolved", "retained_wait": "claim_wait_unresolved"}
+                if change in expected:
+                    self.assertEqual(caught.exception.code, expected[change])
                 self.assert_no_writes()
 
     def test_canonical_child_handoff_rechecks_relationship_source_and_head_on_both_readbacks(self) -> None:
-        for stage, change in product(("after_post", "after_status"), ("parent", "release", "source", "head", "artifact", "sibling")):
+        for stage, change in product(("after_post", "after_status"), ("parent", "release", "source", "head", "artifact", "sibling", "sibling_head")):
             with self.subTest(stage=stage, change=change):
                 self.setUp()
                 self.completed_child_handoff_fixture()
+                if change == "sibling_head":
+                    sibling = self.closed_pulls.pop(100)
+                    sibling["state"] = self.targets["100"]["state"] = "open"
+                    self.pulls.append(sibling)
                 def invalidate() -> None:
                     if change == "parent": self.parent = None
                     elif change == "release": self.target_comments["/repos/owner/repo/issues/41/comments"].pop()
                     elif change == "source": self.target_comments["/repos/owner/repo/issues/41/comments"][0]["body"] = CLAIM.marker(OWNER)
                     elif change == "head": self.pulls[0]["head"]["sha"] = "changed-head"
+                    elif change == "sibling_head": self.pulls[-1]["head"]["sha"] = "changed-sibling-head"
                     elif change == "artifact": self.pulls[0]["body"] = "Refs #41\nRefs #43"
                     elif change == "sibling":
                         rival = {**OTHER, "resume_from": "17", "retained_handoff": CLAIM.handoff_url("owner/repo", 41, 18)}
