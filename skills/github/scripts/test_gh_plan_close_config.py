@@ -47,18 +47,38 @@ class NotPlannedScopeTests(unittest.TestCase):
         self.events = [{"event": "milestoned", "actor": {"login": "fixture-bot"},
                         "created_at": "2026-10-02T00:00:00Z"}]
         self.reactions: list[dict[str, Any]] = []
-        self.reason = "Remove the agent-added benchmark; the requested delivery needs no benchmark."
+        self.source = "https://github.com/fixture/target/issues/6#issuecomment-8"
+        self.reason = f"Remove the agent-added benchmark from {self.source}; delivery needs no benchmark."
+        self.origin: dict[str, Any] = {"id": 8, "node_id": "origin-node", "body": "I propose an extra benchmark.",
+            "user": {"login": "fixture-bot"}, "created_at": "2026-10-02T00:00:00Z",
+            "issue_url": "https://api.github.com/repos/fixture/target/issues/6"}
+        self.editors: list[dict[str, Any]] = []
+        self.more_edits = False
         self.patches = patch.multiple(PLAN,
             load_direction=Mock(return_value="## Milestones\n- `Catalog adoption` proves adoption."),
             wait_authors=Mock(return_value={"fixture", "fixture-bot"}),
             EXPECTED_ACTOR="fixture-bot",
-            api_json=Mock(return_value=("fixture-bot", {"data": {"repository": {"issue": {"lastEditedAt": None}}}})),
+            api_json=Mock(side_effect=self.api),
             collect_paged_rest_items=Mock(side_effect=self.pages))
         self.patches.start()
         self.addCleanup(self.patches.stop)
 
+    def api(self, _method: str, _path: str, _body: Any = None, **kwargs: Any) -> tuple[str, dict[str, Any]]:
+        step = kwargs["failed_step"]
+        if step == "read_issue_last_edited":
+            return "fixture-bot", {"data": {"repository": {"issue": {"lastEditedAt": "2026-10-04T00:00:00Z"}}}}
+        if step == "scope_cut_editors":
+            return "fixture-bot", {"data": {"repository": {"issue": {"userContentEdits": {
+                "nodes": self.editors, "pageInfo": {"hasNextPage": self.more_edits}}}}}}
+        if step == "scope_cut_origin":
+            return "fixture-bot", self.origin
+        if step == "read_owner_decision_edit_history":
+            return "fixture-bot", {"data": {"node": {"databaseId": self.origin["id"], "body": self.origin["body"],
+                "createdAt": self.origin["created_at"], "lastEditedAt": None}}}
+        raise AssertionError(step)
+
     def pages(self, path: str, **_: Any) -> tuple[str, list[dict[str, Any]]]:
-        if path.endswith("/events"):
+        if path.endswith("/timeline"):
             return "fixture-bot", self.events
         if path.endswith("/reactions"):
             return "fixture-bot", self.reactions
@@ -73,6 +93,11 @@ class NotPlannedScopeTests(unittest.TestCase):
         result = self.check()
         self.assertFalse(result["required"])
         self.assertEqual(result["scope_cut_reason"], self.reason)
+
+    def test_an_extra_production_build_benchmark_can_be_removed(self) -> None:
+        self.issue["body"] = "Add an extra benchmark to the production build of the client library."
+        self.editors = [{"editor": {"login": "fixture-bot", "__typename": "User"}}]
+        self.assertFalse(self.check()["required"])
 
     def test_scope_cut_requires_a_reason_and_known_agent_provenance(self) -> None:
         for author, reason in (("fixture-bot", ""), ("fixture", self.reason), ("client", self.reason),
@@ -101,7 +126,7 @@ class NotPlannedScopeTests(unittest.TestCase):
                              ("fixture-bot", "Director decision Q4: Keep this requirement.")):
             with self.subTest(author=author):
                 self.comments = [{"id": 9, "user": {"login": author}, "body": body,
-                                  "created_at": "2026-09-30T00:00:00Z"}]
+                                  "created_at": "2026-10-03T00:00:00Z"}]
                 with self.assertRaises(PLAN.PlanError):
                     self.check()
 
@@ -123,7 +148,7 @@ class NotPlannedScopeTests(unittest.TestCase):
             self.check()
 
     def test_incomplete_admission_reads_fail_before_closure(self) -> None:
-        for suffix in ("/events", "/comments", "/reactions"):
+        for suffix in ("/timeline", "/comments", "/reactions"):
             with self.subTest(suffix=suffix):
                 def pages(path: str, **kwargs: Any) -> tuple[str, list[dict[str, Any]]]:
                     if path.endswith(suffix):
@@ -132,10 +157,57 @@ class NotPlannedScopeTests(unittest.TestCase):
                 with patch.object(PLAN, "collect_paged_rest_items", side_effect=pages), self.assertRaises(PLAN.PlanError):
                     self.check()
 
+    def test_scope_cut_needs_an_unedited_agent_origin_in_the_reason(self) -> None:
+        original_reason = self.reason
+        for author, reason in (("fixture-bot", "Remove extra work."), ("fixture", original_reason),
+                               ("client", original_reason), ("outside-user", original_reason)):
+            with self.subTest(author=author, reason=reason):
+                self.origin["user"]["login"], self.reason = author, reason
+                with self.assertRaises(PLAN.PlanError):
+                    self.check()
+        self.origin["user"]["login"] = "fixture-bot"
+        self.reason = original_reason
+        with patch.object(PLAN, "unedited_owner_decision", return_value=False), self.assertRaises(PLAN.PlanError):
+            self.check()
+
+    def test_director_activity_and_body_edits_preserve_admission(self) -> None:
+        for event in ("labeled", "assigned", "renamed", "cross-referenced"):
+            with self.subTest(event=event):
+                self.events.append({"event": event, "actor": {"login": "fixture"}})
+                with self.assertRaises(PLAN.PlanError):
+                    self.check()
+                self.events.pop()
+        for editors, more in (([{"editor": {"login": "fixture", "__typename": "User"}}], False), ([], True)):
+            self.editors, self.more_edits = editors, more
+            with self.assertRaises(PLAN.PlanError):
+                self.check()
+
+    def test_relayed_request_and_decision_origin_stays_protected(self) -> None:
+        for text in ("The Director asked for this.", "Director decision Q4: keep it.", "Client request: add this."):
+            with self.subTest(text=text):
+                self.origin["body"] = text
+                with self.assertRaises(PLAN.PlanError):
+                    self.check()
+        self.issue["body"] = "The Director asked for this."
+        with self.assertRaises(PLAN.PlanError):
+            self.check()
+
+    def test_any_human_reaction_keeps_the_decision_guard(self) -> None:
+        for author, content in (("fixture", "heart"), ("client", "+1"), ("outside-user", "rocket")):
+            self.reactions = [{"content": content, "user": {"login": author}}]
+            with self.assertRaises(PLAN.PlanError):
+                self.check()
+
+    def test_a_recent_director_keep_comment_is_not_a_close_decision(self) -> None:
+        self.comments = [{"id": 9, "user": {"login": "fixture"}, "body": "Keep this after the audit.",
+                          "created_at": "2026-10-05T00:00:00Z"}]
+        with self.assertRaises(PLAN.PlanError):
+            self.check()
+
     def test_recent_director_close_decision_still_allows_admitted_work(self) -> None:
         self.issue["user"]["login"] = "fixture"
-        self.comments = [{"user": {"login": "fixture"}, "body": "Close this as not planned.",
-                          "created_at": "2026-10-03T00:00:00Z", "html_url": "https://example.test/decision"}]
+        self.comments = [{"user": {"login": "fixture"}, "body": "Close #7 as not planned.",
+                          "created_at": "2026-10-05T00:00:00Z", "html_url": "https://example.test/decision"}]
         result = self.check()
         self.assertTrue(result["required"])
         self.assertEqual(result["comment_url"], self.comments[0]["html_url"])
@@ -324,26 +396,44 @@ class CloseConfigTests(unittest.TestCase):
         self.assertEqual(check["error"]["code"], "claim_wait_unresolved")
         self.assertEqual(check["error"]["structured_wait"]["state"], "waiting")
 
-    def test_scope_cut_reason_reaches_the_guard_and_is_published(self) -> None:
-        reason = "Remove an agent-added benchmark beyond the requested outcome."
-        for admitted in (False, True):
-            with self.subTest(admitted=admitted):
-                decision = Mock(return_value={"required": False, "scope_cut_reason": reason})
-                if admitted:
-                    decision.side_effect = PLAN.owner_decision_refusal("Director-admitted work stays protected")
-                with patch.object(PLAN, "check_owner_decides_not_planned", decision):
-                    code, result, state, _, _ = self.run_close(
-                        scope_issue=True, overrides=("--reason", "not_planned", "--comment", reason),
-                        trigger_comments=Mock(return_value={"actor": "fixture-bot", "comment": {"id": 88}}))
-                decision.assert_called_once()
-                self.assertEqual(decision.call_args.kwargs["scope_cut_reason"], reason)
-                if admitted:
-                    self.assertNotEqual(code, 0)
-                    state.assert_not_called()
-                else:
-                    self.assertEqual(code, 0)
-                    self.assertEqual(result["closed"]["owner_decision"]["scope_cut_reason"], reason)
-                    state.assert_called_once()
+    def test_scope_cut_reason_is_read_back_before_closing_even_if_metadata_fails(self) -> None:
+        reason = "Remove an extra benchmark after reviewing its agent origin."
+        events: list[str] = []
+        decision = {"required": False, "reason": "agent_attested_scope_cut", "scope_cut_reason": reason}
+        for fail_labels in (False, True):
+            events.clear()
+            def publish(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+                events.append("publish")
+                return {"actor": "fixture-bot", "comment": {"id": 88}}
+            def readback(*_args: Any, **_kwargs: Any) -> tuple[str, dict[str, Any]]:
+                events.append("readback")
+                return "fixture-bot", {"id": 88, "body": reason, "user": {"login": "fixture-bot"},
+                    "issue_url": "https://api.github.com/repos/fixture/target/issues/7"}
+            with patch.object(PLAN, "check_owner_decides_not_planned", return_value=decision), \
+                    patch.object(PLAN, "api_json", side_effect=readback):
+                code, result, state, _, _ = self.run_close(scope_issue=True, fail_labels=fail_labels, close_events=events,
+                    overrides=("--reason", "not_planned", "--comment", reason),
+                    trigger_comments=Mock(side_effect=publish))
+            self.assertEqual(events, ["publish", "readback", "close"])
+            self.assertEqual(code == 0, not fail_labels)
+            state.assert_called_once()
+            self.assertEqual(result["closed"]["owner_decision"]["scope_cut_reason"], reason)
+
+    def test_scope_reason_publication_failure_leaves_the_issue_open(self) -> None:
+        decision: dict[str, Any] = {"required": False, "reason": "agent_attested_scope_cut", "scope_cut_reason": "Remove extra work."}
+        for failure in ("publish", "readback"):
+            writer = Mock(return_value={"actor": "fixture-bot", "comment": {"id": 88}})
+            if failure == "publish":
+                writer.side_effect = PLAN.github_comment_core.CommentError("Publication failed", failure=PLAN.github_api_core.FailureDetail(
+                    cause="transport_error", message="Publication failed", retryable=False, fallback_eligible=False,
+                    disposition="stop", write_outcome="rejected"))
+            with patch.object(PLAN, "check_owner_decides_not_planned", return_value=decision), \
+                    patch.object(PLAN, "api_json", return_value=("fixture-bot", {"body": "Changed reason"})):
+                code, _, state, _, project = self.run_close(scope_issue=True,
+                    overrides=("--reason", "not_planned", "--comment", decision["scope_cut_reason"]), trigger_comments=writer)
+            self.assertNotEqual(code, 0)
+            state.assert_not_called()
+            project.assert_not_called()
 
     def test_public_close_uses_resolved_target_config_and_keeps_overrides(self) -> None:
         for ref, caller in (("fixture/target#7", "fixture/local"),
@@ -403,7 +493,7 @@ class CloseConfigTests(unittest.TestCase):
                   fail_labels: bool = False, fail_project: bool = False,
                   blocked: bool = False, already_closed: bool = False, indexed: bool = False, trigger_comments: Mock | None = None,
                   trigger_readback: Mock | None = None,
-                  comments: Any = None, scope_issue: bool = False) -> tuple[int, dict, Mock, Mock, Mock]:
+                  comments: Any = None, scope_issue: bool = False, close_events: list[str] | None = None) -> tuple[int, dict, Mock, Mock, Mock]:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             caller, target = root / "caller", root / "elsewhere" / "target"
@@ -429,6 +519,12 @@ class CloseConfigTests(unittest.TestCase):
             if already_closed:
                 issue.update(state="closed", state_reason="not_planned")
             state = Mock(return_value={"actor": "fixture-bot"})
+            if close_events is not None:
+                close_trace = close_events
+                def close_state(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+                    close_trace.append("close")
+                    return {"actor": "fixture-bot"}
+                state.side_effect = close_state
             labels = Mock(return_value={"actor": "fixture-bot"})
             if fail_labels:
                 labels.side_effect = PLAN.github_issue_core.IssueError(

@@ -2178,18 +2178,27 @@ malformed rather than ignoring its additional field.
   requires the Director's approval, given as the repository owner, for Director-opened
   or Director-admitted work in a milestone listed in merged `DIRECTION.md`. An
   unadmitted agent-added requirement beyond the agreed outcome may close with
-  the reason supplied through `--comment-file`; it is recorded in the close comment
-  and `closed.owner_decision.scope_cut_reason`. This exception requires a known managed
-  agent author, only known agent milestone assignments across the complete event
-  history, no human discussion or recorded Director decision, and no Director
-  `+1` on the issue or any comment. Protected Client, outside-user, security,
-  live-site and Track records retain the decision guard; incomplete reads refuse.
-  Before using the exception, review the original request and linked decisions
-  and audit records against the overall scope rule. An automated audit listing
-  an addition is not Director admission. A manual fallback must establish the
-  same evidence and record the reason, or retain the Director decision route:
-  a repository owner comment after
-  the last issue-body edit, or a repository owner `+1` reaction after
+  the reason and a link to the original agent proposal in `--comment-file`.
+  Cite an unedited known-agent issue/PR timeline comment, using its full
+  `https://github.com/OWNER/REPO/issues/N#issuecomment-ID` URL (the `/pull/` form
+  also works). The helper verifies the source's identity and edit history;
+  agents still judge the original request, linked decisions and audit records
+  against the overall scope rule. Bot authorship is not proof of expendable scope.
+  The result records this as `closed.owner_decision.reason: agent_attested_scope_cut`,
+  with `scope_cut_reason` and `scope_cut_source`. The reason is published and
+  read back before closure, so a failed comment leaves the issue open.
+  This exception requires a known managed agent author, complete milestone and
+  timeline evidence with only agent actors, only agent body editors, no human
+  discussion or reactions, and no recorded Director decision. Protected Client,
+  outside-user, security, live-site and Track records retain the decision guard;
+  incomplete reads refuse. An automated audit listing an addition is not Director
+  admission. A parent or Track's approval does not admit every later agent-added
+  child; the reason must explain what exceeds that agreed outcome. A manual
+  fallback must establish the same evidence and record the reason, or retain
+  the Director decision route:
+  a repository owner comment after the last issue-body edit whose first line is
+  `Close #<number> as not planned.` (optionally prefixed `Director decision: `
+  or `Owner decision: `), or a repository owner `+1` reaction after
   that edit on an unedited comment starting with the exact first line
   `Director decision: Close #<number> as not planned.` The legacy `Owner decision:`
   spelling remains accepted for existing comments. Other accounts, comment

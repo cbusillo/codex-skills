@@ -6685,6 +6685,25 @@ def cmd_close(args: argparse.Namespace) -> None:
         completed_steps.append("index_reopen_trigger")
         close_comment = ""
 
+    if close_comment and owner_decision and owner_decision.get("reason") == "agent_attested_scope_cut":
+        try:
+            comment_result = github_comment_core.comment(
+                "issue", number, close_comment, repo=issue_repo, gh_cmd=gh_cmd,
+                expected_actor=expected_actor, operation=CURRENT_OPERATION, completed_steps=completed_steps,
+                failed_step="post_scope_cut_reason", dedupe_body=True)
+            comment_id = comment_result["comment"]["id"]
+            _, published = api_json("GET", f"/repos/{issue_repo}/issues/comments/{comment_id}",
+                                    failed_step="read_scope_cut_reason", repository=issue_repo)
+            if (github_comment_core.canonical_comment_body(published.get("body")) != close_comment.rstrip()
+                    or published.get("id") != comment_id
+                    or issue_author_login(published) != (expected_actor or comment_result.get("actor"))
+                    or published.get("issue_url") != f"https://api.github.com/repos/{issue_repo}/issues/{number}"):
+                raise PlanError("Scope-cut reason readback differs; issue not closed")
+        except github_comment_core.CommentError as exc:
+            raise plan_error_from_comment(exc, completed_steps=completed_steps) from exc
+        completed_steps.append("scope_cut_reason_readback")
+        close_comment = ""
+
     project_result: dict[str, Any] = {}
     project_config = config.get("projects") or {}
     project = args.project or project_config.get("default_project")
@@ -7328,46 +7347,100 @@ def owner_reaction_decision(
     return None
 
 
+SCOPE_CUT_EDITS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      userContentEdits(first: 100) {
+        nodes { editor { login __typename } }
+        pageInfo { hasNextPage }
+      }
+    }
+  }
+}
+"""
+
+
 PROTECTED_SCOPE = re.compile(
-    r"\b(?:client|customer|security|vulnerability|incident|outage|production|live[- ]site|outside[- ]user)\b"
-    r"|\b(?:Director|Owner) decision\b|^Track:", re.IGNORECASE | re.MULTILINE,
+    r"\b(?:client|customer) requests?\b|\bsecurity findings?\b|\bvulnerabilit(?:y|ies)\b"
+    r"|\blive[- ]site (?:issue|breakage)\b|\boutside[- ]user reports?\b"
+    r"|\b(?:Director|Owner) (?:decision|asked|requested)\b|^Track:", re.IGNORECASE | re.MULTILINE,
+)
+PROTECTED_SCOPE_LABEL = re.compile(
+    r"\b(?:client|customer|security|vulnerability|incident|outage|production|live[- ]site|outside[- ]user)\b",
+    re.IGNORECASE,
 )
 
 
-def unadmitted_agent_requirement(
-    issue_repo: str, number: int, issue: dict[str, Any], comments: list[dict[str, Any]],
-) -> bool:
+# https://github.com/cbusillo/direction/issues/152
+
+def agent_scope_cut_source(
+    issue_repo: str, number: int, issue: dict[str, Any], comments: list[dict[str, Any]], reason: str,
+) -> str | None:
     if not issue_body_is_fully_managed(issue):
-        return False
-    text = "\n".join([str(issue.get("title") or ""), str(issue.get("body") or ""),
-                       *normalize_labels(issue.get("labels"))])
-    if PROTECTED_SCOPE.search(text):
-        return False
+        return None
+    text = str(issue.get("title") or "") + "\n" + str(issue.get("body") or "")
+    if PROTECTED_SCOPE.search(text) or any(PROTECTED_SCOPE_LABEL.search(label) for label in normalize_labels(issue.get("labels"))):
+        return None
     owner = issue_repo.split("/", 1)[0].casefold()
     agents = {login.casefold() for login in wait_authors(issue_repo)} - {owner}
     for comment in comments:
         author = issue_author_login(comment)
         if not author or author.casefold() not in agents or PROTECTED_SCOPE.search(str(comment.get("body") or "")):
-            return False
+            return None
     _, events = collect_paged_rest_items(
-        f"/repos/{issue_repo}/issues/{number}/events", query={}, bucket="rest_core",
-        step_prefix="scope_cut_milestone_events",
+        f"/repos/{issue_repo}/issues/{number}/timeline", query={}, bucket="rest_core",
+        step_prefix="scope_cut_timeline",
     )
-    assignments = [event for event in events if event.get("event") == "milestoned"]
-    if not assignments or any(str((event.get("actor") or {}).get("login") or "").casefold() not in agents
-                              for event in assignments):
-        return False
+    if not any(event.get("event") == "milestoned" for event in events):
+        return None
+    for event in events:
+        actor = (event.get("actor") or event.get("user") or {}).get("login")
+        if not isinstance(actor, str) or actor.casefold() not in agents:
+            return None
+        source_issue = (event.get("source") or {}).get("issue")
+        if isinstance(source_issue, dict) and (not issue_body_is_fully_managed(source_issue)
+                                              or PROTECTED_SCOPE.search(str(source_issue.get("body") or ""))):
+            return None
+    repo_owner, repo_name = issue_repo.split("/", 1)
+    _, data = api_json("POST", "/graphql", {"query": SCOPE_CUT_EDITS_QUERY,
+        "variables": {"owner": repo_owner, "name": repo_name, "number": number}},
+        is_write=False, failed_step="scope_cut_editors", repository=issue_repo)
+    edits = data["data"]["repository"]["issue"]["userContentEdits"]
+    if data.get("errors") or edits["pageInfo"]["hasNextPage"] is not False:
+        return None
+    for edit in edits["nodes"]:
+        editor = edit.get("editor") or {}
+        login = editor.get("login")
+        if editor.get("__typename") == "Bot" and isinstance(login, str):
+            login += "[bot]"
+        if not isinstance(login, str) or login.casefold() not in agents:
+            return None
     reaction_paths = [f"/repos/{issue_repo}/issues/{number}/reactions"]
     for comment in comments:
         if not isinstance(comment.get("id"), int):
-            return False
+            return None
         reaction_paths.append(f"/repos/{issue_repo}/issues/comments/{comment['id']}/reactions")
     for path in reaction_paths:
         _, reactions = collect_paged_rest_items(path, query={}, bucket="rest_core", step_prefix="scope_cut_reactions")
-        if any(reaction.get("content") == "+1" and str((reaction.get("user") or {}).get("login") or "").casefold() == owner
+        if any(str((reaction.get("user") or {}).get("login") or "").casefold() not in agents
                for reaction in reactions):
-            return False
-    return True
+            return None
+    sources = re.finditer(r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/(\d+)#issuecomment-(\d+)\b", reason)
+    for source in sources:
+        source_repo, source_number, comment_id = source.groups()
+        if source_repo.split("/", 1)[0].casefold() != owner:
+            continue
+        _, origin = api_json("GET", f"/repos/{source_repo}/issues/comments/{comment_id}",
+                             failed_step="scope_cut_origin", repository=source_repo)
+        author = issue_author_login(origin)
+        source_agents = {login.casefold() for login in wait_authors(source_repo)} - {owner}
+        if (author and author.casefold() in source_agents
+                and origin.get("issue_url") == f"https://api.github.com/repos/{source_repo}/issues/{source_number}"
+                and not PROTECTED_SCOPE.search(str(origin.get("body") or ""))
+                and unedited_owner_decision(origin, repository=source_repo)):
+            return source.group()
+    return None
 
 
 def check_owner_decides_not_planned(
@@ -7421,6 +7494,8 @@ def check_owner_decides_not_planned(
             and author.casefold() == repo_owner.casefold()
             and isinstance(created_at, str)
             and created_at > status_updated_at
+            and re.fullmatch(rf"(?:(?:Director|Owner) decision: )?Close #{number} as not planned\.",
+                             str(comment.get("body") or "").split("\n", 1)[0]) is not None
         ):
             return {
                 "required": True,
@@ -7438,14 +7513,21 @@ def check_owner_decides_not_planned(
             f"Cannot close {issue_repo}#{number} as not planned: could not verify the owner's "
             "reaction and the decision's edit history.", cause="read_failure",
         ) from exc
-    if scope_cut_reason.strip() and unadmitted_agent_requirement(issue_repo, number, issue, comments):
-        return {"required": False, "reason": "unadmitted_agent_requirement", "milestone": title,
-                "scope_cut_reason": scope_cut_reason.strip()}
+    try:
+        source = agent_scope_cut_source(issue_repo, number, issue, comments, scope_cut_reason) if scope_cut_reason.strip() else None
+    except (PlanError, KeyError, TypeError, AttributeError) as exc:
+        raise owner_decision_refusal(
+            f"Cannot close {issue_repo}#{number} as not planned: scope-cut admission evidence is unavailable.",
+            cause="read_failure",
+        ) from exc
+    if source:
+        return {"required": False, "reason": "agent_attested_scope_cut", "milestone": title,
+                "scope_cut_reason": scope_cut_reason.strip(), "scope_cut_source": source}
     raise owner_decision_refusal(
         f"Cannot close {issue_repo}#{number} as not planned: it is in milestone {title!r} listed in "
         f"{issue_repo}:{DIRECTION_FILE}, and no comment by the repository owner {repo_owner!r} after the "
-        f"last Current Status update ({status_updated_at}) records the decision. Ask the Director to comment "
-        "on the issue, or react with thumbs-up to an unedited comment whose first line is "
+        f"last Current Status update ({status_updated_at}) records the decision. Ask the Director to post a comment starting with "
+        f'"Close #{number} as not planned.", or react with thumbs-up to an unedited comment whose first line is '
         f"\"Director decision: Close #{number} as not planned.\", then rerun; do not close it another way."
     )
 
