@@ -275,9 +275,9 @@ def overlay_lower_digest(root: Path) -> str:
         metadata = path.lstat()
         if not stat.S_ISDIR(metadata.st_mode) and not stat.S_ISREG(metadata.st_mode):
             raise ValueError("Overlay inputs cannot contain links or special files")
-        required_mode = 0o005 if path.is_dir() else 0o004
+        required_mode = 0o007 if path.is_dir() else 0o006
         if metadata.st_mode & required_mode != required_mode:
-            raise ValueError("Overlay lower must already be readable by the image user; prepare a readable frozen input")
+            raise ValueError("Overlay lower must already have container-copy permissions; prepare a compatible frozen input")
         entry = [
             str(path.relative_to(root)),
             metadata.st_mode,
@@ -366,6 +366,21 @@ class Docker:
         if volume.get("Name") != name or volume.get("Driver") != "local" or (volume.get("Labels") or {}).get(key) != value:
             raise RuntimeError("Overlay volume ownership differs; preserve custody")
         return volume
+
+    @staticmethod
+    def stage_overlay_input(root: Path) -> None:
+        if root.resolve(strict=True) != root or not root.is_dir():
+            raise ValueError("Stage only a new unaliased overlay input directory")
+        paths = [root, *root.rglob("*")]
+        for path in paths:
+            mode = path.lstat().st_mode
+            if not stat.S_ISDIR(mode) and not stat.S_ISREG(mode):
+                raise ValueError("Overlay input staging refuses links and special files")
+        for path in paths:
+            member = tarfile.TarInfo(str(path))
+            member.mode = path.stat().st_mode
+            member.type = tarfile.DIRTYPE if path.is_dir() else tarfile.REGTYPE
+            path.chmod(container_copy_mode(member).mode)
 
     def cleanup_overlay_volumes(self) -> None:
         names = self.call("volume", "ls", "-q", "--filter", f"label={self.label}").split()

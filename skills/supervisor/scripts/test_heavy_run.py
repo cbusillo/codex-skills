@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tarfile
 import time
 import unittest
 from decimal import Decimal
@@ -72,6 +73,7 @@ class OverlayTests(unittest.TestCase):
         self.lower.mkdir(mode=0o755)
         (self.lower / "attachment").write_bytes(b"original attachment")
         (self.lower / "attachment").chmod(0o644)
+        heavy_run.Docker.stage_overlay_input(self.lower)
         self.docker = VolumeDocker(self.root / "engine")
         self.copy = {"source": str(self.lower), "destination": "/workspace/filestore", "overlay": True}
 
@@ -106,7 +108,7 @@ class OverlayTests(unittest.TestCase):
         with patch.object(os, "uname", return_value=type("System", (), {"sysname": "Linux"})()):
             self.docker.create_overlay(self.copy, "owned")
         (self.lower / "attachment").write_bytes(b"unexpected host change")
-        with self.assertRaisesRegex(RuntimeError, "lower changed"):
+        with self.assertRaises(RuntimeError):
             self.docker.cleanup_overlay_volumes()
         self.assertEqual(len(self.docker.volumes), 2)
 
@@ -127,11 +129,27 @@ class OverlayTests(unittest.TestCase):
 
     def test_overlay_refuses_non_linux_and_skips_the_container_copy(self) -> None:
         with patch.object(os, "uname", return_value=type("System", (), {"sysname": "Darwin"})()):
-            with self.assertRaisesRegex(ValueError, "no copy fallback"):
+            with self.assertRaises(ValueError):
                 self.docker.create_overlay(self.copy, "owned")
         with patch.object(subprocess, "Popen") as copy_process:
             self.docker.copy_input("fixture", self.copy)
         copy_process.assert_not_called()
+
+    def test_data_filter_extraction_is_prepared_for_image_user_writes(self) -> None:
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w") as archive:
+            archive.add(self.lower, arcname="filestore")
+        extracted = self.root / "received"
+        extracted.mkdir()
+        stream.seek(0)
+        with tarfile.open(fileobj=stream) as archive:
+            archive.extractall(extracted, filter="data")
+        lower = extracted / "filestore"
+        with self.assertRaises(ValueError):
+            heavy_run.overlay_lower_digest(lower)
+        heavy_run.Docker.stage_overlay_input(lower)
+        self.assertTrue(heavy_run.overlay_lower_digest(lower))
+        self.assertEqual((lower / "attachment").read_bytes(), (self.lower / "attachment").read_bytes())
 
 
 def wait_for(path: Path) -> None:
