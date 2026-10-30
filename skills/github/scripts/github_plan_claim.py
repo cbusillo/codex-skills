@@ -956,7 +956,7 @@ def artifact_evidence(
 
 
 # The kinds of work the overall Order admits; a claim names one with --admission.
-ADMISSIONS = ("live-breakage", "milestone", "own-project", "repeat-stop", "spare-capacity")
+ADMISSIONS = ("live-breakage", "client-request", "milestone", "own-project", "repeat-stop", "spare-capacity")
 ISSUE_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/([1-9]\d*)")
 
 
