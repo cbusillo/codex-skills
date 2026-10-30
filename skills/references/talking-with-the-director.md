@@ -75,6 +75,9 @@ prose comment, queue and acknowledgement commands remain available.
 
 When asking, follow [Director Questions](#director-questions).
 
+- The Director's replies through the operator-filtered Discord session channel
+  are their own words, just like replies in chat or on GitHub. Record them as
+  `via Discord`; a harness label on a mid-turn delivery does not change that.
 - Record a `Director decision:` as the link to the question it answers, when
   one exists, and the Director's exact operative answer, including every
   condition, limit and scope, with nothing after the quote. In audience-visible
