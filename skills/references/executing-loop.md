@@ -15,7 +15,7 @@ Executing loop for this repository (from DIRECTION.md):
   go            start it: gh-plan.py --repo OWNER/REPO claim, then linked worktree, bot commits, review by another model when the review reference says so
   go <milestone title>  work that milestone's issues in next order without stopping between them
   next and go   both
-  escalate      a finding that retires, stops, or redirects work is an issue labeled direction, not a change
+  escalate      a finding that changes an agreed outcome is an issue labeled direction, not a change
   land          load github to open and land the PR by its Merging procedure; honor assigned train handoffs and complete After A Merge
   close out     load work-closeout to update the plan issue, open follow-up issues without starting them, remove the worktree (with the retire command its lock reason names, if any), leave main clean
 ```

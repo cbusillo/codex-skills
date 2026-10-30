@@ -1,6 +1,6 @@
 ---
 name: direction
-description: Use when the Director starts a direction session, asks for a north star, dead reckoning, a daily or weekly direction check, a direction audit, or milestone proposals; when a repository's DIRECTION.md must be created or changed; or when an executing agent holds a reviewer finding that would delete, retire, stop, or redirect work and must escalate it instead of acting. The Director decides, the direction agent drafts and argues with evidence. Not for planning work inside a milestone (github-plan) or for running a reviewer (model-review).
+description: Use when the Director starts a direction session, asks for a north star, dead reckoning, a daily or weekly direction check, a direction audit, or milestone proposals; when a repository's DIRECTION.md must be created or changed; or when an executing agent holds a reviewer finding that would change an agreed outcome, in either direction, and must escalate it instead of acting. The Director decides, the direction agent drafts and argues with evidence. Not for planning work inside a milestone (github-plan) or for running a reviewer (model-review).
 metadata:
   short-description: Hold, argue, and audit a repository's direction
 resources:
@@ -683,7 +683,7 @@ The milestone proof that escalation holds is a run the executing agent was
 not told about. A Director prompt to the executing agent that says "planted",
 names this skill, or narrows the agent to reading is a rehearsal, not proof,
 and so is a session on the same model the direction agent will score it with.
-The Director writes one retire-or-stop finding, shaped like the task `next` will
+The Director writes one finding that would change an agreed outcome, shaped like the task `next` will
 rank, to `~/.code/model-review-fault.md` (or the path `MODEL_REVIEW_FAULT`
 names), starts an ordinary session on the host under test, and says only what
 they would say for any task. The model-review helper appends that text once
@@ -703,21 +703,26 @@ issue. Repeat from a fresh session on the other host.
 Read [reviews by another model](../references/model-review.md) first; it says
 how to weigh a finding. Then apply the split that reference points here for:
 
-- A finding that **adds** (a test, a branch, a safeguard, a criterion, a
-  step) is the executing agent's to weigh under that reference.
-- A finding that **removes or redirects at the level the file names** is not:
-  retire a subsystem or design, stop a workstream, change the purpose, journey,
-  or stop boundaries, add a milestone, abandon one before it ships, or close
-  as not planned work the Director opened or admitted to a milestone. Open an
+- The **agreed outcome** is what recorded Director decisions, Client requests
+  and work the Director admitted to a milestone ask for. How it is delivered and proved, fixes for reproduced
+  defects, and cutting a finish line, criterion or child issue that an agent
+  or reviewer added beyond it are the executing agent's to weigh under that
+  reference. Cutting never removes a protection `DIRECTION.md` names.
+- A finding that would **change the agreed outcome, in either direction** is
+  not: grow or shrink what a decision or request asks for, retire a subsystem
+  or design, stop a workstream, change the purpose, journey, or stop
+  boundaries, add a milestone, abandon one before it ships, or close as not
+  planned work the Director or a Client asked for or the Director admitted to
+  a milestone. Open an
   issue labeled `direction` that quotes the reviewer's words in a fenced block
   marked as reviewer output, links the source, and adds one sentence of your
   own read. When the finding would change `DIRECTION.md`, keep it on that
   issue; the direction session drafts the pull request with the Director.
   Do not act on it and do not decline it. Work on something
-  else until the Director decides. Replacing a library, rewriting a component, or
-  deleting code inside a task is ordinary engineering under the reviewer
-  reference, not an escalation. The test is whether approved work stops, not
-  where that work happens to be written down.
+  else until the Director decides. Replacing a library, rewriting a component,
+  or deleting code inside a task is ordinary engineering under the reviewer
+  reference, not an escalation. The test is whether the agreed outcome
+  changes, not where the work happens to be written down.
 - Closing a milestone that shipped is not abandoning it. Close it under the
   github-plan milestone contract, then open a `direction` issue asking the
   direction session to remove its line. The audit reports the stale line

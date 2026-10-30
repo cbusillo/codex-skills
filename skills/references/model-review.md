@@ -42,8 +42,8 @@ fails loudly when a reviewer could not read or returned nothing.
 - Also ask: "Read the Director's overall DIRECTION.md and the repository's
   own, if it has one. Does this work fit them, and would they prefer a simpler
   way?" Reviewers have no network. Pass the overall file, from a checkout
-  current with its remote, with the helper's `--input`. A finding that the work should stop
-  or change course is weighed under the escalation rule below.
+  current with its remote, with the helper's `--input`. A finding that would change
+  the agreed outcome is weighed under the escalation rule below.
 - When commits carry
   [Client-impact trailers](../github/references/repo-workflow.md#client-impact-trailers),
   ask the reviewer to check each `none` claim against that commit's diff. A
@@ -108,11 +108,14 @@ the author verifies it.
   additive fix can skip a full rereview.
 - When reviewers disagree, or you disagree with one, test it rather than
   averaging the opinions.
-- The rules above cover findings that add something. A finding that would
-  delete, retire, stop, or redirect work is the Director's to decide: escalate it
-  under the `direction` skill instead of acting on it or declining it. An
-  author judging a challenge to its own plan is how a wrong direction survives
-  review.
+- A finding that would change the agreed outcome (what recorded Director
+  decisions, Client requests and work the Director admitted to a milestone ask
+  for), in either direction, is the Director's to decide: escalate it under the
+  `direction` skill instead of acting on it or declining it. Cutting a finish
+  line, criterion or child issue that an agent or reviewer added beyond that
+  outcome is weighed like any other finding, and never removes a protection
+  `DIRECTION.md` names. An author judging a challenge to its own plan is how a wrong
+  direction survives review.
 
 ## Reporting
 

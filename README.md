@@ -686,7 +686,7 @@ After a confirmed landing, reconcile the runtime checkout as described in
 The `direction` skill holds a repository's direction in one Director-approved
 `DIRECTION.md` at the root, keeps milestones as waypoints that must be listed
 there, and tells an executing agent to escalate a reviewer finding that would
-delete, retire, or redirect work instead of judging it. Its read-only audit
+change an agreed outcome instead of judging it. Its read-only audit
 reports drift:
 
 ```bash

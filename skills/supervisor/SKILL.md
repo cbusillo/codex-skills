@@ -463,7 +463,7 @@ Read `direction_audit.py --stale-waits-only` for repositories `gh-plan.py next`
 discovers, respecting quota/landing priority. Read full finish lines and later
 comments before correcting obsolete qualification waits; preserve real people
 waits, engineering and selection exclusions. Post takeover findings and question
-links on the handoff record. Escalate retire/stop/redirect findings to `direction`.
+links on the handoff record. Escalate findings that change an agreed outcome to `direction`.
 Keep working through compaction; close out only when done, compaction fails or
 an account needs departure, with durable handoff and verified safe closure.
 
