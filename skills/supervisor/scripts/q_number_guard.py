@@ -61,9 +61,10 @@ def missing_context(message: str) -> str | None:
     text = QUOTED.sub(" ", message)
     if not asks_director(text):
         return None
+    has_context = bool(COST.search(text) and DEVELOPER.search(text))
     if not NUMBERED.search(text):
-        return REASON
-    if COST.search(text) and DEVELOPER.search(text):
+        return REASON if has_context else f"{REASON} {director_question_rule()}"
+    if has_context:
         return None
     return (f"{director_question_rule()} "
             "Repeat the reply. If the reply asks nothing, end the turn again unchanged.")
