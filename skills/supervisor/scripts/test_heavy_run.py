@@ -5,13 +5,16 @@
 # ///
 from __future__ import annotations
 
+import io
 import json
 import multiprocessing
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
+import tarfile
 import time
 import unittest
 from decimal import Decimal
@@ -20,6 +23,133 @@ from pathlib import Path
 from unittest.mock import patch
 
 import heavy_run
+
+
+class VolumeDocker(heavy_run.Docker):
+    def __init__(self, root: Path) -> None:
+        super().__init__(heavy_run.Slot(0, io.BytesIO(), "fixture"), io.StringIO(), "unix:///fixture")
+        self.root = root
+        self.volumes = {}
+        self.creates = []
+
+    def call(self, *args: str, timeout: int | None = 60) -> str:
+        if args[0] == "info":
+            return str(self.root)
+        if args[0] == "create":
+            self.creates.append(args)
+            return args[args.index("--name") + 1]
+        if args[:2] == ("volume", "ls"):
+            return "\n".join(self.volumes)
+        if args[:2] == ("volume", "inspect"):
+            return json.dumps([self.volumes[args[-1]]])
+        if args[:2] == ("volume", "create"):
+            name = args[-1]
+            labels, options = {}, {}
+            for index, value in enumerate(args[:-1]):
+                if value in {"--opt", "--label"}:
+                    key, setting = args[index + 1].split("=", 1)
+                    (labels if value == "--label" else options)[key] = setting
+            backing = self.root / "volumes" / name / "_data"
+            backing.mkdir(parents=True)
+            self.volumes[name] = {"Name": name, "Driver": "local", "Options": options,
+                                  "Labels": labels, "Mountpoint": str(backing)}
+            return name
+        if args[:2] == ("volume", "rm"):
+            name = args[-1]
+            if any(name + "/_data/" in volume["Options"].get("o", "") for volume in self.volumes.values()):
+                raise RuntimeError("Writable backing still has an overlay consumer")
+            shutil.rmtree(self.root / "volumes" / name)
+            del self.volumes[name]
+            return name
+        raise AssertionError(args)
+
+
+class OverlayTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.lower = self.root / "lower"
+        self.lower.mkdir(mode=0o755)
+        (self.lower / "attachment").write_bytes(b"original attachment")
+        (self.lower / "attachment").chmod(0o644)
+        heavy_run.Docker.stage_overlay_input(self.lower)
+        self.docker = VolumeDocker(self.root / "engine")
+        self.copy = {"source": str(self.lower), "destination": "/workspace/filestore", "overlay": True}
+
+    def test_shared_lower_gets_private_volumes_and_cleanup_preserves_original(self) -> None:
+        before = heavy_run.overlay_lower_digest(self.lower)
+        with patch.object(os, "uname", return_value=type("System", (), {"sysname": "Linux"})()):
+            for name in ("first", "second"):
+                copy = {**self.copy, "destination": f"/workspace/{name}"}
+                self.docker.create({"name": name, "image": "fixture", "copies": [copy]}, "run", "1", "1024", self.root)
+        self.assertEqual(len(self.docker.creates), 2)
+        mounts = [args[args.index("--mount") + 1] for args in self.docker.creates]
+        self.assertNotEqual(*mounts)
+        backings = [Path(volume["Mountpoint"]) for volume in self.docker.volumes.values() if not volume["Options"]]
+        self.assertEqual(len(backings), 2)
+        (backings[0] / "upper/attachment").write_bytes(b"private change")
+        self.assertFalse((backings[1] / "upper/attachment").exists())
+        self.assertEqual(heavy_run.overlay_lower_digest(self.lower), before)
+        self.docker.cleanup_overlay_volumes()
+        self.assertFalse(self.docker.volumes)
+        self.assertTrue(self.lower.is_dir())
+        self.assertEqual((self.lower / "attachment").read_bytes(), b"original attachment")
+
+    def test_containers_in_the_same_run_share_the_same_destination_upper(self) -> None:
+        with patch.object(os, "uname", return_value=type("System", (), {"sysname": "Linux"})()):
+            for name in ("web", "migration"):
+                self.docker.create({"name": name, "image": "fixture", "copies": [self.copy]}, "run", "1", "1024", self.root)
+        self.assertEqual(len(self.docker.volumes), 2)
+        mounts = [args[args.index("--mount") + 1] for args in self.docker.creates]
+        self.assertEqual(*mounts)
+
+    def test_changed_lower_keeps_owned_volume_custody_for_recovery(self) -> None:
+        with patch.object(os, "uname", return_value=type("System", (), {"sysname": "Linux"})()):
+            self.docker.create_overlay(self.copy, "owned")
+        (self.lower / "attachment").write_bytes(b"unexpected host change")
+        with self.assertRaises(RuntimeError):
+            self.docker.cleanup_overlay_volumes()
+        self.assertEqual(len(self.docker.volumes), 2)
+
+    def test_aliases_special_files_and_mount_option_injection_are_refused(self) -> None:
+        alias = self.root / "alias"
+        alias.symlink_to(self.lower, target_is_directory=True)
+        injected = self.root / "lower,upperdir=other"
+        injected.mkdir()
+        for path in (alias, injected):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                heavy_run.overlay_lower_digest(path)
+        (self.lower / "link").symlink_to(self.lower / "attachment")
+        with self.assertRaises(ValueError):
+            heavy_run.overlay_lower_digest(self.lower)
+        bad = {**self.copy, "destination": "/workspace,src=other"}
+        with self.assertRaises(ValueError):
+            heavy_run.validate_manifest({"containers": [{"name": "job", "image": "fixture", "copies": [bad]}], "job": "job"})
+
+    def test_overlay_refuses_non_linux_and_skips_the_container_copy(self) -> None:
+        with patch.object(os, "uname", return_value=type("System", (), {"sysname": "Darwin"})()):
+            with self.assertRaises(ValueError):
+                self.docker.create_overlay(self.copy, "owned")
+        with patch.object(subprocess, "Popen") as copy_process:
+            self.docker.copy_input("fixture", self.copy)
+        copy_process.assert_not_called()
+
+    def test_data_filter_extraction_is_prepared_for_image_user_writes(self) -> None:
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w") as archive:
+            archive.add(self.lower, arcname="filestore")
+        extracted = self.root / "received"
+        extracted.mkdir()
+        stream.seek(0)
+        with tarfile.open(fileobj=stream) as archive:
+            archive.extractall(extracted, filter="data")
+        lower = extracted / "filestore"
+        with self.assertRaises(ValueError):
+            heavy_run.overlay_lower_digest(lower)
+        heavy_run.Docker.stage_overlay_input(lower)
+        self.assertTrue(heavy_run.overlay_lower_digest(lower))
+        self.assertEqual((lower / "attachment").read_bytes(), (self.lower / "attachment").read_bytes())
 
 
 def wait_for(path: Path) -> None:
