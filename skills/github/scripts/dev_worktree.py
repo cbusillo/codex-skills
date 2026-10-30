@@ -194,9 +194,10 @@ def retire_task(target: Path, *, dry_run: bool, offline_only: bool = False) -> i
     if not target.is_dir():
         raise Refused(f"Retirement target is unavailable: {target}")
     common = Path(git(target, "rev-parse", "--path-format=absolute", "--git-common-dir"))
-    result = landed_worktrees.main(["--checkout", str(common.parent), "--path", str(target)], qualify_only=True)
-    if result:
-        return result
+    decision = landed_worktrees.target_decision(target, common.parent)
+    if decision["decision"] != "candidate":
+        print(json.dumps({"ok": False, "worktrees": [decision]}))
+        return 2
     _, helper = configuration()
     if helper is None:
         outcome = landed_worktrees.portable_retire(target, dry_run=dry_run)

@@ -34,16 +34,14 @@ does not trigger a global repository scan, cache sweep, or retirement workflow.
    bindings; unresolved ownership remains a hold. Release a known task-owned
    worktree lock only when its job has ended and removal is authorized, then
    collect fresh evidence. Never unlock merely because a lock looks stale.
-   A lock whose reason names a retire command was placed by the host's
-   worktree helper when it created the checkout. It is not another job's hold.
-   After the task is finished or handed off and its claim released, use
+   A managed host lock protects registration; it does not establish inactivity.
+   After continuing use ends and the task's claim release is verified, use
    [qualified retirement](../github/references/worktrees.md#retirement) from
    outside the tree. Never invoke the host primitive directly; its filesystem
    checks do not prove ownership. The catalog's next `dev-worktree` creation runs the same guarded
    retirement for that repository, with kept reasons; no separate after-landing
-   cleanup handoff is needed. The host command replaces manual unlock and
-   removal in step 6, including local IDE-state proof, and restores the lock
-   if it fails.
+   cleanup handoff is needed. Retain trees needed by ongoing work through a
+   handoff under that work's ownership.
 2. Establish current Git evidence. Resolve the live default branch and pin its
    advertised SHA (`git ls-remote --symref`); obtain missing objects through an
    authorized fetch, rather than trusting a stale tracking ref. Check ancestry

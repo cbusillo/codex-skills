@@ -97,38 +97,6 @@ class WorktreeTests(unittest.TestCase):
                 dev_worktree.main([str(self.repo), "new-task", self.initial])
             self.assertEqual(events[:3], ["refresh", "retire", "create"])
 
-    def test_retirement_qualifies_the_target_without_a_creation_sweep(self) -> None:
-        proof = mock.Mock()
-        proof.main.return_value = 0
-        proof.portable_retire.return_value = subprocess.CompletedProcess([], 0, "", "")
-        for helper in (None, self.base / "host"):
-            for flags in ([], ["--dry-run"], ["--offline-only"], ["--offline-only", "--dry-run"]):
-                with self.subTest(helper=helper, flags=flags), \
-                        mock.patch.dict(dev_worktree.os.environ, self.env, clear=True), \
-                        mock.patch.dict(sys.modules, {"landed_worktrees": proof}), \
-                        mock.patch.object(dev_worktree, "configuration", return_value=(self.base, helper)), \
-                        mock.patch.object(dev_worktree, "retire_finished") as sweep, \
-                        mock.patch.object(dev_worktree.os, "execv") as host:
-                    self.assertEqual(dev_worktree.main(["retire", *flags, str(self.repo)]), 0)
-                sweep.assert_not_called()
-                if helper is None:
-                    host.assert_not_called()
-                    proof.portable_retire.assert_called_with(self.repo, dry_run="--dry-run" in flags)
-                else:
-                    self.assertEqual(host.call_args.args[0], str(helper))
-                    self.assertEqual(host.call_args.args[1][-1], str(self.repo))
-                    self.assertEqual(set(host.call_args.args[1][1:-1]), {"retire", *flags})
-
-    def test_retirement_never_delegates_after_failed_ownership_qualification(self) -> None:
-        proof = mock.Mock()
-        proof.main.return_value = 2
-        with mock.patch.dict(sys.modules, {"landed_worktrees": proof}), \
-                mock.patch.dict(dev_worktree.os.environ, self.env, clear=True), \
-                mock.patch.object(dev_worktree, "configuration", return_value=(self.base, self.base / "host")), \
-                mock.patch.object(dev_worktree.os, "execv") as host:
-            self.assertEqual(dev_worktree.main(["retire", str(self.repo)]), 2)
-        host.assert_not_called()
-
     def test_unavailable_sweep_does_not_prevent_creation(self) -> None:
         for outcome in (subprocess.CompletedProcess([], 2, "", "unavailable"), FileNotFoundError("missing helper")):
             with mock.patch.object(dev_worktree, "configuration", return_value=(self.base, None)), \
@@ -671,7 +639,7 @@ class WorktreeTests(unittest.TestCase):
             destination = fixture / source.name
             destination.write_bytes(source.read_bytes())
             destination.chmod(source.stat().st_mode)
-        (fixture / "landed_worktrees.py").write_text("def main(argv, *, qualify_only=False):\n    return 0\n")
+        (fixture / "landed_worktrees.py").write_text("def target_decision(target, checkout):\n    return {'decision': 'candidate'}\n")
         entrypoint = [str(fixture / Path(arg).name) if arg in {str(SCRIPT), str(SCRIPT.with_name("dev-worktree"))}
                       else arg for arg in entrypoint]
         target = self.base / "target"
@@ -702,7 +670,8 @@ class WorktreeTests(unittest.TestCase):
                 time.sleep(0.01)
             self.assertTrue(ready.exists(), "host did not reach its interrupt handler")
             os.killpg(process.pid, signal.SIGINT)
-            process.communicate(timeout=5)
+            stdout, _ = process.communicate(timeout=5)
+            self.assertEqual(stdout, "")
             self.assertTrue(cleaned.exists(), "host cleanup was killed before completion")
             self.assertEqual(process.returncode, 130)
         finally:

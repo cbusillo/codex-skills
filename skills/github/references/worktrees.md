@@ -110,17 +110,18 @@ with this configuration:
 Verify this per-host setting before creation; the catalog entry delegates to
 the configured host helper. If it is absent, report the missing host configuration; the JSON above is
 the supported configuration route. Do not use the portable default on Chris-Studio. The existing helper verifies the volume identity before creating anything,
-locks registrations against unmounted-volume pruning, and names its guarded
-retirement command in the lock reason. Use the catalog entry above with this host configuration, so creation also
+locks registrations against unmounted-volume pruning. Use the catalog entry
+above with this host configuration, so creation also
 runs repository retirement. Keep the host helper unchanged; never make a
 replacement volume directory or fall back to internal storage. A catalog pull
 does not provision host storage or change runtime configuration.
 
 ## Retirement
 
-Use `work-closeout` to finish or hand off the work and record its retained
-artifacts. Release and verify its claim before retiring completed task trees;
-until then the claim protects continuing use. Run from outside the target tree.
+Use `work-closeout` to establish the task's disposition and retained artifacts.
+Retain a tree needed by ongoing work through a handoff under that work's
+ownership. Once continuing use ends, release and verify its claim before
+retiring the tree. Run from outside the target tree.
 For portable and managed-host worktrees, use the catalog entry by its full path:
 
 ```sh
@@ -128,12 +129,22 @@ For portable and managed-host worktrees, use the catalog entry by its full path:
 <catalog>/skills/github/scripts/dev-worktree retire /exact/task/path
 ```
 
-Apply only after a passing preview. A held claim on a record linked by the PR
-or naming the exact branch keeps the related trees, even across repositories.
-Record those links on the existing work issue or PR; a claim cannot protect an
-unrecorded association. Incomplete evidence or a kept target returns nonzero.
+Apply only after a passing preview. A held claim on the PR, an issue referenced
+with `Refs`, `Fixes` or `Closes`, or a record naming the exact branch keeps the
+related trees, even across repositories. Use `Refs OWNER/REPO#N` in the PR body
+for delivery associations, or name every related branch on the existing
+claimed work record. An ordinary URL in the body is not a recognized reference;
+an unrecorded association is unprotected. Incomplete evidence or a kept target
+returns nonzero.
 The host lock's command is a legacy primitive marker, not ownership proof; never
 substitute the bare host command. Preserve active, dirty or ambiguous work.
+
+Explicit retirement supports completed or abandoned published tasks after
+the existing closeout checks establish their disposition; it does not infer
+completion from checkout age or merged/default history. The configured host
+checks its current, legacy or missing registration lock and retains foreign
+locks. Portable foreign locks remain holds. Physical publication, contents,
+live-use and IDE checks still apply.
 
 Creation checks each registered linked worktree through `landed_worktrees.py`.
 A closed PR uses the existing PR-head, claim and publication checks;

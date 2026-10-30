@@ -21,6 +21,7 @@ from unittest import mock
 import github_plan_claim
 import github_plan_lease
 import landed_worktrees
+import dev_worktree
 
 
 NAMED = f"External worktree; {landed_worktrees.RETIRE_MARKER} <path>"
@@ -251,7 +252,7 @@ class RepositoryTests(Fixture):
             reader.paged_json.side_effect = lambda route, **_: (
                 [{"state": "closed", "number": 7}] if route.endswith(f"commits/{head}/pulls") else [])
             with mock.patch.object(landed_worktrees, "issues_naming", return_value=[]), \
-                    mock.patch.object(landed_worktrees, "pull_rows", side_effect=lambda *_: ({},
+                    mock.patch.object(landed_worktrees, "pull_rows", side_effect=lambda *_, **__: ({},
                     landed_worktrees.landed_decisions(self.repo, "work/source", head, self.root, pr_commits={head}))):
                 rows = list(landed_worktrees.repository_rows(reader, mock.Mock(), "o/sample", self.repo, self.root))
             self.assertEqual(next(row for row in rows if row["path"] == str(path))["decision"], "candidate")
@@ -326,9 +327,11 @@ class MainTests(Fixture):
         self.git(self.repo, "remote", "set-url", "origin", "https://github.com/o/sample.git")
 
     def run_main(self, pull, repo="o/sample", commits=(), discussions=None, bodies=None, branch=None, branch_pulls=(),
-                 claim_issues=(), search=None, archived_claim=False, all_trees=False, checkout=None, target=None, qualify_only=False):
+                 claim_issues=(), search=None, archived_claim=False, all_trees=False, checkout=None, target=None,
+                 entrypoint=False, dry_run=False, portable=False, offline_only=False):
+        pull = {"number": 7, **pull} if pull else pull
         config = self.base / "worktrees.json"
-        config.write_text(json.dumps({"root": str(self.root), "hostHelper": str(self.base / "host-helper")}))
+        config.write_text(json.dumps({"root": str(self.root), **({} if portable else {"hostHelper": str(self.base / "host-helper")})}))
         discussions = discussions or {}
         reader = mock.Mock()
         self.reader = reader
@@ -365,13 +368,89 @@ class MainTests(Fixture):
         out = io.StringIO()
         with mock.patch.dict(os.environ, {"DEV_WORKTREE_CONFIG": str(config)}), \
                 mock.patch.dict("sys.modules", {"github_read": read_errors}), \
-                mock.patch.object(landed_worktrees, "run_retire") as run, redirect_stdout(out):
+                mock.patch.object(landed_worktrees, "run_retire") as run, \
+                mock.patch.object(dev_worktree.os, "execv") as host, redirect_stdout(out):
             run.return_value = subprocess.CompletedProcess([], 0, "", "")
             landed = (["--path", str(target)] if target else ["--all"] if all_trees
                       else ["--branch", branch] if branch else ["--pr", "7"])
-            code = landed_worktrees.main(["--repo", repo, *landed, "--checkout", str(checkout or self.repo),
-                                          *([] if qualify_only else ["--apply"])], qualify_only=qualify_only)
-        return code, json.loads(out.getvalue()), run
+            if entrypoint:
+                code = dev_worktree.main(["retire", *(["--dry-run"] if dry_run else []),
+                                           *(["--offline-only"] if offline_only else []), str(target)])
+            else:
+                code = landed_worktrees.main(["--repo", repo, *landed, "--checkout", str(checkout or self.repo), "--apply"])
+            self.delegation_packet = os.environ.get("DEV_WORKTREE_DELEGATED")
+        return code, json.loads(out.getvalue()) if out.getvalue() else {}, host if entrypoint else run
+
+    def test_explicit_retirement_of_fresh_published_abandoned_work_reaches_host(self):
+        for lock in (NAMED, "External SanDisk worktree; preserve registration when unmounted", None):
+            with self.subTest(lock=lock):
+                target = self.worktree(f"abandoned-{len(self.git(self.repo, 'worktree', 'list').splitlines())}", lock=lock)
+                head = self.commit(target, "Abandoned work")
+                self.git(target, "push", str(self.remote), "HEAD")
+                code, result, host = self.run_main(None, target=target, entrypoint=True)
+                self.assertEqual((code, result), (0, {}))
+                self.assertEqual(host.call_args.args[1][-1], str(target))
+                self.assertEqual(self.git(target, "rev-parse", "HEAD"), head)
+
+    def test_explicit_retirement_blocks_active_prs_and_foreign_portable_locks(self):
+        target = self.worktree("ongoing", lock="Another job")
+        for portable, pulls in ((False, [{"number": 7, "state": "open"}]), (True, [])):
+            with self.subTest(portable=portable):
+                code, result, host = self.run_main(None, target=target, entrypoint=True,
+                                                   portable=portable, branch_pulls=pulls)
+                self.assertNotEqual(code, 0)
+                self.assertFalse(result["ok"])
+                host.assert_not_called()
+
+    def test_explicit_retirement_preserves_host_flags_and_qualified_exec_packet(self):
+        target = self.worktree("flags")
+        for dry_run, offline_only in ((False, False), (True, False), (False, True), (True, True)):
+            with self.subTest(dry_run=dry_run, offline_only=offline_only):
+                code, result, host = self.run_main(None, target=target, entrypoint=True,
+                                                   dry_run=dry_run, offline_only=offline_only)
+                self.assertEqual((code, result), (0, {}))
+                arguments = host.call_args.args[1][1:]
+                self.assertEqual(arguments, ["retire", *(["--dry-run"] if dry_run else []),
+                                             *(["--offline-only"] if offline_only else []), str(target)])
+                pid, request = self.delegation_packet.split(":", 1)
+                self.assertEqual(int(pid), os.getpid())
+                self.assertEqual(json.loads(request), arguments)
+
+    def test_explicit_retirement_keeps_primary_subdirectories_and_active_roots(self):
+        target = self.worktree("active")
+        nested = target / "nested"
+        nested.mkdir()
+        for path in (self.repo, nested):
+            code, result, host = self.run_main(None, target=path, entrypoint=True)
+            self.assertNotEqual(code, 0)
+            host.assert_not_called()
+        for active in ("calling", "runtime"):
+            patcher = (mock.patch.object(landed_worktrees.Path, "cwd", return_value=nested) if active == "calling"
+                       else mock.patch.object(landed_worktrees, "__file__", str(nested / "landed_worktrees.py")))
+            with self.subTest(active=active), patcher:
+                code, result, host = self.run_main(None, target=target, entrypoint=True)
+            self.assertNotEqual(code, 0)
+            self.assertEqual(result["worktrees"][0]["decision"], "kept")
+            host.assert_not_called()
+
+    def test_explicit_retirement_reads_recognized_cross_repository_delivery_ownership(self):
+        target = self.worktree("delivery-source")
+        ownership = self.claimed_source(released=False)
+        pull = {"number": 7, "state": "closed", "head": {"ref": "work/delivery-source"},
+                "body": "Refs o/operations#5"}
+        code, result, host = self.run_main(pull, target=target, entrypoint=True, branch_pulls=[pull],
+                                           discussions={"5": ownership["discussions"]["3"]})
+        self.assertNotEqual(code, 0)
+        self.assertEqual(result["worktrees"][0]["decision"], "kept")
+        host.assert_not_called()
+        self.assertEqual(self.reader.request.call_count, 1)
+
+    def test_source_and_refresh_branch_associations_are_searched_once(self):
+        refresh, pull, commits = self.merged_refresh()
+        self.run_main(pull, commits=commits)
+        queries = [call.args[1] for call in self.reader.request.call_args_list]
+        self.assertEqual(len(queries), len(set(queries)))
+        self.assertEqual(len(queries), 2)
 
     def test_open_pr_retires_nothing(self):
         path = self.worktree("open")
@@ -387,6 +466,16 @@ class MainTests(Fixture):
             code, result, run = self.run_main(None, all_trees=True, checkout=source)
         self.assertEqual((code, [row["decision"] for row in result["worktrees"]]), (0, ["kept", "kept"]))
         run.assert_not_called()
+
+    def test_explicit_pr_preserves_its_calling_and_source_checkout(self):
+        target = self.worktree("source")
+        pull = {"state": "closed", "head": {"ref": "work/source", "sha": self.git(target, "rev-parse", "HEAD"),
+                                               "repo": {"full_name": "o/sample"}}}
+        for checkout, calling in ((target, self.repo), (self.repo, target / "nested")):
+            with self.subTest(checkout=checkout), mock.patch.object(landed_worktrees.Path, "cwd", return_value=calling):
+                _, result, physical = self.run_main(pull, checkout=checkout)
+            self.assertEqual(result["worktrees"][0]["decision"], "kept")
+            physical.assert_not_called()
 
     def test_merged_pr_retires_its_source_worktree(self):
         path = self.worktree("merged")
@@ -510,21 +599,25 @@ class MainTests(Fixture):
     def test_exact_path_rechecks_ownership_and_never_retires_another_tree(self):
         target = self.settled_worktree("source")
         self.settled_worktree("other")
-        for released, qualification in ((False, False), (True, False), (False, True), (True, True)):
-            with self.subTest(released=released, qualification=qualification):
+        for released, entrypoint in ((False, False), (True, False), (False, True), (True, True)):
+            with self.subTest(released=released, entrypoint=entrypoint):
                 ownership = self.claimed_source(released=released)
-                code, result, run = self.run_main(None, target=target, claim_issues=[3], qualify_only=qualification, **ownership)
+                code, result, run = self.run_main(None, target=target, claim_issues=[3], entrypoint=entrypoint, **ownership)
                 self.assertEqual(code == 0, released)
-                self.assertEqual([r["path"] for r in result["worktrees"]], [str(target)])
-                self.assertEqual(result["worktrees"][0]["decision"],
-                                 ("candidate" if qualification else "retired") if released else "kept")
-                self.assertEqual(run.call_args_list, [mock.call(str(target), dry_run=True),
-                                                      mock.call(str(target), dry_run=False)] if released and not qualification else [])
-        code, result, run = self.run_main(None, target=target, claim_issues=[3],
-                                         discussions={"3": ValueError("Ownership record unreadable")})
-        self.assertNotEqual(code, 0)
-        self.assertEqual(result["worktrees"][0]["decision"], "kept")
-        run.assert_not_called()
+                if entrypoint and released:
+                    self.assertEqual(result, {})
+                    self.assertEqual(run.call_args.args[1][-1], str(target))
+                else:
+                    self.assertEqual([r["path"] for r in result["worktrees"]], [str(target)])
+                    self.assertEqual(result["worktrees"][0]["decision"], "retired" if released else "kept")
+                    self.assertEqual(run.call_args_list, [mock.call(str(target), dry_run=True),
+                                                          mock.call(str(target), dry_run=False)] if released else [])
+        for entrypoint in (False, True):
+            code, result, run = self.run_main(None, target=target, claim_issues=[3], entrypoint=entrypoint,
+                                             discussions={"3": ValueError("Ownership record unreadable")})
+            self.assertNotEqual(code, 0)
+            self.assertEqual(result["worktrees"][0]["decision"], "kept")
+            run.assert_not_called()
 
     def test_expired_session_lease_without_a_release_still_keeps_the_worktree(self):
         _, pull, commits = self.merged_refresh()

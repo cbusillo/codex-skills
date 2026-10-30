@@ -100,7 +100,9 @@ def landed_decisions(checkout: Path, branch: str, pr_head: str, root: Path, *,
         if tree.branch != branch and not fed_the_pr:
             continue
         row = {"path": str(tree.path), "branch": tree.branch, "head": tree.head}
-        if not is_under(tree.path, root):
+        if any(is_under(path, tree.path) for path in (checkout, Path.cwd(), Path(__file__))):
+            row.update(decision="kept", reason="source checkout or calling session uses this tree")
+        elif not is_under(tree.path, root):
             row.update(decision="kept", reason="outside the configured worktree root")
         elif not tree.names_retire_command and (tree.lock is not None or dev_worktree.configuration()[1] is not None):
             row.update(decision="kept", reason="lock names no retire command; follow work-closeout")
@@ -306,16 +308,59 @@ def unless_fast_forwarded(pull: dict, pr_commits: set[str]) -> set[str]:
     return set() if pull.get("merge_commit_sha") in pr_commits else pr_commits
 
 
-def open_claims(reader, github_read, repo: str, number: int, pull: dict) -> str:
+def ownership_decision(reader, github_read, repo: str, pulls: Iterable[dict], branches: Iterable[str]) -> dict:
     import github_plan_landing
     import github_plan_status.references
 
-    records = [(repo, number), *github_plan_status.references.linked_issues(repo, pull),
-               *issues_naming(reader, repo.split("/")[0], pull["head"]["ref"])]
-    base = pull.get("base") or {}
-    if pull.get("merged_at") and base.get("ref") == (base.get("repo") or {}).get("default_branch"):
-        records += github_plan_landing.closing_references(reader, repo, number)[1]
-    return claims_on(reader, github_read, records)
+    records = []
+    names = dict.fromkeys(branches)
+    for pull in pulls:
+        if not finished_pull(pull):
+            return {"decision": "kept", "reason": "branch or commit has an open PR"}
+        number = pull["number"]
+        records += [(repo, number), *github_plan_status.references.linked_issues(repo, pull)]
+        names[(pull.get("head") or {}).get("ref")] = None
+        base = pull.get("base") or {}
+        if pull.get("merged_at") and base.get("ref") == (base.get("repo") or {}).get("default_branch"):
+            records += github_plan_landing.closing_references(reader, repo, number)[1]
+    for branch in names:
+        if branch:
+            records += issues_naming(reader, repo.split("/")[0], branch)
+    if claims_on(reader, github_read, records):
+        return {"decision": "kept", "reason": "associated work has an open claim"}
+    return {"decision": "candidate"}
+
+
+def target_decision(target: Path, checkout: Path, *, preserve: Iterable[Path] = (), reader: Any = None) -> dict:
+    row = {"path": str(target), "decision": "kept"}
+    try:
+        root, helper = dev_worktree.configuration()
+        tree = next((tree for tree in registered(checkout) if tree.path.resolve() == target.resolve()), None)
+        if tree is None:
+            return {**row, "reason": "target is not a registered linked worktree"}
+        row.update(path=str(tree.path), branch=tree.branch, head=tree.head)
+        protected = {checkout.resolve(), Path.cwd().resolve(), Path(__file__).resolve(),
+                     *(path.resolve() for path in preserve)}
+        if any(is_under(path, tree.path) for path in protected):
+            return {**row, "reason": "source checkout or calling session uses this tree"}
+        if not is_under(tree.path, root):
+            return {**row, "reason": "outside the configured worktree root"}
+        if helper is None and tree.lock is not None:
+            return {**row, "reason": "portable worktree has a lock; resolve its owning job first"}
+        repo = github_slug(checkout)
+        if not repo:
+            return {**row, "reason": "checkout origin is not a GitHub repository"}
+        import github_read
+
+        if reader is None:
+            reader = github_read.GitHubReader(operation="github.worktree.retire_landed", include_archived=True)
+        pulls = reader.paged_json(f"repos/{repo}/pulls", step_prefix="retirement_target_pulls",
+                                  params={"state": "all", "head": f"{repo.split('/')[0]}:{tree.branch}"}) if tree.branch else []
+        if not pulls:
+            pulls = reader.paged_json(f"repos/{repo}/commits/{tree.head}/pulls", step_prefix="retirement_target_commit_pulls")
+        return {**row, **ownership_decision(reader, github_read, repo, pulls, [tree.branch] if tree.branch else [])}
+    except Exception as exc:
+        return {**row, "reason": f"retirement evidence unavailable: {type(exc).__name__}: {exc}"}
 
 
 def issues_naming(reader, owner: str, branch: str) -> list[tuple[str, int]]:
@@ -374,10 +419,14 @@ def pull_rows(reader, github_read, repo: str, number: int, checkout: Path, root:
         pr_commits = {c.get("sha") for c in reader.paged_json(f"repos/{repo}/pulls/{number}/commits",
                                                               step_prefix="landed_pull_commits")}
         pr_commits = unless_fast_forwarded(pull, pr_commits)
-        claims = open_claims(reader, github_read, repo, number, pull)
-    except (github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError, TypeError) as exc:
+        rows = landed_decisions(checkout, head["ref"], head["sha"], root, pr_commits=pr_commits)
+        ownership = ownership_decision(reader, github_read, repo, [pull], [row["branch"] for row in rows])
+    except (github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError, TypeError, KeyError) as exc:
         raise LookupError(f"PR commits or claims unavailable; nothing is retired: {exc}") from exc
-    rows = landed_decisions(checkout, head["ref"], head["sha"], root, pr_commits=pr_commits, claims=claims)
+    if ownership["decision"] == "kept":
+        for row in rows:
+            if row["decision"] == "candidate":
+                row.update(ownership)
     return {"merged": bool(pull.get("merged_at"))}, rows
 
 
@@ -393,10 +442,10 @@ def branch_rows(reader, github_read, repo: str, branch: str, checkout: Path, roo
     if not tip:
         raise LookupError("the default branch's tracking ref is missing; fetch origin first")
     try:
-        claims = claims_on(reader, github_read, issues_naming(reader, repo.split("/")[0], branch))
+        ownership = ownership_decision(reader, github_read, repo, [], [branch])
     except (github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError, TypeError, KeyError) as exc:
         raise LookupError(f"claims naming {branch} unavailable; nothing is retired: {exc}") from exc
-    rows = landed_decisions(checkout, branch, tip, root, claims=claims)
+    rows = landed_decisions(checkout, branch, tip, root, claims=ownership.get("reason", ""))
     return {}, keep_fresh_starts(rows, dt.datetime.now(dt.timezone.utc))
 
 
@@ -449,9 +498,6 @@ def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, ro
                         row = next((dict(decision) for decision in decisions if decision["path"] == str(tree.path)),
                                    {**row, "reason": "no covered worktree found; use --branch or --pr with exact provenance"})
                         row = keep_fresh_starts([row], dt.datetime.now(dt.timezone.utc))[0]
-                        if pulls and row["decision"] == "candidate" and tree.branch and claims_on(
-                                reader, github_read, issues_naming(reader, repo.split("/")[0], tree.branch)):
-                            row.update(decision="kept", reason="associated work has an open claim")
             except Exception as exc:
                 row.update(decision="kept", reason=f"retirement evidence unavailable: {type(exc).__name__}: {exc}")
             yield row
@@ -459,7 +505,7 @@ def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, ro
     return decisions_for_trees()
 
 
-def main(argv: list[str] | None = None, *, qualify_only: bool = False) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Guarded retirement of finished repository worktrees.")
     parser.add_argument("--repo", help="OWNER/REPO of the landed work")
     landed = parser.add_mutually_exclusive_group(required=True)
@@ -472,8 +518,6 @@ def main(argv: list[str] | None = None, *, qualify_only: bool = False) -> int:
     parser.add_argument("--budget-seconds", type=float, help="stop starting checks after this many seconds; finish any guarded retirement in progress")
     parser.add_argument("--preserve", type=Path, action="append", default=[], help="retain an explicitly preserved path")
     args = parser.parse_args(argv)
-    if qualify_only and (not args.path or args.apply):
-        return refuse("Ownership qualification requires an exact path and never applies retirement.")
     if args.budget_seconds is not None and (args.budget_seconds <= 0 or not math.isfinite(args.budget_seconds)):
         return refuse("budget-seconds must be positive and finite")
     deadline = time.monotonic() + args.budget_seconds if args.budget_seconds else None
@@ -490,7 +534,10 @@ def main(argv: list[str] | None = None, *, qualify_only: bool = False) -> int:
     reader = github_read.GitHubReader(operation="github.worktree.retire_landed", include_archived=True,
                                       deadline_at=time.time() + args.budget_seconds if args.budget_seconds else None)
     try:
-        if args.all or args.path:
+        if args.path:
+            summary = {}
+            rows = [target_decision(args.path, args.checkout, preserve=args.preserve, reader=reader)]
+        elif args.all:
             summary = {}
             rows = repository_rows(reader, github_read, repo, args.checkout, root,
                                    preserve={args.checkout.resolve(), Path.cwd().resolve(), Path(__file__).resolve(),
@@ -501,8 +548,8 @@ def main(argv: list[str] | None = None, *, qualify_only: bool = False) -> int:
             summary, rows = pull_rows(reader, github_read, repo, args.pr, args.checkout, root)
     except (LookupError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
         return refuse(str(exc))
-    rows = list(rows) if qualify_only else retire(rows, apply=args.apply, deadline=deadline)
-    passed = {"candidate"} if qualify_only else {"retired", "would_retire"}
+    rows = retire(rows, apply=args.apply, deadline=deadline)
+    passed = {"retired", "would_retire"}
     ok = not args.path or len(rows) == 1 and rows[0]["decision"] in passed
     print(json.dumps({"ok": bool(ok), **summary, "worktrees": rows}, indent=2), flush=True)
     return 0 if ok else 2
