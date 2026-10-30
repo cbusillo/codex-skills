@@ -6481,6 +6481,22 @@ class ClaimTests(unittest.TestCase):
         self.assertIn(CLAIM.admission_text("own-project", []), self.comments[-1]["body"])
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
+    def test_client_request_admission_requires_and_preserves_the_clients_issue_or_comment(self) -> None:
+        with self.assertRaises(PLAN.PlanError):
+            self.admit("client-request")
+        self.assert_no_writes()
+        for link in ("https://github.com/owner/repo/issues/42",
+                     "https://github.com/owner/repo/pull/7#issuecomment-123"):
+            with self.subTest(link=link):
+                self.setUp()
+                parsed = PLAN.build_parser().parse_args([
+                    "claim", "42", "--worker", "worker", "--session", "session",
+                    "--branch", "work/request", "--next-action", "Implement the Client request",
+                    "--admission", "client-request", "--admission-link", link])
+                self.admit(parsed.admission, parsed.admission_link)
+                self.assertIn(CLAIM.admission_text(parsed.admission, [link]), self.comments[-1]["body"])
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
     def test_admission_details_require_the_kind_they_describe(self):
         for kind, links, unlinked in ((None, ("https://github.com/owner/repo/issues/5",), None),
                                       ("spare-capacity", (), "reason"),
@@ -6534,13 +6550,13 @@ class ClaimTests(unittest.TestCase):
 
     def test_comment_admission_preserves_ownership_and_wait_refusals(self):
         link = "https://github.com/owner/repo/issues/5#issuecomment-123"
-        for blocked, code in (
+        for kind, (blocked, code) in product(("milestone", "client-request"), (
             ("ownership", "claim_conflict"),
             ("wait", "claim_wait_unresolved"),
             ("blocker", "claim_native_blockers_unresolved"),
             ("human_claim", "claim_conflict"),
-        ):
-            with self.subTest(blocked=blocked):
+        )):
+            with self.subTest(kind=kind, blocked=blocked):
                 self.setUp()
                 if blocked == "ownership":
                     self.inventory["worktrees"] = [{"path": "/retained/issue-42", "branch": OTHER["branch"]}]
@@ -6553,7 +6569,7 @@ class ClaimTests(unittest.TestCase):
                     self.wait = wait_record.reviewed(evidence="Device test pending", waiting_for="Director",
                                                      ends_when="Device acceptance recorded")
                 with self.assertRaises(PLAN.PlanError) as caught:
-                    self.admit("milestone", (link,))
+                    self.admit(kind, (link,))
                 self.assertEqual(caught.exception.code, code)
                 self.assert_no_writes()
 
