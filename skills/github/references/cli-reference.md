@@ -2724,7 +2724,7 @@ Human warnings and progress remain on stderr, and the process exit code matches
 
 ### Comment attachments
 
-Use `gh-attachment.py` for files the Director, Clients or their staff attach to comments in
+Use `gh-attachment.py` for files the Director, Clients or their staff attach to issue bodies or comments in
 Director-owned repositories. The [Q467 standing approval](https://github.com/cbusillo/codex-skills/issues/2021#issuecomment-6241276473)
 covers read-only downloads under `cbusillo`'s login in `cbusillo/*`, into task
 evidence only. Do not ask for per-file approval or request a token. GitHub
@@ -2759,9 +2759,9 @@ Recognized Q467 replies without unqualified approval also withhold it, including
 an older reply edited after the approval. A later unqualified `Q467 yes` restores
 it. Quoted or third-party text does not.
 
-The standing route accepts comments by the declared personal login and human
-collaborator/member comments in personally owned repositories; unknown authors
-and bots remain outside that scope. It verifies the canonical repository and exact comment link
+The standing route accepts sources by the declared personal login and human
+collaborator/member sources in personally owned repositories; unknown authors
+and bots remain outside that scope. It verifies the canonical repository and exact source link
 using automation-only REST reads. The existing `gh` credential for `cbusillo`
 is retrieved inside the helper and checked against `/user`; it is never printed,
 persisted or handed to the agent. A conflicting declared personal login is not
