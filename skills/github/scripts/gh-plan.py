@@ -3473,8 +3473,8 @@ def claim_once(args: argparse.Namespace) -> None:
 
     def read_canonical_issues(pull: dict[str, Any]) -> list[str]:
         canonical_issues = []
-        text = (pull.get("title") or "") + "\n" + (pull.get("body") or "")
-        links = re.findall(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/([1-9]\d*)|(?<![\w/])([\w.-]+/[\w.-]+)#([1-9]\d*)|(?<![\w/])#([1-9]\d*)", text)
+        reference_text = (pull.get("title") or "") + "\n" + (pull.get("body") or "")
+        links = re.findall(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/([1-9]\d*)|(?<![\w/])([\w.-]+/[\w.-]+)#([1-9]\d*)|(?<![\w/])#([1-9]\d*)", reference_text)
         for url_repo, url_number, qualified_repo, qualified_number, bare_number in links:
             linked_repo = url_repo or qualified_repo or issue_repo
             linked_number = int(url_number or qualified_number or bare_number)
@@ -3551,9 +3551,11 @@ def claim_once(args: argparse.Namespace) -> None:
             )
         phase["canonical_issue"] = None
         phase["canonical_issues"] = []
-        subject = next((pull for pull in phase["open_pulls"] if pull["number"] == number), None)
-        if record_kind == "pr" and subject is not None:
-            phase["canonical_issues"] = read_canonical_issues(subject)
+        if record_kind == "pr":
+            for subject in phase["open_pulls"]:
+                if subject["number"] == number:
+                    phase["canonical_issues"] = read_canonical_issues(subject)
+                    break
         elif record_kind == "issue" and getattr(args, "resume_issue", None):
             phase["canonical_issues"] = list(dict.fromkeys(url for pull in phase["open_pulls"]
                 if pull["number"] in phase.get("retained_pr_numbers", ()) for url in read_canonical_issues(pull)))
