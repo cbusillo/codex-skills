@@ -26,8 +26,6 @@ import github_plan_claim
 import github_plan_release
 
 
-# The host helper's lock reason ends with "retire with: dev-worktree retire <path>".
-RETIRE_MARKER = "retire with: dev-worktree retire"
 ANY_CLAIM = {"worker": "", "session": "", "branch": "", "claimed_at": ""}
 NO_WORKTREES = {"worktrees": []}
 FRESH_START = dt.timedelta(hours=2)
@@ -41,10 +39,6 @@ class Worktree:
     head: str
     branch: str | None
     lock: str | None
-
-    @property
-    def names_retire_command(self) -> bool:
-        return self.lock is not None and RETIRE_MARKER in self.lock
 
 
 def git(checkout: Path, *args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -94,6 +88,7 @@ def first_parent_history(checkout: Path) -> set[str]:
 def landed_decisions(checkout: Path, branch: str, pr_head: str, root: Path, *,
                      pr_commits: set[str] = frozenset(), claims: str = "") -> list[dict]:
     fresh_starts = first_parent_history(checkout) if pr_commits else set()
+    _, helper = dev_worktree.configuration()
     rows = []
     for tree in registered(checkout):
         fed_the_pr = tree.branch != branch and tree.head in pr_commits
@@ -104,8 +99,8 @@ def landed_decisions(checkout: Path, branch: str, pr_head: str, root: Path, *,
             row.update(decision="kept", reason="source checkout or calling session uses this tree")
         elif not is_under(tree.path, root):
             row.update(decision="kept", reason="outside the configured worktree root")
-        elif not tree.names_retire_command and (tree.lock is not None or dev_worktree.configuration()[1] is not None):
-            row.update(decision="kept", reason="lock names no retire command; follow work-closeout")
+        elif helper is None and tree.lock is not None:
+            row.update(decision="kept", reason="portable worktree has a lock; resolve its owning job first")
         elif claims:
             row.update(decision="kept", reason="associated work has an open claim")
         elif fed_the_pr and (tree.head in fresh_starts or not fresh_starts):
@@ -231,6 +226,10 @@ def default_tracking_tip(checkout: Path) -> str | None:
 
 
 def finished(root: Path, pulls_for, include=lambda slug: True) -> tuple[list[dict], list[dict]]:
+    try:
+        _, helper = dev_worktree.configuration()
+    except (ValueError, OSError):
+        return [], [{"source": "worktree_configuration", "reason": "unavailable"}]
     found: list[dict] = []
     gaps: list[dict] = []
     seen: set[Path] = set()
@@ -262,7 +261,7 @@ def finished(root: Path, pulls_for, include=lambda slug: True) -> tuple[list[dic
                 continue
             for tree in trees:
                 try:
-                    if not tree.names_retire_command or not tree.branch or not is_under(tree.path, folder):
+                    if (helper is None and tree.lock is not None) or not tree.branch or not is_under(tree.path, folder):
                         continue
                     row = {"repo": slug, "task": tree.path.name, "branch": tree.branch,
                            "dirty": bool(git(tree.path, "status", "--porcelain").stdout.strip()), "pull": None}
@@ -451,8 +450,9 @@ def branch_rows(reader, github_read, repo: str, branch: str, checkout: Path, roo
 
 def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, root: Path, *,
                     preserve: set[Path] | frozenset[Path] = frozenset(),
-                    deadline: float | None = None, target: Path | None = None) -> Iterator[dict]:
+                    deadline: float | None = None) -> Iterator[dict]:
     trees = registered(checkout)
+    _, helper = dev_worktree.configuration()
     if deadline is not None:
         random.shuffle(trees)
     tip = default_tracking_tip(checkout)
@@ -461,16 +461,14 @@ def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, ro
 
     def decisions_for_trees() -> Iterator[dict]:
         for tree in trees:
-            if target is not None and tree.path.resolve() != target.resolve():
-                continue
             row = {"path": str(tree.path), "branch": tree.branch, "head": tree.head, "decision": "kept"}
             try:
                 if any(is_under(path, tree.path) for path in preserve):
                     row["reason"] = "source checkout or calling session uses this tree"
                 elif not is_under(tree.path, root):
                     row["reason"] = "outside the configured worktree root"
-                elif not tree.names_retire_command and (tree.lock is not None or dev_worktree.configuration()[1] is not None):
-                    row["reason"] = "no supported retirement lock; follow work-closeout"
+                elif helper is None and tree.lock is not None:
+                    row["reason"] = "portable worktree has a lock; resolve its owning job first"
                 elif deadline is not None and time.monotonic() >= deadline:
                     row["reason"] = "creation cleanup time budget exhausted; checked on the next start"
                 elif (fresh := keep_fresh_starts([{**row, "decision": "candidate"}], dt.datetime.now(dt.timezone.utc))[0])["decision"] == "kept":
@@ -541,7 +539,7 @@ def main(argv: list[str] | None = None) -> int:
             summary = {}
             rows = repository_rows(reader, github_read, repo, args.checkout, root,
                                    preserve={args.checkout.resolve(), Path.cwd().resolve(), Path(__file__).resolve(),
-                                             *(path.resolve() for path in args.preserve)}, deadline=deadline, target=args.path)
+                                             *(path.resolve() for path in args.preserve)}, deadline=deadline)
         elif args.branch:
             summary, rows = branch_rows(reader, github_read, repo, args.branch, args.checkout, root)
         else:

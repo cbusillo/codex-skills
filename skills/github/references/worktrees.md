@@ -118,10 +118,13 @@ does not provision host storage or change runtime configuration.
 
 ## Retirement
 
-Use `work-closeout` to establish the task's disposition and retained artifacts.
-Retain a tree needed by ongoing work through a handoff under that work's
-ownership. Once continuing use ends, release and verify its claim before
-retiring the tree. Run from outside the target tree.
+Exact-target retirement is for a tree this task's record establishes it created,
+after `work-closeout` establishes its disposition and retained artifacts. Missing
+claims do not establish ownership or completion. Retain trees needed by continuing
+work. Before handoff, record their custody and the `Refs` or exact-branch
+associations below on the continuing work's existing claimed record; use the
+existing claim handoff protocol. Once continuing use ends, release and verify
+its claim before retiring the tree. Run from outside the target tree.
 For portable and managed-host worktrees, use the catalog entry by its full path:
 
 ```sh
@@ -136,8 +139,10 @@ for delivery associations, or name every related branch on the existing
 claimed work record. An ordinary URL in the body is not a recognized reference;
 an unrecorded association is unprotected. Incomplete evidence or a kept target
 returns nonzero.
-The host lock's command is a legacy primitive marker, not ownership proof; never
-substitute the bare host command. Preserve active, dirty or ambiguous work.
+Host lock text is not ownership proof; never substitute the bare host command.
+Preserve active, dirty or ambiguous work. Ownership reads precede physical
+retirement and do not reserve a tree: search may lag and ownership can change
+before removal. Recheck changed evidence and retain uncertain custody.
 
 Explicit retirement supports completed or abandoned published tasks after
 the existing closeout checks establish their disposition; it does not infer
@@ -163,17 +168,21 @@ contents or unavailable proof before retrying. Portable local branches remain
 subject to the normal work-closeout branch policy. The same creation route runs on both
 harnesses, without a scheduler or a host-specific landing handoff.
 
-For an explicit repository pass, preview with:
+For a bulk repository pass, use automatic candidate qualification and preview:
 
 ```sh
 uv run <catalog>/skills/github/scripts/landed_worktrees.py --repo OWNER/REPO --checkout /absolute/checkout --all
 ```
 
 Add `--apply` to retire eligible trees. `--preserve /exact/path` keeps explicit
-artifact custody during a bulk pass. Existing `--pr N` and
-`--branch work/task` commands remain available for exact provenance. The
+artifact custody during a bulk pass. Do not loop exact-target retirement over
+reported paths. The
 [daily stranded-work sweep](../../direction/references/stranded-work.md)
 reports work that remains.
+
+For legacy trees outside the configured root, follow the existing
+[disposal route](../../references/repo-cleanup.md#establish-the-disposition).
+It does not override a managed-host refusal or current placement rules.
 
 ## Claude Desktop folder trust
 

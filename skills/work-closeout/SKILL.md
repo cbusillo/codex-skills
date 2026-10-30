@@ -605,8 +605,10 @@ checks below as relevant.
   worktree and its merged local branch, not a remote branch. The task's record
   includes its claim on the owning issue, which names the branch. A worktree on
   that branch is this task's, even after compaction or a handoff. Retain a tree
-  needed after a handoff under the continuing task's ownership. Once continuing
-  use ends, release and verify its claim, then follow
+  needed after a handoff under the continuing task's ownership. Before handoff,
+  record retained-tree custody and the `Refs` or exact-branch associations on
+  the continuing work's existing claimed record; use the existing claim handoff
+  protocol. Once continuing use ends, release and verify its claim, then follow
   [qualified retirement](../github/references/worktrees.md#retirement) from
   outside the tree. When the task's
   record does not show that it created a registered worktree, the owning session is

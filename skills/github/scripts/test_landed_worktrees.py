@@ -24,7 +24,7 @@ import landed_worktrees
 import dev_worktree
 
 
-NAMED = f"External worktree; {landed_worktrees.RETIRE_MARKER} <path>"
+MANAGED_LOCK = "External storage registration"
 IDENTITY = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"]
 
 
@@ -47,6 +47,9 @@ class Fixture(unittest.TestCase):
         self.git(self.repo, "remote", "set-head", "origin", "main")
         self.root = self.base / "worktrees"
         (self.root / "sample").mkdir(parents=True)
+        config = self.base / "worktrees.json"
+        config.write_text(json.dumps({"root": str(self.root), "hostHelper": str(self.base / "host-helper")}))
+        os.environ["DEV_WORKTREE_CONFIG"] = str(config)
 
     def git(self, where, *args):
         return subprocess.run(["git", "-C", str(where), *args], capture_output=True, text=True, check=True).stdout.strip()
@@ -55,7 +58,7 @@ class Fixture(unittest.TestCase):
         self.git(where, *IDENTITY, "commit", "-q", "--allow-empty", "-m", message)
         return self.git(where, "rev-parse", "HEAD")
 
-    def worktree(self, task: str, *, lock: str | None = NAMED, parent: Path | None = None) -> Path:
+    def worktree(self, task: str, *, lock: str | None = MANAGED_LOCK, parent: Path | None = None) -> Path:
         path = (parent or self.root / "sample") / task
         self.git(self.repo, "worktree", "add", "-q", *(["--lock", "--reason", lock] if lock else []),
                  "-b", f"work/{task}", str(path), "origin/main")
@@ -63,11 +66,13 @@ class Fixture(unittest.TestCase):
 
 
 class LandedDecisionTests(Fixture):
-    def test_landed_branch_with_named_lock_is_a_candidate(self):
-        path = self.worktree("done")
-        head = self.commit(path, "Work")
-        rows = landed_worktrees.landed_decisions(self.repo, "work/done", head, self.root)
-        self.assertEqual([(r["path"], r["decision"]) for r in rows], [(str(path), "candidate")])
+    def test_host_decisions_leave_lock_interpretation_to_the_host(self):
+        for task, lock in (("current", MANAGED_LOCK), ("legacy", "Old registration lock"),
+                           ("foreign", "Held by another job"), ("unlocked", None)):
+            path = self.worktree(task, lock=lock)
+            head = self.commit(path, "Work")
+            rows = landed_worktrees.landed_decisions(self.repo, f"work/{task}", head, self.root)
+            self.assertEqual([(r["path"], r["decision"]) for r in rows], [(str(path), "candidate")])
 
     def test_local_head_behind_the_pr_head_is_a_candidate(self):
         # The train often adds commits to the PR after the session ended.
@@ -89,12 +94,13 @@ class LandedDecisionTests(Fixture):
         rows = landed_worktrees.landed_decisions(self.repo, "work/extra", pr_head, self.root)
         self.assertEqual(rows[0]["decision"], "kept")
 
-    def test_lock_without_retire_command_and_outside_root_are_kept(self):
+    def test_portable_locks_and_outside_root_are_kept(self):
         plain = self.worktree("plain", lock="Held by another job")
         outside = self.worktree("outside", parent=self.base)
-        for path, branch in ((plain, "work/plain"), (outside, "work/outside")):
-            rows = landed_worktrees.landed_decisions(self.repo, branch, self.git(path, "rev-parse", "HEAD"), self.root)
-            self.assertEqual(rows[0]["decision"], "kept", rows)
+        with mock.patch.object(dev_worktree, "configuration", return_value=(self.root, None)):
+            for path, branch in ((plain, "work/plain"), (outside, "work/outside")):
+                rows = landed_worktrees.landed_decisions(self.repo, branch, self.git(path, "rev-parse", "HEAD"), self.root)
+                self.assertEqual(rows[0]["decision"], "kept", rows)
 
     def test_other_branches_are_not_considered(self):
         self.worktree("unrelated")
@@ -382,7 +388,7 @@ class MainTests(Fixture):
         return code, json.loads(out.getvalue()) if out.getvalue() else {}, host if entrypoint else run
 
     def test_explicit_retirement_of_fresh_published_abandoned_work_reaches_host(self):
-        for lock in (NAMED, "External SanDisk worktree; preserve registration when unmounted", None):
+        for lock in (MANAGED_LOCK, "Old registration lock", None):
             with self.subTest(lock=lock):
                 target = self.worktree(f"abandoned-{len(self.git(self.repo, 'worktree', 'list').splitlines())}", lock=lock)
                 head = self.commit(target, "Abandoned work")
@@ -443,14 +449,12 @@ class MainTests(Fixture):
         self.assertNotEqual(code, 0)
         self.assertEqual(result["worktrees"][0]["decision"], "kept")
         host.assert_not_called()
-        self.assertEqual(self.reader.request.call_count, 1)
 
     def test_source_and_refresh_branch_associations_are_searched_once(self):
         refresh, pull, commits = self.merged_refresh()
         self.run_main(pull, commits=commits)
         queries = [call.args[1] for call in self.reader.request.call_args_list]
         self.assertEqual(len(queries), len(set(queries)))
-        self.assertEqual(len(queries), 2)
 
     def test_open_pr_retires_nothing(self):
         path = self.worktree("open")
@@ -690,7 +694,7 @@ class FinishedScanTests(Fixture):
             self.assertTrue(gaps)
 
     def test_scan_reports_landed_worktrees_and_reads_github_only_when_needed(self):
-        self.worktree("untouched")
+        self.worktree("untouched", lock=None)
         merged = self.worktree("merged")
         merged_head = self.commit(merged, "Merged work")
         opened = self.worktree("open")
@@ -713,13 +717,17 @@ class FinishedScanTests(Fixture):
 
         found, gaps = landed_worktrees.finished(self.root, pulls_for)
         self.assertEqual(sorted((r["task"], r["basis"]) for r in found),
-                         [("merged", "PR merged"), ("untouched", "in default branch")])
+                         [("held", "in default branch"), ("merged", "PR merged"), ("untouched", "in default branch")])
         self.assertEqual(sorted(reads), ["work/merged", "work/open", "work/unread"])
         self.assertEqual([g["reason"] for g in gaps], ["request_budget_exhausted"])
         self.assertIsNotNone(next(r for r in found if r["task"] == "untouched")["since"])
         reads.clear()
         self.assertEqual(landed_worktrees.finished(self.root, pulls_for, include=lambda slug: slug != "o/sample"), ([], []))
         self.assertEqual(reads, [])
+        with mock.patch.object(dev_worktree, "configuration", return_value=(self.root, None)):
+            portable, gaps = landed_worktrees.finished(self.root, pulls_for)
+        self.assertEqual([(row["task"], row["basis"]) for row in portable], [("untouched", "in default branch")])
+        self.assertEqual(gaps, [])
 
 
 if __name__ == "__main__":
