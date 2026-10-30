@@ -276,6 +276,10 @@ a labeled backing volume. Lower data is read-only through the overlay. The
 lower must already have permissions usable by the image user; the private
 receiver normalizes newly transported overlay inputs just like container
 copies, without changing host originals or existing retained inputs.
+Local Linux callers can use `docker.stage_overlay_input(new_staged_directory)`
+inside the existing queued `prepare` callback to apply the
+[input-copy permissions](#local-heavy-runs). Use a fresh staging tree inside a
+private enclosing directory, never a host original or retained lower.
 
 Cleanup stops/removes containers, verifies lower content and filesystem
 identity, removes the labeled overlay volumes before their backing volumes,
