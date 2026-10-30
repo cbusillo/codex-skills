@@ -27,7 +27,6 @@ import github_plan_release
 
 # The host helper's lock reason ends with "retire with: dev-worktree retire <path>".
 RETIRE_MARKER = "retire with: dev-worktree retire"
-DEV_WORKTREE = Path(__file__).with_name("dev-worktree")
 ANY_CLAIM = {"worker": "", "session": "", "branch": "", "claimed_at": ""}
 NO_WORKTREES = {"worktrees": []}
 FRESH_START = dt.timedelta(hours=2)
@@ -104,8 +103,8 @@ def landed_decisions(checkout: Path, branch: str, pr_head: str, root: Path, *,
             row.update(decision="kept", reason="outside the configured worktree root")
         elif not tree.names_retire_command and (tree.lock is not None or dev_worktree.configuration()[1] is not None):
             row.update(decision="kept", reason="lock names no retire command; follow work-closeout")
-        elif tree.branch and tree.branch in claims:
-            row.update(decision="kept", reason="an open claim names this branch")
+        elif claims:
+            row.update(decision="kept", reason="associated work has an open claim")
         elif fed_the_pr and (tree.head in fresh_starts or not fresh_starts):
             row.update(decision="kept", reason="HEAD may be a fresh start on the default branch")
         elif not fed_the_pr and not contained(checkout, tree.head, pr_head):
@@ -117,9 +116,10 @@ def landed_decisions(checkout: Path, branch: str, pr_head: str, root: Path, *,
 
 
 def retirement_command(path: str, dry_run: bool) -> subprocess.CompletedProcess[str]:
-    if dev_worktree.configuration()[1] is None:
+    _, helper = dev_worktree.configuration()
+    if helper is None:
         return portable_retire(Path(path), dry_run=dry_run)
-    args = [str(DEV_WORKTREE), "retire", *(["--dry-run"] if dry_run else []), path]
+    args = [str(helper), "retire", *(["--dry-run"] if dry_run else []), path]
     return subprocess.run(args, capture_output=True, text=True)
 
 
@@ -308,7 +308,8 @@ def open_claims(reader, github_read, repo: str, number: int, pull: dict) -> str:
     import github_plan_landing
     import github_plan_status.references
 
-    records = [(repo, number), *github_plan_status.references.linked_issues(repo, pull)]
+    records = [(repo, number), *github_plan_status.references.linked_issues(repo, pull),
+               *issues_naming(reader, repo.split("/")[0], pull["head"]["ref"])]
     base = pull.get("base") or {}
     if pull.get("merged_at") and base.get("ref") == (base.get("repo") or {}).get("default_branch"):
         records += github_plan_landing.closing_references(reader, repo, number)[1]
@@ -399,7 +400,7 @@ def branch_rows(reader, github_read, repo: str, branch: str, checkout: Path, roo
 
 def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, root: Path, *,
                     preserve: set[Path] | frozenset[Path] = frozenset(),
-                    deadline: float | None = None) -> Iterator[dict]:
+                    deadline: float | None = None, target: Path | None = None) -> Iterator[dict]:
     trees = registered(checkout)
     if deadline is not None:
         random.shuffle(trees)
@@ -409,6 +410,8 @@ def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, ro
 
     def decisions_for_trees() -> Iterator[dict]:
         for tree in trees:
+            if target is not None and tree.path.resolve() != target.resolve():
+                continue
             row = {"path": str(tree.path), "branch": tree.branch, "head": tree.head, "decision": "kept"}
             try:
                 if any(is_under(path, tree.path) for path in preserve):
@@ -444,9 +447,9 @@ def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, ro
                         row = next((dict(decision) for decision in decisions if decision["path"] == str(tree.path)),
                                    {**row, "reason": "no covered worktree found; use --branch or --pr with exact provenance"})
                         row = keep_fresh_starts([row], dt.datetime.now(dt.timezone.utc))[0]
-                        if pulls and row["decision"] == "candidate" and tree.branch and tree.branch in claims_on(
+                        if pulls and row["decision"] == "candidate" and tree.branch and claims_on(
                                 reader, github_read, issues_naming(reader, repo.split("/")[0], tree.branch)):
-                            row.update(decision="kept", reason="an open claim names this branch")
+                            row.update(decision="kept", reason="associated work has an open claim")
             except Exception as exc:
                 row.update(decision="kept", reason=f"retirement evidence unavailable: {type(exc).__name__}: {exc}")
             yield row
@@ -461,6 +464,7 @@ def main(argv: list[str] | None = None) -> int:
     landed.add_argument("--all", action="store_true", help="check every linked worktree of this repository")
     landed.add_argument("--pr", type=int)
     landed.add_argument("--branch", help="a task branch that never had a PR and is in the default branch")
+    landed.add_argument("--path", type=Path, help="qualify only this exact linked worktree")
     parser.add_argument("--checkout", required=True, type=Path, help="any local checkout of that repository")
     parser.add_argument("--apply", action="store_true", help="retire; the default only previews")
     parser.add_argument("--budget-seconds", type=float, help="stop starting checks after this many seconds; finish any guarded retirement in progress")
@@ -482,11 +486,11 @@ def main(argv: list[str] | None = None) -> int:
     reader = github_read.GitHubReader(operation="github.worktree.retire_landed", include_archived=True,
                                       deadline_at=time.time() + args.budget_seconds if args.budget_seconds else None)
     try:
-        if args.all:
+        if args.all or args.path:
             summary = {}
             rows = repository_rows(reader, github_read, repo, args.checkout, root,
                                    preserve={args.checkout.resolve(), Path.cwd().resolve(), Path(__file__).resolve(),
-                                             *(path.resolve() for path in args.preserve)}, deadline=deadline)
+                                             *(path.resolve() for path in args.preserve)}, deadline=deadline, target=args.path)
         elif args.branch:
             summary, rows = branch_rows(reader, github_read, repo, args.branch, args.checkout, root)
         else:
@@ -494,8 +498,9 @@ def main(argv: list[str] | None = None) -> int:
     except (LookupError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
         return refuse(str(exc))
     rows = retire(rows, apply=args.apply, deadline=deadline)
-    print(json.dumps({"ok": True, **summary, "worktrees": rows}, indent=2))
-    return 0
+    ok = not args.path or len(rows) == 1 and rows[0]["decision"] in {"retired", "would_retire"}
+    print(json.dumps({"ok": bool(ok), **summary, "worktrees": rows}, indent=2))
+    return 0 if ok else 2
 
 if __name__ == "__main__":
     sys.exit(main())

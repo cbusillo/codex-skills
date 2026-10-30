@@ -133,6 +133,12 @@ def main(argv: list[str] | None = None) -> int:
                 raise Refused("Host helper delegated back to the catalog; configure the actual host executable.")
             if helper.resolve() in {Path(__file__).resolve(), Path(__file__).with_name("dev-worktree").resolve()}:
                 raise Refused("hostHelper must not refer to the catalog helper itself.")
+            if len(args) == 2 and args[0] == "retire":
+                return retire_task(Path(args[1]), dry_run=False)
+            if len(args) == 3 and args[:2] == ["retire", "--dry-run"]:
+                return retire_task(Path(args[2]), dry_run=True)
+            if args and args[0] == "retire":
+                raise Refused("Usage: dev-worktree retire [--dry-run] PATH")
         if len(args) == 3 and args[0] != "retire":
             refresh_primary(Path(args[0]))
             retire_finished(Path(args[0]))
@@ -178,6 +184,24 @@ def retire_finished(checkout: Path) -> None:
         return
     print(result.stdout.strip() or result.stderr.strip() or "dev-worktree: retirement evidence unavailable; trees kept",
           file=sys.stderr)
+
+
+def retire_task(target: Path, *, dry_run: bool) -> int:
+    import landed_worktrees
+
+    if not target.is_dir():
+        raise Refused(f"Retirement target is unavailable: {target}")
+    common = Path(git(target, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    result = landed_worktrees.main(["--checkout", str(common.parent), "--path", str(target)])
+    if result or dry_run:
+        return result
+    _, helper = configuration()
+    if helper is None:
+        raise Refused("Managed retirement requires a configured host helper.")
+    args = ["retire", str(target)]
+    os.environ["DEV_WORKTREE_DELEGATED"] = f"{os.getpid()}:{json.dumps(args)}"
+    os.execv(str(helper), [str(helper), *args])
+    return 0
 
 
 if __name__ == "__main__":

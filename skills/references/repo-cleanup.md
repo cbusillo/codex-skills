@@ -37,7 +37,10 @@ does not trigger a global repository scan, cache sweep, or retirement workflow.
    A lock whose reason names a retire command was placed by the host's
    worktree helper when it created the checkout. It is not another job's hold.
    When this task created the worktree and its PR is merged or closed, retire
-   the worktree with that command. The catalog's next `dev-worktree` creation runs the same guarded
+   the worktree through the catalog's `dev-worktree retire --dry-run /exact/task/path`,
+   then `dev-worktree retire /exact/task/path` after qualification passes. Do not
+   invoke the host primitive directly: its filesystem checks do not prove ownership.
+   The catalog's next `dev-worktree` creation runs the same guarded
    retirement for that repository, with kept reasons; no separate after-landing
    cleanup handoff is needed. The host command replaces manual unlock and
    removal in step 6, including local IDE-state proof, and restores the lock

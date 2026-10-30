@@ -65,7 +65,7 @@ Follow any stricter host storage policy before using the helper.
 ## Existing host helper integration
 
 A host with its own storage, lock and retirement policy can configure
-`hostHelper` with an explicit `root`. The catalog command delegates its arguments
+`hostHelper` with an explicit `root`. The catalog command delegates creation arguments
 to that executable, preserves its exit status and output, and creates no
 directories itself. A failure never falls back to portable creation. The host
 helper owns enforcement of the root: in this mode `root` is an informational
@@ -92,6 +92,9 @@ This setting selects an existing trusted host executable; it does
 not install, replace or edit one. Its `retire --dry-run` contract must be read-only;
 creation bounds that preview using the existing process-group probe, while apply
 finishes without an interrupt that could prevent lock restoration.
+Explicit retirement first qualifies the exact target through the common
+GitHub retirement checks. A passing apply then replaces the catalog process
+with the host executable, preserving its signal cleanup; preview remains read-only.
 
 Chris-Studio keeps its existing host-local helper and external-volume checks
 with this configuration:
@@ -119,9 +122,13 @@ before cleanup. Release a task claim last; until then it protects a tree still
 needed by its session. Portable worktrees are ordinary unlocked Git worktrees: remove
 an eligible finished one with `git worktree remove /exact/task/path`, without
 force, then apply the normal branch cleanup policy. Kept trees follow `work-closeout` before retrying automatic retirement. When a registration's lock names a retirement
-command, use that exact command. With `hostHelper` configured, the catalog entry
-also forwards `retire [--dry-run] /exact/task/path` to the host helper; it never
-unlocks or deletes a worktree itself. Preserve active, dirty or ambiguous work.
+command, use the catalog entry with `retire --dry-run /exact/task/path`, then
+`retire /exact/task/path` after a passing preview. It qualifies only that tree
+through `landed_worktrees.py` before the configured host helper runs. A held
+claim on an associated delivery issue protects related trees across repositories;
+missing evidence or a kept target returns nonzero. The host command remains the
+low-level storage and IDE primitive, not an ownership check. Preserve active,
+dirty or ambiguous work.
 
 Creation checks each registered linked worktree through `landed_worktrees.py`.
 A closed PR uses the existing PR-head, claim and publication checks;

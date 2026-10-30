@@ -128,9 +128,11 @@ unknown), next actor and review requirement:
   worktrees of the sweep's selected repositories or account are scanned. A worktree with no commits of its own is aged from its
   creation, so a session that has only just started stays under the age
   threshold. The root comes from `--worktree-root`, or else from the host's
-  configured `hostHelper` root; without one the check is skipped. Each worktree
-  is checked by the next catalog worktree creation and retired with its lock's
-  command when eligible, never from the report.
+  configured `hostHelper` root; without one the check is skipped. These are Git
+  completion candidates; ownership and continuing operational use remain unproved.
+  The next catalog worktree creation qualifies them through `landed_worktrees.py`,
+  never from the report. An explicitly authorized cleanup pass uses that same
+  helper or the catalog's qualified `dev-worktree retire` route, not the host primitive.
 - Open issues whose body Current Status `Next action:` routes the work to the
   Supervisor: the action opens with the capitalized role, makes it the subject
   of a verb, or waits on or hands off to it. A path, skill name or description
