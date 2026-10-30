@@ -44,16 +44,14 @@ class NotPlannedScopeTests(unittest.TestCase):
                       "body": "Agent-added requirement beyond the requested outcome.", "labels": [],
                       "milestone": {"title": "Catalog adoption"}, "created_at": "2026-10-01T00:00:00Z"}
         self.comments: list[dict[str, Any]] = []
-        self.events = [{"event": "milestoned", "actor": {"login": "fixture-bot"},
+        self.events: list[dict[str, Any]] = [{"event": "milestoned", "actor": {"login": "fixture-bot"},
                         "created_at": "2026-10-02T00:00:00Z"}]
         self.reactions: list[dict[str, Any]] = []
-        self.source = "https://github.com/fixture/target/issues/6#issuecomment-8"
-        self.reason = f"Remove the agent-added benchmark from {self.source}; delivery needs no benchmark."
-        self.origin: dict[str, Any] = {"id": 8, "node_id": "origin-node", "body": "I propose an extra benchmark.",
-            "user": {"login": "fixture-bot"}, "created_at": "2026-10-02T00:00:00Z",
-            "issue_url": "https://api.github.com/repos/fixture/target/issues/6"}
+        self.reason = "Remove the agent-added benchmark; the agreed delivery needs no benchmark."
         self.editors: list[dict[str, Any]] = []
         self.more_edits = False
+        self.edit_pages: list[dict[str, Any]] = []
+        self.editor_cursors: list[str | None] = []
         self.patches = patch.multiple(PLAN,
             load_direction=Mock(return_value="## Milestones\n- `Catalog adoption` proves adoption."),
             wait_authors=Mock(return_value={"fixture", "fixture-bot"}),
@@ -68,13 +66,12 @@ class NotPlannedScopeTests(unittest.TestCase):
         if step == "read_issue_last_edited":
             return "fixture-bot", {"data": {"repository": {"issue": {"lastEditedAt": "2026-10-04T00:00:00Z"}}}}
         if step == "scope_cut_editors":
-            return "fixture-bot", {"data": {"repository": {"issue": {"userContentEdits": {
-                "nodes": self.editors, "pageInfo": {"hasNextPage": self.more_edits}}}}}}
-        if step == "scope_cut_origin":
-            return "fixture-bot", self.origin
-        if step == "read_owner_decision_edit_history":
-            return "fixture-bot", {"data": {"node": {"databaseId": self.origin["id"], "body": self.origin["body"],
-                "createdAt": self.origin["created_at"], "lastEditedAt": None}}}
+            assert isinstance(_body, dict)
+            cursor = _body["variables"]["cursor"]
+            self.editor_cursors.append(cursor)
+            page = (self.edit_pages[0 if cursor is None else 1] if self.edit_pages else {
+                "nodes": self.editors, "pageInfo": {"hasNextPage": self.more_edits}})
+            return "fixture-bot", {"data": {"repository": {"issue": {"userContentEdits": page}}}}
         raise AssertionError(step)
 
     def pages(self, path: str, **_: Any) -> tuple[str, list[dict[str, Any]]]:
@@ -93,6 +90,9 @@ class NotPlannedScopeTests(unittest.TestCase):
         result = self.check()
         self.assertFalse(result["required"])
         self.assertEqual(result["scope_cut_reason"], self.reason)
+        self.reason += " The parent Director decision asks only for delivery."
+        self.comments = [{"id": 8, "user": {"login": "fixture-bot"}, "body": self.reason}]
+        self.assertFalse(self.check()["required"])
 
     def test_an_extra_production_build_benchmark_can_be_removed(self) -> None:
         self.issue["body"] = "Add an extra benchmark to the production build of the client library."
@@ -157,19 +157,6 @@ class NotPlannedScopeTests(unittest.TestCase):
                 with patch.object(PLAN, "collect_paged_rest_items", side_effect=pages), self.assertRaises(PLAN.PlanError):
                     self.check()
 
-    def test_scope_cut_needs_an_unedited_agent_origin_in_the_reason(self) -> None:
-        original_reason = self.reason
-        for author, reason in (("fixture-bot", "Remove extra work."), ("fixture", original_reason),
-                               ("client", original_reason), ("outside-user", original_reason)):
-            with self.subTest(author=author, reason=reason):
-                self.origin["user"]["login"], self.reason = author, reason
-                with self.assertRaises(PLAN.PlanError):
-                    self.check()
-        self.origin["user"]["login"] = "fixture-bot"
-        self.reason = original_reason
-        with patch.object(PLAN, "unedited_owner_decision", return_value=False), self.assertRaises(PLAN.PlanError):
-            self.check()
-
     def test_director_activity_and_body_edits_preserve_admission(self) -> None:
         for event in ("labeled", "assigned", "renamed", "cross-referenced"):
             with self.subTest(event=event):
@@ -182,13 +169,25 @@ class NotPlannedScopeTests(unittest.TestCase):
             with self.assertRaises(PLAN.PlanError):
                 self.check()
 
-    def test_relayed_request_and_decision_origin_stays_protected(self) -> None:
+    def test_recorded_requests_and_decisions_keep_the_guard(self) -> None:
         for text in ("The Director asked for this.", "Director decision Q4: keep it.", "Client request: add this."):
             with self.subTest(text=text):
-                self.origin["body"] = text
+                self.issue["body"] = text
                 with self.assertRaises(PLAN.PlanError):
                     self.check()
-        self.issue["body"] = "The Director asked for this."
+
+    def test_agent_link_from_an_approved_parent_does_not_admit_the_extra_child(self) -> None:
+        self.events.append({"event": "cross-referenced", "actor": {"login": "fixture-bot"},
+            "source": {"issue": {"user": {"login": "fixture"}, "body": "Director decision: deliver the product."}}})
+        self.assertFalse(self.check()["required"])
+
+    def test_body_editor_pages_include_later_human_admission(self) -> None:
+        self.edit_pages = [{"nodes": [{"editor": {"login": "fixture-bot", "__typename": "User"}}],
+                            "pageInfo": {"hasNextPage": True, "endCursor": "next-edit-page"}},
+                           {"nodes": [], "pageInfo": {"hasNextPage": False}}]
+        self.assertFalse(self.check()["required"])
+        self.assertEqual(self.editor_cursors, [None, "next-edit-page"])
+        self.edit_pages[1]["nodes"] = [{"editor": {"login": "fixture", "__typename": "User"}}]
         with self.assertRaises(PLAN.PlanError):
             self.check()
 
@@ -208,9 +207,13 @@ class NotPlannedScopeTests(unittest.TestCase):
         self.issue["user"]["login"] = "fixture"
         self.comments = [{"user": {"login": "fixture"}, "body": "Close #7 as not planned.",
                           "created_at": "2026-10-05T00:00:00Z", "html_url": "https://example.test/decision"}]
-        result = self.check()
-        self.assertTrue(result["required"])
-        self.assertEqual(result["comment_url"], self.comments[0]["html_url"])
+        for body in ("Close #7 as not planned.", "Close #7 as not planned.\r\nNo longer needed.",
+                     "Close #7 as not planned.  \nNo longer needed."):
+            self.comments[0]["body"] = body
+            result = self.check()
+            self.assertTrue(result["required"])
+            self.assertEqual(result["comment_url"], self.comments[0]["html_url"])
+
 
 
 class CloseConfigTests(unittest.TestCase):
