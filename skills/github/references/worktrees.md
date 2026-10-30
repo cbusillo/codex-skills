@@ -135,8 +135,8 @@ For portable and managed-host worktrees, use the catalog entry by its full path:
 Apply only after a passing preview. A held claim on the PR, an issue referenced
 with `Refs`, `Fixes` or `Closes`, or a record naming the exact branch keeps the
 related trees, even across repositories. Use `Refs OWNER/REPO#N` in the PR body
-for delivery associations. Branch-name discovery searches the target owner's
-repositories; name every related branch on the existing claimed work record.
+for delivery associations. Branch-name discovery searches repositories in the
+target GitHub account; name every related branch on the existing claimed record.
 An ordinary URL in the body is not a recognized reference;
 an unrecorded association is unprotected. Incomplete evidence or a kept target
 returns nonzero.
