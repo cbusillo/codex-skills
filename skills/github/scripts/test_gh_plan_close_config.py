@@ -197,8 +197,9 @@ class CloseConfigTests(unittest.TestCase):
             track["state"] = state
             result, _, _ = self.show_fixture(launch=True, admission="milestone", admission_links=[link], track=track)
             self.assertEqual(result["issue"]["launch_check"]["allowed"], state == "open")
-        result, _, _ = self.show_fixture(launch=True, admission="spare-capacity", admission_links=[link])
-        self.assertTrue(result["issue"]["launch_check"]["allowed"])
+        for kind in ("spare-capacity", "client-request"):
+            result, _, _ = self.show_fixture(launch=True, admission=kind, admission_links=[link])
+            self.assertTrue(result["issue"]["launch_check"]["allowed"])
         result, _, _ = self.show_fixture(launch=True, read_only=True, admission="milestone")
         self.assertTrue(result["issue"]["launch_check"]["allowed"])
 

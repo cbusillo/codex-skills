@@ -105,6 +105,7 @@ class LaunchIssueTests(unittest.TestCase):
             for declaration, kind in (("Admission for this item: milestone (" + link + ")", "milestone"),
                                       ("Admission: milestone (" + link + ")", "milestone"),
                                       ("**Admission:** spare-capacity; " + link, "spare-capacity"),
+                                      ("Admission: client-request; " + link, "client-request"),
                                       ("- Admission: repeat-stop; " + link + " https://github.com/fixture/repo/issues/8", "repeat-stop")):
                 iterm_tab.check_launch_issue(brief + "\n" + declaration)
                 self.assertEqual(calls[-1].admission, kind)

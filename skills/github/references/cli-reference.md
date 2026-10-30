@@ -1256,8 +1256,11 @@ The helper returns previous Current Status in the recovery result; it links
 the work record without copying that history into the claim comment.
 
 When the overall direction's Order admits the work, name the rule with
-`--admission live-breakage|milestone|own-project|repeat-stop|spare-capacity`; the claim
-comment records it as an `Admission:` line. For milestone work, cite its open
+`--admission live-breakage|client-request|milestone|own-project|repeat-stop|spare-capacity`;
+the claim comment records it as an `Admission:` line. Use `client-request` for
+a Client's request on a live product, after live breakage and before milestones;
+cite the Client's own issue or request comment with `--admission-link`.
+For milestone work, cite its open
 Track in the Director's direction with `--admission-link`. The Director account
 comes from the same read-only configuration lookup as instruction sync,
 falling back to the repository owner when none is recorded. The helper follows

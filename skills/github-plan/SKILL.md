@@ -256,7 +256,8 @@ active issue labels and continuing background jobs do not lift a hold.
    `gh-plan.py --repo OWNER/REPO claim <issue> --worker <worker> --session <session-id>
    --branch <task-branch> --next-action "<action>"` before creating a
    branch or worktree, adding `--admission <kind>` when the overall Order
-   admits the work: live-site breakage, a named `milestone` item (cite its overall Track
+   admits the work: live-site breakage, a `client-request` on a live product
+   (cite the Client's own request with `--admission-link`), a named `milestone` item (cite its overall Track
    with `--admission-link`; admission records its citation without changing the graph), a
    `repeat-stop` with both occurrences, `own-project` work from the Order's
    weekly own-projects share, or `spare-capacity`. Name the
