@@ -645,7 +645,18 @@ installed local helper bindings.
   `destroy_retry_key`, `preview_recovery_plan`, `destroy_retry_stop_reason` and
   `feedback_recovery_stop_reason` are withheld and counted under their own names.
   `artifact_scan` retains only validated `status`, `reason`, nonnegative `high`
-  and `critical` counts, and UTC `scanned_at`. Its `image_reference` is withheld
+  and `critical` counts, UTC `scanned_at`, nonnegative `findings_omitted` and up
+  to 50 `findings`. Each complete finding keeps only validated `vulnerability_id`
+  (CVE or GHSA), `package_name`, `installed_version`, `fixed_version` and
+  HIGH/CRITICAL `severity`, bounded to 160 characters per field. Invalid rows
+  and excess rows are omitted and counted in the projection's dropped fields;
+  a secret-shaped diagnostic row is omitted without losing the other rows or
+  the existing reconcile decision. Secret handling elsewhere is unchanged.
+  The service's omission count and gate counts stay unchanged. Match the plan's
+  `head_sha` and `desired_image_digest` before using these diagnostics, and use
+  `--target-key <product>:preview:<PR>` to select the exact preview before
+  bounding. Old scan records remain readable without findings.
+  `artifact_scan.image_reference` is withheld
   and counted by name; other nested fields are dropped under `<unlisted field>`.
   Missing scan fields stay missing. `held_reservations` and
   `testing_deploy_recovery` carry original-operation or provider evidence.
