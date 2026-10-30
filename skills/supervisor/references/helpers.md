@@ -1065,8 +1065,7 @@ tail -n 40 /private/supervisor-services/logs/enqueue.stderr.log
 ```
 
 Repeat for the other jobs. Their log names are `<service>.jsonl` and
-`<service>.stderr.log` under the render output's `logs/`. Read foreign notices
-there during checks; `--persistent` keeps watching after notices and retains its watermark.
+`<service>.stderr.log` under the render output's `logs/`.
 Rotate logs during a stopped maintenance window when needed.
 
 Clean bounded exits restart after `restart_seconds`. Transient enqueue reads
