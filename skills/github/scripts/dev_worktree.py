@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import os
@@ -124,7 +125,7 @@ def create(repo_arg: str, task: str, start: str, root: Path) -> Path:
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if args in (["--help"], ["-h"]):
-        print(f"Usage: dev-worktree REPOSITORY TASK-SLUG START-POINT\nConfig: ~/{DEFAULT_CONFIG_RELATIVE} (override: DEV_WORKTREE_CONFIG)\nA configured hostHelper also receives: retire [--dry-run] PATH\nSee skills/github/references/worktrees.md for host integration and cleanup.")
+        print(f"Usage: dev-worktree REPOSITORY TASK-SLUG START-POINT\n       dev-worktree retire [--dry-run] [--offline-only] PATH\nConfig: ~/{DEFAULT_CONFIG_RELATIVE} (override: DEV_WORKTREE_CONFIG)\nSee skills/github/references/worktrees.md for host integration and cleanup.")
         return 0
     try:
         root, helper = configuration()
@@ -133,12 +134,13 @@ def main(argv: list[str] | None = None) -> int:
                 raise Refused("Host helper delegated back to the catalog; configure the actual host executable.")
             if helper.resolve() in {Path(__file__).resolve(), Path(__file__).with_name("dev-worktree").resolve()}:
                 raise Refused("hostHelper must not refer to the catalog helper itself.")
-            if len(args) == 2 and args[0] == "retire":
-                return retire_task(Path(args[1]), dry_run=False)
-            if len(args) == 3 and args[:2] == ["retire", "--dry-run"]:
-                return retire_task(Path(args[2]), dry_run=True)
-            if args and args[0] == "retire":
-                raise Refused("Usage: dev-worktree retire [--dry-run] PATH")
+        if args and args[0] == "retire":
+            parser = argparse.ArgumentParser(prog="dev-worktree retire")
+            parser.add_argument("--dry-run", action="store_true")
+            parser.add_argument("--offline-only", action="store_true")
+            parser.add_argument("path", type=Path)
+            retirement = parser.parse_args(args[1:])
+            return retire_task(retirement.path, dry_run=retirement.dry_run, offline_only=retirement.offline_only)
         if len(args) == 3 and args[0] != "retire":
             refresh_primary(Path(args[0]))
             retire_finished(Path(args[0]))
@@ -148,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
             os.environ["DEV_WORKTREE_DELEGATED"] = f"{os.getpid()}:{json.dumps(args)}"
             os.execv(str(helper), [str(helper), *args])
         if len(args) != 3 or args[0] == "retire":
-            raise Refused("Usage: dev-worktree REPOSITORY TASK-SLUG START-POINT. For cleanup follow work-closeout; this portable helper only creates worktrees.")
+            raise Refused("Usage: dev-worktree REPOSITORY TASK-SLUG START-POINT; see --help for retirement.")
         print(create(*args, root))
         return 0
     except (Refused, OSError, UnicodeError, json.JSONDecodeError, subprocess.CalledProcessError) as exc:
@@ -186,19 +188,24 @@ def retire_finished(checkout: Path) -> None:
           file=sys.stderr)
 
 
-def retire_task(target: Path, *, dry_run: bool) -> int:
+def retire_task(target: Path, *, dry_run: bool, offline_only: bool = False) -> int:
     import landed_worktrees
 
     if not target.is_dir():
         raise Refused(f"Retirement target is unavailable: {target}")
     common = Path(git(target, "rev-parse", "--path-format=absolute", "--git-common-dir"))
-    result = landed_worktrees.main(["--checkout", str(common.parent), "--path", str(target)])
-    if result or dry_run:
+    result = landed_worktrees.main(["--checkout", str(common.parent), "--path", str(target)], qualify_only=True)
+    if result:
         return result
     _, helper = configuration()
     if helper is None:
-        raise Refused("Managed retirement requires a configured host helper.")
-    args = ["retire", str(target)]
+        outcome = landed_worktrees.portable_retire(target, dry_run=dry_run)
+        if outcome.stdout:
+            print(outcome.stdout, end="")
+        if outcome.stderr:
+            print(outcome.stderr, end="", file=sys.stderr)
+        return outcome.returncode
+    args = ["retire", *(["--dry-run"] if dry_run else []), *(["--offline-only"] if offline_only else []), str(target)]
     os.environ["DEV_WORKTREE_DELEGATED"] = f"{os.getpid()}:{json.dumps(args)}"
     os.execv(str(helper), [str(helper), *args])
     return 0

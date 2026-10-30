@@ -36,11 +36,10 @@ does not trigger a global repository scan, cache sweep, or retirement workflow.
    collect fresh evidence. Never unlock merely because a lock looks stale.
    A lock whose reason names a retire command was placed by the host's
    worktree helper when it created the checkout. It is not another job's hold.
-   When this task created the worktree and its PR is merged or closed, retire
-   the worktree through the catalog's `dev-worktree retire --dry-run /exact/task/path`,
-   then `dev-worktree retire /exact/task/path` after qualification passes. Do not
-   invoke the host primitive directly: its filesystem checks do not prove ownership.
-   The catalog's next `dev-worktree` creation runs the same guarded
+   After the task is finished or handed off and its claim released, use
+   [qualified retirement](../github/references/worktrees.md#retirement) from
+   outside the tree. Never invoke the host primitive directly; its filesystem
+   checks do not prove ownership. The catalog's next `dev-worktree` creation runs the same guarded
    retirement for that repository, with kept reasons; no separate after-landing
    cleanup handoff is needed. The host command replaces manual unlock and
    removal in step 6, including local IDE-state proof, and restores the lock
@@ -82,18 +81,11 @@ does not trigger a global repository scan, cache sweep, or retirement workflow.
    and worktree-location policy; missing/wrong volumes, symlink escapes,
    unexamined boundaries and just-in-time changes remain holds. Do not substitute
    an internal-drive destination or follow a symlink to make a check succeed.
-   Prefer non-force Git removal. Force syntax never substitutes for resolving a
-   hold; use it only when necessary for the exact already-authorized disposition
-   after preservation and ownership evidence is complete.
-   Agents never open source worktrees in a desktop IDE. After the disposition
-   above is established, keep the worktree lock during the preview. Use
-   `uv run <catalog>/skills/jetbrains-inspection/scripts/jb-inspect.py remove-worktree --repo /exact/task/path`
-   for a dry-run, then release only the completed task's lock and add
-   `--no-dry-run` for non-force Git removal. The helper clears only target leases
-   whose staleness and local records already prove no project needs closing;
-   it never discovers or contacts an IDE. Existing `--offline-only` callers
-   retain leases without reconciliation. Both modes require the same local
-   safety proof ([IDE cleanup](../jetbrains-inspection/references/ide-cleanup.md)).
+   Use qualified retirement after claim disposition; never substitute manual
+   unlock or an IDE removal command. It keeps managed locks during preview and
+   uses non-force removal with the existing local IDE proof. Agents never open
+   source worktrees in a desktop IDE. The retirement path never discovers or
+   contacts an IDE ([IDE cleanup](../jetbrains-inspection/references/ide-cleanup.md)).
    An IDE holding this worktree, legacy SDK/project/cache state or ambiguous
    proof retains the worktree; restore its lock if apply fails. Resolve legacy state separately,
    never launch an IDE as a retirement prerequisite or bypass the refusal.

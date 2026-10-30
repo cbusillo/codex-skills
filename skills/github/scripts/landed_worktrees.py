@@ -11,6 +11,7 @@ import datetime as dt
 import json
 import importlib.util
 import math
+import os
 import random
 from pathlib import Path
 import subprocess
@@ -120,7 +121,8 @@ def retirement_command(path: str, dry_run: bool) -> subprocess.CompletedProcess[
     if helper is None:
         return portable_retire(Path(path), dry_run=dry_run)
     args = [str(helper), "retire", *(["--dry-run"] if dry_run else []), path]
-    return subprocess.run(args, capture_output=True, text=True)
+    environment = {**os.environ, "DEV_WORKTREE_DELEGATED": f"{os.getpid()}:{json.dumps(args[1:])}"}
+    return subprocess.run(args, capture_output=True, text=True, env=environment)
 
 
 def run_retire(path: str, *, dry_run: bool) -> subprocess.CompletedProcess[str]:
@@ -457,7 +459,7 @@ def repository_rows(reader: Any, github_read: Any, repo: str, checkout: Path, ro
     return decisions_for_trees()
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, qualify_only: bool = False) -> int:
     parser = argparse.ArgumentParser(description="Guarded retirement of finished repository worktrees.")
     parser.add_argument("--repo", help="OWNER/REPO of the landed work")
     landed = parser.add_mutually_exclusive_group(required=True)
@@ -470,6 +472,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--budget-seconds", type=float, help="stop starting checks after this many seconds; finish any guarded retirement in progress")
     parser.add_argument("--preserve", type=Path, action="append", default=[], help="retain an explicitly preserved path")
     args = parser.parse_args(argv)
+    if qualify_only and (not args.path or args.apply):
+        return refuse("Ownership qualification requires an exact path and never applies retirement.")
     if args.budget_seconds is not None and (args.budget_seconds <= 0 or not math.isfinite(args.budget_seconds)):
         return refuse("budget-seconds must be positive and finite")
     deadline = time.monotonic() + args.budget_seconds if args.budget_seconds else None
@@ -497,9 +501,10 @@ def main(argv: list[str] | None = None) -> int:
             summary, rows = pull_rows(reader, github_read, repo, args.pr, args.checkout, root)
     except (LookupError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
         return refuse(str(exc))
-    rows = retire(rows, apply=args.apply, deadline=deadline)
-    ok = not args.path or len(rows) == 1 and rows[0]["decision"] in {"retired", "would_retire"}
-    print(json.dumps({"ok": bool(ok), **summary, "worktrees": rows}, indent=2))
+    rows = list(rows) if qualify_only else retire(rows, apply=args.apply, deadline=deadline)
+    passed = {"candidate"} if qualify_only else {"retired", "would_retire"}
+    ok = not args.path or len(rows) == 1 and rows[0]["decision"] in passed
+    print(json.dumps({"ok": bool(ok), **summary, "worktrees": rows}, indent=2), flush=True)
     return 0 if ok else 2
 
 if __name__ == "__main__":

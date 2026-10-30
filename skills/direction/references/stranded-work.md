@@ -132,7 +132,7 @@ unknown), next actor and review requirement:
   completion candidates; ownership and continuing operational use remain unproved.
   The next catalog worktree creation qualifies them through `landed_worktrees.py`,
   never from the report. An explicitly authorized cleanup pass uses that same
-  helper or the catalog's qualified `dev-worktree retire` route, not the host primitive.
+  helper or [qualified retirement](../../github/references/worktrees.md#retirement), not the host primitive.
 - Open issues whose body Current Status `Next action:` routes the work to the
   Supervisor: the action opens with the capitalized role, makes it the subject
   of a verb, or waits on or hands off to it. A path, skill name or description

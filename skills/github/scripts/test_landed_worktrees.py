@@ -196,9 +196,11 @@ class PreviewTests(Fixture):
         receipt = self.base / "pids.json"
         helper.write_text(
             f"#!{sys.executable}\nimport json, os, subprocess, sys, time\nfrom pathlib import Path\n"
+            f"sys.path.insert(0, {str(Path(landed_worktrees.dev_worktree.__file__).parent)!r})\nimport dev_worktree\n"
             "if '--dry-run' in sys.argv:\n"
             "    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
-            f"    Path({str(receipt)!r}).write_text(json.dumps([os.getpid(), child.pid]))\n"
+            "    observation = {'pids': [os.getpid(), child.pid], 'callback_refused': dev_worktree.delegation_active(sys.argv[1:])}\n"
+            f"    Path({str(receipt)!r}).write_text(json.dumps(observation))\n"
             "    time.sleep(60)\n"
             "else:\n"
             "    time.sleep(0.2)\n"
@@ -208,7 +210,9 @@ class PreviewTests(Fixture):
                 mock.patch.object(landed_worktrees, "PREVIEW_TIMEOUT", 1):
             preview = landed_worktrees.run_retire(str(self.base / "target"), dry_run=True)
             self.assertNotEqual(preview.returncode, 0)
-            pids = json.loads(receipt.read_text())
+            observed = json.loads(receipt.read_text())
+            self.assertTrue(observed["callback_refused"])
+            pids = observed["pids"]
             for pid in pids:
                 state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
                 self.assertTrue(state.returncode != 0 or not state.stdout.strip() or state.stdout.strip().startswith("Z"))
@@ -322,11 +326,12 @@ class MainTests(Fixture):
         self.git(self.repo, "remote", "set-url", "origin", "https://github.com/o/sample.git")
 
     def run_main(self, pull, repo="o/sample", commits=(), discussions=None, bodies=None, branch=None, branch_pulls=(),
-                 claim_issues=(), search=None, archived_claim=False, all_trees=False, checkout=None, target=None):
+                 claim_issues=(), search=None, archived_claim=False, all_trees=False, checkout=None, target=None, qualify_only=False):
         config = self.base / "worktrees.json"
         config.write_text(json.dumps({"root": str(self.root), "hostHelper": str(self.base / "host-helper")}))
         discussions = discussions or {}
         reader = mock.Mock()
+        self.reader = reader
         reader.get_json.side_effect = lambda path, step: pull if path.endswith("/pulls/7") else {
             "body": (bodies or {}).get(path.rsplit("/", 1)[-1], "")}
         reader.request.return_value = mock.Mock(body=search if search is not None else {
@@ -364,7 +369,8 @@ class MainTests(Fixture):
             run.return_value = subprocess.CompletedProcess([], 0, "", "")
             landed = (["--path", str(target)] if target else ["--all"] if all_trees
                       else ["--branch", branch] if branch else ["--pr", "7"])
-            code = landed_worktrees.main(["--repo", repo, *landed, "--checkout", str(checkout or self.repo), "--apply"])
+            code = landed_worktrees.main(["--repo", repo, *landed, "--checkout", str(checkout or self.repo),
+                                          *([] if qualify_only else ["--apply"])], qualify_only=qualify_only)
         return code, json.loads(out.getvalue()), run
 
     def test_open_pr_retires_nothing(self):
@@ -504,15 +510,16 @@ class MainTests(Fixture):
     def test_exact_path_rechecks_ownership_and_never_retires_another_tree(self):
         target = self.settled_worktree("source")
         self.settled_worktree("other")
-        for released in (False, True):
-            with self.subTest(released=released):
+        for released, qualification in ((False, False), (True, False), (False, True), (True, True)):
+            with self.subTest(released=released, qualification=qualification):
                 ownership = self.claimed_source(released=released)
-                code, result, run = self.run_main(None, target=target, claim_issues=[3], **ownership)
+                code, result, run = self.run_main(None, target=target, claim_issues=[3], qualify_only=qualification, **ownership)
                 self.assertEqual(code == 0, released)
                 self.assertEqual([r["path"] for r in result["worktrees"]], [str(target)])
-                self.assertEqual(result["worktrees"][0]["decision"], "retired" if released else "kept")
+                self.assertEqual(result["worktrees"][0]["decision"],
+                                 ("candidate" if qualification else "retired") if released else "kept")
                 self.assertEqual(run.call_args_list, [mock.call(str(target), dry_run=True),
-                                                      mock.call(str(target), dry_run=False)] if released else [])
+                                                      mock.call(str(target), dry_run=False)] if released and not qualification else [])
         code, result, run = self.run_main(None, target=target, claim_issues=[3],
                                          discussions={"3": ValueError("Ownership record unreadable")})
         self.assertNotEqual(code, 0)
@@ -530,10 +537,14 @@ class MainTests(Fixture):
 
     def test_open_claim_on_an_issue_the_pr_refs_keeps_the_refresh_worktree(self):
         refresh, pull, commits = self.merged_refresh()
+        delivery_repo = "o/operations"
+        delivery_number = 5
         claim = {"id": 12, "user": {"login": "bot"}, "created_at": "2026-10-22T00:00:00Z",
                  "body": "Claimed by refresher\n" + github_plan_claim.marker(
-                     {"worker": "refresher", "session": "s1", "branch": "work/refresh", "claimed_at": "2026-10-22T00:00:00Z"})}
-        code, result, run = self.run_main({**pull, "body": "Refs #5"}, commits=commits, discussions={"5": [claim]})
+                     {"worker": "refresher", "session": "s1", "branch": "work/delivery", "claimed_at": "2026-10-22T00:00:00Z"})}
+        code, result, run = self.run_main({**pull, "body": f"Refs {delivery_repo}#{delivery_number}"},
+                                         commits=commits, discussions={str(delivery_number): [claim]})
+        self.assertIn(f"repos/{delivery_repo}/issues/{delivery_number}", [call.args[0] for call in self.reader.get_json.call_args_list])
         self.assertEqual({r["path"]: r["decision"] for r in result["worktrees"]}[str(refresh)], "kept")
         self.assertNotIn(mock.call(str(refresh), dry_run=False), run.call_args_list)
 

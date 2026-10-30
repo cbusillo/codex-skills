@@ -604,10 +604,10 @@ checks below as relevant.
   contents checks; dirty or unpreserved state is retained. This covers the
   worktree and its merged local branch, not a remote branch. The task's record
   includes its claim on the owning issue, which names the branch. A worktree on
-  that branch is this task's, even after compaction or a handoff. For a managed
-  host worktree, use the catalog's `dev-worktree retire --dry-run /exact/task/path`,
-  then `dev-worktree retire /exact/task/path` after a passing preview. Both
-  qualify ownership before invoking the configured host primitive. When the task's
+  that branch is this task's, even after compaction or a handoff. Once work is
+  complete or handed off, release and verify its claim, then follow
+  [qualified retirement](../github/references/worktrees.md#retirement) from
+  outside the tree. When the task's
   record does not show that it created a registered worktree, the owning session is
   unknown: leave it, and mention it when it bears on this closeout.
   [Task worktrees](../github/references/worktrees.md) documents portable Git

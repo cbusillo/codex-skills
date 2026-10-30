@@ -92,9 +92,10 @@ This setting selects an existing trusted host executable; it does
 not install, replace or edit one. Its `retire --dry-run` contract must be read-only;
 creation bounds that preview using the existing process-group probe, while apply
 finishes without an interrupt that could prevent lock restoration.
-Explicit retirement first qualifies the exact target through the common
-GitHub retirement checks. A passing apply then replaces the catalog process
-with the host executable, preserving its signal cleanup; preview remains read-only.
+Explicit retirement first qualifies the exact target's source and ownership
+through the common GitHub checks, then replaces the catalog process with the
+host executable for its full preview or apply. Its signal cleanup and existing
+`--offline-only` mode remain available. Preview changes no worktree.
 
 Chris-Studio keeps its existing host-local helper and external-volume checks
 with this configuration:
@@ -117,18 +118,22 @@ does not provision host storage or change runtime configuration.
 
 ## Retirement
 
-Use `work-closeout` to verify ownership, live use, contents and publication
-before cleanup. Release a task claim last; until then it protects a tree still
-needed by its session. Portable worktrees are ordinary unlocked Git worktrees: remove
-an eligible finished one with `git worktree remove /exact/task/path`, without
-force, then apply the normal branch cleanup policy. Kept trees follow `work-closeout` before retrying automatic retirement. When a registration's lock names a retirement
-command, use the catalog entry with `retire --dry-run /exact/task/path`, then
-`retire /exact/task/path` after a passing preview. It qualifies only that tree
-through `landed_worktrees.py` before the configured host helper runs. A held
-claim on an associated delivery issue protects related trees across repositories;
-missing evidence or a kept target returns nonzero. The host command remains the
-low-level storage and IDE primitive, not an ownership check. Preserve active,
-dirty or ambiguous work.
+Use `work-closeout` to finish or hand off the work and record its retained
+artifacts. Release and verify its claim before retiring completed task trees;
+until then the claim protects continuing use. Run from outside the target tree.
+For portable and managed-host worktrees, use the catalog entry by its full path:
+
+```sh
+<catalog>/skills/github/scripts/dev-worktree retire --dry-run /exact/task/path
+<catalog>/skills/github/scripts/dev-worktree retire /exact/task/path
+```
+
+Apply only after a passing preview. A held claim on a record linked by the PR
+or naming the exact branch keeps the related trees, even across repositories.
+Record those links on the existing work issue or PR; a claim cannot protect an
+unrecorded association. Incomplete evidence or a kept target returns nonzero.
+The host lock's command is a legacy primitive marker, not ownership proof; never
+substitute the bare host command. Preserve active, dirty or ambiguous work.
 
 Creation checks each registered linked worktree through `landed_worktrees.py`.
 A closed PR uses the existing PR-head, claim and publication checks;

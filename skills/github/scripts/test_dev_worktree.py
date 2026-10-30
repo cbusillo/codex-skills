@@ -98,22 +98,35 @@ class WorktreeTests(unittest.TestCase):
             self.assertEqual(events[:3], ["refresh", "retire", "create"])
 
     def test_retirement_qualifies_the_target_without_a_creation_sweep(self) -> None:
-        with mock.patch.dict(dev_worktree.os.environ, self.env, clear=True), \
-                mock.patch.object(dev_worktree, "configuration", return_value=(self.base, self.base / "host")), \
-                mock.patch.object(dev_worktree, "retire_finished") as sweep, \
-                mock.patch.object(dev_worktree, "retire_task", return_value=0) as retire, \
-                mock.patch.object(dev_worktree.os, "execv") as host:
-            self.assertEqual(dev_worktree.main(["retire", "--dry-run", str(self.base / "old")]), 0)
-        sweep.assert_not_called()
-        host.assert_not_called()
-        retire.assert_called_once_with(self.base / "old", dry_run=True)
+        proof = mock.Mock()
+        proof.main.return_value = 0
+        proof.portable_retire.return_value = subprocess.CompletedProcess([], 0, "", "")
+        for helper in (None, self.base / "host"):
+            for flags in ([], ["--dry-run"], ["--offline-only"], ["--offline-only", "--dry-run"]):
+                with self.subTest(helper=helper, flags=flags), \
+                        mock.patch.dict(dev_worktree.os.environ, self.env, clear=True), \
+                        mock.patch.dict(sys.modules, {"landed_worktrees": proof}), \
+                        mock.patch.object(dev_worktree, "configuration", return_value=(self.base, helper)), \
+                        mock.patch.object(dev_worktree, "retire_finished") as sweep, \
+                        mock.patch.object(dev_worktree.os, "execv") as host:
+                    self.assertEqual(dev_worktree.main(["retire", *flags, str(self.repo)]), 0)
+                sweep.assert_not_called()
+                if helper is None:
+                    host.assert_not_called()
+                    proof.portable_retire.assert_called_with(self.repo, dry_run="--dry-run" in flags)
+                else:
+                    self.assertEqual(host.call_args.args[0], str(helper))
+                    self.assertEqual(host.call_args.args[1][-1], str(self.repo))
+                    self.assertEqual(set(host.call_args.args[1][1:-1]), {"retire", *flags})
 
     def test_retirement_never_delegates_after_failed_ownership_qualification(self) -> None:
         proof = mock.Mock()
         proof.main.return_value = 2
         with mock.patch.dict(sys.modules, {"landed_worktrees": proof}), \
+                mock.patch.dict(dev_worktree.os.environ, self.env, clear=True), \
+                mock.patch.object(dev_worktree, "configuration", return_value=(self.base, self.base / "host")), \
                 mock.patch.object(dev_worktree.os, "execv") as host:
-            self.assertEqual(dev_worktree.retire_task(self.repo, dry_run=False), 2)
+            self.assertEqual(dev_worktree.main(["retire", str(self.repo)]), 2)
         host.assert_not_called()
 
     def test_unavailable_sweep_does_not_prevent_creation(self) -> None:
@@ -658,7 +671,7 @@ class WorktreeTests(unittest.TestCase):
             destination = fixture / source.name
             destination.write_bytes(source.read_bytes())
             destination.chmod(source.stat().st_mode)
-        (fixture / "landed_worktrees.py").write_text("def main(argv):\n    return 0\n")
+        (fixture / "landed_worktrees.py").write_text("def main(argv, *, qualify_only=False):\n    return 0\n")
         entrypoint = [str(fixture / Path(arg).name) if arg in {str(SCRIPT), str(SCRIPT.with_name("dev-worktree"))}
                       else arg for arg in entrypoint]
         target = self.base / "target"
