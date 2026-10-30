@@ -109,11 +109,12 @@ the author verifies it.
 - When reviewers disagree, or you disagree with one, test it rather than
   averaging the opinions.
 - A finding that would change the agreed outcome (what recorded Director
-  decisions and Client requests ask for), in either direction, is the
-  Director's to decide: escalate it under the `direction` skill instead of
-  acting on it or declining it. Cutting a finish line, criterion or child issue
-  that an agent or reviewer added beyond that outcome is weighed like any
-  other finding. An author judging a challenge to its own plan is how a wrong
+  decisions, Client requests and work the Director admitted to a milestone ask
+  for), in either direction, is the Director's to decide: escalate it under the
+  `direction` skill instead of acting on it or declining it. Cutting a finish
+  line, criterion or child issue that an agent or reviewer added beyond that
+  outcome is weighed like any other finding, and never removes a protection
+  `DIRECTION.md` names. An author judging a challenge to its own plan is how a wrong
   direction survives review.
 
 ## Reporting

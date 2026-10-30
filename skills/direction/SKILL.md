@@ -703,8 +703,8 @@ issue. Repeat from a fresh session on the other host.
 Read [reviews by another model](../references/model-review.md) first; it says
 how to weigh a finding. Then apply the split that reference points here for:
 
-- The **agreed outcome** is what recorded Director decisions and Client
-  requests ask for. How it is delivered and proved, fixes for reproduced
+- The **agreed outcome** is what recorded Director decisions, Client requests
+  and work the Director admitted to a milestone ask for. How it is delivered and proved, fixes for reproduced
   defects, and cutting a finish line, criterion or child issue that an agent
   or reviewer added beyond it are the executing agent's to weigh under that
   reference. Cutting never removes a protection `DIRECTION.md` names.
@@ -712,7 +712,8 @@ how to weigh a finding. Then apply the split that reference points here for:
   not: grow or shrink what a decision or request asks for, retire a subsystem
   or design, stop a workstream, change the purpose, journey, or stop
   boundaries, add a milestone, abandon one before it ships, or close as not
-  planned work the Director or a Client asked for. Open an
+  planned work the Director or a Client asked for or the Director admitted to
+  a milestone. Open an
   issue labeled `direction` that quotes the reviewer's words in a fenced block
   marked as reviewer output, links the source, and adds one sentence of your
   own read. When the finding would change `DIRECTION.md`, keep it on that
