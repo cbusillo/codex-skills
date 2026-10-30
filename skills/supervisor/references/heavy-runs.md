@@ -265,6 +265,9 @@ overlapping another execution without adding a scheduler.
 An existing directory copy can opt into `"overlay": true`. On a local Linux
 Docker engine this attaches a Docker local overlay volume at that copy's
 absolute destination instead of copying the directory into the container.
+The helper must run on the engine's Linux host with write access to its volume
+directory. The private receiver runs it as root; membership in the Docker group
+alone does not provide that filesystem access to a rootful engine.
 There are no caller-supplied volume names, host mount flags or driver options.
 Symlinks, special files, aliased lower paths, mount-option delimiters and
 input destinations overlapping another copy are refused. Unsupported engines
@@ -291,7 +294,7 @@ copy behavior when a run needs its own base.
 
 A private executor may resolve a copy's `retained_from` to an existing original
 input under its own custody and frozen-transfer verification. It must preserve
-local input/image bindings and the original owner's retirement boundary. This
+local input/image bindings and the original request's retirement boundary. This
 is not a host path supplied to the generic queue; local execution refuses that
 field without an executor. The receiver's own runbook owns its reference schema,
 installation and adoption. Do not add a second cache, queue or provenance system.
