@@ -6619,10 +6619,10 @@ def cmd_close(args: argparse.Namespace) -> None:
     if getattr(args, "only_closed", False) and not issue_matches_close_reason(issue, close_reason):
         raise PlanError("Landing reconciliation only repairs already-closed issues")
     _, relationship_preflight = close_relationship_preflight(issue_repo, number, close_reason)
+    close_comment = read_body(args) if args.body is not None or args.body_file else ""
     owner_decision: dict[str, Any] | None = None
     if close_reason == "not_planned" and not issue_matches_close_reason(issue, close_reason):
-        owner_decision = check_owner_decides_not_planned(issue_repo, number, issue)
-    close_comment = read_body(args) if args.body is not None or args.body_file else ""
+        owner_decision = check_owner_decides_not_planned(issue_repo, number, issue, scope_cut_reason=close_comment)
     validate_plan_references(close_comment, issue_repo)
     plan_labels = config.get("labels") or {}
     route_actor, gh_cmd, expected_actor = comment_route()
@@ -6683,6 +6683,25 @@ def cmd_close(args: argparse.Namespace) -> None:
             except github_issue_core.IssueError as exc:
                 raise plan_error_from_issue(exc, completed_steps=completed_steps) from exc
         completed_steps.append("index_reopen_trigger")
+        close_comment = ""
+
+    if close_comment and owner_decision and owner_decision.get("reason") == "agent_attested_scope_cut":
+        try:
+            comment_result = github_comment_core.comment(
+                "issue", number, close_comment, repo=issue_repo, gh_cmd=gh_cmd,
+                expected_actor=expected_actor, operation=CURRENT_OPERATION, completed_steps=completed_steps,
+                failed_step="post_scope_cut_reason", dedupe_body=True)
+            comment_id = comment_result["comment"]["id"]
+            _, published = api_json("GET", f"/repos/{issue_repo}/issues/comments/{comment_id}",
+                                    failed_step="read_scope_cut_reason", repository=issue_repo)
+            if (github_comment_core.canonical_comment_body(published.get("body")) != close_comment.rstrip()
+                    or published.get("id") != comment_id
+                    or issue_author_login(published) != (expected_actor or comment_result.get("actor"))
+                    or published.get("issue_url") != f"https://api.github.com/repos/{issue_repo}/issues/{number}"):
+                raise PlanError("Scope-cut reason readback differs; issue not closed")
+        except github_comment_core.CommentError as exc:
+            raise plan_error_from_comment(exc, completed_steps=completed_steps) from exc
+        completed_steps.append("scope_cut_reason_readback")
         close_comment = ""
 
     project_result: dict[str, Any] = {}
@@ -7244,7 +7263,7 @@ def owner_decision_refusal(message: str, *, cause: str = "validation_error") -> 
         message,
         failure=github_api_core.FailureDetail(
             cause=cause,
-            message="not-planned close of direction milestone work needs the owner's decision",
+            message="not-planned close needs scope-cut evidence or the Director's decision",
             retryable=False,
             fallback_eligible=False,
             disposition="stop",
@@ -7328,14 +7347,98 @@ def owner_reaction_decision(
     return None
 
 
-def check_owner_decides_not_planned(issue_repo: str, number: int, issue: dict[str, Any]) -> dict[str, Any]:
-    """Refuse to drop milestone work the owner admitted unless the owner said so.
+SCOPE_CUT_EDITS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      userContentEdits(first: 100, after: $cursor) {
+        nodes { editor { login __typename } }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}
+"""
 
-    Applies only to an issue in a milestone listed in the merged DIRECTION.md.
-    The decision is an owner comment or an owner thumbs-up on an unedited
-    recorded decision, after the body holding Current Status was last edited.
-    Automation cannot supply the owner identity on either path.
-    """
+
+PROTECTED_SCOPE = re.compile(r"^(?:(?:Director|Owner) decision\b|Track:)", re.IGNORECASE | re.MULTILINE)
+PROTECTED_SCOPE_LABEL = re.compile(
+    r"\b(?:client|customer|security|vulnerability|incident|outage|production|live[- ]site|outside[- ]user)\b",
+    re.IGNORECASE,
+)
+
+
+# https://github.com/cbusillo/direction/issues/152
+
+def scope_cut_admission_rejection(
+    issue_repo: str, number: int, issue: dict[str, Any], comments: list[dict[str, Any]],
+) -> str | None:
+    if not issue_body_is_fully_managed(issue):
+        return "issue author is not a known managed agent"
+    text = str(issue.get("title") or "") + "\n" + str(issue.get("body") or "")
+    if PROTECTED_SCOPE.search(text) or any(PROTECTED_SCOPE_LABEL.search(label) for label in normalize_labels(issue.get("labels"))):
+        return "issue records a protected request, classification or decision"
+    owner = issue_repo.split("/", 1)[0].casefold()
+    agents = {login.casefold() for login in wait_authors(issue_repo)} - {owner}
+    for comment in comments:
+        author = issue_author_login(comment)
+        if not author or author.casefold() not in agents or PROTECTED_SCOPE.search(str(comment.get("body") or "")):
+            return "discussion includes a human, unknown author or protected decision"
+    _, events = collect_paged_rest_items(
+        f"/repos/{issue_repo}/issues/{number}/timeline", query={}, bucket="rest_core",
+        step_prefix="scope_cut_timeline",
+    )
+    if not any(event.get("event") == "milestoned" for event in events):
+        return "milestone assignment history is missing"
+    for event in events:
+        actor = (event.get("actor") or event.get("user") or {}).get("login")
+        if not isinstance(actor, str) or actor.casefold() not in agents:
+            return "timeline includes a human or unknown actor"
+    editor_rejection = scope_cut_editor_rejection(issue_repo, number, agents)
+    if editor_rejection:
+        return editor_rejection
+    reaction_paths = [f"/repos/{issue_repo}/issues/{number}/reactions"]
+    for comment in comments:
+        if not isinstance(comment.get("id"), int):
+            return "comment identity is missing for reaction evidence"
+        reaction_paths.append(f"/repos/{issue_repo}/issues/comments/{comment['id']}/reactions")
+    for path in reaction_paths:
+        _, reactions = collect_paged_rest_items(path, query={}, bucket="rest_core", step_prefix="scope_cut_reactions")
+        if any(str((reaction.get("user") or {}).get("login") or "").casefold() not in agents for reaction in reactions):
+            return "issue or comment reactions include a human or unknown actor"
+    return None
+
+
+def scope_cut_editor_rejection(issue_repo: str, number: int, agents: set[str]) -> str | None:
+    repo_owner, repo_name = issue_repo.split("/", 1)
+    cursor = None
+    seen: set[str] = set()
+    while True:
+        _, data = api_json("POST", "/graphql", {"query": SCOPE_CUT_EDITS_QUERY,
+            "variables": {"owner": repo_owner, "name": repo_name, "number": number, "cursor": cursor}},
+            is_write=False, failed_step="scope_cut_editors", repository=issue_repo)
+        if data.get("errors"):
+            raise PlanError("Body edit history is unavailable")
+        edits = data["data"]["repository"]["issue"]["userContentEdits"]
+        for edit in edits["nodes"]:
+            editor = edit.get("editor") or {}
+            login = editor.get("login")
+            if editor.get("__typename") == "Bot" and isinstance(login, str):
+                login += "[bot]"
+            if not isinstance(login, str) or login.casefold() not in agents:
+                return "body edit history includes a human or unknown editor"
+        page = edits["pageInfo"]
+        if page["hasNextPage"] is False:
+            return None
+        cursor = page.get("endCursor")
+        if page["hasNextPage"] is not True or not isinstance(cursor, str) or not cursor or cursor in seen:
+            raise PlanError("Body edit history pagination is incomplete")
+        seen.add(cursor)
+
+
+def check_owner_decides_not_planned(
+    issue_repo: str, number: int, issue: dict[str, Any], *, scope_cut_reason: str = "",
+) -> dict[str, Any]:
     milestone = issue.get("milestone")
     title = milestone.get("title") if isinstance(milestone, dict) else None
     if not isinstance(title, str):
@@ -7384,6 +7487,8 @@ def check_owner_decides_not_planned(issue_repo: str, number: int, issue: dict[st
             and author.casefold() == repo_owner.casefold()
             and isinstance(created_at, str)
             and created_at > status_updated_at
+            and re.fullmatch(rf"(?:(?:Director|Owner) decision: )?Close #{number} as not planned\.",
+                             str(comment.get("body") or "").splitlines()[0].rstrip() if comment.get("body") else "") is not None
         ):
             return {
                 "required": True,
@@ -7401,11 +7506,26 @@ def check_owner_decides_not_planned(issue_repo: str, number: int, issue: dict[st
             f"Cannot close {issue_repo}#{number} as not planned: could not verify the owner's "
             "reaction and the decision's edit history.", cause="read_failure",
         ) from exc
+    scope_rejection = "scope-cut reason is missing"
+    try:
+        if scope_cut_reason.strip():
+            scope_rejection = scope_cut_admission_rejection(issue_repo, number, issue, comments)
+    except (PlanError, KeyError, TypeError, AttributeError) as exc:
+        raise owner_decision_refusal(
+            f"Cannot close {issue_repo}#{number} as not planned: scope-cut admission evidence is unavailable "
+            f"({github_api_core.redact_string(str(exc))}). Recover the read before retrying.",
+            cause="read_failure",
+        ) from exc
+    if scope_rejection is None:
+        return {"required": False, "reason": "agent_attested_scope_cut", "milestone": title,
+                "scope_cut_reason": scope_cut_reason.strip()}
     raise owner_decision_refusal(
-        f"Cannot close {issue_repo}#{number} as not planned: it is in milestone {title!r} listed in "
+        f"Cannot close {issue_repo}#{number} as not planned: {scope_rejection}. It is in milestone {title!r} listed in "
         f"{issue_repo}:{DIRECTION_FILE}, and no comment by the repository owner {repo_owner!r} after the "
-        f"last Current Status update ({status_updated_at}) records the decision. Ask the Director to comment "
-        "on the issue, or react with thumbs-up to an unedited comment whose first line is "
+        f"last Current Status update ({status_updated_at}) records the decision. Review and correct missing scope-cut evidence "
+        "through this helper first. On a scope cut, --comment or --comment-file attests that the requirement is "
+        "agent-added beyond the agreed outcome. For Director-admitted work, the Director can post a comment starting with "
+        f'"Close #{number} as not planned.", or react with thumbs-up to an unedited comment whose first line is '
         f"\"Director decision: Close #{number} as not planned.\", then rerun; do not close it another way."
     )
 

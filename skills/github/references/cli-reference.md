@@ -2175,9 +2175,30 @@ malformed rather than ignoring its additional field.
   record there that the repository owner approved with `+1`. `gh-issue close`
   runs the same check and takes the same flag. Already-closed issues, including
   landing reconciliation, skip it. `--reason not_planned`
-  requires the Director's approval, given as the repository owner, for work in a
-  milestone listed in merged `DIRECTION.md`: a repository owner comment after
-  the last issue-body edit, or a repository owner `+1` reaction after
+  requires the Director's approval, given as the repository owner, for Director-opened
+  or Director-admitted work in a milestone listed in merged `DIRECTION.md`. An
+  unadmitted agent-added requirement beyond the agreed outcome may close with
+  a close comment through `--comment` or `--comment-file`. For this path, that
+  comment is the agent's attestation that the requirement exceeds the agreed
+  outcome. The result records that scope judgment
+  as `closed.owner_decision.reason: agent_attested_scope_cut`, with `scope_cut_reason`.
+  The reason is published and read back before closure; a failed comment leaves
+  the issue open. This follows the [Q1076 scope trial](https://github.com/cbusillo/direction/issues/152).
+  Agents must establish that the requirement exceeds the agreed outcome and
+  preserves Director decisions, Client requests, outside reports, security findings
+  and live-site protections, including decisions and requests relayed by bots or
+  recorded elsewhere. Review the original request, related decisions and audit
+  records; bot authorship alone proves none of those judgments.
+  The helper checks only observable target evidence: known managed agent authorship,
+  complete milestone/timeline history with only agent actors, body editors,
+  discussion, reactions and protected classifications. Incomplete reads refuse
+  with a recovery reason. An automated audit listing an addition is not Director
+  admission, and approval of a parent's outcome does not admit every later child
+  an agent adds. Never bypass a refusal through another tool.
+  The Director decision route remains:
+  a repository owner comment after the last issue-body edit whose first line is
+  `Close #<number> as not planned.` (optionally prefixed `Director decision: `
+  or `Owner decision: `), or a repository owner `+1` reaction after
   that edit on an unedited comment starting with the exact first line
   `Director decision: Close #<number> as not planned.` The legacy `Owner decision:`
   spelling remains accepted for existing comments. Other accounts, comment
