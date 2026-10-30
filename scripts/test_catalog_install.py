@@ -133,6 +133,33 @@ class InstallTests(unittest.TestCase):
         self.assertTrue(all(alias.is_symlink() for alias in aliases))
         self.assertEqual(private.read_bytes(), before)
 
+    def test_linked_generated_target_with_direction_refreshes_without_a_generated_hash(self) -> None:
+        private = self.catalog / ".local/global-instructions.md"
+        private.parent.mkdir()
+        private.write_text("Personal fixture rule.\n")
+        first = self.sync.DIRECTION_START + "\nFirst merged direction."
+        updated = self.sync.DIRECTION_START + "\nUpdated merged direction."
+        target = self.root / "shared-CLAUDE.md"
+        path = self.claude / "CLAUDE.md"
+        with mock.patch.object(self.sync, "direction_content", return_value=first):
+            self.install()
+            target.write_bytes(path.read_bytes())
+            path.unlink()
+            path.symlink_to(target)
+            self.install()
+        receipt_path = self.catalog / ".local" / "catalog-install.json"
+        receipt = json.loads(receipt_path.read_text())
+        receipt["generated_instruction_hashes"].pop(str(path), None)
+        receipt_path.write_text(json.dumps(receipt))
+        (self.catalog / "instructions" / "global.md").write_text("# Shared\nNew catalog instruction.\n")
+        with mock.patch.object(self.sync, "direction_content", return_value=updated):
+            installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        text = target.read_text()
+        self.assertIn("New catalog instruction.", text)
+        self.assertIn(updated, text)
+        self.assertNotIn(first, text)
+        self.assertEqual(path.readlink(), target)
+
     def test_unavailable_merged_direction_preserves_installed_files_and_receipt(self) -> None:
         self.install()
         paths = (self.codex / "AGENTS.md", self.claude / "CLAUDE.md", self.catalog / ".local/catalog-install.json")

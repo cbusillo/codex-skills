@@ -193,12 +193,16 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         inspected = target.read_bytes()
         text = inspected.decode().replace("\r\n", "\n").replace("\r", "\n")
         digest = hashlib.sha256(inspected).hexdigest()
-        recognized = text in known_outputs or (text.startswith(sync.HEADER) and generated_hashes.get(str(path)) == digest)
+        # The merged DIRECTION block is regenerated on every write, so recognize the text before it.
+        marker = text.find("\n\n" + sync.DIRECTION_START)
+        undirected = text if marker < 0 else text[:marker] + "\n"
+        recognized = (text in known_outputs or undirected in known_outputs
+                      or (text.startswith(sync.HEADER) and generated_hashes.get(str(path)) == digest))
         if not recognized and text.startswith(sync.HEADER):
             if historical_outputs is None:
                 historical_outputs = {"\n\n".join(filter(None, (base.strip(), personal.strip()))) + "\n"
                                       for base in committed_shared_sources(sync)}
-            recognized = text in historical_outputs
+            recognized = undirected in historical_outputs
         # Old receipts hashed linked text after universal-newline decoding.
         matches_receipt = hashes.get(str(path)) in {digest, hashlib.sha256(text.encode()).hexdigest()}
         if recognized and (text == content or str(path) not in hashes or matches_receipt):
