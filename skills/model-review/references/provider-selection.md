@@ -65,7 +65,7 @@ Finish the primary review before running a permitted supplement. Run each
 supplement once, serially, with its recorded budget:
 
 ```sh
-uv run scripts/review_with_model.py run --author-provider openai --provider google --supplementary --timeout 1800 --repo <repo> --prompt-file <file> --out <supplement.md>
+uv run scripts/review_with_model.py run --author-provider openai --provider PROVIDER --supplementary --timeout 1800 --repo <repo> --prompt-file <file> --out <supplement.md>
 ```
 
 The helper runs one review per invocation; serial scheduling across invocations
