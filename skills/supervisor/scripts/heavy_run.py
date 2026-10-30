@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import math
 import os
 import pwd
 import re
 import signal
+import stat
 import subprocess
 import tarfile
 import time
@@ -25,6 +27,7 @@ from pathlib import Path
 from typing import BinaryIO, TextIO
 
 LABEL = "org.codex-skills.heavy-slot"
+LOWER_DIGEST_LABEL = "org.codex-skills.heavy-lower-sha256"
 CONFIG_PATH = Path(".config/codex-skills/heavy-run.json")
 STATE_PATH = Path(".local/state/codex-skills/heavy-run")
 MIN_NANO_CPUS = 10**7
@@ -221,6 +224,24 @@ def validate_manifest(manifest: object) -> None:
                 or not Path(copy["source"]).exists()
             ):
                 raise ValueError("Copy inputs must exist and container destinations must be absolute strings")
+            if type(copy.get("overlay", False)) is not bool:
+                raise ValueError("Copy overlay must be a boolean")
+            if "retained_from" in copy and not copy.get("overlay"):
+                raise ValueError("Retained inputs require an overlay and the configured private executor")
+            if copy.get("overlay"):
+                destination = Path(copy["destination"])
+                if (
+                    destination == Path("/")
+                    or not re.fullmatch(r"/[A-Za-z0-9_./-]+", str(destination))
+                    or not Path(copy["source"]).is_dir()
+                ):
+                    raise ValueError("Overlay copies require a directory and a dedicated destination")
+                if any(
+                    other is not copy
+                    and (destination.is_relative_to(other["destination"]) or Path(other["destination"]).is_relative_to(destination))
+                    for other in copies
+                ):
+                    raise ValueError("Overlay destinations cannot overlap another input")
     if not isinstance(manifest.get("job"), str) or manifest["job"] not in names:
         raise ValueError("Select a job container")
     outputs = manifest.get("outputs", [])
@@ -246,6 +267,32 @@ def docker_environment() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if not key.startswith("DOCKER_")}
 
 
+def overlay_lower_digest(root: Path) -> str:
+    if not re.fullmatch(r"/[A-Za-z0-9_./-]+", str(root)) or root.resolve(strict=True) != root or not root.is_dir():
+        raise ValueError("Overlay lower must be an unaliased local directory without mount option delimiters")
+    digest = hashlib.sha256()
+    for path in [root, *sorted(root.rglob("*"))]:
+        metadata = path.lstat()
+        if not stat.S_ISDIR(metadata.st_mode) and not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("Overlay inputs cannot contain links or special files")
+        required_mode = 0o007 if path.is_dir() else 0o006
+        if metadata.st_mode & required_mode != required_mode:
+            raise ValueError("Overlay lower must already have container-copy permissions; prepare a compatible frozen input")
+        entry = [
+            str(path.relative_to(root)),
+            metadata.st_mode,
+            metadata.st_uid,
+            metadata.st_gid,
+            metadata.st_dev,
+            metadata.st_ino,
+        ]
+        if path.is_file():
+            with path.open("rb") as stream:
+                entry.append(hashlib.file_digest(stream, "sha256").hexdigest())
+        digest.update(json.dumps(entry).encode())
+    return digest.hexdigest()
+
+
 def local_endpoint(home: Path, log: TextIO) -> str:
     endpoint = subprocess.run(
         ["docker", "--config", str(home / ".docker"), "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
@@ -261,11 +308,13 @@ def local_endpoint(home: Path, log: TextIO) -> str:
     return endpoint
 
 
+def container_input_mode(mode: int, *, directory: bool) -> int:
+    return 0o777 if directory or mode & 0o111 else 0o666
+
+
 def container_copy_mode(info: tarfile.TarInfo) -> tarfile.TarInfo:
-    if info.isdir():
-        info.mode = 0o777
-    elif info.isfile():
-        info.mode = 0o777 if info.mode & 0o111 else 0o666
+    if info.isdir() or info.isfile():
+        info.mode = container_input_mode(info.mode, directory=info.isdir())
     return info
 
 
@@ -279,6 +328,8 @@ class Docker:
         self.label = f"{LABEL}={slot.queue_id}:{slot.index}"
         self.environment = docker_environment()
         self.prefix = ["docker", "--host", endpoint]
+        self.lower_digests: dict[Path, str] = {}
+        self.overlay_volumes: dict[tuple[Path, str], str] = {}
 
     def call(self, *args: str, timeout: int | None = 60) -> str:
         result = subprocess.run(
@@ -304,11 +355,106 @@ class Docker:
             self.call("rm", "--force", "--volumes", container)
         if self.containers():
             raise RuntimeError("Owned containers remain; slot cannot admit work")
+        self.cleanup_overlay_volumes()
         networks = self.call("network", "ls", "-q", "--filter", f"label={self.label}").split()
         for network in networks:
             self.call("network", "rm", network)
         if self.call("network", "ls", "-q", "--filter", f"label={self.label}").split():
             raise RuntimeError("Owned networks remain; slot cannot admit work")
+
+    def owned_volume(self, name: str) -> dict:
+        volume = json.loads(self.call("volume", "inspect", name))[0]
+        key, value = self.label.split("=", 1)
+        if volume.get("Name") != name or volume.get("Driver") != "local" or (volume.get("Labels") or {}).get(key) != value:
+            raise RuntimeError("Overlay volume ownership differs; preserve custody")
+        return volume
+
+    @staticmethod
+    def stage_overlay_input(root: Path) -> None:
+        if root.resolve(strict=True) != root or not root.is_dir():
+            raise ValueError("Stage only a new unaliased overlay input directory")
+        paths = [root, *root.rglob("*")]
+        for path in paths:
+            mode = path.lstat().st_mode
+            if not stat.S_ISDIR(mode) and not stat.S_ISREG(mode):
+                raise ValueError("Overlay input staging refuses links and special files")
+        for path in paths:
+            path.chmod(container_input_mode(path.stat().st_mode, directory=path.is_dir()))
+
+    def cleanup_overlay_volumes(self) -> None:
+        names = self.call("volume", "ls", "-q", "--filter", f"label={self.label}").split()
+        volumes = [self.owned_volume(name) for name in names]
+        lowers = {}
+        for volume in volumes:
+            options = volume.get("Options") or {}
+            if not options:
+                continue
+            fields = options.get("o", "").split(",")
+            if (
+                options.keys() != {"type", "device", "o"}
+                or options["type"] != "overlay"
+                or options["device"] != "overlay"
+                or len(fields) != 4
+                or not fields[0].startswith("lowerdir=")
+                or fields[-1] != "userxattr"
+            ):
+                raise RuntimeError("Owned overlay options differ; preserve custody")
+            lower = Path(fields[0].removeprefix("lowerdir="))
+            expected = (volume.get("Labels") or {}).get(LOWER_DIGEST_LABEL)
+            if lower in lowers and lowers[lower] != expected:
+                raise RuntimeError("Shared overlay lower bindings differ")
+            lowers[lower] = expected
+        if any(overlay_lower_digest(lower) != expected for lower, expected in lowers.items()):
+            raise RuntimeError("Overlay lower changed during execution; preserve original input custody")
+        for volume in sorted(volumes, key=lambda item: not bool(item.get("Options"))):
+            self.call("volume", "rm", volume["Name"])
+        if self.call("volume", "ls", "-q", "--filter", f"label={self.label}").split():
+            raise RuntimeError("Owned overlay volumes remain; slot cannot admit work")
+
+    def create_overlay(self, copy: dict, name: str) -> str:
+        if os.uname().sysname != "Linux":
+            raise ValueError("Overlay copies require a local Linux Docker engine; no copy fallback")
+        lower = Path(copy["source"])
+        if lower not in self.lower_digests:
+            self.lower_digests[lower] = overlay_lower_digest(lower)
+        lower_digest = self.lower_digests[lower]
+        backing_name = name + "-backing"
+        self.call("volume", "create", "--label", self.label, backing_name)
+        backing = self.owned_volume(backing_name)
+        private = Path(backing["Mountpoint"])
+        docker_root = Path(self.call("info", "--format", "{{.DockerRootDir}}"))
+        if (
+            backing.get("Options")
+            or not re.fullmatch(r"/[A-Za-z0-9_./-]+", str(private))
+            or private != docker_root / "volumes" / backing_name / "_data"
+            or private.resolve(strict=True) != private
+            or any(private.iterdir())
+        ):
+            raise RuntimeError("Overlay writable backing is not an empty private volume")
+        for directory in (private / "upper", private / "work"):
+            directory.mkdir()
+            directory.chmod(0o777)
+        options = {
+            "type": "overlay",
+            "device": "overlay",
+            "o": f"lowerdir={lower},upperdir={private}/upper,workdir={private}/work,userxattr",
+        }
+        arguments = [
+            "volume",
+            "create",
+            "--driver",
+            "local",
+            "--label",
+            self.label,
+            "--label",
+            f"{LOWER_DIGEST_LABEL}={lower_digest}",
+        ]
+        for key, value in options.items():
+            arguments.extend(["--opt", f"{key}={value}"])
+        self.call(*arguments, name)
+        if self.owned_volume(name).get("Options") != options:
+            raise RuntimeError("Overlay volume options differ")
+        return name
 
     def collect_logs(self, container: str, log: TextIO) -> None:
         try:
@@ -324,6 +470,8 @@ class Docker:
             log.write(f"Log collection failed: {type(error).__name__}\n")
 
     def copy_input(self, identifier: str, copy: dict) -> None:
+        if copy.get("overlay"):
+            return
         with subprocess.Popen(
             [*self.prefix, "cp", "-", f"{identifier}:/"],
             stdin=subprocess.PIPE,
@@ -333,9 +481,14 @@ class Docker:
             pass_fds=(self.slot.handle.fileno(),),
         ) as process:
             assert process.stdin is not None
-            with process.stdin, tarfile.open(fileobj=process.stdin, mode="w|") as archive:
+            with (
+                process.stdin,
+                tarfile.open(fileobj=process.stdin, mode="w|") as archive,
+            ):
                 archive.add(
-                    Path(copy["source"]).resolve(), arcname=copy["destination"].lstrip("/") or ".", filter=container_copy_mode
+                    Path(copy["source"]).resolve(),
+                    arcname=copy["destination"].lstrip("/") or ".",
+                    filter=container_copy_mode,
                 )
             if process.wait():
                 raise RuntimeError("Docker input copy failed; see private run.log")
@@ -364,6 +517,18 @@ class Docker:
             "--network-alias",
             container["name"],
         ]
+        for index, copy in enumerate(container.get("copies", [])):
+            if copy.get("overlay"):
+                binding = (Path(copy["source"]), copy["destination"])
+                if binding not in self.overlay_volumes:
+                    self.overlay_volumes[binding] = self.create_overlay(copy, f"{network}-{container['name']}-{index}")
+                name = self.overlay_volumes[binding]
+                args.extend(
+                    [
+                        "--mount",
+                        f"type=volume,src={name},dst={copy['destination']},volume-nocopy",
+                    ]
+                )
         env_file = evidence / f"{container['name']}.env"
         environment: dict[str, str] = container.get("environment") or {}
         try:
@@ -530,14 +695,37 @@ def main(*, home: Path | None = None) -> int:
         if settings.executor is not None:
             os.execvp(
                 settings.executor[0],
-                [*settings.executor, "--manifest", str(args.manifest.resolve()), "--evidence", str(args.evidence.resolve())],
+                [
+                    *settings.executor,
+                    "--manifest",
+                    str(args.manifest.resolve()),
+                    "--evidence",
+                    str(args.evidence.resolve()),
+                ],
             )
+        if any("retained_from" in copy for container in manifest["containers"] for copy in container.get("copies", [])):
+            raise ValueError("Retained inputs require the configured private executor; no local fallback")
         settings.limits(len(manifest["containers"]))
         result = run(manifest, args.evidence, settings, home)
     except Canceled as error:
         return 128 + error.signum
-    except (KeyError, TypeError, OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
-        print(json.dumps({"ok": False, "error": type(error).__name__, "evidence": str(args.evidence)}))
+    except (
+        KeyError,
+        TypeError,
+        OSError,
+        ValueError,
+        RuntimeError,
+        subprocess.SubprocessError,
+    ) as error:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": type(error).__name__,
+                    "evidence": str(args.evidence),
+                }
+            )
+        )
         return 1
     print(json.dumps({"ok": result == 0, "exit_code": result, "evidence": str(args.evidence)}))
     return result
