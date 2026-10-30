@@ -3471,6 +3471,28 @@ def claim_once(args: argparse.Namespace) -> None:
             prepared["targets"][pull["number"]] = (target, sections, target_comments)
         return prepared
 
+    def read_canonical_issues(pull: dict[str, Any]) -> list[str]:
+        canonical_issues = []
+        text = (pull.get("title") or "") + "\n" + (pull.get("body") or "")
+        links = re.findall(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/([1-9]\d*)|(?<![\w/])([\w.-]+/[\w.-]+)#([1-9]\d*)|(?<![\w/])#([1-9]\d*)", text)
+        for url_repo, url_number, qualified_repo, qualified_number, bare_number in links:
+            linked_repo = url_repo or qualified_repo or issue_repo
+            linked_number = int(url_number or qualified_number or bare_number)
+            if linked_repo.casefold() == issue_repo.casefold() and linked_number == pull["number"]:
+                continue
+            if not github_plan_claim.pr_issue_reference(pull, linked_number, repo=linked_repo,
+                                                        local_references=linked_repo.casefold() == issue_repo.casefold()):
+                continue
+            _, linked = get_issue(str(linked_number), linked_repo)
+            if "pull_request" not in linked and linked.get("state") == "closed":
+                linked, linked_status, linked_comments, _ = read_record(linked_number, linked_repo, allow_closed=True)
+                phase_peers.append((linked_repo, linked_number, linked_status, linked_comments))
+            if "pull_request" not in linked and linked.get("state") != "closed":
+                canonical_url = f"https://github.com/{linked_repo}/issues/{linked_number}"
+                if canonical_url.casefold() not in {url.casefold() for url in canonical_issues}:
+                    canonical_issues.append(canonical_url)
+        return canonical_issues
+
     def prepare_phase(snapshot):
         nonlocal phase_family_error
         phase_records.clear()
@@ -3531,25 +3553,11 @@ def claim_once(args: argparse.Namespace) -> None:
         phase["canonical_issues"] = []
         subject = next((pull for pull in phase["open_pulls"] if pull["number"] == number), None)
         if record_kind == "pr" and subject is not None:
-            text = (subject.get("title") or "") + "\n" + (subject.get("body") or "")
-            links = re.findall(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/([1-9]\d*)|(?<![\w/])([\w.-]+/[\w.-]+)#([1-9]\d*)|(?<![\w/])#([1-9]\d*)", text)
-            for url_repo, url_number, qualified_repo, qualified_number, bare_number in links:
-                linked_repo = url_repo or qualified_repo or issue_repo
-                linked_number = int(url_number or qualified_number or bare_number)
-                if linked_repo.casefold() == issue_repo.casefold() and linked_number == number:
-                    continue
-                if not github_plan_claim.pr_issue_reference(subject, linked_number, repo=linked_repo,
-                                                            local_references=linked_repo.casefold() == issue_repo.casefold()):
-                    continue
-                _, linked = get_issue(str(linked_number), linked_repo)
-                if "pull_request" not in linked and linked.get("state") == "closed":
-                    linked, linked_status, linked_comments, _ = read_record(linked_number, linked_repo, allow_closed=True)
-                    phase_peers.append((linked_repo, linked_number, linked_status, linked_comments))
-                if "pull_request" not in linked and linked.get("state") != "closed":
-                    canonical_url = f"https://github.com/{linked_repo}/issues/{linked_number}"
-                    if canonical_url.casefold() not in {url.casefold() for url in phase["canonical_issues"]}:
-                        phase["canonical_issues"].append(canonical_url)
-            phase["canonical_issue"] = next(iter(phase["canonical_issues"]), None)
+            phase["canonical_issues"] = read_canonical_issues(subject)
+        elif record_kind == "issue" and getattr(args, "resume_issue", None):
+            phase["canonical_issues"] = list(dict.fromkeys(url for pull in phase["open_pulls"]
+                if pull["number"] in phase.get("retained_pr_numbers", ()) for url in read_canonical_issues(pull)))
+        phase["canonical_issue"] = next(iter(phase["canonical_issues"]), None)
         return source_info, prepared
 
     def check_phase_peers(source_inventory):
@@ -3734,9 +3742,10 @@ def claim_once(args: argparse.Namespace) -> None:
     def check_pr_artifacts(status_to_check: str, current_comments: list[dict[str, Any]]) -> None:
         fresh_inventory = inventory
         fresh_pulls = phase["open_pulls"]
-        source_issue_url = (f"https://github.com/{issue_repo}/issues/{resume_source_number}"
-                            if retained_mode and record_kind == "pr" else None)
-        other_canonical = [url for url in phase["canonical_issues"] if url.casefold() != (source_issue_url or "").casefold()]
+        permitted_issues = {f"https://github.com/{issue_repo}/issues/{number}".casefold()} if record_kind == "issue" else set()
+        if retained_mode and record_kind == "pr":
+            permitted_issues.add(f"https://github.com/{issue_repo}/issues/{resume_source_number}".casefold())
+        other_canonical = [url for url in phase["canonical_issues"] if url.casefold() not in permitted_issues]
         if other_canonical:
             raise ClassifiedPlanError("claim_issue_record_required",
                 "PR has a canonical implementation issue; claim that issue instead",

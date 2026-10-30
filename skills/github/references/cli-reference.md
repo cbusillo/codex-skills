@@ -1125,8 +1125,10 @@ issue's completed native child, claim the canonical issue with the child's exact
 source claim URL in `--resume-from`. The child must be closed as completed in the
 same repository. Its exact authored, timestamp-proved release must qualify an
 open retained PR that links both records. Every retained open PR must link the
-canonical issue; all their identities and heads, the native relationship and
-selected source are checked again on both claim readbacks. Source
+canonical issue and have no other open canonical issue;
+closed references retain their ownership checks. All retained identities and
+heads, the native relationship and selected source are checked again on both
+claim readbacks. Source
 family and sibling ownership checks still apply. Use a new task branch and
 preserve the retained source branches and worktrees. Existing target and PR
 holds still apply; `--wait-resolved` records existing authority for the named
