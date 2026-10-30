@@ -14,6 +14,7 @@ from pathlib import Path
 import tempfile
 import tomllib
 import unittest
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 from unittest.mock import Mock, patch
 
@@ -52,17 +53,44 @@ def feeds(*comment_pages, opened_items=(), repositories=()):
     return read
 
 
+def patch_attr(target: object, name: str, **kwargs: Any) -> Any:
+    return patch.object(target, name, **kwargs)
+
+
 class WatchTests(unittest.TestCase):
+    def test_client_comment_returns_to_supervisor_before_another_poll(self) -> None:
+        for author in ("client", "client-agent[bot]"):
+            for persistent in (False, True):
+                with self.subTest(author=author, persistent=persistent), tempfile.TemporaryDirectory() as directory:
+                    reader = Mock()
+                    feedback = comment(author, "Inventory and Helpdesk are missing. Holding Accept.", "2026-10-30T19:38:54Z")
+                    reader.paged_json.side_effect = feeds([feedback])
+                    args = argparse.Namespace(state=Path(directory) / "state.json", since=None,
+                        own_login=["director", "agent[bot]"], launchplane_login=[], interval=300,
+                        once=False, persistent=persistent)
+                    output = io.StringIO()
+                    with (patch_attr(foreign_watch, "GitHubReader", return_value=reader),
+                          patch.object(foreign_watch, "utc_now", return_value="2026-10-30T19:40:00Z"),
+                          patch.object(foreign_watch.time, "sleep", side_effect=AssertionError("notice must return before sleep")),
+                          redirect_stdout(output)):
+                        result = foreign_watch.watch(args, [REPO], "2026-10-30T19:35:00Z", foreign_watch.time.monotonic() + 60)
+                    self.assertEqual(result, 0)
+                    [notice] = json.loads(output.getvalue())["notices"]
+                    self.assertEqual(notice["url"], feedback["html_url"])
+                    self.assertEqual(notice["author"], author)
+                    state = json.loads(args.state.read_text())
+                    self.assertEqual(state["watermarks"][REPO], "2026-10-30T19:40:00Z")
+
     def test_persistent_read_retry_preserves_watermark_and_provider_cooldown(self):
         with tempfile.TemporaryDirectory() as directory:
             now = [0.0]
             reader = Mock()
-            reader.paged_json.side_effect = feeds(foreign_watch.GitHubReadError(
+            reader.paged_json.side_effect = feeds([comment()], getattr(foreign_watch, "GitHubReadError")(
                 "provider unavailable", result=ApiResult(ok=False, status=503, body=None,
                     failure=FailureDetail(cause="network_provider_failure", message="unavailable",
                                           retryable=True, fallback_eligible=False, disposition="retry")),
                 diagnostics={"requests": [{"retryAt": 20}]},
-            ), [comment()], foreign_watch.GitHubReadShapeError("terminal"))
+            ), [], ValueError("terminal"))
             args = argparse.Namespace(state=Path(directory) / "state.json", since=None,
                 own_login=["director"], launchplane_login=[], interval=5, once=False, persistent=True)
 
@@ -75,11 +103,13 @@ class WatchTests(unittest.TestCase):
                   patch.object(foreign_watch.time, "sleep", side_effect=sleep) as sleeps,
                   patch.object(foreign_watch, "utc_now", return_value=STARTED),
                   redirect_stdout(io.StringIO())):
-                self.assertEqual(foreign_watch.watch(args, [REPO], SINCE, 100), 1)
+                self.assertEqual(foreign_watch.watch(args, ["director/healthy", REPO], SINCE, 100), 1)
             self.assertEqual(sleeps.call_args_list[0].args, (20,))
-            self.assertEqual(reader.paged_json.call_args_list[0].kwargs["params"],
-                             reader.paged_json.call_args_list[1].kwargs["params"])
-            self.assertEqual(json.loads(args.state.read_text())["watermarks"][REPO], STARTED)
+            failed_reads = [call for call in reader.paged_json.call_args_list if call.args[0] == f"repos/{REPO}/issues/comments"]
+            self.assertEqual(failed_reads[0].kwargs["params"], failed_reads[1].kwargs["params"])
+            state = json.loads(args.state.read_text())
+            self.assertEqual(state["watermarks"][REPO], SINCE)
+            self.assertEqual(state["watermarks"]["director/healthy"], STARTED)
 
     def scan(self, reader):
         return foreign_watch.scan([REPO], {REPO: SINCE}, ["director", "agent[bot]"],

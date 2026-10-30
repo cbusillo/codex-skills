@@ -149,9 +149,11 @@ Rules for this brief (every Supervisor brief carries them):
   report it as passed.
 - On a Client's own product repository, reply to Client and Client-team
   comments on its issues and PRs that need an answer (questions, requests,
-  status notes) with short, accurate replies; never promise what is the
-  Director's to decide. Outbound messages anywhere else stay a stop boundary
-  under the overall
+  status notes), including those posted by their agents. While owning a PR,
+  read its new comments at each work check and before handoff, using the
+  existing PR watcher or comment radar. Give short, accurate replies; never
+  promise what is the Director's to decide. Outbound messages anywhere else
+  stay a stop boundary under the overall
   [DIRECTION.md](https://github.com/cbusillo/direction/blob/main/DIRECTION.md#stop-boundaries).
 - When you need Chris, post a `Director question:` comment on the item under
   [role words](../../references/role-words.md#legacy-identifiers) and leave presentation to the Supervisor; never use a
