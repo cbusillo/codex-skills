@@ -86,7 +86,7 @@ class AttachmentTests(unittest.TestCase):
     def invoke(self, **overrides):
         values = {"repo": self.repository, "comment": "42", "url": self.url,
                   "evidence-dir": str(self.evidence), **overrides}
-        argv = [value for key, item in values.items() for value in (f"--{key}", str(item))]
+        argv = [value for key, item in values.items() if item is not None for value in (f"--{key}", str(item))]
         output = io.StringIO()
         with redirect_stdout(output):
             status = attachment.main(argv)
@@ -357,6 +357,40 @@ class AttachmentTests(unittest.TestCase):
         self.evidence.unlink()
         (self.root / ".git").mkdir()
         self.assertEqual(self.invoke()[0], 1)
+        self.run.assert_not_called()
+
+
+class IssueAttachmentTests(AttachmentTests):
+    def setUp(self) -> None:
+        super().setUp()
+        self.comment.update({"number": 9, "url": "https://api.github.com/repos/director/product/issues/9"})
+        self.reader_factory.return_value.get_json.side_effect = self.metadata
+
+    def metadata(self, path: str, **_kwargs: object) -> dict:
+        if path.endswith(f"/comments/{attachment.APPROVAL_COMMENT}"):
+            return self.approval
+        if path.endswith("/issues/9"):
+            return self.comment
+        return self.repo
+
+    def standing_scope(self) -> None:
+        super().standing_scope()
+        self.comment["url"] = f"https://api.github.com/repos/{self.repository}/issues/9"
+        self.reader_factory.return_value.get_json.side_effect = self.metadata
+
+    def invoke(self, **overrides: object) -> tuple[int, dict]:
+        return super().invoke(comment=None, issue="9", **overrides)
+
+    def test_wrong_issue_or_pull_request_refused_before_personal_token(self) -> None:
+        for change in ({"url": "https://api.github.com/repos/elsewhere/product/issues/9"},
+                       {"number": 10}, {"pull_request": {"url": "https://api.github.com/pulls/9"}}):
+            with self.subTest(change=change), patch.dict(self.comment, change):
+                self.assertEqual(self.invoke()[0], 1)
+        self.run.assert_not_called()
+
+    def test_wrong_comment_or_missing_link_refused_before_personal_token(self) -> None:
+        with patch.dict(self.comment, {"body": self.url + ".other"}):
+            self.assertEqual(self.invoke()[0], 1)
         self.run.assert_not_called()
 
 

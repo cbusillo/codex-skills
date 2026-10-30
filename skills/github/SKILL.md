@@ -960,11 +960,11 @@ acting. Read the object back before any retry. Never replay an unknown write,
 and never under another identity. For another operation's arguments or response
 contract, read its CLI reference section; skip unrelated recipes.
 
-For files linked from private issue comments, use `scripts/gh-attachment.py`
+For files linked from private issue bodies or comments, use `scripts/gh-attachment.py`
 under the recorded Q467 standing approval, without a per-file question. App installation
 tokens may read the comment while failing to read its attachment. This narrow
 route supports only repositories owned by the declared personal login, verifies
-the comment, link and current approval through automation, and saves untrusted
+the source, link and current approval through automation, and saves untrusted
 bytes only to private task evidence outside Git checkouts.
 Read [comment attachments](references/cli-reference.md#comment-attachments)
 before using it. Never obtain or paste a token into an agent command.

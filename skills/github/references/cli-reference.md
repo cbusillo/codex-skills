@@ -2724,7 +2724,7 @@ Human warnings and progress remain on stderr, and the process exit code matches
 
 ### Comment attachments
 
-Use `gh-attachment.py` for files the Director, Clients or their staff attach to comments in
+Use `gh-attachment.py` for files the Director, Clients or their staff attach to issue bodies or comments in
 Director-owned repositories. The [Q467 standing approval](https://github.com/cbusillo/codex-skills/issues/2021#issuecomment-6241276473)
 covers read-only downloads under `cbusillo`'s login in `cbusillo/*`, into task
 evidence only. Do not ask for per-file approval or request a token. GitHub
@@ -2746,7 +2746,10 @@ transport as file attachments; saved images are named `asset-UUID`, without a
 server-selected filename or extension.
 
 On Chris-Studio, use the host's `/Volumes/Developer-Artifacts/task-evidence/`
-root. `COMMENT_ID` is the numeric ID in `#issuecomment-...`. The helper checks
+root. `COMMENT_ID` is the numeric ID in `#issuecomment-...`. For a file attached
+to an issue body, replace `--comment COMMENT_ID` with `--issue ISSUE_NUMBER`.
+The helper verifies that exact issue and rejects pull requests; the same
+author, exact-link, approval, credential and storage checks apply. The helper checks
 the recorded approval and the complete subsequent discussion through automation
 for standing downloads, using the same approval reader as mention searches.
 Unreadable, ambiguous or withdrawn approval stops before personal authentication.
@@ -2756,9 +2759,9 @@ Recognized Q467 replies without unqualified approval also withhold it, including
 an older reply edited after the approval. A later unqualified `Q467 yes` restores
 it. Quoted or third-party text does not.
 
-The standing route accepts comments by the declared personal login and human
-collaborator/member comments in personally owned repositories; unknown authors
-and bots remain outside that scope. It verifies the canonical repository and exact comment link
+The standing route accepts sources by the declared personal login and human
+collaborator/member sources in personally owned repositories; unknown authors
+and bots remain outside that scope. It verifies the canonical repository and exact source link
 using automation-only REST reads. The existing `gh` credential for `cbusillo`
 is retrieved inside the helper and checked against `/user`; it is never printed,
 persisted or handed to the agent. A conflicting declared personal login is not
