@@ -2746,7 +2746,10 @@ transport as file attachments; saved images are named `asset-UUID`, without a
 server-selected filename or extension.
 
 On Chris-Studio, use the host's `/Volumes/Developer-Artifacts/task-evidence/`
-root. `COMMENT_ID` is the numeric ID in `#issuecomment-...`. The helper checks
+root. `COMMENT_ID` is the numeric ID in `#issuecomment-...`. For a file attached
+to an issue body, replace `--comment COMMENT_ID` with `--issue ISSUE_NUMBER`.
+The helper verifies that exact issue and rejects pull requests; the same
+author, exact-link, approval, credential and storage checks apply. The helper checks
 the recorded approval and the complete subsequent discussion through automation
 for standing downloads, using the same approval reader as mention searches.
 Unreadable, ambiguous or withdrawn approval stops before personal authentication.

@@ -78,7 +78,7 @@ def attachment_name(url: str) -> str:
     return f"{match[1]}-{safe_name}"
 
 
-def verify_comment(repository: str, comment: int, url: str):
+def verify_comment(repository: str, comment: int, url: str, *, issue: bool = False):
     reader = github_read.GitHubReader(
         operation="github.attachment.download", repository=repository,
         gh_prefix_args=github_read.automation_only_gh_prefix_args(), strict_actor=True,
@@ -87,11 +87,18 @@ def verify_comment(repository: str, comment: int, url: str):
     if (not isinstance(repo, dict) or str(repo.get("full_name", "")).casefold() != repository.casefold()
             or not isinstance(repo.get("owner"), dict) or repo["owner"].get("type") != "User"):
         raise AttachmentError("repository identity changed or is not personally owned")
-    record = reader.get_json(f"/repos/{repository}/issues/comments/{comment}", step="verify_comment")
+    source = f"issues/{comment}" if issue else f"issues/comments/{comment}"
+    record = reader.get_json(f"/repos/{repository}/{source}", step="verify_source")
     expected_issue = rf"https://api\.github\.com/repos/{re.escape(repository)}/issues/[0-9]+"
-    if (not isinstance(record, dict) or record.get("id") != comment
-            or not re.fullmatch(expected_issue, str(record.get("issue_url", "")), re.IGNORECASE)):
-        raise AttachmentError("comment does not belong to the requested repository")
+    if issue:
+        valid = (isinstance(record, dict) and record.get("number") == comment
+                 and str(record.get("url", "")).casefold() == f"https://api.github.com/repos/{repository}/issues/{comment}".casefold()
+                 and "pull_request" not in record)
+    else:
+        valid = (isinstance(record, dict) and record.get("id") == comment
+                 and re.fullmatch(expected_issue, str(record.get("issue_url", "")), re.IGNORECASE))
+    if not valid:
+        raise AttachmentError("attachment source does not belong to the requested repository or kind")
     links = re.findall(r'https://github\.com/user-attachments/(?:files/[0-9]+|assets)/[^\s<>()\]"\']+', str(record.get("body", "")))
     if url not in links:
         raise AttachmentError("attachment URL is absent from the requested comment")
@@ -246,7 +253,9 @@ def evidence_directory(value: str, repository: str) -> pathlib.Path:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", required=True)
-    parser.add_argument("--comment", required=True, type=int, help="numeric issue-comment ID")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--comment", type=int, help="numeric issue-comment ID")
+    source.add_argument("--issue", type=int, help="issue number for an attachment in its body")
     parser.add_argument("--url", required=True)
     parser.add_argument("--evidence-dir", required=True)
     parser.add_argument("--max-bytes", type=int, default=100 * 1024 * 1024)
@@ -254,9 +263,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         login = personal_login(args.repo)
         name = attachment_name(args.url)
-        if args.comment < 1 or args.max_bytes < 1:
+        source_number = args.issue if args.issue is not None else args.comment
+        if source_number < 1 or args.max_bytes < 1:
             raise AttachmentError("comment and max-bytes must be positive")
-        reader, record = verify_comment(args.repo, args.comment, args.url)
+        reader, record = verify_comment(args.repo, source_number, args.url, issue=args.issue is not None)
         authority = authorization(login, reader, record)
         directory = evidence_directory(args.evidence_dir, args.repo)
         destination = directory / name
