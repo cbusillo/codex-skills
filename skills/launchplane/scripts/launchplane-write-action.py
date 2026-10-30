@@ -21,6 +21,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -2741,6 +2742,17 @@ PREVIEW_MAX_GENERATIONS = 20
 PREVIEW_MAX_SOURCES = 10
 RECONCILE_MAX_REQUESTS = 50
 RECONCILE_MAX_PLAN_LIST_ITEMS = 20
+RECONCILE_MAX_SCAN_FINDINGS = 50
+RECONCILE_SCAN_FINDING_VALIDATORS = {
+    key: partial(public_identifier, pattern=re.compile(r"(?=.{1,160}\Z)" + pattern))
+    for key, pattern in {
+        "vulnerability_id": r"(?:CVE-[0-9]{4}-[0-9]{4,19}|GHSA-[a-z0-9]{4}(?:-[a-z0-9]{4}){2})",
+        "package_name": r"(?:@[a-zA-Z0-9._-]+/)?[a-zA-Z0-9][a-zA-Z0-9.+_-]*",
+        "installed_version": r"[a-zA-Z0-9][a-zA-Z0-9.+:~_-]*",
+        "fixed_version": r"[a-zA-Z0-9][a-zA-Z0-9.+:~_-]*(?:, ?[a-zA-Z0-9][a-zA-Z0-9.+:~_-]*)*",
+        "severity": r"(?:HIGH|CRITICAL)",
+    }.items()
+}
 COMMIT_SHA_RE = re.compile(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}")
 
 
@@ -3562,6 +3574,24 @@ def _project_reconcile_feedback(value: object, drops: _FieldDrops) -> dict[str, 
     return projected
 
 
+def _project_scan_findings(value: object, drops: _FieldDrops) -> list[dict[str, object]]:
+    path = "requests[].last_plan.artifact_scan.findings"
+    if not isinstance(value, list):
+        drops.drop(path)
+        return []
+    findings: list[dict[str, object]] = []
+    for item in value[:RECONCILE_MAX_SCAN_FINDINGS]:
+        kept = _project_retained_provenance_value(
+            item, RECONCILE_SCAN_FINDING_VALIDATORS, path=f"{path}[]", drops=drops
+        )
+        if isinstance(kept, dict) and kept.keys() == RECONCILE_SCAN_FINDING_VALIDATORS.keys():
+            findings.append(kept)
+    if len(value) > RECONCILE_MAX_SCAN_FINDINGS:
+        drops.paths.add(f"{path}[]")
+        drops.count += len(value) - RECONCILE_MAX_SCAN_FINDINGS
+    return findings
+
+
 def _project_reconcile_scan(value: object, drops: _FieldDrops) -> dict[str, object]:
     if not isinstance(value, dict):
         drops.drop("requests[].last_plan.artifact_scan")
@@ -3571,10 +3601,14 @@ def _project_reconcile_scan(value: object, drops: _FieldDrops) -> dict[str, obje
         "reason": _public_dotted_code,
         "high": _nonnegative_int,
         "critical": _nonnegative_int,
+        "findings_omitted": _nonnegative_int,
         "scanned_at": _utc_timestamp,
     }
     projected: dict[str, object] = {}
     for key, item in value.items():
+        if key == "findings":
+            projected[key] = _project_scan_findings(item, drops)
+            continue
         path = key if key in validators or key == "image_reference" else "<unlisted field>"
         if key not in validators:
             drops.drop(f"requests[].last_plan.artifact_scan.{path}")

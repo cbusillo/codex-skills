@@ -342,5 +342,63 @@ def test_reconcile_scan_evidence_keeps_only_public_fields(scan: dict[str, object
     assert "PRIVATE_SENTINEL" not in json.dumps(payload)
 
 
+def test_selected_preview_keeps_bounded_scan_facts_and_refusal_without_raw_report() -> None:
+    finding = {
+        "vulnerability_id": "CVE-2026-12345",
+        "package_name": "@example/package",
+        "installed_version": "1.0.0+build1",
+        "fixed_version": "1.0.1, 2.0.1",
+        "severity": "HIGH",
+    }
+    scan = {
+        "status": "fail", "reason": "fixable_vulnerabilities", "high": 2, "critical": 0,
+        "findings": [{**finding, "PkgPath": "/private/customer/file"}], "findings_omitted": 1,
+    }
+    plan = {
+        "action": "wait", "held": True, "reason": "artifact_scan_refused",
+        "head_sha": "a" * 40, "desired_image_digest": "sha256:" + "b" * 64, "artifact_scan": scan,
+    }
+    target = "example-product:preview:7"
+    body = {"product": "example-product", "requests": [
+        {"target_key": "example-product:testing", "last_plan": {"artifact_scan": {"status": "pass"}}},
+        {"target_key": target, "last_plan": plan},
+    ]}
+    args = ["reconcile-requests-read", "--product", "example-product", "--target-key", target]
+    status, payload, _ = _run_product_read(args, body)
+    assert status == 0, payload
+    requests = payload["result"]["requests"]
+    assert len(requests) == 1
+    kept = requests[0]["last_plan"]
+    assert kept == {**plan, "artifact_scan": {**scan, "findings": [finding]}}
+    assert "/private/customer/file" not in json.dumps(payload)
+
+    scan["findings"] = [finding] * (write_action.RECONCILE_MAX_SCAN_FINDINGS + 3)
+    status, payload, _ = _run_product_read(args, body)
+    assert status == 0, payload
+    kept_scan = payload["result"]["requests"][0]["last_plan"]["artifact_scan"]
+    assert len(kept_scan["findings"]) == write_action.RECONCILE_MAX_SCAN_FINDINGS
+    assert kept_scan["high"] == scan["high"]
+    assert kept_scan["findings_omitted"] == scan["findings_omitted"]
+    assert payload["result"]["dropped_field_count"] >= 3
+
+    for field, value in (
+        ("fixed_version", "https://example.invalid/fix"),
+        ("package_name", "/private/customer/file"),
+        ("installed_version", "1" * 161),
+        ("vulnerability_id", "provider output"),
+        ("severity", "MEDIUM"),
+    ):
+        scan["findings"] = [{**finding, field: value}]
+        status, payload, _ = _run_product_read(args, body)
+        assert status == 0, payload
+        assert payload["result"]["requests"][0]["last_plan"]["artifact_scan"]["findings"] == []
+        assert payload["result"]["dropped_field_count"] > 0
+
+    scan["findings"] = [{**finding, "package_name": "ghp_abcdefghijklmnopqrstuvwxyz0123456789"}]
+    status, payload, _ = _run_product_read(args, body)
+    assert status != 0
+    assert "ghp_abcdefghijklmnopqrstuvwxyz0123456789" not in json.dumps(payload)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
