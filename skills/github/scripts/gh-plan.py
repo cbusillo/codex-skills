@@ -6619,10 +6619,10 @@ def cmd_close(args: argparse.Namespace) -> None:
     if getattr(args, "only_closed", False) and not issue_matches_close_reason(issue, close_reason):
         raise PlanError("Landing reconciliation only repairs already-closed issues")
     _, relationship_preflight = close_relationship_preflight(issue_repo, number, close_reason)
+    close_comment = read_body(args) if args.body is not None or args.body_file else ""
     owner_decision: dict[str, Any] | None = None
     if close_reason == "not_planned" and not issue_matches_close_reason(issue, close_reason):
-        owner_decision = check_owner_decides_not_planned(issue_repo, number, issue)
-    close_comment = read_body(args) if args.body is not None or args.body_file else ""
+        owner_decision = check_owner_decides_not_planned(issue_repo, number, issue, scope_cut_reason=close_comment)
     validate_plan_references(close_comment, issue_repo)
     plan_labels = config.get("labels") or {}
     route_actor, gh_cmd, expected_actor = comment_route()
@@ -7328,14 +7328,51 @@ def owner_reaction_decision(
     return None
 
 
-def check_owner_decides_not_planned(issue_repo: str, number: int, issue: dict[str, Any]) -> dict[str, Any]:
-    """Refuse to drop milestone work the owner admitted unless the owner said so.
+PROTECTED_SCOPE = re.compile(
+    r"\b(?:client|customer|security|vulnerability|incident|outage|production|live[- ]site|outside[- ]user)\b"
+    r"|\b(?:Director|Owner) decision\b|^Track:", re.IGNORECASE | re.MULTILINE,
+)
 
-    Applies only to an issue in a milestone listed in the merged DIRECTION.md.
-    The decision is an owner comment or an owner thumbs-up on an unedited
-    recorded decision, after the body holding Current Status was last edited.
-    Automation cannot supply the owner identity on either path.
-    """
+
+def unadmitted_agent_requirement(
+    issue_repo: str, number: int, issue: dict[str, Any], comments: list[dict[str, Any]],
+) -> bool:
+    if not issue_body_is_fully_managed(issue):
+        return False
+    text = "\n".join([str(issue.get("title") or ""), str(issue.get("body") or ""),
+                       *normalize_labels(issue.get("labels"))])
+    if PROTECTED_SCOPE.search(text):
+        return False
+    owner = issue_repo.split("/", 1)[0].casefold()
+    agents = {login.casefold() for login in wait_authors(issue_repo)} - {owner}
+    for comment in comments:
+        author = issue_author_login(comment)
+        if not author or author.casefold() not in agents or PROTECTED_SCOPE.search(str(comment.get("body") or "")):
+            return False
+    _, events = collect_paged_rest_items(
+        f"/repos/{issue_repo}/issues/{number}/events", query={}, bucket="rest_core",
+        step_prefix="scope_cut_milestone_events",
+    )
+    assignments = [event for event in events if event.get("event") == "milestoned"]
+    if not assignments or any(str((event.get("actor") or {}).get("login") or "").casefold() not in agents
+                              for event in assignments):
+        return False
+    reaction_paths = [f"/repos/{issue_repo}/issues/{number}/reactions"]
+    for comment in comments:
+        if not isinstance(comment.get("id"), int):
+            return False
+        reaction_paths.append(f"/repos/{issue_repo}/issues/comments/{comment['id']}/reactions")
+    for path in reaction_paths:
+        _, reactions = collect_paged_rest_items(path, query={}, bucket="rest_core", step_prefix="scope_cut_reactions")
+        if any(reaction.get("content") == "+1" and str((reaction.get("user") or {}).get("login") or "").casefold() == owner
+               for reaction in reactions):
+            return False
+    return True
+
+
+def check_owner_decides_not_planned(
+    issue_repo: str, number: int, issue: dict[str, Any], *, scope_cut_reason: str = "",
+) -> dict[str, Any]:
     milestone = issue.get("milestone")
     title = milestone.get("title") if isinstance(milestone, dict) else None
     if not isinstance(title, str):
@@ -7401,6 +7438,9 @@ def check_owner_decides_not_planned(issue_repo: str, number: int, issue: dict[st
             f"Cannot close {issue_repo}#{number} as not planned: could not verify the owner's "
             "reaction and the decision's edit history.", cause="read_failure",
         ) from exc
+    if scope_cut_reason.strip() and unadmitted_agent_requirement(issue_repo, number, issue, comments):
+        return {"required": False, "reason": "unadmitted_agent_requirement", "milestone": title,
+                "scope_cut_reason": scope_cut_reason.strip()}
     raise owner_decision_refusal(
         f"Cannot close {issue_repo}#{number} as not planned: it is in milestone {title!r} listed in "
         f"{issue_repo}:{DIRECTION_FILE}, and no comment by the repository owner {repo_owner!r} after the "

@@ -38,6 +38,109 @@ def comment_check(attention: list[dict] | None = None, linked: list[dict] | None
     return patch.multiple(PLAN.github_close_attention, GitHubReader=Mock(return_value=reader), run_radar=radar), radar
 
 
+class NotPlannedScopeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.issue: dict[str, Any] = {"number": 7, "user": {"login": "fixture-bot"}, "title": "Extra benchmark",
+                      "body": "Agent-added requirement beyond the requested outcome.", "labels": [],
+                      "milestone": {"title": "Catalog adoption"}, "created_at": "2026-10-01T00:00:00Z"}
+        self.comments: list[dict[str, Any]] = []
+        self.events = [{"event": "milestoned", "actor": {"login": "fixture-bot"},
+                        "created_at": "2026-10-02T00:00:00Z"}]
+        self.reactions: list[dict[str, Any]] = []
+        self.reason = "Remove the agent-added benchmark; the requested delivery needs no benchmark."
+        self.patches = patch.multiple(PLAN,
+            load_direction=Mock(return_value="## Milestones\n- `Catalog adoption` proves adoption."),
+            wait_authors=Mock(return_value={"fixture", "fixture-bot"}),
+            EXPECTED_ACTOR="fixture-bot",
+            api_json=Mock(return_value=("fixture-bot", {"data": {"repository": {"issue": {"lastEditedAt": None}}}})),
+            collect_paged_rest_items=Mock(side_effect=self.pages))
+        self.patches.start()
+        self.addCleanup(self.patches.stop)
+
+    def pages(self, path: str, **_: Any) -> tuple[str, list[dict[str, Any]]]:
+        if path.endswith("/events"):
+            return "fixture-bot", self.events
+        if path.endswith("/reactions"):
+            return "fixture-bot", self.reactions
+        if path.endswith("/comments"):
+            return "fixture-bot", self.comments
+        raise AssertionError(path)
+
+    def check(self) -> dict[str, Any]:
+        return PLAN.check_owner_decides_not_planned("fixture/target", 7, self.issue, scope_cut_reason=self.reason)
+
+    def test_unadmitted_agent_requirement_can_be_cut_with_a_recorded_reason(self) -> None:
+        result = self.check()
+        self.assertFalse(result["required"])
+        self.assertEqual(result["scope_cut_reason"], self.reason)
+
+    def test_scope_cut_requires_a_reason_and_known_agent_provenance(self) -> None:
+        for author, reason in (("fixture-bot", ""), ("fixture", self.reason), ("client", self.reason),
+                               ("outside-user", self.reason), ("unknown-bot", self.reason)):
+            with self.subTest(author=author, reason=reason):
+                self.issue["user"]["login"], self.reason = author, reason
+                with self.assertRaises(PLAN.PlanError):
+                    self.check()
+
+    def test_director_milestone_admission_survives_agent_reassignment(self) -> None:
+        self.events.insert(0, {"event": "milestoned", "actor": {"login": "fixture"}})
+        with self.assertRaises(PLAN.PlanError):
+            self.check()
+
+    def test_unknown_or_missing_milestone_history_refuses(self) -> None:
+        for events in ([], [{"event": "milestoned"}],
+                       [{"event": "milestoned", "actor": {"login": "outside-user"}}]):
+            with self.subTest(events=events):
+                self.events = events
+                with self.assertRaises(PLAN.PlanError):
+                    self.check()
+
+    def test_human_discussion_and_recorded_decisions_keep_the_existing_guard(self) -> None:
+        for author, body in (("fixture", "Keep this after the direction audit."),
+                             ("client", "We need this behavior."), ("outside-user", "Still broken."),
+                             ("fixture-bot", "Director decision Q4: Keep this requirement.")):
+            with self.subTest(author=author):
+                self.comments = [{"id": 9, "user": {"login": author}, "body": body,
+                                  "created_at": "2026-09-30T00:00:00Z"}]
+                with self.assertRaises(PLAN.PlanError):
+                    self.check()
+
+    def test_director_reaction_admitting_work_requires_a_close_decision(self) -> None:
+        self.comments = [{"id": 9, "user": {"login": "fixture-bot"}, "body": "Keep this after audit."}]
+        self.reactions = [{"content": "+1", "user": {"login": "fixture"}}]
+        with self.assertRaises(PLAN.PlanError):
+            self.check()
+
+    def test_protected_work_cannot_use_the_agent_scope_exception(self) -> None:
+        for label in ("security", "client-request", "outside-user-report", "live-site", "incident"):
+            with self.subTest(label=label):
+                self.issue["labels"] = [{"name": label}]
+                with self.assertRaises(PLAN.PlanError):
+                    self.check()
+        self.issue["labels"] = []
+        self.issue["body"] = "Director decision: Deliver this as part of the agreed outcome."
+        with self.assertRaises(PLAN.PlanError):
+            self.check()
+
+    def test_incomplete_admission_reads_fail_before_closure(self) -> None:
+        for suffix in ("/events", "/comments", "/reactions"):
+            with self.subTest(suffix=suffix):
+                def pages(path: str, **kwargs: Any) -> tuple[str, list[dict[str, Any]]]:
+                    if path.endswith(suffix):
+                        raise PLAN.PlanError("Admission evidence unavailable")
+                    return self.pages(path, **kwargs)
+                with patch.object(PLAN, "collect_paged_rest_items", side_effect=pages), self.assertRaises(PLAN.PlanError):
+                    self.check()
+
+    def test_recent_director_close_decision_still_allows_admitted_work(self) -> None:
+        self.issue["user"]["login"] = "fixture"
+        self.comments = [{"user": {"login": "fixture"}, "body": "Close this as not planned.",
+                          "created_at": "2026-10-03T00:00:00Z", "html_url": "https://example.test/decision"}]
+        result = self.check()
+        self.assertTrue(result["required"])
+        self.assertEqual(result["comment_url"], self.comments[0]["html_url"])
+
+
 class CloseConfigTests(unittest.TestCase):
     def setUp(self) -> None:
         # These routing fixtures have no dependents; native propagation is
@@ -221,6 +324,27 @@ class CloseConfigTests(unittest.TestCase):
         self.assertEqual(check["error"]["code"], "claim_wait_unresolved")
         self.assertEqual(check["error"]["structured_wait"]["state"], "waiting")
 
+    def test_scope_cut_reason_reaches_the_guard_and_is_published(self) -> None:
+        reason = "Remove an agent-added benchmark beyond the requested outcome."
+        for admitted in (False, True):
+            with self.subTest(admitted=admitted):
+                decision = Mock(return_value={"required": False, "scope_cut_reason": reason})
+                if admitted:
+                    decision.side_effect = PLAN.owner_decision_refusal("Director-admitted work stays protected")
+                with patch.object(PLAN, "check_owner_decides_not_planned", decision):
+                    code, result, state, _, _ = self.run_close(
+                        scope_issue=True, overrides=("--reason", "not_planned", "--comment", reason),
+                        trigger_comments=Mock(return_value={"actor": "fixture-bot", "comment": {"id": 88}}))
+                decision.assert_called_once()
+                self.assertEqual(decision.call_args.kwargs["scope_cut_reason"], reason)
+                if admitted:
+                    self.assertNotEqual(code, 0)
+                    state.assert_not_called()
+                else:
+                    self.assertEqual(code, 0)
+                    self.assertEqual(result["closed"]["owner_decision"]["scope_cut_reason"], reason)
+                    state.assert_called_once()
+
     def test_public_close_uses_resolved_target_config_and_keeps_overrides(self) -> None:
         for ref, caller in (("fixture/target#7", "fixture/local"),
                             ("https://github.com/fixture/target/issues/7", "fixture/local"),
@@ -279,7 +403,7 @@ class CloseConfigTests(unittest.TestCase):
                   fail_labels: bool = False, fail_project: bool = False,
                   blocked: bool = False, already_closed: bool = False, indexed: bool = False, trigger_comments: Mock | None = None,
                   trigger_readback: Mock | None = None,
-                  comments: Any = None) -> tuple[int, dict, Mock, Mock, Mock]:
+                  comments: Any = None, scope_issue: bool = False) -> tuple[int, dict, Mock, Mock, Mock]:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             caller, target = root / "caller", root / "elsewhere" / "target"
@@ -297,6 +421,9 @@ class CloseConfigTests(unittest.TestCase):
                      "user": {"login": "fixture"},
                      "body": PLAN.github_plan_wait.marker(PLAN.github_plan_wait.reviewed(
                          evidence="Fixture completion and full discussion reviewed"))}
+            if scope_issue:
+                issue.update(user={"login": "fixture-bot"}, milestone={"title": "Catalog adoption"},
+                             title="Extra benchmark", created_at="2026-10-01T00:00:00Z")
             if indexed:
                 issue["labels"].append({"name": PLAN.github_plan_trigger.INDEX_LABEL})
             if already_closed:

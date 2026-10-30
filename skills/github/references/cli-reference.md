@@ -2175,8 +2175,20 @@ malformed rather than ignoring its additional field.
   record there that the repository owner approved with `+1`. `gh-issue close`
   runs the same check and takes the same flag. Already-closed issues, including
   landing reconciliation, skip it. `--reason not_planned`
-  requires the Director's approval, given as the repository owner, for work in a
-  milestone listed in merged `DIRECTION.md`: a repository owner comment after
+  requires the Director's approval, given as the repository owner, for Director-opened
+  or Director-admitted work in a milestone listed in merged `DIRECTION.md`. An
+  unadmitted agent-added requirement beyond the agreed outcome may close with
+  the reason supplied through `--comment-file`; it is recorded in the close comment
+  and `closed.owner_decision.scope_cut_reason`. This exception requires a known managed
+  agent author, only known agent milestone assignments across the complete event
+  history, no human discussion or recorded Director decision, and no Director
+  `+1` on the issue or any comment. Protected Client, outside-user, security,
+  live-site and Track records retain the decision guard; incomplete reads refuse.
+  Before using the exception, review the original request and linked decisions
+  and audit records against the overall scope rule. An automated audit listing
+  an addition is not Director admission. A manual fallback must establish the
+  same evidence and record the reason, or retain the Director decision route:
+  a repository owner comment after
   the last issue-body edit, or a repository owner `+1` reaction after
   that edit on an unedited comment starting with the exact first line
   `Director decision: Close #<number> as not planned.` The legacy `Owner decision:`

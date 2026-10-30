@@ -599,8 +599,15 @@ Completed closure requires all native blockers and sub-issues closed and their
 reads complete. Issues the plan blocks do not prevent its closure. Use
 `--reason not_planned` only for explicitly superseded or abandoned plans;
 retained open relationships are not completion evidence. For an issue in a
-milestone listed in merged `DIRECTION.md`, a `not_planned` close requires the
-Director's approval through the
+milestone listed in merged `DIRECTION.md`, a `not_planned` close of Director-opened
+or Director-admitted work requires the Director's approval. Under the overall
+scope rule, agents may close requirements agents or reviewers added beyond the
+agreed outcome, with the reason in `--comment-file`. Review the original request,
+linked decisions and audit evidence first; bot authorship alone does not make
+work expendable. Client requests, outside reports, security findings and live-site
+issues remain protected. The helper checks known agent authorship, complete
+milestone history, discussion and Director reactions; unknown admission keeps
+the guard. See the
 [closure decision contract](../github/references/cli-reference.md#planning-management).
 Record the exact action in a new comment; never edit existing question or
 decision comments to migrate them, or bypass a closure refusal through another tool.
