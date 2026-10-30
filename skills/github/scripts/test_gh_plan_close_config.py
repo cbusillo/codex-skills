@@ -205,6 +205,7 @@ class CloseConfigTests(unittest.TestCase):
 
     def test_launch_returns_actionable_admission_argument_errors(self) -> None:
         for kind, links in (("own project", []), ("TBD", []), ("repeat-stop", []),
+                            ("client-request", []),
                             ("milestone", ["not-a-link"])):
             with self.subTest(kind=kind, links=links):
                 result, _, _ = self.show_fixture(launch=True, admission=kind, admission_links=links)

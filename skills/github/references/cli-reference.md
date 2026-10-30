@@ -1259,7 +1259,7 @@ When the overall direction's Order admits the work, name the rule with
 `--admission live-breakage|client-request|milestone|own-project|repeat-stop|spare-capacity`;
 the claim comment records it as an `Admission:` line. Use `client-request` for
 a Client's request on a live product, after live breakage and before milestones;
-cite the Client's own issue or request comment with `--admission-link`.
+cite the Client's own issue or request comment with the required `--admission-link`.
 For milestone work, cite its open
 Track in the Director's direction with `--admission-link`. The Director account
 comes from the same read-only configuration lookup as instruction sync,

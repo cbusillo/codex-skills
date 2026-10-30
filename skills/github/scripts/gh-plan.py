@@ -2839,6 +2839,8 @@ def claim_admission_options(args: argparse.Namespace) -> tuple[str | None, list[
     for link, target in admission_targets.items():
         first_spellings.setdefault(target, link)
     admission_links = list(first_spellings.values())
+    if admission == "client-request" and not admission_links:
+        raise PlanError("Client-request admission needs the Client's own request: pass --admission-link")
     if admission == "repeat-stop" and len(admission_links) < 2:
         raise PlanError("Repeat-stop admission needs both occurrences: pass --admission-link once for each")
     return admission, admission_links, admission_unlinked

@@ -6481,7 +6481,10 @@ class ClaimTests(unittest.TestCase):
         self.assertIn(CLAIM.admission_text("own-project", []), self.comments[-1]["body"])
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
-    def test_client_request_admission_preserves_the_clients_issue_or_comment(self) -> None:
+    def test_client_request_admission_requires_and_preserves_the_clients_issue_or_comment(self) -> None:
+        with self.assertRaises(PLAN.PlanError):
+            self.admit("client-request")
+        self.assert_no_writes()
         for link in ("https://github.com/owner/repo/issues/42",
                      "https://github.com/owner/repo/pull/7#issuecomment-123"):
             with self.subTest(link=link):
