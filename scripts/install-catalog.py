@@ -64,6 +64,11 @@ def committed_shared_sources(sync) -> list[str]:
     return bases
 
 
+def without_regenerated_direction(sync, text: str) -> str:
+    marker = text.find("\n\n" + sync.DIRECTION_START)
+    return text if marker < 0 else text[:marker] + "\n"
+
+
 def personal_source(sync, destinations: list[Path], local: Path, *, new_destinations: set[Path] | None = None) -> str:
     """Import unmanaged text; generated documents require their known catalog prefix."""
     content = safe_file(local).strip()
@@ -193,9 +198,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         inspected = target.read_bytes()
         text = inspected.decode().replace("\r\n", "\n").replace("\r", "\n")
         digest = hashlib.sha256(inspected).hexdigest()
-        # The merged DIRECTION block is regenerated on every write, so recognize the text before it.
-        marker = text.find("\n\n" + sync.DIRECTION_START)
-        undirected = text if marker < 0 else text[:marker] + "\n"
+        undirected = without_regenerated_direction(sync, text)
         recognized = (text in known_outputs or undirected in known_outputs
                       or (text.startswith(sync.HEADER) and generated_hashes.get(str(path)) == digest))
         if not recognized and text.startswith(sync.HEADER):
