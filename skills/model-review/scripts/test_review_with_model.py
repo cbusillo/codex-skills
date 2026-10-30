@@ -196,6 +196,7 @@ class ReviewWithModelTests(unittest.TestCase):
                "FAKE_AGY_JSON": json.dumps({"response": completed("none")})}
         code, result = self.review("google", **env)
         self.assertEqual((code, result["ok"]), (1, False))
+        self.assertIn("primary: anthropic; supplementary: google", result["error"])
         self.assertFalse(cwd_file.exists())
         self.assertFalse((self.storage / "Launch Receipts").exists())
         code, result = self.run_helper(

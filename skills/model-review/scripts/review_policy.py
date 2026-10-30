@@ -80,8 +80,10 @@ def select(policy, author, requested=None, supplementary=False, model=None, time
     if supplementary and not requested:
         raise ValueError("--supplementary requires an explicit --provider")
     if requested and (requested not in allowed or requested == author):
-        raise ValueError(f"standing review decision does not allow {requested} for this role and author: "
-                         + policy["decision"])
+        allowed_roles = "; ".join(f"{name}: {', '.join(policy[key]) or 'none'}"
+                                  for name, key in (("primary", "providers"), ("supplementary", "supplementary")))
+        raise ValueError(f"standing review decision does not allow {requested} as {'supplementary' if supplementary else 'primary'} "
+                         f"for author {author} (allowed {allowed_roles}): {policy['decision']}")
     candidates = [requested] if requested else default_providers(allowed, author)
     config = account_choice.load_config()
     snapshot, problem = account_choice.read_snapshot(config["snapshot_command"])
