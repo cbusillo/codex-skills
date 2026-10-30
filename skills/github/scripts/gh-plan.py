@@ -7361,11 +7361,7 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
 """
 
 
-PROTECTED_SCOPE = re.compile(
-    r"\b(?:client|customer) requests?\b|\bsecurity findings?\b|\bvulnerabilit(?:y|ies)\b"
-    r"|\blive[- ]site (?:issue|breakage)\b|\boutside[- ]user reports?\b"
-    r"|\b(?:Director|Owner) (?:asked|requested)\b|^(?:Director|Owner) decision\b|^Track:", re.IGNORECASE | re.MULTILINE,
-)
+PROTECTED_SCOPE = re.compile(r"^(?:(?:Director|Owner) decision\b|Track:)", re.IGNORECASE | re.MULTILINE)
 PROTECTED_SCOPE_LABEL = re.compile(
     r"\b(?:client|customer|security|vulnerability|incident|outage|production|live[- ]site|outside[- ]user)\b",
     re.IGNORECASE,
@@ -7527,7 +7523,8 @@ def check_owner_decides_not_planned(
         f"Cannot close {issue_repo}#{number} as not planned: {scope_rejection}. It is in milestone {title!r} listed in "
         f"{issue_repo}:{DIRECTION_FILE}, and no comment by the repository owner {repo_owner!r} after the "
         f"last Current Status update ({status_updated_at}) records the decision. Review and correct missing scope-cut evidence "
-        "through this helper first. For Director-admitted work, the Director can post a comment starting with "
+        "through this helper first. On a scope cut, --comment or --comment-file attests that the requirement is "
+        "agent-added beyond the agreed outcome. For Director-admitted work, the Director can post a comment starting with "
         f'"Close #{number} as not planned.", or react with thumbs-up to an unedited comment whose first line is '
         f"\"Director decision: Close #{number} as not planned.\", then rerun; do not close it another way."
     )

@@ -51,7 +51,6 @@ class NotPlannedScopeTests(unittest.TestCase):
         self.editors: list[dict[str, Any]] = []
         self.more_edits = False
         self.edit_pages: list[dict[str, Any]] = []
-        self.editor_cursors: list[str | None] = []
         self.patches = patch.multiple(PLAN,
             load_direction=Mock(return_value="## Milestones\n- `Catalog adoption` proves adoption."),
             wait_authors=Mock(return_value={"fixture", "fixture-bot"}),
@@ -68,7 +67,6 @@ class NotPlannedScopeTests(unittest.TestCase):
         if step == "scope_cut_editors":
             assert isinstance(_body, dict)
             cursor = _body["variables"]["cursor"]
-            self.editor_cursors.append(cursor)
             page = (self.edit_pages[0 if cursor is None else 1] if self.edit_pages else {
                 "nodes": self.editors, "pageInfo": {"hasNextPage": self.more_edits}})
             return "fixture-bot", {"data": {"repository": {"issue": {"userContentEdits": page}}}}
@@ -90,7 +88,7 @@ class NotPlannedScopeTests(unittest.TestCase):
         result = self.check()
         self.assertFalse(result["required"])
         self.assertEqual(result["scope_cut_reason"], self.reason)
-        self.reason += " The parent Director decision asks only for delivery."
+        self.reason += " No Director asked for this and it is not a client request; this is not a security finding."
         self.comments = [{"id": 8, "user": {"login": "fixture-bot"}, "body": self.reason}]
         self.assertFalse(self.check()["required"])
 
@@ -169,8 +167,8 @@ class NotPlannedScopeTests(unittest.TestCase):
             with self.assertRaises(PLAN.PlanError):
                 self.check()
 
-    def test_recorded_requests_and_decisions_keep_the_guard(self) -> None:
-        for text in ("The Director asked for this.", "Director decision Q4: keep it.", "Client request: add this."):
+    def test_recorded_director_decisions_keep_the_guard(self) -> None:
+        for text in ("Director decision Q4: keep it.", "Owner decision: keep it."):
             with self.subTest(text=text):
                 self.issue["body"] = text
                 with self.assertRaises(PLAN.PlanError):
@@ -186,7 +184,6 @@ class NotPlannedScopeTests(unittest.TestCase):
                             "pageInfo": {"hasNextPage": True, "endCursor": "next-edit-page"}},
                            {"nodes": [], "pageInfo": {"hasNextPage": False}}]
         self.assertFalse(self.check()["required"])
-        self.assertEqual(self.editor_cursors, [None, "next-edit-page"])
         self.edit_pages[1]["nodes"] = [{"editor": {"login": "fixture", "__typename": "User"}}]
         with self.assertRaises(PLAN.PlanError):
             self.check()

@@ -2178,7 +2178,9 @@ malformed rather than ignoring its additional field.
   requires the Director's approval, given as the repository owner, for Director-opened
   or Director-admitted work in a milestone listed in merged `DIRECTION.md`. An
   unadmitted agent-added requirement beyond the agreed outcome may close with
-  the reason in `--comment-file`. The result records the agent's scope judgment
+  a close comment through `--comment` or `--comment-file`. For this path, that
+  comment is the agent's attestation that the requirement exceeds the agreed
+  outcome. The result records that scope judgment
   as `closed.owner_decision.reason: agent_attested_scope_cut`, with `scope_cut_reason`.
   The reason is published and read back before closure; a failed comment leaves
   the issue open. This follows the [Q1076 scope trial](https://github.com/cbusillo/direction/issues/152).

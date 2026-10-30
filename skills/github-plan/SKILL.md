@@ -600,11 +600,9 @@ reads complete. Issues the plan blocks do not prevent its closure. Use
 `--reason not_planned` only for explicitly superseded or abandoned plans;
 retained open relationships are not completion evidence. For an issue in a
 milestone listed in merged `DIRECTION.md`, a `not_planned` close of Director-opened
-or Director-admitted work requires the Director's approval. The overall scope
-rule permits cutting unadmitted agent-added requirements beyond the agreed
-outcome. Review the original request and linked decisions and audits first;
-record the reason through `--comment-file`
-under the [closure decision contract](../github/references/cli-reference.md#planning-management).
+or Director-admitted work requires the Director's approval. Follow the
+[closure decision contract](../github/references/cli-reference.md#planning-management)
+for agent scope cuts and their required reason.
 Record the exact action in a new comment; never edit existing question or
 decision comments to migrate them, or bypass a closure refusal through another tool.
 
