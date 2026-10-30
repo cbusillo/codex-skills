@@ -2553,12 +2553,12 @@ id = "github.worktree.retire_landed"
 request_priority = "essential"
 capabilities = ["pull_requests_read", "issues_read"]
 permission_mode = "delegated"
-permission_note = "PR, PR commit and claim-discussion reads under the existing pull-request and issue read grants. Local retirement uses the lock-named host helper or guarded portable offline IDE proof; no GitHub write, branch deletion on the remote or new grant."
+permission_note = "PR, PR commit and claim-discussion reads under the existing pull-request and issue read grants. Local retirement uses the configured host helper or guarded portable offline IDE proof; no GitHub write, branch deletion on the remote or new grant."
 entrypoint = "github/scripts/landed_worktrees.py"
-intent = "Before creation or on explicit request, check repository worktrees and retire a closed PR's source task worktree and any review or refresh worktree whose HEAD is one of the PR's commits, keeping fresh starts on the default branch and branches an open claim names; or retire a PR-less task branch already in the default branch."
+intent = "Qualify repository sweep candidates from closed PRs or default history, keeping fresh starts and claimed work; or check ownership of an explicitly selected task-owned tree whose closeout disposition is established before guarded local retirement."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "GET /repos/{owner}/{repo}/pulls/{number} and its commits, or GET /repos/{owner}/{repo}/pulls?head= and GET /search/issues for issues naming a PR-less branch; issue and comment reads of the PR and the issues it links or closes; GraphQL closingIssuesReferences; GET /repos/{owner}/{repo}/commits/{sha}/pulls; local git worktree list and guarded host or portable retirement"
+endpoint_or_command = "GET /repos/{owner}/{repo}/pulls/{number} and its commits, or GET /repos/{owner}/{repo}/pulls?head=; GET /search/issues for distinct PR-head and worktree branches; issue and comment reads of the PR and the issues it links or closes; GraphQL closingIssuesReferences; GET /repos/{owner}/{repo}/commits/{sha}/pulls; local git worktree list and guarded host or portable retirement"
 quota_bucket = "mixed"
 actor_policy = "automation_required"
 mutation_class = "read"
@@ -2566,7 +2566,7 @@ idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "degraded_snapshot"
 retained_graphql_rationale = "REST supplies the PR, its commits and claim discussions; only GraphQL lists the closing issues that hold claims."
-source_refs = ["github/scripts/landed_worktrees.py:main", "github/scripts/landed_worktrees.py:pull_rows", "github/scripts/landed_worktrees.py:branch_rows", "github/scripts/landed_worktrees.py:landed_decisions", "github/scripts/landed_worktrees.py:open_claims", "github/scripts/landed_worktrees.py:repository_rows", "github/scripts/landed_worktrees.py:portable_retire"]
+source_refs = ["github/scripts/landed_worktrees.py:main", "github/scripts/landed_worktrees.py:pull_rows", "github/scripts/landed_worktrees.py:branch_rows", "github/scripts/landed_worktrees.py:landed_decisions", "github/scripts/landed_worktrees.py:ownership_decision", "github/scripts/landed_worktrees.py:claims_on", "github/scripts/landed_worktrees.py:target_decision", "github/scripts/landed_worktrees.py:repository_rows", "github/scripts/landed_worktrees.py:portable_retire"]
 test_refs = ["github/scripts/test_landed_worktrees.py"]
 
 [[operations]]

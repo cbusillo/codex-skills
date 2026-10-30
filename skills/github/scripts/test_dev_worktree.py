@@ -97,15 +97,6 @@ class WorktreeTests(unittest.TestCase):
                 dev_worktree.main([str(self.repo), "new-task", self.initial])
             self.assertEqual(events[:3], ["refresh", "retire", "create"])
 
-    def test_retirement_delegation_does_not_start_another_sweep(self) -> None:
-        with mock.patch.dict(dev_worktree.os.environ, self.env, clear=True), \
-                mock.patch.object(dev_worktree, "configuration", return_value=(self.base, self.base / "host")), \
-                mock.patch.object(dev_worktree, "retire_finished") as sweep, \
-                mock.patch.object(dev_worktree.os, "execv", side_effect=SystemExit):
-            with self.assertRaises(SystemExit):
-                dev_worktree.main(["retire", "--dry-run", str(self.base / "old")])
-        sweep.assert_not_called()
-
     def test_unavailable_sweep_does_not_prevent_creation(self) -> None:
         for outcome in (subprocess.CompletedProcess([], 2, "", "unavailable"), FileNotFoundError("missing helper")):
             with mock.patch.object(dev_worktree, "configuration", return_value=(self.base, None)), \
@@ -578,7 +569,7 @@ class WorktreeTests(unittest.TestCase):
         config.write_text("invalid json")
         self.assert_refused(self.run_helper(self.repo, "task", "HEAD"))
 
-    def test_host_helper_receives_literal_creation_and_retirement_args(self):
+    def test_host_helper_receives_literal_creation_args_and_never_an_unknown_retirement(self):
         host = self.base / "host helper"
         receipt = self.base / "args.json"
         host.write_text(f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\nPath({str(receipt)!r}).write_text(json.dumps(sys.argv[1:]))\n")
@@ -586,12 +577,15 @@ class WorktreeTests(unittest.TestCase):
         root = self.base / "unmounted/tasks"
         config = self.settings({"root": str(root), "hostHelper": str(host)})
         before = config.read_bytes()
-        for args in ((str(self.repo), "task", "HEAD~1"), ("retire", "--dry-run", str(root / "some task"))):
-            with self.subTest(args=args):
-                result = self.run_helper(*args)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(json.loads(receipt.read_text()), list(args))
-                self.assertFalse(root.parent.exists())
+        args = (str(self.repo), "task", "HEAD~1")
+        result = self.run_helper(*args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(receipt.read_text()), list(args))
+        receipt.unlink()
+        result = self.run_helper("retire", "--dry-run", str(root / "some task"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(receipt.exists())
+        self.assertFalse(root.parent.exists())
         self.assertEqual(config.read_bytes(), before)
 
     def test_host_failure_or_missing_helper_never_uses_portable_fallback(self):
@@ -639,6 +633,17 @@ class WorktreeTests(unittest.TestCase):
         self.check_interrupt([str(SCRIPT.with_name("dev-worktree"))])
 
     def check_interrupt(self, entrypoint):
+        fixture = self.base / "entrypoint"
+        fixture.mkdir()
+        for source in (SCRIPT, SCRIPT.with_name("dev-worktree")):
+            destination = fixture / source.name
+            destination.write_bytes(source.read_bytes())
+            destination.chmod(source.stat().st_mode)
+        (fixture / "landed_worktrees.py").write_text("def target_decision(target, checkout):\n    return {'decision': 'candidate'}\n")
+        entrypoint = [str(fixture / Path(arg).name) if arg in {str(SCRIPT), str(SCRIPT.with_name("dev-worktree"))}
+                      else arg for arg in entrypoint]
+        target = self.base / "target"
+        self.git("worktree", "add", "-b", "work/target", str(target), "HEAD")
         host = self.base / "interrupt host"
         ready = self.base / "ready"
         cleaned = self.base / "cleaned"
@@ -656,7 +661,7 @@ class WorktreeTests(unittest.TestCase):
         host.chmod(0o700)
         self.settings({"root": str(self.base / "tasks"), "hostHelper": str(host)})
         process = subprocess.Popen(
-            [*entrypoint, "retire", "fixture"], env=self.env,
+            [*entrypoint, "retire", str(target)], env=self.env,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
         )
         try:
@@ -665,7 +670,8 @@ class WorktreeTests(unittest.TestCase):
                 time.sleep(0.01)
             self.assertTrue(ready.exists(), "host did not reach its interrupt handler")
             os.killpg(process.pid, signal.SIGINT)
-            process.communicate(timeout=5)
+            stdout, _ = process.communicate(timeout=5)
+            self.assertEqual(stdout, "")
             self.assertTrue(cleaned.exists(), "host cleanup was killed before completion")
             self.assertEqual(process.returncode, 130)
         finally:

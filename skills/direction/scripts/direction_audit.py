@@ -2200,7 +2200,6 @@ def main(argv: list[str] | None = None) -> int:
 
         worktree_root = args.worktree_root
         if worktree_root is None:
-            # Only a host helper's root carries locks that name a retire command.
             try:
                 root, helper = dev_worktree.configuration()
                 worktree_root = root if helper else None

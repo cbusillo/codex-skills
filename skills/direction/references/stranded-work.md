@@ -120,17 +120,22 @@ unknown), next actor and review requirement:
   repositories are read too; reopening them would first require unarchiving,
   which this sweep does not do.
 - Finished task worktrees left on this host, one finding per repository with
-  every worktree in its evidence. A worktree counts when its lock names a
-  retire command and its branch is already in the default branch's tracking
-  ref, or every PR for it is merged or closed and contains its local head. The
+  every worktree in its evidence. A worktree counts when its branch is already
+  in the default branch's tracking ref, or every PR for it is merged or closed
+  and contains its local head. The
   local check needs no GitHub read; other branches use one PR read each from the
   sweep's budget, and a full page of PRs for one branch is a coverage gap. Only
   worktrees of the sweep's selected repositories or account are scanned. A worktree with no commits of its own is aged from its
   creation, so a session that has only just started stays under the age
   threshold. The root comes from `--worktree-root`, or else from the host's
-  configured `hostHelper` root; without one the check is skipped. Each worktree
-  is checked by the next catalog worktree creation and retired with its lock's
-  command when eligible, never from the report.
+  configured `hostHelper` root; without one the check is skipped. The configured
+  host owns lock interpretation at retirement; portable locked trees are held.
+  These are Git completion candidates; ownership and continuing operational use
+  remain unproved.
+  The next catalog worktree creation qualifies them through `landed_worktrees.py`,
+  never from the report. An authorized bulk cleanup pass uses
+  `landed_worktrees.py --all`, with a preview before `--apply`; it does not loop
+  exact-target retirement over reported paths or invoke the host primitive.
 - Open issues whose body Current Status `Next action:` routes the work to the
   Supervisor: the action opens with the capitalized role, makes it the subject
   of a verb, or waits on or hands off to it. A path, skill name or description

@@ -65,7 +65,7 @@ Follow any stricter host storage policy before using the helper.
 ## Existing host helper integration
 
 A host with its own storage, lock and retirement policy can configure
-`hostHelper` with an explicit `root`. The catalog command delegates its arguments
+`hostHelper` with an explicit `root`. The catalog command delegates creation arguments
 to that executable, preserves its exit status and output, and creates no
 directories itself. A failure never falls back to portable creation. The host
 helper owns enforcement of the root: in this mode `root` is an informational
@@ -92,6 +92,10 @@ This setting selects an existing trusted host executable; it does
 not install, replace or edit one. Its `retire --dry-run` contract must be read-only;
 creation bounds that preview using the existing process-group probe, while apply
 finishes without an interrupt that could prevent lock restoration.
+Explicit retirement first qualifies the exact target's source and ownership
+through the common GitHub checks, then replaces the catalog process with the
+host executable for its full preview or apply. Its signal cleanup and existing
+`--offline-only` mode remain available. Preview changes no worktree.
 
 Chris-Studio keeps its existing host-local helper and external-volume checks
 with this configuration:
@@ -106,22 +110,47 @@ with this configuration:
 Verify this per-host setting before creation; the catalog entry delegates to
 the configured host helper. If it is absent, report the missing host configuration; the JSON above is
 the supported configuration route. Do not use the portable default on Chris-Studio. The existing helper verifies the volume identity before creating anything,
-locks registrations against unmounted-volume pruning, and names its guarded
-retirement command in the lock reason. Use the catalog entry above with this host configuration, so creation also
+locks registrations against unmounted-volume pruning. Use the catalog entry
+above with this host configuration, so creation also
 runs repository retirement. Keep the host helper unchanged; never make a
 replacement volume directory or fall back to internal storage. A catalog pull
 does not provision host storage or change runtime configuration.
 
 ## Retirement
 
-Use `work-closeout` to verify ownership, live use, contents and publication
-before cleanup. Release a task claim last; until then it protects a tree still
-needed by its session. Portable worktrees are ordinary unlocked Git worktrees: remove
-an eligible finished one with `git worktree remove /exact/task/path`, without
-force, then apply the normal branch cleanup policy. Kept trees follow `work-closeout` before retrying automatic retirement. When a registration's lock names a retirement
-command, use that exact command. With `hostHelper` configured, the catalog entry
-also forwards `retire [--dry-run] /exact/task/path` to the host helper; it never
-unlocks or deletes a worktree itself. Preserve active, dirty or ambiguous work.
+Exact-target retirement is for a tree this task's record establishes it created,
+after `work-closeout` establishes its disposition and retained artifacts. Missing
+claims do not establish ownership or completion. Retain trees needed by continuing
+work. Before handoff, record their custody and the `Refs` or exact-branch
+associations below on the continuing work's existing claimed record; use the
+existing claim handoff protocol. Once continuing use ends, release and verify
+its claim before retiring the tree. Run from outside the target tree.
+For portable and managed-host worktrees, use the catalog entry by its full path:
+
+```sh
+<catalog>/skills/github/scripts/dev-worktree retire --dry-run /exact/task/path
+<catalog>/skills/github/scripts/dev-worktree retire /exact/task/path
+```
+
+Apply only after a passing preview. A held claim on the PR, an issue referenced
+with `Refs`, `Fixes` or `Closes`, or a record naming the exact branch keeps the
+related trees, even across repositories. Use `Refs OWNER/REPO#N` in the PR body
+for delivery associations. Branch-name discovery searches repositories in the
+target GitHub account; name every related branch on the existing claimed record.
+An ordinary URL in the body is not a recognized reference;
+an unrecorded association is unprotected. Incomplete evidence or a kept target
+returns nonzero.
+Host lock text is not ownership proof; never substitute the bare host command.
+Preserve active, dirty or ambiguous work. Ownership reads precede physical
+retirement and do not reserve a tree: search may lag and ownership can change
+before removal. Recheck changed evidence and retain uncertain custody.
+
+Explicit retirement supports completed or abandoned published tasks after
+the existing closeout checks establish their disposition; it does not infer
+completion from checkout age or merged/default history. The configured host
+checks its current, legacy or missing registration lock and retains foreign
+locks. Portable foreign locks remain holds. Physical publication, contents,
+live-use and IDE checks still apply.
 
 Creation checks each registered linked worktree through `landed_worktrees.py`.
 A closed PR uses the existing PR-head, claim and publication checks;
@@ -140,17 +169,21 @@ contents or unavailable proof before retrying. Portable local branches remain
 subject to the normal work-closeout branch policy. The same creation route runs on both
 harnesses, without a scheduler or a host-specific landing handoff.
 
-For an explicit repository pass, preview with:
+For a bulk repository pass, use automatic candidate qualification and preview:
 
 ```sh
 uv run <catalog>/skills/github/scripts/landed_worktrees.py --repo OWNER/REPO --checkout /absolute/checkout --all
 ```
 
 Add `--apply` to retire eligible trees. `--preserve /exact/path` keeps explicit
-artifact custody during a bulk pass. Existing `--pr N` and
-`--branch work/task` commands remain available for exact provenance. The
+artifact custody during a bulk pass. Do not loop exact-target retirement over
+reported paths. The
 [daily stranded-work sweep](../../direction/references/stranded-work.md)
 reports work that remains.
+
+For legacy trees outside the configured root, follow the existing
+[disposal route](../../references/repo-cleanup.md#establish-the-disposition).
+It does not override a managed-host refusal or current placement rules.
 
 ## Claude Desktop folder trust
 

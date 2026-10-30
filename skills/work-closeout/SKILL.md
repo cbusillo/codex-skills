@@ -604,12 +604,17 @@ checks below as relevant.
   contents checks; dirty or unpreserved state is retained. This covers the
   worktree and its merged local branch, not a remote branch. The task's record
   includes its claim on the owning issue, which names the branch. A worktree on
-  that branch is this task's, even after compaction or a handoff. When its lock
-  reason names a retire command, use that command. When the task's
+  that branch is this task's, even after compaction or a handoff. Retain a tree
+  needed after a handoff under the continuing task's ownership. Before handoff,
+  record retained-tree custody and the `Refs` or exact-branch associations on
+  the continuing work's existing claimed record; use the existing claim handoff
+  protocol. Once continuing use ends, release and verify its claim, then follow
+  [qualified retirement](../github/references/worktrees.md#retirement) from
+  outside the tree. When the task's
   record does not show that it created a registered worktree, the owning session is
   unknown: leave it, and mention it when it bears on this closeout.
-  [Task worktrees](../github/references/worktrees.md) documents portable Git
-  removal and per-host helper retirement. Creation through the catalog helper
+  [Task worktrees](../github/references/worktrees.md) documents the shared
+  portable and per-host retirement route. Creation through the catalog helper
   does not replace a host's lock or guarded retirement policy.
 - After merged PRs, include relevant post-merge Actions and GitHub
   security/quality signal outcomes when GitHub data is available. Report signals
