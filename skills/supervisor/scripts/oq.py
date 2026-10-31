@@ -82,7 +82,7 @@ def questions(comments, owner, decision_authors, related_comments=(), *, recorde
     return results
 
 
-def fetch(item: str, timeout: float = 120) -> list[dict]:
+def fetch(item):
     match = ITEM.fullmatch(item)
     if not match:
         raise ValueError("item must be OWNER/REPO#NUMBER")
@@ -92,7 +92,7 @@ def fetch(item: str, timeout: float = 120) -> list[dict]:
         capture_output=True,
         text=True,
         check=True,
-        timeout=timeout,
+        timeout=120,
     )
     result = json.loads(run.stdout)
     if (result.get("ok") is not True

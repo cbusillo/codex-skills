@@ -11,7 +11,6 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from typing import Any
 from unittest import mock
 
 import q_number_guard as guard
@@ -63,8 +62,9 @@ class GuardTests(unittest.TestCase):
         self.home = tempfile.TemporaryDirectory()
         self.addCleanup(self.home.cleanup)
         self.env = {"CODE_HOME": self.home.name}
-        self.enterContext(mock.patch.object(record.question_id, "configured_queue", return_value=None))
+        self.enterContext(mock.patch.object(record.question_id, "configured_queue", return_value="example/direction#9"))
         self.enterContext(mock.patch.object(record.delivery.oq, "default_decision_authors", return_value=["fixture-automation"]))
+        self.read_question = self.enterContext(mock.patch.object(guard, "read_question", side_effect=ValueError("unavailable")))
 
     def run_hook(self, payload):
         stdin = io.StringIO(payload if isinstance(payload, str) else json.dumps(payload))
@@ -77,7 +77,7 @@ class GuardTests(unittest.TestCase):
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     @staticmethod
-    def registered_question(number: str = "Q590") -> tuple[dict, dict]:
+    def registered_question(number: str = "Q590") -> dict:
         value = {
             "version": record.VERSION,
             "issue": "https://github.com/example/product/issues/3",
@@ -93,24 +93,8 @@ class GuardTests(unittest.TestCase):
         }
         url = value["issue"] + "#issuecomment-17"
         source = {"body": record.question_id.number_heading(record.render(value), number), "url": url,
-                  "author": "fixture-automation"}
-        registration = {
-            "body": record.delivery.marker_body("registered", url),
-            "url": "https://github.com/example/direction/issues/9#issuecomment-18",
-            "author": "example",
-        }
-        return source, registration
-
-    def relay_lookup(self, source: dict, registration: dict) -> tuple[Any, Any]:
-        def fetch(item: str, timeout: float) -> list[dict]:
-            self.assertGreater(timeout, 0)
-            self.assertLessEqual(timeout, guard.LOOKUP_TIMEOUT)
-            return [registration] if item == "example/direction#9" else [source]
-
-        return mock.patch.multiple(
-            record.question_id,
-            configured_queue=mock.DEFAULT,
-        ), mock.patch.object(record.delivery.oq, "fetch", side_effect=fetch)
+                  "author": "fixture-automation", "issue": value["issue"]}
+        return source
 
     def test_numbered_question_passes(self):
         self.assertEqual(self.run_hook(stop(last_assistant_message=NUMBERED)), "")
@@ -126,45 +110,31 @@ class GuardTests(unittest.TestCase):
                 self.assertEqual(self.run_hook(stop(last_assistant_message=message, stop_hook_active=True)), "")
 
     def test_registered_structured_question_supplies_relay_context(self) -> None:
-        source, registration = self.registered_question()
-        configured, fetch = self.relay_lookup(source, registration)
-        with configured as values, fetch as lookup:
-            values["configured_queue"].return_value = "example/direction#9"
-            self.assertEqual(self.run_hook(stop(last_assistant_message="**Q590 — Should we move the nightly sync?**")), "")
-        self.assertEqual([call.args[0] for call in lookup.call_args_list], ["example/direction#9", "example/product#3"])
+        source = self.registered_question()
+        with mock.patch.object(guard, "read_question", return_value=source):
+            self.assertEqual(self.run_hook(stop(last_assistant_message=f"**Q590 — Should we move the nightly sync?** {source['url']}")), "")
 
     def test_registered_legacy_question_and_new_ask_do_not_bypass_context(self) -> None:
-        source, registration = self.registered_question()
+        source = self.registered_question()
         messages = [
             "**Q590 — Should we move the nightly sync?** Should I also replace its runner?",
             "**Q591 — Should we replace the runner?**",
+            "**Q590 — Should we move the nightly sync?** Your call on the runner too.",
         ]
         for message in messages:
             with self.subTest(message=message):
-                configured, fetch = self.relay_lookup(source, registration)
-                with configured as values, fetch:
-                    values["configured_queue"].return_value = "example/direction#9"
-                    self.assertIn("block", self.run_hook(stop(last_assistant_message=message)))
-        source["body"] = "**Q590 — Should we move the nightly sync?**"
-        configured, fetch = self.relay_lookup(source, registration)
-        with configured as values, fetch:
-            values["configured_queue"].return_value = "example/direction#9"
-            self.assertIn("block", self.run_hook(stop(last_assistant_message="**Q590 — Should we move the nightly sync?**")))
-
-        source, registration = self.registered_question()
-        source["author"] = "stranger"
-        configured, fetch = self.relay_lookup(source, registration)
-        with configured as values, fetch:
-            values["configured_queue"].return_value = "example/direction#9"
-            self.assertIn("block", self.run_hook(stop(last_assistant_message="**Q590 — Should we move the nightly sync?**")))
+                with mock.patch.object(guard, "read_question", return_value=source):
+                    self.assertIn("block", self.run_hook(stop(last_assistant_message=f"{message} {source['url']}")))
+        for changes in ({"body": "**Q590 — Should we move the nightly sync?**"}, {"author": "stranger"}):
+            with self.subTest(changes=changes), mock.patch.object(guard, "read_question", return_value={**source, **changes}):
+                self.assertIn("block", self.run_hook(stop(last_assistant_message=f"**Q590 — Should we move the nightly sync?** {source['url']}")))
 
     def test_unknown_registered_question_lookup_falls_back_to_context_check(self) -> None:
-        with mock.patch.object(record.question_id, "configured_queue", return_value="example/direction#9"), \
-             mock.patch.object(record.delivery.oq, "fetch", side_effect=ValueError("unavailable")) as fetch:
-            self.assertIn("block", self.run_hook(stop(last_assistant_message="**Q590 — Should we move the sync?**")))
-        self.assertEqual(fetch.call_args.args, ("example/direction#9",))
-        self.assertGreater(fetch.call_args.kwargs["timeout"], 0)
-        self.assertLessEqual(fetch.call_args.kwargs["timeout"], guard.LOOKUP_TIMEOUT)
+        source = self.registered_question()
+        message = "**Q590 — Should we move the sync?**"
+        self.assertIn("block", self.run_hook(stop(last_assistant_message=message)))
+        self.read_question.assert_not_called()
+        self.assertIn("block", self.run_hook(stop(last_assistant_message=f"{message} {source['url']}")))
 
     def test_context_correction_uses_shared_guidance(self) -> None:
         guidance = Path(self.home.name, "guidance.md")
