@@ -464,8 +464,9 @@ private state and fetches canonical source before routing. Source versions
 share delivery receipts across the watcher and routine radar. Intake takes a
 short state lock; native delivery is serialized separately. Each writer
 updates only its own fields. A newer edit arriving during delivery remains
-pending. Deleted source hints are removed; provider cooldowns survive restart
-and nonretryable source-read refusals remain fenced.
+pending. Deleted or malformed source hints leave the queue with diagnostic
+evidence; provider cooldowns survive restart. Nonretryable source-read refusals
+stop the service for its existing reconciliation procedure.
 
 Both readers reuse the pending-review claim resolver and native notification
 routes: a live worker receives a pointer; otherwise the Supervisor answers or
@@ -481,6 +482,10 @@ source links, authors and words stay in private state. Connection observations
 distinguish subscriber downtime from a notification absent while subscribed.
 Activation catch-up does not claim historical posts were missed events.
 Unobserved upstream hops remain UNKNOWN.
+Ordinary bot signals, Launchplane dispatches and Director questions keep their
+existing log or queue paths. Native message routing recognizes Client agents
+through the optional people index; `--people-index` selects an explicit index.
+Answered radar rows are not sent again; the original request still stays in planning.
 
 Run the same watcher arguments with `--receipts` to inspect existing private
 receipts without sending. Certainly unsent native deliveries remain retryable;
@@ -489,6 +494,9 @@ confirm an uncertain send through its exact generated message in the verified
 native transcript. Absence there does not prove a send failed. An uncertain
 miss-report write is reconciled by reading its random receipt from trusted
 comments on the repair issue; an absent comment never authorizes a blind retry.
+`--reconcile` runs those positive readbacks immediately. Only a helper-confirmed
+certainly unstarted miss write is retryable. Completed receipts are retained for
+the radar's 30-day window; unresolved send and audit fences remain preserved.
 
 Add `--director-login DIRECTOR-LOGIN --mention-approval <approval-comment-link>`
 to also report threads outside the listed repositories that mention the

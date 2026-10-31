@@ -18,21 +18,29 @@ spec = importlib.util.spec_from_file_location("attention_operator", LAUNCHPLANE 
 assert spec is not None and spec.loader is not None
 operator: Any = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(operator)
+MAX_EVENT_LINE_BYTES = 8192
+
+
+class ConfigurationError(ValueError):
+    pass
 
 
 def messages(args: Any) -> Iterator[dict]:
-    settings = operator.resolve_settings(args)
-    operator.validate_service_url(settings["service_url"])
-    if not settings["token"]:
-        raise ValueError("existing Launchplane operator configuration is required")
+    try:
+        settings = operator.resolve_settings(args)
+        operator.validate_service_url(settings["service_url"])
+        if not settings["token"]:
+            raise ValueError("existing Launchplane operator configuration is required")
+    except ValueError as error:
+        raise ConfigurationError(str(error)) from error
     request = urllib.request.Request(
         operator.build_url(settings["service_url"], operator.helper_command_path("attention-events-read")),
         headers={"Accept": "application/x-ndjson", "Authorization": f"Bearer {settings['token']}"},
     )
     try:
         with operator.safe_urlopen(request, timeout=20) as response:
-            while line := response.readline(8193):
-                if len(line) > 8192 or not line.endswith(b"\n"):
+            while line := response.readline(MAX_EVENT_LINE_BYTES + 1):
+                if len(line) > MAX_EVENT_LINE_BYTES or not line.endswith(b"\n"):
                     raise ValueError("attention event exceeded the bounded message size")
                 row = json.loads(line)
                 if not isinstance(row, dict):

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --no-cache --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["PyYAML==6.0.3"]
 # ///
 """Emit untrusted foreign-post notices; never start or widen work."""
 
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import importlib
 import json
 import math
 import uuid
@@ -78,43 +79,60 @@ def enqueue_event(args: Any, repos: list[str] | None, hint: dict) -> None:
         atomic_text(args.state, json.dumps(state) + "\n")
 
 
-def receive_events(args: Any, repos: list[str] | None, wake: threading.Event, stop: threading.Event) -> None:
-    from attention_events import messages
+def connection_observation(args: Any, opened: str | None, *, connected: bool) -> str | None:
+    observed = utc_now()
+    with watch_lock(args.state, wait=True):
+        state = json.loads(args.state.read_text()) if args.state.exists() else {}
+        intervals = state.setdefault("event_connections", [])
+        if connected and opened is None:
+            opened = observed
+            intervals.append({"start": opened, "end": observed})
+            state.setdefault("event_started_at", observed)
+        if opened is not None and intervals and intervals[-1]["start"] == opened:
+            intervals[-1]["end"] = observed
+        cutoff = timestamp(observed) - timedelta(days=30)
+        state["event_connections"] = [row for row in intervals if timestamp(row["end"]) >= cutoff]
+        state["event_transport"] = "connected" if connected else "disconnected"
+        atomic_text(args.state, json.dumps(state) + "\n")
+    return opened if connected else None
 
-    while not stop.is_set():
+
+def receive_events(args: Any, repos: list[str] | None, wake: threading.Event, stop: threading.Event) -> None:
+    opened = None
+    try:
+        from attention_events import ConfigurationError, messages
+
+        while not stop.is_set():
+            try:
+                for hint in messages(args):
+                    if stop.is_set():
+                        return
+                    kind = hint.get("type")
+                    if kind == "connected":
+                        opened = connection_observation(args, None, connected=True)
+                    elif kind == "heartbeat" and opened is not None:
+                        connection_observation(args, opened, connected=True)
+                    elif kind == "disconnected":
+                        opened = connection_observation(args, opened, connected=False)
+                        break
+                    elif kind == "message":
+                        enqueue_event(args, repos, hint)
+                        wake.set()
+                opened = connection_observation(args, opened, connected=False)
+                stop.wait(5)
+            except (PermissionError, ConfigurationError) as error:
+                print(json.dumps({"event_error": redact_string(str(error))}), flush=True)
+                return
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                opened = connection_observation(args, opened, connected=False)
+                print(json.dumps({"event_error": redact_string(type(error).__name__)}), flush=True)
+                stop.wait(5)
+    finally:
         try:
-            for hint in messages(args):
-                if stop.is_set():
-                    return
-                if hint.get("type") in {"connected", "heartbeat", "disconnected"}:
-                    with watch_lock(args.state, wait=True):
-                        state = json.loads(args.state.read_text()) if args.state.exists() else {}
-                        observed = utc_now()
-                        state.setdefault("event_started_at", observed)
-                        intervals = state.setdefault("event_connections", [])
-                        if hint["type"] == "connected":
-                            intervals.append({"start": observed, "end": observed})
-                            state["event_connections"] = intervals[-64:]
-                        elif intervals:
-                            intervals[-1]["end"] = observed
-                        state["event_transport"] = "disconnected" if hint["type"] == "disconnected" else "connected"
-                        atomic_text(args.state, json.dumps(state) + "\n")
-                    continue
-                if hint.get("type") == "message":
-                    enqueue_event(args, repos, hint)
-                    wake.set()
-        except PermissionError as error:
-            print(json.dumps({"event_error": redact_string(str(error)), "permission_denied": True}), flush=True)
+            connection_observation(args, opened, connected=False)
+        finally:
             stop.set()
             wake.set()
-            return
-        except (OSError, ValueError, KeyError, TypeError) as error:
-            with watch_lock(args.state, wait=True):
-                state = json.loads(args.state.read_text()) if args.state.exists() else {}
-                state["event_transport"] = "disconnected"
-                atomic_text(args.state, json.dumps(state) + "\n")
-            print(json.dumps({"event_error": redact_string(type(error).__name__)}), flush=True)
-            stop.wait(5)
 
 
 def drain_events(args: Any, repos: list[str] | None, deadline: float) -> None:
@@ -126,8 +144,6 @@ def drain_events(args: Any, repos: list[str] | None, deadline: float) -> None:
     for key, hint in pending.items():
         if time.monotonic() >= deadline:
             break
-        if hint.get("fenced"):
-            continue
         event_args = argparse.Namespace(**{**vars(args), "event": hint["event"], "event_payload": hint["payload"]})
         try:
             complete = event_pass(event_args, repos, deadline) == 0
@@ -139,11 +155,14 @@ def drain_events(args: Any, repos: list[str] | None, deadline: float) -> None:
                 with watch_lock(args.state, wait=True):
                     state = json.loads(args.state.read_text())
                     state["next_event_read_at"] = failure.get("retry_at") or time.time() + 60
-                    if not failure["retryable"]:
-                        state["pending_events"][key]["fenced"] = True
                     atomic_text(args.state, json.dumps(state) + "\n")
                 print(json.dumps({"event_error": failure}), flush=True)
+                if not failure["retryable"]:
+                    raise
                 break
+        except (ValueError, KeyError, TypeError, GitHubReadShapeError) as error:
+            print(json.dumps({"error": "invalid event source; retained reader log requires triage", "reason": type(error).__name__}), flush=True)
+            complete = True
         except (*READ_ERRORS, subprocess.SubprocessError):
             print(json.dumps({"error": "message event read or routing failed; retained for sweep"}), flush=True)
             continue
@@ -162,19 +181,26 @@ def watch_events(args: Any, repos: list[str] | None, initial: str, deadline: flo
     thread.start()
     sweep_args = argparse.Namespace(**{**vars(args), "once": True})
     next_sweep = time.monotonic()
+    sweep_failed = False
     try:
         while time.monotonic() < deadline and not stop.is_set():
             wake.clear()
             drain_events(args, repos, deadline)
             if time.monotonic() >= next_sweep:
-                watch(sweep_args, repos, initial, deadline)
+                if watch(sweep_args, repos, initial, deadline):
+                    with watch_lock(args.state, wait=True):
+                        state = json.loads(args.state.read_text())
+                    if not state.get("sweep_retryable"):
+                        sweep_failed = True
+                        break
                 sweep_args.since = None
                 next_sweep = time.monotonic() + args.interval
             wake.wait(max(0, min(next_sweep, deadline) - time.monotonic()))
-        failed = stop.is_set()
+        failed = stop.is_set() or sweep_failed
     finally:
         stop.set()
         thread.join(timeout=25)
+        connection_observation(args, None, connected=False)
     return int(failed)
 
 
@@ -261,7 +287,7 @@ def read_comments(reader, repo: str, since: str) -> list[dict]:
     )
 
 
-def read_opened(reader, repo: str, since: str) -> list[dict]:
+def read_opened(reader, repo: str, since: str, client_agents=()) -> list[dict]:
     query_since = (timestamp(since) - timedelta(seconds=1)).isoformat()
     issues = reader.paged_json(
         f"repos/{repo}/issues",
@@ -269,7 +295,7 @@ def read_opened(reader, repo: str, since: str) -> list[dict]:
         params={"since": query_since, "state": "all"},
         required_query_params={"since": query_since},
     )
-    return [opening_message(reader, issue) for issue in issues]
+    return [opening_message(reader, issue) for issue in issues if not isinstance(issue.get("user"), dict) or issue["user"].get("type") != "Bot" or issue["user"].get("login", "").casefold() in client_agents]
 
 
 def opening_message(reader: GitHubReader, source: dict) -> dict:
@@ -317,13 +343,13 @@ def read_error(repo: str, error: Exception) -> dict:
     }
 
 
-def scan(repos, watermarks, own_logins, launchplane_logins, started, reader):
+def scan(repos, watermarks, own_logins, launchplane_logins, started, reader, client_agents=()):
     notices, errors, next_watermarks = [], [], dict(watermarks)
     for repo in repos:
         since = watermarks[repo]
         pending = []
         try:
-            for comment in read_comments(reader, repo, since) + read_opened(reader, repo, since):
+            for comment in read_comments(reader, repo, since) + read_opened(reader, repo, since, client_agents):
                 if timestamp(comment["updated_at"]) < timestamp(since):
                     continue
                 notice = make_notice(repo, comment, own_logins, launchplane_logins)
@@ -474,7 +500,12 @@ def load_deliveries(path: Path) -> dict[str, dict]:
         isinstance(key, str) and isinstance(row, dict) for key, row in deliveries.items()
     ):
         raise ValueError("message_deliveries must be an object of delivery receipts")
-    return deliveries
+    cutoff = timestamp(utc_now()) - timedelta(days=30)
+    return {
+        key: row for key, row in deliveries.items()
+        if row.get("status") != "sent" or row.get("audit_error")
+        or timestamp(json.loads(key)[1]) >= cutoff
+    }
 
 
 def event_comment(args: Any, repos: list[str] | None, reader: GitHubReader) -> tuple[str, dict] | None:
@@ -552,7 +583,7 @@ def event_pass(args: Any, repos: list[str] | None, deadline: float) -> int:
                 deliveries.setdefault(delivery_key(row), {})["hook_seen"] = True
             persist()
         print(json.dumps({"notices": notices, "errors": [], "coverage_gaps": [], "untrusted": True}), flush=True)
-        return int(any(row.get("routing", {}).get("status") != "sent" for row in notices) if args.ledger else False)
+        return int(any(row.get("routing", {}).get("status") in {"pending", "not_attempted"} for row in notices) if args.ledger else False)
 
 
 def make_notice(repo: str, comment: dict, own_logins: list[str], launchplane_logins: list[str]) -> dict | None:
@@ -574,6 +605,7 @@ def make_notice(repo: str, comment: dict, own_logins: list[str], launchplane_log
     notice = {
         "repository": repo,
         "author": login,
+        "author_type": user.get("type", "") if isinstance(user, dict) else "",
         "url": url,
         "updated_at": updated,
         "excerpt": excerpt(body),
@@ -593,13 +625,16 @@ def missed_event_cause(args: Any, notice: dict) -> str:
     with watch_lock(args.state, wait=True):
         state = json.loads(args.state.read_text()) if args.state.exists() else {}
     at = timestamp(notice["updated_at"])
-    if state.get("event_started_at") and at < timestamp(state["event_started_at"]):
+    if not state.get("event_started_at") or at < timestamp(state["event_started_at"]):
         return ""
     intervals = state.get("event_connections", [])
-    for index, interval in enumerate(intervals):
-        end = utc_now() if index == len(intervals) - 1 and state.get("event_transport") == "connected" else interval["end"]
-        if timestamp(interval["start"]) <= at <= timestamp(end):
+    for interval in intervals:
+        if timestamp(interval["start"]) <= at <= timestamp(interval["end"]):
             return "not_notified_while_subscribed"
+    if intervals and at < timestamp(intervals[0]["start"]):
+        return "connection_history_unavailable"
+    if state.get("event_transport") == "connected":
+        return "connection_observation_incomplete"
     return "subscriber_disconnected"
 
 
@@ -660,6 +695,7 @@ def recipient(args: Any, notice: dict, reader: GitHubReader) -> Recipient:
             {"body": ""},
             pull,
             thread_issue=number if "pull_request" not in issue else None,
+            extra_issues=(number,) if "pull_request" in issue else (),
         )
     except ReviewError:
         return Recipient(supervisor_recipient(args), True, "owner_not_live_or_ambiguous")
@@ -684,7 +720,7 @@ def audit_miss(args: Any, receipt: dict, persist: Any) -> None:
         reader = GitHubReader(operation="github.supervisor.foreign_watch", strict_actor=True, gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 30)
         try:
             comments = reader.paged_json(f"repos/{repo}/issues/{number}/comments", step_prefix="routing_miss_reconciliation")
-            matching = [row for row in comments if row.get("user", {}).get("login", "").casefold() in {value.casefold() for value in args.own_login} and f"private receipt {receipt['audit_token']}." in row.get("body", "")]
+            matching = [row for row in comments if (row.get("user") or {}).get("login", "").casefold() in {value.casefold() for value in args.own_login} and f"private receipt {receipt['audit_token']}." in row.get("body", "")]
             if len(matching) == 1:
                 receipt.update(audit_status="sent", audit_url=matching[0]["html_url"])
                 receipt.pop("audit_error", None)
@@ -699,7 +735,7 @@ def audit_miss(args: Any, receipt: dict, persist: Any) -> None:
     repo, number = args.miss_issue.split("#")
     body = (
         f"Message routing miss: private receipt {receipt.setdefault('audit_token', uuid.uuid4().hex)}.\n\n"
-        f"Observed cause: {receipt['cause']}. Hook observed: {bool(receipt.get('hook_seen'))}. "
+        f"Observed cause: {receipt.get('miss_cause') or receipt.get('cause') or 'unknown'}. Hook observed: {bool(receipt.get('hook_seen'))}. "
         f"Delivery status: {receipt.get('status', 'not_attempted')}.\n\n"
         "Next action: Supervisor inspect the hook/recipient delivery evidence, fix the failing path, "
         "and keep the original request open until its next action is done. A missing hook receipt "
@@ -715,6 +751,13 @@ def audit_miss(args: Any, receipt: dict, persist: Any) -> None:
             timeout=120,
         )
         if result.returncode:
+            try:
+                outcome = json.loads(result.stdout)
+            except ValueError:
+                outcome = {}
+            if isinstance(outcome, dict) and outcome.get("status") not in {401, 403} and outcome.get("failure", {}).get("write_outcome") == "not_started":
+                receipt["audit_status"] = "pending"
+                receipt["audit_error"] = "miss record certainly not posted; retry after its cause is repaired"
             return
         receipt["audit_url"] = json.loads(result.stdout).get("url")
     except (OSError, subprocess.SubprocessError, ValueError):
@@ -728,6 +771,11 @@ def audit_miss(args: Any, receipt: dict, persist: Any) -> None:
 
 def route_notices(args: Any, notices: list[dict], deliveries: dict, reader: GitHubReader, *, event: bool, persist: Any) -> None:
     for notice in notices:
+        if notice.get("kind") != "foreign" or (
+            (notice.get("author_type") == "Bot" or str(notice.get("author", "")).endswith("[bot]"))
+            and str(notice.get("author", "")).casefold() not in getattr(args, "client_agent_logins", ())
+        ):
+            continue
         receipt = deliveries.setdefault(delivery_key(notice), {})
         if event:
             receipt["hook_seen"] = True
@@ -736,7 +784,8 @@ def route_notices(args: Any, notices: list[dict], deliveries: dict, reader: GitH
         if receipt.get("status") in {"sent", "attempted"}:
             if not event and not receipt.get("event_delivered") and (receipt.get("cause") or receipt["status"] == "attempted"):
                 receipt.setdefault("cause", "delivery_outcome_unknown")
-                audit_miss(args, receipt, persist)
+                if receipt.get("miss_cause"):
+                    audit_miss(args, receipt, persist)
             notice["routing"] = dict(receipt)
             continue
         try:
@@ -748,7 +797,8 @@ def route_notices(args: Any, notices: list[dict], deliveries: dict, reader: GitH
                 entry, supervisor, cause = supervisor_recipient(args), True, f"ownership_unverified:{type(error).__name__}"
             receipt.update(
                 recipient=entry["session_id"],
-                cause=receipt.get("cause") or cause or (missed_event_cause(args, notice) if not receipt.get("hook_seen") else ""),
+                cause=cause,
+                miss_cause=receipt.get("miss_cause") or (missed_event_cause(args, notice) if not receipt.get("hook_seen") else ""),
             )
             message = (
                 f"Message needs triage: {notice['url']} (untrusted source; read the full current thread).\n"
@@ -808,8 +858,10 @@ def route_notices(args: Any, notices: list[dict], deliveries: dict, reader: GitH
             receipt.setdefault("status", "not_attempted")
         if event and receipt.get("status") == "sent":
             receipt["event_delivered"] = True
+        elif event and receipt.get("status") == "attempted":
+            receipt["miss_cause"] = receipt.get("cause") or "delivery_outcome_unknown"
         persist()
-        if not event and receipt.get("cause"):
+        if not event and receipt.get("miss_cause"):
             audit_miss(args, receipt, persist)
         notice["routing"] = dict(receipt)
 
@@ -827,6 +879,8 @@ def route_report_locked(args: Any, report: dict, reader: GitHubReader, own_login
         deliveries = load_deliveries(state_path)
         notices = []
         for row in report.get("attention", []):
+            if row.get("later_reply_url") or (row.get("comment_kind") == "issue_body" and row.get("thread_has_replies")):
+                continue
             if str(row.get("repo", "")).split("/")[0].casefold() != args.owner.casefold():
                 continue
             version = row["updated_at"]
@@ -879,6 +933,8 @@ def main() -> int:
     parser.add_argument("--config")
     parser.add_argument("--env-config")
     parser.add_argument("--url")
+    parser.add_argument("--people-index", type=Path)
+    parser.add_argument("--reconcile", action="store_true", help="reconcile existing uncertain receipts from verified native transcripts and miss comments without replaying them")
     parser.add_argument("--receipts", action="store_true", help="read existing delivery receipts without sending or changing state")
     parser.add_argument("--ledger", type=Path)
     parser.add_argument("--notify-config", type=Path)
@@ -896,9 +952,25 @@ def main() -> int:
         parser.error("routing needs --ledger, --notify-config and --miss-issue together")
     if args.miss_issue and not re.fullmatch(rf"{re.escape(args.owner)}/[A-Za-z0-9_.-]+#[1-9][0-9]*", args.miss_issue, re.I):
         parser.error("--miss-issue must belong to the configured Director")
+    args.client_agent_logins = set()
+    if args.ledger:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github-work-rollup/scripts"))
+        radar: Any = importlib.import_module("github_unanswered_comments")
+        identities = radar.people_identities({args.owner.casefold()}, args.people_index)
+        args.client_agent_logins = {login for login, person in identities["automation"].items() if person}
     deadline = time.monotonic() + args.deadline_seconds
     initial = args.since or utc_now()
     try:
+        if args.reconcile:
+            with watch_lock(args.state.with_name(args.state.name + ".routing"), wait=True):
+                receipts = load_deliveries(args.state)
+                for receipt in receipts.values():
+                    reconcile_delivery(args, receipt)
+                    if receipt.get("audit_status") == "attempted":
+                        audit_miss(args, receipt, lambda: save_deliveries(args.state, receipts))
+                save_deliveries(args.state, receipts)
+                print(json.dumps(receipts))
+            return 0
         if args.receipts:
             with watch_lock(args.state, wait=True):
                 print(json.dumps(load_deliveries(args.state)))
@@ -920,10 +992,15 @@ def watch(args, repos, initial, deadline):
     seen: dict[str, str] = {}
     dispatched: set[str] = set()
     while time.monotonic() < deadline:
-        with watch_lock(args.state):
+        with watch_lock(args.state, wait=True):
+            state = json.loads(args.state.read_text()) if args.state.exists() else {}
+            cooldown = float(state.get("next_event_read_at", 0)) - time.time()
             watermarks = load_state(args.state, [*(repos or []), MENTIONS], initial, rewind=rewind)
             seen = load_mention_seen(args.state)
             dispatched = load_dispatched(args.state)
+        if cooldown > 0:
+            time.sleep(min(cooldown, max(0, deadline - time.monotonic())))
+            continue
         started = utc_now()
         reader = GitHubReader(
             operation="github.supervisor.foreign_watch",
@@ -938,7 +1015,7 @@ def watch(args, repos, initial, deadline):
         else:
             cover(watermarks, [repo for repo in watched if repo not in covered], initial, args.since is not None)
             covered.update(watched)
-            notices, errors, watermarks = scan(watched, watermarks, args.own_login, args.launchplane_login, started, reader)
+            notices, errors, watermarks = scan(watched, watermarks, args.own_login, args.launchplane_login, started, reader, getattr(args, "client_agent_logins", ()))
             mentions, gaps, mention_errors, watermarks, seen = scan_mentions(
                 args, watched, watermarks, seen, args.own_login, started, reader
             )
@@ -956,16 +1033,16 @@ def watch(args, repos, initial, deadline):
                     persist=lambda: save_deliveries(args.state, deliveries),
                 )
             print(json.dumps({"notices": notices, "errors": errors, "coverage_gaps": gaps, "untrusted": True}), flush=True)
-            if not any(row.get("routing", {}).get("status") == "pending" for row in notices):
-                save_state(args.state, watermarks, seen, dispatched, deliveries)
-            else:
-                save_state(
-                    args.state,
-                    checkpoint.get("watermarks", {}),
-                    checkpoint.get("mention_seen", {}),
-                    checkpoint.get("change_requests_dispatched", []),
-                    deliveries,
-                )
+            retry_repos = {row["repository"] for row in notices if row.get("routing", {}).get("status") in {"pending", "not_attempted"}}
+            for repo in retry_repos:
+                watermarks[repo] = checkpoint.get("watermarks", {}).get(repo, initial)
+            save_state(args.state, watermarks, seen, dispatched, deliveries)
+            if errors:
+                with watch_lock(args.state, wait=True):
+                    state = json.loads(args.state.read_text())
+                    state["sweep_retryable"] = all(error["retryable"] for error in errors)
+                    state["next_event_read_at"] = max([time.time() + args.interval] + [error["retry_at"] for error in errors if isinstance(error.get("retry_at"), (int, float))])
+                    atomic_text(args.state, json.dumps(state) + "\n")
         rewind = False
         persistent = getattr(args, "persistent", False)
         if args.once or (notices and not errors) or (not persistent and errors) or any(not error["retryable"] for error in errors):

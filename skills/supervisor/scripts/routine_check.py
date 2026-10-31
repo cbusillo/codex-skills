@@ -141,7 +141,7 @@ def digest(sources: dict[str, dict]) -> str:
         if row.get("later_reply_url") or (row.get("comment_kind") == radar.OPENING_POST and row.get("thread_has_replies")):
             continue
         routing = row.get("routing", {})
-        if routing.get("status") not in {None, "sent"} or routing.get("audit_error"):
+        if routing.get("status") not in {None, "sent", "pending"} or routing.get("audit_error"):
             lines.append(f"ERROR routing {pointer(row)}: {routing.get('audit_error') or routing.get('cause') or routing['status']}")
         lines.append(f"COMMENT {pointer(row)}: {' '.join((row.get('body_excerpt') or row.get('body') or '').split())[:180]}")
     for row in comments.get("unasked_director_waits", []):
@@ -252,7 +252,7 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
         result["coverage"]["errors"].extend(errors)
         result["ok"] = result["ok"] and not errors
         if getattr(args, "foreign_state", None):
-            foreign_watch.route_report(args, result, github_reader(), [*settings["self_logins"], *settings["bot_logins"]])
+            foreign_watch.route_report(args, result, github_reader(), [*settings["self_logins"], *github_read.github_identity.configured_bot_logins()])
             result["coverage"]["errors"].extend(result.get("routing_errors", []))
             result["ok"] = result["ok"] and not result.get("routing_errors")
         return result
@@ -320,7 +320,7 @@ def main() -> int:
     return int(
         any(source_errors(name, report) for name, report in sources.items())
         or any(
-            row.get("routing", {}).get("status") not in {None, "sent"} or row.get("routing", {}).get("audit_error")
+            row.get("routing", {}).get("status") not in {None, "sent", "pending"} or row.get("routing", {}).get("audit_error")
             for row in sources.get("comments", {}).get("attention", [])
         )
     )

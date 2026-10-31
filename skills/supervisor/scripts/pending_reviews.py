@@ -529,7 +529,7 @@ def live_claim_comments(comments, branches):
     return [comment for comment in cleaned if comment["id"] not in ended]
 
 
-def bind_session(io, repo, branches, entries, logins, request, pr, *, refresh=False, thread_issue=None):
+def bind_session(io, repo, branches, entries, logins, request, pr, *, refresh=False, thread_issue=None, extra_issues=()):
     candidates = {entry["session_id"]: entry for entry in entries
                   if entry.get("repository", "").casefold() == repo.casefold()
                   and entry.get("supervisor_owned") is True}
@@ -538,6 +538,7 @@ def bind_session(io, repo, branches, entries, logins, request, pr, *, refresh=Fa
     # A brief may name a parent before its worker creates the implementation issue.
     # Linked issues locate claims; the trusted claim must still bind branch and session.
     issues = set(owned_issues)
+    issues.update(extra_issues)
     issues.update(ref["number"] for ref in issue_references(pr.get("body") or "", repo=repo)
                   if ref["repo"].casefold() == repo.casefold())
     if thread_issue is not None:

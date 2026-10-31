@@ -111,9 +111,10 @@ class WatchTests(unittest.TestCase):
             self.assertEqual(state["watermarks"][REPO], SINCE)
             self.assertEqual(state["watermarks"]["director/healthy"], STARTED)
 
-    def scan(self, reader):
+    @staticmethod
+    def scan(reader, client_agents=()):
         return foreign_watch.scan([REPO], {REPO: SINCE}, ["director", "agent[bot]"],
-                                  ["delivery[bot]"], STARTED, reader)
+                                  ["delivery[bot]"], STARTED, reader, client_agents)
 
     def test_filter_and_review_records(self):
         reader = Mock()
@@ -131,8 +132,8 @@ class WatchTests(unittest.TestCase):
     def test_issue_or_pull_request_opened_by_an_outside_person_is_a_notice(self):
         reader = Mock()
         reader.paged_json.side_effect = feeds([], opened_items=[
-            opened(), opened("director"), opened("client-agent[bot]", "Bot"), opened(created="2026-10-09T11:00:00Z")])
-        notices, errors, _ = self.scan(reader)
+            opened(), opened("director"), opened("client-agent[bot]", "Bot"), opened("dependabot[bot]", "Bot"), opened(created="2026-10-09T11:00:00Z")])
+        notices, errors, _ = self.scan(reader, {"client-agent[bot]"})
         self.assertEqual(errors, [])
         self.assertEqual([(n["author"], n["url"], n["excerpt"]) for n in notices],
                          [(author, "https://github.com/director/project/pull/50", "Add tvOS support")
