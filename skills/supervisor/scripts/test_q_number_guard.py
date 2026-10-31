@@ -122,6 +122,7 @@ class GuardTests(unittest.TestCase):
         source = self.registered_question()
         messages = [
             "**Q590 — Should we move the nightly sync?** Should I also replace its runner?",
+            "**Q590 — Should we move the nightly sync? And should I also replace its runner?**",
             "**Q591 — Should we replace the runner?**",
             "**Q590 — Should we move the nightly sync?** Your call on the runner too.",
         ]
@@ -162,9 +163,16 @@ class GuardTests(unittest.TestCase):
 
     def test_missing_lookup_import_and_null_author_keep_the_block(self) -> None:
         source = self.registered_question()
-        for failure in (ImportError("missing sibling"), AttributeError("unknown author")):
+        for failure in (ImportError("missing sibling"), AttributeError("unknown author"), SyntaxError("broken sibling")):
             with self.subTest(failure=failure), mock.patch.object(guard, "read_question", side_effect=failure):
                 self.assertIn("block", self.run_hook(stop(last_assistant_message=f"**Q590 — Move the sync?** {source['url']}")))
+
+    def test_unrelated_trusted_comment_does_not_hide_the_record(self) -> None:
+        source = self.registered_question()
+        other = {**source, "body": "Status update", "url": source["url"] + "1"}
+        with mock.patch.object(guard, "read_question", side_effect=[other, source]):
+            self.assertEqual(self.run_hook(stop(last_assistant_message=
+                f"**Q590 — Move the sync?** {other['url']} {source['url']}")), "")
 
     def test_context_correction_uses_shared_guidance(self) -> None:
         guidance = Path(self.home.name, "guidance.md")

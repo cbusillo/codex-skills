@@ -81,7 +81,9 @@ def missing_context(message: str) -> str | None:
 
 
 def has_unnumbered_ask(text: str) -> bool:
-    text = re.sub(NUMBERED.pattern + r"[^*\n]*\?\*\*", " ", text)
+    if any(match[0].count("?") > 1 for match in re.finditer(NUMBERED.pattern + r"[^*\n]*\*\*", text)):
+        return True
+    text = re.sub(NUMBERED.pattern + r"[^*?\n]*\?\*\*", " ", text)
     questions = [match[0] for match in SENTENCE.finditer(text)
                  if not ANSWERED.match(text, match.end()) and ADDRESSED.search(match[0].strip(" \t*_-"))]
     if any(not NUMBERED.search(question) for question in questions):
@@ -105,7 +107,8 @@ def read_question(url: str, deadline: float) -> dict:
     command = [sys.executable, str(API_HELPER), "call", "--method", "GET",
                f"/repos/{match[1]}/issues/comments/{match[3]}", "--operation", "github.read", "--read"]
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True,
-                          env={**os.environ, "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "1"}) as child:
+                          env={**os.environ, "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "1",
+                               "GITHUB_RETRY_DEADLINE_AT": str(deadline)}) as child:
         try:
             output, _ = child.communicate(timeout=max(0, deadline - time.time()))
         except subprocess.TimeoutExpired:
@@ -148,11 +151,14 @@ def registered_records_cover(message: str) -> bool:
             source = read_question(url, deadline)
             if source["author"].casefold() not in trusted:
                 continue
-            registered_ids.add(question_record.read_record(source)["question_id"])
+            try:
+                registered_ids.add(question_record.read_record(source)["question_id"])
+            except ValueError:
+                continue
             if requested_ids <= registered_ids:
                 return True
         return False
-    except (OSError, ValueError, KeyError, TypeError, ImportError, AttributeError, subprocess.SubprocessError):
+    except Exception:
         return False
 
 
