@@ -1918,6 +1918,11 @@ def test_operation_marker_is_hidden_and_detectable() -> None:
     assert _api.operation_marker_comment("a" * 32) in body
     assert _api.body_has_operation_marker(body, "a" * 32) is True
     assert _api.body_has_operation_marker(body, "b" * 32) is False
+    legacy = "<!-- github-skill-operation:" + "a" * 32 + " -->"
+    assert _api.body_has_operation_marker(legacy, "a" * 32)
+    old_version = "<!-- github-skill-operation:" + "a" * 32 + " catalog=" + "b" * 40 + " updater=fail -->"
+    assert _api.body_has_operation_marker(old_version, "a" * 32)
+    assert not _api.body_has_operation_marker(old_version, "a" * 31)
 
 
 def test_aggregate_retry_summaries_prefers_write_certainty() -> None:

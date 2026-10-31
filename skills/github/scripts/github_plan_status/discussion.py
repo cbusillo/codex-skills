@@ -77,7 +77,7 @@ def records(text: str) -> list[dict[str, str]]:
 
 
 def without_operation_marker(text: str) -> str:
-    return re.sub(r"\n\s*<!-- github-skill-operation:[0-9a-f]+ -->\s*$", "", text).rstrip()
+    return re.sub(r"\n\s*<!-- github-skill-operation:[0-9a-f]+(?: [^<>\r\n]*)? -->\s*$", "", text).rstrip()
 
 
 def released_claim_id(text: str) -> int | None:

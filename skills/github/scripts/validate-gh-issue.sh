@@ -93,7 +93,7 @@ assert actual.startswith(expected), (expected, actual)
 suffix = actual[len(expected):]
 separator = "" if expected.endswith("\n") else "\n"
 assert re.fullmatch(
-    rf"{re.escape(separator)}\n<!-- github-skill-operation:[0-9a-f]{{32}} -->\n",
+    rf"{re.escape(separator)}\n<!-- github-skill-operation:[0-9a-f]{{32}}(?: [^<>\r\n]*)? -->\n",
     suffix,
 ), suffix
 PY
@@ -1227,7 +1227,7 @@ create = next(
 payload = json.loads(create.split(" | ", 1)[1])
 assert payload["title"] == "Issue title", payload
 assert payload["body"].startswith("Body with `literal markdown` and $(do-not-run).\n"), payload
-assert re.search(r"<!-- github-skill-operation:[0-9a-f]{32} -->", payload["body"]), payload
+assert re.search(r"<!-- github-skill-operation:[0-9a-f]{32}(?: [^<>\r\n]*)? -->", payload["body"]), payload
 assert payload["labels"] == ["plan"], payload
 assert payload["assignees"] == ["fixture-automation"], payload
 assert payload["milestone"] == 7, payload
