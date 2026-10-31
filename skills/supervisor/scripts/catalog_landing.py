@@ -34,6 +34,7 @@ from check_operation import (
 from codex_session_proxy import read_launch_receipt
 from session_closeout import explicit_session, require
 from session_record import (
+    TranscriptChanged,
     load_ledger,
     read_jsonl,
     session_status,
@@ -47,7 +48,7 @@ def observe(entry: dict, landing: str, *, after_size: int = 0, final: bool = Fal
     while True:
         try:
             status = session_status(entry)
-        except FileNotFoundError:
+        except (FileNotFoundError, TranscriptChanged):
             status = {"state": "starting"}
         if status["state"] == "turn_ended" and status["size"] > after_size:
             require(
@@ -457,7 +458,7 @@ def require_supervisor_identity(config: dict) -> None:
             "identity", "catalog closeout requires supervisor_session")
 
 
-def poll(config: dict, evidence: Path, *, resume_failed: bool = False, supersede_failed: bool = False) -> dict:
+def poll(config: dict, evidence: Path, *, supersede_failed: bool = False) -> dict:
     require_supervisor_identity(config)
     source = Path(config["source_worktree"])
     state_path = evidence / "cursor.json"
@@ -496,9 +497,11 @@ def poll(config: dict, evidence: Path, *, resume_failed: bool = False, supersede
             current["landing_sha"] = landing
             result_path = operation.evidence / "result.json"
             saved: dict = json.loads(result_path.read_text()) if result_path.exists() else {}
-            if saved and (saved["ok"] or not resume_failed):
+            if saved and saved["ok"]:
                 result = saved
             else:
+                if saved:
+                    post_result(current, operation, saved)
                 reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
                 current["pr"] = landing_pull(reader, config["repo"], landing)
                 skip_smoke = documentation_only(source, landings)
@@ -525,7 +528,7 @@ def main() -> int:
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--poll", action="store_true", help="check new default-branch landings through the existing service runner")
     recovery = parser.add_mutually_exclusive_group()
-    recovery.add_argument("--resume-failed", action="store_true", help="resume reconciled verification with its existing journal")
+    recovery.add_argument("--resume-failed", action="store_true", help="compatibility option; polling resumes the existing journal")
     recovery.add_argument("--supersede-failed", action="store_true", help="start fresh only after exact old smoke sessions closed normally")
     args = parser.parse_args()
     if (args.resume_failed or args.supersede_failed) and not args.poll:
@@ -536,7 +539,7 @@ def main() -> int:
         config = json.loads(args.config.read_text())
         require_supervisor_identity(config)
         if args.poll:
-            result = poll(config, args.evidence, resume_failed=args.resume_failed, supersede_failed=args.supersede_failed)
+            result = poll(config, args.evidence, supersede_failed=args.supersede_failed)
             print(json.dumps(result, separators=(",", ":")))
             return int(not result["ok"])
         identity = config["landing_sha"]
