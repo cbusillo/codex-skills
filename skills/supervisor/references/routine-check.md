@@ -4,7 +4,7 @@ Use this for the existing ~23-minute check and immediate notices: established
 readers and one named normal closeout within the run's scope need no reload.
 Read the full skill at takeover; load owning skills/sections for rare events.
 Keep absolute pointers to the private ledger, one recovery note, reader state,
-handoff, question queue and latest landing receipt. Keep no copied rules,
+handoff and question queue. Keep no copied rules,
 decisions, statuses, board contents or narrative; open linked records for action.
 
 1. Read the recovery note and reconcile pending local actions at their source.
@@ -37,10 +37,7 @@ decisions, statuses, board contents or narrative; open linked records for action
    first failed gate; inspect private details on failure and reuse its evidence.
    Never replay uncertain mutations with another directory. Nonempty input,
    prompts and interrupted sources use [shutdown/recovery](helpers.md#finished-session-shutdown-stages).
-5. Catch up merged catalog PRs against the latest verification link, including
-   service-led landings. Use [catalog landing verification](helpers.md#catalog-landing-verification)
-   for an unverified SHA; retain earlier missed-SHA gaps explicitly.
-6. Staff through current global `gh-plan.py --repo OWNER/direction next`, active child records and complete
+5. Staff through current global `gh-plan.py --repo OWNER/direction next`, active child records and complete
    claim coverage under the overall Order and existing capacity/PR limits.
    Reuse that output for [planning intake](../../github-plan/SKILL.md#triage-incoming-reports);
    the unanswered-comment radar alone does not track unfinished requests.

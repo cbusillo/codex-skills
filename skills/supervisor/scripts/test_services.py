@@ -80,9 +80,12 @@ class ServicesTests(unittest.TestCase):
     def test_running_service_and_uv_child_leave_shared_cache_prunable(self):
         self.assert_service_cache_prunable([])
 
-    def test_optional_idle_job_uses_existing_runner_and_preserves_failure_stop(self) -> None:
-        name = services.IDLE_SERVICES[0]
-        self.data["services"][name] = dict(self.data["services"]["foreign"])
+    def test_optional_catalog_job_uses_existing_runner_and_preserves_failure_stop(self) -> None:
+        name = services.OPTIONAL_SERVICES[-1]
+        self.data["services"] = {name: dict(self.data["services"]["foreign"])}
+        sender = self.root / "sender.py"
+        sender.write_text("from pathlib import Path\nimport sys\np=Path('notices.txt')\np.write_text((p.read_text() if p.exists() else '') + 'delivery\\n')\nsys.stdin.read()\n")
+        self.data["services"][name]["failure_argv"] = [sys.executable, str(sender)]
         self.fixture.write_text("raise SystemExit(4)\n")
         self.save()
         output = services.render(self.config, Path(__file__).resolve().parents[3], self.root / "jobs")
@@ -90,11 +93,45 @@ class ServicesTests(unittest.TestCase):
             job = plistlib.load(stream)
         result = subprocess.run(job["ProgramArguments"], capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(len((self.root / "notices.txt").read_text().splitlines()), 1)
         self.assertTrue(services.reconciliation_marker(self.config, name).exists())
         again = subprocess.run(job["ProgramArguments"], capture_output=True, text=True, timeout=15)
         self.assertEqual(again.returncode, 1)
         events = [json.loads(line) for line in again.stdout.splitlines()]
         self.assertFalse(any(event["event"] == "started" for event in events))
+        self.assertEqual(len((self.root / "notices.txt").read_text().splitlines()), 1)
+        cleared = subprocess.run([sys.executable, str(Path(__file__).with_name("services.py")), "clear", "--config", str(self.config),
+                                  "--service", name], capture_output=True, text=True, timeout=5)
+        self.assertEqual(cleared.returncode, 0, cleared.stderr)
+        subprocess.run(job["ProgramArguments"], cwd=job["WorkingDirectory"], capture_output=True, timeout=15)
+        self.assertEqual(len((self.root / "notices.txt").read_text().splitlines()), 2)
+
+    def test_stale_marker_alerts_once_and_uncertain_notification_never_replays(self) -> None:
+        name = "foreign"
+        settings = self.data["services"][name]
+        settings["failure_argv"] = ["/existing-sender"]
+        self.save()
+        marker = services.reconciliation_marker(self.config, name)
+        marker.touch()
+        with patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("sender", 120)) as sender:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                services.notify_failure(settings, marker, name)
+            services.notify_failure(settings, marker, name)
+            self.assertEqual(sender.call_count, 1)
+            self.assertEqual(services.main(["clear", "--config", str(self.config), "--service", name]), 0)
+            self.assertFalse(marker.exists())
+            self.assertEqual(sender.call_count, 1)
+            self.assertTrue(any(json.loads(path.read_text()).get("complete") is False for path in self.root.glob("*.json")))
+
+    def test_runner_alerts_on_stale_marker_without_restarting_child(self) -> None:
+        self.fixture.write_text("raise SystemExit(0)\n")
+        self.save()
+        marker = services.reconciliation_marker(self.config, "foreign")
+        marker.touch()
+        with patch.object(services, "notify_failure") as notify, patch.object(services, "supervise") as supervise:
+            self.assertEqual(services.main(["run", "--config", str(self.config), "--service", "foreign"]), 1)
+            notify.assert_called_once()
+            supervise.assert_not_called()
 
     def test_uv_child_with_existing_cache_flag_still_runs_and_allows_pruning(self):
         self.assert_service_cache_prunable(["--no-cache"])
