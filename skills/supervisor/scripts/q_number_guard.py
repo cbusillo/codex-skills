@@ -11,10 +11,14 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Mapping
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 NUMBERED = re.compile(r"[*][*]Q[0-9]{3,}\b")
 # Quoted material repeats old questions; only the reply's own words count. Only a
@@ -47,6 +51,7 @@ REASON = (
     "allocate one with `uv run <direction-skill-dir>/scripts/question_id.py next` and repeat "
     "the reply with it. If the reply asks him nothing, end the turn again unchanged."
 )
+LOOKUP_TIMEOUT = 8
 
 
 def asks_director(text: str) -> bool:
@@ -66,8 +71,68 @@ def missing_context(message: str) -> str | None:
         return REASON if has_context else f"{REASON} {director_question_rule()}"
     if has_context:
         return None
+    if not has_unnumbered_ask(text) and registered_records_cover(text):
+        return None
     return (f"{director_question_rule()} "
             "Repeat the reply. If the reply asks nothing, end the turn again unchanged.")
+
+
+def has_unnumbered_ask(text: str) -> bool:
+    questions = [match[0] for match in SENTENCE.finditer(text)
+                 if not ANSWERED.match(text, match.end()) and ADDRESSED.search(match[0].strip(" \t*_-"))]
+    if any(not NUMBERED.search(question) for question in questions):
+        return True
+    for ask in ASK.finditer(text):
+        if not NEGATED.search(text, endpos=ask.start()):
+            line = text[text.rfind("\n", 0, ask.start()) + 1:text.find("\n", ask.end()) if "\n" in text[ask.end():] else len(text)]
+            if not NUMBERED.search(line):
+                return True
+    return False
+
+
+def registered_records_cover(text: str) -> bool:
+    try:
+        import question_record
+
+        queue = question_record.question_id.configured_queue()
+        if not queue:
+            return False
+        deadline = time.monotonic() + LOOKUP_TIMEOUT
+        discussions = {}
+
+        def fetch(item: str) -> list[dict]:
+            if item in discussions:
+                return discussions[item]
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("question lookup timed out")
+            discussions[item] = question_record.delivery.oq.fetch(item, timeout=remaining)
+            return discussions[item]
+
+        comments = fetch(queue)
+        owner = queue.split("/", 1)[0]
+        trusted = {
+            owner.casefold(),
+            *(author.casefold() for author in question_record.delivery.oq.default_decision_authors()),
+        }
+        registrations = question_record.delivery.records(comments, trusted)
+        registered_urls = dict.fromkeys(row["question_url"] for row in registrations if row["event"] == "registered")
+        storage = question_record.GitHubComments(fetch)
+        requested_ids = {match[0].strip("*") for match in NUMBERED.finditer(text)}
+        registered_ids = set()
+        for url in reversed(registered_urls):
+            try:
+                source = storage.read(url)
+                if source["author"].casefold() not in trusted:
+                    continue
+                registered_ids.add(question_record.read_record(source)["question_id"])
+            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+                continue
+            if requested_ids <= registered_ids:
+                return True
+        return False
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        return False
 
 
 def director_question_rule() -> str:
