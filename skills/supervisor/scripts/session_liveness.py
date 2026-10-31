@@ -509,6 +509,12 @@ def invocation(argv, *, bounded=True):
     return [operand] if operand is not None else [], "resume", operand
 
 
+def require_source_not_resumed(session: str | None, candidates: list[str]) -> None:
+    source = native_uuid(session) or session
+    if source in [native_uuid(value) or value for value in candidates]:
+        raise ValueError("source native session is visible in a resumed harness process")
+
+
 def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
                         independent_harness=None, replacement_owner=None, require_tty=False,
                         scope="session", rebooted_at=None):
@@ -534,7 +540,6 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
     same_tty = [row for row in rows if row[1] == tty]
     if require_tty and not same_tty:
         raise ValueError("no process rows match the terminal TTY; inventory is uncertain")
-    source = native_uuid(entry.get("session_id")) or entry.get("session_id")
     for pid, process_tty, command in rows:
         if pid in pids and rebooted_at is None:
             raise ValueError("source PID (possibly reused) or work on its TTY remains; preserve claims and verify native identity")
@@ -542,8 +547,7 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
         if scope == "session":
             argv, bounded = process_arguments(pid, command)
             resumed, command_kind, exact_resume = invocation(argv, bounded=bounded)
-            if source in [native_uuid(value) or value for value in resumed]:
-                raise ValueError("source native session is visible in a resumed harness process")
+            require_source_not_resumed(entry.get("session_id"), resumed)
             if entry.get("_inventory") and argv and harness_family(argv[0]) == entry.get("harness"):
                 if command_kind == "resume" and native_uuid(exact_resume) is None:
                     raise ValueError("Unresolved native process may own the source; preserve claims")

@@ -1222,8 +1222,8 @@ session's normal handoff and run `session_closeout.py` with the exact native ID
 and the original `<attempt>/<harness>-closeout` evidence directory. The saved
 `<harness>_source` gives its native ID, original ledger and generation. Once all
 old sessions have retired, run the poll command with `--supersede-failed`. It
-revalidates those exact closeouts through the existing helper, refuses changed
-generations or uncertain mutations, includes later landings, and preserves the
+validates those exact retired journals in process, refuses changed generations
+or uncertain mutations, includes later landings, and preserves the
 old attempt while starting fresh sessions. It can retry the same tip after an
 environment repair. It never skips missing merged-PR proof or rewritten history.
 
@@ -1241,8 +1241,23 @@ the directory suffix does not supply authority. A smoke that failed before
 creating an original closeout uses its resumed session's verified normal handoff.
 It requires the original process generation to have exited, the retained launch to match the
 original fingerprint, and the canonical closure to match the original native ID,
-account and transcript. It revalidates the exact retired generation's closeout
-before starting fresh verification. The old smoke remains a failed attempt;
+account and transcript. A completed journal's retirement marker proves its
+finish and terminal disappearance. Revalidation checks the matching canonical
+closure, handoff, absent active ledger entry and native transcript/action
+freshness; it never probes the retired PID or TTY, repeats GitHub claim/handoff
+checks, or rewrites retained closeout receipts. A resume command naming that
+native source on any terminal still stops. If retirement was interrupted before
+ledger removal, rerun normal closeout on the same evidence; it removes only the
+exact matching finished generation under the ledger lock. Incomplete journals
+still need normal closeout. A matching retirement marker proves quit/close
+effects even when an older journal retains a lost acknowledgement; revalidation
+preserves that journal and its failed receipt. Normal verified-closure retries
+accept a later local harness only with the same saved generation and bounded
+native arguments, after proving its birth follows the recorded exit cutoff.
+First-time and backfill proof and guarded remote-launch requirements remain.
+Freshness checks include configured transcript copies. Uncertain effects
+without that proof stop without replay.
+The old smoke remains a failed attempt;
 only the new batch may pass. No original fingerprint or receipt is replaced.
 
 After recovery succeeds, clear the runner's `catalog` marker and restart that

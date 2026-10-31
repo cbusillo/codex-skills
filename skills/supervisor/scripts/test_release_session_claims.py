@@ -421,14 +421,53 @@ class ReleaseTests(unittest.TestCase):
                             helper.verify_process_exit(self.entry, ended_at=ended)
                 self.assertEqual(shared.read_bytes(), before)
 
+    def test_closed_generation_retry_accepts_only_verified_new_local_work(self) -> None:
+        ended = datetime.fromisoformat(str(self.entry["ended_at"]))
+        shared = self.root / "saved-source.json"
+        for harness in ("codex", "claude"):
+            entry = {**self.entry, "harness": harness}
+            if harness == "claude":
+                self.transcript.write_text(json.dumps({"type": "assistant", "sessionId": SOURCE["session"],
+                    "timestamp": "2026-01-01T00:01:00Z", "message": {"content": [{"type": "text", "text": "Safe to exit: yes"}],
+                    "stop_reason": "end_turn"}}) + "\n")
+            for case in ("fresh", "flags", "missing", "changed", "duplicate", "resumed", "backfill",
+                         "old_birth", "unknown_birth", "unknown_argv", "source_resume", "unknown_resume", "unguarded_remote"):
+                with self.subTest(harness=harness, case=case):
+                    saved = {**entry, **({"pid": 999} if case == "changed" else {})}
+                    if case == "resumed":
+                        saved["resumed_at"] = "2026-01-01T00:03:00Z"
+                    shared.write_text(json.dumps([] if case == "missing" else [saved, saved] if case == "duplicate" else [saved]))
+                    shared.chmod(0o600)
+                    argv = [harness]
+                    if case == "flags":
+                        argv += ["--model", "fixture-model"]
+                    elif case in {"source_resume", "unknown_resume"}:
+                        argv += (["resume", SOURCE["session"] if case == "source_resume" else "--last"] if harness == "codex"
+                                 else ["--resume", SOURCE["session"]] if case == "source_resume" else ["--continue"])
+                    elif case == "unguarded_remote":
+                        argv += ["--remote", "unix:///unverified-client"]
+                    birth = ended if case == "old_birth" else ended + timedelta(seconds=22)
+                    with (patch_attribute(closure, "closed_log", return_value=shared),
+                          patch.object(helper, "inventory", return_value=[(456, entry["tty"], " ".join(argv))]),
+                          patch_attribute(closure, "guarded_launch_endpoint", return_value=None),
+                          patch_attribute(closure, "process_started_at", return_value=birth,
+                                       side_effect=ValueError("unknown birth") if case == "unknown_birth" else None),
+                          patch.object(helper.session_liveness, "process_arguments", return_value=(argv, case != "unknown_argv")),
+                          patch.object(helper.session_liveness, "process_absent", return_value=False),
+                          patch.object(helper.session_liveness, "replacement_tty_owner", return_value=None)):
+                        if case in {"fresh", "flags"}:
+                            self.assertTrue(helper.validate_closure(entry, "supervisor")["safe_verdict"])
+                        else:
+                            with self.assertRaises(ValueError):
+                                helper.validate_closure({**entry, **({"_backfill": True} if case == "backfill" else {})}, "supervisor")
+
     def test_finish_retry_never_excuses_recorded_pids_or_native_resume(self):
         self.entry["launch_pid"] = 124
         ended = helper.release.stamp(self.entry["ended_at"])
         for pid, tty, command in ((self.entry["pid"], "other-tty", "codex"),
                                   (self.entry["launch_pid"], "other-tty", "shell"),
                                   *((456, self.entry["tty"], command) for command in (
-                                      "codex resume source-session", "codex resume --last", "codex resume",
-                                      "codex"))):
+                                      "codex resume source-session", "codex resume --last", "codex resume"))):
             for born in (ended - timedelta(seconds=1), ended + timedelta(seconds=22)):
                 with self.subTest(pid=pid, command=command, born=born), \
                         patch.object(helper, "inventory", return_value=[(pid, tty, command)]), \
