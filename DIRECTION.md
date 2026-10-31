@@ -63,5 +63,4 @@ rule above, not a reason to drop inspection.
 
 ## Milestones
 
-None. Other Directors open an issue when the catalog fails them (Q1149,
-October 31, 2026).
+None.
