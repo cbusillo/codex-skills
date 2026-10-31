@@ -38,12 +38,16 @@ def opened(login="client", kind="User", created=SINCE):
             "html_url": "https://github.com/director/project/pull/50"}
 
 
-def feeds(*comment_pages, opened_items=(), repositories=()):
+def feeds(*comment_pages, opened_items=(), inline_items=(), reviews=(), repositories=()):
     pages = iter(comment_pages)
 
     def read(path, **_):
         if path == "/installation/repositories":
             return list(repositories)
+        if path.endswith("/pulls/comments"):
+            return list(inline_items)
+        if path.endswith("/reviews"):
+            return list(reviews)
         if not path.endswith("/issues/comments"):
             return list(opened_items)
         page = next(pages)
@@ -138,6 +142,17 @@ class WatchTests(unittest.TestCase):
         self.assertEqual([(n["author"], n["url"], n["excerpt"]) for n in notices],
                          [(author, "https://github.com/director/project/pull/50", "Add tvOS support")
                           for author in ("client", "client-agent[bot]")])
+
+    def test_sweep_recovers_inline_and_bare_review_on_an_old_pull(self):
+        reader = Mock()
+        inline = {**comment(), "html_url": f"https://github.com/{REPO}/pull/50#discussion_r42"}
+        review = {**comment(), "html_url": f"https://github.com/{REPO}/pull/50#pullrequestreview-43", "created_at": SINCE}
+        old_pull = {**opened(created="2026-10-08T00:00:00Z"), "number": 50, "pull_request": {}}
+        reader.paged_json.side_effect = feeds([], opened_items=[old_pull], inline_items=[inline], reviews=[review, {"body": ""}])
+        notices, errors, watermarks = self.scan(reader)
+        self.assertEqual(errors, [])
+        self.assertEqual({row["url"] for row in notices}, {inline["html_url"], review["html_url"]})
+        self.assertEqual(watermarks[REPO], STARTED)
 
     def test_worker_questions_surface_on_the_next_scan_without_ordinary_own_posts(self) -> None:
         reader = Mock()
@@ -274,8 +289,8 @@ class WatchTests(unittest.TestCase):
             first_since = reader.paged_json.call_args_list[1].kwargs["params"]["since"]
             self.assertLess(foreign_watch.timestamp(first_since), foreign_watch.timestamp(SINCE))
             read = {call.args[0] for call in reader.paged_json.call_args_list}
-            self.assertEqual(read, {"/installation/repositories", f"repos/{REPO}/issues/comments", f"repos/{REPO}/issues",
-                                    "repos/director/new/issues/comments", "repos/director/new/issues"})
+            self.assertEqual(read, {"/installation/repositories", f"repos/{REPO}/issues/comments", f"repos/{REPO}/issues", f"repos/{REPO}/pulls/comments",
+                                    "repos/director/new/issues/comments", "repos/director/new/issues", "repos/director/new/pulls/comments"})
             self.assertEqual([n["repository"] for n in json.loads(output.getvalue())["notices"]], ["director/new"])
 
     def test_expired_deadline_starts_no_read(self):

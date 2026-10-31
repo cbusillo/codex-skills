@@ -459,14 +459,15 @@ the existing App administration route and never changes grants implicitly.
 The source PRs do not establish that those subscriptions are active.
 
 The bounded authenticated subscription uses a dedicated database connection
-and heartbeat lines. The watcher saves pending identifiers in its existing
-private state and fetches canonical source before routing. Source versions
-share delivery receipts across the watcher and routine radar. Intake takes a
-short state lock; native delivery is serialized separately. Each writer
-updates only its own fields. A newer edit arriving during delivery remains
-pending. Deleted or malformed source hints leave the queue with diagnostic
-evidence; provider cooldowns survive restart. Nonretryable source-read refusals
-stop the service for its existing reconciliation procedure.
+and heartbeat lines. The watcher keeps only a bounded in-memory buffer of
+source identifiers and fetches canonical source before routing; loss or overflow
+is recovered by the existing sweep. Source versions share delivery receipts
+across the watcher and routine radar. Native delivery is serialized separately
+from short state writes. The shared GitHub reader owns provider cooldowns;
+a failed source does not pause unrelated events. Deleted sources are ignored,
+read failures produce diagnostics, and permission refusals stop the service
+for its existing reconciliation procedure. Normal stream renewal reconnects
+immediately; disconnected or failed streams back off.
 
 Both readers reuse the pending-review claim resolver and native notification
 routes: a live worker receives a pointer; otherwise the Supervisor answers or
@@ -476,10 +477,15 @@ in planning intake until their next action is done.
 
 Use the same `--foreign-state`, `--notify-config` and `--miss-issue` on
 `routine_check.py` for the existing radar's scheduled backstop, including
-inline reviews. No second collector or durable request store is introduced.
+inline reviews. The watch sweep also reads inline comments and nonempty review
+bodies on updated PRs, including old and closed PRs. No second collector or
+durable request store is introduced.
 Miss reports on the named repair issue contain random receipt identifiers;
-source links, authors and words stay in private state. Connection observations
-distinguish subscriber downtime from a notification absent while subscribed.
+source links, authors and words stay in private state. Recovery delivers
+immediately and waits two minutes before auditing a missing event receipt;
+a late matching event cancels that audit. Audit maintenance runs even after
+a message leaves the attention report. The report records subscriber state
+at backstop observation, not an inferred state when GitHub published it.
 Activation catch-up does not claim historical posts were missed events.
 Unobserved upstream hops remain UNKNOWN.
 Ordinary bot signals, Launchplane dispatches and Director questions keep their

@@ -34,8 +34,14 @@ def messages(args: Any) -> Iterator[dict]:
     except ValueError as error:
         raise ConfigurationError(str(error)) from error
     request = urllib.request.Request(
-        operator.build_url(settings["service_url"], operator.helper_command_path("attention-events-read")),
-        headers={"Accept": "application/x-ndjson", "Authorization": f"Bearer {settings['token']}"},
+        operator.build_url(
+            settings["service_url"],
+            operator.helper_command_path("attention-events-read"),
+        ),
+        headers={
+            "Accept": "application/x-ndjson",
+            "Authorization": f"Bearer {settings['token']}",
+        },
     )
     try:
         with operator.safe_urlopen(request, timeout=20) as response:

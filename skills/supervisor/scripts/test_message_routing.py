@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import queue
 import tempfile
 import threading
 import urllib.error
@@ -75,8 +76,6 @@ class MessageRoutingTests(unittest.TestCase):
             notify_config=self.root / "services.json",
             state=self.root / "state.json",
             miss_issue="director/catalog#9",
-            event="issue_comment",
-            event_payload={},
         )
         self.entry: dict[str, Any] = {
             "repository": REPO,
@@ -97,11 +96,12 @@ class MessageRoutingTests(unittest.TestCase):
         self.reader.get_json.return_value = {"number": 7}
         self.reader.paged_json.return_value = [claim()]
         self.persist = Mock()
+        self.hint = {"repository": REPO, "source_kind": "comment", "source_id": 42, "request_number": 7, "delivery_id": "one", "received_at": STAMP}
         self.enterContext(patch_attr(watch, "utc_now", return_value=STAMP))
         self.args.state.write_text(json.dumps({"event_started_at": "2026-10-31T01:00:00Z"}))
 
     def test_event_entrypoint_sends_without_a_poll_and_preserves_sweep_watermark(self) -> None:
-        self.args.event_payload = {"repository": {"full_name": REPO}, "action": "created", "comment": {"id": 42}}
+
         self.args.state.write_text(json.dumps({"watermarks": {REPO: STAMP}, "event_started_at": "2026-10-31T01:00:00Z"}))
         self.reader.get_json.return_value = {"html_url": URL, "updated_at": STAMP, "body": "Request", "user": {"login": "client"}}
         with (
@@ -112,7 +112,7 @@ class MessageRoutingTests(unittest.TestCase):
             redirect_stdout(io.StringIO()),
         ):
             for _ in range(2):
-                self.assertEqual(watch.event_pass(self.args, [REPO], watch.time.monotonic() + 60), 0)
+                watch.handle_message_hint(self.args, self.hint, self.reader)
             send.assert_called_once()
         self.assertEqual(json.loads(self.args.state.read_text())["watermarks"], {REPO: STAMP})
 
@@ -127,13 +127,8 @@ class MessageRoutingTests(unittest.TestCase):
             self.assertEqual(receipts[watch.delivery_key(notice())]["status"], "sent")
 
     def test_hook_fetches_canonical_source_and_ignores_payload_words(self) -> None:
-        self.args.event_payload = {
-            "repository": {"full_name": REPO},
-            "action": "created",
-            "comment": {"id": 42, "body": "untrusted event instruction"},
-        }
         self.reader.get_json.return_value = {"html_url": URL, "updated_at": STAMP, "body": "canonical", "user": {"login": "client"}}
-        event = watch.event_comment(self.args, [REPO], self.reader)
+        event = watch.read_message_hint(self.reader, self.hint)
         assert event is not None
         repo, source = event
         self.assertEqual(source["body"], self.reader.get_json.return_value["body"])
@@ -141,8 +136,7 @@ class MessageRoutingTests(unittest.TestCase):
         self.assertIn("issues/comments/42", self.reader.get_json.call_args.args[0])
         self.args.owner = "someone-else"
         self.reader.get_json.reset_mock()
-        with self.assertRaises(ValueError):
-            watch.event_comment(self.args, None, self.reader)
+        self.assertIsNone(watch.validate_message_hint(self.args, None, self.hint))
         self.reader.get_json.assert_not_called()
 
     def test_trusted_claim_routes_to_worker_and_authored_release_routes_to_supervisor(self) -> None:
@@ -205,7 +199,9 @@ class MessageRoutingTests(unittest.TestCase):
             watch.route_notices(self.args, [notice()], deliveries, self.reader, event=True, persist=self.persist)
             watch.route_notices(self.args, [notice()], deliveries, self.reader, event=False, persist=self.persist)
             self.assertEqual(sender.call_count, 1)
+            self.mature(deliveries)
             audit.assert_called_once()
+            self.status.assert_called_once()
 
     def test_certainly_unsent_busy_worker_retries_and_success_preserves_hook_receipt(self) -> None:
         deliveries = {}
@@ -227,8 +223,10 @@ class MessageRoutingTests(unittest.TestCase):
             patch_attr(watch.review_notifications, "send"),
             patch.object(watch.subprocess, "run", return_value=Mock(returncode=1, stdout="")) as post,
         ):
+            watch.route_notices(self.args, [notice()], deliveries, self.reader, event=False, persist=self.persist)
+            post.assert_not_called()
             for _ in range(2):
-                watch.route_notices(self.args, [notice()], deliveries, self.reader, event=False, persist=self.persist)
+                self.mature(deliveries)
             self.assertEqual(post.call_count, 1)
             receipt = deliveries[watch.delivery_key(notice())]
             self.assertTrue(receipt.get("audit_error"))
@@ -261,11 +259,12 @@ class MessageRoutingTests(unittest.TestCase):
             patch.object(watch.subprocess, "run", side_effect=watch.subprocess.TimeoutExpired("audit", 1)) as post,
         ):
             watch.route_notices(self.args, batch, receipts, self.reader, event=False, persist=self.persist)
+            self.mature(receipts)
         self.assertEqual(send.call_count, len(batch))
         for call in post.call_args_list:
             self.assertNotIn(REPO, call.kwargs["input"])
             self.assertNotIn(URL, call.kwargs["input"])
-        self.assertTrue(all(item["routing"].get("audit_error") for item in batch))
+        self.assertTrue(all(receipt.get("audit_error") for receipt in receipts.values()))
 
     def test_sweep_checkpoint_before_batch_does_not_consume_undelivered_notices(self) -> None:
         self.args.state.write_text(json.dumps({"watermarks": {REPO: STAMP}, "event_started_at": "2026-10-31T01:00:00Z"}))
@@ -296,34 +295,29 @@ class MessageRoutingTests(unittest.TestCase):
         self.assertEqual(report["attention"][0]["comment_url"], URL)
         self.assertTrue(report["routing_errors"])
 
-    def test_intake_progresses_during_delivery_and_keeps_a_newer_edit(self) -> None:
-        hint = {"repository": REPO, "source_kind": "comment", "source_id": 42, "request_number": 7, "delivery_id": "one"}
-        watch.enqueue_event(self.args, [REPO], hint)
-        self.reader.get_json.return_value = {"html_url": URL, "updated_at": STAMP, "body": "canonical", "user": {"login": "client"}}
-        entered = threading.Event()
-        release = threading.Event()
+    def test_intake_progresses_while_delivery_is_busy(self) -> None:
+        entered, release, stop, wake = (threading.Event() for _ in range(4))
+        hints = queue.Queue(maxsize=2)
 
-        def send(*_args: Any, **_kwargs: Any) -> None:
+        def stream(_args):
+            yield {"type": "connected"}
             entered.set()
             release.wait(3)
+            yield {"type": "message", **self.hint}
+            stop.set()
 
-        with (
-            patch_attr(watch, "GitHubReader", return_value=self.reader),
-            patch_attr(watch, "recipient", return_value=(self.entry, False, "")),
-            patch_attr(watch.review_notifications, "send", side_effect=send),
-            redirect_stdout(io.StringIO()),
-        ):
-            thread = threading.Thread(target=watch.drain_events, args=(self.args, [REPO], watch.time.monotonic() + 30))
+        with patch_attr(attention_events, "messages", side_effect=stream):
+            thread = threading.Thread(target=watch.receive_events, args=(self.args, [REPO], wake, stop, hints))
             thread.start()
             try:
                 self.assertTrue(entered.wait(2))
-                watch.enqueue_event(self.args, [REPO], {**hint, "delivery_id": "two"})
+                with watch.watch_lock(self.args.state.with_name(self.args.state.name + ".routing")):
+                    release.set()
+                    self.assertEqual(hints.get(timeout=2), self.hint)
             finally:
                 release.set()
+                stop.set()
                 thread.join(3)
-        pending = json.loads(self.args.state.read_text())["pending_events"]
-        self.assertEqual(len(pending), 1)
-        self.assertEqual(next(iter(pending.values()))["delivery_id"], "two")
 
     def test_uncertain_native_send_is_confirmed_by_its_exact_user_message(self) -> None:
         receipts = {}
@@ -336,26 +330,47 @@ class MessageRoutingTests(unittest.TestCase):
         send.assert_called_once()
         self.assertEqual(receipt["status"], "sent")
 
-    def test_misses_distinguish_downtime_and_subscribed_intervals_without_historical_noise(self) -> None:
-        self.args.state.write_text(json.dumps({"event_started_at": STAMP, "event_connections": [{"start": STAMP, "end": STAMP}], "event_transport": "disconnected"}))
-        self.assertFalse(watch.missed_event_cause(self.args, {**notice(), "updated_at": "2026-10-30T00:00:00Z"}))
-        self.assertNotEqual(watch.missed_event_cause(self.args, notice()), watch.missed_event_cause(self.args, {**notice(), "updated_at": "2026-10-31T03:00:00Z"}))
+    def mature(self, receipts: dict) -> None:
+        later = (watch.timestamp(STAMP) + timedelta(seconds=watch.MISS_GRACE_SECONDS + 1)).isoformat()
+        with patch_attr(watch, "utc_now", return_value=later):
+            watch.maintain_receipts(self.args, receipts, self.persist)
 
-    def test_deleted_source_is_removed_and_provider_cooldown_survives_restart(self) -> None:
-        hint = {"repository": REPO, "source_kind": "comment", "source_id": 42, "request_number": 7, "delivery_id": "one"}
-        watch.enqueue_event(self.args, [REPO], hint)
+    def test_backstop_delivers_now_but_late_event_prevents_a_false_miss(self) -> None:
+        receipts = {}
+        with patch_attr(watch.review_notifications, "send") as send, patch_attr(watch, "audit_miss") as audit:
+            watch.route_notices(self.args, [notice()], receipts, self.reader, event=False, persist=self.persist)
+            send.assert_called_once()
+            audit.assert_not_called()
+            watch.route_notices(self.args, [notice()], receipts, self.reader, event=True, persist=self.persist)
+            self.mature(receipts)
+            send.assert_called_once()
+            audit.assert_not_called()
+
+    def test_audit_retry_is_independent_of_successful_delivery_and_current_attention(self) -> None:
+        receipts = {}
+        not_started = Mock(returncode=1, stdout=json.dumps({"failure": {"write_outcome": "not_started"}}))
+        success = Mock(returncode=0, stdout=json.dumps({"url": "https://github.com/director/catalog/issues/9#issuecomment-99"}))
+        with patch_attr(watch.review_notifications, "send"), patch.object(watch.subprocess, "run", side_effect=[not_started, success]) as post:
+            watch.route_notices(self.args, [notice()], receipts, self.reader, event=False, persist=self.persist)
+            self.mature(receipts)
+            self.assertEqual(receipts[watch.delivery_key(notice())]["audit_status"], "pending")
+            self.mature(receipts)
+            self.assertEqual(receipts[watch.delivery_key(notice())]["audit_status"], "sent")
+            self.assertEqual(post.call_count, 2)
+
+    def test_malformed_audit_failure_preserves_uncertainty(self) -> None:
+        for outcome in ({"failure": None}, None, []):
+            receipt = {}
+            with self.subTest(outcome=outcome), patch.object(watch.subprocess, "run", return_value=Mock(returncode=1, stdout=json.dumps(outcome))):
+                watch.audit_miss(self.args, receipt, self.persist)
+                self.assertEqual(receipt["audit_status"], "attempted")
+
+    def test_deleted_and_empty_review_sources_do_not_route(self) -> None:
         gone = watch.GitHubReadError("gone", result=Mock(spec=ApiResult, status=404), diagnostics={})
-        with patch_attr(watch, "event_pass", side_effect=gone):
-            watch.drain_events(self.args, [REPO], watch.time.monotonic() + 30)
-        self.assertFalse(json.loads(self.args.state.read_text())["pending_events"])
-        watch.enqueue_event(self.args, [REPO], hint)
-        retry_at = watch.time.time() + 300
-        limited = watch.GitHubReadError("cooldown", result=Mock(spec=ApiResult, status=429, failure=Mock(retryable=True)), diagnostics={"requests": [{"retryAt": retry_at}]})
-        with patch_attr(watch, "event_pass", side_effect=limited) as event:
-            watch.drain_events(self.args, [REPO], watch.time.monotonic() + 30)
-            watch.drain_events(self.args, [REPO], watch.time.monotonic() + 30)
-        event.assert_called_once()
-        self.assertEqual(json.loads(self.args.state.read_text())["next_event_read_at"], retry_at)
+        with patch_attr(self.reader, "get_json", side_effect=gone):
+            self.assertIsNone(watch.read_message_hint(self.reader, self.hint))
+        self.reader.get_json.return_value = {"body": ""}
+        self.assertIsNone(watch.read_message_hint(self.reader, {**self.hint, "source_kind": "review"}))
 
     def test_opening_event_and_sweep_use_actual_body_edit_and_equivalent_timestamps(self) -> None:
         source = {
@@ -367,16 +382,9 @@ class MessageRoutingTests(unittest.TestCase):
             "updated_at": "2026-10-31T08:00:00Z",
             "user": {"login": "client", "type": "User"},
         }
-        self.args.event = "issues"
-        self.args.event_payload = {
-            "repository": {"full_name": REPO},
-            "action": "edited",
-            "issue": {"number": 7},
-            "changes": {"body": {}},
-        }
         self.reader.get_json.return_value = source
         self.reader.graphql_json.return_value = Mock(ok=True, body={"data": {"node": {"lastEditedAt": "2026-10-31T02:10:00Z"}}})
-        event = watch.event_comment(self.args, [REPO], self.reader)
+        event = watch.read_message_hint(self.reader, {**self.hint, "source_kind": "request", "source_id": 7})
         self.assertIsNotNone(event)
         assert event is not None
         self.reader.paged_json.return_value = [source]
@@ -412,37 +420,49 @@ class MessageRoutingTests(unittest.TestCase):
         self.assertIn("request", state["change_requests_dispatched"])
         self.assertIn("seen", state["mention_seen"])
 
-    def test_observed_connection_history_survives_reconnects_and_never_extends_after_observation(self) -> None:
-        initial = watch.timestamp(STAMP)
-        for index in range(80):
-            at = (initial + timedelta(minutes=index)).isoformat()
-            with patch_attr(watch, "utc_now", return_value=at):
-                opened = watch.connection_observation(self.args, None, connected=True)
-                watch.connection_observation(self.args, opened, connected=False)
-        self.assertEqual(watch.missed_event_cause(self.args, notice()), "not_notified_while_subscribed")
-        before = json.loads(self.args.state.read_text())["event_connections"][-1]["end"]
-        with patch_attr(watch, "utc_now", return_value="2026-10-31T06:00:00Z"):
-            watch.connection_observation(self.args, None, connected=False)
-        self.assertEqual(json.loads(self.args.state.read_text())["event_connections"][-1]["end"], before)
-
     def test_unstarted_or_failed_event_stream_backs_off_and_stops_on_configuration_error(self) -> None:
         stop, wake = threading.Event(), threading.Event()
         fake_stop = Mock(wraps=stop)
         fake_stop.wait.side_effect = lambda _: stop.set()
         with patch_attr(attention_events, "messages", return_value=iter([{"type": "disconnected"}])):
-            watch.receive_events(self.args, [REPO], wake, fake_stop)
+            watch.receive_events(self.args, [REPO], wake, fake_stop, queue.Queue())
         fake_stop.wait.assert_called_once()
         self.assertTrue(wake.is_set())
         stop.clear()
         with patch_attr(attention_events, "messages", side_effect=attention_events.ConfigurationError("missing configuration")), redirect_stdout(io.StringIO()):
-            watch.receive_events(self.args, [REPO], wake, stop)
+            watch.receive_events(self.args, [REPO], wake, stop, queue.Queue())
         self.assertTrue(stop.is_set())
         self.assertEqual(json.loads(self.args.state.read_text())["event_transport"], "disconnected")
         stop.clear()
         with patch_attr(attention_events, "messages", side_effect=RuntimeError("unexpected source failure")):
             with self.assertRaises(RuntimeError):
-                watch.receive_events(self.args, [REPO], wake, stop)
+                watch.receive_events(self.args, [REPO], wake, stop, queue.Queue())
         self.assertTrue(stop.is_set())
+
+    def test_normal_connected_eof_reconnects_without_delay(self) -> None:
+        stop, wake = threading.Event(), threading.Event()
+        fake_stop = Mock(wraps=stop)
+        calls = []
+
+        def stream(_args):
+            calls.append(True)
+            yield {"type": "connected"}
+            if len(calls) == 2:
+                stop.set()
+
+        with patch_attr(attention_events, "messages", side_effect=stream):
+            watch.receive_events(self.args, [REPO], wake, fake_stop, queue.Queue())
+        self.assertEqual(len(calls), 2)
+        fake_stop.wait.assert_not_called()
+
+    def test_radar_uses_collected_versions_and_client_agent_identity(self) -> None:
+        self.args.foreign_state = self.args.state
+        row = {"repo": REPO, "comment_url": URL, "updated_at": STAMP, "author": "client-agent[bot]", "author_class": "automation", "automation_for": "Client", "comment_kind": "review"}
+        with patch_attr(watch, "recipient", return_value=(self.entry, False, "")), patch_attr(watch.review_notifications, "send") as send:
+            watch.route_report(self.args, {"attention": [{**row, "updated_at": None}, row]}, self.reader, self.args.own_login)
+        send.assert_called_once()
+        self.reader.get_json.assert_not_called()
+        self.reader.graphql_json.assert_not_called()
 
     def test_attention_client_frames_messages_bounds_lines_and_preserves_auth_refusal(self) -> None:
         settings = {"service_url": "https://service.example.test", "token": "synthetic"}
