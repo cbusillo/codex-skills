@@ -20,6 +20,8 @@ decisions, statuses, board contents or narrative; open linked records for action
    owning session for an answer. Use the existing
    [comment radar](../../github-work-rollup/SKILL.md#external-comment-radar)
    to retain unanswered comments; a watch watermark proves collection only.
+   Also check open requests under [planning intake](../../github-plan/SKILL.md#triage-incoming-reports);
+   the unanswered-comment radar alone does not track unfinished work.
    Use
    `oq.py --owner OWNER --queue OWNER/direction#NUMBER --changes-state <question-state.json>`
    for the queue, and source anchors outside watcher coverage with their own

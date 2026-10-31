@@ -224,6 +224,31 @@ Searches, `index`, and global `next` repository discovery exclude archived repos
 by default. Add `--include-archived` to the command to include historical work.
 Explicit issue reads and linked dependency evidence remain available.
 
+## Triage Incoming Reports
+
+Within one check of a new bug report, Client request or imported feedback item,
+check current code, link duplicates and record the concrete next action on the
+original issue. Keep that issue as the work record; preserve the author's request
+under [issue ownership](../github/references/issue-templates.md).
+
+Label a reproduced defect within the agreed outcome into the configured planning
+queue on that issue and staff it in the overall DIRECTION Order and available
+capacity. Use [Create Or Update A Plan](#create-or-update-a-plan) and
+[Status Labels](#status-labels); no second ticket or Director intake step is
+needed. Outside-user bugs use the own-projects share; tooling still needs Order
+item 3 admission. Features, preferences and unclear reports get a clarifying
+question or investigation, not an invented build. Keep stop boundaries and
+Client release acceptance in force.
+
+A reply or acknowledgement never completes a request. Keep the original issue
+open with its next action until that action is done; link a duplicate to its
+open canonical work record. On each check, use `gh-plan.py search
+"is:issue is:open user:OWNER" --state open` alongside `next`, without a planning
+label, unanswered-comment or recent-activity filter, so acknowledged and
+untriaged requests remain visible. Follow incomplete search coverage before
+claiming the intake is clear. Record person/event waits through `wait`; a reply
+does not clear them.
+
 ## Choose Work
 
 Check known repository-wide Director holds before selection or implementation;
