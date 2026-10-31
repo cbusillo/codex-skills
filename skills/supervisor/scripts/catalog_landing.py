@@ -495,8 +495,11 @@ def require_closed_smokes(config: dict, operation: Operation) -> None:
         close_evidence, generation = superseded_closeout(operation, harness, source)
         closed = Operation(close_evidence, [source["ledger"], source["session_id"]])
         require(closed.state.get("generation") == generation, "supersede", "exact smoke generation changed")
-        validate_retired_closeout(argparse.Namespace(ledger=Path(source["ledger"]), session_id=source["session_id"],
-                                                     supervisor_session=config["supervisor_session"]), closed)
+        try:
+            validate_retired_closeout(argparse.Namespace(ledger=Path(source["ledger"]), session_id=source["session_id"],
+                                                         supervisor_session=config["supervisor_session"]), closed)
+        except ValueError as error:
+            raise GateFailed("supersede", str(error)) from error
 
 
 def require_supervisor_identity(config: dict) -> None:

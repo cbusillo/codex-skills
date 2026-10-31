@@ -132,7 +132,7 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
     entry["handoff_url"] = selected
 
 
-def validate_retired_closeout(args: argparse.Namespace, operation: Operation) -> None:
+def validate_retired_closeout(args: argparse.Namespace, operation: Operation, *, finish_retirement: bool = False) -> None:
     operation.gate = "retirement"
     generation = operation.state.get("generation")
     require(isinstance(generation, str) and bool(generation) and operation.state.get("retired_generation") == generation,
@@ -140,8 +140,6 @@ def validate_retired_closeout(args: argparse.Namespace, operation: Operation) ->
     require(all(step.get("complete") is True for step in operation.state["steps"].values()),
             "retirement", "closeout has an uncertain mutation")
     with closure.ownership(args.session_id, create=True):
-        require(not any(entry["session_id"] == args.session_id for entry in load_ledger(args.ledger)),
-                "retirement", "retired source is registered in the active ledger")
         saved = closure.source_records({args.session_id}).get(args.session_id)
         if not isinstance(saved, dict):
             raise GateFailed("retirement", "retired source has no canonical closure")
@@ -154,16 +152,25 @@ def validate_retired_closeout(args: argparse.Namespace, operation: Operation) ->
                 and handoff.get("session_id") == args.session_id
                 and getattr(args, "handoff_url", identity["handoff_url"]) in {None, identity["handoff_url"]},
                 "retirement", "canonical closure handoff differs from the completed journal")
-        ready(saved, args.supervisor_session)
-        release.validate_closure_state(saved, args.supervisor_session)
+        for pid, _tty, command in session_liveness.inventory():
+            argv, bounded = session_liveness.process_arguments(pid, command)
+            resumed, _kind, _exact = session_liveness.invocation(argv, bounded=bounded)
+            session_liveness.require_source_not_resumed(args.session_id, resumed)
+        status = release.validate_closure_state(saved, args.supervisor_session)
+        require(status["state"] == "turn_ended" and not status["background_tasks"], "verdict", "closed source has unfinished native work")
+        with closure.store_lock(args.ledger, create=True):
+            rows = iterm_tab.read_launch_ledger(args.ledger)
+            active = [normalize_ledger_entry(args.ledger, row) for row in rows if row.get("session_id") == args.session_id]
+            require(not active or finish_retirement and len(active) == 1 and release.closure_identity(active[0]) == identity,
+                    "retirement", "active source changed or needs normal closeout to finish ledger retirement")
+            if active:
+                save_state(args.ledger, [row for row in rows if row.get("session_id") != args.session_id])
 
 
 def closeout(args: argparse.Namespace, operation: Operation) -> None:
     if operation.state.get("retired_generation"):
-        validate_retired_closeout(args, operation)
+        validate_retired_closeout(args, operation, finish_retirement=True)
         return
-    require(all(step.get("complete") is True for step in operation.state["steps"].values()),
-            "identity", "previous mutation requires reconciliation; inspect evidence before any retry")
     entries = [entry for entry in load_ledger(args.ledger) if entry["session_id"] == args.session_id]
     require(len(entries) == 1, "identity", "native session must match exactly one ledger entry or verified retirement")
     entry = entries[0]
@@ -318,6 +325,10 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
             active_rows = iterm_tab.read_launch_ledger(args.ledger)
             active_matches = [normalize_ledger_entry(args.ledger, row) for row in active_rows if row.get("session_id") == args.session_id]
             require(active_matches == [entry], "retirement", "active source changed; preserve the ledger")
+            for gate in ("quit", "close"):
+                step = operation.state["steps"].get(gate)
+                if step and step.get("complete") is False:
+                    step.update(complete=True, result={"session_id": terminal_id, "process_exit_verified": True, "terminal_absent": True})
             operation.state["retired_generation"] = generation
             save_state(operation.path, operation.state)
             save_state(args.ledger, [row for row in active_rows if row.get("session_id") != args.session_id])

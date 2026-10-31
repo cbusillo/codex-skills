@@ -1245,8 +1245,13 @@ account and transcript. A completed journal's retirement marker proves its
 finish and terminal disappearance. Revalidation checks the matching canonical
 closure, handoff, absent active ledger entry and native transcript/action
 freshness; it never probes the retired PID or TTY, repeats GitHub claim/handoff
-checks, or rewrites retained closeout receipts. Incomplete journals still need
-normal closeout; uncertain mutations stop for reconciliation.
+checks, or rewrites retained closeout receipts. A resume command naming that
+native source on any terminal still stops. If retirement was interrupted before
+ledger removal, rerun normal closeout on the same evidence; it removes only the
+exact matching finished generation under the ledger lock. Incomplete journals
+still need normal closeout. A lost quit/close acknowledgement can be reconciled
+by verified process exit and terminal disappearance, preserving its failed
+receipt; uncertain effects without that proof stop without replay.
 The old smoke remains a failed attempt;
 only the new batch may pass. No original fingerprint or receipt is replaced.
 

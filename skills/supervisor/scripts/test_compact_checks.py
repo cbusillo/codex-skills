@@ -88,7 +88,7 @@ class OperationTests(unittest.TestCase):
             self.assertEqual(run.call_count, 1)
 
     def test_closeout_uses_native_shapes_and_retires_only_verified_closures(self) -> None:
-        for outcome in ("complete", "finish_refused", "uncertain_exit", "close_uncertain", "resumed", "draft_before_clear", "draft_after_idle", "turn_after_idle"):
+        for outcome in ("complete", "finish_refused", "uncertain_exit", "close_interrupted", "close_uncertain", "resumed", "draft_before_clear", "draft_after_idle", "turn_after_idle"):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 entry: dict[str, Any] = {"session_id": "native", "harness": "claude", "supervisor_owned": True,
@@ -135,6 +135,7 @@ class OperationTests(unittest.TestCase):
                             payload, code = {"status": "send_failed"}, 1
                     elif action == "close":
                         present = outcome == "close_uncertain"
+                        code = 1 if outcome == "close_interrupted" else code
                         if outcome == "resumed":
                             closed["resumed_at"] = "2026-01-01T00:01:00Z"
                     return subprocess.CompletedProcess(argv, code, json.dumps(payload), "")
@@ -165,20 +166,20 @@ class OperationTests(unittest.TestCase):
                         self.assertEqual(failure.exception.gate, "verdict" if outcome == "turn_after_idle" else "input")
                         self.assertFalse({"send", "finish", "close"}.intersection(calls))
                         self.assertEqual(json.loads(ledger.read_text()), [entry])
-                    elif outcome == "uncertain_exit":
+                    elif outcome in {"uncertain_exit", "close_interrupted"}:
                         with self.assertRaises(check_operation.GateFailed):
                             session_closeout.closeout(args, operation)
-                        with self.assertRaises(check_operation.GateFailed):
-                            session_closeout.closeout(args, check_operation.Operation(close_evidence, close_identity))
-                        self.assertEqual(json.loads(ledger.read_text()), [entry])
-                        self.assertFalse({"finish", "close"}.intersection(calls))
+                        failed_receipt = close_evidence / ("quit.json" if outcome == "uncertain_exit" else "close.json")
+                        preserved_receipt = failed_receipt.read_bytes()
+                        session_closeout.closeout(args, check_operation.Operation(close_evidence, close_identity))
+                        self.assertEqual(failed_receipt.read_bytes(), preserved_receipt)
                     elif outcome in {"finish_refused", "close_uncertain", "resumed"}:
                         with self.assertRaises(check_operation.GateFailed):
                             session_closeout.closeout(args, operation)
                         self.assertEqual(json.loads(ledger.read_text()), [entry])
                     else:
                         session_closeout.closeout(args, operation)
-                    if outcome == "complete":
+                    if outcome in {"complete", "uncertain_exit", "close_interrupted"}:
                         self.assertEqual(json.loads(ledger.read_text()), [])
                         self.assertEqual(calls.count("send"), 1)
                         calls.clear()
@@ -208,10 +209,10 @@ class OperationTests(unittest.TestCase):
                         self.assertNotIn("close", calls)
 
     def test_retired_smokes_reuse_completed_journals_without_process_or_network_probes(self) -> None:
-        for harness in ("claude", "codex"):
+        for harness, recovered in (("claude", False), ("codex", False), ("codex", True)):
             for failure in (None, "quit", "close", "generation", "retirement", "handoff", "resumed",
-                            "active", "missing", "new_activity", "native_action", "unverified_exit"):
-                with self.subTest(harness=harness, failure=failure), tempfile.TemporaryDirectory() as directory:
+                            "active", "changed_active", "missing", "new_activity", "native_action", "unverified_exit", "source_resume"):
+                with self.subTest(harness=harness, recovered=recovered, failure=failure), tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
                     ledger = root / "ledger.json"
                     ledger.write_text("[]")
@@ -230,11 +231,19 @@ class OperationTests(unittest.TestCase):
                               "pid": 8, "tty": "ttys003", "process_exit_verified": True, "ended_at": "2026-01-01T00:01:00Z",
                               "handoff_url": "https://github.com/owner/catalog/issues/1#issuecomment-2"}
                     parent = check_operation.Operation(root / "attempt", ["landing"])
-                    parent.state["steps"][harness + "_launch"] = {"complete": True}
-                    catalog_landing.record_smoke_source(parent, harness, closed, ledger)
+                    source = {**closed, "pid": 7, "tmux_session_id": "original-terminal"} if recovered else closed
+                    parent.state["steps"][harness + "_launch"] = {"complete": True, "result": {
+                        **source, "session_id": source["tmux_session_id"], "native_session_id": source["session_id"]}}
+                    catalog_landing.record_smoke_source(parent, harness, source, ledger)
                     identity = [str(ledger.resolve()), closed["session_id"]]
-                    operation = check_operation.Operation(parent.evidence / (harness + "-closeout"), identity)
-                    generation = parent.state["steps"][harness + "_source"]["generation"]
+                    if recovered:
+                        original = check_operation.Operation(parent.evidence / "codex-closeout", identity)
+                        original.state.update(generation=parent.state["steps"]["codex_source"]["generation"],
+                                              handoff={"url": source["handoff_url"]}, steps={"quit": {"complete": True}})
+                        check_changes.save_state(original.path, original.state)
+                    operation = check_operation.Operation(parent.evidence / (harness + "-closeout" + ("-recovery" if recovered else "")), identity)
+                    generation = check_changes.fingerprint({key: value for key, value in session_closeout.release.closure_identity(closed).items()
+                                                            if key != "handoff_url"})
                     operation.state.update(generation=generation, retired_generation=generation,
                                            handoff={"url": closed["handoff_url"], "session_id": closed["session_id"]},
                                            steps={"quit": {"complete": True, "result": {"session_id": "old-terminal", "sent": True}},
@@ -251,8 +260,8 @@ class OperationTests(unittest.TestCase):
                         closed["resumed_at"] = "2026-01-01T00:02:00Z"
                     elif failure == "unverified_exit":
                         closed["process_exit_verified"] = False
-                    elif failure == "active":
-                        ledger.write_text(json.dumps([closed]))
+                    elif failure in {"active", "changed_active"}:
+                        ledger.write_text(json.dumps([{**closed, **({"pid": 99} if failure == "changed_active" else {})}]))
                     elif failure == "new_activity":
                         with transcript.open("a") as stream:
                             stream.write(json.dumps({**records[-1], "timestamp": "2026-01-01T00:02:00Z"}) + "\n")
@@ -261,17 +270,30 @@ class OperationTests(unittest.TestCase):
                     args = argparse.Namespace(ledger=ledger, session_id="native", supervisor_session="controller", owner="owner")
                     config = {"ledger": str(ledger), "runtime_worktree": str(root), "repo": "owner/catalog", "supervisor_session": "controller"}
                     with (patch.object(subprocess, "run", side_effect=AssertionError("external commands forbidden")),
-                          patch.object(session_closeout.session_liveness, "inventory", side_effect=AssertionError("retired TTY probe forbidden")),
+                          patch.object(session_closeout.session_liveness, "inventory", return_value=[
+                              (8, "ttys003", harness), (9, "ttys004", harness + (" resume " if harness == "codex" else " --resume ")
+                                                       + ("native" if failure == "source_resume" else "other"))]),
+                          patch.object(session_closeout.session_liveness, "process_arguments",
+                                       side_effect=lambda _pid, command: (session_liveness.harness_arguments(command), True)),
                           patch.object(session_closeout.session_liveness, "process_absent", side_effect=AssertionError("retired PID probe forbidden")),
+                          patch.object(session_closeout.session_liveness, "process_started_at", side_effect=AssertionError("retired birth probe forbidden")),
+                          patch.object(session_closeout.session_liveness, "generation_ended", return_value=True),
                           patch.object(session_closeout.closure, "ownership", return_value=nullcontext()),
+                          patch.object(session_closeout.closure, "store_lock", side_effect=lambda *_, **__: nullcontext()),
                           patch.object(session_closeout.closure, "source_records", return_value={} if failure == "missing" else {"native": closed}),
                           patch.object(session_closeout.closure, "require_fresh_action_verdict",
                                        side_effect=ValueError("pending native action") if failure == "native_action" else None)):
                         if failure:
-                            with self.assertRaises(ValueError):
+                            with self.assertRaises(check_operation.GateFailed) as refusal:
                                 catalog_landing.require_closed_smokes(config, parent)
-                            with self.assertRaises(ValueError):
+                            self.assertEqual(refusal.exception.gate, "supersede")
+                            if failure == "active":
                                 session_closeout.closeout(args, operation)
+                                self.assertEqual(json.loads(ledger.read_text()), [])
+                                catalog_landing.require_closed_smokes(config, parent)
+                            else:
+                                with self.assertRaises(ValueError):
+                                    session_closeout.closeout(args, operation)
                         else:
                             catalog_landing.require_closed_smokes(config, parent)
                             session_closeout.closeout(args, operation)
