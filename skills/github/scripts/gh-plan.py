@@ -3067,9 +3067,9 @@ def claim_once(args: argparse.Namespace) -> None:
                         or not github_api_core.body_has_operation_marker(operation_comment.get("body"), marker["operation_id"])
                         or github_plan_claim.records(operation_comment.get("body") or "") != [original]):
                     continue
-                suffix = github_api_core.operation_marker_comment(marker["operation_id"]) + "\n"
                 operation_body = operation_comment.get("body") or ""
-                if not operation_body.endswith(suffix):
+                suffix = operation_body[operation_body.rfind("<!-- github-skill-operation:"):]
+                if not re.fullmatch(r"<!-- github-skill-operation:" + re.escape(str(marker["operation_id"])) + r"(?: [^<>\r\n]*)? -->\n", suffix):
                     continue
                 prefix = operation_body.removesuffix(suffix)
                 if not prefix.endswith("\n"):

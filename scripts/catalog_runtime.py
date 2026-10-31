@@ -23,6 +23,8 @@ BLOCKED_NOTICE_AFTER = dt.timedelta(hours=1)
 MAX_BLOCKING_PATHS = 20
 INSTRUCTION_PREVIEW_TIMEOUT = 15
 DELIVERY_NOTICE = "DIRECTION delivery"
+sys.path.insert(0, str(ROOT))
+from skills.github.scripts import github_catalog_health
 
 
 def git(root: Path, *args: str) -> str:
@@ -334,6 +336,8 @@ def update(root: Path) -> dict:
             if warning:
                 state["warning"] = warning
         write_receipt(root, state)
+        github_catalog_health.refresh_health(root)
+        state["health_notice"] = github_catalog_health.health_notice(github_catalog_health.health_enabled(github_catalog_health.read_record(root / ".local/catalog-install.json")))
         return state
 
 

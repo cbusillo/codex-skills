@@ -1474,3 +1474,37 @@ Factory identity comparisons used as guards do not disable verification.
 The complete gate selects tracked source for both linters, so untracked scratch
 files do not change the local result. Ruff also checks tracked stubs/notebooks
 and keeps its configured exclusions; the AST check parses tracked `.py` files.
+
+### Public catalog version and optional health sharing
+
+GitHub write helpers include the catalog commit in their existing hidden
+`github-skill-operation` comment. The operation ID still identifies the write;
+legacy markers remain readable. Version reporting needs no setup.
+
+Health sharing is **off by default**. The installer and scheduled updater suggest
+turning it on. Your Director can run `uv run scripts/install-catalog.py --write
+--health-status` to enable it, or use `--no-health-status` to turn it off.
+A preview without `--write` changes nothing. Updates preserve the choice.
+
+When enabled, installation and updates check the setup and keep the result in
+the existing local installation receipt. Subsequent comment markers include
+only allowlisted codes and versions: `codex_hooks`, `claude_hooks`, `approval`,
+`updater` (`pass`, `fail`, `unknown`), harness versions, `behind` (commits behind
+locally known `origin/main`), and `checked` (Unix time). Hook checks inspect
+registered catalog startup and command-policy definitions; they do not execute
+hooks or infer native approval from installed files. Native approval is currently
+`unknown`. The updater passes only when its launchd job is loaded and an update succeeded
+within 12 hours.
+These are observations at the recorded time, not a live health guarantee.
+Paths, host names, account names, commands and raw diagnostic output never enter
+the marker. Turning sharing off removes health fields from future comments;
+previously posted comments remain public. No new service or status record is used.
+
+Read recent markers with `uv run skills/github/scripts/github_catalog_health.py
+--repo OWNER/REPO`. It reports each comment author's latest marker and its source
+link, including unknown versions for legacy markers. A newer version-only marker
+replaces earlier health. The default scan covers up to 300 recent issue and PR
+comments; `--pages 1..10` adjusts that bound, and the output reports omissions.
+Shared automation accounts cannot identify individual Directors. Use the source
+repository and comment to identify the setup before suggesting a fix; this reader
+never posts an issue or changes anyone's setup.

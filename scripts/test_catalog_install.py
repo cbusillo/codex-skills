@@ -72,6 +72,20 @@ class InstallTests(unittest.TestCase):
         mock.patch.object(installer, "ROOT", self.catalog).start()
         mock.patch.object(installer, "load_sync", return_value=self.sync).start()
 
+    def test_health_opt_in_survives_refresh_and_can_be_disabled(self) -> None:
+        with mock.patch.object(installer.github_catalog_health, "self_check", return_value={"approval": "unknown"}) as check:
+            self.install()
+            check.assert_not_called()
+            installer.install(self.home, self.codex, self.claude, write=True, updater=False, health_status=True)
+            self.assertEqual(check.call_count, 1)
+            installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+            self.assertEqual(check.call_count, 2)
+            installer.install(self.home, self.codex, self.claude, write=True, updater=False, health_status=False)
+            self.assertEqual(check.call_count, 2)
+            record = json.loads((self.catalog / ".local/catalog-install.json").read_text())
+            self.assertFalse(record["health_status"])
+            self.assertNotIn("health", record)
+
     @staticmethod
     def legacy_alerts():
         # Historical install input, independent of what today's renderer emits.
@@ -1747,6 +1761,10 @@ class UpdateTests(unittest.TestCase):
         for name in ("hooks.json", "direction_check_hook.py"):
             shutil.copyfile(source.parent / "hooks" / name, self.seed / "hooks" / name)
         (self.seed / "skills").mkdir()
+        health_source = source.parent / "skills/github/scripts/github_catalog_health.py"
+        health_target = self.seed / "skills/github/scripts/github_catalog_health.py"
+        health_target.parent.mkdir(parents=True)
+        shutil.copyfile(health_source, health_target)
         (self.seed / "skills" / "original").write_text("first")
         command("git", "add", ".", cwd=self.seed)
         command("git", "commit", "-qm", "install sources", cwd=self.seed)

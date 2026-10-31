@@ -23,7 +23,10 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-LABEL = "com.codex-skills.catalog-update"
+sys.path.insert(0, str(ROOT))
+from skills.github.scripts import github_catalog_health
+
+LABEL = github_catalog_health.UPDATER_LABEL
 
 
 def load_sync():
@@ -110,7 +113,7 @@ def personal_source(sync, destinations: list[Path], local: Path, *, new_destinat
     return content + "\n" if content else ""
 
 
-def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool, show_diff: bool = False, refresh_instructions: bool = False, skip_codex_hooks: bool = False) -> dict:
+def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool, show_diff: bool = False, refresh_instructions: bool = False, skip_codex_hooks: bool = False, health_status: bool | None = None) -> dict:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import chrome_mcp
 
@@ -336,6 +339,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         if scheduled and not scheduled_at:
             scheduled_at = dt.datetime.now(dt.timezone.utc).isoformat()
         installation = json.dumps({"home": str(home), "codex": str(codex), "claude": str(claude),
+                                   "health_status": previous_installation.get("health_status", False) if health_status is None else health_status,
                                    "scheduled_updater": scheduled, "scheduled_at": scheduled_at,
                                    "updater_plist": str(launch_path) if scheduled else None,
                                    "instruction_hashes": {entry["path"]: entry["sha256"] for entry in outputs},
@@ -366,6 +370,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
                     subprocess.run(["launchctl", "bootstrap", domain, str(launch_path)], check=True)
                 except subprocess.CalledProcessError as error:
                     raise ValueError("Catalog installed; scheduled updater activation failed. Rerun --write --updater from a logged-in GUI session") from error
+        github_catalog_health.refresh_health(ROOT)
     else:
         outputs = instruction_preview + hook_preview
     # Avoid printing private instruction text/diffs in the normal install output.
@@ -379,7 +384,8 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             "migrated_events": hook_outputs.migrated_events if hook_outputs else {},
             "disabled_migrated_handlers": hook_outputs.disabled_migrated_handlers if hook_outputs else [],
             "codex_hook_setup": "skipped; existing definitions unchanged" if skip_codex_hooks else "alert retirement evaluated" if refresh_instructions else "prepared",
-            "hook_trust": sync.HOOK_TRUST_NOTICE}
+            "hook_trust": sync.HOOK_TRUST_NOTICE,
+            "health_notice": github_catalog_health.health_notice(previous_installation.get("health_status", False) if health_status is None or not write else health_status)}
 
 
 def main() -> int:
@@ -387,6 +393,7 @@ def main() -> int:
     parser.add_argument("--write", action="store_true", help="Apply; default is a read-only preview")
     parser.add_argument("--show-diff", action="store_true", help="Include full private instruction and hook configuration diffs in preview output")
     parser.add_argument("--skip-codex-hooks", action="store_true", help="Install bindings/instructions while preserving existing Codex hook definitions, for unsupported migration inputs")
+    parser.add_argument("--health-status", action=argparse.BooleanOptionalAction, default=None, help="Opt in to public status codes in hidden GitHub comment markers; default off")
     parser.add_argument("--updater", action="store_true", help="Also enable a guarded six-hour launchd updater")
     parser.add_argument("--refresh-instructions", action="store_true", help="Refresh global instructions and retire obsolete Codex alerts; preserve bindings and unrelated hooks")
     parser.add_argument("--home-dir", type=Path, help="Fixture home in an isolated catalog checkout; overrides host environment directories")
@@ -403,7 +410,7 @@ def main() -> int:
     # can share a directory while having different native user config files.
     claude = (args.claude_dir or claude).absolute()
     try:
-        print(json.dumps(install(home, codex, claude, write=args.write, updater=args.updater, show_diff=args.show_diff, refresh_instructions=args.refresh_instructions, skip_codex_hooks=args.skip_codex_hooks), indent=2))
+        print(json.dumps(install(home, codex, claude, write=args.write, updater=args.updater, show_diff=args.show_diff, refresh_instructions=args.refresh_instructions, skip_codex_hooks=args.skip_codex_hooks, health_status=args.health_status), indent=2))
         return 0
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"Catalog setup stopped; earlier successful writes may remain: {error}", file=sys.stderr)
