@@ -95,6 +95,8 @@ def direction(actor: str | None, wait: dict) -> bool:
 
 
 def migration(status: str, wait: dict) -> list[str]:
+    from .events import TARGET
+
     missing = []
     try:
         actor = read(status)
@@ -108,7 +110,8 @@ def migration(status: str, wait: dict) -> list[str]:
         missing.append("Review the parked date and record its explicit event")
     dated = re.compile(r"(?i)\b(?:\d{4}-\d{2}-\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2})\b")
     for entry in wait["waits"]:
+        linked = any(TARGET.fullmatch(url.rstrip(".,;)")) for url in re.findall(r"https?://[^\s<>]+", entry["waiting_for"]))
         if "event" not in entry and "release" not in entry and (dated.search(entry["waiting_for"] + " " + entry["ends_when"]) or
-                "https://github.com/" in entry["waiting_for"] or agent_step(entry["waiting_for"])):
+                linked or agent_step(entry["waiting_for"])):
             missing.append("Review the legacy wait and record its explicit event or next agent action")
     return missing

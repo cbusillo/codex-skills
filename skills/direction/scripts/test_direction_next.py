@@ -263,6 +263,10 @@ class NextSweepTests(unittest.TestCase):
             sweep.next_actor.migration("Next actor: agent\nParked until: 2026-10-30", waits.reviewed(evidence="Reviewed"))
         )
 
+        for url, expected in (("https://github.com/owner/repo/pull/2", True), ("https://other.test/https://github.com/", False)):
+            legacy = waits.reviewed(evidence="Source landing", waiting_for=url, ends_when="Source lands")
+            self.assertEqual(bool(sweep.next_actor.migration("Next actor: agent", legacy)), expected)
+
 
 if __name__ == "__main__":
     unittest.main()
