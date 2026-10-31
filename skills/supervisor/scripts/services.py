@@ -31,7 +31,6 @@ import threading
 import time
 import uuid
 
-from check_changes import save_state
 
 SERVICES = ("enqueue", "drive", "foreign", "throughput")
 IDLE_SERVICES = ("idle-codex", "idle-claude")
@@ -283,6 +282,8 @@ def reconciliation_marker(config_path, name):
 def notify_failure(settings: dict, marker: Path, name: str) -> None:
     if not settings.get("failure_argv"):
         return
+    from check_changes import save_state
+
     notice = marker.with_suffix(".notice.json")
     if notice.exists():
         return
