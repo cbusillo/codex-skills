@@ -74,7 +74,7 @@ def run(args) -> int:
         receipt = asyncio.run(queue_input(home, args.session_id, message))
         print(json.dumps({"ok": True, **receipt}))
         return 0
-    endpoint = source_endpoint(args.session_id, home)
+    endpoint = source_endpoint(args.session_id, home, for_resume=True)
     command = ["codex", "--remote", "unix://" + str(endpoint), "resume", args.session_id]
     return asyncio.run(run_client(home, command, session=args.session_id))
 
