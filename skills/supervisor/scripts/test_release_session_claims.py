@@ -12,18 +12,27 @@ import io
 import itertools
 import fcntl
 import importlib
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
+from typing import Any
 
 import release_session_claims as helper
+closure = importlib.import_module("github_plan_closure")
+identity = importlib.import_module("github_identity")
 
 ACTOR = "test-automation[bot]"
 SOURCE = {"worker": "trial", "session": "source-session", "branch": "work/trial",
           "claimed_at": "2026-01-01T00:00:00Z"}
+
+
+def patch_attribute(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    return patch.object(target, name, *args, **kwargs)
 
 
 def comment(number, body, author=ACTOR):
@@ -125,6 +134,50 @@ class ReleaseTests(unittest.TestCase):
             result = json.loads(output.getvalue())
             self.assertFalse(result["ok"])
             self.assertTrue(result["needs_reconciliation"])
+
+    def test_backfill_posting_contention_never_posts(self) -> None:
+        log = self.root / "closed.json"
+        argv = ["helper", "backfill", "--closed-log", str(log), "--supervisor-session", "supervisor",
+                "--owner", "test", "--checkout-root", str(self.root), "--confirm-session-ended",
+                "--transcript-root", str(self.root), "--apply"]
+        def verify(entry: dict, _supervisor: str) -> None:
+            if entry["session_id"] == "invalid-source":
+                raise ValueError("fixture permanent verification failure")
+
+        for permanent_failure in (False, True):
+            with self.subTest(permanent_failure=permanent_failure):
+                rows = [self.entry, *([{**self.entry, "session_id": "invalid-source"}] if permanent_failure else [])]
+                log.write_text(json.dumps(rows))
+                output = io.StringIO()
+                with Path(str(log) + ".release.lock").open("w") as held:
+                    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    with patch.object(helper.sys, "argv", argv), \
+                            patch_attribute(identity, "automation_login", return_value=ACTOR), \
+                            patch.object(helper, "validate_closure", side_effect=verify), \
+                            patch.object(helper, "discover", return_value=([], ["test/a"])) as discover, \
+                            patch.object(helper, "release_session") as release, contextlib.redirect_stdout(output):
+                        self.assertEqual(helper.main(), 1)
+                    discover.assert_called_once()
+                    release.assert_not_called()
+                self.assertEqual(json.loads(output.getvalue())["retryable"], not permanent_failure)
+
+    def test_mixed_busy_and_uncertain_release_is_not_retryable(self) -> None:
+        log = self.root / "closed.json"
+        log.write_text(json.dumps([self.entry, {**self.entry, "session_id": "other-source"}]))
+        argv = ["helper", "backfill", "--closed-log", str(log), "--supervisor-session", "supervisor",
+                "--owner", "test", "--checkout-root", str(self.root), "--confirm-session-ended",
+                "--transcript-root", str(self.root), "--apply"]
+        output = io.StringIO()
+        with patch.object(helper.sys, "argv", argv), \
+                patch_attribute(identity, "automation_login", return_value=ACTOR), \
+                patch.object(helper, "validate_closure"), \
+                patch.object(helper, "discover", return_value=([], ["test/a"])), \
+                patch.object(helper, "release_session", side_effect=[closure.LeaseBusy("busy"),
+                    helper.PartialRelease("uncertain", {"attestation": "posted"})]), contextlib.redirect_stdout(output):
+            self.assertEqual(helper.main(), 1)
+        result = json.loads(output.getvalue())
+        self.assertFalse(result["retryable"])
+        self.assertTrue(result["needs_reconciliation"])
 
     def test_pr_release_handoff_refuses_a_checkout_for_another_repository(self):
         handoff = dict(self.reader.get_json.return_value)
@@ -1337,7 +1390,7 @@ class ReleaseTests(unittest.TestCase):
                 report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
             self.assertEqual(report["claims"][0]["retained_prs"], [])
 
-    def test_finish_apply_records_private_log_and_lock_refuses_second_operation(self):
+    def test_finish_apply_records_private_log_and_reports_concurrent_store_lock_retryable(self):
         ledger, log = self.root / "ledger.json", self.root / "closed.json"
         ledger.write_text(json.dumps([self.entry]))
         argv = ["helper", "finish", "--ledger", str(ledger), "--closed-log", str(log), "--session-id", "source-session",
@@ -1352,9 +1405,21 @@ class ReleaseTests(unittest.TestCase):
             first = json.loads(log.read_text())[0]["ended_at"]
             self.assertEqual(helper.main(), 0)
             self.assertEqual(json.loads(log.read_text())[0]["ended_at"], first)
-            with Path(str(log) + ".lock").open("w") as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                self.assertEqual(helper.main(), 1)
+            held, release = threading.Event(), threading.Event()
+            def hold_store_lock():
+                with closure.store_lock(log):
+                    held.set()
+                    release.wait(3)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(hold_store_lock)
+                self.assertTrue(held.wait(3))
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    self.assertEqual(helper.main(), 1)
+                release.set()
+                future.result(timeout=3)
+            busy = json.loads(output.getvalue())
+            self.assertTrue(busy["retryable"])
             self.assertEqual(run.call_count, 2)
 
     def test_issue_refused_in_preflight_gets_no_attestation(self):

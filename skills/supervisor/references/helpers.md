@@ -2107,6 +2107,9 @@ uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <priv
 
 `--apply` records closure and reports existing releases; finish posts no new
 attestation/release and changes no wait, blocker, status or retained artifact.
+Slow verification and runtime-registration probes run outside the shared log
+mutation lock. Busy closure/ownership locks report `retryable: true`; preserve
+records and retry after the holder finishes.
 Require `ok: true` and `needs_reconciliation: false` before guarded close and
 confirmed disappearance. Only then remove the unchanged active row under source
 ownership; finish retains its full source identity in the canonical log.
