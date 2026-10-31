@@ -68,7 +68,7 @@ class RoutineCheckTests(unittest.TestCase):
                 )
                 output = routine_check.digest({"comments": {"attention": rows}})
                 self.assertNotIn(external.url, output)
-                self.assertIn("COMMENT followup", output)
+                self.assertIn(followup.url, output)
 
     def test_opening_post_stops_repeating_after_any_reply_even_after_a_body_edit(self) -> None:
         opening = routine_check.radar.Comment(
@@ -83,7 +83,7 @@ class RoutineCheckTests(unittest.TestCase):
                 {"state": "open"}, comments, {opening.key}, {"owner"}, {"agent[bot]"}, {opening.key: []},
             )
             output = routine_check.digest({"comments": {"attention": rows}})
-            self.assertEqual("COMMENT opening" in output, len(comments) == 1)
+            self.assertEqual(opening.url in output, len(comments) == 1)
 
     def test_held_accept_and_staff_now_survive_unchanged_checks(self) -> None:
         staffing = comment("STAFF NOW, two independent source slices: OPW406 and Devkit313", ident=6532738729)
