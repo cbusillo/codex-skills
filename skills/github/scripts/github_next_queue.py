@@ -159,8 +159,8 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
         return {**row, "state": "review", "reason": projected["reason"]}
     if not status_known:
         return {**row, "state": "review", "reason": "incomplete_discussion"}
-    if (actor == "agent" or not next_actor.fields(status)) and projected.get("next_actor") == "agent":
-        actor = row["next_actor"] = "agent"
+    if ((actor or "").startswith("agent") or not next_actor.fields(status)) and projected.get("next_actor") == "agent":
+        actor = row["next_actor"] = actor or "agent"
         row["next_action"] = row["next_action"] or projected["next_action"]
         row["wait_review_required"] = False
         wait = github_plan_wait.reviewed(evidence="Saved Client acceptance ends the current-head Client handoff wait.")
