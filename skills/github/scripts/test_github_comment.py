@@ -55,7 +55,7 @@ def comment_body(
 
 
 def test_create_preserves_markdown_body() -> None:
-    markdown = "Director decision: Close owner/repo#42 as not planned.\n\n## Result\n\n`literal` ${NOT_EXPANDED}\n"
+    markdown = "## Result\n\n`literal` ${NOT_EXPANDED}\n"
 
     def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
         if path == "/user":

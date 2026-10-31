@@ -7359,7 +7359,7 @@ def owner_reaction_decision(
     # An exact first line binds the reaction to this issue and this action.
     body = comment.get("body")
     if not isinstance(body, str) or not re.fullmatch(
-        rf"(?:Director|Owner) decision: Close (?:{re.escape(issue_repo)})?#{number} as not planned\.",
+        rf"(?:Director|Owner) decision: Close (?i:{re.escape(issue_repo)})?#{number} as not planned\.",
         body.splitlines()[0] if body else "",
     ):
         return None
@@ -7537,7 +7537,7 @@ def check_owner_decides_not_planned(
             and author.casefold() == repo_owner.casefold()
             and isinstance(created_at, str)
             and created_at > status_updated_at
-            and re.fullmatch(rf"(?:(?:Director|Owner) decision: )?Close (?:{re.escape(issue_repo)})?#{number} as not planned\.",
+            and re.fullmatch(rf"(?:(?:Director|Owner) decision: )?Close (?i:{re.escape(issue_repo)})?#{number} as not planned\.",
                              str(comment.get("body") or "").splitlines()[0].rstrip() if comment.get("body") else "") is not None
         ):
             return {

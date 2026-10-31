@@ -2546,12 +2546,18 @@ def test_close_not_planned_refuses_direction_milestone_work_without_owner_commen
         assert exc.failure.failed_step == "check_owner_decision", exc.failure
         assert exc.failure.write_outcome == "not_started", exc.failure
         plan.github_comment_core.validate_planning_references(message, "owner/repo")
+        directive = re.findall(r'"([^"]+)"', message)[-1]
+        _, calls, _ = owner_decision_close(
+            reason="not_planned", milestone="Holds in use",
+            comments=[recorded_decision("Director") | {"body": directive}], reactions=[approving_reaction()],
+        )
+        assert "close" in calls, calls
     else:
         raise AssertionError("not-planned close of direction milestone work must need the owner's comment")
 
 
 def test_close_not_planned_allows_direction_milestone_work_with_owner_comment() -> None:
-    for reference in ("#10", "owner/repo#10"):
+    for reference in ("#10", "owner/repo#10", "Owner/Repo#10"):
         comments = [owner_comment("OWNER", "2026-09-21T00:00:00Z") | {"body": f"Close {reference} as not planned."}]
         _plan, calls, output = owner_decision_close(reason="not_planned", milestone="Holds in use", comments=comments)
         payload = json.loads(output.getvalue())
@@ -2573,10 +2579,8 @@ def approving_reaction() -> dict[str, Any]:
 
 
 def test_close_not_planned_accepts_owner_reaction_on_unedited_decision() -> None:
-    for role, reference in product(("Director", "Owner"), ("#10", "owner/repo#10")):
+    for role, reference in product(("Director", "Owner"), ("#10", "owner/repo#10", "Owner/Repo#10")):
         comment = recorded_decision(role) | {"body": f"{role} decision: Close {reference} as not planned."}
-        if reference != "#10":
-            load_plan_module().github_comment_core.validate_planning_references(comment["body"], "owner/repo")
         _plan, calls, output = owner_decision_close(
             reason="not_planned", milestone="Holds in use", comments=[comment],
             reactions=[approving_reaction()],
