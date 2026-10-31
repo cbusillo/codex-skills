@@ -4,6 +4,9 @@ description: Use to hand implementation work to a separate agent process on any 
 metadata:
   short-description: Brief, watch, nudge, and record agent sessions
 resources:
+  - path: scripts/routine_check.py
+    kind: script
+    description: Combine current readers into one digest, retaining unresolved comments, staffing requests and coverage errors.
   - path: references/routine-check.md
     kind: reference
     description: Short entry for recurring checks without skill reloads.
@@ -77,6 +80,11 @@ resources:
     kind: reference
     description: Rules every Supervisor brief carries by link, and the milestone lead brief template.
 commands:
+  - name: supervisor-routine-check
+    source: skill
+    resource_path: scripts/routine_check.py
+    example_argv: ["uv", "run", "scripts/routine_check.py", "--owner", "OWNER", "--queue", "OWNER/direction#NUMBER", "--ledger", "<ledger.json>", "--foreign-log", "<watch.jsonl>", "--watch-state", "<watch-reader.json>"]
+    purpose: Read the board, workers, questions, unanswered comments and existing watch log in one process.
   - name: supervisor-heavy-run
     source: skill
     resource_path: scripts/heavy_run.py
@@ -433,9 +441,8 @@ PR carries `## Client test notes`. Discussions are drafts; issues are requests.
 
 ## Milestone State
 
-Rebuild the board from GitHub at takeover, each check and after compaction;
-use `goal_board.py --owner OWNER --changes-state <private-board-state.json>`
-for routine output and the full board for takeover. Coverage gaps stay unknown.
+Use the full goal board at takeover and after compaction, and the
+[routine digest](references/routine-check.md) at each check. Coverage gaps stay unknown.
 Open the linked decision and Current Status before repeating a hold or briefing
 work. PR handoffs stay open until merged; read current head, mergeability and
 train reason. Assess each Track's `closure_review` under
@@ -486,8 +493,9 @@ including complete citation blocks and native exit/compaction tails; an
 unrecognized format needs a fresh standalone verdict, never a parser override.
 
 Use `session_closeout.py` from [Routine check](references/routine-check.md) for a
-normal session. Supply its actual posted `--handoff-url` when the launch ledger
-has none; the helper verifies and saves it before shutdown. It returns one
+normal session. It discovers the exact-session handoff on the ledger's issue,
+verifies its automation author and journals and saves it before shutdown;
+ambiguity stops closeout. It returns one
 receipt or its first failed gate. Nonempty/unknown input, permission prompts,
 interrupted sources and other exceptional cases use the procedure below and
 [shutdown/recovery](references/helpers.md#finished-session-shutdown-stages).

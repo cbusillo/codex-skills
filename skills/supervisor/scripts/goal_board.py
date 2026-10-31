@@ -200,6 +200,7 @@ def issue_row(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | 
             {"status": UNKNOWN, "blocked_by": [], "waits": [], "structured_wait": None}),
         "next_action": ("Track proof and child records" if node["title"].startswith("Track:") else
                         read_part("next action", unread, lambda: next_action(node, trusted, unread))),
+        "staffing_requests": read_part("staffing requests", unread, lambda: staffing_requests(node, trusted), []),
         "latest_decision": read_part("latest decision", unread,
             lambda: latest_decision(node["comments"], trusted, unread), None)}
 
@@ -284,9 +285,19 @@ def track_row(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | 
         "status": UNKNOWN if unread or groups["unknown"] else state,
         "blocked_by": own["blocked_by"], "waits": own["waits"], "hold_status": own["status"],
         "open_questions": activity["open_questions"], "latest_decision": decision,
+        "staffing_requests": read_part("staffing requests", unread, lambda: staffing_requests(node, trusted), []),
         "closure_review": github_direction_next.milestone_closure_review(node.get("body") or ""),
         "milestone": read_part("milestone", unread, lambda: (node.get("milestone") or {}).get("title"), None),
         "children": children, "groups": groups, "unread": list(dict.fromkeys(unread))}
+
+
+def staffing_requests(node: dict[str, Any], trusted: set[str]) -> list[dict[str, str]]:
+    if node.get("state") == "CLOSED":
+        return []
+    return [{"url": comment["url"], "body": comment["body"]}
+            for comment in node["comments"]["nodes"]
+            if login(comment.get("author")) in trusted
+            and re.match(r"(?i)^\W*STAFF NOW\b", comment.get("body") or "")]
 
 
 def complete_comments(reader: github_read.GitHubReader, node: dict[str, Any]) -> None:
