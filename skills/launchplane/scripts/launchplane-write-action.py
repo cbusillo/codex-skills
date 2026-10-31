@@ -79,6 +79,7 @@ READ_ONLY_OPERATIONS = {
     "repository-inventory-read",
     "integration-allowances-read",
     "testing-hold-read",
+    "product-status-read",
     "product-environment-read",
     "product-activity-read",
     "protected-artifacts-read",
@@ -6124,6 +6125,61 @@ def summarize_path_check(
     return payload
 
 
+def _project_lane_status(value: object) -> dict[str, object]:
+    status = _require_dict(value)
+    evaluated_at = public_timestamp(status.get("evaluated_at"))
+    signal = _require_dict(status.get("current"))
+    transitions = status.get("transitions")
+    if not isinstance(transitions, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    now = datetime.now(UTC)
+    valid_until = None
+    for value in transitions:
+        transition = _require_dict(value)
+        after = public_timestamp(transition.get("after"))
+        if datetime.fromisoformat(after.replace("Z", "+00:00")) < now:
+            signal = _require_dict(transition.get("signal"))
+        elif valid_until is None:
+            valid_until = after
+    tone = signal.get("sidebar_tone")
+    if tone not in {"verified", "danger", "warning", "stale", "missing", "recorded", "unsupported"}:
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {"tone": tone, "evaluated_at": evaluated_at, "valid_until": valid_until}
+    redacted = False
+    for field in ("description", "attention_reasons", "warning_reasons"):
+        values = [signal.get(field)] if field == "description" else signal.get(field)
+        if not isinstance(values, list):
+            raise LaunchplaneSafetyError("invalid_response")
+        texts = [public_service_text(value, max_length=16000) for value in values]
+        redacted |= texts != values
+        projected[field] = texts[0] if field == "description" else texts
+    projected["text_redacted"] = redacted
+    return projected
+
+
+def summarize_product_status_read(*, request: dict[str, object], provider_payload: dict[str, Any]) -> dict[str, object]:
+    _require_read_fields("product-status-read", provider_payload, required=frozenset({"status", "trace_id", "product"}))
+    product = _require_dict(provider_payload["product"])
+    if product.get("product") != request["product"]:
+        raise LaunchplaneSafetyError("invalid_response")
+    environments, warnings = product.get("environments"), product.get("warnings")
+    if not isinstance(environments, list) or not isinstance(warnings, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    lanes = []
+    for value in environments:
+        lane = _require_dict(value)
+        lanes.append({"environment": public_identifier(lane.get("environment")), **_project_lane_status(lane.get("lane_status"))})
+    product_warnings = [public_service_text(value, max_length=16000) for value in warnings]
+    payload = base_payload(status=public_code(provider_payload.get("status")), operation="product-status-read", request=request)
+    payload["result"] = {"product": public_identifier(product["product"]), "lanes": lanes, "warnings": product_warnings,
+                         "warning_text_redacted": product_warnings != warnings}
+    payload["summary"] = {"trace_id": public_trace_id(provider_payload["trace_id"]),
+                          "recommendation": "Service-computed Product Ops sidebar status. Use each tone and description; preserve missing and stale states. No authority to change a lane."}
+    assert_public_safe_shape(payload["result"])
+    assert_public_safe_shape(payload["summary"])
+    return payload
+
+
 def summarize_product_environment_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
@@ -6136,8 +6192,8 @@ def summarize_product_environment_read(
         recommendation=(
             "Compare deployment identity and fresh health evidence with the expected build. "
             "Inspect open incidents, topology warning codes, TLS states and other_warning_count. "
-            "Route diagnostics do not set the sidebar color. This is attention evidence, not a green verdict; "
-            "verify green with complete canonical sidebar data. Missing or truncated evidence is unknown."
+            "Use product-status-read for the service-computed sidebar tone and reasons, including product warnings. "
+            "Missing or truncated evidence is unknown."
         ),
     )
 
@@ -6578,6 +6634,7 @@ PRODUCT_READ_SUMMARIZERS = {
     "generic-web-deploy-recovery-reference-read": summarize_recovery_reference_read,
     "merge-train-policy-read": summarize_merge_train_policy_read,
     "path-check": summarize_path_check,
+    "product-status-read": summarize_product_status_read,
     "product-environment-read": summarize_product_environment_read,
     "product-activity-read": summarize_product_activity_read,
     "protected-artifacts-read": summarize_protected_artifacts_read,
@@ -11877,6 +11934,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     for argument in ("--product", "--context", "--instance"):
         testing_hold_read.add_argument(argument, required=True)
 
+    product_status_read = subparsers.add_parser("product-status-read", help="Read every lane's service-computed Product Ops sidebar tone, reasons and product warnings.")
+    product_status_read.add_argument("--product", required=True)
+
     product_environment_read = subparsers.add_parser(
         "product-environment-read",
         help="Read one product environment's current build, runtime identity and health.",
@@ -12836,6 +12896,10 @@ def main(argv: list[str]) -> int:
                 "payload_source": "operator_argument",
             }
             return execute_lane_config_read(args=args, operation=args.command, request=request)
+        if args.command == "product-status-read":
+            path = _product_read_path(args.command, product=args.product)
+            request = {"product": _request_identifier(args.product), "payload_source": "operator_argument"}
+            return execute_product_read(args=args, operation=args.command, request=request, path=path)
         if args.command == "product-environment-read":
             path = _product_read_path(
                 args.command, product=args.product, environment=args.environment
