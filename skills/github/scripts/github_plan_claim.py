@@ -15,12 +15,13 @@ import time
 from typing import Any, Callable
 
 try:
+    from github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources
     from github_plan_status.references import pr_issue_reference as pr_issue_reference
 except ModuleNotFoundError:
+    from skills.github.scripts.github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources
     from skills.github.scripts.github_plan_status.references import pr_issue_reference as pr_issue_reference
 
 
-MARKER = "github-plan:claim "
 LEASE_TAKEOVER_PREFIX = "Lease takeover: claim "
 EMPTY_HOLDERS = {"none", "unassigned", "unclaimed", "not assigned", "n/a", "-", "nobody", "no one", "no-one"}
 
@@ -87,38 +88,10 @@ def marker(claim: dict[str, str]) -> str:
     return "<!-- " + MARKER + json.dumps(claim, sort_keys=True).replace(">", "\\u003e") + " -->"
 
 
-def live_lines(text: str) -> list[str]:
-    # Format examples and incidental prose are not live ownership records.
-    text = re.sub(r"(?ms)^```[^\n]*\n.*?^```[^\n]*$", "", text)
-    return [line for line in text.splitlines() if line.strip().startswith("<!-- " + MARKER)]
-
-
-def records(text: str) -> list[dict[str, str]]:
-    found = []
-    for line in (line.strip() for line in live_lines(text)):
-        match = re.fullmatch(r"<!-- github-plan:claim (.*?) -->", line)
-        if not match:
-            raise ValueError("Malformed claim marker; preserve ownership for owner review")
-        raw = match.group(1)
-        record = json.loads(raw)
-        if not isinstance(record, dict) or not all(
-            isinstance(record.get(key), str) and record[key]
-            for key in ("worker", "session", "branch", "claimed_at")
-        ):
-            raise ValueError("Malformed claim record; preserve ownership for owner review")
-        found.append(record)
-    return found
-
-
 def same_owner(record: dict[str, Any], claim: dict[str, Any]) -> bool:
     return (all(record.get(key) == claim[key] for key in ("worker", "session", "branch"))
             and all(record.get(key) == claim.get(key)
                     for key in ("refresh_pr", "retained_handoff", "resume_from")))
-
-
-def without_operation_marker(text: str) -> str:
-    """Remove the helper's trailing transport marker, not handoff prose."""
-    return re.sub(r"\n\s*<!-- github-skill-operation:[0-9a-f]+ -->\s*$", "", text).rstrip()
 
 
 def legacy_release_worker(text: str) -> str | None:
@@ -126,51 +99,6 @@ def legacy_release_worker(text: str) -> str | None:
     text = without_operation_marker("\n".join(text.splitlines()))
     match = re.fullmatch(r"Released by (\S+)", text)
     return match.group(1) if match else None
-
-
-def released_claim_id(text: str) -> int | None:
-    """Read an exact release directive; handoff narrative is not release state."""
-    first = text.splitlines()[:1]
-    match = re.fullmatch(r"Released claim (\d+)\.?[ \t]*", first[0]) if first else None
-    if match:
-        return int(match.group(1))
-    text = "\n".join(line if line.strip() else "" for line in text.splitlines())
-    text = without_operation_marker(text)
-    lines = text.splitlines()
-    if len(lines) < 3 or lines[-2].strip():
-        return None
-    match = re.fullmatch(r"Released claim (\d+)\.?[ \t]*", lines[-1])
-    if not match:
-        return None
-    preceding = text.rsplit("\n\n", 1)[0].rstrip()
-    # A colon introduces an example/instruction rather than an authored directive.
-    if preceding.endswith(":"):
-        return None
-    # A final line inside an unclosed code fence or raw HTML block is an example,
-    # not a release. Quoted and indented directives never match the exact line.
-    fence = None
-    html_end = None
-    for line in lines[:-1]:
-        if fence:
-            if re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*", line):
-                fence = None
-            continue
-        if html_end:
-            if html_end in line.casefold():
-                html_end = None
-            continue
-        if "<!--" in line:
-            if "-->" not in line.split("<!--", 1)[1]:
-                html_end = "-->"
-            continue
-        html = re.match(r" {0,3}<(pre|code|blockquote|details|script|style|textarea)[\s>]", line, re.IGNORECASE)
-        if html and f"</{html.group(1).casefold()}>" not in line.casefold():
-            html_end = f"</{html.group(1).casefold()}>"
-            continue
-        opener = re.match(r" {0,3}(`{3,}|~{3,})", line)
-        if opener:
-            fence = opener.group(1)
-    return int(match.group(1)) if not fence and not html_end else None
 
 
 def resumed_status(status: str, comments: list[dict[str, Any]], source_id: int | None) -> str:
@@ -369,32 +297,6 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
                     continue
         return True
     return False
-
-
-def exact_released_sources(comments: list[dict[str, Any]]) -> list[tuple[int, dict[str, str], int]]:
-    """Bind history to one authored, timestamp-proved structured release."""
-    from github_plan_release import stamp
-    found = []
-    for index, source in enumerate(comments):
-        parsed = records(source.get("body") or "")
-        author = (source.get("user") or {}).get("login")
-        if len(parsed) != 1 or not author or not isinstance(source.get("id"), int):
-            continue
-        for release_index in range(index + 1, len(comments)):
-            release = comments[release_index]
-            if ((release.get("user") or {}).get("login") != author
-                    or released_claim_id(release.get("body") or "") != source["id"]):
-                continue
-            try:
-                if stamp(release.get("created_at")) <= max(
-                    stamp(parsed[0]["claimed_at"]), stamp(source.get("updated_at") or source.get("created_at")),
-                ):
-                    continue
-            except (ValueError, TypeError):
-                continue
-            found.append((index, parsed[0], release_index))
-            break
-    return found
 
 
 def released_successor_route(
