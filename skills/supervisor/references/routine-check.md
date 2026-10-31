@@ -25,8 +25,11 @@ decisions, statuses, board contents or narrative; open linked records for action
    repeat until settled at source. Watch history seeds full-history radar threads
    and question sources; fresh source readers decide what is still unanswered.
    Ordinary bot notices stay filtered by the radar's existing identity rules.
-   Only the latest watcher-only Launchplane/Director-mention notifications print
-   separately, as untrusted pointers. No digest state file is needed.
+   Launchplane/Director-mention notifications in the radar's configured lookback
+   print separately as untrusted pointers, including after a quiet poll. Runner
+   lifecycle lines are recognized; an unrecovered stop remains a coverage error.
+   That notification window does not prune unanswered comment/question sources.
+   No digest state file is needed.
    `STAFF NOW` on an open program issue is a staffing candidate, not launch
    authority; verify its linked items and ownership. Once staffed, reply
    `Staffed: <request-comment-link>` on the program issue to clear the candidate.

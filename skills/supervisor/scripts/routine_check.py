@@ -11,6 +11,7 @@ import re
 import sys
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -38,10 +39,11 @@ def collect(readers: dict[str, Callable[[], dict]]) -> dict[str, dict]:
     return results
 
 
-def watch_report(path: Path) -> dict:
+def watch_report(path: Path, *, window: str = radar.DEFAULT_WINDOW, now: datetime | None = None) -> dict:
     notices: dict[str, dict] = {}
     latest: dict = {"errors": ["foreign watch log has no complete reports"], "coverage_gaps": []}
     incomplete = []
+    runner_error = None
     for number, line in enumerate(path.read_text().splitlines(), 1):
         if not line.strip():
             continue
@@ -50,10 +52,14 @@ def watch_report(path: Path) -> dict:
         except ValueError:
             incomplete.append(f"watch log line {number} is incomplete or malformed; prior notices retained")
             continue
-        if isinstance(row, dict) and row.get("error"):
+        if isinstance(row, dict) and row.get("event") in {"started", "completed", "stopped", "reconciliation_required"}:
+            if row["event"] in {"stopped", "reconciliation_required"} or row["event"] == "completed" and row.get("exit_code") != 0:
+                runner_error = f"watcher stopped: {row['event']} (exit {row.get('exit_code')})"
+        elif isinstance(row, dict) and row.get("error"):
             latest = {"errors": [row["error"]], "coverage_gaps": []}
         elif isinstance(row, dict) and all(isinstance(row.get(key), list) for key in ("notices", "errors", "coverage_gaps")):
             latest = row
+            runner_error = None
             for notice in row["notices"]:
                 if isinstance(notice, dict):
                     notices[pointer(notice)] = notice
@@ -61,15 +67,24 @@ def watch_report(path: Path) -> dict:
                     incomplete.append(f"watch log line {number} has an invalid notice")
         else:
             incomplete.append(f"watch log line {number} has an unknown shape")
+    since = (now or datetime.now(UTC)) - timedelta(hours=radar.rollup.parse_duration_hours(window))
+    notifications = []
+    for notice in notices.values():
+        if notice.get("kind") not in {"launchplane", "director_mention"}:
+            continue
+        try:
+            updated = datetime.fromisoformat(notice["updated_at"].replace("Z", "+00:00"))
+            if updated.tzinfo is None:
+                raise ValueError("notification timestamp has no timezone")
+            if updated >= since:
+                notifications.append(notice)
+        except (ValueError, KeyError, TypeError, AttributeError) as error:
+            incomplete.append(f"watch notification {pointer(notice)}: {error}")
     return {
         **latest,
-        "errors": [*latest["errors"], *incomplete],
+        "errors": [*latest["errors"], *incomplete, *([runner_error] if runner_error else [])],
         "history": list(notices.values()),
-        "notices": [
-            notice
-            for notice in latest.get("notices", [])
-            if isinstance(notice, dict) and notice.get("kind") in {"launchplane", "director_mention"}
-        ],
+        "notices": notifications,
     }
 
 
@@ -234,6 +249,8 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
 
 
 def comment_hint(notice: dict) -> Any:
+    if not isinstance(notice.get("author"), str) or not notice["author"].strip():
+        raise ValueError(f"watch hint author is unknown: {pointer(notice)}")
     repo, number = radar.parse_thread_reference(notice["url"])
     match = re.search(r"#issuecomment-([1-9][0-9]*)$", notice["url"])
     return radar.Comment(
@@ -264,7 +281,12 @@ def main() -> int:
     parser.add_argument("--thread", action="append", default=[])
     parser.add_argument("--radar-config", type=Path, default=radar.DEFAULT_CONFIG)
     args = parser.parse_args()
-    sources = collect({"watch": lambda: watch_report(args.foreign_log)})
+
+    def read_watch() -> dict:
+        config = radar.rollup.load_config(args.radar_config)
+        return watch_report(args.foreign_log, window=str(config.get("comment_window") or radar.DEFAULT_WINDOW))
+
+    sources = collect({"watch": read_watch})
     sources.update(collect(build_readers(args, sources["watch"])))
     print(digest(sources))
     return int(any(source_errors(name, report) for name, report in sources.items()))

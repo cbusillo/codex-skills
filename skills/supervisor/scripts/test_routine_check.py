@@ -8,6 +8,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -135,19 +136,37 @@ class RoutineCheckTests(unittest.TestCase):
     def test_watch_notifications_do_not_accumulate_bot_noise(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "watch.jsonl"
+            now = datetime(2026, 10, 30, tzinfo=UTC)
+            old = now - timedelta(
+                hours=routine_check.radar.rollup.parse_duration_hours(routine_check.radar.DEFAULT_WINDOW), seconds=1
+            )
             rows = [
+                {"event": "started", "pid": 10},
                 {
-                    "notices": [{"url": "old-bot", "kind": "foreign"}, {"url": "old-event", "kind": "launchplane"}],
+                    "notices": [
+                        {"url": "old-bot", "kind": "foreign"},
+                        {"url": "old-event", "kind": "launchplane", "updated_at": old.isoformat()},
+                        {"url": "current-event", "kind": "launchplane", "updated_at": now.isoformat()},
+                    ],
                     "errors": [],
                     "coverage_gaps": [],
                 },
-                {"notices": [{"url": "current-event", "kind": "launchplane"}], "errors": [], "coverage_gaps": []},
+                {"event": "completed", "exit_code": 0},
+                {"event": "started", "pid": 11},
+                {"notices": [], "errors": [], "coverage_gaps": []},
             ]
             log.write_text("\n".join(json.dumps(row) for row in rows))
-            output = routine_check.digest({"watch": routine_check.watch_report(log)})
+            output = routine_check.digest({"watch": routine_check.watch_report(log, now=now)})
             self.assertIn("current-event", output)
             self.assertNotIn("old-bot", output)
             self.assertNotIn("old-event", output)
+            self.assertNotIn("ERROR", output)
+            with log.open("a") as stream:
+                stream.write('\n{"event":"completed","exit_code":2}\n{"event":"reconciliation_required","exit_code":2}')
+            self.assertIn("watcher stopped", routine_check.digest({"watch": routine_check.watch_report(log, now=now)}))
+            with log.open("a") as stream:
+                stream.write('\n{"notices":[],"errors":[],"coverage_gaps":[]}')
+            self.assertNotIn("ERROR", routine_check.digest({"watch": routine_check.watch_report(log, now=now)}))
 
     def test_reader_wiring_retains_client_attention_and_other_questions_on_source_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
