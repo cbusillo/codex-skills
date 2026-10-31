@@ -11,6 +11,8 @@ writes, owner-specific routing, or authorization decisions.
 
 from __future__ import annotations
 
+from github_plan_status.discussion import section_map
+
 import datetime as dt
 import re
 from collections.abc import Callable
@@ -68,17 +70,6 @@ def compact_list_issue(repo: str, issue: dict[str, Any]) -> dict[str, Any]:
         "labels": normalize_labels(issue.get("labels")),
         "milestone": milestone.get("title") if isinstance(milestone, dict) else None,
     }
-
-
-def section_map(body: str) -> dict[str, str]:
-    sections: dict[str, str] = {}
-    matches = list(re.finditer(r"(?m)^##\s+(.+?)\s*$", body or ""))
-    for idx, match in enumerate(matches):
-        name = match.group(1).strip()
-        start = match.end()
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
-        sections[name] = body[start:end].strip()
-    return sections
 
 
 def milestone_closure_review(body: str) -> dict[str, Any]:

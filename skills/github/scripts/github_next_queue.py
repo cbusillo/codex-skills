@@ -10,8 +10,6 @@ mandatory and independently checks holds, artifacts and current sessions.
 from __future__ import annotations
 
 import fnmatch
-import re
-from datetime import datetime
 from collections import Counter
 from collections.abc import Callable
 from typing import Any
@@ -20,37 +18,9 @@ import github_plan_claim
 import github_plan_wait
 import github_direction_next
 import github_next_pr
+from github_plan_status.discussion import current_status, status_field
 from github_plan_status import next_actor
 from github_plan_status.references import linked_issues
-
-
-def current_status(discussion: dict[str, Any], trusted: set[str], *, body_recorded_at: str | None = None) -> str:
-    def timestamp(value: Any) -> datetime | None:
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00")) if isinstance(value, str) else None
-            return parsed if parsed is not None and parsed.tzinfo is not None else None
-        except ValueError:
-            return None
-    status = github_direction_next.section_map(discussion.get("body") or "").get("Current Status")
-    has_body_status = status is not None
-    body_time = timestamp(body_recorded_at or discussion.get("updated_at"))
-    for comment in discussion.get("comments", []):
-        if str(comment.get("author") or "").casefold() not in trusted:
-            continue
-        found = github_direction_next.section_map(comment.get("body") or "").get("Current Status")
-        comment_time = timestamp(comment.get("created_at"))
-        # Older status comments are historical once the issue's current body
-        # has newer evidence. Unmanaged records without status use comments.
-        if found is not None and (not has_body_status or (comment_time is not None and (body_time is None or comment_time >= body_time))):
-            status = found
-            body_time = comment_time
-            has_body_status = True
-    return re.sub(r"<!--.*?-->", "", status or "", flags=re.S).strip()
-
-
-def status_field(status: str, field: str) -> str:
-    match = re.search(rf"(?mi)^\s*(?:[-*]\s+)?(?:[*]{{2}})?{re.escape(field)}(?:[*]{{2}})?:(?:[*]{{2}})?[ \t]*(.*)$", status)
-    return match[1].strip() if match else ""
 
 
 def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[str],
@@ -130,13 +100,11 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
 def released_actor(actor: str, discussion: dict[str, Any], trusted: set[str]) -> bool:
     from github_plan_release import effective_comments
 
+    from github_plan_status.discussion import released_actor as shared_released_actor
+
     comments = effective_comments([{**comment, "user": {"login": comment.get("author") or ""}}
                                    for comment in discussion.get("comments", [])])
-    relevant = [index for index, comment in enumerate(comments)
-                if str((comment.get("user") or {}).get("login") or "").casefold() in trusted
-                and any(record["session"] == actor.removeprefix("agent:")
-                        for record in github_plan_claim.records(comment.get("body") or ""))]
-    return bool(relevant and relevant[-1] in {index for index, _, _ in github_plan_claim.exact_released_sources(comments)})
+    return shared_released_actor(actor, effective_comments=comments, trusted=trusted)
 
 
 def is_scoping_track(item: dict[str, Any]) -> bool:
