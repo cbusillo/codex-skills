@@ -74,6 +74,12 @@ def validate(record: Any) -> None:
         raise ValueError("Trigger requires a GHSA identifier")
 
 
+def clear(evidence: str) -> dict[str, Any]:
+    record = {"version": 1, "state": "clear", "evidence": evidence}
+    validate(record)
+    return record
+
+
 def describe(record: dict) -> str:
     if record.get("state") == "clear":
         return "cleared: " + record["evidence"]

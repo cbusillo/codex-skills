@@ -8,6 +8,11 @@ completed wait event, and comments once when an agent next action has had no
 activity for 24 hours. Each action rereads its source. Unreadable or changed
 facts stop that action; independent holds, claims and stop boundaries remain.
 
+Legacy records needing an explicit actor or event remain visible in `needs_status`
+and `wait --all`; the Markdown report gives their per-repository counts. Review
+that existing evidence once before rewriting it. No legacy human hold is inferred
+complete from prose.
+
 Two consecutive failed scheduled GitHub workflow runs open, or reopen, one
 agent issue in that repository with the run links. A success or running job
 breaks the failure pair. The workflow id indexes the existing issue; there is

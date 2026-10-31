@@ -977,11 +977,28 @@ def _edit_issue_impl(
     if any(label.casefold() == "direction" for label in normalized_remove_labels):
         reader = github_read.GitHubReader(gh_cmd=gh_cmd, expected_actor=expected_actor,
                                          operation=operation, cache_enabled=False)
-        issue = reader.get_json(f"/repos/{resolved_repo}/issues/{number}", step="direction_route")
-        comments = reader.paged_json(f"/repos/{resolved_repo}/issues/{number}/comments", step_prefix="direction_route")
-        if body is not None:
-            issue = {**issue, "body": body, "body_recorded_at": dt.datetime.now(dt.UTC).isoformat()}
-        route = next_actor.record(issue, comments, github_plan_wait.authors(resolved_repo, expected_actor=expected_actor))
+        try:
+            issue = reader.get_json(f"/repos/{resolved_repo}/issues/{number}", step="direction_route")
+            comments = reader.paged_json(f"/repos/{resolved_repo}/issues/{number}/comments", step_prefix="direction_route")
+            if body is not None:
+                issue = {**issue, "body": body, "body_recorded_at": dt.datetime.now(dt.UTC).isoformat()}
+            if body is None and any("## Current Status" in (comment.get("body") or "") for comment in comments):
+                owner, name = resolved_repo.split("/")
+                response = reader.graphql_json(
+                    "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){createdAt lastEditedAt}}}",
+                    {"owner": owner, "name": name, "number": number}, step="direction_route_body_time")
+                if not response.ok:
+                    raise github_read.GitHubReadError("Current Status body edit time unavailable", result=response, diagnostics=reader.diagnostics())
+                source_time = response.body["data"]["repository"]["issue"]
+                recorded_at = source_time["lastEditedAt"] or source_time["createdAt"]
+                if not isinstance(recorded_at, str) or dt.datetime.fromisoformat(recorded_at).tzinfo is None:
+                    raise ValueError("Current Status body edit time invalid")
+                issue["body_recorded_at"] = recorded_at
+            route = next_actor.record(issue, comments, github_plan_wait.authors(resolved_repo, expected_actor=expected_actor))
+        except (github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError, KeyError, TypeError) as exc:
+            failure = getattr(getattr(exc, "result", None), "failure", None)
+            raise _local_error(str(exc), operation=operation, cause=failure.cause if failure else "invalid_response",
+                               actor=actor, expected_actor=expected_actor, completed_steps=steps, failed_step="direction_route") from exc
         if next_actor.direction(route["actor"], route["wait"]):
             raise _local_error("Current Next actor or structured wait still routes this issue to direction",
                                operation=operation, cause="validation_error", actor=actor, expected_actor=expected_actor,

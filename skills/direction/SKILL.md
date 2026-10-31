@@ -18,7 +18,7 @@ resources:
     description: Lists every visible open Director wait independently of labels or posted questions, with age and stale-verification evidence.
   - path: references/stranded-work.md
     kind: reference
-    description: Daily read-only stranded-work sweep, coverage limits and reuse of existing Supervisor Discord delivery.
+    description: Daily next-record sweep, reversible actions, coverage limits and reuse of existing Supervisor delivery.
   - path: scripts/repository_setup.py
     kind: script
     description: Read-only list of the standard setup each non-archived repository is missing, and who fixes each gap.
@@ -30,7 +30,7 @@ commands:
     source: skill
     resource_path: scripts/direction_audit.py
     example_argv: ["uv", "run", "scripts/direction_audit.py", "--stranded-work-only", "--repo", "OWNER/REPO"]
-    purpose: Report aged questions, handoffs, merged links, status mismatches, promises and train holds without changing GitHub or audit markers.
+    purpose: Report next records by default; --apply-next performs their reversible actions within the named Director account.
   - name: direction-audit
     source: skill
     resource_path: scripts/direction_audit.py
@@ -604,7 +604,9 @@ past an age threshold with evidence, next actor and explicit coverage gaps,
 without stamping a turn or audit. Reuse the Supervisor's existing daily
 scheduler and Director Discord helper/destination; record scheduler and receiver
 evidence before calling delivery active. Labels remain helper-managed views,
-never hand-applied state. Findings do not clear real waits or authorize writes.
+never hand-applied state. The daily service supplies `--apply-next`; the shared
+[stranded-work reference](references/stranded-work.md) owns its reversible actions
+and legacy-record review. Findings alone authorize no other write.
 
 The audit of `OWNER/direction` also returns `capacity`, the overall
 direction's weekly numbers for the window since the prior audit: merged pull

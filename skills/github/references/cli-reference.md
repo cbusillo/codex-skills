@@ -1016,7 +1016,8 @@ uv run skills/github/scripts/gh-plan.py close 123 --reason not-planned \
   --reopen-trigger '{"version":1,"kind":"date","at":"2026-12-01","evidence":"Recorded deferral decision"}'
 ```
 
-After reviewing a fired event, retire it with
+The daily applying sweep reopens a fired event and retires it through the shared
+event-clear record. For a reviewed cancellation or completed manual reopening, use
 `close ISSUE --clear-reopen-trigger "<resolution evidence>"`. This publishes a
 superseding `{"version":1,"state":"clear","evidence":"..."}` record and
 removes the discovery label. Use it when review decides no reopening is needed,

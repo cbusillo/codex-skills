@@ -2,7 +2,6 @@
 # requires-python = ">=3.12"
 # dependencies = ["PyYAML==6.0.3"]
 # ///
-"""Read-only stranded-work view of the existing direction audit inventory."""
 from __future__ import annotations
 
 import base64
@@ -212,6 +211,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
            supervisor_bodies: list[dict] | None = None) -> dict:
     """Interpret retained API facts. A finding requests review, never authorizes a write."""
     findings: list[dict] = []
+    needs_status = []
     gaps = list(gaps or [])
     trusted = {name.casefold() for name in trusted} | {name.casefold() for name in owners}
     owners = {name.casefold() for name in owners}
@@ -370,6 +370,9 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
         except (ValueError, TypeError):
             gaps.append({"source": url, "reason": "structured_wait_unreadable"})
             wait = {"state": "review", "waits": []}
+        status = audit.github_direction_next.section_map(item.get("body") or "").get("Current Status", "")
+        if migration := next_actor.migration(status, wait):
+            needs_status.append({"repo": repo, "number": item["number"], "url": url, "next_action": migration})
         if wait["state"] == "waiting":
             kinds = {w["waiting_for"]: attention.current_director_wait(w["waiting_for"], director_terms, owners)
                      for w in wait["waits"]}
@@ -445,7 +448,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
     findings.sort(key=lambda row: (row["since"] or "", row["repo"], row["number"] or 0, row["kind"], row["url"]))
     routed = Counter(row["repo"] for row in findings if row["kind"] == "supervisor_next_action")
     return {"read_only": True, "sampled_at": now.isoformat(), "age_threshold_hours": age_hours,
-            "complete": not gaps, "findings": findings, "coverage_gaps": gaps,
+            "complete": not gaps, "findings": findings, "coverage_gaps": gaps, "needs_status": needs_status,
             "supervisor_next_action_by_repo": dict(sorted(routed.items(), key=lambda pair: (-pair[1], pair[0]))),
             "scope_notes": ["Decisions and completion records outside the selected repositories/history are unverified.",
                             "Unscheduled promises without a parseable due time are not ageable; no promise state is invented.",
@@ -617,31 +620,48 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
             return {}
 
     applied_actions = []
-    writes_stopped = False
     allowed = (director or owner or "").casefold()
-    fresh = github_read.GitHubReader(gh_cmd=reader.gh_cmd, operation="github.direction.stranded_work", cache_enabled=False) if apply_next else None
+    if apply_next and not allowed:
+        raise audit.AuditError("Applying next records requires --owner or --stranded-owner")
+    fresh = github_read.GitHubReader(gh_cmd=reader.gh_cmd, operation="github.direction.stranded_work", cache_enabled=False,
+                                    deadline_at=reader.deadline_at) if apply_next else None
+
+    def fresh_one(path):
+        nonlocal reads
+        if reads >= budget:
+            raise ValueError("request_budget_exhausted")
+        reads += 1
+        return fresh.get_json(path, step="next_recheck")
+
+    def fresh_listing(path, *, stop=None):
+        rows, cut = audit.fetch_paginated(path, fetch=lambda args: fresh_one(args[1]), max_pages=max_pages, stop=stop)
+        if cut:
+            raise ValueError("next_recheck_page_limit")
+        return rows
+
+    def prepare_source(repo, item, comments):
+        record = {"repo": repo, "item": item, "comments": comments}
+        status_body_time(record, source_reader=fresh)
+        return record["item"]
 
     def apply_record(record):
-        nonlocal writes_stopped
         item, repo = record["item"], record["repo"]
-        if not apply_next or writes_stopped or "pull_request" in item or repo.split("/")[0].casefold() != allowed:
+        if (not apply_next or record.get("archived") or "pull_request" in item
+                or repo.split("/")[0].casefold() != allowed):
             return
-        if reader.deadline_at is not None and time.time() >= reader.deadline_at:
-            return
-        trusted = bots | {allowed}
         try:
+            trusted = bots | {allowed}
+            status_body_time(record)
             for action in direction_next.actions(item, record["comments"], trusted=trusted, now=now, one=one, listing=listing):
                 applied = direction_next.apply(repo, item["number"], action, trusted=trusted, now=now,
-                    one=lambda path: fresh.get_json(path, step="next_recheck"),
-                    listing=lambda path: fresh.paged_json(path, step_prefix="next_recheck"))
+                                               one=fresh_one, listing=fresh_listing, prepare_source=prepare_source)
                 applied_actions.append({"repo": repo, "number": item["number"], "kind": action["kind"], "applied": applied})
-        except (ValueError, OSError, subprocess.SubprocessError, github_read.GitHubReadError, github_read.GitHubReadShapeError) as exc:
+        except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError, github_read.GitHubReadError,
+                github_read.GitHubReadShapeError, direction_next.github_issue.IssueError, direction_next.github_comment.CommentError) as exc:
             gaps.append({"source": f"{repo}#{item['number']}", "reason": "next_action_failed", "detail": str(exc)})
-            writes_stopped = True
 
     def check_scheduled(repo):
-        nonlocal writes_stopped
-        if not apply_next or writes_stopped or repo.split("/")[0].casefold() != allowed:
+        if not apply_next or repo.split("/")[0].casefold() != allowed:
             return
         try:
             workflows = []
@@ -654,27 +674,30 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                     break
             else:
                 raise ValueError("Workflow inventory page limit")
-            failed_pairs = []
             for workflow in workflows:
                 if workflow.get("state") != "active":
                     continue
                 payload = one(f"repos/{repo}/actions/workflows/{workflow['id']}/runs?event=schedule&per_page=2")
                 if not isinstance(payload.get("workflow_runs"), list):
                     raise ValueError("Scheduled run inventory unavailable")
-                failed_pairs.extend(direction_next.scheduled_failures(payload["workflow_runs"]))
-            for pair in failed_pairs:
-                marker = f"github-plan:scheduled-job {pair[0]['workflow_id']}"
-                query = quote(f'repo:{repo} is:issue "{marker}"', safe="")
-                found = one(f"search/issues?q={query}")
-                if found.get("incomplete_results") is not False or not isinstance(found.get("items"), list):
-                    raise ValueError("Scheduled job issue lookup incomplete")
-                outcome = direction_next.scheduled_issue(repo, pair, candidates=found["items"])
-                applied_actions.append({"repo": repo, "kind": "scheduled_job", "result": outcome})
-        except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                for pair in direction_next.scheduled_failures(payload["workflow_runs"]):
+                    query = quote(f'repo:{repo} is:issue in:body "Scheduled job ID: {pair[0]["workflow_id"]}"', safe="")
+                    found = one(f"search/issues?q={query}")
+                    if found.get("incomplete_results") is not False or not isinstance(found.get("items"), list):
+                        raise ValueError("Scheduled job issue lookup incomplete")
+                    candidates = []
+                    for found_item in found["items"]:
+                        item = fresh_one(f"repos/{repo}/issues/{found_item['number']}")
+                        item["_comments"] = [row for row in fresh_listing(f"repos/{repo}/issues/{item['number']}/comments")
+                                             if login(row) in bots | {allowed}]
+                        candidates.append(item)
+                    outcome = direction_next.scheduled_issue(repo, pair, candidates=candidates)
+                    applied_actions.append({"repo": repo, "kind": "scheduled_job", "result": outcome})
+        except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError, github_read.GitHubReadError,
+                github_read.GitHubReadShapeError, direction_next.github_issue.IssueError, direction_next.github_comment.CommentError) as exc:
             gaps.append({"source": repo, "reason": "scheduled_job_unavailable", "detail": str(exc)})
-            writes_stopped = True
 
-    def status_body_time(record):
+    def status_body_time(record, *, source_reader=reader):
         """Read body edit time for an incidental merge with body status, or a
         body status that routes the next action to the Supervisor.
 
@@ -682,9 +705,12 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
         This read shares the collector's request budget and reader deadline.
         """
         nonlocal reads, budget
+        if record.get("status_body_updated_at") and source_reader is reader:
+            return
         selected = merged_link(record)
         incidental = selected and not selected[0] and has_status(record["item"])
-        if not incidental and not supervisor_next_action(record["item"].get("body")):
+        commented_status = any(login(comment) in bots | {allowed} and has_status(comment) for comment in record.get("comments", []))
+        if not incidental and not supervisor_next_action(record["item"].get("body")) and not commented_status:
             return
         source = f"{record['repo']}#{record['item']['number']}/status"
         try:
@@ -692,7 +718,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                 raise ValueError("request_budget_exhausted")
             reads += 1
             owner_name, repo_name = record["repo"].split("/")
-            result = reader.graphql_json(
+            result = source_reader.graphql_json(
                 "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){createdAt lastEditedAt}}}",
                 {"owner": owner_name, "name": repo_name, "number": record["item"]["number"]},
                 step="stranded_merged_status")
@@ -708,6 +734,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
             if not stamp(value):
                 raise ValueError("status_edit_time_invalid")
             record["status_body_updated_at"] = value
+            record["item"]["body_recorded_at"] = value
         except (github_read.GitHubReadError, github_read.GitHubReadShapeError, TimeoutError,
                 ValueError, KeyError, TypeError) as exc:
             if isinstance(exc, TimeoutError):
@@ -834,7 +861,6 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                     closed_pr_inventory_complete = False
                 continue
             if state == "open":
-                check_scheduled(repo)
                 register = operational_register(repo, metadata["default_branch"])
                 if register:
                     registers.append(register)
@@ -852,6 +878,8 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                             and "pull_request" not in item and supervisor_next_action(item.get("body"))):
                         supervisor_bodies[(repo, item["number"])] = {"repo": repo, "item": item}
         for repo, metadata, issues in inventories:
+            if state == "open":
+                check_scheduled(repo)
             policy = None
             if any("pull_request" in item and item.get("state") == "open" for item in issues):
                 if policy_reader and reads < budget:
@@ -889,7 +917,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                 seen.add(number)
                 attempted_records += 1
                 before_comments = len(gaps)
-                record = {"repo": repo, "item": item, "default_branch": metadata["default_branch"],
+                record = {"repo": repo, "item": item, "default_branch": metadata["default_branch"], "archived": metadata["archived"],
                           "train_policy": policy,
                           "comments": [] if item.get("comments") == 0 else listing(f"repos/{repo}/issues/{number}/comments")}
                 if len(gaps) != before_comments:
@@ -1059,6 +1087,9 @@ def markdown(result: dict) -> str:
         lines.append(f"Tooling scope: non-archived among {', '.join(result['repositories'])}; history {result['history_days']} days; weekly capacity rank.")
         for row in measure["rows"]:
             lines.append(f"  Tooling PR: {row['url']} net lines {row['net_lines']:+d}; Removed: {', '.join(row['removed']) or 'absent'}")
+    if missing := result.get("needs_status"):
+        counts = Counter(row["repo"] for row in missing)
+        lines.append("Next records needing one-time review (wait --all): " + ", ".join(f"{repo} {count}" for repo, count in sorted(counts.items())))
     for action in result.get("actions", []):
         lines.append(f"Action: {action['kind']} on {action['repo']}#{action.get('number', 'scheduled-job')}; applied={action.get('applied', True)}")
     for row in result["findings"]:

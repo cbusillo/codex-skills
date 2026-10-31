@@ -1,6 +1,7 @@
 """Pure structured-wait format and trusted-record selection."""
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import re
@@ -127,10 +128,11 @@ def resolve_release(record: dict[str, Any], *, product: str, contains_commit: Ca
     return resolved, [entry["release"]["next_action"] for entry in matched]
 
 
-def resolve_events(record: dict[str, Any], *, now: Any, one: Any, listing: Any) -> dict[str, Any]:
+def resolve_events(record: dict[str, Any], *, now: Any, one: Any, listing: Any, kinds: set[str] | None = None) -> dict[str, Any]:
     from . import events
 
     matched = [entry for entry in record["waits"] if "event" in entry
+               and (kinds is None or entry["event"]["kind"] in kinds)
                and events.fired(entry["event"], now=now, one=one, listing=listing)]
     if not matched:
         return record
@@ -138,6 +140,10 @@ def resolve_events(record: dict[str, Any], *, now: Any, one: Any, listing: Any) 
     return {**record, "state": "waiting" if remaining else "clear", "waits": remaining,
             "evidence": record["evidence"] + "\nObserved completed events: " + "; ".join(events.describe(entry["event"]) for entry in matched),
             "replaces": record_digest(record)}
+
+
+def project_dates(record: dict[str, Any]) -> dict[str, Any]:
+    return resolve_events(record, now=dt.datetime.now(dt.UTC), one=None, listing=None, kinds={"date"})
 
 
 def live_lines(text: str, *, prefix: str = PREFIX) -> list[tuple[int, str]]:

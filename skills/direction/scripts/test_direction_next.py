@@ -94,10 +94,20 @@ class NextSweepTests(unittest.TestCase):
         newer.update(url="https://github.com/owner/repo/issues/1", comments=[], provenance={"author": "owner"})
         run, post = Mock(return_value={"issue": newer}), Mock()
         self.assertFalse(
-            sweep.apply("owner/repo", 1, action, trusted=TRUSTED, now=NOW, one=Mock(), listing=Mock(), run=run, post=post)
+            sweep.apply(
+                "owner/repo",
+                1,
+                action,
+                trusted=TRUSTED,
+                now=NOW,
+                one=Mock(return_value=newer),
+                listing=Mock(return_value=[]),
+                run=run,
+                post=post,
+            )
         )
         post.assert_not_called()
-        self.assertEqual(run.call_count, 1)
+        run.assert_not_called()
 
     def test_resolution_returns_an_event_actor_to_agent_without_losing_next_action(self) -> None:
         wait = waits.reviewed(evidence="Window", waiting_for="Window", ends_when="Date arrives", not_before="2026-10-30")
@@ -106,7 +116,17 @@ class NextSweepTests(unittest.TestCase):
         item.update(url="https://github.com/owner/repo/issues/1", comments=[], provenance={"author": "owner"})
         run, post = Mock(return_value={"issue": item}), Mock()
         self.assertTrue(
-            sweep.apply("owner/repo", 1, action, trusted=TRUSTED, now=NOW, one=Mock(), listing=Mock(), run=run, post=post)
+            sweep.apply(
+                "owner/repo",
+                1,
+                action,
+                trusted=TRUSTED,
+                now=NOW,
+                one=Mock(return_value=item),
+                listing=Mock(return_value=[]),
+                run=run,
+                post=post,
+            )
         )
         body = post.call_args.args[2]
         self.assertEqual(sweep.next_actor.read(sweep.next_actor.record({**item, "body": body}, [], TRUSTED)["status"]), "agent")
@@ -116,6 +136,7 @@ class NextSweepTests(unittest.TestCase):
     def test_second_failure_creates_one_agent_issue_and_success_or_running_breaks_the_streak(self) -> None:
         pair = [
             {
+                "id": number,
                 "event": "schedule",
                 "workflow_id": 7,
                 "run_number": number,
@@ -141,10 +162,35 @@ class NextSweepTests(unittest.TestCase):
         run.assert_not_called()
         post.assert_not_called()
         tracked["state"] = "closed"
-        with patch.object(sweep.subprocess, "run", return_value=Mock(returncode=0)) as reopen:
+        with patch.object(sweep.github_issue, "set_issue_state") as reopen:
             sweep.scheduled_issue("owner/repo", pair, candidates=[tracked], run=run, post=post)
-        self.assertIn("reopen", reopen.call_args.args[0])
+            reopen.assert_not_called()
+            pair[0] = {**pair[0], "id": 3, "run_number": 3}
+            sweep.scheduled_issue("owner/repo", pair, candidates=[tracked], run=run, post=post)
+            reopen.assert_called_once()
         self.assertIn(pair[0]["html_url"], post.call_args.args[2])
+        tracked["_comments"] = [{"body": post.call_args.args[2]}]
+        with patch.object(sweep.github_issue, "set_issue_state") as reopen:
+            sweep.scheduled_issue("owner/repo", pair, candidates=[tracked], run=run, post=post)
+            reopen.assert_not_called()
+
+    def test_client_direction_is_not_routing_to_the_direction_session(self) -> None:
+        for person in ("Justin's direction on pricing", "Client direction on the layout"):
+            wait = waits.reviewed(evidence="Client choice", waiting_for=person, ends_when="Client replies")
+            self.assertEqual(actions(issue("person:owner", wait)), [])
+
+    def test_existing_dated_and_agent_waits_remain_visible_for_one_time_review(self) -> None:
+        wait = {
+            "version": 1,
+            "state": "waiting",
+            "evidence": "Historical record",
+            "waits": [
+                {"waiting_for": "Window until November 12, 2026", "ends_when": "Audit opens"},
+                {"waiting_for": "Supervisor", "ends_when": "Completes routing"},
+            ],
+        }
+        self.assertTrue(sweep.next_actor.migration("Next action: Supervisor routes source.", wait))
+        self.assertFalse(sweep.next_actor.migration("Next actor: agent", waits.reviewed(evidence="Reviewed")))
 
 
 if __name__ == "__main__":

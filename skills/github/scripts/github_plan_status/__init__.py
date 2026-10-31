@@ -24,6 +24,7 @@ def reopened(issue: dict[str, Any]) -> bool:
 def derive(issue: dict[str, Any], relationships: dict[str, Any], wait: dict[str, Any], *,
            label_names: Mapping[str, str] = DEFAULT_STATUS_LABELS) -> dict[str, Any]:
     validate_wait(wait)
+    wait = wait_records.project_dates(wait)
     state = str(issue.get("state", "")).casefold()
     if state not in {"open", "closed"} or any(
             str(item.get("state", "")).casefold() not in {"open", "closed"}

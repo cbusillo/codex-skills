@@ -9,7 +9,6 @@ mandatory and independently checks holds, artifacts and current sessions.
 """
 from __future__ import annotations
 
-import datetime as dt
 import fnmatch
 from collections import Counter
 from collections.abc import Callable
@@ -69,8 +68,7 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
         wait = github_plan_wait.current(
             {"body": discussion.get("body") or "", "user": {"login": discussion.get("author") or ""}}, comments, trusted)
         original_wait = wait
-        if all("event" not in entry or entry["event"]["kind"] == "date" for entry in wait["waits"]):
-            wait = waits.resolve_events(wait, now=dt.datetime.now(dt.UTC), one=None, listing=None)
+        wait = waits.project_dates(wait)
         if resume_from:
             source_item = resume_source or item
             source_comments = ([{**comment, "user": {"login": comment.get("author") or ""}}

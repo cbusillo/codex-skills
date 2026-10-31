@@ -23,9 +23,6 @@ import github_api as github_api_core
 import github_comment as github_comment_core
 import github_read as github_read_core
 import github_identity
-import github_plan_landing
-import github_plan_status.references
-import github_plan_wait
 from ready_handoff import (
     client_handoff,
     pending_client_reviews,

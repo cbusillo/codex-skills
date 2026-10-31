@@ -5,6 +5,6 @@
 from __future__ import annotations
 
 try:
-    from github_plan_status.events import PREFIX, INDEX_LABEL, FIELDS, TARGET, date, version, validate, describe, marker, current, fired
+    from github_plan_status.events import PREFIX, INDEX_LABEL, FIELDS, TARGET, date, version, validate, describe, marker, current, fired, clear
 except ModuleNotFoundError:
-    from skills.github.scripts.github_plan_status.events import PREFIX, INDEX_LABEL, FIELDS, TARGET, date, version, validate, describe, marker, current, fired
+    from skills.github.scripts.github_plan_status.events import PREFIX, INDEX_LABEL, FIELDS, TARGET, date, version, validate, describe, marker, current, fired, clear

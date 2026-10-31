@@ -2815,7 +2815,7 @@ def link_native_dependency(
 
 def evaluate_claim_wait(waiting_issue: dict[str, Any], waiting_status: str, config: dict[str, Any], *,
                         wait_resolved: str | None = None, record_status: str | None = None) -> tuple[bool, ClassifiedPlanError | None]:
-    wait = waiting_issue["claim_wait"]
+    wait = github_plan_wait.project_dates(waiting_issue["claim_wait"])
     status_state = next_plan_status(waiting_issue, config)
     has_wait = bool(wait["state"] != "clear" or status_state in {"stale", "done"})
     if has_wait and not wait_resolved:
@@ -4236,7 +4236,8 @@ def wait_once(args: argparse.Namespace) -> None:
             checked += 1
             try:
                 wait = current_wait(issue, comments, repo)
-                reason = "No reviewed structured record" if wait["state"] == "review" else None
+                reason = "No reviewed structured record" if wait["state"] == "review" else "; ".join(
+                    github_plan_next_actor.migration(claim_current_status(issue, issue_plan_sections(issue), comments), wait)) or None
             except (ValueError, PlanError) as exc:
                 reason = str(exc)
             if reason:
@@ -4271,7 +4272,11 @@ def wait_once(args: argparse.Namespace) -> None:
     latest_issue, _, latest_comments, _ = claim_snapshot(args.issue, repo, allow_closed=True)
     if latest_issue["claim_wait"] != current or latest_issue.get("body") != issue.get("body") or latest_comments != comments:
         raise PlanError("Wait evidence changed before the review write; read the new record and discussion")
-    label_direction_route(issue["repo"], issue["number"], github_plan_next_actor.read(status), wait)
+    try:
+        next_actor = github_plan_next_actor.read(status)
+    except ValueError:
+        next_actor = None
+    label_direction_route(issue["repo"], issue["number"], next_actor, wait)
     result = github_comment_core.comment(kind, issue["number"],
         summary + "\n\n" + github_plan_wait.marker(wait), repo=issue["repo"],
         gh_cmd=gh_cmd, expected_actor=expected_actor, operation=CURRENT_OPERATION, dedupe_body=True)
@@ -6641,7 +6646,7 @@ def cmd_close(args: argparse.Namespace) -> None:
         except ValueError as exc:
             raise PlanError(f"Invalid --reopen-trigger: {exc}") from exc
     if getattr(args, "clear_reopen_trigger", None) is not None:
-        trigger = {"version": 1, "state": "clear", "evidence": args.clear_reopen_trigger}
+        trigger = github_plan_trigger.clear(args.clear_reopen_trigger)
         try:
             github_plan_trigger.validate(trigger)
         except ValueError as exc:

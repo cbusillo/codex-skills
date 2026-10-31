@@ -106,6 +106,22 @@ def test_dated_wait_becomes_agent_work_when_its_event_arrives() -> None:
         assert classify(row)["state"] == expected
 
 
+def test_dated_wait_is_actionable_through_plan_selection_and_claim_preflight() -> None:
+    module = cli.load_module()
+    record = wait.reviewed(evidence="Dated checkpoint", waiting_for="Checkpoint date", ends_when="Date arrives", not_before="2000-01-01")
+    raw = cli.issue(1, labels=[module.DEFAULT_CONFIG["labels"][key] for key in ("plan", "waiting")])
+    raw["repo"] = "owner/repo"
+    selected = direction.evaluate_direction_node(raw, config=module.DEFAULT_CONFIG, focus=None,
+        relationships=cli.relationships(), structured_wait=record)["item"]
+    assert selected.get("exclusion") != "waiting"
+    assert selected["plan_status"] == "active"
+    raw["claim_wait"] = record
+    assert module.evaluate_claim_wait(raw, "", module.DEFAULT_CONFIG) == (False, None)
+    record["waits"].append({"waiting_for": "Client acceptance", "ends_when": "Client accepts"})
+    has_wait, error = module.evaluate_claim_wait(raw, "", module.DEFAULT_CONFIG)
+    assert has_wait and error is not None
+
+
 def test_current_waits_and_authorized_status_override_prevent_false_availability() -> None:
     row = item()
     row['discussion']['comments'] = [{'id': 1, 'author': 'owner', 'body': wait.marker(wait.reviewed(evidence='Owner test required', waiting_for='Owner acceptance', ends_when='Owner records acceptance'))}]

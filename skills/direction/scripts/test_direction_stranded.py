@@ -592,6 +592,98 @@ class InventoryTests(unittest.TestCase):
     def collect(self, **kwargs):
         return sweep.collect(["test/repo"], reader=self.reader, now=self.now, **kwargs)
 
+    def applying_reader(self) -> None:
+        self.reader.gh_cmd = "fake-gh"
+        self.reader.deadline_at = 10000000000.0
+        original = self.reader.get_json
+
+        def read(path: str, *, step: str) -> Any:
+            if "/actions/workflows?" in path:
+                return {"workflows": [], "total_count": 0}
+            return original(path, step=step)
+
+        self.reader.get_json = read
+
+    def test_applying_release_recheck_accepts_stop_and_keeps_the_read_deadline(self) -> None:
+        self.applying_reader()
+        event = {"version": 1, "kind": "release_published", "repo": "test/repo", "minimum_tag": "v1.0", "evidence": "Release window"}
+        item = {"number": 1, "state": "closed", "comments": 0, "user": {"login": "test"},
+                "body": sweep.github_plan_trigger.marker(event), "html_url": "https://github.com/test/repo/issues/1"}
+        self.reader.pages[("repos/test/repo/issues", 1, "closed")] = [item]
+        self.reader.repositories["repos/test/repo/issues/1"] = item
+        self.reader.pages[("repos/test/repo/releases", 1, None)] = [
+            {"tag_name": "v1.0", "draft": False, "prerelease": False, "published_at": self.now.isoformat()}]
+        original_apply = sweep.direction_next.apply
+        posts = unittest.mock.Mock()
+
+        def apply(repo: str, number: int, action: dict, **kwargs: Any) -> bool:
+            return original_apply(repo, number, action, **kwargs, run=unittest.mock.Mock(), post=posts)
+
+        with (patch.object(sweep.github_read, "GitHubReader", return_value=self.reader) as factory,
+              patch.object(sweep.direction_next, "apply", side_effect=apply),
+              patch.object(sweep.direction_next.github_issue, "set_issue_state") as reopen,
+              patch.object(sweep.direction_next.github_issue, "edit_issue")):
+            result = self.collect(apply_next=True, director="test")
+        reopen.assert_called_once()
+        self.assertTrue(any(row["kind"] == "reopen" and row["applied"] for row in result["actions"]))
+        self.assertEqual(factory.call_args.kwargs["deadline_at"], self.reader.deadline_at)
+        self.assertFalse(any(gap["reason"] == "next_action_failed" for gap in result["coverage_gaps"]))
+        self.assertIn("state", posts.call_args.args[2])
+
+    def test_one_unreadable_record_does_not_stop_later_actions(self) -> None:
+        self.applying_reader()
+        clear = sweep.github_plan_wait.marker(sweep.github_plan_wait.reviewed(evidence="Available agent step"))
+        items = [{"number": number, "state": "open", "comments": 0, "user": {"login": "test"},
+                  "updated_at": "2026-10-10T00:00:00Z", "body": "## Current Status\nNext actor: agent\nNext action: Finish.\n" + clear}
+                 for number in (1, 2)]
+        self.reader.pages[("repos/test/repo/issues", 1, "open")] = items
+        failure = sweep.direction_next.github_issue._local_error(
+            "fixture read refusal", operation="github.issue.edit", cause="authorization_denied", failed_step="labels")
+        with (patch.object(sweep.github_read, "GitHubReader", return_value=self.reader),
+              patch.object(sweep.direction_next, "apply", side_effect=[failure, True]) as apply):
+            result = self.collect(apply_next=True, director="test")
+        self.assertEqual(apply.call_count, 2)
+        self.assertEqual([row["number"] for row in result["actions"]], [2])
+        self.assertTrue(any(gap["reason"] == "next_action_failed" for gap in result["coverage_gaps"]))
+
+    def test_archived_reopen_triggers_are_reported_without_writes(self) -> None:
+        self.applying_reader()
+        self.reader.repositories["repos/test/repo"]["archived"] = True
+        event = {"version": 1, "kind": "date", "at": "2026-01-01", "evidence": "Historical checkpoint"}
+        self.reader.pages[("repos/test/repo/issues", 1, "closed")] = [{
+            "number": 1, "state": "closed", "comments": 0, "user": {"login": "test"}, "body": sweep.github_plan_trigger.marker(event)}]
+        with (patch.object(sweep.github_read, "GitHubReader", return_value=self.reader),
+              patch.object(sweep.direction_next, "apply") as apply):
+            result = self.collect(apply_next=True, director="test")
+        apply.assert_not_called()
+        self.assertTrue(any(row["kind"] == "reopen_trigger_fired" for row in result["findings"]))
+
+    def test_applying_scheduled_job_uses_the_latest_pair_for_each_workflow(self) -> None:
+        self.applying_reader()
+        original = self.reader.get_json
+        pair = [{"id": number, "workflow_id": 7, "event": "schedule", "run_number": number,
+                 "status": "completed", "conclusion": "failure"} for number in (2, 1)]
+
+        def read(path: str, *, step: str) -> Any:
+            if "/actions/workflows?" in path:
+                return {"workflows": [{"id": 7, "state": "active"}], "total_count": 1}
+            if "/actions/workflows/7/runs?" in path:
+                return {"workflow_runs": pair, "total_count": 200}
+            if path.startswith("search/issues?"):
+                return {"incomplete_results": False, "items": []}
+            return original(path, step=step)
+
+        self.reader.get_json = read
+        with (patch.object(sweep.github_read, "GitHubReader", return_value=self.reader),
+              patch.object(sweep.direction_next, "scheduled_issue", return_value={"issue": {"number": 8}}) as intake):
+            result = self.collect(apply_next=True, director="test")
+        intake.assert_called_once_with("test/repo", pair, candidates=[])
+        self.assertTrue(any(row["kind"] == "scheduled_job" for row in result["actions"]))
+
+    def test_applying_scope_must_name_the_director_account(self) -> None:
+        with self.assertRaises(audit.AuditError):
+            self.collect(apply_next=True)
+
     def test_daily_collector_computes_tooling_share_and_sender_keeps_it(self) -> None:
         pulls: dict[int, dict[str, Any]] = {number: {"number": number, "title": "Tool change", "body": "Removed: unused code" if number % 2 else "",
                           "labels": [{"name": "own-project"}] if number == 23 else [],
