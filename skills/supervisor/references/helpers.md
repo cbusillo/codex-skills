@@ -1222,8 +1222,8 @@ session's normal handoff and run `session_closeout.py` with the exact native ID
 and the original `<attempt>/<harness>-closeout` evidence directory. The saved
 `<harness>_source` gives its native ID, original ledger and generation. Once all
 old sessions have retired, run the poll command with `--supersede-failed`. It
-revalidates those exact closeouts through the existing helper, refuses changed
-generations or uncertain mutations, includes later landings, and preserves the
+validates those exact retired journals in process, refuses changed generations
+or uncertain mutations, includes later landings, and preserves the
 old attempt while starting fresh sessions. It can retry the same tip after an
 environment repair. It never skips missing merged-PR proof or rewritten history.
 
@@ -1241,8 +1241,13 @@ the directory suffix does not supply authority. A smoke that failed before
 creating an original closeout uses its resumed session's verified normal handoff.
 It requires the original process generation to have exited, the retained launch to match the
 original fingerprint, and the canonical closure to match the original native ID,
-account and transcript. It revalidates the exact retired generation's closeout
-before starting fresh verification. The old smoke remains a failed attempt;
+account and transcript. A completed journal's retirement marker proves its
+finish and terminal disappearance. Revalidation checks the matching canonical
+closure, handoff, absent active ledger entry and native transcript/action
+freshness; it never probes the retired PID or TTY, repeats GitHub claim/handoff
+checks, or rewrites retained closeout receipts. Incomplete journals still need
+normal closeout; uncertain mutations stop for reconciliation.
+The old smoke remains a failed attempt;
 only the new batch may pass. No original fingerprint or receipt is replaced.
 
 After recovery succeeds, clear the runner's `catalog` marker and restart that

@@ -343,7 +343,7 @@ class CatalogLandingTests(unittest.TestCase):
                       patch.object(landing.closure, "source_records", return_value={} if failure == "missing_closure" else {"native": closed}),
                       patch.object(landing, "read_launch_receipt", return_value=original),
                       patch.object(landing.session_liveness, "process_absent", return_value=failure != "live_original"),
-                      patch.object(operation, "run", return_value={"ok": True}) as revalidate):
+                      patch.object(landing, "validate_retired_closeout") as revalidate):
                     if failure not in {None, "no_original_journal", "late_registration", "unrelated_uncertain"}:
                         with self.assertRaises(GateFailed) as refusal:
                             landing.require_closed_smokes(self.config, operation)
@@ -351,8 +351,8 @@ class CatalogLandingTests(unittest.TestCase):
                         revalidate.assert_not_called()
                     else:
                         landing.require_closed_smokes(self.config, operation)
-                        self.assertIn(str(recovery.evidence), revalidate.call_args.args[1])
-                        self.assertNotIn(str(old.evidence), revalidate.call_args.args[1])
+                        self.assertEqual(revalidate.call_args.args[1].evidence, recovery.evidence)
+                        self.assertNotEqual(revalidate.call_args.args[1].evidence, old.evidence)
                 self.assertEqual({path: path.read_bytes() for path in retained}, retained)
 
     def test_prelaunch_read_failure_retries_without_explicit_resume(self) -> None:

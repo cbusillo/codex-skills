@@ -102,7 +102,7 @@ class OperationTests(unittest.TestCase):
                             {"type": "event_msg", "payload": {"type": "agent_message", "message": safe}},
                             {"type": "event_msg", "payload": {"type": "task_complete"}}] if entry["harness"] == "codex" else
                            [{"type": "assistant", "sessionId": "native", "message": {"content": [{"type": "text", "text": safe}], "stop_reason": "end_turn"}}])
-                transcript.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+                transcript.write_text("\n".join(json.dumps({**row, "timestamp": "2026-01-01T00:00:00Z"}) for row in records) + "\n")
                 ledger = root / "ledger.json"
                 ledger.write_text(json.dumps([entry]))
                 normalized = {**entry, "transcript": str(root / entry["transcript"])}
@@ -168,14 +168,17 @@ class OperationTests(unittest.TestCase):
                     elif outcome == "uncertain_exit":
                         with self.assertRaises(check_operation.GateFailed):
                             session_closeout.closeout(args, operation)
-                        session_closeout.closeout(args, check_operation.Operation(close_evidence, close_identity))
+                        with self.assertRaises(check_operation.GateFailed):
+                            session_closeout.closeout(args, check_operation.Operation(close_evidence, close_identity))
+                        self.assertEqual(json.loads(ledger.read_text()), [entry])
+                        self.assertFalse({"finish", "close"}.intersection(calls))
                     elif outcome in {"finish_refused", "close_uncertain", "resumed"}:
                         with self.assertRaises(check_operation.GateFailed):
                             session_closeout.closeout(args, operation)
                         self.assertEqual(json.loads(ledger.read_text()), [entry])
                     else:
                         session_closeout.closeout(args, operation)
-                    if outcome in {"complete", "uncertain_exit"}:
+                    if outcome == "complete":
                         self.assertEqual(json.loads(ledger.read_text()), [])
                         self.assertEqual(calls.count("send"), 1)
                         calls.clear()
@@ -189,13 +192,9 @@ class OperationTests(unittest.TestCase):
                             config = {"ledger": str(ledger), "runtime_worktree": str(root), "repo": "owner/repo",
                                       "supervisor_session": args.supervisor_session}
 
-                            def revalidate(*_: Any, **__: Any) -> dict:
-                                session_closeout.closeout(args, check_operation.Operation(original, close_identity))
-                                return {"ok": True}
-
-                            with patch.object(parent, "run", side_effect=revalidate) as checked:
+                            with patch.object(parent, "run") as checked:
                                 catalog_landing.require_closed_smokes(config, parent)
-                                checked.assert_called_once()
+                                checked.assert_not_called()
                                 parent.state["steps"][entry["harness"] + "_source"]["generation"] = "changed"
                                 with self.assertRaises(check_operation.GateFailed):
                                     catalog_landing.require_closed_smokes(config, parent)
@@ -207,6 +206,76 @@ class OperationTests(unittest.TestCase):
                         self.assertEqual(calls.count("send"), 1)
                     if outcome == "finish_refused":
                         self.assertNotIn("close", calls)
+
+    def test_retired_smokes_reuse_completed_journals_without_process_or_network_probes(self) -> None:
+        for harness in ("claude", "codex"):
+            for failure in (None, "quit", "close", "generation", "retirement", "handoff", "resumed",
+                            "active", "missing", "new_activity", "native_action", "unverified_exit"):
+                with self.subTest(harness=harness, failure=failure), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    ledger = root / "ledger.json"
+                    ledger.write_text("[]")
+                    transcript = root / "source.jsonl"
+                    safe = "Safe to exit: yes"
+                    records = ([{"type": "session_meta", "timestamp": "2026-01-01T00:00:00Z", "payload": {"id": "native"}},
+                                {"type": "event_msg", "timestamp": "2026-01-01T00:00:01Z",
+                                 "payload": {"type": "agent_message", "message": safe}},
+                                {"type": "event_msg", "timestamp": "2026-01-01T00:00:02Z", "payload": {"type": "task_complete"}}]
+                               if harness == "codex" else
+                               [{"type": "assistant", "sessionId": "native", "timestamp": "2026-01-01T00:00:01Z",
+                                 "message": {"content": [{"type": "text", "text": safe}], "stop_reason": "end_turn"}}])
+                    transcript.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+                    closed: dict[str, Any] = {"session_id": "native", "harness": harness, "supervisor_owned": True,
+                              "backend": "tmux", "tmux_session_id": "old-terminal", "transcript": str(transcript),
+                              "pid": 8, "tty": "ttys003", "process_exit_verified": True, "ended_at": "2026-01-01T00:01:00Z",
+                              "handoff_url": "https://github.com/owner/catalog/issues/1#issuecomment-2"}
+                    parent = check_operation.Operation(root / "attempt", ["landing"])
+                    parent.state["steps"][harness + "_launch"] = {"complete": True}
+                    catalog_landing.record_smoke_source(parent, harness, closed, ledger)
+                    identity = [str(ledger.resolve()), closed["session_id"]]
+                    operation = check_operation.Operation(parent.evidence / (harness + "-closeout"), identity)
+                    generation = parent.state["steps"][harness + "_source"]["generation"]
+                    operation.state.update(generation=generation, retired_generation=generation,
+                                           handoff={"url": closed["handoff_url"], "session_id": closed["session_id"]},
+                                           steps={"quit": {"complete": True, "result": {"session_id": "old-terminal", "sent": True}},
+                                                  "close": {"complete": True, "result": {"session_id": "old-terminal", "close_requested": True}}})
+                    check_changes.save_state(operation.evidence / "finish.json", {"exit_code": 0, "stdout": json.dumps({"ok": True, "needs_reconciliation": False}), "stderr": ""})
+                    check_changes.save_state(operation.evidence / "disappearance.json", {"exit_code": 0, "stdout": "[]", "stderr": ""})
+                    if failure in {"quit", "close"}:
+                        operation.state["steps"][failure]["complete"] = False
+                    elif failure in {"generation", "retirement"}:
+                        operation.state["generation" if failure == "generation" else "retired_generation"] = "other"
+                    elif failure == "handoff":
+                        closed["handoff_url"] = "https://github.com/owner/catalog/issues/1#issuecomment-3"
+                    elif failure == "resumed":
+                        closed["resumed_at"] = "2026-01-01T00:02:00Z"
+                    elif failure == "unverified_exit":
+                        closed["process_exit_verified"] = False
+                    elif failure == "active":
+                        ledger.write_text(json.dumps([closed]))
+                    elif failure == "new_activity":
+                        with transcript.open("a") as stream:
+                            stream.write(json.dumps({**records[-1], "timestamp": "2026-01-01T00:02:00Z"}) + "\n")
+                    check_changes.save_state(operation.path, operation.state)
+                    preserved = {path: path.read_bytes() for path in parent.evidence.rglob("*") if path.is_file()}
+                    args = argparse.Namespace(ledger=ledger, session_id="native", supervisor_session="controller", owner="owner")
+                    config = {"ledger": str(ledger), "runtime_worktree": str(root), "repo": "owner/catalog", "supervisor_session": "controller"}
+                    with (patch.object(subprocess, "run", side_effect=AssertionError("external commands forbidden")),
+                          patch.object(session_closeout.session_liveness, "inventory", side_effect=AssertionError("retired TTY probe forbidden")),
+                          patch.object(session_closeout.session_liveness, "process_absent", side_effect=AssertionError("retired PID probe forbidden")),
+                          patch.object(session_closeout.closure, "ownership", return_value=nullcontext()),
+                          patch.object(session_closeout.closure, "source_records", return_value={} if failure == "missing" else {"native": closed}),
+                          patch.object(session_closeout.closure, "require_fresh_action_verdict",
+                                       side_effect=ValueError("pending native action") if failure == "native_action" else None)):
+                        if failure:
+                            with self.assertRaises(ValueError):
+                                catalog_landing.require_closed_smokes(config, parent)
+                            with self.assertRaises(ValueError):
+                                session_closeout.closeout(args, operation)
+                        else:
+                            catalog_landing.require_closed_smokes(config, parent)
+                            session_closeout.closeout(args, operation)
+                    self.assertEqual({path: path.read_bytes() for path in parent.evidence.rglob("*") if path.is_file()}, preserved)
 
     def test_handoff_observation_requires_a_new_completed_turn(self) -> None:
         original = {"state": "turn_ended", "size": 5, "last_text": "landing", "safe_verdict": False}
