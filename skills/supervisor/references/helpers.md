@@ -1249,9 +1249,14 @@ checks, or rewrites retained closeout receipts. A resume command naming that
 native source on any terminal still stops. If retirement was interrupted before
 ledger removal, rerun normal closeout on the same evidence; it removes only the
 exact matching finished generation under the ledger lock. Incomplete journals
-still need normal closeout. A lost quit/close acknowledgement can be reconciled
-by verified process exit and terminal disappearance, preserving its failed
-receipt; uncertain effects without that proof stop without replay.
+still need normal closeout. A matching retirement marker proves quit/close
+effects even when an older journal retains a lost acknowledgement; revalidation
+preserves that journal and its failed receipt. Normal verified-closure retries
+accept a later local harness only with the same saved generation and bounded
+native arguments, after proving its birth follows the recorded exit cutoff.
+First-time and backfill proof and guarded remote-launch requirements remain.
+Freshness checks include configured transcript copies. Uncertain effects
+without that proof stop without replay.
 The old smoke remains a failed attempt;
 only the new batch may pass. No original fingerprint or receipt is replaced.
 

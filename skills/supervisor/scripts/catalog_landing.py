@@ -32,7 +32,7 @@ from check_operation import (
     release,
 )
 from codex_session_proxy import read_launch_receipt
-from session_closeout import explicit_session, require, validate_retired_closeout
+from session_closeout import closeout_mutations_settled, explicit_session, require, validate_retired_closeout
 from session_record import (
     TranscriptChanged,
     load_ledger,
@@ -441,7 +441,7 @@ def superseded_closeout(operation: Operation, harness: str, source: dict) -> tup
         require(original.get("identity") == [source["ledger"], source["session_id"]]
                 and original.get("generation") == source["generation"],
                 "supersede", "original closeout identity or generation changed")
-        require(not any(step.get("complete") is False for step in original["steps"].values()),
+        require(closeout_mutations_settled(original),
                 "supersede", "original closeout has an uncertain mutation")
     else:
         require(harness + "_closeout" not in operation.state["steps"], "supersede", "recorded closeout journal is missing")
@@ -473,7 +473,7 @@ def superseded_closeout(operation: Operation, harness: str, source: dict) -> tup
         journal = json.loads(path.read_text())
         if journal.get("identity") != [source["ledger"], source["session_id"]]:
             continue
-        require(not any(step.get("complete") is False for step in journal["steps"].values()),
+        require(closeout_mutations_settled(journal),
                 "supersede", "recovery closeout has an uncertain mutation")
         if journal.get("generation") == generation == journal.get("retired_generation"):
             matches.append(path.parent)

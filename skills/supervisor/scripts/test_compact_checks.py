@@ -159,6 +159,7 @@ class OperationTests(unittest.TestCase):
                       patch.object(session_closeout.closure, "ownership", return_value=nullcontext()),
                       patch.object(session_closeout.closure, "store_lock", side_effect=lambda *_, **__: nullcontext()),
                       patch.object(session_closeout.closure, "source_records", return_value={"native": closed}),
+                      patch.object(session_closeout.release, "transcript_roots", return_value=[str(root)]),
                       patch.object(session_closeout.release, "validate_closure")):
                     if outcome in {"draft_before_clear", "draft_after_idle", "turn_after_idle"}:
                         with self.assertRaises(check_operation.GateFailed) as failure:
@@ -210,8 +211,8 @@ class OperationTests(unittest.TestCase):
 
     def test_retired_smokes_reuse_completed_journals_without_process_or_network_probes(self) -> None:
         for harness, recovered in (("claude", False), ("codex", False), ("codex", True)):
-            for failure in (None, "quit", "close", "generation", "retirement", "handoff", "resumed",
-                            "active", "changed_active", "missing", "new_activity", "native_action", "unverified_exit", "source_resume"):
+            for failure in (None, "quit", "close", "incomplete_quit", "incomplete_close", "uncertain_other", "generation", "retirement", "handoff", "resumed",
+                            "active", "changed_active", "missing", "new_activity", "new_copy", "roots_unavailable", "native_action", "unverified_exit", "source_resume"):
                 with self.subTest(harness=harness, recovered=recovered, failure=failure), tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
                     ledger = root / "ledger.json"
@@ -250,8 +251,12 @@ class OperationTests(unittest.TestCase):
                                                   "close": {"complete": True, "result": {"session_id": "old-terminal", "close_requested": True}}})
                     check_changes.save_state(operation.evidence / "finish.json", {"exit_code": 0, "stdout": json.dumps({"ok": True, "needs_reconciliation": False}), "stderr": ""})
                     check_changes.save_state(operation.evidence / "disappearance.json", {"exit_code": 0, "stdout": "[]", "stderr": ""})
-                    if failure in {"quit", "close"}:
-                        operation.state["steps"][failure]["complete"] = False
+                    if failure in {"quit", "close", "incomplete_quit", "incomplete_close"}:
+                        operation.state["steps"][failure.removeprefix("incomplete_")]["complete"] = False
+                        if failure.startswith("incomplete_"):
+                            operation.state.pop("retired_generation")
+                    elif failure == "uncertain_other":
+                        operation.state["steps"]["other_mutation"] = {"complete": False}
                     elif failure in {"generation", "retirement"}:
                         operation.state["generation" if failure == "generation" else "retired_generation"] = "other"
                     elif failure == "handoff":
@@ -265,6 +270,10 @@ class OperationTests(unittest.TestCase):
                     elif failure == "new_activity":
                         with transcript.open("a") as stream:
                             stream.write(json.dumps({**records[-1], "timestamp": "2026-01-01T00:02:00Z"}) + "\n")
+                    copies = root / "other-account"
+                    if failure == "new_copy":
+                        copies.mkdir()
+                        (copies / "native.jsonl").write_text(json.dumps({**records[-1], "timestamp": "2026-01-01T00:02:00Z"}) + "\n")
                     check_changes.save_state(operation.path, operation.state)
                     preserved = {path: path.read_bytes() for path in parent.evidence.rglob("*") if path.is_file()}
                     args = argparse.Namespace(ledger=ledger, session_id="native", supervisor_session="controller", owner="owner")
@@ -281,9 +290,11 @@ class OperationTests(unittest.TestCase):
                           patch.object(session_closeout.closure, "ownership", return_value=nullcontext()),
                           patch.object(session_closeout.closure, "store_lock", side_effect=lambda *_, **__: nullcontext()),
                           patch.object(session_closeout.closure, "source_records", return_value={} if failure == "missing" else {"native": closed}),
+                          patch.object(session_closeout.release, "transcript_roots", return_value=[str(copies)],
+                                       side_effect=ValueError("account scope unavailable") if failure == "roots_unavailable" else None),
                           patch.object(session_closeout.closure, "require_fresh_action_verdict",
                                        side_effect=ValueError("pending native action") if failure == "native_action" else None)):
-                        if failure:
+                        if failure not in {None, "quit", "close"}:
                             with self.assertRaises(check_operation.GateFailed) as refusal:
                                 catalog_landing.require_closed_smokes(config, parent)
                             self.assertEqual(refusal.exception.gate, "supersede")

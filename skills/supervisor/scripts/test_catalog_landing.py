@@ -289,7 +289,7 @@ class CatalogLandingTests(unittest.TestCase):
         generation = lambda row: landing.fingerprint({field: value for field, value in landing.release.closure_identity(row).items()
                                                       if field != "handoff_url"})
         for failure in (None, "missing_closure", "account", "transcript", "native_launch", "ownership", "handoff", "original_generation",
-                        "live_original", "uncertain_original", "uncertain_resume", "unretired_resume", "missing_journal", "duplicate_journal",
+                        "live_original", "uncertain_original", "retired_lost_ack", "unretired_resume", "missing_journal", "duplicate_journal",
                         "no_original_journal", "missing_recorded_original", "late_registration", "unrelated_uncertain"):
             with self.subTest(failure=failure):
                 operation = Operation(self.root / str(failure), ["landing"])
@@ -324,7 +324,7 @@ class CatalogLandingTests(unittest.TestCase):
                 recovery.state.update(generation=generation(closed), retired_generation=generation(closed))
                 if failure == "unretired_resume":
                     recovery.state.pop("retired_generation")
-                if failure == "uncertain_resume":
+                if failure == "retired_lost_ack":
                     recovery.state["steps"]["close"] = {"complete": False}
                 landing.save_state(recovery.path, recovery.state)
                 if failure == "missing_journal":
@@ -344,7 +344,7 @@ class CatalogLandingTests(unittest.TestCase):
                       patch.object(landing, "read_launch_receipt", return_value=original),
                       patch.object(landing.session_liveness, "process_absent", return_value=failure != "live_original"),
                       patch.object(landing, "validate_retired_closeout") as revalidate):
-                    if failure not in {None, "no_original_journal", "late_registration", "unrelated_uncertain"}:
+                    if failure not in {None, "no_original_journal", "late_registration", "unrelated_uncertain", "retired_lost_ack"}:
                         with self.assertRaises(GateFailed) as refusal:
                             landing.require_closed_smokes(self.config, operation)
                         self.assertEqual(refusal.exception.gate, "supersede")

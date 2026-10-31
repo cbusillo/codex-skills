@@ -93,17 +93,23 @@ def _verify_process_exit(entry, ended_at, source_record):
         # share that second; ancestry, not a rounded time, identifies them.
         cutoff -= timedelta(microseconds=1)
 
-    def independent(pid, argv):
-        if closure.guarded_launch_endpoint(pid, argv) is None:
-            return False
-        # Retain the existing saved-generation identity check. A first or
-        # resumed generation instead gets its cutoff from the native pane.
+    def independent(pid: int, argv: list[str]) -> bool:
+        guarded = closure.guarded_launch_endpoint(pid, argv) is not None
         saved = source_record()
-        if saved is not None and not saved.get("resumed_at") and saved.get("process_exit_verified"):
+        if saved is not None and not saved.get("resumed_at") and saved.get("resumed_generation") is None and saved.get("process_exit_verified") is True:
             identity = lambda row: {key: value for key, value in session_record.normalize_ledger_entry(
                 closure.closed_log(), row).items() if not key.startswith("_") and key != "handoff_url"}
-            return identity(saved) == identity(entry)
-        return True
+            if identity(saved) != identity(entry):
+                return False
+            if guarded:
+                return True
+            command = next(arguments for current, _tty, arguments in rows if current == pid)
+            observed, bounded = session_liveness.process_arguments(pid, command)
+            return (not entry.get("_backfill") and bounded and observed == argv
+                    and session_liveness.harness_family(argv[0]) == entry.get("harness")
+                    and not closure.remote_endpoints(argv)
+                    and session_liveness.invocation(argv, bounded=bounded)[1] != "resume")
+        return guarded
 
     def verify(cutoff, replacement):
         return session_liveness.verify_process_exit(
