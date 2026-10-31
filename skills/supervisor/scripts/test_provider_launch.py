@@ -181,6 +181,7 @@ class ResumeLaunchTests(unittest.TestCase):
         self.entry = {"session_id": self.session, "harness": "codex", "supervisor_owned": True,
                       "codex_home": str(self.home), "transcript": str(transcript), "pid": 123}
         self.enterContext(patch.object(session_liveness, "process_absent", return_value=True))
+        self.enterContext(patch.object(session_liveness, "inventory", return_value=[]))
         self.ledger = self.root / "ledger.json"
         self.ledger.write_text(json.dumps([self.entry]))
         self.args = SimpleNamespace(resume_session_id=self.session, ledger=self.ledger,

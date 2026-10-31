@@ -75,6 +75,22 @@ def host_boot_time() -> datetime | None:
         return None
 
 
+def generation_ended(entry: dict) -> bool:
+    pid = entry.get("pid")
+    if type(pid) is not int or pid <= 0:
+        return False
+    if process_absent(pid):
+        return True
+    if entry.get("launch_pid", pid) != pid:
+        return False
+    try:
+        original = datetime.fromisoformat(entry["launch_started_at"])
+        current = process_started_at(pid)
+        return original.tzinfo is not None and original < current <= datetime.now(timezone.utc)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        return False
+
+
 def process_absent(pid):
     """Only the kernel's missing-PID result establishes current absence."""
     if sys.platform not in {"darwin", "linux"} or type(pid) is not int or pid <= 0:

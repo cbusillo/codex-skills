@@ -129,7 +129,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
         import account_choice
         import check_changes
 
-        for failure in (None, "changed_source", "account", "transcript", "metadata", "live_original", "stale_flag", "iterm"):
+        for failure in (None, "changed_source", "account", "transcript", "metadata", "live_original", "stale_flag", "iterm", "missing_terminal"):
             with self.subTest(failure=failure), ReceiptFixture() as f:
                 ledger = f.root / "ledger.json"
                 source = {**f.entry, "backend": "tmux", "tmux_session_id": "old-terminal",
@@ -160,8 +160,12 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     result.pop("tty")
                     result.pop("tmux_socket")
                 terminal = {**result, "tty": "/dev/resumed-tty"}
+                if failure == "missing_terminal":
+                    result.pop("window_id")
+                    terminal["tty"] = None
                 with (patch.object(closure, "process_started_at", return_value=born),
                       patch.object(session_liveness, "process_absent", return_value=failure != "live_original"),
+                      patch.object(session_liveness, "process_started_at", return_value=datetime.fromisoformat(source["launch_started_at"])),
                       patch.object(iterm_tab, "LAUNCH_TIMEOUT", 0),
                       patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps([terminal])))):
                     if failure not in (None, "stale_flag", "iterm"):
@@ -221,6 +225,26 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     await iterm_tab.register_fresh_launch(Namespace(ledger=ledger, resume_session_id=f.session), result, choice)
                 self.assertEqual(calls, 2)
                 self.assertTrue(result["ledger_recorded"])
+
+    def test_pending_resume_keeps_one_client_without_confusing_queue_invalidation(self) -> None:
+        import session_liveness
+
+        for state in ("queue_invalidation", "published_live", "unpublished_live"):
+            with self.subTest(state=state), ReceiptFixture() as f:
+                with closure.ownership(f.session, create=True):
+                    closure.record_resume(f.session, closure.source_records({f.session})[f.session], method="thread/queue/add", home=f.home)
+                    if state == "published_live":
+                        closure.resumed_launch(f.session, {"codex_home": str(f.home), "launch_pid": 456, "launch_generation": "resumed",
+                                               "launch_started_at": f.entry["launch_started_at"]}, str(f.transcript), "new-tty")
+                rows = [(456, "new-tty", f"codex resume {f.session}")] if state == "unpublished_live" else []
+                with (patch.object(session_liveness, "inventory", return_value=rows),
+                      patch.object(session_liveness, "process_absent", return_value=False),
+                      patch.object(session_liveness, "process_started_at", return_value=datetime.fromisoformat(f.entry["launch_started_at"]))):
+                    if state == "queue_invalidation":
+                        proxy.require_resume_available(f.session)
+                    else:
+                        with self.assertRaises(ValueError):
+                            proxy.require_resume_available(f.session)
 
     def test_concurrent_launch_ledger_appends_preserve_both_workers(self) -> None:
         import iterm_tab

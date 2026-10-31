@@ -456,7 +456,7 @@ def superseded_closeout(operation: Operation, harness: str, source: dict) -> tup
     require(entry["session_id"] == source["session_id"]
             and fingerprint({key: value for key, value in identity.items() if key != "handoff_url"}) == source["generation"],
             "supersede", "retained launch does not prove the original smoke generation")
-    require(session_liveness.process_absent(entry["pid"]), "supersede", "original smoke process remains")
+    require(session_liveness.generation_ended(entry), "supersede", "original smoke process remains")
     with closure.ownership(source["session_id"], create=True):
         closed = closure.source_records({source["session_id"]}).get(source["session_id"])
         require(bool(closed),

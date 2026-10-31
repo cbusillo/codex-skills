@@ -1226,7 +1226,7 @@ def prepare_resume(args):
     if len(entries) != 1 or entries[0].get("supervisor_owned") is not True or entries[0]["harness"] != "codex":
         raise ValueError("resume source is not uniquely Supervisor-owned in the ledger")
     entry = entries[0]
-    if type(entry.get("pid")) is not int or entry["pid"] <= 0 or not session_liveness.process_absent(entry["pid"]):
+    if not session_liveness.generation_ended(entry):
         raise ValueError("resume needs the original source's verified exited PID")
     if not isinstance(entry.get("codex_home"), str):
         raise ValueError("resume ledger needs the source's absolute codex_home")
@@ -1238,7 +1238,7 @@ def prepare_resume(args):
         transcript = Path(entry["transcript"])
         if not any(transcript.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions")):
             raise ValueError("resume transcript is outside the source account")
-        source_endpoint(session, home, transcript=transcript)
+        source_endpoint(session, home, transcript=transcript, for_resume=True)
         config = account_choice.load_config(args.account_config)
         accounts = [account for account in config["accounts"] if account["provider"] == "openai"
                     and Path(account["env"]["CODEX_HOME"]).expanduser().resolve() == home]
@@ -1639,6 +1639,8 @@ async def observe_resume_terminal(result: dict) -> None:
         raise ValueError("retained resume terminal is not unique; preserve the launch")
     for key in ("tty", "window_id", "tab_id"):
         actual = matches[0][key]
+        if not isinstance(actual, str) or not actual:
+            raise ValueError("retained resume terminal identity is unavailable; preserve the launch")
         expected = result.get(key)
         if expected and (expected.removeprefix("/dev/") if key == "tty" else expected) != (
                 actual.removeprefix("/dev/") if key == "tty" else actual):
@@ -1679,7 +1681,7 @@ def refresh_resume_ledger(path: Path, result: dict, source: dict, session: str) 
 
     if result.get("native_session_id") != session or source["session_id"] != session:
         raise ValueError("resume native identity differs from its source")
-    if not session_liveness.process_absent(source["pid"]):
+    if not session_liveness.generation_ended(source):
         raise ValueError("original resume source process remains; preserve both generations")
     with github_plan_closure.store_lock(path, create=True):
         rows = read_launch_ledger(path)
@@ -1687,8 +1689,7 @@ def refresh_resume_ledger(path: Path, result: dict, source: dict, session: str) 
         if len(matches) != 1:
             raise ValueError("resume source is not unique in the ledger")
         entry = dict(source)
-        if (Path(result["transcript"]).resolve() != Path(source["transcript"]).resolve()
-                or Path(result["codex_home"]).resolve() != Path(source["codex_home"]).expanduser().resolve()):
+        if Path(result["transcript"]).resolve() != Path(source["transcript"]).resolve():
             raise ValueError("resumed account or transcript differs from the source")
         for key in ("pid", "tty", "transcript", "codex_home", "launch_pid", "launch_generation", "launch_started_at",
                     "window_id", "tab_id"):
