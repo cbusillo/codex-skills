@@ -211,7 +211,7 @@ it is not required to clear attention. Decisions needing the Director still go
 through numbered Director questions. Edits/new comments reopen attention;
 incomplete coverage is never an all-clear. Each `gh` call has a timeout, and
 each repository's discovery and wait scan has the existing discussion-read budget.
-Structured-wait searches share one such budget across owners.
+Structured-wait searches share one such budget across repository accounts.
 Repository comments are read one page at a time, retaining earlier candidates
 if a later page fails. All thread and reaction reads share one deadline; a read that misses either
 bound is reported as degraded coverage rather than stalling the report.
