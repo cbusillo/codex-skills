@@ -92,6 +92,11 @@
     "status",
     "trace_id"
   ],
+  "product-status-read": [
+    "products",
+    "status",
+    "trace_id"
+  ],
   "production-backup-authority-read": [
     "authority",
     "policy_configuration",

@@ -216,6 +216,7 @@ LOCAL_EXTENSION_ROUTES = {
         "path": "/v1/product-config/testing-hold/apply",
         "mode": "apply",
     },
+    "product-status-read": {"method": "GET", "path": "/v1/products", "mode": "read"},
     "product-environment-read": {
         "method": "GET",
         "path": "/v1/products/{product}/environments/{environment}",
@@ -512,6 +513,7 @@ BOUNDED_READ_RESPONSE_FIELDS: dict[str, frozenset[str]] = {
             "status", "trace_id", "environment",
             "host_network_capacity_available", "host_network_capacity",
         },
+        "product-status-read": {"status", "trace_id", "products"},
         "product-profile-read": {"status", "trace_id", "profile"},
         "product-promotion-status-read": {"status", "trace_id", "promotion_status"},
         "product-secret-bindings-read": {

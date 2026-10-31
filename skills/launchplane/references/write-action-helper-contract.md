@@ -522,17 +522,20 @@ installed local helper bindings.
   `null`, never an empty all-clear. `other_warning_count` counts lane warnings
   whose detail is absent from topology warnings, matching the sidebar's separate
   warning branch without exposing prose. Missing warning inputs remain unknown.
-  Passing health checks and verified runtime identity alone do not establish a
-  green product. This bounded read exposes red evidence; complete amber/green
-  state also needs the sidebar's placement, public-observation and applicability
-  inputs. Verify green with complete canonical sidebar data, including incidents,
-  TLS and product warnings.
-  Route-diagnostic warning codes remain route-change evidence and are excluded
-  by the sidebar's `healthWarnings` rule; their severity alone is not a color.
-  Preserve unknown and truncated results.
-  Incident summaries, warning detail, certificate contents, URLs and other
-  topology fields are omitted. The helper reports evidence, not a second color
-  algorithm or authority to clear an incident.
+  Use `product-status-read` for the sidebar's status rather than deriving a
+  color from this diagnostic projection. Missing or truncated inputs stay unknown.
+
+- `product-status-read` makes one product-inventory read and
+  returns each caller-visible product and every recorded lane's service-computed sidebar `tone` and `description`,
+  sidebar reasons and attention and warning reasons, plus product warnings. It uses the same
+  `lane_status` result and expiry transitions the UI renders, with no local health
+  algorithm. `evaluated_at` identifies the source read and `valid_until` is the
+  next computed transition, if any. A lane omitted from the complete product
+  overview is not recorded, as with the sidebar's absent-lane icon. Missing status
+  reports `lane_status_unavailable`; malformed selected status or warning inputs fail the read; they never become a green result. Private
+  prose is redacted with `text_redacted` or `warning_text_redacted` disclosed.
+  This read grants no authority to change a lane or clear an incident.
+
 - A healthy deployment does not establish a qualified release candidate. Before
   reporting release readiness, match testing's `target.artifact` and observed
   runtime identity from `product-environment-read` to the exact candidate, and
