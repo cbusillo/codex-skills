@@ -317,6 +317,31 @@ def complete_comments(reader: github_read.GitHubReader, node: dict[str, Any]) ->
     node["comments"] = {"totalCount": len(completed["comments"]), "nodes": completed["comments"]}
 
 
+def complete_pr_comments(reader: github_read.GitHubReader, node: dict[str, Any]) -> None:
+    for pr in node["closedByPullRequestsReferences"]["nodes"]:
+        if not isinstance(pr, dict):
+            continue
+        comments = pr["comments"]
+        if pr["state"] != "OPEN" or not truncated(comments):
+            continue
+        pr["comments"] = None
+        reference = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/([1-9][0-9]*)", pr["url"])
+        if reference is None or int(reference[2]) != pr["number"]:
+            raise ValueError("closing PR identity is unknown")
+        completed = reader.paged_json(
+            f"/repos/{reference[1]}/issues/{pr['number']}/comments", step_prefix=f"board_pr_{pr['number']}_comments")
+        if len(completed) != comments["totalCount"] or len({item["id"] for item in completed}) != len(completed):
+            raise ValueError("closing PR comment history is incomplete or changed")
+        nodes = []
+        for item in completed:
+            actor = (item["user"] or {}).get("login", "")
+            typename = "Bot" if actor.endswith("[bot]") else "User"
+            nodes.append({"databaseId": item["id"], "body": item["body"], "createdAt": item["created_at"],
+                          "updatedAt": item["updated_at"], "url": item["html_url"],
+                          "author": {"__typename": typename, "login": actor.removesuffix("[bot]")}})
+        pr["comments"] = {"totalCount": len(nodes), "nodes": nodes}
+
+
 def claim_evidence(reader: github_read.GitHubReader, repo: str, identifier: int) -> dict[str, Any] | None:
     try:
         return reader.get_json(f"/repos/{repo}/issues/comments/{identifier}", step="board_claim_evidence")
@@ -369,6 +394,7 @@ def descendants(reader: github_read.GitHubReader, node: dict[str, Any], errors: 
                 child.update(expanded)
                 refs = register(child)
             complete_comments(reader, child)
+            complete_pr_comments(reader, child)
             comments = [github_work_graph.graphql_comment(comment) for comment in child["comments"]["nodes"]]
             if child["state"] != "CLOSED":
                 child["_claim_comments"] = github_plan_release.verified_comments(comments,

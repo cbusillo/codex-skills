@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 
 import goal_board
 from skills.github.scripts.github_api import ApiResult
-from skills.github.scripts import github_plan_body, github_plan_wait, github_plan_status, github_plan_claim
+from skills.github.scripts import github_plan_body, github_plan_graph, github_plan_wait, github_plan_status, github_plan_claim
 
 BOT = {"__typename": "Bot", "login": "shiny-code-app"}
 TRUSTED = {"owner", "shiny-code-app[bot]"}
@@ -473,6 +473,35 @@ class GoalBoardTests(unittest.TestCase):
         self.assertEqual(self.reader.graphql_json.call_args_list[0].args[1]["cursor"], None)
         self.assertEqual(self.reader.graphql_json.call_args_list[1].args[1]["cursor"], "c1")
 
+    def test_pr_handoff_after_first_comment_page_is_read(self) -> None:
+        waiting = comment("Engineering ready; waiting for the Client's acceptance", ident=1)
+        ready = comment(f"Ready for the merge train\n\nHead: {HEAD}", at="2026-10-16T11:00:00Z", ident=101)
+        pull = pr(100, comments=[waiting])
+        pull["comments"]["totalCount"] = 101
+        history = [waiting, *(comment("Progress", ident=ident) for ident in range(2, 101)), ready]
+        self.reader.paged_json.return_value = [github_plan_graph.rest_comment(item) for item in history]
+
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
+                            details(t1=track(1, children=[child(10, prs=[pull])])))
+
+        observed = board["tracks"][0]["children"][0]["open_prs"][0]
+        self.assertEqual(observed["handoff"], "ready")
+        self.reader.paged_json.assert_called_once_with(
+            "/repos/owner/app/issues/100/comments", step_prefix="board_pr_100_comments")
+
+    def test_incomplete_or_failed_pr_history_stays_unknown(self) -> None:
+        ready = comment(f"Ready for the merge train\n\nHead: {HEAD}")
+        for failure in (None, goal_board.github_read.GitHubReadShapeError("missing page")):
+            with self.subTest(failure=failure):
+                pull = pr(100, comments=[ready])
+                pull["comments"]["totalCount"] = 101
+                self.reader.paged_json.side_effect = failure
+                self.reader.paged_json.return_value = [github_plan_graph.rest_comment(ready)]
+                board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
+                                    details(t1=track(1, children=[child(10, prs=[pull])])))
+                self.assertFalse(board["coverage"]["complete"])
+                self.assertEqual(board["tracks"][0]["children"][0]["open_prs"][0]["handoff"], goal_board.UNKNOWN)
+
     def test_failed_or_partial_track_read_says_unknown_and_never_complete(self):
         board = self.replay(listing([{"number": 1, "title": "Track: One"}, {"number": 2, "title": "Track: Two"}]),
                             ApiResult(ok=False, status=502, body=None))
@@ -510,8 +539,10 @@ class GoalBoardTests(unittest.TestCase):
         decided = track(1, comments=[comment("Director decision: yes")])
         decided["comments"]["totalCount"] = 145
         decided["lastEditedAt"] = "2026-10-16T12:00:00Z"
-        ready = pr(100, comments=[comment(f"Ready for the merge train\n\nHead: {HEAD}")])
+        ready = pr(100, comments=[comment(f"Ready for the merge train\n\nHead: {HEAD}", ident=80)])
         ready["comments"]["totalCount"] = 80
+        history = [*(comment("Progress", ident=ident) for ident in range(1, 80)), ready["comments"]["nodes"][0]]
+        self.reader.paged_json.return_value = [github_plan_graph.rest_comment(item) for item in history]
         decided["subIssues"] = {"totalCount": 1, "nodes": [child(12, prs=[ready])]}
         board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=decided))
         self.assertFalse(board["coverage"]["complete"])
