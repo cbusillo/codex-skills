@@ -374,8 +374,7 @@ def landing_pull(reader: GitHubReader, repo: str, landing: str) -> int:
 
 
 def post_result(config: dict, operation: Operation, result: dict) -> str:
-    import github_api
-    import github_comment
+    from skills.github.scripts import github_api, github_comment
 
     body = operation.evidence / "result.md"
     outcome = "PASSED" if result["ok"] else "FAILED"
