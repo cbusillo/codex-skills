@@ -201,15 +201,17 @@ A reply targets an exact comment link or an
 inline-review thread with one eligible external comment; automation may also
 use an unambiguous single-author mention. A reply opening with a person's
 unambiguous people-index name and a comma or colon also addresses their earlier
-comments on that thread, including comments from their indexed agents.
-Comments without a targeted reply
+comments on that thread, including comments from their indexed agents. This
+includes addressed status replies; unfinished requests still stay in planning.
+Shared logins have no inferred addressee. Comments without a targeted reply
 stay flagged, including on closed threads. Director reactions, question or
-decision records, unrelated later comments, generic closeout posts, labels and
-notifications do not answer a comment. Director awareness is diagnostic only;
+decision records, later comments or closeout posts without a targeted address,
+labels and notifications do not answer a comment. Director awareness is diagnostic only;
 it is not required to clear attention. Decisions needing the Director still go
 through numbered Director questions. Edits/new comments reopen attention;
 incomplete coverage is never an all-clear. Each `gh` call has a timeout, and
-repository comments are read one page at a time, retaining earlier candidates
+each repository's discovery and wait scan has the existing discussion-read budget.
+Repository comments are read one page at a time, retaining earlier candidates
 if a later page fails. All thread and reaction reads share one deadline; a read that misses either
 bound is reported as degraded coverage rather than stalling the report.
 

@@ -91,7 +91,7 @@ def watch_report(path: Path, *, window: str = radar.DEFAULT_WINDOW, now: datetim
 def source_errors(name: str, report: dict) -> list[str]:
     errors = [f"ERROR {name}: {report['error']}"] if report.get("error") else []
     coverage = report.get("coverage", {})
-    for key in ("errors", "source_errors", "coverage_gaps", "untrusted_records"):
+    for key in ("errors", "source_errors", "coverage_gaps", "untrusted_records", "unnumbered_sources", "untrusted_sources"):
         for error in report.get(key, []):
             errors.append(f"ERROR {name} {key}: {json.dumps(error, sort_keys=True)}")
     if isinstance(coverage, dict):

@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 from datetime import UTC, datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -1093,13 +1094,14 @@ def test_held_accept_from_client_agent_stays_visible_until_targeted_answer(
 
 @pytest.mark.parametrize("reply_author", ["cbusillo", "fixture-automation"])
 @pytest.mark.parametrize("author", ["casey-client", "client-agent[bot]"])
-@pytest.mark.parametrize("address,ambiguous,answered", [
-    ("Casey,", False, True), ("Hi Casey Client:", False, True),
-    ("I told Casey,", False, False), ("Casey,", True, False),
+@pytest.mark.parametrize("address,ambiguity,answered", [
+    ("Casey,", None, True), ("Hi Casey Client:", None, True),
+    ("I told Casey,", None, False), ("Casey,", "name", False),
+    ("Casey,", "login", False),
 ])
 def test_named_reply_answers_person_and_agent_comments_until_next_edit(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reply_author: str, author: str,
-    address: str, ambiguous: bool, answered: bool,
+    address: str, ambiguity: str | None, answered: bool,
 ) -> None:
     feedback = api_comment(1, author, "2026-07-25T18:00:00Z", "Inventory menus are missing.")
     followup = api_comment(2, author, "2026-07-25T18:01:00Z", "My printers is empty too.")
@@ -1115,8 +1117,10 @@ def test_named_reply_answers_person_and_agent_comments_until_next_edit(
     })
     patch_radar(monkeypatch, "run_json", fake)
     index = people_index(tmp_path)
-    if ambiguous:
+    if ambiguity == "name":
         index.write_text(index.read_text().replace("preferred_reference: Pat", "preferred_reference: Casey"))
+    elif ambiguity == "login":
+        index.write_text(index.read_text().replace("bot_usernames: [director-code-bot]", f"bot_usernames: {json.dumps([author])}"))
     settings = portfolio_settings(thread=["example/repo#42"], people_index=index, include_handled=True)
     payload = github_unanswered_comments.collect_payload(settings)
     expected = {other["id"]} if answered else {feedback["id"], followup["id"], other["id"]}
@@ -2098,6 +2102,38 @@ def test_stuck_gh_call_times_out_as_a_coverage_error(monkeypatch) -> None:
         github_unanswered_comments.run_json([sys.executable, "-c", "import time; time.sleep(30)"])
 
     assert time.monotonic() - started < 10
+
+
+def test_repository_discovery_budget_retains_pages_and_next_repository(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = [0.0]
+    timeouts = []
+    message = api_comment(1, "outside-user", "2026-07-25T18:00:00Z",
+                          issue_url="https://api.github.com/repos/example/repo/issues/42")
+    budget = github_unanswered_comments.GH_CALL_TIMEOUT_SECONDS
+    patch_radar(monkeypatch, "DISCUSSION_READ_DEADLINE_SECONDS", budget)
+
+    def request(command: list[str], **options: Any) -> subprocess.CompletedProcess[str]:
+        endpoint = command[2]
+        if "/issues/comments?" in endpoint and "example/repo/" in endpoint:
+            timeouts.append(options["timeout"])
+            query = parse_qs(urlsplit(endpoint).query)
+            if int(query["page"][0]) == 1:
+                now[0] += budget / 2
+                return subprocess.CompletedProcess(command, 0, json.dumps([message] * int(query["per_page"][0])), "")
+            now[0] += options["timeout"]
+            raise subprocess.TimeoutExpired(command, options["timeout"])
+        return subprocess.CompletedProcess(command, 0, "[]", "")
+
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(subprocess, "run", request)
+    read = partial(github_unanswered_comments.repository_activity,
+                   since=datetime(2026, 7, 1, tzinfo=UTC), until=datetime(2026, 7, 26, tzinfo=UTC),
+                   self_logins={"cbusillo"}, bot_logins={"fixture-automation"})
+    candidates, errors = github_unanswered_comments.bounded_discovery(partial(read, "example/repo"))
+    assert candidates[("example/repo", 42)] == {("issue_comment", message["id"])}
+    assert any("deadline" in error["error"] for error in errors)
+    assert timeouts[1] < timeouts[0]
+    assert github_unanswered_comments.bounded_discovery(partial(read, "example/other")) == ({}, [])
 
 
 FAKE_GH = """

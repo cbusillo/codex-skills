@@ -17,7 +17,7 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, replace
@@ -276,7 +276,15 @@ def completed_before(futures: dict[Future[Any], Any], deadline: float) -> Iterat
 
 
 def deadline_error() -> str:
-    return f"Discussion read deadline of {DISCUSSION_READ_DEADLINE_SECONDS}s passed before this read finished."
+    return "GitHub read deadline passed before this read finished."
+
+
+def bounded_discovery(read: Callable[[], Any]) -> Any:
+    token = read_deadline.set(time.monotonic() + DISCUSSION_READ_DEADLINE_SECONDS)
+    try:
+        return read()
+    finally:
+        read_deadline.reset(token)
 
 
 def run_json(command: list[str]) -> Any:
@@ -447,9 +455,13 @@ def people_identities(self_logins: set[str], index_path: Path | None) -> dict[st
     directors = [person for person in people if set(github_logins(person)[0]) & self_logins]
     automation: dict[str, str] = {}
     named_people: dict[str, set[str]] = {}
+    login_people: dict[str, set[str]] = {}
     for person in people:
+        own, agents = github_logins(person)
+        for login in [*own, *agents]:
+            login_people.setdefault(login, set()).add(str(person.get("id")))
         label = str(person.get("preferred_reference") or person.get("display_name") or person.get("id") or "")
-        for login in github_logins(person)[1]:
+        for login in agents:
             automation[login] = label
         names = [*rollup.as_str_list(person.get("preferred_reference")),
                  *rollup.as_str_list(person.get("display_name")), *rollup.as_str_list(person.get("aliases"))]
@@ -460,7 +472,10 @@ def people_identities(self_logins: set[str], index_path: Path | None) -> dict[st
         names = [name for name, identities in named_people.items() if identities == {str(person.get("id"))}]
         own, agents = github_logins(person)
         for login in [*own, *agents]:
-            address_names[login] = names
+            if len(login_people[login]) == 1:
+                address_names[login] = names
+            elif login in automation:
+                automation[login] = ""
     empty["address_names"] = address_names
     if len(directors) != 1:
         # Scanning another person's repository makes them match too; use no
@@ -1535,23 +1550,27 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = {
                 executor.submit(
-                    repository_activity,
-                    repo,
-                    settings["since"],
-                    settings["until"],
-                    self_logins,
-                    bot_logins,
-                    people["automation"],
+                    bounded_discovery,
+                    partial(
+                        repository_activity,
+                        repo,
+                        settings["since"],
+                        settings["until"],
+                        self_logins,
+                        bot_logins,
+                        people["automation"],
+                    ),
                 ): repo
                 for repo in repositories
             }
-            structured_waits, structured_errors = structured_wait_issues(
-                repositories, settings.get("include_archived", False)
-            )
+            structured_waits, structured_errors = bounded_discovery(partial(
+                structured_wait_issues, repositories, settings.get("include_archived", False)
+            ))
             coverage_errors.extend(structured_errors)
             wait_futures = [
                 executor.submit(
-                    unasked_director_waits, repo, wait_terms, self_logins, bot_logins, structured_waits.get(repo, {})
+                    bounded_discovery,
+                    partial(unasked_director_waits, repo, wait_terms, self_logins, bot_logins, structured_waits.get(repo, {}))
                 )
                 for repo in repositories
             ]
