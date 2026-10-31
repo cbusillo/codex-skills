@@ -187,8 +187,7 @@ Rules for this brief (every Supervisor brief carries them):
 A milestone lead brief
 ([Milestone lead trial, codex-skills#2277](https://github.com/cbusillo/codex-skills/issues/2277);
 Q515) fills the placeholders in double underscores, then carries the rules
-above by link or inclusion. A lead ends its own run with the safe-exit line
-from step 6, not after each item. When several leads share a repository, the
+above by link or inclusion. When several leads share a repository, the
 Supervisor spreads work so one lead does not take the whole PR cap.
 
 ```text
@@ -204,7 +203,7 @@ How a lead works:
 3. Use subagents (the Agent tool) for parallel work under your claim: reading and diagnosis, running tests, your own review of record, drafting comments. Only one subagent or you edits files at a time, in your one task worktree.
 4. After each item: post results on the child issue, keep its Current Status current, release the claim, then take the next item. Track comments are for decisions, not per-slice progress.
 5. People waits: when an item needs a person (Chris, a Client, an outside party), record the wait on the item, post a `Director question:` there under [role words](https://github.com/cbusillo/codex-skills/blob/main/skills/references/role-words.md#legacy-identifiers) if it is Chris's, and move to the next item. Never wait idle on a person.
-6. End a turn at least every two hours with a short progress note saying the Track remains actionable, without a safe-exit line, and wait for the Supervisor's steering or continuation. Stop working only when no item on the Track is actionable by an agent or you need the Director; then keep each child's Current Status and structured waits current, close out with work-closeout, and end with a standalone final line: Safe to exit: yes
+6. Post short progress notes while the Track remains actionable. Stop working only when no item on the Track is actionable by an agent or you need the Director; then keep each child's Current Status and structured waits current, close out with work-closeout, and end with a standalone final line: Safe to exit: yes
 
 For work subject to the shared rules' PR cap, instead of opening another PR:
 1. Help land what is already open there: fix a failing check, resolve a conflict, or answer review findings on the oldest stuck PR.
