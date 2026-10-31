@@ -91,7 +91,7 @@ def watch_report(path: Path, *, window: str = radar.DEFAULT_WINDOW, now: datetim
 def source_errors(name: str, report: dict) -> list[str]:
     errors = [f"ERROR {name}: {report['error']}"] if report.get("error") else []
     coverage = report.get("coverage", {})
-    for key in ("errors", "source_errors", "coverage_gaps", "untrusted_records"):
+    for key in ("errors", "source_errors", "coverage_gaps", "untrusted_records", "unnumbered_sources", "untrusted_sources"):
         for error in report.get(key, []):
             errors.append(f"ERROR {name} {key}: {json.dumps(error, sort_keys=True)}")
     if isinstance(coverage, dict):
@@ -122,12 +122,14 @@ def digest(sources: dict[str, dict]) -> str:
                 lines.append(f"ERROR board {pointer(row)}: {row.get('unread') or 'unread record'}")
             for request in row.get("staffing_requests", []):
                 lines.append(f"STAFF {pointer(request)}: {' '.join(request['body'].split())[:180]}")
-            for question in row.get("open_questions", []):
-                lines.append(f"QUESTION {pointer(question)}")
     questions = sources.get("questions", {})
     lines.append(f"QUEUE {questions.get('queue', 'UNKNOWN')}")
-    for question in questions.get("questions", []):
+    queued = [question for question in questions.get("questions", []) if question.get("registration_url")]
+    unregistered = [question for question in questions.get("questions", []) if not question.get("registration_url")]
+    for question in queued:
         lines.append(f"QUESTION {pointer(question)}: {question.get('delivery', question.get('status', 'unresolved'))}")
+    if unregistered:
+        lines.append(f"UNREGISTERED {len(unregistered)}: {pointer(unregistered[0])}")
     comments = sources.get("comments", {})
     for row in comments.get("attention", []):
         lines.append(f"COMMENT {pointer(row)}: {' '.join((row.get('body_excerpt') or row.get('body') or '').split())[:180]}")

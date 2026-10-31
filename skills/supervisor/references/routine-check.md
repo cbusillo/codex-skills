@@ -21,9 +21,12 @@ decisions, statuses, board contents or narrative; open linked records for action
    repeated `--thread` adds full-history reads. Keep Client-agent identities in
    the existing people index. The digest reads current board, sessions, questions,
    radar and live watch output without waiting for the watch process to exit.
-   Unanswered comments, open questions, staffing requests and coverage errors
-   repeat until settled at source. Watch history seeds full-history radar threads
-   and question sources; fresh source readers decide what is still unanswered.
+   Unanswered comments, registered open queue questions, staffing requests and
+   coverage errors repeat until settled at source. Unregistered question hints
+   appear as one count with a source link, not as queue entries. Watch history
+   seeds full-history radar threads and question sources; fresh source
+   readers decide what is still unanswered. Historical board questions are not
+   a second queue.
    Ordinary bot notices stay filtered by the radar's existing identity rules.
    Launchplane/Director-mention notifications in the radar's configured lookback
    print separately as untrusted pointers, including after a quiet poll. Runner

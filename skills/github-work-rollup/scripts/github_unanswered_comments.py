@@ -17,7 +17,7 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, replace
@@ -62,6 +62,7 @@ DEFAULT_CONFIG = ROOT / ".local/github-work-rollup.yaml"
 DEFAULT_WINDOW = "30d"
 DEFAULT_BOT_LOGINS = ()
 MAX_WORKERS = 8
+REPOSITORY_COMMENT_PAGE_SIZE = 100
 # Each gh call is bounded, and every thread and reaction read shares one deadline.
 GH_CALL_TIMEOUT_SECONDS = 60
 DISCUSSION_READ_DEADLINE_SECONDS = 600
@@ -275,7 +276,15 @@ def completed_before(futures: dict[Future[Any], Any], deadline: float) -> Iterat
 
 
 def deadline_error() -> str:
-    return f"Discussion read deadline of {DISCUSSION_READ_DEADLINE_SECONDS}s passed before this read finished."
+    return "GitHub read deadline passed before this read finished."
+
+
+def bounded_discovery(read: Callable[[], Any]) -> Any:
+    token = read_deadline.set(time.monotonic() + DISCUSSION_READ_DEADLINE_SECONDS)
+    try:
+        return read()
+    finally:
+        read_deadline.reset(token)
 
 
 def run_json(command: list[str]) -> Any:
@@ -300,6 +309,18 @@ def api_list(endpoint: str) -> list[dict[str, Any]]:
     else:
         raise rollup.RollupError(f"GitHub returned a mixed paginated payload for {endpoint}.")
     return [item for page in pages for item in page if isinstance(item, dict)]
+
+
+def repository_comment_pages(endpoint: str) -> Iterator[dict[str, Any]]:
+    page = 1
+    while True:
+        payload = run_json([GH, "api", f"{endpoint}&page={page}"])
+        if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
+            raise rollup.RollupError(f"GitHub returned an invalid comment page for {endpoint}.")
+        yield from payload
+        if len(payload) < REPOSITORY_COMMENT_PAGE_SIZE:
+            return
+        page += 1
 
 
 def authenticated_login() -> str:
@@ -420,7 +441,7 @@ def github_logins(person: dict[str, Any]) -> tuple[list[str], list[str]]:
 
 
 def people_identities(self_logins: set[str], index_path: Path | None) -> dict[str, Any]:
-    empty = {"director_names": [], "director_ambiguous": False, "automation": {}}
+    empty = {"director_names": [], "director_ambiguous": False, "automation": {}, "address_names": {}}
     if index_path is not None and not index_path.expanduser().is_file():
         # An index someone named must exist; only the default index is optional.
         return {**empty, "status": "error", "error": f"people index {index_path} does not exist"}
@@ -433,10 +454,29 @@ def people_identities(self_logins: set[str], index_path: Path | None) -> dict[st
         return {**empty, "status": "error", "error": str(exc)}
     directors = [person for person in people if set(github_logins(person)[0]) & self_logins]
     automation: dict[str, str] = {}
+    named_people: dict[str, set[str]] = {}
+    login_people: dict[str, set[str]] = {}
     for person in people:
+        own, agents = github_logins(person)
+        for login in [*own, *agents]:
+            login_people.setdefault(login, set()).add(str(person.get("id")))
         label = str(person.get("preferred_reference") or person.get("display_name") or person.get("id") or "")
-        for login in github_logins(person)[1]:
+        for login in agents:
             automation[login] = label
+        names = [*rollup.as_str_list(person.get("preferred_reference")),
+                 *rollup.as_str_list(person.get("display_name")), *rollup.as_str_list(person.get("aliases"))]
+        for name in names:
+            named_people.setdefault(name.casefold(), set()).add(str(person.get("id")))
+    address_names: dict[str, list[str]] = {}
+    for person in people:
+        names = [name for name, identities in named_people.items() if identities == {str(person.get("id"))}]
+        own, agents = github_logins(person)
+        for login in [*own, *agents]:
+            if len(login_people[login]) == 1:
+                address_names[login] = names
+            elif login in automation:
+                automation[login] = ""
+    empty["address_names"] = address_names
     if len(directors) != 1:
         # Scanning another person's repository makes them match too; use no
         # names rather than guess which match is the Director.
@@ -628,7 +668,7 @@ def repository_activity(
             "since": format_api_timestamp(since),
             "sort": "updated",
             "direction": "asc",
-            "per_page": 100,
+            "per_page": REPOSITORY_COMMENT_PAGE_SIZE,
         }
     )
     candidate_ids: dict[tuple[str, int], set[tuple[str, int]]] = {}
@@ -639,19 +679,17 @@ def repository_activity(
     )
     for lane, endpoint, normalizer in lanes:
         try:
-            items = api_list(endpoint)
+            for item in repository_comment_pages(endpoint):
+                comment = normalizer(repo, item)
+                if (
+                    comment is None
+                    or not comment_in_window(comment, since, until)
+                    or not is_external_comment(comment, self_logins, bot_logins, automation_logins)
+                ):
+                    continue
+                candidate_ids.setdefault(comment.thread_key, set()).add(comment.key)
         except rollup.RollupError as exc:
             errors.append({"repo": repo, "lane": lane, "error": rollup.trim(str(exc))})
-            continue
-        for item in items:
-            comment = normalizer(repo, item)
-            if (
-                comment is None
-                or not comment_in_window(comment, since, until)
-                or not is_external_comment(comment, self_logins, bot_logins, automation_logins)
-            ):
-                continue
-            candidate_ids.setdefault(comment.thread_key, set()).add(comment.key)
     try:
         threads = opened_threads(repo, since, until)
     except rollup.RollupError as exc:
@@ -874,8 +912,14 @@ def response_targets(
     until: datetime,
     *,
     allow_unambiguous_mention: bool,
+    addressee_names: list[str],
 ) -> bool:
     if exact_comment_reference(response, external):
+        return True
+    if response.thread_key == external.thread_key and any(
+        re.match(rf"(?:Hi\s+|Hello\s+|Hey\s+)?{re.escape(name)}\s*[:,]\s*\S", response.body.strip(), re.IGNORECASE)
+        for name in addressee_names
+    ):
         return True
     external_root = review_thread_root(external)
     if external_root is not None and review_thread_root(response) == external_root:
@@ -918,6 +962,7 @@ def targeted_response_for(
     until: datetime,
     *,
     allow_unambiguous_mention: bool = False,
+    addressee_names: list[str] | None = None,
 ) -> Comment | None:
     responses = sorted(comments, key=lambda comment: (comment_activity_through(comment, until), comment.comment_id))
     for response in responses:
@@ -933,6 +978,7 @@ def targeted_response_for(
             external_comments,
             until,
             allow_unambiguous_mention=allow_unambiguous_mention,
+            addressee_names=addressee_names or [],
         ):
             return response
     return None
@@ -1029,6 +1075,7 @@ def comment_states_for_thread(
     reactions_by_comment: dict[tuple[str, int], list[Reaction] | None],
     until: datetime | None = None,
     automation_logins: dict[str, str] | None = None,
+    address_names: dict[str, list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     effective_until = until or datetime.max.replace(tzinfo=timezone.utc)
     owner_logins = self_logins - bot_logins
@@ -1049,6 +1096,7 @@ def comment_states_for_thread(
             external_comments,
             owner_logins,
             effective_until,
+            addressee_names=(address_names or {}).get(normalize_login(comment.author), []),
         )
         bot_response = targeted_response_for(
             comment,
@@ -1057,6 +1105,7 @@ def comment_states_for_thread(
             bot_logins,
             effective_until,
             allow_unambiguous_mention=True,
+            addressee_names=(address_names or {}).get(normalize_login(comment.author), []),
         )
         reaction_coverage_known = comment.key in reactions_by_comment
         owner_reaction = owner_reaction_for(
@@ -1501,23 +1550,27 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = {
                 executor.submit(
-                    repository_activity,
-                    repo,
-                    settings["since"],
-                    settings["until"],
-                    self_logins,
-                    bot_logins,
-                    people["automation"],
+                    bounded_discovery,
+                    partial(
+                        repository_activity,
+                        repo,
+                        settings["since"],
+                        settings["until"],
+                        self_logins,
+                        bot_logins,
+                        people["automation"],
+                    ),
                 ): repo
                 for repo in repositories
             }
-            structured_waits, structured_errors = structured_wait_issues(
-                repositories, settings.get("include_archived", False)
-            )
+            structured_waits, structured_errors = bounded_discovery(partial(
+                structured_wait_issues, repositories, settings.get("include_archived", False)
+            ))
             coverage_errors.extend(structured_errors)
             wait_futures = [
                 executor.submit(
-                    unasked_director_waits, repo, wait_terms, self_logins, bot_logins, structured_waits.get(repo, {})
+                    bounded_discovery,
+                    partial(unasked_director_waits, repo, wait_terms, self_logins, bot_logins, structured_waits.get(repo, {}))
                 )
                 for repo in repositories
             ]
@@ -1648,6 +1701,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
                 reactions_by_comment,
                 classification_until,
                 people["automation"],
+                people["address_names"],
             )
         )
 
@@ -1725,7 +1779,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
             "An edit to an issue or PR description is caught only by a full-history --thread scan or when the thread is opened in the window.",
             "Configured own automation is excluded. People-index agents (contacts.github.bot_usernames) remain eligible even as GitHub Bot accounts and are labeled with who they act for. Other GitHub bots stay filtered; unlisted human-account logins ending in bot or automation are marked possible_automation.",
             "Waits on the Director are open plan:waiting issues, and open issues whose comments GitHub search finds with a structured wait, whose current wait (the trusted structured record when one is readable, otherwise the Current Status prose marked for review) names the Director's login, a people-index name, or the Director role, with no Director or Owner question still open; an unreadable trusted record is listed as an unresolved wait for review, whether or not a question is open; negated mentions are left out, and waits worded as the Director's own hold (resume, park, hold, select, revisit) are listed as director_hold without raising attention; repository scans only.",
-            "A targeted public reply from the Director or configured automation handles a comment after its latest edit. Exact comment links or an inline-review thread with one eligible external comment target a reply; automation may also use an unambiguous single-author mention.",
+            "A targeted public reply from the Director or configured automation handles a comment after its latest edit. Exact comment links, an inline-review thread with one eligible external comment, or a salutation using an unambiguous people-index name target a reply; automation may also use an unambiguous single-author mention.",
             "Director reactions and question/decision records are diagnostic awareness evidence, not public replies or requirements for clearing attention. Unanswered comments remain flagged even on closed threads; edits and new comments reopen attention.",
             "Opt-in --outbound searches involvement in repositories not owned by the configured human logins, verifies authorship or comment participation, and lists external messages in the window after their latest human activity, including review bodies and inline comments. Only edits with a verified human editor advance that cutoff; automation and maintainer edits do not. Explicit thread and portfolio scopes retain their normal rules when outbound discovery overlaps them. GitHub search indexing, visibility and its 1,000-result cap limit discovery; detected partial results degrade coverage.",
             "With --outbound, threads outside the scanned repositories that mention the Director and were updated in the window are listed as untrusted links. That search runs read-only under the Director gh login and only with the standing approval linked by --mention-approval; without it, the gap is reported as degraded coverage.",
