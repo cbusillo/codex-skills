@@ -96,8 +96,8 @@ class CatalogLandingTests(unittest.TestCase):
             nonlocal elapsed
             elapsed += seconds
 
-        pull = {"number": 3223, "merged_at": "merged", "merge_commit_sha": merge,
-                "base": {"repo": {"full_name": self.config["repo"]}}}
+        pull: dict[str, Any] = {"number": 3223, "merged_at": "merged", "merge_commit_sha": merge,
+                                "base": {"repo": {"full_name": self.config["repo"]}}}
         with (patch.object(landing.time, "time", side_effect=lambda: elapsed),
               patch.object(landing.time, "sleep", side_effect=advance),
               patch.object(landing.GitHubReader, "paged_json", side_effect=[[], [{**pull, "number": 999}], [pull]])):
