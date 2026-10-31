@@ -24,6 +24,9 @@ import github_close_attention
 import github_comment
 import github_agent
 import github_identity
+import github_read
+import github_plan_wait
+from github_plan_status import next_actor
 import github_milestone as github_milestone_core
 
 
@@ -971,6 +974,18 @@ def _edit_issue_impl(
     steps = ["resolve_actor"]
     normalized_add_labels = _split_values(add_labels)
     normalized_remove_labels = _split_values(remove_labels)
+    if any(label.casefold() == "direction" for label in normalized_remove_labels):
+        reader = github_read.GitHubReader(gh_cmd=gh_cmd, expected_actor=expected_actor,
+                                         operation=operation, cache_enabled=False)
+        issue = reader.get_json(f"/repos/{resolved_repo}/issues/{number}", step="direction_route")
+        comments = reader.paged_json(f"/repos/{resolved_repo}/issues/{number}/comments", step_prefix="direction_route")
+        if body is not None:
+            issue = {**issue, "body": body, "body_recorded_at": dt.datetime.now(dt.UTC).isoformat()}
+        route = next_actor.record(issue, comments, github_plan_wait.authors(resolved_repo, expected_actor=expected_actor))
+        if next_actor.direction(route["actor"], route["wait"]):
+            raise _local_error("Current Next actor or structured wait still routes this issue to direction",
+                               operation=operation, cause="validation_error", actor=actor, expected_actor=expected_actor,
+                               completed_steps=steps, failed_step="direction_route")
     normalized_add_assignees = _normalize_assignees(add_assignees, actor)
     normalized_remove_assignees = _normalize_assignees(remove_assignees, actor)
     if set(normalized_add_labels) & set(normalized_remove_labels):

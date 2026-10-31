@@ -638,17 +638,10 @@ weighed-outcome record for the current head, or a change to the base branch's
 and automation identity count; refusals name those identities. A raw Supervisor
 review report does not attest that its findings have been weighed.
 
-It also refuses while the PR names an open issue in the same account's
-repositories, in its title or after a keyword such as `Refs`, that GitHub
-does not list among its closing references, unless that issue has an open
-sub-issue or a recorded wait
-([Q761](https://github.com/cbusillo/direction/issues/98#issuecomment-6386746517)).
-The refusal names each issue. Close it with the PR, or split every remaining
-step into an open sub-issue that names its next actor, or record the event it
-waits on under
-[issue closing](repo-workflow.md#issue-closing-and-post-merge-proof). A
-recorded wait on a decision for the Director also needs its registered
-question linked, under the [wait rule](#planning-claim).
+A partial PR uses `Refs` and leaves the issue open with its concrete Next actor
+and Next action. Ready does not force another issue or a wait for ordinary
+agent work. Record a wait only for an actual person, decision or external event.
+
 
 Post the disposition through the existing comment command:
 
@@ -1218,6 +1211,13 @@ waited for and when each wait ends, or that nothing is waited on; a wait that
 names someone as a live `@login` is refused, so write `<code>@login</code>`. Keep labels current separately
 under [Status Labels](../../github-plan/SKILL.md#status-labels). Native open
 blockers remain independent and cannot be cleared by a wait record.
+
+`wait --not-before YYYY-MM-DD` binds the first wait to the start of that day
+in UTC; a timestamp requires a timezone. `--event JSON` binds it to a checked
+reopen-event kind, such as `issue_closed` or `pr_merged`. Supply only one ending
+event per wait. `next` can surface a passed date immediately; the daily sweep
+records completed events and preserves every independent hold. Agent and
+Supervisor steps use Next actor and Next action, never `--waiting-for`.
 
 `wait --all` reads every open issue and its complete discussion in the explicit
 repository, then lists records needing review. It performs no writes and

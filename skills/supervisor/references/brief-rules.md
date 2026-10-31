@@ -108,8 +108,8 @@ Rules for this brief (every Supervisor brief carries them):
   repositories, and add to the existing issue when one fits. Open a new issue
   only when nothing fits; link it to its parent, and name the next actor and
   the finish line. A slice of ongoing work goes on its parent. Close the issue
-  with the PR that finishes it (`Closes #N`), and split what a PR leaves of a
-  linked issue into owned follow-ups
+  with the PR that finishes it (`Closes #N`); a partial PR keeps the linked
+  issue open with its next actor and action
   ([ready handoff](../../github/references/cli-reference.md#ready-handoffs)).
 - Never grant, copy or invent access or credentials, and never switch
   identity or use a workflow to carry a call Launchplane denied. Record a

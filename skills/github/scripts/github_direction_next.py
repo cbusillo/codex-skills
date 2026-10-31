@@ -771,7 +771,7 @@ def rank_portfolio_work(
         if queue.get("state") == "underway":
             underway.append({**item, "availability": "underway"})
             continue
-        if queue.get("state") == "needs_status":
+        if queue.get("state") == "needs_status" or (queue.get("state") == "review" and queue.get("wait_review_required")):
             needs_status.append(item)
             continue
         if queue.get("state") == "waiting":

@@ -68,3 +68,19 @@ def resolve(text: str, explicit: str | None) -> str:
     if actor is None:
         raise ValueError("Supply --next-actor or a Next actor line in Current Status or the release handoff")
     return actor
+
+
+def record(issue: dict, comments: list[dict], trusted: set[str]) -> dict:
+    from . import discussion, events, waits
+
+    normalized = [{**comment, "author": (comment.get("user") or {}).get("login") or comment.get("author") or ""}
+                  for comment in comments]
+    status = discussion.current_status({**issue, "comments": normalized}, trusted,
+                                       body_recorded_at=issue.get("body_recorded_at"))
+    return {"status": status, "actor": read(status), "action": discussion.status_field(status, "Next action"),
+            "wait": waits.current(issue, comments, trusted), "reopen": events.current(issue, comments, trusted)}
+
+
+def direction(actor: str | None, wait: dict) -> bool:
+    routed = re.compile(r"(?i)\b(?:direction(?:[ :_-]+session)?|weekly[ :_-]+(?:direction[ :_-]+)?audit)\b")
+    return bool(actor and routed.search(actor)) or any(routed.search(entry["waiting_for"]) for entry in wait["waits"])

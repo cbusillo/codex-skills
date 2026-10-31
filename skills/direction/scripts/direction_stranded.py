@@ -18,6 +18,9 @@ from urllib.parse import quote
 from typing import Any
 
 import direction_audit as audit
+import direction_next
+from skills.github.scripts.github_plan_status import next_actor
+from skills.github.scripts.github_plan_status.discussion import status_field
 from skills.direction.scripts.question_id import heading_id
 from skills.github.scripts import github_identity, github_plan_wait, github_plan_trigger, github_read, ready_handoff, github_request_usage
 
@@ -67,10 +70,6 @@ CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:https://
 
 DATE = (r"(?:\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2}))?"
         r"|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? \d{1,2},? \d{4})")
-# A wait's own date names when it ends; a date after "since" or in a cited
-# record ("2026-10-12 scope comment") does not.
-ENDS_AT = re.compile(r"\b(?:until|till|after|by|due|before|no earlier than|on or after)\s+(?:the\s+)?(?:[`*]+)?(" + DATE + ")", re.I)
-LEADING_DATE = re.compile(r"\s*(?:[`*]+)?(" + DATE + ")", re.I)
 REGISTER_FIELD = re.compile(r"(?m)^[-*]\s+\**([A-Za-z][\w ]*?)\**:\**\s*(.*(?:\n[ \t]+\S.*)*)")
 CLAUSE_END = re.compile(r";|\.\s")
 # Repository metadata names its operational register under this docs key.
@@ -91,53 +90,13 @@ def calendar(text: str) -> dt.datetime | None:
     return None
 
 
-NEXT_ACTION = re.compile(r"(?im)^[ \t]*(?:[-*][ \t]*)?\**Next action\**:\**[ \t]*(.*)$")
-# The role is capitalized; a lowercase "supervisor" is a path, skill or description.
-ROLE = r"(?<![\w/.-])Supervisor(?![\w/-])"
-# The Supervisor routes the work when the action opens with it, it is the
-# subject of a verb, or the action waits on or hands off to it. After another
-# verb ("fixes the Supervisor scripts") it is an object, not the subject.
-SUPERVISOR_ACTS = re.compile(
-    rf"^(?:[Tt]he\s+)?{ROLE}"
-    rf"|(?<!s )(?<!s the ){ROLE}\s+(?:\([^)]*\)\s+)?(?:(?:then|first|also|now|still)\s+)?"
-    rf"(?:[a-z][\w-]*s|(?:must|will|should|can|may)\s+[a-z]\w*)\b"
-    rf"|\b(?:[Ww]ait(?:s|ing)?\s+(?:on|for)|[Hh]and(?:s|ed)?(?:\s+it)?(?:\s*offs?|\s+back)?\s+to)\s+(?:the\s+)?{ROLE}")
-
-
 def supervisor_next_action(body: str | None) -> str | None:
-    """The body Current Status Next action when it routes work to the Supervisor."""
-    status = next((v for k, v in audit.github_direction_next.section_map(body or "").items()
-                   if k.casefold() == "current status"), "")
-    line = NEXT_ACTION.search(status)
-    action = line[1].strip() if line else ""
-    return action if SUPERVISOR_ACTS.search(action) else None
-
-
-def ends_at(text: str, *, leading: bool) -> dt.datetime | None:
-    """The earliest date at which a recorded wait or check says it ends."""
-    found = [m[1] for m in ENDS_AT.finditer(text)]
-    if leading and (start := LEADING_DATE.match(text)):
-        found.append(start[1])
-    dates = [d for d in map(calendar, found) if d]
-    return min(dates) if dates else None
-
-
-def dated_waits(item: dict, wait: dict) -> list[tuple[str, dt.datetime]]:
-    """Waits whose own date ends them; the structured record supersedes prose."""
-    if wait["state"] == "clear":
-        return []
-    if wait["state"] == "waiting":
-        rows = [(f"{w['waiting_for']} (ends when: {w['ends_when']})",
-                 ends_at(w["waiting_for"], leading=False) or ends_at(w["ends_when"], leading=True))
-                for w in wait["waits"]]
-        return [(text, due) for text, due in rows if due]
-    body = item.get("body") or ""
-    status = next((v for k, v in audit.github_direction_next.section_map(body).items()
-                   if k.casefold() == "current status"), body)
-    rows = audit.github_direction_next.waiting_records(
-        {"repo": "", "number": item.get("number"), "url": item.get("html_url")}, status)
-    rows = [(r["waiting_for"], ends_at(r["waiting_for"], leading=True)) for r in rows if not r["no_current_wait"]]
-    return [(text, due) for text, due in rows if due]
+    status = audit.github_direction_next.section_map(body or "").get("Current Status", "")
+    try:
+        actor = next_actor.read(status)
+    except ValueError:
+        return None
+    return status_field(status, "Next action") if actor == "agent:supervisor" else None
 
 
 def register_entries(text: str) -> list[dict]:
@@ -432,11 +391,6 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                 add("aged_structured_wait", record, source.get("html_url") or url, since, "; ".join(receivers),
                     "Recorded receiver still has an unresolved wait. Body-only marker age is unknown; issue activity cannot reset the wait clock.",
                     evidence=wait["waits"])
-        for text, due in dated_waits(item, wait):
-            if due <= now:
-                add("passed_dated_wait", record, url, due, "Supervisor",
-                    f"Dated wait passed; re-evaluate its trigger, then resume, re-park or close. Wait: {text}",
-                    evidence=[text])
         blockers = record.get("blockers")
         if ("plan:blocked" in labels(item) and wait["state"] == "clear" and blockers
                 and all(b.get("state") == "closed" and b.get("state_reason") == "completed" for b in blockers)):
@@ -593,7 +547,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
             history_days: int = 30, max_requests: int = 800, max_pages: int = 20,
             quota_reserve: int = 250, owner: str | None = None, director_names: tuple[str, ...] = (),
             question_queue: str | None = None, policy_reader=None, director: str | None = None,
-            worktree_root: pathlib.Path | None = None) -> dict:
+            worktree_root: pathlib.Path | None = None, apply_next: bool = False) -> dict:
     """Reuse the direction audit's paged inventory with one global bounded read budget."""
     gaps: list[dict] = []
     records: list[dict] = []
@@ -661,6 +615,64 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
         except audit.AuditError as exc:
             gaps.append({"source": path, "reason": str(exc)})
             return {}
+
+    applied_actions = []
+    writes_stopped = False
+    allowed = (director or owner or "").casefold()
+    fresh = github_read.GitHubReader(gh_cmd=reader.gh_cmd, operation="github.direction.stranded_work", cache_enabled=False) if apply_next else None
+
+    def apply_record(record):
+        nonlocal writes_stopped
+        item, repo = record["item"], record["repo"]
+        if not apply_next or writes_stopped or "pull_request" in item or repo.split("/")[0].casefold() != allowed:
+            return
+        if reader.deadline_at is not None and time.time() >= reader.deadline_at:
+            return
+        trusted = bots | {allowed}
+        try:
+            for action in direction_next.actions(item, record["comments"], trusted=trusted, now=now, one=one, listing=listing):
+                applied = direction_next.apply(repo, item["number"], action, trusted=trusted, now=now,
+                    one=lambda path: fresh.get_json(path, step="next_recheck"),
+                    listing=lambda path: fresh.paged_json(path, step_prefix="next_recheck"))
+                applied_actions.append({"repo": repo, "number": item["number"], "kind": action["kind"], "applied": applied})
+        except (ValueError, OSError, subprocess.SubprocessError, github_read.GitHubReadError, github_read.GitHubReadShapeError) as exc:
+            gaps.append({"source": f"{repo}#{item['number']}", "reason": "next_action_failed", "detail": str(exc)})
+            writes_stopped = True
+
+    def check_scheduled(repo):
+        nonlocal writes_stopped
+        if not apply_next or writes_stopped or repo.split("/")[0].casefold() != allowed:
+            return
+        try:
+            workflows = []
+            for page in range(1, max_pages + 1):
+                payload = one(f"repos/{repo}/actions/workflows?per_page=100&page={page}")
+                if not isinstance(payload.get("workflows"), list) or type(payload.get("total_count")) is not int:
+                    raise ValueError("Workflow inventory unavailable")
+                workflows.extend(payload["workflows"])
+                if len(workflows) >= payload["total_count"]:
+                    break
+            else:
+                raise ValueError("Workflow inventory page limit")
+            failed_pairs = []
+            for workflow in workflows:
+                if workflow.get("state") != "active":
+                    continue
+                payload = one(f"repos/{repo}/actions/workflows/{workflow['id']}/runs?event=schedule&per_page=2")
+                if not isinstance(payload.get("workflow_runs"), list):
+                    raise ValueError("Scheduled run inventory unavailable")
+                failed_pairs.extend(direction_next.scheduled_failures(payload["workflow_runs"]))
+            for pair in failed_pairs:
+                marker = f"github-plan:scheduled-job {pair[0]['workflow_id']}"
+                query = quote(f'repo:{repo} is:issue "{marker}"', safe="")
+                found = one(f"search/issues?q={query}")
+                if found.get("incomplete_results") is not False or not isinstance(found.get("items"), list):
+                    raise ValueError("Scheduled job issue lookup incomplete")
+                outcome = direction_next.scheduled_issue(repo, pair, candidates=found["items"])
+                applied_actions.append({"repo": repo, "kind": "scheduled_job", "result": outcome})
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
+            gaps.append({"source": repo, "reason": "scheduled_job_unavailable", "detail": str(exc)})
+            writes_stopped = True
 
     def status_body_time(record):
         """Read body edit time for an incidental merge with body status, or a
@@ -822,6 +834,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                     closed_pr_inventory_complete = False
                 continue
             if state == "open":
+                check_scheduled(repo)
                 register = operational_register(repo, metadata["default_branch"])
                 if register:
                     registers.append(register)
@@ -891,6 +904,8 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                         closed_pr_inventory_complete = False
                 comments_complete = len(valid_comments) == len(record["comments"])
                 record["comments"] = valid_comments
+                if comments_complete:
+                    apply_record(record)
                 if state != "open":
                     record["trigger_only"] = metadata["archived"] or not recent
                     if "pull_request" not in item and comments_complete:
@@ -974,6 +989,9 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                         worktree_root, fetch, gaps,
                         lambda slug: slug.casefold() in repos or (owner or "").casefold() == slug.split("/")[0].casefold(),
                     ) if worktree_root else None)
+    result["read_only"] = not apply_next
+    result["actions"] = applied_actions
+    result["complete"] = result["complete"] and not result["coverage_gaps"]
     selected_owners = {repo.split('/')[0] for repo in repos}
     measure = tooling_measure(records, owner=owner or director or (next(iter(selected_owners)) if len(selected_owners) == 1 else None),
                               since=history_start, now=now, fetch=fetch, incomplete=not closed_pr_inventory_complete,
@@ -1041,6 +1059,8 @@ def markdown(result: dict) -> str:
         lines.append(f"Tooling scope: non-archived among {', '.join(result['repositories'])}; history {result['history_days']} days; weekly capacity rank.")
         for row in measure["rows"]:
             lines.append(f"  Tooling PR: {row['url']} net lines {row['net_lines']:+d}; Removed: {', '.join(row['removed']) or 'absent'}")
+    for action in result.get("actions", []):
+        lines.append(f"Action: {action['kind']} on {action['repo']}#{action.get('number', 'scheduled-job')}; applied={action.get('applied', True)}")
     for row in result["findings"]:
         age = f"{row['age_hours']:g}h" if row["age_hours"] is not None else "age unknown"
         lines.append(f"- {row['kind']} ({age}): {row['url']} — {row['next_actor']}. {row['detail']}")

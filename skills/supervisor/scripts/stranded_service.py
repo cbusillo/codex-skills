@@ -138,7 +138,7 @@ def run_once(config_path: Path, stopped: threading.Event, retry_unsent: bool = F
         else:
             scan = [config["uv"], "run", "--no-project", "--no-cache",
                     str(catalog / "skills/direction/scripts/direction_audit.py"),
-                    *config["scan_args"], "--stranded-work-only", "--stranded-format", "markdown"]
+                    *config["scan_args"], "--stranded-work-only", "--stranded-format", "markdown", "--apply-next"]
             with report.open("wb") as out, (attempt / "scan.stderr").open("wb") as err:
                 scan_code = command(scan, catalog, subprocess.DEVNULL, out, err, stopped, 900)
         services.emit("scanned", exit_code=scan_code, report=str(report))
