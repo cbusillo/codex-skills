@@ -20,13 +20,19 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
+from typing import Any
 
 import release_session_claims as helper
 closure = importlib.import_module("github_plan_closure")
+identity = importlib.import_module("github_identity")
 
 ACTOR = "test-automation[bot]"
 SOURCE = {"worker": "trial", "session": "source-session", "branch": "work/trial",
           "claimed_at": "2026-01-01T00:00:00Z"}
+
+
+def patch_attribute(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    return patch.object(target, name, *args, **kwargs)
 
 
 def comment(number, body, author=ACTOR):
@@ -131,21 +137,29 @@ class ReleaseTests(unittest.TestCase):
 
     def test_backfill_posting_contention_never_posts(self) -> None:
         log = self.root / "closed.json"
-        log.write_text(json.dumps([self.entry]))
         argv = ["helper", "backfill", "--closed-log", str(log), "--supervisor-session", "supervisor",
                 "--owner", "test", "--checkout-root", str(self.root), "--confirm-session-ended",
                 "--transcript-root", str(self.root), "--apply"]
-        output = io.StringIO()
-        with Path(str(log) + ".release.lock").open("w") as held:
-            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            with patch.object(helper.sys, "argv", argv), \
-                    patch("github_identity.automation_login", return_value=ACTOR), \
-                    patch.object(helper, "discover", return_value=([], ["test/a"])) as discover, \
-                    patch.object(helper, "release_session") as release, contextlib.redirect_stdout(output):
-                self.assertEqual(helper.main(), 1)
-            discover.assert_called_once()
-            release.assert_not_called()
-        self.assertTrue(json.loads(output.getvalue())["retryable"])
+        def verify(entry: dict, _supervisor: str) -> None:
+            if entry["session_id"] == "invalid-source":
+                raise ValueError("fixture permanent verification failure")
+
+        for permanent_failure in (False, True):
+            with self.subTest(permanent_failure=permanent_failure):
+                rows = [self.entry, *([{**self.entry, "session_id": "invalid-source"}] if permanent_failure else [])]
+                log.write_text(json.dumps(rows))
+                output = io.StringIO()
+                with Path(str(log) + ".release.lock").open("w") as held:
+                    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    with patch.object(helper.sys, "argv", argv), \
+                            patch_attribute(identity, "automation_login", return_value=ACTOR), \
+                            patch.object(helper, "validate_closure", side_effect=verify), \
+                            patch.object(helper, "discover", return_value=([], ["test/a"])) as discover, \
+                            patch.object(helper, "release_session") as release, contextlib.redirect_stdout(output):
+                        self.assertEqual(helper.main(), 1)
+                    discover.assert_called_once()
+                    release.assert_not_called()
+                self.assertEqual(json.loads(output.getvalue())["retryable"], not permanent_failure)
 
     def test_mixed_busy_and_uncertain_release_is_not_retryable(self) -> None:
         log = self.root / "closed.json"
@@ -155,7 +169,7 @@ class ReleaseTests(unittest.TestCase):
                 "--transcript-root", str(self.root), "--apply"]
         output = io.StringIO()
         with patch.object(helper.sys, "argv", argv), \
-                patch("github_identity.automation_login", return_value=ACTOR), \
+                patch_attribute(identity, "automation_login", return_value=ACTOR), \
                 patch.object(helper, "validate_closure"), \
                 patch.object(helper, "discover", return_value=([], ["test/a"])), \
                 patch.object(helper, "release_session", side_effect=[closure.LeaseBusy("busy"),

@@ -1010,7 +1010,9 @@ def main():
             GitHubReadError, GitHubReadShapeError, CommentError) as error:
         if isinstance(error, PartialRelease):
             reports.append(error.report)
-        retryable = isinstance(error, closure.LeaseBusy)
+        retryable = isinstance(error, closure.LeaseBusy) and all(
+            report.get("retryable") is True for report in reports
+            if "error" in report or report.get("issue_refusals") or report.get("pr_claim_handoffs"))
         print(json.dumps({"ok": False, "error": str(error), "completed_sessions": reports,
                           "retryable": retryable,
                           "next_action": ("retry after the shared closure log is available" if retryable else
