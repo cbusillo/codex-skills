@@ -896,9 +896,11 @@ for line in sys.stdin:
               patch("codex_session_proxy.source_endpoint"),
               patch.object(iterm_tab, "inspect_codex_daemon"),
               patch.object(iterm_tab, "source_launch_metadata", side_effect=lambda row, _: row),
+              patch.object(iterm_tab, "register_resumed_launch") as register,
               patch.object(iterm_tab, "startup_prompt_window", return_value=0)):
             row = self.operate("new", window_id=self.window, resume_session_id=native, ledger=self.ledger,
                                command_file=None, brief_file=None, account_provider="openai", account_config=None, account=None)
+        register.assert_called_once_with(self.ledger, row, choice)
         fd = os.open(row["tty"], os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
         self.addCleanup(os.close, fd)
         self.wait_screen(row["session_id"], "RESUMED:")

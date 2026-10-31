@@ -433,19 +433,24 @@ def post_result(config: dict, operation: Operation, result: dict) -> str:
     return posted["url"]
 
 
-def superseded_closeout(config: dict, operation: Operation, harness: str, source: dict) -> tuple[Path, str]:
+def superseded_closeout(operation: Operation, harness: str, source: dict) -> tuple[Path, str]:
     evidence = operation.evidence / (harness + "-closeout")
-    original = json.loads((evidence / "operation.json").read_text())
-    require(original.get("identity") == [source["ledger"], source["session_id"]]
-            and original.get("generation") == source["generation"],
-            "supersede", "original closeout identity or generation changed")
-    require(not any(step.get("complete") is False for step in original["steps"].values()),
-            "supersede", "original closeout has an uncertain mutation")
+    path = evidence / "operation.json"
+    original = json.loads(path.read_text()) if path.exists() else {}
+    if original:
+        require(original.get("identity") == [source["ledger"], source["session_id"]]
+                and original.get("generation") == source["generation"],
+                "supersede", "original closeout identity or generation changed")
+        require(not any(step.get("complete") is False for step in original["steps"].values()),
+                "supersede", "original closeout has an uncertain mutation")
+    else:
+        require(harness + "_closeout" not in operation.state["steps"], "supersede", "recorded closeout journal is missing")
     if original.get("retired_generation") == source["generation"]:
         return evidence, source["generation"]
     require(harness == "codex", "supersede", "original smoke has not completed normal closeout")
     launch = operation.state["steps"]["codex_launch"]["result"]
-    entry = {**launch, "session_id": launch["native_session_id"], "harness": "codex", "supervisor_owned": True,
+    native = read_launch_receipt(Path(launch["native_receipt"])) if not launch.get("transcript") else {}
+    entry = {**launch, **native, "session_id": launch["native_session_id"], "harness": "codex", "supervisor_owned": True,
              "tmux_session_id" if launch.get("backend") == "tmux" else "iterm_session_id": launch["session_id"]}
     identity = release.closure_identity(entry)
     require(entry["session_id"] == source["session_id"]
@@ -454,17 +459,24 @@ def superseded_closeout(config: dict, operation: Operation, harness: str, source
     require(session_liveness.process_absent(entry["pid"]), "supersede", "original smoke process remains")
     with closure.ownership(source["session_id"], create=True):
         closed = closure.source_records({source["session_id"]}).get(source["session_id"])
-        require(bool(closed) and closed.get("session_id") == source["session_id"],
+        require(bool(closed),
                 "supersede", "same native smoke has no canonical closure")
         current = release.closure_identity(closed)
         require(all(current[key] == identity[key] for key in ("harness", "supervisor_owned", "transcript", "codex_home")),
                 "supersede", "closed source differs from the original native smoke")
-        require(bool(original.get("handoff", {}).get("url"))
-                and closed.get("handoff_url") == original["handoff"]["url"],
+        require(not original or closed.get("handoff_url") == original.get("handoff", {}).get("url"),
                 "supersede", "closed source does not preserve the original smoke handoff")
-        release.validate_closure(closed, config["supervisor_session"])
         generation = fingerprint({key: value for key, value in current.items() if key != "handoff_url"})
-    return operation.evidence / (harness + "-closeout-" + generation), generation
+    matches = []
+    for path in operation.evidence.glob(harness + "-closeout-*/operation.json"):
+        journal = json.loads(path.read_text())
+        require(not any(step.get("complete") is False for step in journal["steps"].values()),
+                "supersede", "recovery closeout has an uncertain mutation")
+        if (journal.get("identity") == [source["ledger"], source["session_id"]]
+                and journal.get("generation") == generation == journal.get("retired_generation")):
+            matches.append(path.parent)
+    require(len(matches) == 1, "supersede", "requires one exact retired recovery closeout journal")
+    return matches[0], generation
 
 
 def require_closed_smokes(config: dict, operation: Operation) -> None:
@@ -478,7 +490,7 @@ def require_closed_smokes(config: dict, operation: Operation) -> None:
         if not isinstance(source, dict):
             raise GateFailed("supersede", "original smoke source is missing")
         require(source["ledger"] == str(Path(config["ledger"]).resolve()), "supersede", "original ledger changed")
-        close_evidence, generation = superseded_closeout(config, operation, harness, source)
+        close_evidence, generation = superseded_closeout(operation, harness, source)
         closed = json.loads((close_evidence / "operation.json").read_text())
         require(closed.get("identity") == [source["ledger"], source["session_id"]]
                 and closed.get("generation") == generation == closed.get("retired_generation")

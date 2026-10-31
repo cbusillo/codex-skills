@@ -1249,6 +1249,7 @@ def prepare_resume(args):
     preflight_codex_daemon(choice, exact_source=True)
     account_choice.prepare_launch(choice)
     choice["resume_session_id"] = session
+    choice["resume_source"] = entry
     invocation = ["uv", "run", str(Path(__file__).with_name("codex-session.py").resolve()),
                   "resume", "--session-id", session, "--codex-home", str(home)]
     settings = [f"{key}={os.path.expanduser(value)}" for key, value in choice["env"].items()]
@@ -1624,9 +1625,49 @@ def append_launch_ledger(path: Path, entry: dict) -> None:
                 temporary.unlink(missing_ok=True)
 
 
+def register_resumed_launch(path: Path, result: dict, choice: dict) -> None:
+    import github_plan_closure
+    import session_liveness
+    import session_record
+    from check_changes import save_state
+
+    session = choice["resume_session_id"]
+    with github_plan_closure.ownership(session, create=True):
+        source_launch_metadata(result, choice)
+        if result.get("launch_identity_unavailable") or result.get("native_session_id") != session:
+            raise ValueError("resumed launch identity is unavailable; preserve its receipt")
+        if not session_liveness.process_absent(choice["resume_source"]["pid"]):
+            raise ValueError("original resume source process remains; preserve both generations")
+        with github_plan_closure.store_lock(path, create=True):
+            rows = read_launch_ledger(path)
+            matches = [row for row in rows if row.get("session_id") == session]
+            if len(matches) != 1 or session_record.normalize_ledger_entry(path, matches[0]) != choice["resume_source"]:
+                raise ValueError("resume source changed before ledger refresh; preserve both generations")
+            entry = matches[0]
+            if (Path(result["transcript"]).resolve() != Path(choice["resume_source"]["transcript"]).resolve()
+                    or result["codex_home"] != choice["resume_source"]["codex_home"]):
+                raise ValueError("resumed account or transcript differs from the source")
+            for key in ("pid", "tty", "transcript", "codex_home", "launch_pid", "launch_generation", "launch_started_at",
+                        "window_id", "tab_id"):
+                entry[key] = result[key]
+            for key in ("tmux_session_id", "iterm_session_id", "tmux_socket"):
+                entry.pop(key, None)
+            entry["backend"] = result.get("backend", "iterm")
+            entry["tmux_session_id" if entry["backend"] == "tmux" else "iterm_session_id"] = result["session_id"]
+            if entry["backend"] == "tmux":
+                entry["tmux_socket"] = result["tmux_socket"]
+            save_state(path, rows)
+        result["ledger_recorded"] = True
+
+
 async def register_fresh_launch(args: argparse.Namespace, result: dict, choice: dict | None) -> None:
     path = getattr(args, "ledger", None)
-    if not isinstance(path, Path) or getattr(args, "resume_session_id", None):
+    if not isinstance(path, Path):
+        return
+    if getattr(args, "resume_session_id", None):
+        if not choice or choice.get("resume_session_id") != args.resume_session_id:
+            raise ValueError("resume registration needs the verified source choice")
+        register_resumed_launch(path, result, choice)
         return
     from codex_session_proxy import read_launch_receipt
     if choice is None:

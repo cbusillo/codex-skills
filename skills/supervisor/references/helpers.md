@@ -1229,12 +1229,16 @@ environment repair. It never skips missing merged-PR proof or rewritten history.
 
 If a Codex smoke needs the supported [exact-source resume](#release-a-verified-finished-session),
 keep its original launch, source fingerprint and closeout journal unchanged.
-Resume that native thread in its original account, maintain its ledger row from
-the verified resume receipt, obtain its final safe verdict, and close it normally
-with the original handoff URL. Use `<attempt>/codex-closeout-<generation>` for
-this closeout, where `generation` is the fingerprint of
-`release_session_claims.closure_identity(entry)` without `handoff_url`, as used
-by `record_smoke_source`. Then use `--supersede-failed`, not ordinary polling.
+Before resuming, close the original dead terminal through `iterm_tab.py close`
+with its original ledger entry and confirm disappearance. Resume that native
+thread in its original account, obtain its final safe verdict, and close it normally
+with the original handoff URL. The launcher refreshes only this source's ledger
+row from the verified resume generation; no ledger hand edit is needed.
+Use a new directory named `<attempt>/codex-closeout-<recovery-name>` for this
+closeout, then use `--supersede-failed`, not ordinary polling. Supersede selects
+the single journal proving retirement of the current canonical generation;
+the directory suffix does not supply authority. A smoke that failed before
+creating an original closeout uses its resumed session's verified normal handoff.
 It requires the original process to be absent, the retained launch to match the
 original fingerprint, and the canonical closure to match the original native ID,
 account and transcript. It revalidates the exact retired generation's closeout
@@ -1556,8 +1560,11 @@ The managed RPC ingress requires that same spelling for every action, so another
 spelling cannot select a different source freeze or ownership lease. Process
 observation recognizes all UUID spellings the native CLI accepts as the same thread.
 The helper invalidates the old receipt before sending or launching. `status`
-returns the resumed generation's metadata for the ledger; preserve the native
-thread and verified handoff when updating it. A later `finish` accepts that new
+returns the resumed generation's metadata. `iterm_tab.py new --resume-session-id`
+refreshes that exact source's ledger row under the source lease and ledger lock,
+preserving its native thread, account, transcript, verified handoff and other
+workers' rows. A changed source or unverified generation leaves the ledger
+unchanged and retains the launch for reconciliation. A later `finish` accepts that new
 generation, never the old receipt. Terminal `/resume` input names this route
 instead for a single-line Codex command; Claude targets retain their own resume
 command, and multiline pasted reference text is unchanged. When successor

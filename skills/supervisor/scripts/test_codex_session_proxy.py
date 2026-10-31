@@ -120,6 +120,52 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             (f.root / "stop").touch()
             await asyncio.wait_for(task, 8)
 
+    async def test_resume_refreshes_only_its_verified_ledger_row(self) -> None:
+        import iterm_tab
+        import session_liveness
+        import session_record
+
+        for failure in (None, "changed_source", "account", "transcript", "metadata", "live_original"):
+            with self.subTest(failure=failure), ReceiptFixture() as f:
+                ledger = f.root / "ledger.json"
+                source = {**f.entry, "backend": "tmux", "tmux_session_id": "old-terminal",
+                          "handoff_url": "https://github.com/owner/repo/issues/1#issuecomment-2"}
+                unrelated = {"iterm_session_id": "unbound-other-launch", "supervisor_owned": True}
+                ledger.write_text(json.dumps([source, unrelated]))
+                choice = {"provider": "openai", "env": {"CODEX_HOME": str(f.home)}, "resume_session_id": f.session,
+                          "resume_source": session_record.normalize_ledger_entry(ledger, source)}
+                born = datetime(2026, 10, 1, 3, tzinfo=timezone.utc)
+                metadata = {"codex_home": str(f.home), "launch_pid": 456, "launch_generation": "resumed",
+                            "launch_started_at": born.isoformat()}
+                if failure == "account":
+                    metadata["codex_home"] = str(f.root / "different-account")
+                if failure == "metadata":
+                    metadata["launch_generation"] = ""
+                transcript = str(f.root / "different.jsonl") if failure == "transcript" else str(f.transcript)
+                with closure.ownership(f.session, create=True):
+                    closure.resumed_launch(f.session, metadata, transcript, "resumed-tty")
+                if failure == "changed_source":
+                    ledger.write_text(json.dumps([{**source, "pid": 999}, unrelated]))
+                before = json.loads(ledger.read_text())
+                result = {"session_id": "new-terminal", "tty": "/dev/resumed-tty", "backend": "tmux",
+                          "tmux_socket": "supervisor", "window_id": "window", "tab_id": "tab"}
+                with (patch.object(closure, "process_started_at", return_value=born),
+                      patch.object(session_liveness, "process_absent", return_value=failure != "live_original")):
+                    if failure:
+                        with self.assertRaises(ValueError):
+                            await iterm_tab.register_fresh_launch(Namespace(ledger=ledger, resume_session_id=f.session), result, choice)
+                        self.assertEqual(json.loads(ledger.read_text()), before)
+                    else:
+                        await iterm_tab.register_fresh_launch(Namespace(ledger=ledger, resume_session_id=f.session), result, choice)
+                        current, other = json.loads(ledger.read_text())
+                        self.assertEqual(other, unrelated)
+                        for key in ("session_id", "harness", "supervisor_owned", "transcript", "codex_home", "handoff_url"):
+                            self.assertEqual(current[key], source[key])
+                        self.assertEqual(current["pid"], metadata["launch_pid"])
+                        self.assertEqual(current["launch_generation"], metadata["launch_generation"])
+                        self.assertEqual(current["tmux_session_id"], result["session_id"])
+                        self.assertTrue(result["ledger_recorded"])
+
     def test_concurrent_launch_ledger_appends_preserve_both_workers(self) -> None:
         import iterm_tab
         f = ReceiptFixture()
