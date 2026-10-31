@@ -14,6 +14,9 @@ Director and for the other Directors who install it. A harness is the program
 that runs the agent loop and its tools, such as Claude Code, Codex CLI, or
 Antigravity; a chat app is not one.
 
+The catalog works with a git host alone. Launchplane adds to it for Directors
+who run it and is never required.
+
 A Director is the person whose `DIRECTION.md` the agents follow; see
 [role words](skills/references/role-words.md).
 
