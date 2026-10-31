@@ -231,12 +231,12 @@ check current code, link duplicates and record the concrete next action on the
 original issue. Keep that issue as the work record; preserve the author's request
 under [issue ownership](../github/references/issue-templates.md).
 
-Keep every triaged request that remains open in the existing planning states,
+Apply the configured planning label to every triaged request that remains open,
 with its next actor/action and any real person/event wait recorded through
 [Create Or Update A Plan](#create-or-update-a-plan) and [Status Labels](#status-labels).
 A reproduced defect within the agreed outcome enters staffing in the overall
 DIRECTION Order and available capacity; no second ticket or Director intake step
-is needed. Outside-user bugs use the own-projects share; tooling still needs
+is needed. Outside-user bugs use the own-projects share; other tooling still needs
 Order item 3 admission. Features, preferences and unclear reports get a clarifying
 question or investigation, not an invented build. Keep stop boundaries and Client
 release acceptance in force.
@@ -248,7 +248,7 @@ open canonical work record. A reply does not clear a recorded wait.
 The Supervisor or intake owner reuses [global next](references/global-next.md)
 on each routine check: `gh-plan.py --repo OWNER/direction next`. Its open-state
 inventory includes unlabelled issues, imported feedback and Client-agent reports.
-Read status-review records, candidates, underway work, waits and exclusions,
+Read `needs_status`, candidates, underway work, waits and exclusions,
 not only `available_candidates`. Increase `--limit` until candidate rows match
 `candidate_count`, and follow incomplete graph, discovery and candidate coverage
 before calling intake clear within the accessible repositories. Workers apply

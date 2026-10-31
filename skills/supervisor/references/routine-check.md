@@ -20,8 +20,6 @@ decisions, statuses, board contents or narrative; open linked records for action
    owning session for an answer. Use the existing
    [comment radar](../../github-work-rollup/SKILL.md#external-comment-radar)
    to retain unanswered comments; a watch watermark proves collection only.
-   Also check open requests under [planning intake](../../github-plan/SKILL.md#triage-incoming-reports);
-   the unanswered-comment radar alone does not track unfinished work.
    Use
    `oq.py --owner OWNER --queue OWNER/direction#NUMBER --changes-state <question-state.json>`
    for the queue, and source anchors outside watcher coverage with their own
@@ -42,8 +40,10 @@ decisions, statuses, board contents or narrative; open linked records for action
 5. Catch up merged catalog PRs against the latest verification link, including
    service-led landings. Use [catalog landing verification](helpers.md#catalog-landing-verification)
    for an unverified SHA; retain earlier missed-SHA gaps explicitly.
-6. Staff through current `gh-plan.py next`, active child records and complete
+6. Staff through current global `gh-plan.py --repo OWNER/direction next`, active child records and complete
    claim coverage under the overall Order and existing capacity/PR limits.
+   Reuse that output for [planning intake](../../github-plan/SKILL.md#triage-incoming-reports);
+   the unanswered-comment radar alone does not track unfinished requests.
    Load the owning skill before a launch, plan mutation or train/landing action;
    those actions are outside this no-reload reader entry. Refill
    available capacity, handle stale waits and deferred-question conditions,
