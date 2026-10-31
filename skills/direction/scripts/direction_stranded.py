@@ -720,7 +720,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
         commented_status = any(login(comment) in bots | {allowed} and has_status(comment) for comment in status_record.get("comments", []))
         if not incidental and not supervisor_next_action(status_record["item"].get("body")) and not commented_status:
             return
-        source = f"{status_record['repo']}#{status_record['item']['number']}/status"
+        status_source = f"{status_record['repo']}#{status_record['item']['number']}/status"
         try:
             if reads >= budget:
                 raise ValueError("request_budget_exhausted")
@@ -747,7 +747,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                 ValueError, KeyError, TypeError) as exc:
             if isinstance(exc, TimeoutError):
                 budget = reads
-            gaps.append({"source": source, "reason": str(exc) if isinstance(exc, ValueError) else "status_edit_time_unavailable"})
+            gaps.append({"source": status_source, "reason": str(exc) if isinstance(exc, ValueError) else "status_edit_time_unavailable"})
 
     quota = one("rate_limit").get("resources", {}).get("core", {})
     remaining = quota.get("remaining")

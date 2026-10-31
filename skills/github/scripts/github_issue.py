@@ -997,7 +997,7 @@ def _edit_issue_impl(
             route = next_actor.record(issue, comments, github_plan_wait.authors(resolved_repo, expected_actor=expected_actor))
         except (github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError, KeyError, TypeError) as exc:
             failure = getattr(getattr(exc, "result", None), "failure", None)
-            raise _local_error(str(exc), operation=operation, cause=getattr(failure, "cause", "invalid_response"),
+            raise _local_error(str(exc), operation=operation, cause=str(getattr(failure, "cause", None) or "invalid_response"),
                                actor=actor, expected_actor=expected_actor, completed_steps=steps, failed_step="direction_route") from exc
         if next_actor.direction(route["actor"], route["wait"]):
             raise _local_error("Current Next actor or structured wait still routes this issue to direction",

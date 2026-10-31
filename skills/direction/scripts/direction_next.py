@@ -7,20 +7,20 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
-import pathlib
 import os
+import pathlib
 import subprocess
 import sys
 import tempfile
-from contextlib import contextmanager
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "skills/github/scripts"))
+from skills.github.scripts import github_api, github_comment, github_issue
 from skills.github.scripts.github_plan_status import events, next_actor, waits
-from skills.github.scripts import github_comment, github_issue, github_api
 
 
 @contextmanager
