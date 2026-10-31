@@ -158,7 +158,8 @@ def registered_records_cover(message: str) -> bool:
             if requested_ids <= registered_ids:
                 return True
         return False
-    except Exception:
+    except (OSError, ValueError, KeyError, TypeError, ImportError, AttributeError, SyntaxError, RuntimeError,
+            IndexError, subprocess.SubprocessError):
         return False
 
 
