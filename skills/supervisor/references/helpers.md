@@ -1227,6 +1227,24 @@ generations or uncertain mutations, includes later landings, and preserves the
 old attempt while starting fresh sessions. It can retry the same tip after an
 environment repair. It never skips missing merged-PR proof or rewritten history.
 
+If a Codex smoke needs the supported [exact-source resume](#release-a-verified-finished-session),
+keep its original launch, source fingerprint and closeout journal unchanged.
+Before resuming, close the original dead terminal through `iterm_tab.py close`
+with its original ledger entry and confirm disappearance. Resume that native
+thread in its original account, obtain its final safe verdict, and close it normally
+with the original handoff URL. The launcher refreshes only this source's ledger
+row from the verified resume generation; no ledger hand edit is needed.
+Use a new directory named `<attempt>/codex-closeout-<recovery-name>` for this
+closeout, then use `--supersede-failed`, not ordinary polling. Supersede selects
+the single journal proving retirement of the current canonical generation;
+the directory suffix does not supply authority. A smoke that failed before
+creating an original closeout uses its resumed session's verified normal handoff.
+It requires the original process generation to have exited, the retained launch to match the
+original fingerprint, and the canonical closure to match the original native ID,
+account and transcript. It revalidates the exact retired generation's closeout
+before starting fresh verification. The old smoke remains a failed attempt;
+only the new batch may pass. No original fingerprint or receipt is replaced.
+
 After recovery succeeds, clear the runner's `catalog` marker and restart that
 job through the existing service route. Never remove a journal or replay an
 uncertain mutation to clear a failure. The runner reserves each notice before
@@ -1542,8 +1560,24 @@ The managed RPC ingress requires that same spelling for every action, so another
 spelling cannot select a different source freeze or ownership lease. Process
 observation recognizes all UUID spellings the native CLI accepts as the same thread.
 The helper invalidates the old receipt before sending or launching. `status`
-returns the resumed generation's metadata for the ledger; preserve the native
-thread and verified handoff when updating it. A later `finish` accepts that new
+returns the resumed generation's metadata. `iterm_tab.py new --resume-session-id`
+refreshes that exact source's ledger row under the source lease and ledger lock,
+preserving its native thread, account, transcript, verified handoff and other
+workers' rows. A changed source or unverified generation leaves the ledger
+unchanged and retains the launch for reconciliation. Missing metadata and a busy
+source lease retry within the launch deadline. A submitted launch whose registration
+failed after successful startup uses `iterm_tab.py register --receipt-file <retained-launch.json>
+--ledger <original-ledger.json>`, accepting either its launch object or full failure
+receipt. Registration only rereads that exact terminal and published generation;
+it never resumes or sends input. An already recorded matching row succeeds without
+rewriting it. Missing authoritative generation publication stays UNKNOWN.
+The exact-source launch routes refuse a second live resume; a queue invalidation
+alone does not identify a resumed process. Preserve a partial resume's existing
+terminal and inspect its authoritative publication before registering its receipt.
+Never launch a second client to repair missing registration. A startup failure
+without a retained launch object needs inspection of its exact pane and remains
+preserved; the registration command cannot reconstruct it.
+A later `finish` accepts that new
 generation, never the old receipt. Terminal `/resume` input names this route
 instead for a single-line Codex command; Claude targets retain their own resume
 command, and multiline pasted reference text is unchanged. When successor
@@ -2154,12 +2188,9 @@ uv run skills/supervisor/scripts/iterm_tab.py --backend tmux send --session-id <
 uv run skills/supervisor/scripts/codex-session.py status --session-id <native-id>
 ```
 
-Preserve input and inspect the idle prompt before a fresh safe turn. Keep native
-`session_id`, transcript and handoff; store the terminal ID only in
-`tmux_session_id`/`iterm_session_id`, with this recovery's verified PID/TTY and
-generation. Missing launch identity needs `status` and PID/TTY verification,
-never old metadata. A partially completed native resume retains its connection
-and invalidation; retry that exact resume for metadata, preserving the source.
+Preserve input and inspect the idle prompt before a fresh safe turn. The launcher's
+[automatic registration and retained-receipt recovery](#terminal-launches)
+preserve native custody without hand-editing the ledger or launching a second client.
 Keep actual recovery exit times and earlier evidence; uncertain launches keep
 their exact pane without replay, account switching or daemon restart.
 Retained direct-binding Codex sessions without native daemon proof use the full

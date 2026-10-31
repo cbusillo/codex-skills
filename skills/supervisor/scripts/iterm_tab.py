@@ -1212,6 +1212,7 @@ def claude_trust_writes(command_text, choice, config_path):
 def prepare_resume(args):
     """Build only the maintained exact-source helper, never caller shell text."""
     import session_record
+    import session_liveness
     from codex_session_proxy import source_endpoint
 
     session = args.resume_session_id
@@ -1225,6 +1226,8 @@ def prepare_resume(args):
     if len(entries) != 1 or entries[0].get("supervisor_owned") is not True or entries[0]["harness"] != "codex":
         raise ValueError("resume source is not uniquely Supervisor-owned in the ledger")
     entry = entries[0]
+    if not session_liveness.generation_ended(entry):
+        raise ValueError("resume needs the original source's verified exited PID")
     if not isinstance(entry.get("codex_home"), str):
         raise ValueError("resume ledger needs the source's absolute codex_home")
     home = Path(entry["codex_home"]).expanduser()
@@ -1235,7 +1238,7 @@ def prepare_resume(args):
         transcript = Path(entry["transcript"])
         if not any(transcript.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions")):
             raise ValueError("resume transcript is outside the source account")
-        source_endpoint(session, home, transcript=transcript)
+        source_endpoint(session, home, transcript=transcript, for_resume=True)
         config = account_choice.load_config(args.account_config)
         accounts = [account for account in config["accounts"] if account["provider"] == "openai"
                     and Path(account["env"]["CODEX_HOME"]).expanduser().resolve() == home]
@@ -1249,6 +1252,7 @@ def prepare_resume(args):
     preflight_codex_daemon(choice, exact_source=True)
     account_choice.prepare_launch(choice)
     choice["resume_session_id"] = session
+    choice["resume_source"] = entry
     invocation = ["uv", "run", str(Path(__file__).with_name("codex-session.py").resolve()),
                   "resume", "--session-id", session, "--codex-home", str(home)]
     settings = [f"{key}={os.path.expanduser(value)}" for key, value in choice["env"].items()]
@@ -1532,6 +1536,7 @@ def validate_resume_input(text, *, tty=None):
 def source_launch_metadata(result, choice):
     if not choice or choice.get("provider") != "openai":
         return result
+    result.pop("launch_identity_unavailable", None)
     home = choice["env"]["CODEX_HOME"]
     result["codex_home"] = str(Path(home).expanduser().resolve())
     if choice.get("resume_session_id"):
@@ -1624,9 +1629,100 @@ def append_launch_ledger(path: Path, entry: dict) -> None:
                 temporary.unlink(missing_ok=True)
 
 
+async def observe_resume_terminal(result: dict) -> None:
+    command = ["uv", "run", str(Path(__file__).resolve()), "--backend", result.get("backend", "iterm")]
+    if result.get("backend") == "tmux":
+        command += ["--tmux-socket", result["tmux_socket"]]
+    response = await asyncio.to_thread(subprocess.run, [*command, "list"], capture_output=True, text=True, check=True, timeout=30)
+    matches = [row for row in json.loads(response.stdout) if row["session_id"] == result["session_id"]]
+    if len(matches) != 1:
+        raise ValueError("retained resume terminal is not unique; preserve the launch")
+    for key in ("tty", "window_id", "tab_id"):
+        actual = matches[0][key]
+        if not isinstance(actual, str) or not actual:
+            raise ValueError("retained resume terminal identity is unavailable; preserve the launch")
+        expected = result.get(key)
+        if isinstance(expected, str) and expected and (expected.removeprefix("/dev/") if key == "tty" else expected) != (
+                actual.removeprefix("/dev/") if key == "tty" else actual):
+            raise ValueError("retained resume terminal changed; preserve both generations")
+        result[key] = actual
+
+
+async def register_resumed_launch(path: Path, result: dict, choice: dict) -> None:
+    from check_operation import closure as github_plan_closure
+
+    session, source = choice["resume_session_id"], choice["resume_source"]
+    if choice.get("provider") != "openai" or source.get("harness") != "codex" or source.get("supervisor_owned") is not True:
+        raise ValueError("resume registration requires the original Supervisor-owned Codex source")
+    result["resume_source"] = source
+    if not all(result.get(key) for key in ("tty", "window_id", "tab_id")):
+        await observe_resume_terminal(result)
+    deadline = time.monotonic() + LAUNCH_TIMEOUT
+    last_error: Exception | None = None
+    while True:
+        try:
+            with github_plan_closure.ownership(session, create=True):
+                source_launch_metadata(result, choice)
+                if not result.get("launch_identity_unavailable"):
+                    refresh_resume_ledger(path, result, source, session)
+                    return
+        except github_plan_closure.LeaseBusy as error:
+            last_error = error
+        if time.monotonic() >= deadline:
+            raise ValueError("resume registration pending; retain the launch and use register --receipt-file without relaunching") from last_error
+        await asyncio.sleep(0.2)
+
+
+def refresh_resume_ledger(path: Path, result: dict, source: dict, session: str) -> None:
+    from check_operation import closure as github_plan_closure
+    import session_liveness
+    import session_record
+    from check_changes import save_state
+
+    if result.get("native_session_id") != session or source["session_id"] != session:
+        raise ValueError("resume native identity differs from its source")
+    if not session_liveness.generation_ended(source):
+        raise ValueError("original resume source process remains; preserve both generations")
+    with github_plan_closure.store_lock(path, create=True):
+        rows = read_launch_ledger(path)
+        matches = [row for row in rows if row.get("session_id") == session]
+        if len(matches) != 1:
+            raise ValueError("resume source is not unique in the ledger")
+        entry = dict(source)
+        if Path(result["transcript"]).resolve() != Path(source["transcript"]).resolve():
+            raise ValueError("resumed account or transcript differs from the source")
+        for key in ("pid", "tty", "transcript", "codex_home", "launch_pid", "launch_generation", "launch_started_at",
+                    "window_id", "tab_id"):
+            entry[key] = result[key]
+        for key in ("tmux_session_id", "iterm_session_id", "tmux_socket"):
+            entry.pop(key, None)
+        entry["backend"] = result.get("backend", "iterm")
+        entry["tmux_session_id" if entry["backend"] == "tmux" else "iterm_session_id"] = result["session_id"]
+        if entry["backend"] == "tmux":
+            entry["tmux_socket"] = result["tmux_socket"]
+        current = session_record.normalize_ledger_entry(path, matches[0])
+        intended = session_record.normalize_ledger_entry(path, entry)
+        if current != intended:
+            if current != source:
+                raise ValueError("resume source changed before ledger refresh; preserve both generations")
+            rows[rows.index(matches[0])] = entry
+            save_state(path, rows)
+    result["ledger_recorded"] = True
+
+
 async def register_fresh_launch(args: argparse.Namespace, result: dict, choice: dict | None) -> None:
     path = getattr(args, "ledger", None)
-    if not isinstance(path, Path) or getattr(args, "resume_session_id", None):
+    if not isinstance(path, Path):
+        return
+    retained = not choice and bool(result.get("account", {}).get("resume_session_id"))
+    if retained:
+        choice = {**result["account"], "resume_source": result["resume_source"],
+                  "env": {"CODEX_HOME": result["resume_source"]["codex_home"]}}
+        await observe_resume_terminal(result)
+    if getattr(args, "resume_session_id", None) or retained:
+        if not choice or choice.get("resume_session_id") != getattr(args, "resume_session_id", choice["resume_session_id"]):
+            raise ValueError("resume registration needs the verified source choice")
+        await register_resumed_launch(path, result, choice)
         return
     from codex_session_proxy import read_launch_receipt
     if choice is None:
@@ -1864,7 +1960,7 @@ async def operate(app, args):
                 source_launch_metadata(result, choice)
             try:
                 await register_fresh_launch(args, result, choice)
-            except (OSError, ValueError, TypeError) as error:
+            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
                 raise LaunchFailure(results, {**progress, "phase": "register_ledger", "launch": result}, error) from error
             results.append(result)
         return results[0] if len(results) == 1 else results
@@ -2045,9 +2141,11 @@ def main():
                 print(json.dumps({"session_id": result["session_id"], "ledger_recorded": True}))
                 return
             result = json.loads(args.receipt_file.read_text())
+            if "failed_launch" in result:
+                result = result["failed_launch"]["launch"]
             asyncio.run(register_fresh_launch(args, result, None))
             print(json.dumps(result))
-        except (OSError, ValueError, KeyError, TypeError) as error:
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
             parser.exit(1, f"registration failed; preserve the launch and receipt: {error}\n")
         return
     if args.command == "view":

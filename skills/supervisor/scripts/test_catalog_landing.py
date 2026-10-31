@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from contextlib import nullcontext
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
@@ -276,6 +277,83 @@ class CatalogLandingTests(unittest.TestCase):
                     landing.post_result(self.config, operation, result)
             self.assertEqual(landing.post_result(self.config, operation, result), posted["html_url"])
             write.assert_not_called()
+
+    def test_supersede_revalidates_closed_resume_without_rewriting_original_generation(self) -> None:
+        original: dict[str, Any] = {"session_id": "native", "harness": "codex", "supervisor_owned": True,
+                    "backend": "tmux", "tmux_session_id": "old-pane", "pid": 8, "tty": "ttys001",
+                    "transcript": str(self.root / "native.jsonl"), "codex_home": str(self.root / "account"),
+                    "handoff_url": "https://github.com/owner/catalog/issues/1#issuecomment-2",
+                    "launch_pid": 8, "launch_generation": "original", "launch_started_at": "before"}
+        resumed = {**original, "pid": 9, "launch_pid": 9, "tty": "ttys002", "tmux_session_id": "new-pane",
+                   "launch_generation": "resumed", "launch_started_at": "after", "process_exit_verified": True}
+        generation = lambda row: landing.fingerprint({field: value for field, value in landing.release.closure_identity(row).items()
+                                                      if field != "handoff_url"})
+        for failure in (None, "missing_closure", "account", "transcript", "native_launch", "ownership", "handoff", "original_generation",
+                        "live_original", "uncertain_original", "uncertain_resume", "unretired_resume", "missing_journal", "duplicate_journal",
+                        "no_original_journal", "missing_recorded_original", "late_registration", "unrelated_uncertain"):
+            with self.subTest(failure=failure):
+                operation = Operation(self.root / str(failure), ["landing"])
+                landing.record_smoke_source(operation, "codex", original, Path(self.config["ledger"]))
+                operation.state["steps"]["codex_launch"] = {"complete": True, "result": {
+                    **original, "session_id": original["tmux_session_id"], "native_session_id": original["session_id"]}}
+                launch = operation.state["steps"]["codex_launch"]["result"]
+                if failure == "native_launch":
+                    launch["native_session_id"] = "unrelated"
+                if failure == "late_registration":
+                    launch.pop("transcript")
+                    launch["native_receipt"] = str(self.root / "native-receipt.json")
+                identity = [str(Path(self.config["ledger"]).resolve()), original["session_id"]]
+                old = Operation(operation.evidence / "codex-closeout", identity)
+                old.state.update(generation=generation(original), steps={"quit": {"complete": True}},
+                                 handoff={"url": original["handoff_url"]})
+                if failure == "original_generation":
+                    old.state["generation"] = "unrelated"
+                if failure == "uncertain_original":
+                    old.state["steps"]["quit"]["complete"] = False
+                landing.save_state(old.path, old.state)
+                if failure in {"no_original_journal", "missing_recorded_original"}:
+                    old.path.unlink()
+                if failure == "missing_recorded_original":
+                    operation.state["steps"]["codex_closeout"] = {"complete": True}
+                closed = dict(resumed)
+                if failure in {"account", "transcript", "ownership", "handoff"}:
+                    key = {"account": "codex_home", "ownership": "supervisor_owned",
+                           "handoff": "handoff_url"}.get(failure, failure)
+                    closed[key] = False if failure == "ownership" else "unrelated"
+                recovery = Operation(operation.evidence / ("codex-closeout-" + generation(closed)), identity)
+                recovery.state.update(generation=generation(closed), retired_generation=generation(closed))
+                if failure == "unretired_resume":
+                    recovery.state.pop("retired_generation")
+                if failure == "uncertain_resume":
+                    recovery.state["steps"]["close"] = {"complete": False}
+                landing.save_state(recovery.path, recovery.state)
+                if failure == "missing_journal":
+                    recovery.path.unlink()
+                if failure == "duplicate_journal":
+                    duplicate = operation.evidence / "codex-closeout-duplicate"
+                    duplicate.mkdir()
+                    landing.save_state(duplicate / "operation.json", recovery.state)
+                if failure == "unrelated_uncertain":
+                    unrelated = operation.evidence / "codex-closeout-unrelated"
+                    unrelated.mkdir()
+                    landing.save_state(unrelated / "operation.json", {"identity": ["other", "native"],
+                                       "steps": {"quit": {"complete": False}}})
+                retained = {path: path.read_bytes() for path in (old.path, recovery.path) if path.exists()}
+                with (patch.object(landing.closure, "ownership", return_value=nullcontext()),
+                      patch.object(landing.closure, "source_records", return_value={} if failure == "missing_closure" else {"native": closed}),
+                      patch.object(landing, "read_launch_receipt", return_value=original),
+                      patch.object(landing.session_liveness, "process_absent", return_value=failure != "live_original"),
+                      patch.object(operation, "run", return_value={"ok": True}) as revalidate):
+                    if failure not in {None, "no_original_journal", "late_registration", "unrelated_uncertain"}:
+                        with self.assertRaises(GateFailed) as refusal:
+                            landing.require_closed_smokes(self.config, operation)
+                        self.assertEqual(refusal.exception.gate, "supersede")
+                        revalidate.assert_not_called()
+                    else:
+                        landing.require_closed_smokes(self.config, operation)
+                        self.assertIn(str(recovery.evidence), revalidate.call_args.args[1])
+                        self.assertNotIn(str(old.evidence), revalidate.call_args.args[1])
+                self.assertEqual({path: path.read_bytes() for path in retained}, retained)
 
     def test_prelaunch_read_failure_retries_without_explicit_resume(self) -> None:
         with (patch.object(landing, "pending_landings", return_value=["first"]),

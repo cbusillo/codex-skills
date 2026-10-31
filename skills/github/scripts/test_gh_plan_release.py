@@ -1804,6 +1804,8 @@ class OwnReleaseTests(ReleaseHarness):
         self.assertTrue(result["ok"])
         posted = self.f.comments[-1]
         self.assertEqual(CLAIM.released_claim_id(posted["body"]), 1)
+        self.assertTrue(release.related_sessions_match(posted["body"], self.args.session))
+        self.assertFalse(release.related_sessions_match(posted["body"], "other-" + self.args.session))
         self.assertIn("LP4214-C1 Finish Line met", posted["body"])
         self.assertTrue(release.exact_source_release(1, posted, self.f.comments))
         self.assertEqual(result["release_comment"]["id"], posted["id"])
@@ -1851,6 +1853,8 @@ class OwnReleaseTests(ReleaseHarness):
         original = self.f.issue["body"]
         self.run_own_release()
         self.assertEqual(self.f.issue["body"], original)
+        self.assertTrue(release.related_sessions_match(self.f.comments[-1]["body"], self.args.session))
+        self.assertFalse(release.related_sessions_match(self.f.comments[-1]["body"], "other-" + self.args.session))
         status = PLAN.section_map(self.f.comments[-1]["body"])["Current Status"]
         self.assertEqual(PLAN.github_plan_next_actor.read(status), "agent:integrator")
         self.assertEqual(CLAIM.records(self.f.comments[-1]["body"]), [])

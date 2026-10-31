@@ -1818,6 +1818,20 @@ class ProcessArgumentsTests(unittest.TestCase):
         # Kernel existence is a fixture fact, never a host PID assumption.
         self.enterContext(patch.object(session_liveness.os, "kill", return_value=None))
 
+    def test_generation_exit_distinguishes_pid_reuse_from_the_recorded_process(self) -> None:
+        original = datetime.now(timezone.utc) - timedelta(hours=1)
+        entry = {"pid": 123, "launch_started_at": original.isoformat()}
+        for born, ended in ((original, False), (original + timedelta(minutes=1), True),
+                            (original - timedelta(minutes=1), False), (original + timedelta(days=1), False)):
+            with (self.subTest(born=born), patch.object(session_liveness, "process_absent", return_value=False),
+                  patch.object(session_liveness, "process_started_at", return_value=born)):
+                self.assertEqual(session_liveness.generation_ended(entry), ended)
+        with (patch.object(session_liveness, "process_absent", return_value=False),
+              patch.object(session_liveness, "process_started_at", side_effect=OSError("unavailable"))):
+            self.assertFalse(session_liveness.generation_ended(entry))
+        with patch.object(session_liveness, "process_absent", return_value=True):
+            self.assertTrue(session_liveness.generation_ended(entry))
+
     def test_kernel_boot_time_reads_both_hosts_and_unknown_keeps_strict_route(self) -> None:
         boot_seconds = 1792934190
         expected = datetime.fromtimestamp(boot_seconds, timezone.utc)
