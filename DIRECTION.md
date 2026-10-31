@@ -63,8 +63,5 @@ rule above, not a reason to drop inspection.
 
 ## Milestones
 
-- `Adopted beyond this repository` proves that the other Directors' agents
-  adopt direction and the review policy from the steps on GitHub alone and
-  report a clean or triaged first audit; ends if adoption needs a hand edit
-  that a catalog pull should have carried, or those Directors remove it as
-  ceremony.
+None. Other Directors open an issue when the catalog fails them (Q1149,
+October 31, 2026).
