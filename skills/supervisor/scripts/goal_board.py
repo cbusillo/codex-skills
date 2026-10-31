@@ -144,6 +144,9 @@ def child_state(child):
 
 def handoff(pr, trusted, unread):
     """Classify the latest trusted handoff with the merge train's shared rules."""
+    if pr.get("_comments_error"):
+        unread.append(f"handoff on {pr['url']} ({pr['_comments_error']})")
+        return UNKNOWN
     latest = None
     for node in pr["comments"]["nodes"]:
         lines = (node.get("body") or "").splitlines()
@@ -321,25 +324,22 @@ def complete_pr_comments(reader: github_read.GitHubReader, node: dict[str, Any])
     for pr in node["closedByPullRequestsReferences"]["nodes"]:
         if not isinstance(pr, dict):
             continue
-        comments = pr["comments"]
-        if pr["state"] != "OPEN" or not truncated(comments):
-            continue
-        pr["comments"] = None
-        reference = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/([1-9][0-9]*)", pr["url"])
-        if reference is None or int(reference[2]) != pr["number"]:
-            raise ValueError("closing PR identity is unknown")
-        completed = reader.paged_json(
-            f"/repos/{reference[1]}/issues/{pr['number']}/comments", step_prefix=f"board_pr_{pr['number']}_comments")
-        if len(completed) != comments["totalCount"] or len({item["id"] for item in completed}) != len(completed):
-            raise ValueError("closing PR comment history is incomplete or changed")
-        nodes = []
-        for item in completed:
-            actor = (item["user"] or {}).get("login", "")
-            typename = "Bot" if actor.endswith("[bot]") else "User"
-            nodes.append({"databaseId": item["id"], "body": item["body"], "createdAt": item["created_at"],
-                          "updatedAt": item["updated_at"], "url": item["html_url"],
-                          "author": {"__typename": typename, "login": actor.removesuffix("[bot]")}})
-        pr["comments"] = {"totalCount": len(nodes), "nodes": nodes}
+        try:
+            comments = pr["comments"]
+            if pr["state"] != "OPEN" or not truncated(comments):
+                continue
+            reference = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/([1-9][0-9]*)", pr["url"])
+            if reference is None or int(reference[2]) != pr["number"]:
+                raise ValueError("closing PR identity is unknown")
+            completed = reader.paged_json(
+                f"/repos/{reference[1]}/issues/{pr['number']}/comments", step_prefix=f"board_pr_{pr['number']}_comments")
+            if len(completed) != comments["totalCount"] or len({item["id"] for item in completed}) != len(completed):
+                raise ValueError("closing PR comment history is incomplete or changed")
+            nodes = [{"databaseId": item["id"], "body": item["body"], "createdAt": item["created_at"],
+                      "updatedAt": item["updated_at"], "url": item["html_url"], "author": item["user"]} for item in completed]
+            pr["comments"] = {"totalCount": len(nodes), "nodes": nodes}
+        except (github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError, KeyError, TypeError) as error:
+            pr["_comments_error"] = str(error)
 
 
 def claim_evidence(reader: github_read.GitHubReader, repo: str, identifier: int) -> dict[str, Any] | None:
@@ -380,8 +380,8 @@ def descendants(reader: github_read.GitHubReader, node: dict[str, Any], errors: 
 
     def read_edges(repo: str, number: int) -> list[tuple[str, int]]:
         child = rows[repo, number]
+        refs = []
         try:
-            refs = []
             if child["subIssuesSummary"]["total"]:
                 owner, name = repo.split("/", 1)
                 result = reader.graphql_json(github_work_graph.detail_query([number]),
@@ -394,17 +394,17 @@ def descendants(reader: github_read.GitHubReader, node: dict[str, Any], errors: 
                 child.update(expanded)
                 refs = register(child)
             complete_comments(reader, child)
-            complete_pr_comments(reader, child)
             comments = [github_work_graph.graphql_comment(comment) for comment in child["comments"]["nodes"]]
             if child["state"] != "CLOSED":
                 child["_claim_comments"] = github_plan_release.verified_comments(comments,
                     lambda evidence_repo, _number, identifier: claim_evidence(reader, evidence_repo, identifier))
+            complete_pr_comments(reader, child)
             return refs
         except (github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError, KeyError, TypeError, AttributeError) as error:
             reason = f"descendants or discussion unread: {error}"
             child.setdefault("_unread", []).append(reason)
             errors.append(f"{child['url']} {reason}")
-            return []
+            return refs
 
     graph = github_plan_graph.walk_native_issues(register(node), read_edges=read_edges, max_nodes=2000)
     if not graph.complete:
