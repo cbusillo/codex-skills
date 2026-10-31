@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 MARKER = "github-plan:claim "
+ABANDONED_RELEASE_MARKER = "github-plan:abandoned-release "
 
 
 def stamp(value: Any) -> datetime:
@@ -150,3 +151,8 @@ def released_actor(actor: str, *, effective_comments: list[dict[str, Any]], trus
                 and any(record["session"] == actor.removeprefix("agent:")
                         for record in records(comment.get("body") or ""))]
     return bool(relevant and relevant[-1] in {index for index, _, _ in exact_released_sources(effective_comments)})
+
+
+def has_release_receipt(text: str) -> bool:
+    text = re.sub(r"(?ms)^```[^\n]*\n.*?^```[^\n]*$", "", text)
+    return any(line.startswith("<!-- " + ABANDONED_RELEASE_MARKER) for line in text.splitlines())

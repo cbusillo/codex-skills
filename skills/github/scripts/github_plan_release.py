@@ -5,7 +5,7 @@
 """Evidence-backed release of automation claims from closed sessions."""
 from __future__ import annotations
 
-from github_plan_status.discussion import stamp
+from github_plan_status.discussion import stamp, has_release_receipt, ABANDONED_RELEASE_MARKER as RELEASE_MARKER
 
 from datetime import datetime
 from dataclasses import dataclass
@@ -19,7 +19,6 @@ import github_plan_claim as claim
 import github_plan_termination as termination
 
 COMMENT_URL = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)#issuecomment-([1-9]\d*)")
-RELEASE_MARKER = "github-plan:abandoned-release "
 PENDING_MARKER = "github-plan:pending-release "
 EXCLUSIONS_MARKER = "github-plan:release-exclusions "
 ISSUE_REFUSAL_SCOPE = "issue"
@@ -562,7 +561,7 @@ def effective_comments(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result = []
     for comment in comments:
         text = re.sub(r"(?ms)^```[^\n]*\n.*?^```[^\n]*$", "", comment.get("body") or "")
-        if not any(line.startswith("<!-- " + RELEASE_MARKER) for line in text.splitlines()):
+        if not has_release_receipt(text):
             result.append(comment)
             continue
         receipt = receipt_for(comment)
