@@ -14,6 +14,9 @@ Director and for the other Directors who install it. A harness is the program
 that runs the agent loop and its tools, such as Claude Code, Codex CLI, or
 Antigravity; a chat app is not one.
 
+The catalog works with a git host alone. Launchplane adds to it for Directors
+who run it and is never required.
+
 A Director is the person whose `DIRECTION.md` the agents follow; see
 [role words](skills/references/role-words.md).
 
@@ -63,8 +66,4 @@ rule above, not a reason to drop inspection.
 
 ## Milestones
 
-- `Adopted beyond this repository` proves that the other Directors' agents
-  adopt direction and the review policy from the steps on GitHub alone and
-  report a clean or triaged first audit; ends if adoption needs a hand edit
-  that a catalog pull should have carried, or those Directors remove it as
-  ceremony.
+None.
