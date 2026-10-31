@@ -22,7 +22,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import release_session_claims as helper
-import github_plan_closure as closure
+closure = importlib.import_module("github_plan_closure")
 
 ACTOR = "test-automation[bot]"
 SOURCE = {"worker": "trial", "session": "source-session", "branch": "work/trial",
@@ -139,7 +139,7 @@ class ReleaseTests(unittest.TestCase):
         with Path(str(log) + ".release.lock").open("w") as held:
             fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
             with patch.object(helper.sys, "argv", argv), \
-                    patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
+                    patch("github_identity.automation_login", return_value=ACTOR), \
                     patch.object(helper, "discover", return_value=([], ["test/a"])) as discover, \
                     patch.object(helper, "release_session") as release, contextlib.redirect_stdout(output):
                 self.assertEqual(helper.main(), 1)
@@ -155,7 +155,7 @@ class ReleaseTests(unittest.TestCase):
                 "--transcript-root", str(self.root), "--apply"]
         output = io.StringIO()
         with patch.object(helper.sys, "argv", argv), \
-                patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
+                patch("github_identity.automation_login", return_value=ACTOR), \
                 patch.object(helper, "validate_closure"), \
                 patch.object(helper, "discover", return_value=([], ["test/a"])), \
                 patch.object(helper, "release_session", side_effect=[closure.LeaseBusy("busy"),
