@@ -2202,11 +2202,12 @@ malformed rather than ignoring its additional field.
   an agent adds. Never bypass a refusal through another tool.
   The Director decision route remains:
   a repository owner comment after the last issue-body edit whose first line is
-  `Close #<number> as not planned.` (optionally prefixed `Director decision: `
+  `Close OWNER/REPO#<number> as not planned.` (optionally prefixed `Director decision: `
   or `Owner decision: `), or a repository owner `+1` reaction after
   that edit on an unedited comment starting with the exact first line
-  `Director decision: Close #<number> as not planned.` The legacy `Owner decision:`
-  spelling remains accepted for existing comments. Other accounts, comment
+  `Director decision: Close OWNER/REPO#<number> as not planned.` The repository
+  and number must match the issue being closed. Existing bare-number decisions
+  and the legacy `Owner decision:` spelling remain accepted. Other accounts, comment
   types, actions, and edited decisions do not qualify; unreadable identity,
   reaction time, or edit history fails closed. On a manual fallback, GraphQL
   `lastEditedAt` must be explicitly null and every reaction page must be read;
