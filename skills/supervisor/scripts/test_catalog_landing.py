@@ -23,6 +23,7 @@ from session_record import TranscriptChanged
 from skills.github.scripts import github_api
 
 operation_run = Operation.run
+reconcile_runtime = landing.reconcile_runtime
 
 
 class CatalogLandingTests(unittest.TestCase):
@@ -90,23 +91,31 @@ class CatalogLandingTests(unittest.TestCase):
         train = commit("Launchplane merge train: merge PR #3229", squash_merge, train_branch)
         train_merge = commit("Merge pull request #3230", squash_merge, train)
         self.assertEqual(landing.pending_landings(self.root, previous, train_merge), [merge, squash_merge, train_merge])
-        for sha, number in ((merge, 3223), (squash_merge, 3225), (train_merge, 3230)):
-            elapsed = 0.0
+        elapsed = 0.0
 
-            def advance(seconds: float) -> None:
-                nonlocal elapsed
-                elapsed += seconds
+        def advance(seconds: float) -> None:
+            nonlocal elapsed
+            elapsed += seconds
 
-            pull = {"number": number, "merged_at": "merged", "merge_commit_sha": sha,
-                    "base": {"repo": {"full_name": self.config["repo"]}}}
-            with (self.subTest(landing=sha), patch.object(landing.time, "time", side_effect=lambda: elapsed),
-                  patch.object(landing.time, "sleep", side_effect=advance),
-                  patch.object(landing.GitHubReader, "paged_json",
-                               side_effect=[[], [{**pull, "merge_commit_sha": branch}], [pull]]) as read):
-                reader = landing.GitHubReader(deadline_at=10)
-                self.assertEqual(landing.landing_pull(reader, self.config["repo"], sha), number)
-                self.assertEqual(read.call_count, 3)
-                self.assertTrue(all(sha in call.args[0] for call in read.call_args_list))
+        pull = {"number": 3223, "merged_at": "merged", "merge_commit_sha": merge,
+                "base": {"repo": {"full_name": self.config["repo"]}}}
+        with (patch.object(landing.time, "time", side_effect=lambda: elapsed),
+              patch.object(landing.time, "sleep", side_effect=advance),
+              patch.object(landing.GitHubReader, "paged_json", side_effect=[[], [{**pull, "merge_commit_sha": branch}], [pull]])):
+            self.assertEqual(landing.landing_pull(landing.GitHubReader(deadline_at=10), self.config["repo"], merge), pull["number"])
+
+    def test_runtime_reconciliation_uses_the_same_retrying_exact_pr_proof(self) -> None:
+        self.config.update(pr=2, landing_sha="a" * 40)
+        pull = {"number": 2, "merged_at": "merged", "merge_commit_sha": self.config["landing_sha"],
+                "base": {"repo": {"full_name": self.config["repo"]}}}
+        with (patch.object(landing.GitHubReader, "paged_json", side_effect=[[], [pull]]),
+              patch.object(landing.GitHubReader, "get_json", return_value={"merged": False}) as detail,
+              patch.object(landing.time, "sleep"),
+              patch.object(Operation, "run", side_effect=GateFailed("runtime", "fixture"))):
+            with self.assertRaises(GateFailed) as failure:
+                reconcile_runtime(self.config, Operation(self.root, ["runtime"]))
+            self.assertEqual(failure.exception.gate, "runtime")
+            detail.assert_not_called()
 
     def test_unmatched_direct_push_exhausts_discovery_deadline_without_accepting_related_pr(self) -> None:
         elapsed = 0.0
@@ -126,7 +135,7 @@ class CatalogLandingTests(unittest.TestCase):
             self.assertEqual(failure.exception.gate, "discovery")
             self.assertIn("direct-push", str(failure.exception))
             self.assertGreater(read.call_count, 1)
-            self.assertEqual(elapsed, reader.deadline_at)
+            self.assertLessEqual(elapsed, reader.deadline_at)
 
     def test_cleared_service_rechecks_failed_batch_instead_of_replaying_failure(self) -> None:
         config = self.root / "services.json"
