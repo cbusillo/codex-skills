@@ -446,6 +446,66 @@ available for a one-off check.
 uv run --no-cache skills/supervisor/scripts/foreign_watch.py --owner OWNER --own-login OWN-LOGIN --own-login AUTOMATION-LOGIN --launchplane-login DELIVERY-LOGIN --state <private-watch-state.json> --deadline-seconds 1800
 ```
 
+For Q1101 event delivery, add `--events --ledger <ledger.json>
+--notify-config <services.json> --miss-issue OWNER/REPO#NUMBER` to that same
+foreign service. It subscribes outbound to Launchplane's existing attention
+read surface using the existing Launchplane helper configuration; `--config` and
+`--env-config` select its supported private sources. Launchplane's existing
+signed App receiver produces source identifiers for tracked repositories.
+No watcher HTTP receiver or additional webhook secret is needed. Its App must
+subscribe to `issues`, `pull_request`, `issue_comment`, `pull_request_review`
+and `pull_request_review_comment`; activating missing subscriptions follows
+the existing App administration route and never changes grants implicitly.
+The source PRs do not establish that those subscriptions are active.
+
+The bounded authenticated subscription uses a dedicated database connection
+and heartbeat lines. The watcher keeps only a bounded in-memory buffer of
+source identifiers and fetches canonical source before routing; loss or overflow
+is recovered by the existing sweep. Source versions share delivery receipts
+across the watcher and routine radar. Native delivery is serialized separately
+from short state writes. The shared GitHub reader owns provider cooldowns;
+a failed source does not pause unrelated events. Deleted sources are ignored,
+read failures produce diagnostics, and permission refusals stop the service
+for its existing reconciliation procedure. Normal stream renewal reconnects
+immediately after a healthy heartbeat; short, disconnected or failed streams
+back off.
+
+Both readers reuse the pending-review claim resolver and native notification
+routes: a live worker receives a pointer; otherwise the Supervisor answers or
+relaunches under existing authority. The pointer is untrusted input, never
+permission to merge, Accept, close or widen work. Replied-to requests remain
+in planning intake until their next action is done.
+
+Use the same `--foreign-state`, `--notify-config` and `--miss-issue` on
+`routine_check.py` for the existing radar's scheduled backstop, including
+inline reviews. The watch sweep also reads inline comments and nonempty review
+bodies on updated PRs, including old and closed PRs. No second collector or
+durable request store is introduced.
+Miss reports on the named repair issue contain random receipt identifiers;
+source links, authors and words stay in private state. Recovery delivers
+immediately and waits two minutes before auditing a missing event receipt;
+a late matching event cancels that audit. Audit maintenance runs even after
+a message leaves the attention report. The report records subscriber state
+at backstop observation, not an inferred state when GitHub published it.
+Activation catch-up does not claim historical posts were missed events.
+Unobserved upstream hops remain UNKNOWN.
+Ordinary bot signals, Launchplane dispatches and Director questions keep their
+existing log or queue paths. Native message routing recognizes Client agents
+through the optional people index; `--people-index` selects an explicit index.
+Answered radar rows are not sent again; the original request still stays in planning.
+
+Run the same watcher arguments with `--receipts` to inspect existing private
+receipts without sending. Certainly unsent native deliveries remain retryable;
+permission refusals and uncertain sends are not replayed. The next read can
+confirm an uncertain send through its private random receipt line in a user
+message in the verified native transcript. Absence there does not prove a send failed. An uncertain
+miss-report write is reconciled by reading its random receipt from trusted
+comments on the repair issue; an absent comment never authorizes a blind retry.
+`--reconcile` runs those positive readbacks immediately. Automatic transcript readback stops after the issue audit is confirmed;
+`--reconcile` still permits an explicit positive readback. Only a helper-confirmed
+certainly unstarted miss write is retryable. Completed receipts are retained for
+the radar's 30-day window; unresolved send and audit fences remain preserved.
+
 Add `--director-login DIRECTOR-LOGIN --mention-approval <approval-comment-link>`
 to also report threads outside the listed repositories that mention the
 Director, including private repositories only the Director's login can read.
@@ -475,8 +535,8 @@ has ended before re-arming; retain an uncertain process and its unread output.
 Concurrent watchers using that state file refuse before reading GitHub. The
 helper reads one since-scoped repository issue-comment listing per pass
 (including PR timeline comments) and one since-scoped issue listing, so an
-issue or PR that an outside person opens is a notice (bot-opened ones are
-not), paginating through the shared reader within
+issue or PR that an outside person or Client agent opens is a notice,
+paginating through the shared reader within
 the wall-clock deadline. It uses the shared bulk quota reserve, identity,
 conditional cache and retry policy; no separate quota probe or history scan.
 A failed, partial or malformed read preserves that repository's watermark.

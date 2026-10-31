@@ -14,6 +14,10 @@ decisions, statuses, board contents or narrative; open linked records for action
    uv run skills/supervisor/scripts/routine_check.py --owner OWNER --queue OWNER/direction#NUMBER --ledger <ledger.json> --foreign-log <watch.jsonl>
    ```
 
+   Add `--foreign-state <watch-state.json> --notify-config <services.json>
+   --miss-issue OWNER/REPO#NUMBER` to route missed messages through the existing
+   watcher receipts and record their causes on the existing repair issue.
+   Routing errors preserve radar evidence and repeat as coverage errors.
    Add `--service-log <render-output>/logs/catalog.jsonl` for the catalog job.
    Other services may use different log formats. Missing or malformed logs are
    coverage errors; stopped jobs repeat until recovery produces a successful report.
@@ -46,7 +50,8 @@ decisions, statuses, board contents or narrative; open linked records for action
    `Staffed: <request-comment-link>` on the program issue to clear the candidate.
    Route Client and Client-agent comments to the owning worker for an answer.
    Open full source comments before acting; register/present questions through
-   the existing queue rules. The digest never writes delivery records or closes sessions.
+   the existing queue rules. Optional routing writes the existing watch receipts
+   and miss reports; the digest never closes sessions.
 3. For one normal finished session, run:
 
    ```sh

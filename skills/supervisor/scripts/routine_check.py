@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import compact_check
+import foreign_watch
 import goal_board
 import oq
 from question_delivery import run_queue, source_item
@@ -113,7 +114,7 @@ def pointer(row: dict) -> str:
 
 
 def digest(sources: dict[str, dict]) -> str:
-    lines = ["Routine check (read-only candidates)"]
+    lines = ["Routine check (source candidates; routing receipts are delivery evidence only)"]
     for name, report in sources.items():
         lines.extend(source_errors(name, report))
     sessions = sources.get("sessions", {}).get("sessions", [])
@@ -139,6 +140,9 @@ def digest(sources: dict[str, dict]) -> str:
     for row in comments.get("attention", []):
         if row.get("later_reply_url") or (row.get("comment_kind") == radar.OPENING_POST and row.get("thread_has_replies")):
             continue
+        routing = row.get("routing", {})
+        if routing.get("status") not in {None, "sent", "pending"} or routing.get("audit_error"):
+            lines.append(f"ERROR routing {pointer(row)}: {routing.get('audit_error') or routing.get('cause') or routing['status']}")
         lines.append(f"COMMENT {pointer(row)}: {' '.join((row.get('body_excerpt') or row.get('body') or '').split())[:180]}")
     for row in comments.get("unasked_director_waits", []):
         lines.append(f"WAIT {pointer(row)}")
@@ -247,6 +251,10 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
         result = radar.collect_payload(settings, comment_hints=tuple(hints))
         result["coverage"]["errors"].extend(errors)
         result["ok"] = result["ok"] and not errors
+        if getattr(args, "foreign_state", None):
+            foreign_watch.route_report(args, result, github_reader(), [*settings["self_logins"], *github_read.github_identity.configured_bot_logins()])
+            result["coverage"]["errors"].extend(result.get("routing_errors", []))
+            result["ok"] = result["ok"] and not result.get("routing_errors")
         return result
 
     return {
@@ -278,7 +286,7 @@ def comment_hint(notice: dict) -> Any:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Print one digest from the existing Supervisor readers; never launch, close or deliver."
+        description="Print the existing Supervisor digest; optional routing delivers message pointers, never launches or closes."
     )
     parser.add_argument("--owner", required=True)
     parser.add_argument("--queue", required=True)
@@ -286,11 +294,20 @@ def main() -> int:
     parser.add_argument("--foreign-log", type=Path, required=True)
     parser.add_argument("--service-log", type=Path, action="append", default=[])
     parser.add_argument("--capacity-state", type=Path)
+    parser.add_argument("--foreign-state", type=Path, help="enable message routing with the existing watch state")
+    parser.add_argument("--notify-config", type=Path)
+    parser.add_argument("--miss-issue", help="existing internal Supervisor/repair issue, OWNER/REPO#NUMBER")
     parser.add_argument("--source", action="append", default=[])
     parser.add_argument("--repo", action="append", default=[])
     parser.add_argument("--thread", action="append", default=[])
     parser.add_argument("--radar-config", type=Path, default=radar.DEFAULT_CONFIG)
     args = parser.parse_args()
+    if any((args.foreign_state, args.notify_config, args.miss_issue)) and not all(
+        (args.foreign_state, args.notify_config, args.miss_issue)
+    ):
+        parser.error("routing needs --foreign-state, --notify-config and --miss-issue together")
+    if args.miss_issue and not re.fullmatch(rf"{re.escape(args.owner)}/[A-Za-z0-9_.-]+#[1-9][0-9]*", args.miss_issue, re.I):
+        parser.error("--miss-issue must belong to the configured Director")
 
     def read_watch() -> dict:
         config = radar.rollup.load_config(args.radar_config)
@@ -300,7 +317,13 @@ def main() -> int:
     sources = collect({"watch": read_watch, **service_readers})
     sources.update(collect(build_readers(args, sources["watch"])))
     print(digest(sources))
-    return int(any(source_errors(name, report) for name, report in sources.items()))
+    return int(
+        any(source_errors(name, report) for name, report in sources.items())
+        or any(
+            row.get("routing", {}).get("status") not in {None, "sent", "pending"} or row.get("routing", {}).get("audit_error")
+            for row in sources.get("comments", {}).get("attention", [])
+        )
+    )
 
 
 if __name__ == "__main__":

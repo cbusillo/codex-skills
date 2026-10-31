@@ -38,12 +38,16 @@ def opened(login="client", kind="User", created=SINCE):
             "html_url": "https://github.com/director/project/pull/50"}
 
 
-def feeds(*comment_pages, opened_items=(), repositories=()):
+def feeds(*comment_pages, opened_items=(), inline_items=(), reviews=(), repositories=()):
     pages = iter(comment_pages)
 
     def read(path, **_):
         if path == "/installation/repositories":
             return list(repositories)
+        if path.endswith("/pulls/comments"):
+            return list(inline_items)
+        if path.endswith("/reviews"):
+            return list(reviews)
         if not path.endswith("/issues/comments"):
             return list(opened_items)
         page = next(pages)
@@ -111,9 +115,10 @@ class WatchTests(unittest.TestCase):
             self.assertEqual(state["watermarks"][REPO], SINCE)
             self.assertEqual(state["watermarks"]["director/healthy"], STARTED)
 
-    def scan(self, reader):
+    @staticmethod
+    def scan(reader, client_agents=()):
         return foreign_watch.scan([REPO], {REPO: SINCE}, ["director", "agent[bot]"],
-                                  ["delivery[bot]"], STARTED, reader)
+                                  ["delivery[bot]"], STARTED, reader, client_agents)
 
     def test_filter_and_review_records(self):
         reader = Mock()
@@ -131,11 +136,52 @@ class WatchTests(unittest.TestCase):
     def test_issue_or_pull_request_opened_by_an_outside_person_is_a_notice(self):
         reader = Mock()
         reader.paged_json.side_effect = feeds([], opened_items=[
-            opened(), opened("director"), opened("dependabot[bot]", "Bot"), opened(created="2026-10-09T11:00:00Z")])
-        notices, errors, _ = self.scan(reader)
+            opened(), opened("director"), opened("client-agent[bot]", "Bot"), opened("dependabot[bot]", "Bot"), opened(created="2026-10-09T11:00:00Z")])
+        notices, errors, _ = self.scan(reader, {"client-agent[bot]"})
         self.assertEqual(errors, [])
         self.assertEqual([(n["author"], n["url"], n["excerpt"]) for n in notices],
-                         [("client", "https://github.com/director/project/pull/50", "Add tvOS support")])
+                         [(author, "https://github.com/director/project/pull/50", "Add tvOS support")
+                          for author in ("client", "client-agent[bot]")])
+
+    def test_sweep_recovers_inline_and_bare_review_on_an_old_pull(self):
+        reader = Mock()
+        inline = {**comment(), "html_url": f"https://github.com/{REPO}/pull/50#discussion_r42"}
+        review = {**comment(), "html_url": f"https://github.com/{REPO}/pull/50#pullrequestreview-43", "created_at": SINCE}
+        old_pull = {**opened(created="2026-10-08T00:00:00Z"), "number": 50, "pull_request": {}}
+        reader.paged_json.side_effect = feeds([], opened_items=[old_pull], inline_items=[inline], reviews=[review, {"body": ""}])
+        notices, errors, watermarks = self.scan(reader)
+        self.assertEqual(errors, [])
+        self.assertEqual({row["url"] for row in notices}, {inline["html_url"], review["html_url"]})
+        self.assertEqual(watermarks[REPO], STARTED)
+
+    def test_opening_versions_are_batched_before_recovery(self):
+        reader = Mock()
+        first = {**opened(), "node_id": "first"}
+        second = {**opened(), "node_id": "second", "html_url": f"https://github.com/{REPO}/issues/51"}
+        reader.paged_json.side_effect = feeds([], opened_items=[first, second])
+        reader.graphql_json.return_value = ApiResult(ok=True, status=200, body={"data": {"nodes": [{"lastEditedAt": SINCE}, {"lastEditedAt": SINCE}]}})
+        notices, errors, _ = self.scan(reader)
+        self.assertEqual(errors, [])
+        self.assertEqual({item["url"] for item in notices}, {first["html_url"], second["html_url"]})
+        reader.graphql_json.assert_called_once()
+
+    def test_version_failures_keep_retryability_and_deleted_nodes_are_skipped(self):
+        reader = Mock()
+        source = {**opened(), "node_id": "source"}
+        reader.paged_json.side_effect = feeds([], opened_items=[source])
+        retry_at = 100.0
+        reader.diagnostics.return_value = {"requests": [{"retryAt": retry_at}]}
+        reader.graphql_json.return_value = ApiResult(ok=False, status=502, body=None, failure=FailureDetail(cause="network_provider_failure", message="unavailable", retryable=True, fallback_eligible=False, disposition="retry"))
+        notices, errors, watermarks = self.scan(reader)
+        self.assertEqual(notices, [])
+        self.assertTrue(errors[0]["retryable"])
+        self.assertEqual(errors[0]["retry_at"], retry_at)
+        self.assertEqual(watermarks[REPO], SINCE)
+        reader.paged_json.side_effect = feeds([], opened_items=[source])
+        reader.graphql_json.return_value = ApiResult(ok=True, status=200, body={"data": {"nodes": [None]}})
+        notices, errors, watermarks = self.scan(reader)
+        self.assertEqual((notices, errors), ([], []))
+        self.assertEqual(watermarks[REPO], STARTED)
 
     def test_worker_questions_surface_on_the_next_scan_without_ordinary_own_posts(self) -> None:
         reader = Mock()
@@ -271,9 +317,6 @@ class WatchTests(unittest.TestCase):
             self.assertEqual(json.loads(state.read_text())["watermarks"]["director/old"], STARTED)
             first_since = reader.paged_json.call_args_list[1].kwargs["params"]["since"]
             self.assertLess(foreign_watch.timestamp(first_since), foreign_watch.timestamp(SINCE))
-            read = {call.args[0] for call in reader.paged_json.call_args_list}
-            self.assertEqual(read, {"/installation/repositories", f"repos/{REPO}/issues/comments", f"repos/{REPO}/issues",
-                                    "repos/director/new/issues/comments", "repos/director/new/issues"})
             self.assertEqual([n["repository"] for n in json.loads(output.getvalue())["notices"]], ["director/new"])
 
     def test_expired_deadline_starts_no_read(self):

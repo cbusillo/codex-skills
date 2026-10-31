@@ -51,6 +51,9 @@ HELPER_OPERATIONS = {
 }
 
 LOCAL_EXTENSION_ROUTES = {
+    "attention-events-read": {
+        "method": "GET", "path": "/v1/attention/requests/events", "mode": "read",
+    },
     "production-backup-preflight-read": {
         "method": "GET", "path": "/v1/production-backup-authority/preflight", "mode": "read",
     },

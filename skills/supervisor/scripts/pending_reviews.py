@@ -518,7 +518,7 @@ def live_claim_comments(comments, branches):
                 match = re.fullmatch(r"\s*<!-- github-plan:claim (.*?) -->\s*", line)
                 raw = json.loads(match[1]) if match else None
                 if (isinstance(raw, dict) and isinstance(raw.get("branch"), str)
-                        and raw["branch"] and raw["branch"] not in branches):
+                        and raw["branch"] and branches is not None and raw["branch"] not in branches):
                     body = body.replace(line, "", 1)
                     continue
                 raise
@@ -529,7 +529,7 @@ def live_claim_comments(comments, branches):
     return [comment for comment in cleaned if comment["id"] not in ended]
 
 
-def bind_session(io, repo, branches, entries, logins, request, pr, *, refresh=False):
+def bind_session(io, repo, branches, entries, logins, request, pr, *, refresh=False, thread_issue=None, extra_issues=()):
     candidates = {entry["session_id"]: entry for entry in entries
                   if entry.get("repository", "").casefold() == repo.casefold()
                   and entry.get("supervisor_owned") is True}
@@ -538,16 +538,19 @@ def bind_session(io, repo, branches, entries, logins, request, pr, *, refresh=Fa
     # A brief may name a parent before its worker creates the implementation issue.
     # Linked issues locate claims; the trusted claim must still bind branch and session.
     issues = set(owned_issues)
+    issues.update(extra_issues)
     issues.update(ref["number"] for ref in issue_references(pr.get("body") or "", repo=repo)
                   if ref["repo"].casefold() == repo.casefold())
+    if thread_issue is not None:
+        issues = {thread_issue}
     matches, outside = {}, set()
     for issue in sorted(issues):
         comments = io.paged_json(f"/repos/{repo}/issues/{issue}/comments",
                                  step_prefix="verify_author_claims" if refresh else "author_claims")
-        comments = live_claim_comments([c for c in comments if trusted(c, logins)], branches)
+        comments = live_claim_comments([c for c in comments if trusted(c, logins)], None if thread_issue is not None else branches)
         for comment in comments:
             for claim in records(comment["body"]):
-                if claim["branch"] in branches:
+                if claim["branch"] in branches or thread_issue is not None:
                     if claim["session"] in candidates:
                         matches[claim["session"]] = candidates[claim["session"]]
                     else:
