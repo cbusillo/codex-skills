@@ -1161,6 +1161,37 @@ def test_full_history_thread_includes_outside_opening_post(monkeypatch) -> None:
     assert [item["comment_kind"] for item in payload["attention"]] == ["issue_body"]
 
 
+def test_watch_hints_retain_old_client_agents_until_reply_and_ignore_unrelated_bots(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = comment(comment_id=901, author="client-agent[bot]", author_type="Bot", body="Holding Accept until the menus work",
+                     created_at="2026-01-01T12:00:00Z")
+    bot = github_unanswered_comments.replace(client, number=43, author="github-actions[bot]")
+    reply = comment(comment_id=902, author="fixture-automation", body=f"The correction is ready: {client.url}",
+                    created_at="2026-01-02T12:00:00Z")
+    settings = {**portfolio_settings(), "scan_repository_scope": False, "threads": []}
+    monkeypatch.setitem(vars(github_unanswered_comments), "authenticated_login", lambda: "fixture-automation")
+    monkeypatch.setitem(vars(github_unanswered_comments), "resolve_repositories", lambda _settings: [])
+    monkeypatch.setitem(vars(github_unanswered_comments), "people_identities", lambda *_: {
+        "director_names": [], "director_ambiguous": False, "automation": {client.author: "Client"}, "status": "loaded"})
+    monkeypatch.setitem(vars(github_unanswered_comments), "collect_candidate_reactions",
+                        lambda candidates, _deadline: ({row.global_key: [] for row in candidates}, {}, []))
+    requested = []
+    source_comments = [client]
+
+    def read_thread(repo: str, number: int) -> tuple[dict, list, list]:
+        requested.append((repo, number))
+        return thread(), source_comments, []
+
+    monkeypatch.setitem(vars(github_unanswered_comments), "collect_thread", read_thread)
+    hints = (client, bot)
+    payload = github_unanswered_comments.collect_payload(settings, comment_hints=hints)
+    assert [row["comment_url"] for row in payload["attention"]] == [client.url]
+    assert requested == [client.thread_key]
+    source_comments.append(reply)
+    payload = github_unanswered_comments.collect_payload(settings, comment_hints=hints)
+    assert not payload["attention"]
+    assert requested == [client.thread_key, client.thread_key]
+
+
 def test_empty_outside_description_still_counts_as_opened() -> None:
     post = opening_comment(opening(body=""))
 

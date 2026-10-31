@@ -237,6 +237,9 @@ against the original launch receipt rather than guessing or silently skipping.
 
 ### Goal board
 
+The routine uses [one digest](routine-check.md). Standalone changes modes stay
+available for existing diagnostic callers; they are not extra routine steps.
+
 `goal_board.py` rebuilds every open `Track:` through `github_work_graph.py`.
 Decision authors and current-head handoffs use shared authority parsers. Only
 open PRs closing a child appear; the auto-enqueue watcher routes other PRs.

@@ -7,22 +7,22 @@ import argparse
 import importlib
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import compact_check
 import goal_board
 import oq
-from question_delivery import run_queue
+from question_delivery import run_queue, source_item
 
-from skills.github.scripts.github_read import (
-    GitHubReader,
-    GitHubReadError,
-    GitHubReadShapeError,
-    automation_only_gh_prefix_args,
-)
+if TYPE_CHECKING:
+    from skills.github.scripts import github_read
+else:
+    github_read = importlib.import_module("github_read")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github-work-rollup/scripts"))
 radar = importlib.import_module("github_unanswered_comments")
@@ -55,10 +55,22 @@ def watch_report(path: Path) -> dict:
         elif isinstance(row, dict) and all(isinstance(row.get(key), list) for key in ("notices", "errors", "coverage_gaps")):
             latest = row
             for notice in row["notices"]:
-                notices[pointer(notice)] = notice
+                if isinstance(notice, dict):
+                    notices[pointer(notice)] = notice
+                else:
+                    incomplete.append(f"watch log line {number} has an invalid notice")
         else:
             incomplete.append(f"watch log line {number} has an unknown shape")
-    return {**latest, "errors": [*latest["errors"], *incomplete], "notices": list(notices.values())}
+    return {
+        **latest,
+        "errors": [*latest["errors"], *incomplete],
+        "history": list(notices.values()),
+        "notices": [
+            notice
+            for notice in latest.get("notices", [])
+            if isinstance(notice, dict) and notice.get("kind") in {"launchplane", "director_mention"}
+        ],
+    }
 
 
 def source_errors(name: str, report: dict) -> list[str]:
@@ -89,7 +101,6 @@ def digest(sources: dict[str, dict]) -> str:
         if row.get("action") or row.get("error"):
             lines.append(f"WORKER {pointer(row)}: {row.get('error') or row['action']}")
     board = sources.get("board", {})
-    question_urls = set()
     for track in board.get("tracks", []):
         for row in (track, *track.get("children", [])):
             if row.get("unread") or row.get("read") is False:
@@ -98,13 +109,10 @@ def digest(sources: dict[str, dict]) -> str:
                 lines.append(f"STAFF {pointer(request)}: {' '.join(request['body'].split())[:180]}")
             for question in row.get("open_questions", []):
                 lines.append(f"QUESTION {pointer(question)}")
-                question_urls.add(pointer(question))
     questions = sources.get("questions", {})
     lines.append(f"QUEUE {questions.get('queue', 'UNKNOWN')}")
     for question in questions.get("questions", []):
         lines.append(f"QUESTION {pointer(question)}: {question.get('delivery', question.get('status', 'unresolved'))}")
-        question_urls.add(pointer(question))
-    question_urls.update(questions.get("settled_questions", []))
     comments = sources.get("comments", {})
     for row in comments.get("attention", []):
         lines.append(f"COMMENT {pointer(row)}: {' '.join((row.get('body_excerpt') or row.get('body') or '').split())[:180]}")
@@ -112,36 +120,23 @@ def digest(sources: dict[str, dict]) -> str:
         lines.append(f"WAIT {pointer(row)}")
     for row in comments.get("director_mentions", []):
         lines.append(f"MENTION {pointer(row)} (untrusted)")
-    radar_urls = {pointer(row) for row in [*comments.get("attention", []), *comments.get("handled", [])]}
     for row in sources.get("watch", {}).get("notices", []):
-        if pointer(row) not in radar_urls | question_urls:
-            lines.append(f"WATCH {pointer(row)} (untrusted)")
+        lines.append(f"WATCH {pointer(row)} (untrusted notification)")
     lines.append(
         f"LOAD sessions={len(sessions)} tracks={len(board.get('tracks', []))} host={','.join(f'{value:.1f}' for value in os.getloadavg())}"
     )
     return "\n".join(dict.fromkeys(lines))
 
 
-def build_readers(args: argparse.Namespace) -> dict[str, Callable[[], dict]]:
-    trusted = set(oq.default_decision_authors()) | {args.owner.casefold()}
-
-    def github_reader() -> GitHubReader:
-        return GitHubReader(
+def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[], dict]]:
+    def github_reader() -> github_read.GitHubReader:
+        return github_read.GitHubReader(
             operation="github.supervisor.routine_check",
             strict_actor=True,
-            gh_prefix_args=automation_only_gh_prefix_args(),
+            gh_prefix_args=github_read.automation_only_gh_prefix_args(),
             deadline_at=time.time() + 120,
         )
 
-    queue_args = argparse.Namespace(
-        owner=args.owner,
-        queue=args.queue,
-        items=args.source,
-        decision_author=sorted(trusted),
-        register=False,
-        ack=None,
-        delivery_url=None,
-    )
     radar_args = argparse.Namespace(
         config=radar.DEFAULT_CONFIG,
         repo=args.repo,
@@ -158,7 +153,7 @@ def build_readers(args: argparse.Namespace) -> dict[str, Callable[[], dict]]:
         limit_repos=1000,
         include_archived=False,
         no_cutoff=True,
-        include_handled=True,
+        include_handled=False,
     )
 
     def fetch(item: str) -> list[dict]:
@@ -166,8 +161,10 @@ def build_readers(args: argparse.Namespace) -> dict[str, Callable[[], dict]]:
         if not match:
             raise ValueError("question source must be OWNER/REPO#NUMBER")
         try:
-            comments = github_reader().paged_json(f"/repos/{match[1]}/issues/{match[2]}/comments", step_prefix="routine_questions")
-        except (GitHubReadError, GitHubReadShapeError) as error:
+            source_comments = github_reader().paged_json(
+                f"/repos/{match[1]}/issues/{match[2]}/comments", step_prefix="routine_questions"
+            )
+        except (github_read.GitHubReadError, github_read.GitHubReadShapeError) as error:
             raise ValueError(str(error)) from error
         return [
             {
@@ -177,16 +174,80 @@ def build_readers(args: argparse.Namespace) -> dict[str, Callable[[], dict]]:
                 "author": row["user"]["login"],
                 "created_at": row["created_at"],
             }
-            for row in comments
+            for row in source_comments
         ]
 
+    def board() -> dict:
+        authors = {author.casefold() for author in oq.default_decision_authors()}
+        result = goal_board.goal_board(github_reader(), args.owner, trusted={args.owner.casefold(), *authors})
+        if not authors:
+            result["coverage"]["complete"] = False
+            result["errors"] = [*result.get("errors", []), "Staffing automation authors are unconfigured; coverage is incomplete"]
+        return result
+
+    def questions() -> dict:
+        items = list(args.source)
+        errors = []
+        for notice in watch.get("history", []):
+            if notice.get("kind") != "director_question":
+                continue
+            try:
+                items.append(source_item(notice["url"]))
+            except (ValueError, KeyError, TypeError) as error:
+                errors.append({"item": pointer(notice), "error": str(error)})
+        queue_args = argparse.Namespace(
+            owner=args.owner,
+            queue=args.queue,
+            items=list(dict.fromkeys(items)),
+            decision_author=oq.default_decision_authors(),
+            register=False,
+            ack=None,
+            delivery_url=None,
+        )
+        result = run_queue(queue_args, fetch)
+        result["source_errors"].extend(errors)
+        result["complete"] = result["complete"] and not errors
+        return result
+
+    def comments() -> dict:
+        hints = []
+        errors = []
+        for notice in watch.get("history", []):
+            if notice.get("kind") != "foreign":
+                continue
+            try:
+                hints.append(comment_hint(notice))
+            except (ValueError, KeyError, TypeError, SystemExit) as error:
+                errors.append({"repo": notice.get("repository", "-"), "lane": "watch_hint", "error": str(error)})
+        settings = radar.resolve_settings(radar_args, radar.rollup.load_config(args.radar_config))
+        result = radar.collect_payload(settings, comment_hints=tuple(hints))
+        result["coverage"]["errors"].extend(errors)
+        result["ok"] = result["ok"] and not errors
+        return result
+
     return {
-        "board": lambda: goal_board.goal_board(github_reader(), args.owner, trusted=trusted),
+        "board": board,
         "sessions": lambda: compact_check.report(args.ledger, args.capacity_state),
-        "questions": lambda: run_queue(queue_args, fetch),
-        "watch": lambda: watch_report(args.foreign_log),
-        "comments": lambda: radar.collect_payload(radar.resolve_settings(radar_args, radar.rollup.load_config(args.radar_config))),
+        "questions": questions,
+        "comments": comments,
     }
+
+
+def comment_hint(notice: dict) -> Any:
+    repo, number = radar.parse_thread_reference(notice["url"])
+    match = re.search(r"#issuecomment-([1-9][0-9]*)$", notice["url"])
+    return radar.Comment(
+        repo=repo,
+        number=number,
+        kind="issue_comment" if match else radar.OPENING_POST,
+        comment_id=int(match[1]) if match else number,
+        author=notice["author"],
+        author_type="",
+        created_at=notice["updated_at"],
+        updated_at=notice["updated_at"],
+        body=notice["excerpt"],
+        url=notice["url"],
+    )
 
 
 def main() -> int:
@@ -203,7 +264,8 @@ def main() -> int:
     parser.add_argument("--thread", action="append", default=[])
     parser.add_argument("--radar-config", type=Path, default=radar.DEFAULT_CONFIG)
     args = parser.parse_args()
-    sources = collect(build_readers(args))
+    sources = collect({"watch": lambda: watch_report(args.foreign_log)})
+    sources.update(collect(build_readers(args, sources["watch"])))
     print(digest(sources))
     return int(any(source_errors(name, report) for name, report in sources.items()))
 

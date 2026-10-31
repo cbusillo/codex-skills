@@ -299,7 +299,7 @@ def staffing_requests(node: dict[str, Any], trusted: set[str]) -> list[dict[str,
             for index, comment in enumerate(comments)
             if login(comment.get("author")) in trusted
             and re.match(r"(?i)^\W*STAFF NOW\b", comment.get("body") or "")
-            and not any(login(reply.get("author")) in trusted and comment["url"] in (reply.get("body") or "")
+            and not any(login(reply.get("author")) in trusted and re.search(re.escape(comment["url"]) + r"\b", reply.get("body") or "")
                         and re.match(r"(?i)^\W*Staffed\b", reply.get("body") or "") for reply in comments[index + 1:])]
 
 

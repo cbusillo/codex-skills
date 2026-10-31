@@ -268,5 +268,5 @@ def reconcile(args, fetch):
                    and (c.get("author") or "").casefold() in trusted for c in queue_comments):
             raise ValueError("question delivery record readback failed")
     report = inventory(comments, queue_comments, args.owner, args.decision_author, question_urls=selected)
-    return {"queue": args.queue, "scope": items, "settled_questions": sorted(registered - active), **report,
+    return {"queue": args.queue, "scope": items, **report,
             "source_errors": errors, "complete": report["complete"] and not errors}

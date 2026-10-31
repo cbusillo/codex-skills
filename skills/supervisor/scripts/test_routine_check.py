@@ -5,12 +5,15 @@
 # ///
 import argparse
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock, patch
+
+os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
 
 import goal_board
 import routine_check
@@ -26,6 +29,14 @@ def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
 
 
 class RoutineCheckTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.enterContext(patch.dict(os.environ, {"CODE_HOME": temporary.name}))
+        self.enterContext(patch.object(routine_check.oq, "default_decision_authors", return_value=["agent[bot]"]))
+        self.enterContext(patch_attr(routine_check.radar.github_identity, "automation_login", return_value="agent[bot]"))
+        self.enterContext(patch_attr(routine_check.radar.github_identity, "configured_bot_logins", return_value=["agent[bot]"]))
+
     def test_held_accept_and_staff_now_survive_unchanged_checks(self) -> None:
         staffing = comment("STAFF NOW, two independent source slices: OPW406 and Devkit313", ident=6532738729)
         program = goal_board.child_row(child(277, comments=[staffing]), TRUSTED)
@@ -103,33 +114,40 @@ class RoutineCheckTests(unittest.TestCase):
             log = Path(directory) / "watch.jsonl"
             with self.assertRaises(OSError):
                 routine_check.watch_report(log)
-            report = {"notices": [{"url": "client"}], "errors": [], "coverage_gaps": []}
+            report = {"notices": [{"url": "client", "kind": "foreign"}], "errors": [], "coverage_gaps": []}
             log.write_text(json.dumps(report) + '\n{"error":"watch restart refused"}\n{')
             for _ in range(2):
-                output = routine_check.digest({"watch": routine_check.watch_report(log)})
-                self.assertIn("client", output)
+                watch = routine_check.watch_report(log)
+                output = routine_check.digest({"watch": watch})
+                self.assertEqual(watch["history"][0]["url"], "client")
                 self.assertIn("watch restart refused", output)
                 self.assertIn("incomplete", output)
 
     def test_staffing_clears_only_after_its_targeted_reply(self) -> None:
         request = comment("STAFF NOW: take the next source slice")
-        unrelated = comment(f"Not staffed yet: {request['url']}", ident=2)
+        unrelated = comment(f"Staffed: {request['url']}0", ident=2)
         node = child(277, comments=[request, unrelated])
         self.assertTrue(goal_board.child_row(node, TRUSTED)["staffing_requests"])
         node["comments"]["nodes"].append(comment(f"Staffed the requested slices: {request['url']}", ident=3))
         node["comments"]["totalCount"] += 1
         self.assertFalse(goal_board.child_row(node, TRUSTED)["staffing_requests"])
 
-    def test_fresh_handled_evidence_clears_watch_candidates_without_watermarks(self) -> None:
-        sources = {
-            "watch": {"notices": [{"url": "answered-client"}, {"url": "answered-question"}, {"url": "unknown"}]},
-            "comments": {"handled": [{"comment_url": "answered-client"}]},
-            "questions": {"settled_questions": ["answered-question"]},
-        }
-        output = routine_check.digest(sources)
-        self.assertIn("unknown", output)
-        self.assertNotIn("answered-client", output)
-        self.assertNotIn("answered-question", output)
+    def test_watch_notifications_do_not_accumulate_bot_noise(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "watch.jsonl"
+            rows = [
+                {
+                    "notices": [{"url": "old-bot", "kind": "foreign"}, {"url": "old-event", "kind": "launchplane"}],
+                    "errors": [],
+                    "coverage_gaps": [],
+                },
+                {"notices": [{"url": "current-event", "kind": "launchplane"}], "errors": [], "coverage_gaps": []},
+            ]
+            log.write_text("\n".join(json.dumps(row) for row in rows))
+            output = routine_check.digest({"watch": routine_check.watch_report(log)})
+            self.assertIn("current-event", output)
+            self.assertNotIn("old-bot", output)
+            self.assertNotIn("old-event", output)
 
     def test_reader_wiring_retains_client_attention_and_other_questions_on_source_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -140,7 +158,7 @@ class RoutineCheckTests(unittest.TestCase):
             args = argparse.Namespace(
                 owner="owner",
                 queue="owner/direction#98",
-                source=["owner/repo#7", "owner/repo#8"],
+                source=[],
                 repo=["owner/repo"],
                 thread=[],
                 ledger=ledger,
@@ -159,20 +177,65 @@ class RoutineCheckTests(unittest.TestCase):
 
             def paged(endpoint: str, **_: object) -> list[dict]:
                 if "/issues/7/" in endpoint:
-                    raise routine_check.GitHubReadError(
+                    raise routine_check.github_read.GitHubReadError(
                         "source unread", result=ApiResult(ok=False, status=404, body=None), diagnostics={}
                     )
                 return [question] if "/issues/8/" in endpoint else []
 
             with (
-                patch.object(routine_check, "GitHubReader", return_value=SimpleNamespace(paged_json=paged)),
+                patch_attr(routine_check.github_read, "GitHubReader", return_value=SimpleNamespace(paged_json=paged)),
                 patch.object(goal_board, "goal_board", return_value={"tracks": [], "coverage": {"complete": True}}),
-                patch_attr(routine_check.radar, "collect_payload", return_value={"attention": [{"url": "client"}], "ok": True}),
+                patch_attr(
+                    routine_check.radar,
+                    "collect_payload",
+                    return_value={"attention": [{"url": "client"}], "ok": True, "coverage": {"errors": []}},
+                ),
             ):
-                output = routine_check.digest(routine_check.collect(routine_check.build_readers(args)))
+                watch = {
+                    "history": [
+                        {"kind": "director_question", "url": "https://github.com/owner/repo/issues/7#issuecomment-70"},
+                        {"kind": "director_question", "url": good_url},
+                    ]
+                }
+                output = routine_check.digest(routine_check.collect(routine_check.build_readers(args, watch)))
             self.assertIn("client", output)
             self.assertIn(good_url, output)
             self.assertIn("source unread", output)
+
+    def test_selected_reader_404_preserves_staffing_rows_and_unknown_authority_is_explicit(self) -> None:
+        reader_module = routine_check.github_read
+        request = comment("STAFF NOW: take the next source slice")
+        program = child(277, comments=[request])
+        args = argparse.Namespace(
+            owner="owner",
+            ledger=Path("unused"),
+            capacity_state=None,
+            repo=[],
+            thread=[],
+            source=[],
+            queue="owner/direction#98",
+            radar_config=Path("unused"),
+        )
+
+        def board(reader: Any, _owner: str, *, trusted: set[str]) -> dict:
+            self.assertIsNone(goal_board.claim_evidence(reader, "owner/repo", 4))
+            return {
+                "tracks": [{"url": "track", "children": [goal_board.child_row(program, trusted)]}],
+                "coverage": {"complete": True},
+            }
+
+        with (
+            patch_attr(reader_module.github_api_core, "request_identity", return_value=("automation-gh", "agent[bot]", [])),
+            patch_attr(reader_module.GitHubReader, "_transport_request", return_value=ApiResult(ok=False, status=404, body=None)),
+            patch.object(goal_board, "goal_board", side_effect=board),
+            patch.object(routine_check.oq, "default_decision_authors", return_value=["Shiny-Code-App[bot]"]),
+        ):
+            report = routine_check.build_readers(args, {})["board"]()
+            self.assertIn(request["url"], routine_check.digest({"board": report}))
+            with patch.object(routine_check.oq, "default_decision_authors", return_value=[]):
+                report = routine_check.build_readers(args, {})["board"]()
+            self.assertFalse(report["coverage"]["complete"])
+            self.assertIn("unconfigured", routine_check.digest({"board": report}))
 
     def test_discovered_handoff_is_unique_exact_authored_and_journaled(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

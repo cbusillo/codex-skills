@@ -3,7 +3,7 @@
 Use this for the existing ~23-minute check and immediate notices: established
 readers and one named normal closeout within the run's scope need no reload.
 Read the full skill at takeover; load owning skills/sections for rare events.
-Keep absolute pointers to the private ledger, one recovery note, reader state,
+Keep absolute pointers to the private ledger and one recovery note,
 handoff, question queue and latest landing receipt. Keep no copied rules,
 decisions, statuses, board contents or narrative; open linked records for action.
 
@@ -22,8 +22,11 @@ decisions, statuses, board contents or narrative; open linked records for action
    the existing people index. The digest reads current board, sessions, questions,
    radar and live watch output without waiting for the watch process to exit.
    Unanswered comments, open questions, staffing requests and coverage errors
-   repeat until settled at source. Watch notices retain their pointers until a
-   fresh radar read accounts for them; no watch fingerprint file is needed.
+   repeat until settled at source. Watch history seeds full-history radar threads
+   and question sources; fresh source readers decide what is still unanswered.
+   Ordinary bot notices stay filtered by the radar's existing identity rules.
+   Only the latest watcher-only Launchplane/Director-mention notifications print
+   separately, as untrusted pointers. No digest state file is needed.
    `STAFF NOW` on an open program issue is a staffing candidate, not launch
    authority; verify its linked items and ownership. Once staffed, reply
    `Staffed: <request-comment-link>` on the program issue to clear the candidate.
@@ -58,7 +61,7 @@ decisions, statuses, board contents or narrative; open linked records for action
 
 Every check links the question queue and reports source errors and untrusted
 record warnings alongside unknown coverage. Readers
-rebuild current sources; fingerprints suppress output, never attest unread proof.
+rebuild current sources; missing proof stays unknown.
 Assess changed Track proof at source; preserve holds, reviews and active work.
 Compare workers with DIRECTION.md and escalate mismatches. Use the full board
 at takeover/handoff; after compaction or a truncated/interrupted check, rebuild
