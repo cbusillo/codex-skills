@@ -512,8 +512,9 @@ class GoalBoardTests(unittest.TestCase):
         parent["subIssuesSummary"] = {"total": 1, "completed": 0}
         expanded = {**parent, "subIssues": {"totalCount": 1, "nodes": [child(11, prs=[pr(92, comments=[ready])])]}}
         self.reader.paged_json.return_value = []
-        board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
-                            details(t1=track(1, children=[parent])), details(t10=expanded))
+        self.reader.graphql_json.side_effect = [ApiResult(ok=True, status=200, body=body) for body in (
+            listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[parent])), details(t10=expanded))]
+        board = goal_board.goal_board(self.reader, "owner", trusted=TRUSTED, wait_trusted=TRUSTED)
         rows = board["tracks"][0]["children"]
         self.assertFalse(board["coverage"]["complete"])
         self.assertEqual([pull["handoff"] for pull in rows[0]["open_prs"]], [goal_board.UNKNOWN, "ready"])
