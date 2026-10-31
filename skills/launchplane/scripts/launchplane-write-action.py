@@ -6127,7 +6127,9 @@ def summarize_path_check(
 
 def _project_lane_status(value: object) -> dict[str, object]:
     status = _require_dict(value)
-    evaluated_at = public_timestamp(status.get("evaluated_at"))
+    evaluated_at = _utc_timestamp(status.get("evaluated_at"))
+    if not evaluated_at:
+        raise LaunchplaneSafetyError("invalid_response")
     signal = _require_dict(status.get("current"))
     transitions = status.get("transitions")
     if not isinstance(transitions, list):
@@ -6136,7 +6138,9 @@ def _project_lane_status(value: object) -> dict[str, object]:
     valid_until = None
     for value in transitions:
         transition = _require_dict(value)
-        after = public_timestamp(transition.get("after"))
+        after = _utc_timestamp(transition.get("after"))
+        if not after:
+            raise LaunchplaneSafetyError("invalid_response")
         if datetime.fromisoformat(after.replace("Z", "+00:00")) < now:
             signal = _require_dict(transition.get("signal"))
         elif valid_until is None:

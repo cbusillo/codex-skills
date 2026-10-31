@@ -12776,13 +12776,13 @@ def _product_status_response() -> dict[str, Any]:
         "status": "ok", "trace_id": "launchplane_req_status",
         "product": {"product": "example-product", "warnings": ["Preview refresh failed"], "environments": [
             {"environment": "testing", "lane_status": {
-                "evaluated_at": "2026-01-01T00:00:00Z",
+                "evaluated_at": "2026-01-01T00:00:00+00:00",
                 "current": {"sidebar_tone": "verified", "description": "Healthy", "attention_reasons": [], "warning_reasons": []},
-                "transitions": [{"after": "2026-01-01T00:01:00Z", "signal": {
+                "transitions": [{"after": "2026-01-01T00:01:00+00:00", "signal": {
                     "sidebar_tone": "stale", "description": "Stale evidence; awaiting current observations", "attention_reasons": [], "warning_reasons": []}}],
             }},
             {"environment": "prod", "lane_status": {
-                "evaluated_at": "2026-01-01T00:00:00Z", "transitions": [],
+                "evaluated_at": "2026-01-01T00:00:00+00:00", "transitions": [],
                 "current": {"sidebar_tone": "danger", "description": "Alert; DNS; A critical incident is open", "attention_reasons": ["A critical incident is open"], "warning_reasons": []},
             }},
         ]},
