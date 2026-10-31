@@ -6,9 +6,11 @@
 import argparse
 import asyncio
 import json
+import re
 import time
 from pathlib import Path
 from subprocess import SubprocessError
+from typing import TYPE_CHECKING
 
 import iterm_tab
 import pending_reviews
@@ -32,6 +34,11 @@ from check_operation import (
 from session_record import load_ledger, normalize_ledger_entry, session_status
 
 SCRIPTS = Path(__file__).resolve().parent
+
+if TYPE_CHECKING:
+    from skills.github.scripts.github_plan_claim import live_lines
+else:
+    from github_plan_claim import live_lines
 
 
 def require(condition: bool, gate: str, reason: str) -> None:
@@ -81,6 +88,50 @@ def ready(entry: dict, supervisor: str) -> dict:
     return status
 
 
+def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, *, retired: bool) -> None:
+    operation.gate = "handoff"
+    reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 60)
+    actor = github_identity.automation_login()
+    require(bool(actor), "handoff", "configured automation identity is unknown")
+    selected = getattr(args, "handoff_url", None) or entry.get("handoff_url") or operation.state.get("handoff", {}).get("url")
+    require(not entry.get("handoff_url") or entry["handoff_url"] == selected, "handoff", "recorded handoff differs; preserve it")
+    if not selected:
+        repo, number = entry.get("repository"), entry.get("issue")
+        require(isinstance(repo, str) and release.REPO.fullmatch(repo) is not None
+                and isinstance(number, int) and not isinstance(number, bool) and number > 0,
+                "handoff", "discovery needs the ledger's exact repository and issue")
+        comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="closeout_handoff")
+        candidates = [comment for comment in comments
+                      if (comment.get("user") or {}).get("login") == actor
+                      and explicit_session(comment.get("body") or "", args.session_id)
+                      and not live_lines(comment.get("body") or "")
+                      and not re.match(r"(?i)^Claimed by\b", (comment.get("body") or "").strip())]
+        require(len(candidates) == 1, "handoff",
+                f"requires one posted handoff; found {len(candidates)} candidates: {[row.get('html_url') for row in candidates]}; "
+                "verify the source and select its exact --handoff-url")
+        selected = candidates[0]["html_url"]
+    require(isinstance(selected, str), "handoff", "handoff URL is missing")
+    require(operation.state.get("handoff", {}).get("url", selected) == selected,
+            "handoff", "journal already records another handoff; preserve its evidence")
+    match = release.HANDOFF.fullmatch(selected)
+    require(bool(match), "handoff", "handoff URL is malformed")
+    proposed = {**entry, "handoff_url": selected}
+    handoff = release.handoff(reader, proposed, actor)
+    require(explicit_session(handoff.get("body") or "", args.session_id), "handoff", "handoff must name this native session")
+    operation.state["handoff"] = {"url": selected, "session_id": args.session_id, "author": actor,
+                                  "revision": fingerprint(handoff)}
+    save_state(operation.path, operation.state)
+    if not retired and entry.get("handoff_url") != selected:
+        with closure.store_lock(args.ledger, create=True):
+            rows = json.loads(args.ledger.read_text())
+            matches = [row for row in rows if row.get("session_id") == args.session_id]
+            require(len(matches) == 1 and release.closure_identity(normalize_ledger_entry(args.ledger, matches[0])) == release.closure_identity(entry),
+                    "identity", "ledger generation changed before handoff update")
+            matches[0]["handoff_url"] = selected
+            save_state(args.ledger, rows)
+    entry["handoff_url"] = selected
+
+
 def closeout(args: argparse.Namespace, operation: Operation) -> None:
     entries = [entry for entry in load_ledger(args.ledger) if entry["session_id"] == args.session_id]
     retired = not entries and bool(operation.state.get("retired_generation"))
@@ -92,10 +143,6 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
             entries = [saved]
     require(len(entries) == 1, "identity", "native session must match exactly one ledger entry or verified retirement")
     entry = entries[0]
-    selected_handoff = getattr(args, "handoff_url", None)
-    if selected_handoff:
-        require(not entry.get("handoff_url") or entry["handoff_url"] == selected_handoff, "handoff", "recorded handoff differs; preserve it")
-        entry["handoff_url"] = selected_handoff
     generation = fingerprint({key: value for key, value in release.closure_identity(entry).items() if key != "handoff_url"})
     require(operation.state.get("generation", generation) == generation, "identity", "journal belongs to another launch generation")
     require(not retired or operation.state["retired_generation"] == generation, "identity", "retired source generation changed")
@@ -111,28 +158,6 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
 
     def call(gate: str, action: str, *extra: str, once: bool = False) -> dict:
         return operation.run(gate, [*terminal, action, "--session-id", terminal_id, *extra], once=once)
-
-    def verify_handoff() -> None:
-        operation.gate = "handoff"
-        reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 60)
-        handoff = release.handoff(reader, entry, github_identity.automation_login())
-        require(
-            explicit_session(handoff.get("body") or "", args.session_id),
-            "handoff",
-            "handoff must name this native session",
-        )
-        if selected_handoff and not retired:
-            with closure.store_lock(args.ledger, create=True):
-                rows = json.loads(args.ledger.read_text())
-                matches = [row for row in rows if row.get("session_id") == args.session_id]
-                require(
-                    len(matches) == 1
-                    and release.closure_identity(normalize_ledger_entry(args.ledger, {**matches[0], "handoff_url": selected_handoff})) == release.closure_identity(entry),
-                    "identity",
-                    "ledger generation changed before handoff update",
-                )
-                matches[0]["handoff_url"] = selected_handoff
-                save_state(args.ledger, rows)
 
     def claims() -> None:
         result = operation.run(
@@ -215,7 +240,7 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
 
     with closure.ownership(args.session_id, create=True):
         claims()
-        verify_handoff()
+        verify_handoff(entry, args, operation, retired=retired)
         require(not retired or session_liveness.process_absent(entry.get("pid")), "process_exit", "retired process identity is live")
         if not session_liveness.process_absent(entry.get("pid")) and not operation.state["steps"].get("quit"):
             operation.gate = "native_idle"
@@ -285,7 +310,7 @@ def main() -> int:
     parser.add_argument("--supervisor-session", required=True)
     parser.add_argument("--owner", required=True)
     parser.add_argument("--evidence", type=Path, required=True)
-    parser.add_argument("--handoff-url", help="exact posted issue handoff; verify and save it in the ledger before shutdown")
+    parser.add_argument("--handoff-url", help="explicit posted handoff after source verification, including a different work issue")
     parser.add_argument("--exit-seconds", type=float, default=30)
     args = parser.parse_args()
     try:

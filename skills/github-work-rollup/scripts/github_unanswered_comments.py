@@ -1470,7 +1470,7 @@ def outbound_states_for_thread(
     return results
 
 
-def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
+def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, ...] = ()) -> dict[str, Any]:
     self_logins = {normalize_login(login) for login in settings["self_logins"] if normalize_login(login)}
     bot_logins = {normalize_login(login) for login in settings["bot_logins"] if normalize_login(login)}
     outbound_self = {normalize_login(login) for login in settings.get("outbound_self_logins", []) if normalize_login(login)}
@@ -1532,6 +1532,8 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
         unasked_waits.sort(key=lambda row: (row["repo"], row["number"]))
 
     full_history_threads = set(settings["threads"])
+    full_history_threads.update(hint.thread_key for hint in comment_hints
+                               if is_external_comment(hint, self_logins, bot_logins, people["automation"]))
     for thread_key in full_history_threads:
         candidate_ids.setdefault(thread_key, set())
     outbound_scope: set[tuple[str, int]] = set()

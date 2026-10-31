@@ -68,13 +68,8 @@ def candidates(ledger: Path, session_id: str | None = None) -> list[dict]:
     return results
 
 
-def check(ledger: Path, state: Path, capacity_state: Path | None = None) -> dict:
+def report(ledger: Path, capacity_state: Path | None = None) -> dict:
     entries = {entry["session_id"]: entry for entry in load_ledger(ledger)}
-    sources = {ledger.resolve(), *(Path(entry["transcript"]).resolve() for entry in entries.values())}
-    if capacity_state:
-        sources.add(capacity_state.resolve())
-    if state.resolve() in sources:
-        raise ValueError("check state must be separate from its sources")
     rows = []
     for result in snapshot(ledger, capacity_state, entries=list(entries.values())):
         entry = entries[result["session_id"]]
@@ -120,12 +115,18 @@ def check(ledger: Path, state: Path, capacity_state: Path | None = None) -> dict
         "read": sum("error" not in row for row in rows),
         "complete": not any("error" in row for row in rows),
     }
-    return {
-        "sessions": changes(
-            rows, state, [str(ledger.resolve()), str(capacity_state)], key="session_id", complete=coverage["complete"]
-        ),
-        "coverage": coverage,
-    }
+    return {"sessions": rows, "coverage": coverage}
+
+
+def check(ledger: Path, state: Path, capacity_state: Path | None = None) -> dict:
+    sources = {ledger.resolve(), *(Path(entry["transcript"]).resolve() for entry in load_ledger(ledger))}
+    if capacity_state:
+        sources.add(capacity_state.resolve())
+    if state.resolve() in sources:
+        raise ValueError("check state must be separate from its sources")
+    result = report(ledger, capacity_state)
+    return {**result, "sessions": changes(result["sessions"], state, [str(ledger.resolve()), str(capacity_state)],
+                                         key="session_id", complete=result["coverage"]["complete"])}
 
 
 def main() -> int:
