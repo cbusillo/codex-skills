@@ -923,6 +923,34 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                 future.result(timeout=3)
             self.assertTrue(any(r.get("launch_pid") == os.getpid() for r in CLOSURE.log_rows()))
 
+    def test_slow_registration_probe_preserves_concurrent_store_updates(self) -> None:
+        with ReceiptFixture() as fixture, ThreadPoolExecutor(max_workers=1) as pool:
+            observed = {"record_kind": "managed_launch", "launch_pid": 123456, "launch_generation": "old"}
+            refreshed = {**observed, "launch_generation": "new"}
+            unrelated = {**fixture.entry, "session_id": "other-source"}
+            CLOSURE.replace_rows([observed])
+            started, release = threading.Event(), threading.Event()
+
+            def probe(_pid: int) -> bool:
+                started.set()
+                if not release.wait(3):
+                    raise TimeoutError("fixture registration probe did not finish")
+                return True
+
+            with patch.object(SESSIONS.process_liveness(), "process_absent", side_effect=probe):
+                future = pool.submit(CLOSURE.register_launch, ["codex", "--", "task"], str(fixture.home))
+                try:
+                    self.assertTrue(started.wait(3))
+                    with CLOSURE.store_lock(fixture.log):
+                        CLOSURE.replace_rows([refreshed, unrelated])
+                finally:
+                    release.set()
+                    future.result(timeout=3)
+            rows = CLOSURE.log_rows()
+            self.assertIn(refreshed, rows)
+            self.assertIn(unrelated, rows)
+            self.assertNotIn(observed, rows)
+
     def test_registration_prunes_only_confirmed_dead_runtime_rows(self):
         shared = SESSIONS.process_liveness()
         native_absent = shared.process_absent

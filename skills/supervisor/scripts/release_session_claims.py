@@ -12,7 +12,6 @@ import asyncio
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 import json
-import fcntl
 import os
 from pathlib import Path
 from typing import Any
@@ -895,7 +894,6 @@ def main():
     parser.add_argument("--transcript-root", type=Path, action="append", default=[])
     args = parser.parse_args()
     reports = []
-    lock_stream = None
     try:
         if args.mode == "backfill" and args.checkout_root is None:
             raise ValueError("backfill requires --checkout-root for canonical release preflight")
@@ -903,13 +901,6 @@ def main():
             if args.mode != "finish":
                 raise ValueError("backfill requires an explicit --closed-log")
             args.closed_log = closure.closed_log()
-        if args.apply:
-            args.closed_log.parent.mkdir(parents=True, exist_ok=True)
-            lock_stream = os.fdopen(os.open(str(args.closed_log) + ".release.lock", os.O_CREAT | os.O_RDWR, 0o600), "w")
-            try:
-                fcntl.flock(lock_stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as error:
-                raise ValueError("another closure/release operation owns this log") from error
         if not args.confirm_session_ended:
             raise ValueError("Supervisor must verify actual process exit")
         if args.deadline_seconds <= 0:
@@ -969,6 +960,7 @@ def main():
             except (ValueError, KeyError, TypeError, OSError) as error:
                 inventory_rows: list[dict[str, Any]] = entry.get("_inventory_claims", [])
                 reports.append({"session_id": entry["session_id"], "error": str(error), "released": False,
+                                "retryable": isinstance(error, closure.LeaseBusy),
                                 "inventory_claims": [{"repository": r["repo"], "issue": r["issue"],
                                     "claim_comment": r["claim_comment_id"], "status": "preserved"}
                                     for r in inventory_rows]})
@@ -995,9 +987,12 @@ def main():
             except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError,
                     GitHubReadError, GitHubReadShapeError, CommentError) as error:
                 report = error.report if isinstance(error, PartialRelease) else {"session_id": entry["session_id"]}
-                reports.append({**report, "error": str(error), "next_action": "inspect records before retry"})
+                reports.append({**report, "error": str(error),
+                                "retryable": isinstance(error, closure.LeaseBusy),
+                                "next_action": "inspect records before retry"})
         ok = not any("error" in r or r.get("issue_refusals") or r.get("pr_claim_handoffs") for r in reports)
         print(json.dumps({"ok": ok, "reports": reports, "repositories_checked": repos,
+                          "retryable": any(r.get("retryable") is True for r in reports),
                           "needs_reconciliation": any(r.get("retained_status_claims") or r.get("issue_refusals") or r.get("pr_claim_handoffs") or "error" in r for r in reports),
                           "coverage": "exact verified inventory claims" if all(e.get("_inventory") for e in entries) else "explicit scope" if args.repo else "accessible repositories under the requested owner",
                           "outside_scope": "other repository owners and other automation App identities; use their configured evidence-backed release-claim route"}))
@@ -1006,12 +1001,12 @@ def main():
             GitHubReadError, GitHubReadShapeError, CommentError) as error:
         if isinstance(error, PartialRelease):
             reports.append(error.report)
+        retryable = isinstance(error, closure.LeaseBusy)
         print(json.dumps({"ok": False, "error": str(error), "completed_sessions": reports,
-                          "next_action": "inspect posted records and remaining claims; do not replay an uncertain write"}))
+                          "retryable": retryable,
+                          "next_action": ("retry after the shared closure log is available" if retryable else
+                                          "inspect posted records and remaining claims; do not replay an uncertain write")}))
         return 1
-    finally:
-        if lock_stream is not None:
-            lock_stream.close()
 
 
 if __name__ == "__main__":

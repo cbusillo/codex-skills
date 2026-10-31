@@ -10,8 +10,9 @@ import os
 import contextlib
 import io
 import itertools
-import fcntl
 import importlib
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,6 +21,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import release_session_claims as helper
+import github_plan_closure as closure
 
 ACTOR = "test-automation[bot]"
 SOURCE = {"worker": "trial", "session": "source-session", "branch": "work/trial",
@@ -1337,7 +1339,7 @@ class ReleaseTests(unittest.TestCase):
                 report = helper.release_session(self.reader, self.entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
             self.assertEqual(report["claims"][0]["retained_prs"], [])
 
-    def test_finish_apply_records_private_log_and_lock_refuses_second_operation(self):
+    def test_finish_apply_records_private_log_and_reports_concurrent_store_lock_retryable(self):
         ledger, log = self.root / "ledger.json", self.root / "closed.json"
         ledger.write_text(json.dumps([self.entry]))
         argv = ["helper", "finish", "--ledger", str(ledger), "--closed-log", str(log), "--session-id", "source-session",
@@ -1352,9 +1354,21 @@ class ReleaseTests(unittest.TestCase):
             first = json.loads(log.read_text())[0]["ended_at"]
             self.assertEqual(helper.main(), 0)
             self.assertEqual(json.loads(log.read_text())[0]["ended_at"], first)
-            with Path(str(log) + ".lock").open("w") as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                self.assertEqual(helper.main(), 1)
+            held, release = threading.Event(), threading.Event()
+            def hold_store_lock():
+                with closure.store_lock(log):
+                    held.set()
+                    release.wait(3)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(hold_store_lock)
+                self.assertTrue(held.wait(3))
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    self.assertEqual(helper.main(), 1)
+                release.set()
+                future.result(timeout=3)
+            busy = json.loads(output.getvalue())
+            self.assertTrue(busy["retryable"])
             self.assertEqual(run.call_count, 2)
 
     def test_issue_refused_in_preflight_gets_no_attestation(self):

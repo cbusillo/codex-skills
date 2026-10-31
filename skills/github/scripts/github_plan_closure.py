@@ -215,12 +215,22 @@ def prune_registrations(rows: list[dict]) -> list[dict]:
             or not shared.process_absent(row.get("launch_pid"))]
 
 
+def expired_registrations() -> list[dict]:
+    try:
+        observed = log_rows()
+    except FileNotFoundError:
+        return []
+    retained = prune_registrations(observed)
+    return [row for row in observed if row not in retained]
+
+
 def register_proxy(home: str, endpoint: str) -> dict:
     metadata = launch_metadata(os.getpid(), os.urandom(16).hex(), home)
     row = {"record_kind": "managed_proxy", **metadata, "endpoint": endpoint,
            "argv_digest": argv_signature(sys.argv)}
+    expired = expired_registrations()
     with store_lock(closed_log(), create=True):
-        rows = prune_registrations(log_rows() if closed_log().exists() else [])
+        rows = [row for row in (log_rows() if closed_log().exists() else []) if row not in expired]
         rows = [r for r in rows if r.get("record_kind") != "managed_proxy" or r.get("launch_pid") != os.getpid()]
         replace_rows([*rows, row])
     return row
@@ -229,14 +239,15 @@ def register_proxy(home: str, endpoint: str) -> dict:
 def remove_registration(pid: int, generation: str) -> None:
     if not closed_log().exists():
         return
+    expired = expired_registrations()
     with store_lock(closed_log()):
         try:
             rows = log_rows()
         except FileNotFoundError:
             return
-        replace_rows(prune_registrations([r for r in rows if not (
+        replace_rows([r for r in rows if r not in expired and not (
             r.get("record_kind") in {"managed_launch", "managed_proxy"}
-            and r.get("launch_pid") == pid and r.get("launch_generation") == generation)]))
+            and r.get("launch_pid") == pid and r.get("launch_generation") == generation)])
 
 
 def register_launch(argv: list[str], home: str, *, proxy: dict | None = None) -> None:
@@ -245,8 +256,9 @@ def register_launch(argv: list[str], home: str, *, proxy: dict | None = None) ->
         raise ValueError("managed native client must use its guarded ingress")
     metadata = launch_metadata(os.getpid(), os.urandom(16).hex(), home)
     path = closed_log()
+    expired = expired_registrations()
     with store_lock(path, create=True):
-        rows = prune_registrations(log_rows() if path.exists() else [])
+        rows = [row for row in (log_rows() if path.exists() else []) if row not in expired]
         # Reap only older records for this PID. PID and birth must both match
         # at observation; other clients' live records are never reassigned.
         rows = [r for r in rows if r.get("record_kind") != "managed_launch" or r.get("launch_pid") != os.getpid()]
