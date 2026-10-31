@@ -37,8 +37,10 @@ decisions, statuses, board contents or narrative; open linked records for action
    first failed gate; inspect private details on failure and reuse its evidence.
    Never replay uncertain mutations with another directory. Nonempty input,
    prompts and interrupted sources use [shutdown/recovery](helpers.md#finished-session-shutdown-stages).
-5. Staff through current `gh-plan.py next`, active child records and complete
+5. Staff through current global `gh-plan.py --repo OWNER/direction next`, active child records and complete
    claim coverage under the overall Order and existing capacity/PR limits.
+   Reuse that output for [planning intake](../../github-plan/SKILL.md#triage-incoming-reports);
+   the unanswered-comment radar alone does not track unfinished requests.
    Load the owning skill before a launch, plan mutation or train/landing action;
    those actions are outside this no-reload reader entry. Refill
    available capacity, handle stale waits and deferred-question conditions,
