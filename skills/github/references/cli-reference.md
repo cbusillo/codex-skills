@@ -1379,7 +1379,8 @@ Current Status, write the handoff to a file and release with the
 `release_command` the claim printed:
 `gh-plan.py release <issue> --claim-comment <claim-comment-id> --session <native-id> --handoff-file <handoff.md>`.
 It posts the exact directive with the handoff below it through the same bot
-identity and reads it back; do not hand-write the release comment.
+identity, includes the native `Session:` field for closeout discovery, and reads
+it back; do not hand-write the release comment.
 Supply `--next-actor agent|agent:<session-or-role>|person:<login>|event:<observable>`
 or a `Next actor:` line in the handoff. Release requires an explicit actor,
 updates only that field in the issue's existing Current Status before releasing,
