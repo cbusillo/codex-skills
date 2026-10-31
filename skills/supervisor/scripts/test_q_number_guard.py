@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -64,6 +65,7 @@ class GuardTests(unittest.TestCase):
         self.env = {"CODE_HOME": self.home.name}
         self.enterContext(mock.patch.object(record.question_id, "configured_queue", return_value="example/direction#9"))
         self.enterContext(mock.patch.object(record.delivery.oq, "default_decision_authors", return_value=["fixture-automation"]))
+        self.original_read_question = guard.read_question
         self.read_question = self.enterContext(mock.patch.object(guard, "read_question", side_effect=ValueError("unavailable")))
 
     def run_hook(self, payload):
@@ -112,7 +114,9 @@ class GuardTests(unittest.TestCase):
     def test_registered_structured_question_supplies_relay_context(self) -> None:
         source = self.registered_question()
         with mock.patch.object(guard, "read_question", return_value=source):
-            self.assertEqual(self.run_hook(stop(last_assistant_message=f"**Q590 — Should we move the nightly sync?** {source['url']}")), "")
+            for heading in ("**Q590 — Should we move the nightly sync?**", source["body"].splitlines()[0]):
+                with self.subTest(heading=heading):
+                    self.assertEqual(self.run_hook(stop(last_assistant_message=f"{heading} {source['url']}")), "")
 
     def test_registered_legacy_question_and_new_ask_do_not_bypass_context(self) -> None:
         source = self.registered_question()
@@ -135,6 +139,32 @@ class GuardTests(unittest.TestCase):
         self.assertIn("block", self.run_hook(stop(last_assistant_message=message)))
         self.read_question.assert_not_called()
         self.assertIn("block", self.run_hook(stop(last_assistant_message=f"{message} {source['url']}")))
+
+    def test_direct_source_read_validates_identity_and_transport(self) -> None:
+        source = self.registered_question()
+        body = {"html_url": source["url"], "body": source["body"], "user": {"login": source["author"]}}
+        for changed, successful in (({}, True), ({"html_url": source["url"] + "1"}, True), ({}, False)):
+            with self.subTest(changed=changed, successful=successful), mock.patch.object(guard.subprocess, "Popen") as launch:
+                child = launch.return_value.__enter__.return_value
+                child.communicate.return_value = (json.dumps({"ok": successful, "outcome_certainty": "confirmed",
+                                                             "body": {**body, **changed}}), None)
+                child.returncode = 0
+                with mock.patch.object(guard, "read_question", side_effect=self.original_read_question):
+                    output = self.run_hook(stop(last_assistant_message=f"**Q590 — Move the sync?** {source['url']}"))
+                self.assertEqual(output == "", successful and not changed)
+
+    def test_slow_authentication_child_is_stopped_at_the_lookup_deadline(self) -> None:
+        helper = Path(self.home.name, "slow-read.py")
+        helper.write_text("import signal\nsignal.pause()\n")
+        with mock.patch.object(guard, "API_HELPER", helper):
+            with self.assertRaises(guard.subprocess.TimeoutExpired):
+                self.original_read_question(self.registered_question()["url"], time.time() + 0.1)
+
+    def test_missing_lookup_import_and_null_author_keep_the_block(self) -> None:
+        source = self.registered_question()
+        for failure in (ImportError("missing sibling"), AttributeError("unknown author")):
+            with self.subTest(failure=failure), mock.patch.object(guard, "read_question", side_effect=failure):
+                self.assertIn("block", self.run_hook(stop(last_assistant_message=f"**Q590 — Move the sync?** {source['url']}")))
 
     def test_context_correction_uses_shared_guidance(self) -> None:
         guidance = Path(self.home.name, "guidance.md")

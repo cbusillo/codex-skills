@@ -10,7 +10,9 @@ import datetime as dt
 import json
 import os
 import re
+import signal
 import stat
+import subprocess
 import sys
 import time
 from collections import Counter
@@ -19,7 +21,6 @@ from typing import Mapping
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
-from skills.github.scripts import github_read
 
 NUMBERED = re.compile(r"[*][*]Q[0-9]{3,}\b")
 # Quoted material repeats old questions; only the reply's own words count. Only a
@@ -53,6 +54,7 @@ REASON = (
     "the reply with it. If the reply asks him nothing, end the turn again unchanged."
 )
 LOOKUP_TIMEOUT = 3
+API_HELPER = Path(__file__).resolve().parents[2] / "github/scripts/github_api.py"
 
 
 def asks_director(text: str) -> bool:
@@ -79,6 +81,7 @@ def missing_context(message: str) -> str | None:
 
 
 def has_unnumbered_ask(text: str) -> bool:
+    text = re.sub(NUMBERED.pattern + r"[^*\n]*\?\*\*", " ", text)
     questions = [match[0] for match in SENTENCE.finditer(text)
                  if not ANSWERED.match(text, match.end()) and ADDRESSED.search(match[0].strip(" \t*_-"))]
     if any(not NUMBERED.search(question) for question in questions):
@@ -97,9 +100,24 @@ def read_question(url: str, deadline: float) -> dict:
     match = delivery.COMMENT_URL.fullmatch(url)
     if match is None:
         raise ValueError("question source link is invalid")
-    reader = github_read.GitHubReader(strict_actor=True, repository=match[1], deadline_at=deadline,
-                                     gh_prefix_args=github_read.automation_only_gh_prefix_args())
-    comment = reader.get_json(f"/repos/{match[1]}/issues/comments/{match[3]}", step="question_relay")
+    if time.time() >= deadline:
+        raise TimeoutError("question lookup deadline elapsed")
+    command = [sys.executable, str(API_HELPER), "call", "--method", "GET",
+               f"/repos/{match[1]}/issues/comments/{match[3]}", "--operation", "github.read", "--read"]
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True,
+                          env={**os.environ, "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "1"}) as child:
+        try:
+            output, _ = child.communicate(timeout=max(0, deadline - time.time()))
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                child.wait()
+            raise
+    payload = json.loads(output)
+    if child.returncode or payload.get("ok") is not True or payload.get("outcome_certainty") != "confirmed":
+        raise ValueError("question source read is unavailable")
+    comment = payload["body"]
     if comment["html_url"] != url:
         raise ValueError("question source identity changed")
     return {"body": comment["body"], "url": url, "author": comment["user"]["login"],
@@ -107,12 +125,14 @@ def read_question(url: str, deadline: float) -> dict:
 
 
 def registered_records_cover(message: str) -> bool:
-    import question_record
-
-    links = dict.fromkeys(match[0] for match in question_record.delivery.COMMENT_URL.finditer(message))
-    if not links:
+    if "github.com/" not in message:
         return False
     try:
+        import question_record
+
+        links = dict.fromkeys(match[0] for match in question_record.delivery.COMMENT_URL.finditer(message))
+        if not links:
+            return False
         queue = question_record.question_id.configured_queue()
         if not queue:
             return False
@@ -132,7 +152,7 @@ def registered_records_cover(message: str) -> bool:
             if requested_ids <= registered_ids:
                 return True
         return False
-    except (OSError, ValueError, KeyError, TypeError, github_read.GitHubReadError, github_read.GitHubReadShapeError):
+    except (OSError, ValueError, KeyError, TypeError, ImportError, AttributeError, subprocess.SubprocessError):
         return False
 
 
