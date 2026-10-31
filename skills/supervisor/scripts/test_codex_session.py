@@ -18,6 +18,7 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 from iterm_tab import codex_daemon_endpoint
+import session_liveness
 
 SPEC = importlib.util.spec_from_file_location("codex_session", Path(__file__).with_name("codex-session.py"))
 SESSION = importlib.util.module_from_spec(SPEC)
@@ -131,6 +132,7 @@ class ResumeTests(unittest.TestCase):
             request.codex_home = str(home.resolve())
             yield request
         self.enterContext(patch.object(github_plan_native, "connection", connection))
+        self.enterContext(patch.object(session_liveness, "inventory", return_value=[]))
         self.spawn = self.enterContext(patch.object(SESSION.subprocess, "Popen", return_value=self.child))
         self.enterContext(patch.object(SESSION.closure, "launch_metadata", return_value={
             "launch_pid": self.child.pid, "launch_generation": "new-generation", "launch_started_at": "2026-10-01T01:00:00Z",
