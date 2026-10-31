@@ -268,6 +268,8 @@ def evaluate_next_plan(
     relationship_error: str | None = None,
     structured_wait: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
+    if structured_wait is not None:
+        structured_wait = github_plan_wait.project_dates(structured_wait)
     status = next_plan_status(issue, config)
     milestone = next_milestone_context(issue)
     base = {
@@ -771,7 +773,7 @@ def rank_portfolio_work(
         if queue.get("state") == "underway":
             underway.append({**item, "availability": "underway"})
             continue
-        if queue.get("state") == "needs_status":
+        if queue.get("state") == "needs_status" or (queue.get("state") == "review" and queue.get("wait_review_required")):
             needs_status.append(item)
             continue
         if queue.get("state") == "waiting":
@@ -1056,6 +1058,8 @@ def evaluate_direction_node(
     Supply structured_wait from the claim wait resolver after a complete,
     authorized discussion read. Omission retains legacy review evidence only.
     """
+    if structured_wait is not None:
+        structured_wait = github_plan_wait.project_dates(structured_wait)
     if truncated_relationships:
         relationship_error = "Relationship evidence exceeded the reader's collection limit"
     _, item = evaluate_next_plan(

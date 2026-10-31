@@ -98,6 +98,30 @@ def test_claim_and_linked_pr_cannot_be_advertised_as_unclaimed_work() -> None:
     assert classify(row, observed)['state'] == 'underway'
 
 
+def test_dated_wait_becomes_agent_work_when_its_event_arrives() -> None:
+    for date, expected in [("2000-01-01", "available"), ("2999-01-01", "waiting")]:
+        row = item(actor="event:checkpoint")
+        record = wait.reviewed(evidence="Dated checkpoint", waiting_for="Checkpoint date", ends_when="Date arrives", not_before=date)
+        row["discussion"]["comments"] = [{"id": 1, "author": "owner", "body": wait.marker(record)}]
+        assert classify(row)["state"] == expected
+
+
+def test_dated_wait_is_actionable_through_plan_selection_and_claim_preflight() -> None:
+    module = cli.load_module()
+    record = wait.reviewed(evidence="Dated checkpoint", waiting_for="Checkpoint date", ends_when="Date arrives", not_before="2000-01-01")
+    raw = cli.issue(1, labels=[module.DEFAULT_CONFIG["labels"][key] for key in ("plan", "waiting")])
+    raw["repo"] = "owner/repo"
+    selected = direction.evaluate_direction_node(raw, config=module.DEFAULT_CONFIG, focus=None,
+        relationships=cli.relationships(), structured_wait=record)["item"]
+    assert selected.get("exclusion") != "waiting"
+    assert selected["plan_status"] == "active"
+    raw["claim_wait"] = record
+    assert module.evaluate_claim_wait(raw, "", module.DEFAULT_CONFIG) == (False, None)
+    record["waits"].append({"waiting_for": "Client acceptance", "ends_when": "Client accepts"})
+    has_wait, error = module.evaluate_claim_wait(raw, "", module.DEFAULT_CONFIG)
+    assert has_wait and error is not None
+
+
 def test_current_waits_and_authorized_status_override_prevent_false_availability() -> None:
     row = item()
     row['discussion']['comments'] = [{'id': 1, 'author': 'owner', 'body': wait.marker(wait.reviewed(evidence='Owner test required', waiting_for='Owner acceptance', ends_when='Owner records acceptance'))}]
@@ -139,7 +163,7 @@ def test_existing_artifacts_and_partial_reads_stay_out_of_start_queue() -> None:
 
 def test_pr_artifacts_cannot_hide_the_recorded_actor_or_missing_owner() -> None:
     for actor, expected in [("", "needs_status"), ("agent", "available"),
-                            ("agent:integrator", "underway"), ("person:owner", "waiting")]:
+                            ("agent:integrator", "available"), ("person:owner", "waiting")]:
         row = item(actor=actor)
         row["record_type"] = "pull_request"
         observed = evidence()
@@ -328,7 +352,7 @@ def test_inherited_overall_milestone_orders_work_without_copying_membership() ->
 def test_next_actor_routes_work_without_prose_inference() -> None:
     for action in ["Implement export.", "Verify the deployed build.", "Supervisor fixes GUI selection.", "#7 owns the source."]:
         assert classify(item(action, "Source delivery is complete"))["state"] == "available"
-        assert classify(item(action, actor="agent:integrator"))["state"] == "underway"
+        assert classify(item(action, actor="agent:integrator"))["state"] == "available"
         for actor in ["person:owner", "event:Apple approves the build"]:
             assert classify(item(action, actor=actor))["state"] == "waiting"
     for actor in ["", "someone", "agent:", "person:", "event:"]:
@@ -587,6 +611,9 @@ def test_milestone_flag_follows_open_dependencies_without_assuming_their_status(
                 row['discussion'] = direction.discussion_snapshot(raw, [
                     {'user': {'login': 'bot'}, 'body': wait.marker(record)}], complete=True)
                 row['discussion']['ancestry_complete'] = True
+                if index == 1 and state == 'underway':
+                    source = {'worker': 'worker', 'session': 'native-session', 'branch': 'work/source', 'claimed_at': '2026-10-01T00:00:00Z'}
+                    row['discussion']['comments'].append({'id': 9, 'author': 'bot', 'created_at': source['claimed_at'], 'body': claim.marker(source)})
                 row['queue'] = classify(row)
                 row['wait_evidence_complete'] = True
                 if index == 1 and state == 'own_project':

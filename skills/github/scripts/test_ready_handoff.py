@@ -816,85 +816,15 @@ class ReadyTests(unittest.TestCase):
         self.reader.pr["body"] = f"Refs #{number}"
         self.reader.issues[number] = {"number": number, "state": "open", "body": "", "user": {"login": "engineer"}}
 
-    def test_open_referenced_issue_without_follow_up_refuses_naming_it(self):
+    def test_open_referenced_issue_keeps_its_next_action_without_forced_decomposition(self):
         self.link_open_issue()
-        message = self.refuse()
-        self.assertIn(f"{REPO}#7", message)
-        self.assertIn(f"Closes {REPO}#7", message)
+        self.reader.issues[7]["body"] = "## Current Status\nNext actor: agent\nNext action: Finish activation."
+        self.post()
 
     def test_closing_the_referenced_issue_allows_ready(self):
         self.link_open_issue()
         self.reader.closing = [7]
         self.post()
-
-    def test_open_sub_issue_owns_the_remaining_steps(self):
-        self.link_open_issue()
-        self.reader.sub_issues[7] = [{"number": 8, "state": "closed"}]
-        self.refuse()
-        self.reader.sub_issues[7].append({"number": 9, "state": "open"})
-        self.post()
-
-    def test_recorded_event_wait_owns_the_remaining_step(self):
-        self.link_open_issue()
-        record = helper.github_plan_wait.reviewed(evidence="Release pending", waiting_for="Client", ends_when="Client accepts the release")
-        self.reader.issues[7]["user"] = {"login": "example"}
-        self.reader.issues[7]["body"] = helper.github_plan_wait.marker(record)
-        self.post()
-
-    def test_director_decision_wait_needs_its_question_before_ready(self):
-        self.link_open_issue()
-        self.reader.issues[7]["user"] = {"login": "example"}
-        question = {"id": 55, "user": {"login": "example"}, "body": "Director question: Q812. Approve the live install?"}
-        self.reader.issue_comments[55] = question
-        for evidence, refused in (("Recorded in the session", True),
-                                  (f"https://github.com/{REPO}/issues/7#issuecomment-55", False)):
-            with self.subTest(evidence=evidence):
-                record = helper.github_plan_wait.reviewed(evidence=evidence, waiting_for="Director approves the live install",
-                                                          ends_when="Director replies")
-                self.reader.issues[7]["body"] = helper.github_plan_wait.marker(record)
-                with patch.object(helper.director_question_gate, "configured_queue", return_value=None):
-                    if refused:
-                        self.assertIn("Director question:", self.refuse())
-                    else:
-                        self.post()
-
-    def test_cancelled_question_read_stops_ready_instead_of_refusing(self):
-        self.link_open_issue()
-        self.reader.issues[7]["user"] = {"login": "example"}
-        record = helper.github_plan_wait.reviewed(evidence=f"https://github.com/{REPO}/issues/7#issuecomment-55",
-                                                  waiting_for="Director approves the live install", ends_when="Director replies")
-        self.reader.issues[7]["body"] = helper.github_plan_wait.marker(record)
-        failure = helper.github_api_core.FailureDetail(cause="cancelled", message="cancelled", retryable=False,
-                                                       fallback_eligible=False, disposition="stop")
-        cancelled = GitHubReadError("cancelled", result=ApiResult(ok=False, status=0, body=None, failure=failure), diagnostics={})
-        read = self.reader.get_json
-
-        def cancel_comment_reads(path, **kwargs):
-            if "/issues/comments/" in path:
-                raise cancelled
-            return read(path, **kwargs)
-
-        with patch.object(self.reader, "get_json", side_effect=cancel_comment_reads), \
-                patch.object(helper.director_question_gate, "configured_queue", return_value=None):
-            message = self.refuse()
-        self.assertIn("unavailable", message)
-        self.assertNotIn("Director question:", message)
-
-    def test_closed_issues_pull_requests_and_other_owners_need_no_follow_up(self):
-        self.reader.pr["body"] = "Refs #7, #8 and other/tool#9"
-        self.reader.issues[7] = {"number": 7, "state": "closed", "body": ""}
-        self.reader.issues[8] = {"number": 8, "state": "open", "body": "", "pull_request": {}}
-        self.post()
-
-    def test_qualified_reference_in_the_title_is_a_linked_issue(self):
-        self.link_open_issue()
-        self.reader.pr["body"] = ""
-        self.reader.pr["title"] = f"{REPO}#7: first slice"
-        self.refuse()
-
-    def test_unreadable_linked_issue_refuses(self):
-        self.reader.pr["body"] = "Refs #7"
-        self.assertIn("unavailable", self.refuse())
 
     def test_cli_selects_ready_and_waiting_variant(self):
         with patch("sys.argv", ["gh-pr.py", "--repo", REPO, "ready", "1", "--waiting-for-client"]):

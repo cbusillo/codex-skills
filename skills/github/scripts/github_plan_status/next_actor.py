@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from .waits import live_lines
+from .waits import agent_step, live_lines
 
 
 def validate(actor: str) -> str:
@@ -68,3 +68,50 @@ def resolve(text: str, explicit: str | None) -> str:
     if actor is None:
         raise ValueError("Supply --next-actor or a Next actor line in Current Status or the release handoff")
     return actor
+
+
+def record(issue: dict, comments: list[dict], trusted: set[str]) -> dict:
+    from . import discussion, events, waits
+
+    normalized = [{**comment, "author": (comment.get("user") or {}).get("login") or comment.get("author") or ""}
+                  for comment in comments]
+    ambiguous = ("Current Status" in discussion.section_map(issue.get("body") or "") and
+                 any(comment["author"].casefold() in trusted and "Current Status" in discussion.section_map(comment.get("body") or "")
+                     for comment in normalized) and not issue.get("body_recorded_at"))
+    status = discussion.current_status({**issue, "comments": normalized}, trusted,
+                                       body_recorded_at=issue.get("body_recorded_at"))
+    try:
+        actor = None if ambiguous else read(status)
+    except ValueError:
+        actor = None
+    return {"status": status, "actor": actor, "action": discussion.status_field(status, "Next action"),
+            "wait": waits.current(issue, comments, trusted), "reopen": events.current(issue, comments, trusted)}
+
+
+def direction(actor: str | None, wait: dict) -> bool:
+    routed = re.compile(r"(?i)\b(?:direction[ _-]+session|weekly[ _-]+(?:direction[ _-]+)?audit)\b")
+    return (actor or "").casefold() in {"agent:direction", "agent:direction-session", "agent:weekly-audit"} or any(
+        routed.search(entry["waiting_for"]) for entry in wait["waits"])
+
+
+def migration(status: str, wait: dict) -> list[str]:
+    from .events import TARGET
+
+    missing = []
+    try:
+        actor = read(status)
+    except ValueError:
+        actor = None
+    if actor is None:
+        missing.append("Record the current Next actor")
+    if (actor or "").startswith("event:") and wait["state"] == "clear":
+        missing.append("Review the event actor and record its explicit wait or next agent action")
+    if re.search(r"(?im)^\s*Parked until:", status) and not any("event" in entry for entry in wait["waits"]):
+        missing.append("Review the parked date and record its explicit event")
+    dated = re.compile(r"(?i)\b(?:\d{4}-\d{2}-\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2})\b")
+    for entry in wait["waits"]:
+        linked = any(TARGET.fullmatch(url.rstrip(".,;)")) for url in re.findall(r"https?://[^\s<>]+", entry["waiting_for"]))
+        if "event" not in entry and "release" not in entry and (dated.search(entry["waiting_for"] + " " + entry["ends_when"]) or
+                linked or agent_step(entry["waiting_for"])):
+            missing.append("Review the legacy wait and record its explicit event or next agent action")
+    return missing

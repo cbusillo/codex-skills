@@ -1,6 +1,7 @@
 """Pure structured-wait format and trusted-record selection."""
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import re
@@ -30,17 +31,34 @@ def marker(record: dict[str, Any]) -> str:
     return PREFIX + json.dumps(record, sort_keys=True).replace(">", "\\u003e") + " -->"
 
 
+def agent_step(actor: str) -> bool:
+    return re.match(r"(?i)^(?:the\s+|next\s+)?(?:agents?|supervisor)(?:\b|:)", actor.strip()) is not None
+
+
 def reviewed(*, evidence: str, waiting_for: str | list[str] | None = None,
              ends_when: str | list[str] | None = None, release_product: str | None = None,
-             release_commit: str | None = None, release_next_action: str | None = None) -> dict[str, Any]:
+             release_commit: str | None = None, release_next_action: str | None = None, not_before: str | None = None,
+             event: dict[str, Any] | None = None) -> dict[str, Any]:
     if not evidence.strip():
         raise ValueError("Wait review requires existing evidence")
     actors = [waiting_for] if isinstance(waiting_for, str) else waiting_for or []
     endings = [ends_when] if isinstance(ends_when, str) else ends_when or []
     if len(actors) != len(endings):
         raise ValueError("Each --waiting-for requires a corresponding --ends-when")
-    record = {"version": 1, "state": "waiting" if waiting_for else "clear", "evidence": evidence,
+    if any(agent_step(actor) for actor in actors):
+        raise ValueError("Agent and Supervisor steps belong in Next actor and Next action, not --waiting-for")
+    record: dict[str, Any] = {"version": 1, "state": "waiting" if waiting_for else "clear", "evidence": evidence,
               "waits": [{"waiting_for": actor, "ends_when": end} for actor, end in zip(actors, endings)]}
+    if not_before is not None or event is not None:
+        from . import events
+        if not actors or (not_before is not None and event is not None):
+            raise ValueError("Supply a wait and either --not-before or --event")
+        event = {"version": 1, "kind": "date", "at": not_before, "evidence": evidence} if not_before is not None else event
+        assert event is not None
+        events.validate(event)
+        if event.get("state") == "clear" or event.get("kind") == "recurrence":
+            raise ValueError("A wait needs a machine-checkable event")
+        record["waits"][0]["event"] = event
     if any(value is not None for value in (release_product, release_commit, release_next_action)):
         if not actors:
             raise ValueError("A release pointer requires a wait")
@@ -64,10 +82,15 @@ def validate(record: Any) -> None:
     if bool(record["waits"]) != (record["state"] == "waiting"):
         raise ValueError("Structured wait state and entries disagree")
     for wait in record["waits"]:
-        if (not isinstance(wait, dict) or set(wait) not in ({"waiting_for", "ends_when"}, {"waiting_for", "ends_when", "release"})
+        if (not isinstance(wait, dict) or (set(wait) - {"event"}) not in ({"waiting_for", "ends_when"}, {"waiting_for", "ends_when", "release"})
                 or any(not isinstance(value, str) or not value.strip() for value in (wait["waiting_for"], wait["ends_when"]))):
             raise ValueError("A structured wait needs its actor/event and ending condition")
 
+        if "event" in wait:
+            from . import events
+            events.validate(wait["event"])
+            if wait["event"].get("state") == "clear" or wait["event"].get("kind") == "recurrence" or "release" in wait:
+                raise ValueError("A wait has one machine-checkable ending event")
         if "release" in wait:
             release = wait["release"]
             if (not isinstance(release, dict) or set(release) != {"product", "source_commit", "next_action"}
@@ -104,6 +127,24 @@ def resolve_release(record: dict[str, Any], *, product: str, contains_commit: Ca
                 "evidence": record["evidence"] + "\n" + evidence, "replaces": record_digest(record)}
     validate(resolved)
     return resolved, [entry["release"]["next_action"] for entry in matched]
+
+
+def resolve_events(record: dict[str, Any], *, now: Any, one: Any, listing: Any, kinds: set[str] | None = None) -> dict[str, Any]:
+    from . import events
+
+    matched = [entry for entry in record["waits"] if "event" in entry
+               and (kinds is None or entry["event"]["kind"] in kinds)
+               and events.fired(entry["event"], now=now, one=one, listing=listing)]
+    if not matched:
+        return record
+    remaining = [entry for entry in record["waits"] if entry not in matched]
+    return {**record, "state": "waiting" if remaining else "clear", "waits": remaining,
+            "evidence": record["evidence"] + "\nObserved completed events: " + "; ".join(events.describe(entry["event"]) for entry in matched),
+            "replaces": record_digest(record)}
+
+
+def project_dates(record: dict[str, Any]) -> dict[str, Any]:
+    return resolve_events(record, now=dt.datetime.now(dt.UTC), one=None, listing=None, kinds={"date"})
 
 
 def live_lines(text: str, *, prefix: str = PREFIX) -> list[tuple[int, str]]:

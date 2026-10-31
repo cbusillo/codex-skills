@@ -20,7 +20,7 @@ import time
 import subprocess
 import urllib.parse
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
 os.environ["CODEX_AUTOMATION_LOGIN"] = "fixture-automation"
@@ -644,6 +644,33 @@ def test_edit_partial_failure_preserves_completed_steps_and_guidance() -> None:
         assert [call["method"] for call in calls] == ["GET", "GET", "PATCH", "POST"], calls
         assert issue_read
 
+    with_call_stub(callback, run)
+
+
+def test_direction_label_removal_preserves_current_routing_and_reports_read_failures() -> None:
+    record = github_issue.github_plan_wait.reviewed(evidence="Current routing reviewed")
+    item = issue_body(body="## Current Status\nNext actor: agent:direction\n" + github_issue.github_plan_wait.marker(record))
+    reader = Mock()
+    reader.get_json.return_value = item
+    reader.paged_json.return_value = []
+
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        assert method == "GET" and path == "/user"
+        return success({"login": "fixture-automation"})
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        with patch.object(github_issue.github_read, "GitHubReader", return_value=reader):
+            try:
+                github_issue.edit_issue(42, repo="owner/repo", remove_labels=["direction"], gh_cmd="fake-gh")
+            except github_issue.IssueError as exc:
+                assert exc.failure.failed_step == "direction_route"
+                assert exc.failure.write_outcome == "not_started"
+            else:
+                raise AssertionError("Current direction routing must be preserved")
+        assert all(call["method"] == "GET" for call in calls)
+
+    with_call_stub(callback, run)
+    reader.get_json.side_effect = github_issue.github_read.GitHubReadShapeError("Fixture unavailable body")
     with_call_stub(callback, run)
 
 
@@ -1711,6 +1738,7 @@ TESTS = [
     test_rejected_retry_enabled_issue_create_can_retry,
     test_edit_uses_rest_membership_endpoints_and_reads_after_write,
     test_edit_partial_failure_preserves_completed_steps_and_guidance,
+    test_direction_label_removal_preserves_current_routing_and_reports_read_failures,
     test_edit_absent_label_removal_completes_requested_edit,
     test_edit_retried_label_removal_confirms_unseen_success,
     test_edit_label_removal_requires_readable_absence,

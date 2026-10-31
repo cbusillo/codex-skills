@@ -23,10 +23,6 @@ import github_api as github_api_core
 import github_comment as github_comment_core
 import github_read as github_read_core
 import github_identity
-import github_plan_landing
-import github_plan_status.references
-import github_plan_wait
-import director_question_gate
 from ready_handoff import (
     client_handoff,
     pending_client_reviews,
@@ -39,7 +35,6 @@ from ready_handoff import (
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 GH = os.environ.get("GH_PR_GH") or str(SCRIPT_DIR / "gh-with-env-token")
 EXPECTED_ACTOR = github_identity.automation_login()
-NO_OWNER = "no owner"
 CURRENT_OPERATION = "github.pr.unknown"
 CURRENT_RETRY_FIELDS: dict[str, Any] = {}
 CURRENT_RETRY_SUMMARY: Optional[github_api_core.RetrySummary] = None
@@ -662,9 +657,6 @@ def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
     review_gap = ready_review_gap(repo, number, current)
     if review_gap:
         raise PrHelperError(review_gap, repo=repo, pr=number)
-    gaps = linked_issue_gaps(repo, number, current)
-    if gaps:
-        raise PrHelperError(linked_issue_gaps_message(gaps), repo=repo, pr=number, unownedIssues=list(gaps))
     try:
         body = handoff_body(checks["headSha"], waiting_for_client=args.waiting_for_client)
     except ValueError as exc:
@@ -700,72 +692,6 @@ def ready_review_gap(repo: str, number: int, pr: dict[str, Any]) -> str:
         record_retry_summary(reader.retry_summary())
         if not any(result.status == 404 for result in config_reader.failed_results):
             record_retry_summary(config_reader.retry_summary())
-
-
-def linked_issue_gaps(repo: str, number: int, pr: dict[str, Any]) -> dict[str, str]:
-    owner = repo.split("/")[0].casefold()
-    linked = [ref for ref in github_plan_status.references.linked_issues(repo, pr)
-              if ref[0].split("/")[0].casefold() == owner]
-    if not linked:
-        return {}
-    reader = github_read_core.GitHubReader(
-        gh_cmd=GH, expected_actor=EXPECTED_ACTOR, operation=read_operation(), cache_enabled=False,
-    )
-    try:
-        _, closing = github_plan_landing.closing_references(reader, repo, number, landed=False)
-        closed_by_pr = {(issue_repo.casefold(), issue_number) for issue_repo, issue_number in closing}
-        gaps = {}
-        for issue_repo, issue_number in dict.fromkeys(linked):
-            if (issue_repo.casefold(), issue_number) in closed_by_pr:
-                continue
-            if gap := remaining_steps_gap(reader, issue_repo, issue_number):
-                gaps[f"{issue_repo}#{issue_number}"] = gap
-        return gaps
-    except github_read_core.GitHubReadError as exc:
-        raise PrHelperError(f"Linked-issue follow-up evidence is unavailable: {exc}", failure=exc.result.failure,
-                            api_result=exc.result.as_dict(), diagnostics=exc.diagnostics, repo=repo, pr=number) from exc
-    except (github_read_core.GitHubReadShapeError, KeyError, TypeError, ValueError) as exc:
-        raise PrHelperError(f"Linked-issue follow-up evidence is unavailable: {exc}", diagnostics=reader.diagnostics(), repo=repo, pr=number) from exc
-    finally:
-        record_retry_summary(reader.retry_summary())
-
-
-def remaining_steps_gap(reader: github_read_core.GitHubReader, repo: str, number: int) -> str | None:
-    issue = reader.get_json(f"/repos/{repo}/issues/{number}", step="linked_issue")
-    if issue.get("state") != "open" or "pull_request" in issue:
-        return None
-    sub_issues = reader.paged_json(f"/repos/{repo}/issues/{number}/sub_issues", step_prefix="linked_issue_sub_issues")
-    if any(child.get("state") == "open" for child in sub_issues):
-        return None
-    comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="linked_issue_comments")
-    trusted = github_plan_wait.authors(repo, expected_actor=EXPECTED_ACTOR)
-    wait = github_plan_wait.current(issue, comments, trusted)
-    if wait["state"] != "waiting":
-        return NO_OWNER
-    return director_question_gate.director_question_gap(
-        repo, wait, read_comment=lambda path: readable_comment(reader, path),
-        read_pages=lambda path: reader.paged_json(path, step_prefix="director_question"))
-
-
-def readable_comment(reader: github_read_core.GitHubReader, path: str) -> dict[str, Any] | None:
-    try:
-        return reader.get_json(path, step="director_question")
-    except github_read_core.GitHubReadError as exc:
-        if exc.result.failure is not None and exc.result.failure.cause == "cancelled":
-            raise
-        return None
-
-
-def linked_issue_gaps_message(gaps: dict[str, str]) -> str:
-    unowned = [issue for issue, gap in gaps.items() if gap == NO_OWNER]
-    steps = "; ".join(
-        f"{issue}: write Closes {issue} if this PR finishes it, otherwise split every remaining step into an open "
-        f"sub-issue that names its next actor (gh-plan.py create, then gh-plan.py --repo {issue.replace('#', ' link ')} subissue NEW) "
-        "or record the event it waits on (gh-plan.py wait)"
-        for issue in unowned)
-    unasked = " ".join(f"{issue}: {gap}" for issue, gap in gaps.items() if gap != NO_OWNER)
-    no_owner = f"PR leaves linked issues open with no owner for their remaining steps. {steps}. " if unowned else ""
-    return f"{no_owner}{unasked}{' ' if unasked else ''}Then post ready again."
 
 
 def validate_ready_pr(pr: dict[str, Any], *, repo: str, number: int) -> None:

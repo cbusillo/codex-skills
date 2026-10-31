@@ -126,8 +126,8 @@ def digest(sources: dict[str, dict]) -> str:
         for row in (track, *track.get("children", [])):
             if row.get("unread") or row.get("read") is False:
                 lines.append(f"ERROR board {pointer(row)}: {row.get('unread') or 'unread record'}")
-            for request in row.get("staffing_requests", []):
-                lines.append(f"STAFF {pointer(request)}: {' '.join(request['body'].split())[:180]}")
+            if row.get("state") != "closed" and row.get("status") == "plan:active" and (row.get("next_actor") or "").startswith("agent"):
+                lines.append(f"NEXT {pointer(row)}: {row.get('next_action', 'Review the next record')} (verify ownership)")
     questions = sources.get("questions", {})
     lines.append(f"QUEUE {questions.get('queue', 'UNKNOWN')}")
     queued = [question for question in questions.get("questions", []) if question.get("registration_url")]

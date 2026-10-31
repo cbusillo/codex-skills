@@ -1330,6 +1330,23 @@ def get_issue(ref: str, repo: str) -> tuple[str, dict[str, Any]]:
     return actor, data
 
 
+def ensure_direction_label(repo: str) -> None:
+    ensure_labels(repo, ["direction"], {"label_defs": {"direction": {
+        "color": "5319e7", "description": "Work for the direction session"}}})
+
+
+def label_direction_route(repo: str, number: int, actor: str | None, wait: dict[str, Any]) -> None:
+    if not github_plan_next_actor.direction(actor, wait):
+        return
+    ensure_direction_label(repo)
+    _, gh_cmd, expected = comment_route()
+    try:
+        github_issue_core.edit_issue(number, repo=repo, add_labels=["direction"],
+                                     gh_cmd=gh_cmd, expected_actor=expected, operation=CURRENT_OPERATION)
+    except github_issue_core.IssueError as exc:
+        raise plan_error_from_issue(exc) from exc
+
+
 def rest_edit_issue(
     repo: str,
     number: int,
@@ -1338,6 +1355,17 @@ def rest_edit_issue(
     title: str | None = None,
     label_names: list[str] | None = None,
 ) -> tuple[str, dict[str, Any]]:
+    if body is not None:
+        status = section_map(body).get("Current Status", "")
+        try:
+            actor = github_plan_next_actor.read(status)
+            wait = github_plan_wait.current({"body": body, "user": {"login": repo.split("/")[0]}}, [], {repo.split("/")[0]})
+        except ValueError:
+            actor, wait = None, {"waits": []}
+        if github_plan_next_actor.direction(actor, wait):
+            _, current = get_issue(str(number), repo)
+            label_names = list(dict.fromkeys([*(label_names if label_names is not None else normalize_labels(current.get("labels"))), "direction"]))
+            ensure_direction_label(repo)
     payload: dict[str, Any] = {}
     if body is not None:
         payload["body"] = body
@@ -2664,6 +2692,7 @@ def cmd_release(args: argparse.Namespace) -> None:
             raise PlanError("Next actor was not visible on status readback; claim remains owned",
                             payload={"completed_steps": completed})
         completed.append("status_readback")
+    label_direction_route(issue["repo"], issue["number"], next_actor, issue["claim_wait"])
     result = github_comment_core.comment("pr" if "pull_request" in issue else "issue", issue["number"], body,
         repo=issue["repo"], gh_cmd=gh_cmd, operation=CURRENT_OPERATION, expected_actor=expected_actor,
         completed_steps=completed, failed_step="post_release", dedupe_body=True)
@@ -2786,7 +2815,7 @@ def link_native_dependency(
 
 def evaluate_claim_wait(waiting_issue: dict[str, Any], waiting_status: str, config: dict[str, Any], *,
                         wait_resolved: str | None = None, record_status: str | None = None) -> tuple[bool, ClassifiedPlanError | None]:
-    wait = waiting_issue["claim_wait"]
+    wait = github_plan_wait.project_dates(waiting_issue["claim_wait"])
     status_state = next_plan_status(waiting_issue, config)
     has_wait = bool(wait["state"] != "clear" or status_state in {"stale", "done"})
     if has_wait and not wait_resolved:
@@ -4154,7 +4183,9 @@ def reviewed_wait(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
                                         ends_when=args.ends_when,
                                         release_product=getattr(args, "release_product", None),
                                         release_commit=getattr(args, "release_commit", None),
-                                        release_next_action=getattr(args, "release_next_action", None))
+                                        release_next_action=getattr(args, "release_next_action", None),
+                                        not_before=getattr(args, "not_before", None),
+                                        event=json.loads(args.event) if getattr(args, "event", None) else None)
         github_comment_core.validate_planning_references(wait, issue_ref(args.issue, default_repo(args.repo))[0])
     except ValueError as exc:
         raise PlanError(str(exc)) from exc
@@ -4191,7 +4222,7 @@ def wait_once(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     if args.all:
         if (args.issue or args.clear or args.waiting_for or args.ends_when or args.evidence
-                or any(getattr(args, field, None) for field in ("release_product", "release_commit", "release_next_action"))):
+                or any(getattr(args, field, None) for field in ("release_product", "release_commit", "release_next_action", "not_before", "event"))):
             raise PlanError("--all is a read-only inventory; choose a single issue to record a review")
         _, issues = collect_paged_rest_items(f"/repos/{repo}/issues", query={"state": "open"},
                                             bucket="rest_core", step_prefix="wait_inventory")
@@ -4205,7 +4236,8 @@ def wait_once(args: argparse.Namespace) -> None:
             checked += 1
             try:
                 wait = current_wait(issue, comments, repo)
-                reason = "No reviewed structured record" if wait["state"] == "review" else None
+                reason = "No reviewed structured record" if wait["state"] == "review" else "; ".join(
+                    github_plan_next_actor.migration(claim_current_status(issue, issue_plan_sections(issue), comments), wait)) or None
             except (ValueError, PlanError) as exc:
                 reason = str(exc)
             if reason:
@@ -4222,7 +4254,7 @@ def wait_once(args: argparse.Namespace) -> None:
     current = issue["claim_wait"]
     if recorded is None:
         if (args.ends_when or args.evidence or any(getattr(args, field, None)
-                for field in ("release_product", "release_commit", "release_next_action"))):
+                for field in ("release_product", "release_commit", "release_next_action", "not_before", "event"))):
             raise PlanError("Choose --clear or --waiting-for with --ends-when and --evidence")
         emit({"ok": True, "review_required": current["state"] == "review", "structured_wait": current,
               "issue": compact_issue(issue), "review_evidence": {
@@ -4240,6 +4272,11 @@ def wait_once(args: argparse.Namespace) -> None:
     latest_issue, _, latest_comments, _ = claim_snapshot(args.issue, repo, allow_closed=True)
     if latest_issue["claim_wait"] != current or latest_issue.get("body") != issue.get("body") or latest_comments != comments:
         raise PlanError("Wait evidence changed before the review write; read the new record and discussion")
+    try:
+        next_actor = github_plan_next_actor.read(status)
+    except ValueError:
+        next_actor = None
+    label_direction_route(issue["repo"], issue["number"], next_actor, wait)
     result = github_comment_core.comment(kind, issue["number"],
         summary + "\n\n" + github_plan_wait.marker(wait), repo=issue["repo"],
         gh_cmd=gh_cmd, expected_actor=expected_actor, operation=CURRENT_OPERATION, dedupe_body=True)
@@ -4282,12 +4319,14 @@ def cmd_create(args: argparse.Namespace) -> None:
                                              waiting_for=args.waiting_for, ends_when=args.ends_when,
                                              release_product=getattr(args, "release_product", None),
                                              release_commit=getattr(args, "release_commit", None),
-                                             release_next_action=getattr(args, "release_next_action", None))
+                                             release_next_action=getattr(args, "release_next_action", None),
+                                        not_before=getattr(args, "not_before", None),
+                                        event=json.loads(args.event) if getattr(args, "event", None) else None)
             github_comment_core.validate_planning_references(wait, repo)
         except ValueError as exc:
             raise PlanError(str(exc)) from exc
     elif (getattr(args, "ends_when", None) or getattr(args, "wait_evidence", None)
-          or any(getattr(args, field, None) for field in ("release_product", "release_commit", "release_next_action"))):
+          or any(getattr(args, field, None) for field in ("release_product", "release_commit", "release_next_action", "not_before", "event"))):
         raise PlanError("Choose --wait-clear or --waiting-for with --ends-when and --wait-evidence")
     if wait is not None:
         require_asked_director_wait(repo, wait, creating=True)
@@ -4312,6 +4351,13 @@ def cmd_create(args: argparse.Namespace) -> None:
         extra_labels = github_agent.creation_labels(args.label or [], getattr(args, "agent", None))
     except ValueError as exc:
         raise PlanError(str(exc)) from exc
+    try:
+        routed_actor = github_plan_next_actor.read(section_map(body).get("Current Status", ""))
+    except ValueError as exc:
+        raise PlanError(str(exc)) from exc
+    if github_plan_next_actor.direction(routed_actor, wait or {"waits": []}):
+        ensure_direction_label(repo)
+        extra_labels.append("direction")
     wanted_labels = list(dict.fromkeys(base_labels + extra_labels))
     _, created_base_labels = ensure_labels(
         repo,
@@ -6600,7 +6646,7 @@ def cmd_close(args: argparse.Namespace) -> None:
         except ValueError as exc:
             raise PlanError(f"Invalid --reopen-trigger: {exc}") from exc
     if getattr(args, "clear_reopen_trigger", None) is not None:
-        trigger = {"version": 1, "state": "clear", "evidence": args.clear_reopen_trigger}
+        trigger = github_plan_trigger.clear(args.clear_reopen_trigger)
         try:
             github_plan_trigger.validate(trigger)
         except ValueError as exc:
@@ -7640,6 +7686,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--release-product", help="Bind the first wait to this Launchplane product's next successful production release")
     p.add_argument("--release-commit", help="Full product source commit that production must include before resolving this wait")
     p.add_argument("--release-next-action", help="Concrete next agent action after that release")
+    p.add_argument("--not-before", help="First wait ends on this YYYY-MM-DD or timezone-qualified timestamp")
+    p.add_argument("--event", help="First wait ends on this JSON event, using the reopen-trigger kinds")
     p.set_defaults(func=cmd_wait)
 
     p = sub.add_parser("create", help="Create a durable plan issue")
@@ -7664,6 +7712,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--release-product", help="Bind the first wait to this Launchplane product's next successful production release")
     p.add_argument("--release-commit", help="Full product source commit that production must include before resolving this wait")
     p.add_argument("--release-next-action", help="Concrete next agent action after that release")
+    p.add_argument("--not-before", help="First wait ends on this YYYY-MM-DD or timezone-qualified timestamp")
+    p.add_argument("--event", help="First wait ends on this JSON event, using the reopen-trigger kinds")
     p.set_defaults(func=cmd_create)
 
     p = sub.add_parser("update-section", help="Patch one markdown section")

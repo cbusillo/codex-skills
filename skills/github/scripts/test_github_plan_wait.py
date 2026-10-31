@@ -19,6 +19,11 @@ from github_plan_status import waits
 
 
 class WaitRecordTests(unittest.TestCase):
+    def test_agent_steps_are_next_actions_instead_of_waits(self) -> None:
+        for actor in ("agent", "agent:integrator", "Next agent", "Supervisor", "The Supervisor routes the PR"):
+            with self.subTest(actor=actor), self.assertRaises(ValueError):
+                waits.reviewed(evidence="Source delivery", waiting_for=actor, ends_when="Completes the step")
+
     def test_catalog_namespace_consumer_can_validate_waits(self):
         result = subprocess.run([
             sys.executable, "-I", "-c",

@@ -106,7 +106,7 @@ class CompleteInventoryTests(unittest.TestCase):
         for actor, state in [
             ("person:owner", "waiting"),
             ("event:watch", "waiting"),
-            ("agent:integrator", "underway"),
+            ("agent:integrator", "available"),
             ("", "needs_status"),
         ]:
             changed = item(actor=actor)

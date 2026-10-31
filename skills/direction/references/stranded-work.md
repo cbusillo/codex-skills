@@ -1,11 +1,22 @@
 # Daily stranded-work sweep
 
-The direction audit's stranded mode is a read-only backstop for work awaiting
-its next receiver. It reuses the existing repository inventory, paged audit
-reads, structured wait parser, question view and current-head Ready parser.
-It never edits GitHub, records an audit turn, clears ownership, closes an issue
-or applies a label. Existing enqueue and blocked labels are views to inspect;
-no new Supervisor label or hand-maintained state is required.
+The daily sweep reads the existing Next actor, Next action and authoritative
+wait or reopen event as one next record. It adds no parallel planning store.
+Without `--apply-next` it only reports. The installed daily runner supplies
+that flag: it reopens a fired trigger, applies the direction label, records a
+completed wait event, and comments once when an agent next action has had no
+activity for 24 hours. Each action rereads its source. Unreadable or changed
+facts stop that action; independent holds, claims and stop boundaries remain.
+
+Legacy records needing an explicit actor or event remain visible in `needs_status`
+and `wait --all`; the Markdown report gives their per-repository counts. Review
+that existing evidence once before rewriting it. No legacy human hold is inferred
+complete from prose.
+
+Two consecutive failed scheduled GitHub workflow runs open, or reopen, one
+agent issue in that repository with the run links. A success or running job
+breaks the failure pair. The workflow id indexes the existing issue; there is
+no new scheduler or notification channel.
 
 ```sh
 uv run skills/direction/scripts/direction_audit.py \
@@ -84,13 +95,10 @@ unknown), next actor and review requirement:
   the existing recorded “Measured after one day” comparison promise. Closure
   of the research issue does not settle its promise. A later linked completion
   from a trusted receiver does.
-- Open issues whose own dated wait has passed: a Current Status
-  `Parked until:` or `Waiting for:` line, or a structured `ends_when`, that
-  starts with a date or whose date follows `until`, `after`, `by`, `before` or
-  `due` (a structured `waiting_for` counts only the latter). A structured wait
-  record supersedes Current Status prose, and a clear record reports nothing.
-  Dates after `since`, or cited records such as "the 2026-10-12 comment", are
-  history, not triggers. A date without a time is reached at its start in UTC.
+- Explicit dated wait events, using `wait --not-before`, and issue/PR events
+  using `wait --event`. Dates use the reopen-event checker. Prose dates are
+  context, not a second event language. Completed events resolve only their
+  own entry; a Client's acceptance or other independent wait remains.
 - Operational-register entries, for repositories whose `.github/github.json`
   names one under `docs.openOperationalIssues`. Each `### ` entry with
   `- **Field**:` bullets is read from the default branch. An entry is reported
@@ -109,10 +117,9 @@ unknown), next actor and review requirement:
   use it on an already closed issue to re-publish and index an existing manual
   record and reconcile its normal close metadata. A
   labeled issue without a trusted record is a coverage gap. Fired triggers bypass the aged-work threshold
-  and remain in each daily digest while the issue is closed until the receiver retires the handled event with
-  `close ISSUE --clear-reopen-trigger "<resolution evidence>"`; this also removes
-  the discovery label. Use it after the reopened work closes, or when review
-  decides not to reopen. The sweep is
+  and are reopened on the daily applying run. That run records the handled
+  trigger so it cannot fire again. A read-only scan leaves the event intact.
+
   report-only: the repository agent/Supervisor reviews and reopens. A patch in
   the advisory database does not prove an installed dependency is fixed.
   Missing event facts, unread comments, malformed records, repository failures,
@@ -136,22 +143,11 @@ unknown), next actor and review requirement:
   never from the report. An authorized bulk cleanup pass uses
   `landed_worktrees.py --all`, with a preview before `--apply`; it does not loop
   exact-target retirement over reported paths or invoke the host primitive.
-- Open issues whose body Current Status `Next action:` routes the work to the
-  Supervisor: the action opens with the capitalized role, makes it the subject
-  of a verb, or waits on or hands off to it. A path, skill name or description
-  that only mentions it does not count, and an empty field never reads the next
-  line. Each issue is aged from the body's edit time, which is read once per such issue from the
-  sweep's budget. An unreadable edit time is a coverage gap and the issue is
-  still listed with unknown age. The result's `supervisor_next_action_by_repo`
-  and a Markdown line give the count per repository. Status kept only in a
-  comment is not read for this check. Each state's repository inventories are
-  read before its discussions, so a busy repository cannot consume the discussion
-  budget before other repositories' issue bodies are seen. Supervisor routing
-  survives an unread discussion with unknown age; no other finding is inferred
-  from that body alone. Unread inventories still name their repository and state.
-- Existing train blocked views, aged from their label event, plus structured
-  waits naming the Supervisor. Body-only waits have unknown age because
-  unrelated issue activity must not reset their clock.
+- Issues whose current Next actor is `agent:supervisor`, with counts per
+  repository. Action prose is no longer classified. The existing body inventory
+  retains routing if discussion coverage stops; unread scopes remain explicit.
+- Existing train blocked views and legacy structured receiver waits remain
+  review findings. New agent/Supervisor waits are refused at the writer.
 - Structured waits on the Director that no open Director question links, as
   `unasked_director_wait`, oldest first. The comment radar's Director-wait
   classifier decides whether a wait is on the Director now; a wait worded as a

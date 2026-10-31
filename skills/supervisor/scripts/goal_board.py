@@ -28,6 +28,7 @@ import oq
 from skills.direction.scripts import question_id
 from skills.github.scripts import github_plan_claim, github_plan_graph, github_plan_release
 from skills.github.scripts.github_identity import automation_login
+from skills.github.scripts.github_plan_status import next_actor
 from skills.github.scripts.ready_handoff import HEAD, READY, WAITING, handoff_line, timestamp
 
 UNKNOWN = "unknown, not refreshed"
@@ -198,12 +199,12 @@ def pr_row(pr: dict[str, Any], trusted: set[str], unread: list[str]) -> dict[str
 
 def issue_row(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | None, unread: list[str]) -> dict[str, Any]:
     return {"number": node["number"], "title": node["title"], "url": node["url"],
+        "next_actor": read_part("next actor", unread, lambda: next_actor.read(current_status(node, trusted, unread) or "")),
         **read_part("status", unread,
             lambda: derived_status(node, wait_trusted if wait_trusted is not None else trusted, unread),
             {"status": UNKNOWN, "blocked_by": [], "waits": [], "structured_wait": None}),
         "next_action": ("Track proof and child records" if node["title"].startswith("Track:") else
                         read_part("next action", unread, lambda: next_action(node, trusted, unread))),
-        "staffing_requests": read_part("staffing requests", unread, lambda: staffing_requests(node, trusted), []),
         "latest_decision": read_part("latest decision", unread,
             lambda: latest_decision(node["comments"], trusted, unread), None)}
 
@@ -285,25 +286,13 @@ def track_row(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | 
     state = ", ".join(f"{name}: {len(rows)}" for name, rows in groups.items() if rows) or "no child issues"
     decision = read_part("latest decision", unread, lambda: latest_decision(node["comments"], trusted, unread), None)
     return {"number": node["number"], "title": node["title"], "url": node["url"],
+        "next_actor": read_part("next actor", unread, lambda: next_actor.read(current_status(node, trusted, unread) or "")),
         "status": UNKNOWN if unread or groups["unknown"] else state,
         "blocked_by": own["blocked_by"], "waits": own["waits"], "hold_status": own["status"],
         "open_questions": activity["open_questions"], "latest_decision": decision,
-        "staffing_requests": read_part("staffing requests", unread, lambda: staffing_requests(node, trusted), []),
         "closure_review": github_direction_next.milestone_closure_review(node.get("body") or ""),
         "milestone": read_part("milestone", unread, lambda: (node.get("milestone") or {}).get("title"), None),
         "children": children, "groups": groups, "unread": list(dict.fromkeys(unread))}
-
-
-def staffing_requests(node: dict[str, Any], trusted: set[str]) -> list[dict[str, str]]:
-    if node.get("state") == "CLOSED":
-        return []
-    comments = node["comments"]["nodes"]
-    return [{"url": comment["url"], "body": comment["body"]}
-            for index, comment in enumerate(comments)
-            if login(comment.get("author")) in trusted
-            and re.match(r"(?i)^\W*STAFF NOW\b", comment.get("body") or "")
-            and not any(login(reply.get("author")) in trusted and re.search(re.escape(comment["url"]) + r"\b", reply.get("body") or "")
-                        and re.match(r"(?i)^\W*Staffed\b", reply.get("body") or "") for reply in comments[index + 1:])]
 
 
 def complete_comments(reader: github_read.GitHubReader, node: dict[str, Any]) -> None:
