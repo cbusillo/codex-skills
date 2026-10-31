@@ -1483,7 +1483,9 @@ GitHub write helpers include the catalog commit in their existing hidden
 Health sharing stays off until the Director requests it. Run
 `uv run scripts/install-catalog.py --write --health-status` to enable it or
 `--no-health-status` to decline or disable it. Preview without `--write` changes
-nothing. Installation and updates preserve the choice. The installer and updater suggest sharing. Healthy session startups repeat the
+nothing. On an existing installation, the health flag alone changes only this
+choice, even when unrelated installation checks need attention. Installation and
+updates preserve the choice. The installer and updater suggest sharing. Healthy session startups repeat the
 suggestion until the Director records a choice, so a headless session cannot
 consume it. Agents relay the choice to their Director.
 

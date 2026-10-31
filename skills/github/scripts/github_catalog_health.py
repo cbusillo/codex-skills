@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -94,8 +95,21 @@ def observed_fields(snapshot: dict[str, Any]) -> dict[str, str]:
     return {key: "unknown" if key in STATUS_KEYS | {"behind"} else value for key, value in fields.items()}
 
 
-def hooks_status(path: Path, root: Path, settings: dict[str, Any] | None = None) -> str:
-    settings = read_record(path) if settings is None else settings
+def catalog_handler(command: str, root: Path, script: str, *, plugin: bool = False) -> bool:
+    try:
+        tokens = shlex.split(command)
+        if str(root / "hooks" / script) in tokens:
+            return True
+        if not plugin and f"CLAUDE_PLUGIN_ROOT={root}" not in tokens:
+            return False
+        placeholder = f"${{CLAUDE_PLUGIN_ROOT}}/hooks/{script}"
+        return placeholder in tokens or any(placeholder in shlex.split(token) for token in tokens if placeholder in token)
+    except ValueError:
+        return False
+
+
+def hooks_status(path: Path, root: Path) -> str:
+    settings = read_record(path)
     if settings.get("disableAllHooks"):
         return "fail"
     groups = settings.get("hooks", {})
@@ -111,11 +125,7 @@ def hooks_status(path: Path, root: Path, settings: dict[str, Any] | None = None)
             and any(
                 isinstance(handler, dict)
                 and handler.get("enabled") is not False
-                and (
-                    str(root) in str(handler.get("command", ""))
-                    or (path == root / "hooks/hooks.json" and "${CLAUDE_PLUGIN_ROOT}" in str(handler.get("command", "")))
-                )
-                and script in str(handler.get("command", ""))
+                and catalog_handler(str(handler.get("command", "")), root, script, plugin=path == root / "hooks/hooks.json")
                 for handler in group["hooks"]
             )
             for group in handlers
@@ -182,8 +192,7 @@ def codex_hooks(root: Path, directory: Path) -> str:
                     if (
                         isinstance(handler, dict)
                         and handler.get("enabled") is not False
-                        and str(root) in str(handler.get("command", ""))
-                        and script in str(handler.get("command", ""))
+                        and catalog_handler(str(handler.get("command", "")), root, script)
                         and not disabled_handler(states, source, event, group_index, handler_index)
                     ):
                         enabled = True
@@ -227,7 +236,7 @@ def self_check(root: Path, installation: dict[str, Any]) -> dict[str, str]:
         and sys.platform == "darwin"
         and bool(output(["launchctl", "print", f"gui/{os.getuid()}/{UPDATER_LABEL}"]))
     )
-    fields["updater"] = "fail" if not scheduled or not isinstance(plist, str) or not Path(plist).is_file() else "unknown"
+    fields["updater"] = "fail" if scheduled and (not isinstance(plist, str) or not Path(plist).is_file()) else "unknown"
     try:
         checked = dt.datetime.fromisoformat(receipt["checked_at"])
         if scheduler_loaded:
@@ -280,9 +289,27 @@ def refresh_health(root: Path) -> bool:
         return False
 
 
-def health_notice(enabled: bool) -> str:
-    if enabled:
-        return "Catalog health sharing is on. Only status codes and versions accompany the hidden marker in GitHub comments."
+def configure_health(root: Path, enabled: bool, *, write: bool) -> dict[str, Any]:
+    if write:
+        with installation_lock(root):
+            installation = read_record(root / ".local/catalog-install.json")
+            if not installation:
+                raise ValueError("Install the catalog before choosing health sharing")
+            installation["health_status"] = enabled
+            if not enabled:
+                installation.pop("health", None)
+            write_locked_installation(root, installation)
+    refreshed = refresh_health(root) if write and enabled else True
+    return {"health_notice": health_notice(enabled if write else None), "health_check": "complete" if refreshed else "unknown"}
+
+
+def health_notice(choice: bool | None) -> str:
+    if isinstance(choice, bool):
+        return (
+            "Catalog health sharing is on. Only status codes and versions accompany the hidden marker in GitHub comments."
+            if choice
+            else "Catalog health sharing is off."
+        )
     return (
         "Catalog health sharing is off. Consider turning it on so maintainers can suggest fixes for your setup. "
         "It shares only status codes and versions in public GitHub comments. "

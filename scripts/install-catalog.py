@@ -337,19 +337,21 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         sync.synchronize(base, [ROOT / ".local" / "catalog-global-source.md"], write=True)
         with github_catalog_health.installation_lock(ROOT):
             current_installation = github_catalog_health.read_record(installation_path)
-            scheduled = updater or (current_installation.get("scheduled_updater", False) and launch_path.is_file())
-            scheduled_at = current_installation.get("scheduled_at") if current_installation.get("scheduled_updater") and launch_path.is_file() else None
+            scheduled = updater or current_installation.get("scheduled_updater", False)
+            scheduled_at = current_installation.get("scheduled_at") if current_installation.get("scheduled_updater") else None
             if scheduled and not scheduled_at:
                 scheduled_at = dt.datetime.now(dt.timezone.utc).isoformat()
-            installation = {"home": str(home), "codex": str(codex), "claude": str(claude),
+            installation = {**current_installation, "home": str(home), "codex": str(codex), "claude": str(claude),
                                    "health_status": current_installation.get("health_status") if health_status is None else health_status,
                                    "scheduled_updater": scheduled, "scheduled_at": scheduled_at,
-                                   "updater_plist": str(launch_path) if scheduled else None,
+                                   "updater_plist": str(launch_path) if updater else current_installation.get("updater_plist") if scheduled else None,
                                    "instruction_hashes": {entry["path"]: entry["sha256"] for entry in outputs},
                                    "generated_instruction_hashes": {entry["path"]: entry["sha256"] for entry in outputs
                                         if entry["state"] in ("written", "current")
                                         and (Path(entry["path"]).resolve() not in preserved_targets
                                              or Path(entry["path"]).resolve() in refresh_targets)}}
+            if not github_catalog_health.health_enabled(installation):
+                installation.pop("health", None)
             github_catalog_health.write_locked_installation(ROOT, installation)
         if hook_outputs:
             outputs += sync.write_codex_hooks(hook_outputs, codex, catalog=ROOT)
@@ -390,7 +392,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             "codex_hook_setup": "skipped; existing definitions unchanged" if skip_codex_hooks else "alert retirement evaluated" if refresh_instructions else "prepared",
             "hook_trust": sync.HOOK_TRUST_NOTICE,
             "health_check": "complete" if health_refreshed else "unknown",
-            "health_notice": github_catalog_health.health_notice(previous_installation.get("health_status", False) if health_status is None or not write else health_status)}
+            "health_notice": github_catalog_health.health_notice(previous_installation.get("health_status") if health_status is None or not write else health_status)}
 
 
 def main() -> int:
@@ -407,6 +409,18 @@ def main() -> int:
     args = parser.parse_args()
     if args.home_dir and args.updater and args.write:
         parser.error("--home-dir is a fixture destination; use a read-only preview or mocked scheduler tests instead of activating a real launchd job")
+    if args.health_status is not None and (ROOT / ".local/catalog-install.json").is_file():
+        try:
+            health_result = github_catalog_health.configure_health(ROOT, args.health_status, write=args.write)
+            if not any((args.updater, args.refresh_instructions, args.show_diff, args.skip_codex_hooks,
+                        args.home_dir, args.codex_dir, args.claude_dir)):
+                print(json.dumps(health_result, indent=2))
+                return 0
+            if args.write:
+                args.health_status = None
+        except (OSError, ValueError) as error:
+            print(f"Catalog health sharing unchanged: {error}", file=sys.stderr)
+            return 1
     home = (args.home_dir or Path.home()).resolve()
     codex = home / ".codex" if args.home_dir else Path(os.environ.get("CODEX_HOME") or home / ".codex")
     claude = home / ".claude" if args.home_dir else Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude")

@@ -265,7 +265,7 @@ def status_line(root: Path, *, observe: bool = False) -> str:
                 if warning:
                     state = {"state": "stale", "reason": warning}
         if state["state"] == "current":
-            return github_catalog_health.health_notice(False) if observe and installation and installation.get("health_status") is None else ""
+            return github_catalog_health.health_notice(None) if observe and installation and installation.get("health_status") is None else ""
         return f"Catalog {state['state']}: {state['reason']} ({root})."
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
         return f"Catalog blocked: could not read checkout/update state ({root})."
@@ -337,7 +337,7 @@ def update(root: Path) -> dict:
                 state["warning"] = warning
         write_receipt(root, state)
         state["health_check"] = "complete" if github_catalog_health.refresh_health(root) else "unknown"
-        state["health_notice"] = github_catalog_health.health_notice(github_catalog_health.health_enabled(github_catalog_health.read_record(root / ".local/catalog-install.json")))
+        state["health_notice"] = github_catalog_health.health_notice(github_catalog_health.read_record(root / ".local/catalog-install.json").get("health_status"))
         return state
 
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime as dt
 import io
 import json
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -168,6 +169,17 @@ class HealthTests(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit):
                 health.main()
+
+    def test_hook_commands_bind_the_exact_checkout(self) -> None:
+        root = Path("/fixture/catalog")
+        for registered in (root, Path(str(root) + "-old")):
+            for _event, script in health.HOOK_SCRIPTS:
+                direct = shlex.join(["uv", "run", str(registered / "hooks" / script)])
+                nested = shlex.join(
+                    ["env", f"CLAUDE_PLUGIN_ROOT={registered}", "sh", "-c", f'uv run "${{CLAUDE_PLUGIN_ROOT}}/hooks/{script}"']
+                )
+                for command in (direct, nested):
+                    self.assertEqual(health.catalog_handler(command, root, script), registered == root)
 
     def test_updater_requires_recent_success(self) -> None:
         with (
