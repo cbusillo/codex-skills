@@ -417,8 +417,9 @@ ownership, close safely, then relaunch the same goal with its retained source.
 Land by the assigned train or authorized protected-branch route. Load the owning
 skill first. Use one maintained driver per repo and its interim auto-enqueue
 procedure; after about 45 minutes with only `lease held`, read candidate CI.
-After landing load `github`, complete catalog verification where applicable,
-then After A Merge and planning reconciliation. Prefer per-repo `since` reads
+After landing load `github` for After A Merge and planning reconciliation.
+Catalog verification runs independently; handle only its failure notices under
+[catalog landing verification](references/helpers.md#catalog-landing-verification). Prefer per-repo `since` reads
 over search where the maintained readers support them. A killed driver can leave
 a lease; two drivers on one repository mean wait, not failure. For stacked PRs,
 keep held children draft or unlabeled under `launchplane`; each landing child

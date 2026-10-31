@@ -146,7 +146,9 @@ class OperationTests(unittest.TestCase):
                         with transcript.open("a") as stream:
                             stream.write(json.dumps({"type": "event_msg", "payload": {"type": "task_started", "turn_id": "later"}}) + "\n")
 
-                operation = check_operation.Operation(root / "evidence", ["native"])
+                close_evidence = root / (entry["harness"] + "-closeout")
+                close_identity = [str(ledger.resolve()), entry["session_id"]]
+                operation = check_operation.Operation(close_evidence, close_identity)
                 with (patch.object(subprocess, "run", side_effect=command),
                       patch.object(session_closeout, "native_idle", side_effect=idle),
                       patch.object(session_closeout.release, "handoff", return_value={"body": "Session: native"}),
@@ -166,7 +168,7 @@ class OperationTests(unittest.TestCase):
                     elif outcome == "uncertain_exit":
                         with self.assertRaises(check_operation.GateFailed):
                             session_closeout.closeout(args, operation)
-                        session_closeout.closeout(args, check_operation.Operation(root / "evidence", ["native"]))
+                        session_closeout.closeout(args, check_operation.Operation(close_evidence, close_identity))
                     elif outcome in {"finish_refused", "close_uncertain", "resumed"}:
                         with self.assertRaises(check_operation.GateFailed):
                             session_closeout.closeout(args, operation)
@@ -177,7 +179,29 @@ class OperationTests(unittest.TestCase):
                         self.assertEqual(json.loads(ledger.read_text()), [])
                         self.assertEqual(calls.count("send"), 1)
                         calls.clear()
-                        session_closeout.closeout(args, check_operation.Operation(root / "evidence", ["native"]))
+                        session_closeout.closeout(args, check_operation.Operation(close_evidence, close_identity))
+                        if outcome == "complete":
+                            parent = check_operation.Operation(root / "catalog", ["landing"])
+                            original = parent.evidence / (entry["harness"] + "-closeout")
+                            close_evidence.rename(original)
+                            parent.state["steps"][entry["harness"] + "_launch"] = {"complete": True}
+                            catalog_landing.record_smoke_source(parent, entry["harness"], normalized, ledger)
+                            config = {"ledger": str(ledger), "runtime_worktree": str(root), "repo": "owner/repo",
+                                      "supervisor_session": args.supervisor_session}
+
+                            def revalidate(*_: Any, **__: Any) -> dict:
+                                session_closeout.closeout(args, check_operation.Operation(original, close_identity))
+                                return {"ok": True}
+
+                            with patch.object(parent, "run", side_effect=revalidate) as checked:
+                                catalog_landing.require_closed_smokes(config, parent)
+                                checked.assert_called_once()
+                                parent.state["steps"][entry["harness"] + "_source"]["generation"] = "changed"
+                                with self.assertRaises(check_operation.GateFailed):
+                                    catalog_landing.require_closed_smokes(config, parent)
+                                parent.state["steps"]["uncertain"] = {"complete": False}
+                                with self.assertRaises(check_operation.GateFailed):
+                                    catalog_landing.require_closed_smokes(config, parent)
                     if outcome in {"finish_refused", "close_uncertain", "resumed"}:
                         self.assertLess(calls.index("clear"), calls.index("send"))
                         self.assertEqual(calls.count("send"), 1)
