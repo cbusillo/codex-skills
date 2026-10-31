@@ -3,17 +3,26 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+import io
 import json
 import subprocess
 import tempfile
+import threading
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
 import catalog_landing as landing
+import services
 from check_operation import GateFailed, Operation
+from session_record import TranscriptChanged
+
 from skills.github.scripts import github_api
+
+operation_run = Operation.run
 
 
 class CatalogLandingTests(unittest.TestCase):
@@ -27,7 +36,6 @@ class CatalogLandingTests(unittest.TestCase):
         self.config: dict[str, Any] = {"repo": "owner/catalog", "issue": 1, "source_worktree": str(self.root),
                                        "runtime_worktree": str(self.root), "ledger": str(self.root / "ledger.json"),
                                        "supervisor_session": "controller"}
-        self.original_run = Operation.run
         runtime = patch.object(Operation, "run", side_effect=lambda gate, *args, **kwargs:
                                {"ok": True} if gate.startswith("supersede_") else {"status": "already_current", "after_sha": "tip"})
         self.runner = runtime.start()
@@ -64,20 +72,72 @@ class CatalogLandingTests(unittest.TestCase):
             self.assertEqual(post.call_count, 2)
             self.assertEqual(json.loads((self.root / "cursor.json").read_text())["last_sha"], "first")
 
-    def test_failed_harness_resumes_same_batch_only_on_explicit_recovery(self) -> None:
+    def test_cleared_service_rechecks_failed_batch_instead_of_replaying_failure(self) -> None:
+        config = self.root / "services.json"
+        config.write_text(json.dumps({"uv": "/fixture/uv", "services": {"catalog": {
+            "argv": ["/fixture/catalog"], "cwd": str(self.root), "restart_seconds": 1}}}))
+        stopped = threading.Event()
+        log = io.StringIO()
+
+        def child(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+            result = landing.poll(self.config, self.root)
+            print(json.dumps(result))
+            code = int(not result["ok"])
+            if result["ok"]:
+                stopped.set()
+            return SimpleNamespace(pid=123, returncode=code, poll=lambda: code)
+
         with (patch.object(landing, "pending_landings", return_value=["first", "second"]),
               patch.object(landing, "landing_pull", return_value=2),
               patch.object(landing, "git", return_value="script.py"),
-              patch.object(landing, "verify", side_effect=[{"ok": False, "gate": "smoke"}, {"ok": True}]) as verify,
-              patch.object(landing, "post_result", return_value="comment")):
-            self.assertFalse(landing.poll(self.config, self.root)["ok"])
-            self.assertFalse(landing.poll(self.config, self.root)["ok"])
+              patch.object(landing, "verify", side_effect=[{"ok": False, "gate": "codex_handoff_request",
+                  "reason": "transcript changed during read; check again"}, {"ok": True}]) as verify,
+              patch.object(landing, "post_result", return_value="comment"),
+              patch.object(services.threading, "Event", return_value=stopped),
+              patch.object(services.subprocess, "Popen", side_effect=child),
+              patch.object(services, "stop_child"), redirect_stdout(log)):
+            command = ["--config", str(config), "--service", "catalog"]
+            self.assertEqual(services.main(["run", *command]), 1)
+            self.assertEqual(services.main(["run", *command]), 1)
             self.assertEqual(verify.call_count, 1)
-            result = landing.poll(self.config, self.root, resume_failed=True)
-            self.assertTrue(result["ok"])
-            self.assertEqual(result["landings"], ["first", "second"])
+            first = verify.call_args.args[1]
+            self.assertEqual(services.main(["clear", *command]), 0)
+            self.assertEqual(services.main(["run", *command]), 0)
             self.assertEqual(verify.call_count, 2)
+            self.assertEqual(verify.call_args.args[1].evidence, first.evidence)
             self.assertEqual(json.loads((self.root / "cursor.json").read_text())["last_sha"], "second")
+        reports = [row for line in log.getvalue().splitlines() if "ok" in (row := json.loads(line))]
+        self.assertEqual([row["ok"] for row in reports], [False, True])
+        self.assertEqual(reports[-1]["landings"], ["first", "second"])
+
+    def test_changing_transcript_retries_until_response_or_existing_deadline(self) -> None:
+        complete = {"state": "turn_ended", "size": 10, "safe_verdict": True, "last_text": "landing"}
+        elapsed = 0.0
+
+        def now() -> float:
+            return elapsed
+
+        def advance(seconds: float) -> None:
+            nonlocal elapsed
+            elapsed += seconds
+
+        for final in (False, True):
+            for settles in (False, True):
+                elapsed = 0.0
+                with (self.subTest(final=final, settles=settles),
+                      patch.object(landing, "session_status", side_effect=[TranscriptChanged("appending"), complete]
+                                   if settles else TranscriptChanged("appending")) as read,
+                      patch.object(landing.time, "monotonic", side_effect=now),
+                      patch.object(landing.time, "sleep", side_effect=advance)):
+                    if settles:
+                        self.assertEqual(landing.observe({}, "landing", final=final), complete)
+                        self.assertEqual(read.call_count, 2)
+                    else:
+                        with self.assertRaises(GateFailed):
+                            landing.observe({}, "landing", final=final)
+        with patch.object(landing, "session_status", side_effect=ValueError("stable invalid JSON")):
+            with self.assertRaises(ValueError):
+                landing.observe({}, "landing")
 
     def test_only_human_documentation_skips_smoke_after_runtime_reconciliation(self) -> None:
         for index, files in enumerate(("README.md\ndocs/guide.md", "skills/thing/SKILL.md", "instructions/global.md", "README.md\nscript.py")):
@@ -141,12 +201,12 @@ class CatalogLandingTests(unittest.TestCase):
     def test_unknown_report_is_settled_by_exact_read_without_another_write(self) -> None:
         operation = Operation(self.root, ["report"])
         result = {"ok": True, "landings": ["landing"], "runtime_sha": "runtime"}
-        with patch.object(Operation, "run", self.original_run), patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("comment", 360)):
+        with patch.object(Operation, "run", operation_run), patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("comment", 360)):
             with self.assertRaises(GateFailed):
                 landing.post_result(self.config, operation, result)
         report = (self.root / "result.md").read_text()
         posted = {"user": {"login": "agent[bot]"}, "body": report, "html_url": "original-comment"}
-        with (patch.object(Operation, "run", self.original_run), patch.object(subprocess, "run") as write,
+        with (patch.object(Operation, "run", operation_run), patch.object(subprocess, "run") as write,
               patch.object(landing.github_identity, "automation_login", return_value="agent[bot]"),
               patch.object(landing.GitHubReader, "paged_json", side_effect=[[], [posted, posted], [posted]])):
             for _ in range(2):
@@ -166,6 +226,28 @@ class CatalogLandingTests(unittest.TestCase):
             self.assertFalse((self.root / "first/result.json").exists())
             self.assertTrue(landing.poll(self.config, self.root)["ok"])
             verify.assert_called_once()
+
+    def test_uncertain_failed_report_is_reconciled_before_rechecking_smokes(self) -> None:
+        def run(operation: Operation, gate: str, *args: Any, **kwargs: Any) -> Any:
+            if gate.startswith("report_"):
+                with patch.object(Operation, "run", operation_run):
+                    return operation.run(gate, *args, **kwargs)
+            return {"status": "already_current", "after_sha": "tip"}
+
+        with (patch.object(Operation, "run", run),
+              patch.object(landing, "pending_landings", return_value=["first"]),
+              patch.object(landing, "landing_pull", return_value=2),
+              patch.object(landing, "git", return_value="script.py"),
+              patch.object(landing, "verify", side_effect=[{"ok": False}, {"ok": True}]) as verify,
+              patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("comment", 360)) as write,
+              patch.object(landing.GitHubReader, "paged_json", return_value=[])):
+            with self.assertRaises(GateFailed):
+                landing.poll(self.config, self.root)
+            with self.assertRaises(GateFailed):
+                landing.poll(self.config, self.root)
+            self.assertEqual(verify.call_count, 1)
+            self.assertEqual(write.call_count, 1)
+            self.assertIsNone(json.loads((self.root / "cursor.json").read_text())["last_sha"])
 
     def test_smoke_records_both_runtime_observations_without_claiming_loaded_version(self) -> None:
         with patch.object(landing, "verify_smoke", return_value="handoff"), patch.object(landing, "git", return_value="after"):

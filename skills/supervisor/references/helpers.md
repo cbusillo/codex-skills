@@ -1195,15 +1195,19 @@ earlier runtime's behavior. Only a nonempty diff confined to `README.md` and Mar
 skip live sessions; skill instructions still need smoke checks. Cursor advancement
 requires verification, cleanup and the posted comment. Success needs no Supervisor action.
 
+Transcript changes during observation retry within the existing acknowledgement
+or handoff deadline. Stable malformed data and expired deadlines still fail.
 Verification failures post the failed gate. The existing runner notifies that
 channel on any failed child or stale reconciliation marker, including an
 interrupted run or a helper that cannot start, then keeps the
 service stopped. Read private evidence and reconcile any
 uncertain launch, request, comment or notification before recovery. An uncertain
 report is settled automatically only by one exact marker/body/author match on
-the owning issue; missing or ambiguous matches never cause another post. Resume a
-failed verification explicitly with the same command plus `--resume-failed`,
-using the same evidence directory; this reuses launch and closeout journals.
+the owning issue; missing or ambiguous matches never cause another post. After
+reconciliation, clear the runner's `catalog` marker and restart it through the
+existing service route. Polling rechecks a failed attempt using its original
+launch and closeout journals, settling any uncertain prior report first.
+`--resume-failed` remains accepted for compatibility; no extra recovery run is needed.
 A completed bad acknowledgement needs a fresh attempt. First get each preserved
 session's normal handoff and run `session_closeout.py` with the exact native ID
 and the original `<attempt>/<harness>-closeout` evidence directory. The saved
