@@ -244,7 +244,7 @@ available for existing diagnostic callers; they are not extra routine steps.
 Decision authors and current-head handoffs use shared authority parsers. Only
 open PRs closing a child appear; the auto-enqueue watcher routes other PRs.
 Truncated Track discussions use the shared planning paginator; failed/changing
-reads keep UNKNOWN and the original newest-comment window. Child discussions use the same paginator; PR windows stay bounded.
+reads keep UNKNOWN and the original newest-comment window. Child discussions use the same paginator; truncated closing-PR discussions use the existing REST paginator and retain UNKNOWN on incomplete reads.
 
 Use `--format json` for full rows/diagnostics, `markdown` for titles and actions,
 or `links` to omit those Client details. Closed children remain closed despite
