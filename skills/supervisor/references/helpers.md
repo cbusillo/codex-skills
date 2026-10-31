@@ -1114,11 +1114,15 @@ may contain only this job; unrelated Supervisor services are not required:
 Its private landing configuration keeps the stable launch pointers described
 below, with `source_worktree` pointing to the durable runtime checkout. Omit
 `pr` and `landing_sha`: polling resolves them from default-branch first-parent
-history and exact merged-PR evidence. Set `notify_config` to the existing
-service configuration so cleanup reads the current Supervisor identity.
+history and exact merged-PR evidence. Keep the owning Supervisor's native ID
+in `supervisor_session` for closeout exclusion; update it at takeover.
+Catalog verification needs no `services.py bind` or managed Supervisor pane.
 The service entry's `failure_argv` uses the existing sender, accepting Markdown
 on stdin, to the channel Chris and the Supervisor already use.
 No new account, recipient registry or delivery service is created.
+Include its existing `logs/catalog.jsonl` in the
+[routine digest](routine-check.md) with `--service-log` so failures remain
+visible there even when channel delivery fails.
 
 The first run checks the current landing and explicitly leaves earlier history
 unverified. Later runs enumerate every first-parent landing since the saved

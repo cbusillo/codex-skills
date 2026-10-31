@@ -452,7 +452,13 @@ def require_closed_smokes(config: dict, operation: Operation) -> None:
         require(result.get("ok") is True, "supersede", "original smoke closeout revalidation failed")
 
 
+def require_supervisor_identity(config: dict) -> None:
+    require(isinstance(config.get("supervisor_session"), str) and bool(config["supervisor_session"].strip()),
+            "identity", "catalog closeout requires supervisor_session")
+
+
 def poll(config: dict, evidence: Path, *, resume_failed: bool = False, supersede_failed: bool = False) -> dict:
+    require_supervisor_identity(config)
     source = Path(config["source_worktree"])
     state_path = evidence / "cursor.json"
     with closure.store_lock(evidence / "poll", create=True):
@@ -463,9 +469,6 @@ def poll(config: dict, evidence: Path, *, resume_failed: bool = False, supersede
                                            "--repo", config["repo"]], timeout=660)
         require(runtime.get("status") in {"synchronized", "already_current"}, "discovery", "runtime reconciliation incomplete")
         current: dict = dict(config)
-        if config.get("notify_config"):
-            from services import supervisor_recipient
-            current["supervisor_session"] = supervisor_recipient(Path(config["notify_config"]))["session_id"]
         landings = state.get("pending") or pending_landings(source, state["last_sha"], runtime["after_sha"])
         superseded = state.get("superseded")
         superseded_url = state.get("superseded_url")
@@ -531,6 +534,7 @@ def main() -> int:
     identity = "unknown"
     try:
         config = json.loads(args.config.read_text())
+        require_supervisor_identity(config)
         if args.poll:
             result = poll(config, args.evidence, resume_failed=args.resume_failed, supersede_failed=args.supersede_failed)
             print(json.dumps(result, separators=(",", ":")))
