@@ -1227,6 +1227,20 @@ generations or uncertain mutations, includes later landings, and preserves the
 old attempt while starting fresh sessions. It can retry the same tip after an
 environment repair. It never skips missing merged-PR proof or rewritten history.
 
+If a Codex smoke needs the supported [exact-source resume](#release-a-verified-finished-session),
+keep its original launch, source fingerprint and closeout journal unchanged.
+Resume that native thread in its original account, maintain its ledger row from
+the verified resume receipt, obtain its final safe verdict, and close it normally
+with the original handoff URL. Use `<attempt>/codex-closeout-<generation>` for
+this closeout, where `generation` is the fingerprint of
+`release_session_claims.closure_identity(entry)` without `handoff_url`, as used
+by `record_smoke_source`. Then use `--supersede-failed`, not ordinary polling.
+It requires the original process to be absent, the retained launch to match the
+original fingerprint, and the canonical closure to match the original native ID,
+account and transcript. It revalidates the exact retired generation's closeout
+before starting fresh verification. The old smoke remains a failed attempt;
+only the new batch may pass. No original fingerprint or receipt is replaced.
+
 After recovery succeeds, clear the runner's `catalog` marker and restart that
 job through the existing service route. Never remove a journal or replay an
 uncertain mutation to clear a failure. The runner reserves each notice before
