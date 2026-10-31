@@ -11,7 +11,7 @@ decisions, statuses, board contents or narrative; open linked records for action
 2. Run the in-process digest from the catalog:
 
    ```sh
-   uv run skills/supervisor/scripts/routine_check.py --owner OWNER --queue OWNER/direction#NUMBER --ledger <ledger.json> --foreign-log <watch.jsonl> --watch-state <watch-reader.json>
+   uv run skills/supervisor/scripts/routine_check.py --owner OWNER --queue OWNER/direction#NUMBER --ledger <ledger.json> --foreign-log <watch.jsonl>
    ```
 
    Add `--capacity-state` when configured, `--source OWNER/REPO#NUMBER` for
@@ -22,9 +22,11 @@ decisions, statuses, board contents or narrative; open linked records for action
    the existing people index. The digest reads current board, sessions, questions,
    radar and live watch output without waiting for the watch process to exit.
    Unanswered comments, open questions, staffing requests and coverage errors
-   repeat until settled at source. Only collected watch notices use fingerprints;
-   they never clear radar attention. `STAFF NOW` on an open program issue is a
-   staffing candidate, not launch authority; verify its linked items and ownership.
+   repeat until settled at source. Watch notices retain their pointers until a
+   fresh radar read accounts for them; no watch fingerprint file is needed.
+   `STAFF NOW` on an open program issue is a staffing candidate, not launch
+   authority; verify its linked items and ownership. Once staffed, reply
+   `Staffed: <request-comment-link>` on the program issue to clear the candidate.
    Route Client and Client-agent comments to the owning worker for an answer.
    Open full source comments before acting; register/present questions through
    the existing queue rules. The digest never writes delivery records or closes sessions.
@@ -35,8 +37,9 @@ decisions, statuses, board contents or narrative; open linked records for action
    ```
 
    The helper finds the automation-authored handoff naming the exact native
-   session on the ledger's issue, journals it and stops on ambiguity. Legacy
-   ledgers without an issue pointer can supply `--handoff-url <actual-comment>`.
+   session on the ledger's issue, journals it and stops on ambiguity. After
+   verifying the source, use `--handoff-url <actual-comment>` to resolve ambiguity,
+   a legacy ledger without an issue pointer, or a handoff on another work issue.
    Keep its receipt or
    first failed gate; inspect private details on failure and reuse its evidence.
    Never replay uncertain mutations with another directory. Nonempty input,

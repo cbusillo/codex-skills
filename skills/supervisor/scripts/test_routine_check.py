@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock, patch
 
 import goal_board
@@ -16,6 +17,12 @@ import routine_check
 import session_closeout
 from check_operation import GateFailed, Operation
 from test_goal_board import TRUSTED, child, comment
+
+from skills.github.scripts.github_api import ApiResult
+
+
+def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    return patch.object(target, name, *args, **kwargs)
 
 
 class RoutineCheckTests(unittest.TestCase):
@@ -68,7 +75,7 @@ class RoutineCheckTests(unittest.TestCase):
             self.assertIn("worker", output)
             self.assertIn("question", output)
 
-    def test_reader_failure_does_not_hide_other_results_or_repeat_errors(self) -> None:
+    def test_reader_failure_does_not_hide_other_results_and_repeats_errors(self) -> None:
         readers = {
             "board": Mock(side_effect=ValueError("unread program")),
             "watch": Mock(return_value={"errors": ["watch offline"], "coverage_gaps": ["unwatched repo"]}),
@@ -85,14 +92,87 @@ class RoutineCheckTests(unittest.TestCase):
             for expected in ("unread program", "watch offline", "unwatched repo", "unread identity", "client"):
                 self.assertIn(expected, output)
 
+        for error in (routine_check.radar.rollup.RollupError("radar failed"), SystemExit("config failed")):
+            readers["comments"].side_effect = error
+            output = routine_check.digest(routine_check.collect(readers))
+            self.assertIn(str(error), output)
+            self.assertIn("watch offline", output)
+
     def test_missing_and_partial_watch_logs_are_coverage_errors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "watch.jsonl"
-            for content in (None, "", '{"errors":[]}\n{'):
-                if content is not None:
-                    log.write_text(content)
-                with self.assertRaises((ValueError, OSError)):
-                    routine_check.watch_report(log)
+            with self.assertRaises(OSError):
+                routine_check.watch_report(log)
+            report = {"notices": [{"url": "client"}], "errors": [], "coverage_gaps": []}
+            log.write_text(json.dumps(report) + '\n{"error":"watch restart refused"}\n{')
+            for _ in range(2):
+                output = routine_check.digest({"watch": routine_check.watch_report(log)})
+                self.assertIn("client", output)
+                self.assertIn("watch restart refused", output)
+                self.assertIn("incomplete", output)
+
+    def test_staffing_clears_only_after_its_targeted_reply(self) -> None:
+        request = comment("STAFF NOW: take the next source slice")
+        unrelated = comment(f"Not staffed yet: {request['url']}", ident=2)
+        node = child(277, comments=[request, unrelated])
+        self.assertTrue(goal_board.child_row(node, TRUSTED)["staffing_requests"])
+        node["comments"]["nodes"].append(comment(f"Staffed the requested slices: {request['url']}", ident=3))
+        node["comments"]["totalCount"] += 1
+        self.assertFalse(goal_board.child_row(node, TRUSTED)["staffing_requests"])
+
+    def test_fresh_handled_evidence_clears_watch_candidates_without_watermarks(self) -> None:
+        sources = {
+            "watch": {"notices": [{"url": "answered-client"}, {"url": "answered-question"}, {"url": "unknown"}]},
+            "comments": {"handled": [{"comment_url": "answered-client"}]},
+            "questions": {"settled_questions": ["answered-question"]},
+        }
+        output = routine_check.digest(sources)
+        self.assertIn("unknown", output)
+        self.assertNotIn("answered-client", output)
+        self.assertNotIn("answered-question", output)
+
+    def test_reader_wiring_retains_client_attention_and_other_questions_on_source_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ledger, log = root / "ledger.json", root / "watch.jsonl"
+            ledger.write_text("[]")
+            log.write_text(json.dumps({"notices": [], "errors": [], "coverage_gaps": []}) + "\n")
+            args = argparse.Namespace(
+                owner="owner",
+                queue="owner/direction#98",
+                source=["owner/repo#7", "owner/repo#8"],
+                repo=["owner/repo"],
+                thread=[],
+                ledger=ledger,
+                capacity_state=None,
+                foreign_log=log,
+                radar_config=root / "absent.yaml",
+            )
+            good_url = "https://github.com/owner/repo/issues/8#issuecomment-80"
+            question = {
+                "id": 80,
+                "body": "Director question: Q80. Continue?",
+                "html_url": good_url,
+                "user": {"login": "owner"},
+                "created_at": "2026-10-30T20:00:00Z",
+            }
+
+            def paged(endpoint: str, **_: object) -> list[dict]:
+                if "/issues/7/" in endpoint:
+                    raise routine_check.GitHubReadError(
+                        "source unread", result=ApiResult(ok=False, status=404, body=None), diagnostics={}
+                    )
+                return [question] if "/issues/8/" in endpoint else []
+
+            with (
+                patch.object(routine_check, "GitHubReader", return_value=SimpleNamespace(paged_json=paged)),
+                patch.object(goal_board, "goal_board", return_value={"tracks": [], "coverage": {"complete": True}}),
+                patch_attr(routine_check.radar, "collect_payload", return_value={"attention": [{"url": "client"}], "ok": True}),
+            ):
+                output = routine_check.digest(routine_check.collect(routine_check.build_readers(args)))
+            self.assertIn("client", output)
+            self.assertIn(good_url, output)
+            self.assertIn("source unread", output)
 
     def test_discovered_handoff_is_unique_exact_authored_and_journaled(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -120,6 +200,11 @@ class RoutineCheckTests(unittest.TestCase):
                 self.assertEqual(json.loads(ledger.read_text())[0]["handoff_url"], url)
                 self.assertEqual(json.loads(operation.path.read_text())["handoff"]["url"], url)
                 self.assertEqual(entry["handoff_url"], url)
+                reader.paged_json.return_value = [handoff, {**handoff, "id": 9}]
+                unrecorded = {key: value for key, value in entry.items() if key != "handoff_url"}
+                ledger.write_text(json.dumps([{**unrecorded, "note": "updated metadata"}]))
+                session_closeout.verify_handoff(unrecorded, args, operation, retired=False)
+                self.assertEqual(json.loads(ledger.read_text())[0]["note"], "updated metadata")
                 for candidates in (
                     [claim],
                     [handoff, {**handoff, "id": 9, "html_url": url.replace("-8", "-9")}],
@@ -134,6 +219,28 @@ class RoutineCheckTests(unittest.TestCase):
                             Operation(root / "other", ["native"]),
                             retired=False,
                         )
+
+    def test_explicit_handoff_supports_another_work_issue_and_partial_legacy_pointer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            entry = {"repository": "owner/Program", "session_id": "native"}
+            ledger = root / "ledger.json"
+            ledger.write_text(json.dumps([entry]))
+            url = "https://github.com/owner/child/issues/8#issuecomment-9"
+            handoff = {
+                "body": "Session: native",
+                "user": {"login": "agent[bot]"},
+                "issue_url": "https://api.github.com/repos/owner/child/issues/8",
+            }
+            args = argparse.Namespace(ledger=ledger, session_id="native", handoff_url=url)
+            reader = SimpleNamespace(get_json=Mock(return_value=handoff), paged_json=Mock())
+            with (
+                patch.object(session_closeout, "GitHubReader", return_value=reader),
+                patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]"),
+            ):
+                session_closeout.verify_handoff(entry, args, Operation(root / "evidence", ["native"]), retired=False)
+            reader.paged_json.assert_not_called()
+            self.assertEqual(entry["handoff_url"], url)
 
 
 if __name__ == "__main__":

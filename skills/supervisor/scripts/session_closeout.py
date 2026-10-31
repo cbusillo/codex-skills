@@ -93,7 +93,7 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
     reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 60)
     actor = github_identity.automation_login()
     require(bool(actor), "handoff", "configured automation identity is unknown")
-    selected = getattr(args, "handoff_url", None) or entry.get("handoff_url")
+    selected = getattr(args, "handoff_url", None) or entry.get("handoff_url") or operation.state.get("handoff", {}).get("url")
     require(not entry.get("handoff_url") or entry["handoff_url"] == selected, "handoff", "recorded handoff differs; preserve it")
     if not selected:
         repo, number = entry.get("repository"), entry.get("issue")
@@ -106,16 +106,15 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
                       and explicit_session(comment.get("body") or "", args.session_id)
                       and not live_lines(comment.get("body") or "")
                       and not re.match(r"(?i)^Claimed by\b", (comment.get("body") or "").strip())]
-        require(len(candidates) == 1, "handoff", f"requires one posted handoff; found {len(candidates)} candidates")
+        require(len(candidates) == 1, "handoff",
+                f"requires one posted handoff; found {len(candidates)} candidates: {[row.get('html_url') for row in candidates]}; "
+                "verify the source and select its exact --handoff-url")
         selected = candidates[0]["html_url"]
     require(isinstance(selected, str), "handoff", "handoff URL is missing")
     require(operation.state.get("handoff", {}).get("url", selected) == selected,
             "handoff", "journal already records another handoff; preserve its evidence")
     match = release.HANDOFF.fullmatch(selected)
     require(bool(match), "handoff", "handoff URL is malformed")
-    if entry.get("repository") is not None or entry.get("issue") is not None:
-        require(match is not None and match[1] == entry.get("repository") and int(match[2]) == entry.get("issue"),
-                "handoff", "handoff differs from the ledger's issue")
     proposed = {**entry, "handoff_url": selected}
     handoff = release.handoff(reader, proposed, actor)
     require(explicit_session(handoff.get("body") or "", args.session_id), "handoff", "handoff must name this native session")
@@ -126,7 +125,7 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
         with closure.store_lock(args.ledger, create=True):
             rows = json.loads(args.ledger.read_text())
             matches = [row for row in rows if row.get("session_id") == args.session_id]
-            require(len(matches) == 1 and normalize_ledger_entry(args.ledger, matches[0]) == entry,
+            require(len(matches) == 1 and release.closure_identity(normalize_ledger_entry(args.ledger, matches[0])) == release.closure_identity(entry),
                     "identity", "ledger generation changed before handoff update")
             matches[0]["handoff_url"] = selected
             save_state(args.ledger, rows)
@@ -311,7 +310,7 @@ def main() -> int:
     parser.add_argument("--supervisor-session", required=True)
     parser.add_argument("--owner", required=True)
     parser.add_argument("--evidence", type=Path, required=True)
-    parser.add_argument("--handoff-url", help="explicit handoff for a missing legacy issue pointer; verified before shutdown")
+    parser.add_argument("--handoff-url", help="explicit posted handoff after source verification, including a different work issue")
     parser.add_argument("--exit-seconds", type=float, default=30)
     args = parser.parse_args()
     try:
