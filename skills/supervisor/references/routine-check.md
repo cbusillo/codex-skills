@@ -27,6 +27,11 @@ decisions, statuses, board contents or narrative; open linked records for action
    seeds full-history radar threads and question sources; fresh source
    readers decide what is still unanswered. Historical board questions are not
    a second queue.
+   A later reply on the same thread by the Director or configured own automation,
+   including a merge or closing comment, clears a comment from this digest after
+   its latest edit. An opening post stops repeating once its thread has any
+   reply. Unfinished requests stay in planning intake; this digest does not settle
+   their work or waits.
    Ordinary bot notices stay filtered by the radar's existing identity rules.
    Launchplane/Director-mention notifications in the radar's configured lookback
    print separately as untrusted pointers, including after a quiet poll. Runner

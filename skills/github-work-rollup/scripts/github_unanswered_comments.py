@@ -1081,6 +1081,10 @@ def comment_states_for_thread(
     owner_logins = self_logins - bot_logins
     is_pull_request = isinstance(thread.get("pull_request"), dict)
     thread_kind = "pull_request" if is_pull_request else "issue"
+    thread_has_replies = any(
+        comment.kind != OPENING_POST and comment_timestamp(comment.created_at) <= effective_until
+        for comment in comments
+    )
     external_comments = [
         comment
         for comment in comments
@@ -1166,6 +1170,7 @@ def comment_states_for_thread(
                 "repo": comment.repo,
                 "number": comment.number,
                 "thread_kind": thread_kind,
+                "thread_has_replies": thread_has_replies,
                 "title": str(thread.get("title") or ""),
                 "state": str(thread.get("state") or ""),
                 "thread_url": str(thread.get("html_url") or ""),

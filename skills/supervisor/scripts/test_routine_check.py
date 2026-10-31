@@ -8,6 +8,7 @@ import json
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +38,52 @@ class RoutineCheckTests(unittest.TestCase):
         self.enterContext(patch.object(routine_check.oq, "default_decision_authors", return_value=["agent[bot]"]))
         self.enterContext(patch_attr(routine_check.radar.github_identity, "automation_login", return_value="agent[bot]"))
         self.enterContext(patch_attr(routine_check.radar.github_identity, "configured_bot_logins", return_value=["agent[bot]"]))
+
+    def test_digest_omits_answered_history_and_keeps_new_unanswered_comments(self) -> None:
+        cases = (
+            ("companion-module-apple-tv", 50, "closed", "issue_body", "mikecreates86", "Thanks for this module.",
+             "shiny-code-app[bot]", "Thanks Mike! Tested and merged."),
+            ("odoo-tenant-cm", 296, "open", "issue_body", "cellmechanic-website-agent[bot]", "Update bot permissions.",
+             "cbusillo", "@cellmechanic done. Please test and close this issue."),
+            ("codex-skills", 3047, "closed", "issue_body", "cellmechanic", "The audit reports false findings.",
+             "shiny-code-app[bot]", "Completed through PR #3054."),
+            *(('odoo-tenant-cm-website', number, "closed", "issue_comment", "cellmechanic-website-agent[bot]",
+               "Status correction from Justin.", "shiny-code-app[bot]", "Closing as delivered.") for number in (33, 75, 76)),
+        )
+        for repo, number, state, kind, author, body, reply_author, reply_body in cases:
+            with self.subTest(repo=repo, number=number):
+                external = routine_check.radar.Comment(
+                    repo=f"cbusillo/{repo}", number=number, kind=kind, comment_id=1, author=author,
+                    author_type="", created_at="2026-10-20T15:49:00Z", updated_at="2026-10-20T15:49:00Z",
+                    body=body, url=f"https://github.com/cbusillo/{repo}/issues/{number}#issuecomment-1",
+                )
+                reply = replace(external, kind="issue_comment", comment_id=2, author=reply_author, body=reply_body,
+                                created_at="2026-10-24T15:00:00Z", updated_at="2026-10-24T15:00:00Z", url="reply")
+                followup = replace(external, kind="issue_comment", comment_id=3, body="A new question?",
+                                   created_at="2026-10-25T15:00:00Z", updated_at="2026-10-25T15:00:00Z", url="followup")
+                rows = routine_check.radar.comment_states_for_thread(
+                    {"state": state}, [external, reply, followup], {external.key, followup.key},
+                    {"cbusillo"}, {"shiny-code-app[bot]"}, {external.key: [], followup.key: []},
+                    automation_logins={"cellmechanic-website-agent[bot]": "Client"},
+                )
+                output = routine_check.digest({"comments": {"attention": rows}})
+                self.assertNotIn(external.url, output)
+                self.assertIn("COMMENT followup", output)
+
+    def test_opening_post_stops_repeating_after_any_reply_even_after_a_body_edit(self) -> None:
+        opening = routine_check.radar.Comment(
+            repo="owner/repo", number=7, kind=routine_check.radar.OPENING_POST, comment_id=1, author="client",
+            author_type="User", created_at="2026-10-20T15:00:00Z", updated_at="2026-10-25T15:00:00Z",
+            body="Please implement this.", url="opening",
+        )
+        reply = replace(opening, kind="issue_comment", comment_id=2, author="another-person", body="More context.",
+                        created_at="2026-10-21T15:00:00Z", updated_at="2026-10-21T15:00:00Z", url="reply")
+        for comments in ([opening], [opening, reply]):
+            rows = routine_check.radar.comment_states_for_thread(
+                {"state": "open"}, comments, {opening.key}, {"owner"}, {"agent[bot]"}, {opening.key: []},
+            )
+            output = routine_check.digest({"comments": {"attention": rows}})
+            self.assertEqual("COMMENT opening" in output, len(comments) == 1)
 
     def test_held_accept_and_staff_now_survive_unchanged_checks(self) -> None:
         staffing = comment("STAFF NOW, two independent source slices: OPW406 and Devkit313", ident=6532738729)
