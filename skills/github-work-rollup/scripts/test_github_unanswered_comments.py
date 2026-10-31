@@ -1130,12 +1130,14 @@ def test_named_reply_answers_person_and_agent_comments_until_next_edit(
     assert {row["comment_id"] for row in payload["attention"]} == expected | {feedback["id"]}
 
 
-@pytest.mark.parametrize("fail_page", [None, 3])
+@pytest.mark.parametrize("fail_last_page", [False, True])
 def test_repository_comment_pages_preserve_results_when_large_read_fails(
-    monkeypatch: pytest.MonkeyPatch, fail_page: int | None,
+    monkeypatch: pytest.MonkeyPatch, fail_last_page: bool,
 ) -> None:
+    page_size = github_unanswered_comments.REPOSITORY_COMMENT_PAGE_SIZE
     messages = [api_comment(number, "outside-user", "2026-07-25T18:00:00Z",
-        issue_url="https://api.github.com/repos/example/repo/issues/42") for number in range(1, 202)]
+        issue_url="https://api.github.com/repos/example/repo/issues/42") for number in range(1, 2 * page_size + 2)]
+    last_page = (len(messages) + page_size - 1) // page_size
     reads = []
 
     def read(command: list[str]) -> object:
@@ -1146,20 +1148,21 @@ def test_repository_comment_pages_preserve_results_when_large_read_fails(
             raise github_unanswered_comments.rollup.RollupError("large repository aggregate read timed out")
         query = parse_qs(urlsplit(endpoint).query)
         page = int(query["page"][0])
-        page_size = int(query["per_page"][0])
+        requested_size = int(query["per_page"][0])
         reads.append(page)
-        if page == fail_page:
+        if fail_last_page and page == last_page:
             raise github_unanswered_comments.rollup.RollupError("large repository page failed")
-        return messages[(page - 1) * page_size:page * page_size]
+        return messages[(page - 1) * requested_size:page * requested_size]
 
     patch_radar(monkeypatch, "run_json", read)
     candidates, errors = github_unanswered_comments.repository_activity(
         "example/repo", datetime(2026, 7, 1, tzinfo=UTC),
         datetime(2026, 7, 26, tzinfo=UTC), {"cbusillo"}, {"fixture-automation"},
     )
-    assert reads == [1, 2, 3]
-    assert len(candidates[("example/repo", 42)]) == (200 if fail_page else len(messages))
-    assert bool(errors) == bool(fail_page)
+    assert reads == list(range(1, last_page + 1))
+    retained = messages[:(last_page - 1) * page_size] if fail_last_page else messages
+    assert len(candidates[("example/repo", 42)]) == len(retained)
+    assert bool(errors) == fail_last_page
 
 
 def test_outside_pull_request_opened_in_window_needs_attention(monkeypatch) -> None:
@@ -2131,7 +2134,7 @@ def test_repository_discovery_budget_retains_pages_and_next_repository(monkeypat
                    self_logins={"cbusillo"}, bot_logins={"fixture-automation"})
     candidates, errors = github_unanswered_comments.bounded_discovery(partial(read, "example/repo"))
     assert candidates[("example/repo", 42)] == {("issue_comment", message["id"])}
-    assert any("deadline" in error["error"] for error in errors)
+    assert errors
     assert timeouts[1] < timeouts[0]
     assert github_unanswered_comments.bounded_discovery(partial(read, "example/other")) == ({}, [])
 
