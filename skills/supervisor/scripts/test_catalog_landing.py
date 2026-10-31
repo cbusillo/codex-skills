@@ -279,15 +279,15 @@ class CatalogLandingTests(unittest.TestCase):
             write.assert_not_called()
 
     def test_supersede_revalidates_closed_resume_without_rewriting_original_generation(self) -> None:
-        original = {"session_id": "native", "harness": "codex", "supervisor_owned": True,
+        original: dict[str, Any] = {"session_id": "native", "harness": "codex", "supervisor_owned": True,
                     "backend": "tmux", "tmux_session_id": "old-pane", "pid": 8, "tty": "ttys001",
                     "transcript": str(self.root / "native.jsonl"), "codex_home": str(self.root / "account"),
                     "handoff_url": "https://github.com/owner/catalog/issues/1#issuecomment-2",
                     "launch_pid": 8, "launch_generation": "original", "launch_started_at": "before"}
         resumed = {**original, "pid": 9, "launch_pid": 9, "tty": "ttys002", "tmux_session_id": "new-pane",
                    "launch_generation": "resumed", "launch_started_at": "after", "process_exit_verified": True}
-        generation = lambda row: landing.fingerprint({key: value for key, value in landing.release.closure_identity(row).items()
-                                                      if key != "handoff_url"})
+        generation = lambda row: landing.fingerprint({field: value for field, value in landing.release.closure_identity(row).items()
+                                                      if field != "handoff_url"})
         for failure in (None, "missing_closure", "account", "transcript", "native_launch", "ownership", "handoff", "original_generation",
                         "live_original", "uncertain_original", "uncertain_resume", "unretired_resume", "missing_journal", "duplicate_journal",
                         "no_original_journal", "missing_recorded_original", "late_registration", "unrelated_uncertain"):

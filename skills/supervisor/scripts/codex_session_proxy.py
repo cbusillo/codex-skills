@@ -50,6 +50,8 @@ def stopped_daemon_remedy(home):
 def require_resume_available(session: str) -> None:
     saved = closure.source_records({session}).get(session)
     generation = saved.get("resumed_generation") if saved else None
+    if generation is not None and (not isinstance(generation, dict) or not generation):
+        raise ValueError("native resumed generation is unavailable; preserve the source")
     if generation and not session_liveness.generation_ended(generation):
         raise ValueError("resumed client remains; finish register --receipt-file without launching another client")
     for _pid, _tty, command in session_liveness.inventory():

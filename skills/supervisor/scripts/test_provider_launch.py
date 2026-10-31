@@ -184,7 +184,7 @@ class ResumeLaunchTests(unittest.TestCase):
         self.enterContext(patch.object(session_liveness, "inventory", return_value=[]))
         self.ledger = self.root / "ledger.json"
         self.ledger.write_text(json.dumps([self.entry]))
-        self.args = SimpleNamespace(resume_session_id=self.session, ledger=self.ledger,
+        self.args = argparse.Namespace(resume_session_id=self.session, ledger=self.ledger,
                                     command_file=None, brief_file=None, account_provider="openai",
                                     account_config=None, account=None)
         self.account = {"provider": "openai", "name": "original", "env": {"CODEX_HOME": str(self.home)}}

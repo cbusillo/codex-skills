@@ -459,8 +459,8 @@ def superseded_closeout(operation: Operation, harness: str, source: dict) -> tup
     require(session_liveness.generation_ended(entry), "supersede", "original smoke process remains")
     with closure.ownership(source["session_id"], create=True):
         closed = closure.source_records({source["session_id"]}).get(source["session_id"])
-        require(bool(closed),
-                "supersede", "same native smoke has no canonical closure")
+        if not isinstance(closed, dict):
+            raise GateFailed("supersede", "same native smoke has no canonical closure")
         current = release.closure_identity(closed)
         require(all(current[key] == identity[key] for key in ("harness", "supervisor_owned", "transcript", "codex_home")),
                 "supersede", "closed source differs from the original native smoke")

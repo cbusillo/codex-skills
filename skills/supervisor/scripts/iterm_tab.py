@@ -1642,14 +1642,14 @@ async def observe_resume_terminal(result: dict) -> None:
         if not isinstance(actual, str) or not actual:
             raise ValueError("retained resume terminal identity is unavailable; preserve the launch")
         expected = result.get(key)
-        if expected and (expected.removeprefix("/dev/") if key == "tty" else expected) != (
+        if isinstance(expected, str) and expected and (expected.removeprefix("/dev/") if key == "tty" else expected) != (
                 actual.removeprefix("/dev/") if key == "tty" else actual):
             raise ValueError("retained resume terminal changed; preserve both generations")
         result[key] = actual
 
 
 async def register_resumed_launch(path: Path, result: dict, choice: dict) -> None:
-    import github_plan_closure
+    from check_operation import closure as github_plan_closure
 
     session, source = choice["resume_session_id"], choice["resume_source"]
     if choice.get("provider") != "openai" or source.get("harness") != "codex" or source.get("supervisor_owned") is not True:
@@ -1674,7 +1674,7 @@ async def register_resumed_launch(path: Path, result: dict, choice: dict) -> Non
 
 
 def refresh_resume_ledger(path: Path, result: dict, source: dict, session: str) -> None:
-    import github_plan_closure
+    from check_operation import closure as github_plan_closure
     import session_liveness
     import session_record
     from check_changes import save_state

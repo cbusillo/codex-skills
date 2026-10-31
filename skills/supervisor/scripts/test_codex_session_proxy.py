@@ -5,7 +5,7 @@
 """Real argv, private sockets and a disposable native client exercise ingress ownership."""
 import asyncio
 import io
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 from argparse import Namespace
 import json
 import os
@@ -130,7 +130,10 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
         import check_changes
 
         for failure in (None, "changed_source", "account", "transcript", "metadata", "live_original", "stale_flag", "iterm", "missing_terminal"):
-            with self.subTest(failure=failure), ReceiptFixture() as f:
+            with self.subTest(failure=failure), ExitStack() as cleanup:
+                f = ReceiptFixture()
+                f.__enter__()
+                cleanup.callback(f.__exit__)
                 ledger = f.root / "ledger.json"
                 source = {**f.entry, "backend": "tmux", "tmux_session_id": "old-terminal",
                           "handoff_url": "https://github.com/owner/repo/issues/1#issuecomment-2"}
@@ -159,7 +162,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     result.pop("backend")
                     result.pop("tty")
                     result.pop("tmux_socket")
-                terminal = {**result, "tty": "/dev/resumed-tty"}
+                terminal: dict[str, object] = {**result, "tty": "/dev/resumed-tty"}
                 if failure == "missing_terminal":
                     result.pop("window_id")
                     terminal["tty"] = None
@@ -197,7 +200,10 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
         import session_record
 
         for pending in ("metadata", "ownership"):
-            with self.subTest(pending=pending), ReceiptFixture() as f:
+            with self.subTest(pending=pending), ExitStack() as cleanup:
+                f = ReceiptFixture()
+                f.__enter__()
+                cleanup.callback(f.__exit__)
                 ledger = f.root / "ledger.json"
                 ledger.write_text(json.dumps([f.entry]))
                 choice = {"provider": "openai", "env": {"CODEX_HOME": str(f.home)}, "resume_session_id": f.session,
@@ -230,7 +236,10 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
         import session_liveness
 
         for state in ("queue_invalidation", "published_live", "unpublished_live"):
-            with self.subTest(state=state), ReceiptFixture() as f:
+            with self.subTest(state=state), ExitStack() as cleanup:
+                f = ReceiptFixture()
+                f.__enter__()
+                cleanup.callback(f.__exit__)
                 with closure.ownership(f.session, create=True):
                     closure.record_resume(f.session, closure.source_records({f.session})[f.session], method="thread/queue/add", home=f.home)
                     if state == "published_live":
