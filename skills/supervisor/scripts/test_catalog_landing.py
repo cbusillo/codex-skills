@@ -13,10 +13,14 @@ from unittest.mock import patch
 
 import catalog_landing as landing
 from check_operation import GateFailed, Operation
+from skills.github.scripts import github_api
 
 
 class CatalogLandingTests(unittest.TestCase):
     def setUp(self) -> None:
+        metadata = patch.dict(vars(github_api.github_catalog_health), {"marker_fields": lambda: "catalog=unknown"})
+        metadata.start()
+        self.addCleanup(metadata.stop)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)

@@ -23,6 +23,8 @@ BLOCKED_NOTICE_AFTER = dt.timedelta(hours=1)
 MAX_BLOCKING_PATHS = 20
 INSTRUCTION_PREVIEW_TIMEOUT = 15
 DELIVERY_NOTICE = "DIRECTION delivery"
+sys.path.insert(0, str(ROOT))
+from skills.github.scripts import github_catalog_health
 
 
 def git(root: Path, *args: str) -> str:
@@ -263,7 +265,7 @@ def status_line(root: Path, *, observe: bool = False) -> str:
                 if warning:
                     state = {"state": "stale", "reason": warning}
         if state["state"] == "current":
-            return ""
+            return github_catalog_health.health_notice(None) if observe and installation and installation.get("health_status") is None else ""
         return f"Catalog {state['state']}: {state['reason']} ({root})."
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
         return f"Catalog blocked: could not read checkout/update state ({root})."
@@ -334,6 +336,8 @@ def update(root: Path) -> dict:
             if warning:
                 state["warning"] = warning
         write_receipt(root, state)
+        state["health_check"] = "complete" if github_catalog_health.refresh_health(root) else "unknown"
+        state["health_notice"] = github_catalog_health.health_notice(github_catalog_health.read_record(root / ".local/catalog-install.json").get("health_status"))
         return state
 
 

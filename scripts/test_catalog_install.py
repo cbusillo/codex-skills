@@ -22,6 +22,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 import unittest
@@ -71,6 +72,147 @@ class InstallTests(unittest.TestCase):
         self.addCleanup(mock.patch.stopall)
         mock.patch.object(installer, "ROOT", self.catalog).start()
         mock.patch.object(installer, "load_sync", return_value=self.sync).start()
+
+    def test_health_opt_in_survives_refresh_and_can_be_disabled(self) -> None:
+        with mock.patch.object(installer.github_catalog_health, "self_check", return_value={"approval": "unknown"}) as check:
+            self.install()
+            check.assert_not_called()
+            installer.install(self.home, self.codex, self.claude, write=True, updater=False, health_status=True)
+            self.assertEqual(check.call_count, 1)
+            installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+            refreshed = json.loads((self.catalog / ".local/catalog-install.json").read_text())
+            self.assertTrue(refreshed["health_status"])
+            self.assertEqual(refreshed["health"], check.return_value)
+            check.reset_mock()
+            installer.install(self.home, self.codex, self.claude, write=True, updater=False, health_status=False)
+            check.assert_not_called()
+            record = json.loads((self.catalog / ".local/catalog-install.json").read_text())
+            self.assertFalse(record["health_status"])
+            self.assertNotIn("health", record)
+
+    def test_opt_out_during_health_collection_cannot_be_undone(self) -> None:
+        health = installer.github_catalog_health
+        with mock.patch.object(health, "self_check", return_value={}):
+            installer.install(self.home, self.codex, self.claude, write=True, updater=False, health_status=True)
+        started, resume = threading.Event(), threading.Event()
+        def check(_root: Path, _installation: dict) -> dict:
+            started.set()
+            if not resume.wait(5):
+                raise TimeoutError("fixture check did not resume")
+            return {"updater": "pass"}
+        results = []
+        with mock.patch.object(health, "self_check", side_effect=check):
+            worker = threading.Thread(target=lambda: results.append(health.refresh_health(self.catalog)))
+            worker.start()
+            try:
+                self.assertTrue(started.wait(5))
+                installer.install(self.home, self.codex, self.claude, write=True, updater=False, health_status=False)
+                path = self.catalog / ".local/catalog-install.json"
+                opted_out = json.loads(path.read_text())
+            finally:
+                resume.set()
+                worker.join(5)
+            self.assertFalse(worker.is_alive())
+        self.assertTrue(results[0])
+        self.assertFalse(opted_out["health_status"])
+        self.assertEqual(json.loads(path.read_text()), opted_out)
+        self.assertNotIn("updater=", health.marker_fields(self.catalog))
+
+    def test_ordinary_install_preserves_a_concurrently_enabled_updater(self) -> None:
+        self.assert_overlapping_updater_install(False)
+
+    def test_updater_enrollment_survives_before_its_plist_is_published(self) -> None:
+        self.assert_overlapping_updater_install(True)
+
+    def assert_overlapping_updater_install(self, pause_activation: bool) -> None:
+        self.install()
+        started, resume = threading.Event(), threading.Event()
+        synchronize = self.sync.synchronize_instructions
+        publish = self.sync.synchronize
+        job = self.home / "Library/LaunchAgents" / f"{installer.LABEL}.plist"
+        errors = []
+        def pause() -> None:
+            started.set()
+            if not resume.wait(5):
+                raise TimeoutError("fixture install did not resume")
+        def prepare(*args: object, **kwargs: object) -> object:
+            if not pause_activation and threading.current_thread() is worker and not kwargs.get("write"):
+                pause()
+            return synchronize(*args, **kwargs)
+        def write(content: str, destinations: list[Path], **kwargs: object) -> object:
+            if pause_activation and threading.current_thread() is worker and job in destinations:
+                pause()
+            return publish(content, destinations, **kwargs)
+        def install() -> None:
+            try:
+                installer.install(self.home, self.codex, self.claude, write=True, updater=pause_activation)
+            except Exception as error:
+                errors.append(error)
+                raise
+        def launch(arguments: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            return subprocess.CompletedProcess(arguments, 1 if arguments[1] == "print" else 0)
+        worker = threading.Thread(target=install)
+        with (mock.patch.object(self.sync, "synchronize_instructions", side_effect=prepare),
+              mock.patch.object(self.sync, "synchronize", side_effect=write),
+              mock.patch.object(sys, "platform", "darwin"), mock.patch.object(shutil, "which", return_value="/fixture/uv"),
+              mock.patch.object(runtime, "checkout_state", return_value={"state": "current"}),
+              mock.patch.object(subprocess, "run", side_effect=launch)):
+            worker.start()
+            try:
+                self.assertTrue(started.wait(5))
+                installer.install(self.home, self.codex, self.claude, write=True, updater=not pause_activation)
+                path = self.catalog / ".local/catalog-install.json"
+                enabled = json.loads(path.read_text())
+            finally:
+                resume.set()
+                worker.join(5)
+            self.assertFalse(worker.is_alive())
+        self.assertFalse(errors)
+        final = json.loads(path.read_text())
+        self.assertTrue(final["scheduled_updater"])
+        self.assertEqual(final["updater_plist"], enabled["updater_plist"])
+        self.assertEqual(final["scheduled_at"], enabled["scheduled_at"])
+        self.assertTrue(job.is_file())
+
+    def test_health_only_cli_can_preview_disable_and_enable_despite_install_drift(self) -> None:
+        health = installer.github_catalog_health
+        self.install()
+        with mock.patch.object(health, "self_check", return_value={"approval": "unknown"}):
+            health.configure_health(self.catalog, True, write=True)
+        (self.codex / "AGENTS.md").write_text("Private edited instructions")
+        with self.assertRaises(ValueError):
+            self.install()
+        receipt = self.catalog / ".local/catalog-install.json"
+        previous = json.loads(receipt.read_text())
+        with mock.patch.object(installer, "install", side_effect=AssertionError("Unrelated installer must not run")), mock.patch("sys.stdout", new_callable=io.StringIO):
+            with mock.patch.object(sys, "argv", ["installer", "--no-health-status"]):
+                self.assertEqual(installer.main(), 0)
+            self.assertEqual(json.loads(receipt.read_text()), previous)
+            with mock.patch.object(sys, "argv", ["installer", "--write", "--no-health-status"]):
+                self.assertEqual(installer.main(), 0)
+            disabled = json.loads(receipt.read_text())
+            self.assertFalse(disabled["health_status"])
+            self.assertNotIn("health", disabled)
+            self.assertEqual(disabled["instruction_hashes"], previous["instruction_hashes"])
+            with mock.patch.object(sys, "argv", ["installer", "--write", "--health-status"]), mock.patch.object(health, "self_check", return_value={}):
+                self.assertEqual(installer.main(), 0)
+            self.assertTrue(json.loads(receipt.read_text())["health_status"])
+
+    def test_combined_instruction_refresh_cannot_block_an_opt_out(self) -> None:
+        health = installer.github_catalog_health
+        self.install()
+        with mock.patch.object(health, "self_check", return_value={}):
+            health.configure_health(self.catalog, True, write=True)
+        (self.codex / "AGENTS.md").write_text("Private edited instructions")
+        with mock.patch.object(sys, "argv", ["installer", "--write", "--refresh-instructions", "--no-health-status"]), mock.patch("sys.stderr", new_callable=io.StringIO):
+            self.assertEqual(installer.main(), 1)
+        self.assertFalse(json.loads((self.catalog / ".local/catalog-install.json").read_text())["health_status"])
+
+    def test_optional_health_failure_does_not_fail_installation(self) -> None:
+        with mock.patch.object(installer.github_catalog_health, "refresh_health", return_value=False):
+            result = self.install()
+        self.assertEqual(result["health_check"], "unknown")
+        self.assertTrue((self.catalog / ".local/catalog-install.json").exists())
 
     @staticmethod
     def legacy_alerts():
@@ -1446,6 +1588,25 @@ class UpdateTests(unittest.TestCase):
         self.assertIn(diagnostic, result["reason"])
         self.assertIn(diagnostic, runtime.status_line(self.checkout))
 
+    def test_health_suggestion_remains_until_a_director_decides(self) -> None:
+        local = self.checkout / ".local"
+        local.mkdir()
+        installation = local / "catalog-install.json"
+        installation.write_text(json.dumps({"health_status": None}))
+        with mock.patch.object(runtime, "instruction_warning", return_value=""):
+            self.assertTrue(runtime.status_line(self.checkout, observe=True))
+            self.assertTrue(runtime.status_line(self.checkout, observe=True))
+            with mock.patch.object(runtime, "observe_checkout", side_effect=OSError):
+                self.assertEqual(runtime.status_line(self.checkout, observe=True), runtime.github_catalog_health.health_notice(None))
+            installation.write_text(json.dumps({"health_status": False}))
+            self.assertEqual(runtime.status_line(self.checkout, observe=True), "")
+
+    def test_health_failure_keeps_successful_update_current(self) -> None:
+        with mock.patch.object(runtime.github_catalog_health, "refresh_health", return_value=False):
+            result = runtime.update(self.checkout)
+        self.assertEqual(result["state"], "current")
+        self.assertEqual(result["health_check"], "unknown")
+
     def test_clean_main_fast_forwards_and_status_goes_quiet(self):
         self.advance()
         command("git", "fetch", "-q", "origin", cwd=self.checkout)
@@ -1457,7 +1618,7 @@ class UpdateTests(unittest.TestCase):
 
     def test_landing_after_startup_does_not_report_inflight_instruction_refresh_as_stale(self) -> None:
         home = self.base / "home"
-        installation = {"home": str(home), "codex": str(home / ".codex"), "claude": str(home / ".claude")}
+        installation = {"health_status": False, "home": str(home), "codex": str(home / ".codex"), "claude": str(home / ".claude")}
         local = self.checkout / ".local"
         local.mkdir()
         (local / "catalog-install.json").write_text(json.dumps(installation))
@@ -1747,6 +1908,10 @@ class UpdateTests(unittest.TestCase):
         for name in ("hooks.json", "direction_check_hook.py"):
             shutil.copyfile(source.parent / "hooks" / name, self.seed / "hooks" / name)
         (self.seed / "skills").mkdir()
+        health_source = source.parent / "skills/github/scripts/github_catalog_health.py"
+        health_target = self.seed / "skills/github/scripts/github_catalog_health.py"
+        health_target.parent.mkdir(parents=True)
+        shutil.copyfile(health_source, health_target)
         (self.seed / "skills" / "original").write_text("first")
         command("git", "add", ".", cwd=self.seed)
         command("git", "commit", "-qm", "install sources", cwd=self.seed)

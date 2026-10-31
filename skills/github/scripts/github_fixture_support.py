@@ -72,6 +72,7 @@ def with_call_stub(
             )
 
         with (
+            patch.object(github_api.github_catalog_health, "marker_fields", return_value="catalog=unknown"),
             patch.object(github_api, "call_gh", stub),
             patch.object(github_api, "default_retry_policy", retry_policy),
         ):

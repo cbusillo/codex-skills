@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, NoReturn, Optional
 
 import github_identity
+import github_catalog_health
 import github_request_usage
 import github_http_cache
 
@@ -291,7 +292,7 @@ def new_operation_id() -> str:
 
 
 def operation_marker_comment(operation_id: str) -> str:
-    return f"{OPERATION_MARKER_PREFIX}{operation_id} -->"
+    return f"{OPERATION_MARKER_PREFIX}{operation_id} {github_catalog_health.marker_fields()} -->"
 
 
 def body_with_operation_marker(body: str, operation_id: str) -> str:
@@ -300,7 +301,7 @@ def body_with_operation_marker(body: str, operation_id: str) -> str:
 
 
 def body_has_operation_marker(body: Any, operation_id: str) -> bool:
-    return isinstance(body, str) and operation_marker_comment(operation_id) in body
+    return isinstance(body, str) and any(match[1] == operation_id for match in github_catalog_health.MARKER.finditer(body))
 
 
 class ArgumentParsingError(Exception):
