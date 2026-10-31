@@ -520,6 +520,22 @@ class GoalBoardTests(unittest.TestCase):
         self.assertEqual(rows[1]["open_prs"][0]["handoff"], "ready")
         self.assertFalse(rows[1]["unread"])
 
+    def test_child_discussion_failure_does_not_skip_descendant_reads(self) -> None:
+        parent = child(10)
+        parent["subIssuesSummary"] = {"total": 1, "completed": 0}
+        expanded = {**parent, "subIssues": {"totalCount": 1, "nodes": [child(11)]}}
+        def read_comments(_reader: Any, node: dict) -> None:
+            if node["number"] == parent["number"]:
+                raise ValueError("missing child page")
+
+        with patch.object(goal_board, "complete_comments", side_effect=read_comments):
+            board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
+                                details(t1=track(1, children=[parent]), t10=expanded))
+        rows = board["tracks"][0]["children"]
+        self.assertTrue(rows[0]["unread"])
+        self.assertFalse(rows[1]["unread"])
+        self.assertEqual(rows[1]["number"], 11)
+
     def test_failed_or_partial_track_read_says_unknown_and_never_complete(self):
         board = self.replay(listing([{"number": 1, "title": "Track: One"}, {"number": 2, "title": "Track: Two"}]),
                             ApiResult(ok=False, status=502, body=None))
