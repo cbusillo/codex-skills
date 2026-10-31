@@ -300,7 +300,8 @@ def installed_repositories(reader, owner: str) -> list[str]:
 
 
 def read_error(repo: str, error: Exception) -> dict:
-    diagnostics = error.diagnostics if isinstance(error, GitHubReadError) else {}
+    diagnostics = getattr(error, "diagnostics", {})
+    requests = diagnostics.get("requests", []) if isinstance(diagnostics, dict) else []
     return {
         "repository": repo,
         "error": "read incomplete",
@@ -308,7 +309,7 @@ def read_error(repo: str, error: Exception) -> dict:
         "retry_at": next(
             (
                 r.get("retryAt")
-                for r in reversed(diagnostics.get("requests", []))
+                for r in reversed(requests)
                 if isinstance(r, dict) and r.get("retryAt") is not None
             ),
             None,
