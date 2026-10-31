@@ -32,6 +32,7 @@ import time
 
 SERVICES = ("enqueue", "drive", "foreign", "throughput")
 IDLE_SERVICES = ("idle-codex", "idle-claude")
+OPTIONAL_SERVICES = IDLE_SERVICES + ("catalog",)
 LABEL_PREFIX = "com.codex-skills.supervisor"
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
@@ -44,8 +45,8 @@ def load_config(path):
         raise ValueError("configuration requires uv and services")
     absolute_path(config["uv"])
     if (not isinstance(config["services"], dict) or not set(SERVICES) <= set(config["services"])
-            or set(config["services"]) - set(SERVICES + IDLE_SERVICES)):
-        raise ValueError("configure enqueue, drive, foreign and throughput; idle-codex and idle-claude are optional")
+            or set(config["services"]) - set(SERVICES + OPTIONAL_SERVICES)):
+        raise ValueError("configure enqueue, drive, foreign and throughput; idle watches and catalog are optional")
     for value in config["services"].values():
         if not isinstance(value, dict) or set(value) != {"argv", "cwd", "restart_seconds"}:
             raise ValueError("each service requires argv, cwd and restart_seconds")
@@ -312,10 +313,10 @@ def main(argv=None):
     prepare.add_argument("--output", type=Path, required=True)
     run = sub.add_parser("run", help="launchd entry point")
     run.add_argument("--config", type=Path, required=True)
-    run.add_argument("--service", choices=SERVICES + IDLE_SERVICES, required=True)
+    run.add_argument("--service", choices=SERVICES + OPTIONAL_SERVICES, required=True)
     clear = sub.add_parser("clear", help="clear a stop marker after reconciliation")
     clear.add_argument("--config", type=Path, required=True)
-    clear.add_argument("--service", choices=SERVICES + IDLE_SERVICES, required=True)
+    clear.add_argument("--service", choices=SERVICES + OPTIONAL_SERVICES, required=True)
     bind = sub.add_parser("bind", help="bind notifications to this actual Supervisor session")
     bind.add_argument("--config", type=Path, required=True)
     bind.add_argument("--transcript", type=Path, help="exact source path when own-account discovery is ambiguous")

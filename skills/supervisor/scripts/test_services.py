@@ -80,8 +80,8 @@ class ServicesTests(unittest.TestCase):
     def test_running_service_and_uv_child_leave_shared_cache_prunable(self):
         self.assert_service_cache_prunable([])
 
-    def test_optional_idle_job_uses_existing_runner_and_preserves_failure_stop(self) -> None:
-        name = services.IDLE_SERVICES[0]
+    def test_optional_catalog_job_uses_existing_runner_and_preserves_failure_stop(self) -> None:
+        name = "catalog"
         self.data["services"][name] = dict(self.data["services"]["foreign"])
         self.fixture.write_text("raise SystemExit(4)\n")
         self.save()

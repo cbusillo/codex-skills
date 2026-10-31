@@ -1092,21 +1092,50 @@ configuration, holds, watch state and logs for takeover or reconciliation.
 
 ## Catalog landing verification
 
-Read this after every landing in the skills catalog, including a service-led
-landing with no local train driver. The Supervisor owns this one landing step;
-an executing worker's green CI or `ready` handoff does not perform it.
+Catalog verification runs independently through the existing service runner.
+The Supervisor handles failure notices only; it does not inventory landings,
+launch smoke sessions or keep a latest-success pointer. Add the optional
+`catalog` entry to the same private service configuration and render/start it
+through the [existing service setup](#persistent-supervisor-services):
 
-At takeover and each regular check, use `github` to inventory merged catalog
-PRs since the last verification linked in the Supervisor handoff. Compare their
-landing SHAs with the verification comments on their owning issues; deduplicate
-PRs from the same batch landing. Run this step for the latest unverified landing
-even when SessionStart catch-up has already updated the runtime. With no prior
-verification record, start at the latest catalog landing and record the earlier
-interval as unverified. If several landings accumulated, report each missed
-earlier SHA on its owning issue and in the Supervisor report as
-**Catalog landing verification NOT VERIFIED: `<skipped-sha>`**, naming the later
-landing that superseded it, then check the latest landing. A later runtime
-passing does not prove an earlier revision passed.
+```json
+"catalog": {
+  "argv": ["/absolute/path/to/uv", "run", "/runtime/catalog/skills/supervisor/scripts/catalog_landing.py", "--poll", "--config", "/private/catalog-landing.json", "--evidence", "/private/catalog-evidence"],
+  "cwd": "/runtime/catalog",
+  "restart_seconds": 60
+}
+```
+
+Its private landing configuration keeps the stable launch pointers described
+below, with `source_worktree` pointing to the durable runtime checkout. Omit
+`pr` and `landing_sha`: polling resolves them from default-branch first-parent
+history and exact merged-PR evidence. Set `notify_config` to the existing
+service configuration so cleanup reads the current Supervisor identity.
+`failure_argv` is the existing sender's absolute argument array, accepting
+Markdown on stdin, to the channel Chris and the Supervisor already use, for
+example `["/absolute/path/to/uv", "run", "/runtime/catalog/skills/supervisor/scripts/discord_digest.py"]`.
+No new account, recipient registry or delivery service is created.
+
+The first run checks the current landing and explicitly leaves earlier history
+unverified. Later runs enumerate every first-parent landing since the saved
+cursor, deduplicate batch PRs by SHA, and record each SHA separately. They
+reconcile the runtime, run both fresh harnesses, close smoke sessions normally,
+and post verification on the merged PR. The comment names the landing and
+actual runtime SHA; a newer runtime proves containment, not an earlier runtime's
+behavior. Only a nonempty diff consisting entirely of Markdown may skip live
+sessions. Cursor advancement requires verification, cleanup and the posted
+comment. Success needs no Supervisor action.
+
+Failures post the failed gate and notify that existing channel, then stop under
+the runner's reconciliation marker. Read private evidence and reconcile any
+uncertain launch, request, comment or notification before recovery. Resume a
+failed verification explicitly with the same command plus `--resume-failed`,
+using the same evidence directory; this reuses launch and closeout journals.
+After it succeeds, clear the runner's `catalog` marker and restart that job
+through the existing service route. Never remove a journal or replay an
+uncertain mutation to clear a failure.
+
+For one bounded manual verification or recovery:
 
 Run `uv run skills/supervisor/scripts/catalog_landing.py --config <private-landing.json> --evidence <private-evidence>` with private identity pointers:
 
@@ -1138,12 +1167,10 @@ A delayed handoff or shutdown leaves a passed launch distinct from incomplete
 cleanup. Failed or uncertain sessions remain preserved for the normal recovery.
 
 The one-line result names the first failed gate or completion, landing/runtime
-SHAs, smoke handoffs and private evidence. Post that result on the owning issue:
-use **Catalog landing verification FAILED: `<landing-sha>`** with the gate and
-cause when incomplete, or link the passing handoffs and reconciliation receipt.
-A failed smoke does not undo the confirmed merge. Keep the latest verification
-link in the Supervisor handoff. Reuse the same evidence directory on recovery;
-an uncertain mutation is never retried with a fresh journal or another route.
+SHAs, smoke handoffs and private evidence. Polling posts its result automatically;
+a bounded manual run leaves posting to its caller. A failed smoke does not undo
+the confirmed merge. Reuse the same evidence directory on recovery; an uncertain
+mutation is never retried with a fresh journal or another route.
 For other rare terminal recovery, use [finished-session shutdown](#finished-session-shutdown-stages).
 
 ## Launching and nudging
