@@ -41,6 +41,14 @@ def test_empty_status_fields_do_not_consume_following_fields() -> None:
     assert not checked['requested']
 
 
+def test_current_status_ignores_quoted_assignments_and_accepts_trusted_discussion() -> None:
+    discussion = {'body': '```\n## Current Status\nNext actor: agent:example\n```',
+                  'comments': [{'author': 'bot', 'body': '## Current Status\n- **Next actor:** person:owner\n- **Next action:** Test the menu.'}]}
+    status = queue.current_status(discussion, {'bot'})
+    assert queue.next_actor.read(status) == 'person:owner'
+    assert queue.status_field(status, 'Next action') == 'Test the menu.'
+
+
 def test_source_work_is_visible_without_caller_snapshot_but_requires_claim() -> None:
     result = classify(item())
     assert result['state'] == 'available'

@@ -241,6 +241,11 @@ Order item 3 admission. Features, preferences and unclear reports get a clarifyi
 question or investigation, not an invented build. Keep stop boundaries and Client
 release acceptance in force.
 
+For a new request on closed work, reopen its source issue. For a merged change
+that cannot be reopened, reuse or record one source issue with the comment link
+and next action. Check that it is a real request first; a reply alone is not one.
+Keep it open until that next action is done.
+
 A reply or acknowledgement never completes a request. Keep the original issue
 open with its next action until that action is done; link a duplicate to its
 open canonical work record. A reply does not clear a recorded wait.
