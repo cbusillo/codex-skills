@@ -452,7 +452,13 @@ def require_closed_smokes(config: dict, operation: Operation) -> None:
         require(result.get("ok") is True, "supersede", "original smoke closeout revalidation failed")
 
 
+def require_supervisor_identity(config: dict) -> None:
+    require(isinstance(config.get("supervisor_session"), str) and bool(config["supervisor_session"].strip()),
+            "identity", "catalog closeout requires supervisor_session")
+
+
 def poll(config: dict, evidence: Path, *, resume_failed: bool = False, supersede_failed: bool = False) -> dict:
+    require_supervisor_identity(config)
     source = Path(config["source_worktree"])
     state_path = evidence / "cursor.json"
     with closure.store_lock(evidence / "poll", create=True):
@@ -528,6 +534,7 @@ def main() -> int:
     identity = "unknown"
     try:
         config = json.loads(args.config.read_text())
+        require_supervisor_identity(config)
         if args.poll:
             result = poll(config, args.evidence, resume_failed=args.resume_failed, supersede_failed=args.supersede_failed)
             print(json.dumps(result, separators=(",", ":")))

@@ -106,6 +106,13 @@ class CatalogLandingTests(unittest.TestCase):
             self.assertFalse((self.root / "cursor.json").exists())
             self.assertTrue(landing.poll(self.config, self.root)["ok"])
 
+    def test_missing_supervisor_identity_stops_before_runtime_or_launch(self) -> None:
+        self.config.pop("supervisor_session")
+        with patch.object(landing, "pending_landings", return_value=[]), self.assertRaises(GateFailed) as failure:
+            landing.poll(self.config, self.root)
+        self.assertEqual(failure.exception.gate, "identity")
+        self.runner.assert_not_called()
+
 
     def test_supersede_preserves_failed_attempt_and_includes_new_fix_only_after_closeout(self) -> None:
         with (patch.object(landing, "pending_landings", side_effect=[["B"], ["C"]]),
