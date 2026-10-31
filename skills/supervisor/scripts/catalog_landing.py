@@ -129,10 +129,10 @@ def reconcile_runtime(config: dict, operation: Operation) -> tuple[Path, str]:
     return runtime, head
 
 
-def verify(config: dict, operation: Operation, *, documentation_only: bool = False) -> dict:
+def verify(config: dict, operation: Operation, *, skip_smoke: bool = False) -> dict:
     runtime, head = reconcile_runtime(config, operation)
     landing = config["landing_sha"]
-    if documentation_only:
+    if skip_smoke:
         return {
             "ok": True,
             "landing_sha": landing,
@@ -412,7 +412,7 @@ def poll(config: dict, evidence: Path, *, resume_failed: bool = False) -> dict:
         landing = landings[-1]
         with closure.store_lock(evidence / landing / "verification", create=True):
             operation = Operation(evidence / landing, [config["repo"], *landings])
-            current = {**config, "landing_sha": landing}
+            current: dict = {**config, "landing_sha": landing}
             result_path = operation.evidence / "result.json"
             saved: dict = json.loads(result_path.read_text()) if result_path.exists() else {}
             if saved and (saved["ok"] or not resume_failed):
@@ -424,7 +424,7 @@ def poll(config: dict, evidence: Path, *, resume_failed: bool = False) -> dict:
                     if config.get("notify_config"):
                         from services import supervisor_recipient
                         current["supervisor_session"] = supervisor_recipient(Path(config["notify_config"]))["session_id"]
-                    result = verify(current, operation, documentation_only=documentation_only(source, landings))
+                    result = verify(current, operation, skip_smoke=documentation_only(source, landings))
                 except (OSError, ValueError, KeyError, TypeError, AttributeError, SubprocessError,
                         GitHubReadError, GitHubReadShapeError) as error:
                     result = receipt(landing, operation.evidence, error, gate=operation.gate)

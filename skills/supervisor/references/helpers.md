@@ -1096,7 +1096,8 @@ Catalog verification runs independently through the existing service runner.
 The Supervisor handles failure notices only; it does not inventory landings,
 launch smoke sessions or keep a latest-success pointer. Add the optional
 `catalog` entry to the same private service configuration and render/start it
-through the [existing service setup](#persistent-supervisor-services):
+through the [existing service setup](#persistent-supervisor-services). A configuration
+may contain only this job; unrelated Supervisor services are not required:
 
 ```json
 "catalog": {

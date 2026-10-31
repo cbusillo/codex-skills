@@ -82,7 +82,7 @@ class ServicesTests(unittest.TestCase):
 
     def test_optional_catalog_job_uses_existing_runner_and_preserves_failure_stop(self) -> None:
         name = services.OPTIONAL_SERVICES[-1]
-        self.data["services"][name] = dict(self.data["services"]["foreign"])
+        self.data["services"] = {name: dict(self.data["services"]["foreign"])}
         sender = self.root / "sender.py"
         sender.write_text("from pathlib import Path\nimport sys\np=Path('notices.txt')\np.write_text((p.read_text() if p.exists() else '') + sys.stdin.read())\n")
         self.data["services"][name]["failure_argv"] = [sys.executable, str(sender)]
@@ -100,7 +100,7 @@ class ServicesTests(unittest.TestCase):
         events = [json.loads(line) for line in again.stdout.splitlines()]
         self.assertFalse(any(event["event"] == "started" for event in events))
         self.assertEqual(len((self.root / "notices.txt").read_text().splitlines()), 1)
-        cleared = subprocess.run([sys.executable, str(Path(services.__file__)), "clear", "--config", str(self.config),
+        cleared = subprocess.run([sys.executable, str(Path(__file__).with_name("services.py")), "clear", "--config", str(self.config),
                                   "--service", name], capture_output=True, text=True, timeout=5)
         self.assertEqual(cleared.returncode, 0, cleared.stderr)
         subprocess.run(job["ProgramArguments"], cwd=job["WorkingDirectory"], capture_output=True, timeout=15)

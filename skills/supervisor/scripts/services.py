@@ -47,9 +47,9 @@ def load_config(path):
             or set(config) - {"uv", "services", "supervisor"}):
         raise ValueError("configuration requires uv and services")
     absolute_path(config["uv"])
-    if (not isinstance(config["services"], dict) or not set(SERVICES) <= set(config["services"])
+    if (not isinstance(config["services"], dict) or not config["services"]
             or set(config["services"]) - set(SERVICES + OPTIONAL_SERVICES)):
-        raise ValueError("configure enqueue, drive, foreign and throughput; idle watches and catalog are optional")
+        raise ValueError("configure at least one supported service")
     for value in config["services"].values():
         if not isinstance(value, dict) or not {"argv", "cwd", "restart_seconds"} <= set(value) <= {
             "argv", "cwd", "restart_seconds", "failure_argv"
