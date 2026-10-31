@@ -195,7 +195,9 @@ not require local files.
 Run `uv run scripts/github_unanswered_comments.py` for missed external comments;
 use `--thread OWNER/REPO#NUMBER` for a full-history merge/closeout gate.
 A targeted public reply from the Director or configured automation clears a
-comment after its latest edit. A reply targets an exact comment link or an
+comment's attention flag after its latest edit. Keep its unfinished request
+open and surfaced through [planning intake](../github-plan/SKILL.md#triage-incoming-reports).
+A reply targets an exact comment link or an
 inline-review thread with one eligible external comment; automation may also
 use an unambiguous single-author mention. Comments without a targeted reply
 stay flagged, including on closed threads. Director reactions, question or

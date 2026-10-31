@@ -224,6 +224,37 @@ Searches, `index`, and global `next` repository discovery exclude archived repos
 by default. Add `--include-archived` to the command to include historical work.
 Explicit issue reads and linked dependency evidence remain available.
 
+## Triage Incoming Reports
+
+Within one check of a new bug report, Client request or imported feedback item,
+check current code, link duplicates and record the concrete next action on the
+original issue. Keep that issue as the work record; preserve the author's request
+under [issue ownership](../github/references/issue-templates.md).
+
+Apply the configured planning label to every triaged request that remains open,
+with its next actor/action and any real person/event wait recorded through
+[Create Or Update A Plan](#create-or-update-a-plan) and [Status Labels](#status-labels).
+A reproduced defect within the agreed outcome enters staffing in the overall
+DIRECTION Order and available capacity; no second ticket or Director intake step
+is needed. Outside-user bugs use the own-projects share; other tooling still needs
+Order item 3 admission. Features, preferences and unclear reports get a clarifying
+question or investigation, not an invented build. Keep stop boundaries and Client
+release acceptance in force.
+
+A reply or acknowledgement never completes a request. Keep the original issue
+open with its next action until that action is done; link a duplicate to its
+open canonical work record. A reply does not clear a recorded wait.
+
+The Supervisor or intake agent reuses [global next](references/global-next.md)
+on each routine check: `gh-plan.py --repo OWNER/direction next`. Its open-state
+inventory includes unlabelled issues, imported feedback and Client-agent reports.
+Read `needs_status`, candidates, underway work, waits and exclusions,
+not only `available_candidates`. Increase `--limit` until candidate rows match
+`candidate_count`, and follow incomplete graph, discovery and candidate coverage
+before calling intake clear within the accessible repositories. Workers apply
+triage only to reports on their assigned item or routed to them; portfolio
+discovery belongs to the intake agent.
+
 ## Choose Work
 
 Check known repository-wide Director holds before selection or implementation;

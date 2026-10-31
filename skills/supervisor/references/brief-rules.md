@@ -58,6 +58,9 @@ Rules for this brief (every Supervisor brief carries them):
   it against current code before starting (overall DIRECTION.md Issue trial,
   [direction#96](https://github.com/cbusillo/direction/issues/96)). If the
   code or a later comment already settles it, record why and continue independent items.
+  At your next review of the item, triage new reports on it or routed to you under
+  [planning intake](../../github-plan/SKILL.md#triage-incoming-reports); keep
+  acknowledged requests open and surfaced until their next action is done.
   Follow the repository's
   [executing loop](../../references/executing-loop.md), opening each step's
   owning SKILL.md before the step.
