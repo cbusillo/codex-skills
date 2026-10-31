@@ -965,7 +965,6 @@ def watch(args, repos, initial, deadline):
     dispatched: set[str] = set()
     while time.monotonic() < deadline:
         with watch_lock(args.state, wait=True):
-            state = json.loads(args.state.read_text()) if args.state.exists() else {}
             watermarks = load_state(args.state, [*(repos or []), MENTIONS], initial, rewind=rewind)
             seen = load_mention_seen(args.state)
             dispatched = load_dispatched(args.state)

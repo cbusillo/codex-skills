@@ -449,7 +449,7 @@ uv run --no-cache skills/supervisor/scripts/foreign_watch.py --owner OWNER --own
 For Q1101 event delivery, add `--events --ledger <ledger.json>
 --notify-config <services.json> --miss-issue OWNER/REPO#NUMBER` to that same
 foreign service. It subscribes outbound to Launchplane's existing attention
-read surface using the existing operator configuration; `--config` and
+read surface using the existing Launchplane helper configuration; `--config` and
 `--env-config` select its supported private sources. Launchplane's existing
 signed App receiver produces source identifiers for tracked repositories.
 No watcher HTTP receiver or additional webhook secret is needed. Its App must
@@ -467,7 +467,8 @@ from short state writes. The shared GitHub reader owns provider cooldowns;
 a failed source does not pause unrelated events. Deleted sources are ignored,
 read failures produce diagnostics, and permission refusals stop the service
 for its existing reconciliation procedure. Normal stream renewal reconnects
-immediately; disconnected or failed streams back off.
+immediately after a healthy heartbeat; short, disconnected or failed streams
+back off.
 
 Both readers reuse the pending-review claim resolver and native notification
 routes: a live worker receives a pointer; otherwise the Supervisor answers or
@@ -496,11 +497,12 @@ Answered radar rows are not sent again; the original request still stays in plan
 Run the same watcher arguments with `--receipts` to inspect existing private
 receipts without sending. Certainly unsent native deliveries remain retryable;
 permission refusals and uncertain sends are not replayed. The next read can
-confirm an uncertain send through its exact generated message in the verified
-native transcript. Absence there does not prove a send failed. An uncertain
+confirm an uncertain send through its private random receipt line in a user
+message in the verified native transcript. Absence there does not prove a send failed. An uncertain
 miss-report write is reconciled by reading its random receipt from trusted
 comments on the repair issue; an absent comment never authorizes a blind retry.
-`--reconcile` runs those positive readbacks immediately. Only a helper-confirmed
+`--reconcile` runs those positive readbacks immediately. Automatic transcript readback stops after the issue audit is confirmed;
+`--reconcile` still permits an explicit positive readback. Only a helper-confirmed
 certainly unstarted miss write is retryable. Completed receipts are retained for
 the radar's 30-day window; unresolved send and audit fences remain preserved.
 

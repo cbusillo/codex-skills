@@ -154,6 +154,17 @@ class WatchTests(unittest.TestCase):
         self.assertEqual({row["url"] for row in notices}, {inline["html_url"], review["html_url"]})
         self.assertEqual(watermarks[REPO], STARTED)
 
+    def test_opening_versions_are_batched_before_recovery(self):
+        reader = Mock()
+        first = {**opened(), "node_id": "first"}
+        second = {**opened(), "node_id": "second", "html_url": f"https://github.com/{REPO}/issues/51"}
+        reader.paged_json.side_effect = feeds([], opened_items=[first, second])
+        reader.graphql_json.return_value = ApiResult(ok=True, status=200, body={"data": {"nodes": [{"lastEditedAt": SINCE}, {"lastEditedAt": SINCE}]}})
+        notices, errors, _ = self.scan(reader)
+        self.assertEqual(errors, [])
+        self.assertEqual({item["url"] for item in notices}, {first["html_url"], second["html_url"]})
+        reader.graphql_json.assert_called_once()
+
     def test_version_failures_keep_retryability_and_deleted_nodes_are_skipped(self):
         reader = Mock()
         source = {**opened(), "node_id": "source"}
