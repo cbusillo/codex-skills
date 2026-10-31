@@ -17,7 +17,7 @@ decisions, statuses, board contents or narrative; open linked records for action
    Add `--capacity-state` when configured, `--source OWNER/REPO#NUMBER` for
    question anchors outside the queue, and `--radar-config` for existing private
    [comment-radar configuration](../../github-work-rollup/SKILL.md#external-comment-radar).
-   Radar defaults to the owner's repositories; `--repo` narrows that scope and
+   Radar defaults to the Director's repositories; `--repo` narrows that scope and
    repeated `--thread` adds full-history reads. Keep Client-agent identities in
    the existing people index. The digest reads current board, sessions, questions,
    radar and live watch output without waiting for the watch process to exit.
