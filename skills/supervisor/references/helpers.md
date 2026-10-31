@@ -1197,6 +1197,8 @@ requires verification, cleanup and the posted comment. Success needs no Supervis
 
 Transcript changes during observation retry within the existing acknowledgement
 or handoff deadline. Stable malformed data and expired deadlines still fail.
+Missing exact merged-PR associations retry within the discovery reader's deadline;
+expiry names the rejected first-parent SHA. Side-branch commits are not landings.
 Verification failures post the failed gate. The existing runner notifies that
 channel on any failed child or stale reconciliation marker, including an
 interrupted run or a helper that cannot start, then keeps the

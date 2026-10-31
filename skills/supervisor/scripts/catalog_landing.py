@@ -362,16 +362,20 @@ def documentation_only(source: Path, landings: list[str]) -> bool:
 
 
 def landing_pull(reader: GitHubReader, repo: str, landing: str) -> int:
-    pulls = reader.paged_json(f"/repos/{repo}/commits/{landing}/pulls", step_prefix="landing_pulls")
-    matches = [
-        pull["number"]
-        for pull in pulls
-        if pull.get("merged_at")
-        and pull.get("merge_commit_sha") == landing
-        and pull.get("base", {}).get("repo", {}).get("full_name") == repo
-    ]
-    require(bool(matches), "discovery", "default-branch commit has no exact merged PR")
-    return max(matches)
+    deadline = reader.deadline_at if reader.deadline_at is not None else time.time() + 120
+    while time.time() < deadline:
+        pulls = reader.paged_json(f"/repos/{repo}/commits/{landing}/pulls", step_prefix="landing_pulls")
+        matches = [
+            pull["number"]
+            for pull in pulls
+            if pull.get("merged_at")
+            and pull.get("merge_commit_sha") == landing
+            and pull.get("base", {}).get("repo", {}).get("full_name") == repo
+        ]
+        if matches:
+            return max(matches)
+        time.sleep(min(2, max(0, deadline - time.time())))
+    raise GateFailed("discovery", f"default-branch commit {landing} has no exact merged PR after discovery deadline")
 
 
 def post_result(config: dict, operation: Operation, result: dict) -> str:

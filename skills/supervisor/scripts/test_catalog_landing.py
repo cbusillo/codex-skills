@@ -72,6 +72,62 @@ class CatalogLandingTests(unittest.TestCase):
             self.assertEqual(post.call_count, 2)
             self.assertEqual(json.loads((self.root / "cursor.json").read_text())["last_sha"], "first")
 
+    def test_merge_squash_and_train_history_retries_delayed_landing_association(self) -> None:
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        tree = landing.git(self.root, "write-tree")
+
+        def commit(subject: str, *parents: str) -> str:
+            return landing.git(self.root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                               "commit-tree", tree, "-m", subject, *[arg for parent in parents for arg in ("-p", parent)])
+
+        previous = commit("previous verified landing")
+        branch = commit("lead fix", previous)
+        branch = commit("lead follow-up", branch)
+        merge = commit("Merge pull request #3223", previous, branch)
+        squash = commit("Direction skill: owed turn (#3221)", merge)
+        squash_merge = commit("Merge pull request #3225", merge, squash)
+        train_branch = commit("product fix", squash_merge)
+        train = commit("Launchplane merge train: merge PR #3229", squash_merge, train_branch)
+        train_merge = commit("Merge pull request #3230", squash_merge, train)
+        self.assertEqual(landing.pending_landings(self.root, previous, train_merge), [merge, squash_merge, train_merge])
+        for sha, number in ((merge, 3223), (squash_merge, 3225), (train_merge, 3230)):
+            elapsed = 0.0
+
+            def advance(seconds: float) -> None:
+                nonlocal elapsed
+                elapsed += seconds
+
+            pull = {"number": number, "merged_at": "merged", "merge_commit_sha": sha,
+                    "base": {"repo": {"full_name": self.config["repo"]}}}
+            with (self.subTest(landing=sha), patch.object(landing.time, "time", side_effect=lambda: elapsed),
+                  patch.object(landing.time, "sleep", side_effect=advance),
+                  patch.object(landing.GitHubReader, "paged_json",
+                               side_effect=[[], [{**pull, "merge_commit_sha": branch}], [pull]]) as read):
+                reader = landing.GitHubReader(deadline_at=10)
+                self.assertEqual(landing.landing_pull(reader, self.config["repo"], sha), number)
+                self.assertEqual(read.call_count, 3)
+                self.assertTrue(all(sha in call.args[0] for call in read.call_args_list))
+
+    def test_unmatched_direct_push_exhausts_discovery_deadline_without_accepting_related_pr(self) -> None:
+        elapsed = 0.0
+
+        def advance(seconds: float) -> None:
+            nonlocal elapsed
+            elapsed += seconds
+
+        unrelated = {"number": 2, "merged_at": "merged", "merge_commit_sha": "other",
+                     "base": {"repo": {"full_name": self.config["repo"]}}}
+        with (patch.object(landing.time, "time", side_effect=lambda: elapsed),
+              patch.object(landing.time, "sleep", side_effect=advance),
+              patch.object(landing.GitHubReader, "paged_json", return_value=[unrelated]) as read):
+            reader = landing.GitHubReader(deadline_at=3)
+            with self.assertRaises(GateFailed) as failure:
+                landing.landing_pull(reader, self.config["repo"], "direct-push")
+            self.assertEqual(failure.exception.gate, "discovery")
+            self.assertIn("direct-push", str(failure.exception))
+            self.assertGreater(read.call_count, 1)
+            self.assertEqual(elapsed, reader.deadline_at)
+
     def test_cleared_service_rechecks_failed_batch_instead_of_replaying_failure(self) -> None:
         config = self.root / "services.json"
         config.write_text(json.dumps({"uv": "/fixture/uv", "services": {"catalog": {
