@@ -474,7 +474,7 @@ class GoalBoardTests(unittest.TestCase):
         self.assertEqual(self.reader.graphql_json.call_args_list[1].args[1]["cursor"], "c1")
 
     def test_pr_handoff_after_first_comment_page_is_read(self) -> None:
-        waiting = comment("Engineering ready; waiting for the Client's acceptance", ident=1)
+        waiting = comment("Engineering ready; waiting for the Client's acceptance")
         ready = comment(f"Ready for the merge train\n\nHead: {HEAD}", at="2026-10-16T11:00:00Z", ident=101)
         pull = pr(100, comments=[waiting])
         pull["comments"]["totalCount"] = 101
@@ -491,7 +491,7 @@ class GoalBoardTests(unittest.TestCase):
 
     def test_incomplete_or_failed_pr_history_stays_unknown(self) -> None:
         ready = comment(f"Ready for the merge train\n\nHead: {HEAD}")
-        for failure in (None, goal_board.github_read.GitHubReadShapeError("missing page")):
+        for failure in (None, ValueError("missing page")):
             with self.subTest(failure=failure):
                 pull = pr(100, comments=[ready])
                 pull["comments"]["totalCount"] = 101
