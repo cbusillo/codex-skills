@@ -6162,7 +6162,7 @@ def _project_lane_status(value: object) -> dict[str, object]:
         if not isinstance(values, list):
             raise LaunchplaneSafetyError("invalid_response")
         texts = [public_service_text(value, max_length=16000) for value in values]
-        redacted |= texts != [" ".join(value.split()) for value in values]
+        redacted |= texts != [" ".join(str(value).split()) for value in values]
         projected[field] = texts[0] if field == "description" else texts
     projected["text_redacted"] = redacted
     return projected
@@ -6178,7 +6178,7 @@ def _project_product_status(product: dict[str, Any]) -> dict[str, object]:
         lanes.append({"environment": public_identifier(lane.get("environment")), **_project_lane_status(lane.get("lane_status"))})
     product_warnings = [public_service_text(value, max_length=16000) for value in warnings]
     return {"product": public_identifier(product.get("product")), "lanes": lanes, "warnings": product_warnings,
-            "warning_text_redacted": product_warnings != [" ".join(value.split()) for value in warnings]}
+            "warning_text_redacted": product_warnings != [" ".join(str(value).split()) for value in warnings]}
 
 
 def summarize_product_status_read(*, request: dict[str, object], provider_payload: dict[str, Any]) -> dict[str, object]:
@@ -11950,7 +11950,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     for argument in ("--product", "--context", "--instance"):
         testing_hold_read.add_argument(argument, required=True)
 
-    product_status_read = subparsers.add_parser("product-status-read", help="Read every lane's service-computed Product Ops sidebar tone, reasons and product warnings.")
+    subparsers.add_parser("product-status-read", help="Read every lane's service-computed Product Ops sidebar tone, reasons and product warnings.")
 
     product_environment_read = subparsers.add_parser(
         "product-environment-read",
