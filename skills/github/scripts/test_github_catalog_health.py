@@ -58,25 +58,6 @@ class HealthTests(unittest.TestCase):
             self.assertEqual(fields["behind"], "unknown")
             self.assertNotIn(str(root), json.dumps(fields))
 
-    def test_hooks_require_both_catalog_bindings_and_not_disabled(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            path = root / "settings.json"
-            hooks = {
-                event: [{"hooks": [{"command": f"uv run {root}/hooks/{script}"}]}]
-                for event, script in [
-                    ("PreToolUse", "command_policy_hook.py"),
-                    ("SessionStart", "direction_check_hook.py"),
-                ]
-            }
-            path.write_text(json.dumps({"hooks": hooks}))
-            self.assertEqual(health.hooks_status(path, root), "pass")
-            path.write_text(json.dumps({"hooks": hooks, "disableAllHooks": True}))
-            self.assertEqual(health.hooks_status(path, root), "fail")
-            hooks.pop("PreToolUse")
-            path.write_text(json.dumps({"hooks": hooks}))
-            self.assertEqual(health.hooks_status(path, root), "fail")
-
     def test_supported_plugin_and_inline_codex_installations(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "catalog"
@@ -118,9 +99,48 @@ class HealthTests(unittest.TestCase):
             root = Path(temporary)
             (root / ".local").mkdir()
             (root / ".local/catalog-install.json").write_text(json.dumps({"health_status": True}))
-            (root / ".local/catalog-install.health.tmp").mkdir()
-            with mock.patch.object(health, "self_check", return_value={}):
+            with (
+                mock.patch.object(health, "self_check", return_value={}),
+                mock.patch.object(health, "write_locked_installation", side_effect=OSError),
+            ):
                 self.assertFalse(health.refresh_health(root))
+            with mock.patch.object(health, "self_check", side_effect=RuntimeError):
+                self.assertFalse(health.refresh_health(root))
+            with mock.patch.object(health, "catalog_version", return_value="a" * 40):
+                (root / ".local/catalog-install.json").write_text(
+                    json.dumps({"health_status": True, "health": {**fields, "catalog": "a" * 40}})
+                )
+                self.assertIn("updater=unknown", health.marker_fields(root))
+
+    def test_codex_mixed_sources_and_indexed_disabled_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            json_path, config_path = root / "hooks.json", root / "config.toml"
+            json_path.write_text(
+                json.dumps({"hooks": {"PreToolUse": [{"hooks": [{"command": f"uv run {root}/hooks/command_policy_hook.py"}]}]}})
+            )
+            inline = f'[[hooks.SessionStart]]\n[[hooks.SessionStart.hooks]]\ncommand="uv run {root}/hooks/direction_check_hook.py"\n'
+            config_path.write_text(inline)
+            self.assertEqual(health.installed_hooks(root, root, "codex"), "pass")
+            config_path.write_text(inline + f'[hooks.state."{json_path}:pre_tool_use:0:0"]\nenabled=false\n')
+            self.assertEqual(health.installed_hooks(root, root, "codex"), "fail")
+            config_path.write_text(inline)
+            json_path.unlink()
+            self.assertEqual(health.installed_hooks(root, root, "codex"), "fail")
+            json_path.write_text("invalid")
+            self.assertEqual(health.installed_hooks(root, root, "codex"), "unknown")
+
+    def test_reader_retains_the_historical_observation(self) -> None:
+        checked = str(int((dt.datetime.now(dt.UTC) - dt.timedelta(days=2)).timestamp()))
+        row = {
+            "user": {"login": "fixture"},
+            "created_at": "2026-10-29T00:00:00Z",
+            "body": f"<!-- github-skill-operation:abc catalog={'a' * 40} updater=pass checked={checked} -->",
+        }
+        report = health.latest_status([row])[0]
+        self.assertEqual(report["status"]["updater"], "pass")
+        self.assertEqual(report["status"]["checked"], checked)
+        self.assertEqual(report["created_at"], row["created_at"])
 
     def test_reader_pagination_bounds_and_malformed_response(self) -> None:
         row = {"user": {"login": "fixture"}, "body": "", "created_at": "2026-10-31"}

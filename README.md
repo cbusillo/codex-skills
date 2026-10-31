@@ -1483,9 +1483,9 @@ GitHub write helpers include the catalog commit in their existing hidden
 Health sharing stays off until the Director requests it. Run
 `uv run scripts/install-catalog.py --write --health-status` to enable it or
 `--no-health-status` to decline or disable it. Preview without `--write` changes
-nothing. Installation and updates preserve the choice. The installer suggests
-sharing; the updater also delivers its suggestion once through the next healthy
-session startup. Agents relay the choice to their Director.
+nothing. Installation and updates preserve the choice. The installer and updater suggest sharing. Healthy session startups repeat the
+suggestion until the Director records a choice, so a headless session cannot
+consume it. Agents relay the choice to their Director.
 
 Opt-in checks run at installation/update and reuse the local installation receipt.
 Public fields contain only status codes (`pass`, `fail`, `unknown`), harness
@@ -1493,12 +1493,12 @@ versions, commits behind locally known `origin/main`, and a Unix check time.
 Hook codes describe installed registrations, including Claude's bound plugin and
 Codex JSON or inline definitions. They do not prove execution or native trust;
 `approval` remains unknown. Updater success requires a loaded launchd job and a
-successful update within 12 hours. Writer and reader downgrade checks older than
-12 hours to unknown. Optional diagnostics cannot fail an installation or update.
+successful update within 12 hours. The writer downgrades checks older than 12 hours to unknown. Optional diagnostics cannot fail an installation or update.
 
 Read recent conversation comments with
 `uv run skills/github/scripts/github_catalog_health.py --repo OWNER/REPO`.
-It shows each self-reporting author's latest marker and source link, without
+It shows each self-reporting author's latest historical observation, date and
+source link, without
 carrying older health forward after a version-only marker. The default scan reads
 up to 300 comments; `--pages 1..10` adjusts the bound and output names omissions.
 It excludes issue/PR bodies and review comments. Shared bots cannot identify

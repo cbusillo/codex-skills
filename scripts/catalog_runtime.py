@@ -103,7 +103,7 @@ def write_receipt(root: Path, record: dict) -> None:
     staged.replace(receipt)
 
 
-def observe_checkout(root: Path, state: dict, now: dt.datetime, *, consume_health_notice: bool = False) -> dict:
+def observe_checkout(root: Path, state: dict, now: dt.datetime) -> dict:
     """Record startup observations without pretending to have checked origin."""
     receipt = root / ".local" / "catalog-update.json"
     with update_lock_path(root).open("a") as lock:
@@ -116,9 +116,6 @@ def observe_checkout(root: Path, state: dict, now: dt.datetime, *, consume_healt
         if not isinstance(record, dict):
             raise ValueError("invalid update receipt")
         previous = record.copy()
-        show_health_notice = consume_health_notice and state["state"] == "current" and bool(record.pop("health_notice_pending", False))
-        if show_health_notice:
-            record["health_notice_shown"] = True
         since = blocked_since(record, now)
         record["checkout_state"] = state["state"]
         if state["state"] == "blocked":
@@ -127,7 +124,7 @@ def observe_checkout(root: Path, state: dict, now: dt.datetime, *, consume_healt
             record.pop("blocked_since", None)
         if record != previous:
             write_receipt(root, record)
-        return {**record, "show_health_notice": show_health_notice}
+        return record
 
 
 def preview_instructions(arguments: list[str]) -> dict:
@@ -268,10 +265,7 @@ def status_line(root: Path, *, observe: bool = False) -> str:
                 if warning:
                     state = {"state": "stale", "reason": warning}
         if state["state"] == "current":
-            if observe and installation and installation.get("health_status") is None:
-                if observe_checkout(root, state, now, consume_health_notice=True).get("show_health_notice"):
-                    return github_catalog_health.health_notice(False)
-            return ""
+            return github_catalog_health.health_notice(False) if observe and installation and installation.get("health_status") is None else ""
         return f"Catalog {state['state']}: {state['reason']} ({root})."
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
         return f"Catalog blocked: could not read checkout/update state ({root})."
@@ -341,11 +335,6 @@ def update(root: Path) -> dict:
             warning = blocked_notice(root, state, since, now)
             if warning:
                 state["warning"] = warning
-        installation = github_catalog_health.read_record(root / ".local/catalog-install.json")
-        if isinstance(previous, dict) and previous.get("health_notice_shown"):
-            state["health_notice_shown"] = True
-        elif installation and installation.get("health_status") is None:
-            state["health_notice_pending"] = True
         write_receipt(root, state)
         state["health_check"] = "complete" if github_catalog_health.refresh_health(root) else "unknown"
         state["health_notice"] = github_catalog_health.health_notice(github_catalog_health.health_enabled(github_catalog_health.read_record(root / ".local/catalog-install.json")))

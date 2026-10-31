@@ -335,20 +335,22 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             path.symlink_to(target, target_is_directory=True)
         outputs = sync.synchronize_instructions(content, destinations, write=True, refresh_targets=refresh_targets)
         sync.synchronize(base, [ROOT / ".local" / "catalog-global-source.md"], write=True)
-        scheduled = updater or (previous_installation.get("scheduled_updater", False) and launch_path.is_file())
-        scheduled_at = previous_installation.get("scheduled_at") if previous_installation.get("scheduled_updater") and launch_path.is_file() else None
-        if scheduled and not scheduled_at:
-            scheduled_at = dt.datetime.now(dt.timezone.utc).isoformat()
-        installation = json.dumps({"home": str(home), "codex": str(codex), "claude": str(claude),
-                                   "health_status": previous_installation.get("health_status") if health_status is None else health_status,
+        with github_catalog_health.installation_lock(ROOT):
+            current_installation = github_catalog_health.read_record(installation_path)
+            scheduled = updater or (current_installation.get("scheduled_updater", False) and launch_path.is_file())
+            scheduled_at = current_installation.get("scheduled_at") if current_installation.get("scheduled_updater") and launch_path.is_file() else None
+            if scheduled and not scheduled_at:
+                scheduled_at = dt.datetime.now(dt.timezone.utc).isoformat()
+            installation = {"home": str(home), "codex": str(codex), "claude": str(claude),
+                                   "health_status": current_installation.get("health_status") if health_status is None else health_status,
                                    "scheduled_updater": scheduled, "scheduled_at": scheduled_at,
                                    "updater_plist": str(launch_path) if scheduled else None,
                                    "instruction_hashes": {entry["path"]: entry["sha256"] for entry in outputs},
                                    "generated_instruction_hashes": {entry["path"]: entry["sha256"] for entry in outputs
                                         if entry["state"] in ("written", "current")
                                         and (Path(entry["path"]).resolve() not in preserved_targets
-                                             or Path(entry["path"]).resolve() in refresh_targets)}}, indent=2) + "\n"
-        sync.synchronize(installation, [installation_path], write=True)
+                                             or Path(entry["path"]).resolve() in refresh_targets)}}
+            github_catalog_health.write_locked_installation(ROOT, installation)
         if hook_outputs:
             outputs += sync.write_codex_hooks(hook_outputs, codex, catalog=ROOT)
         elif refresh_instructions:

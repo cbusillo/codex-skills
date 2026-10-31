@@ -7,20 +7,27 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import json
+import logging
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import tomllib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+_logger = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[3]
 UPDATER_LABEL = "com.codex-skills.catalog-update"
 MARKER = re.compile(r"<!-- github-skill-operation:([0-9a-f]+)(?: ([^<>\r\n]*))? -->")
 STATUS_KEYS = {"codex_hooks", "claude_hooks", "approval", "updater"}
 VERSION_KEYS = {"codex", "claude"}
+HOOK_SCRIPTS = (("PreToolUse", "command_policy_hook.py"), ("SessionStart", "direction_check_hook.py"))
 
 
 def read_record(path: Path) -> dict[str, Any]:
@@ -94,10 +101,7 @@ def hooks_status(path: Path, root: Path, settings: dict[str, Any] | None = None)
     groups = settings.get("hooks", {})
     if not isinstance(groups, dict):
         return "unknown"
-    for event, script in (
-        ("PreToolUse", "command_policy_hook.py"),
-        ("SessionStart", "direction_check_hook.py"),
-    ):
+    for event, script in HOOK_SCRIPTS:
         handlers = groups.get(event, [])
         if not isinstance(handlers, list):
             return "unknown"
@@ -130,19 +134,62 @@ def installed_hooks(root: Path, directory: Path, harness: str) -> str:
         if plugin and (directory / "skills/shared").resolve() == root.resolve():
             return hooks_status(root / "hooks/hooks.json", root)
         return "unknown"
+    return codex_hooks(root, directory)
+
+
+def disabled_handler(states: dict[str, Any], source: Path, event: str, group: int, handler: int) -> bool:
+    event_key = re.sub(r"(?<!^)(?=[A-Z])", "_", event).lower()
+    suffix = f":{event_key}:{group}:{handler}"
+    return any(
+        isinstance(key, str)
+        and key.endswith(suffix)
+        and isinstance(state, dict)
+        and state.get("enabled") is False
+        and Path(key[: -len(suffix)]).resolve() == source.resolve()
+        for key, state in states.items()
+    )
+
+
+def codex_hooks(root: Path, directory: Path) -> str:
+    config_path, json_path = directory / "config.toml", directory / "hooks.json"
     try:
-        config_path = directory / "config.toml"
         config = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
+        registered = json.loads(json_path.read_text()) if json_path.exists() else {}
     except (OSError, ValueError):
         return "unknown"
     features = config.get("features", {})
-    if not isinstance(features, dict):
+    if not isinstance(features, dict) or not isinstance(registered, dict):
         return "unknown"
     if features.get("hooks") is False:
         return "fail"
-    inline = hooks_status(config_path, root, config)
-    registered = hooks_status(directory / "hooks.json", root)
-    return "pass" if "pass" in {inline, registered} else "unknown"
+    inline = config.get("hooks", {})
+    groups = registered.get("hooks", {})
+    if not isinstance(inline, dict) or not isinstance(groups, dict):
+        return "unknown"
+    states = inline.get("state", {})
+    if not isinstance(states, dict):
+        return "unknown"
+    for event, script in HOOK_SCRIPTS:
+        enabled = False
+        for source, definitions in ((config_path, inline), (json_path, groups)):
+            handlers = definitions.get(event, [])
+            if not isinstance(handlers, list):
+                return "unknown"
+            for group_index, group in enumerate(handlers):
+                if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+                    return "unknown"
+                for handler_index, handler in enumerate(group["hooks"]):
+                    if (
+                        isinstance(handler, dict)
+                        and handler.get("enabled") is not False
+                        and str(root) in str(handler.get("command", ""))
+                        and script in str(handler.get("command", ""))
+                        and not disabled_handler(states, source, event, group_index, handler_index)
+                    ):
+                        enabled = True
+        if not enabled:
+            return "fail"
+    return "pass"
 
 
 def self_check(root: Path, installation: dict[str, Any]) -> dict[str, str]:
@@ -192,18 +239,44 @@ def self_check(root: Path, installation: dict[str, Any]) -> dict[str, str]:
     return safe_fields(fields)
 
 
+@contextmanager
+def installation_lock(root: Path) -> Iterator[None]:
+    local = root / ".local"
+    local.mkdir(parents=True, exist_ok=True)
+    with (local / "catalog-install.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def write_locked_installation(root: Path, record: dict[str, Any]) -> None:
+    destination = root / ".local/catalog-install.json"
+    if destination.is_symlink():
+        raise OSError("Installation receipt is a symlink")
+    with tempfile.NamedTemporaryFile(mode="w", dir=destination.parent, prefix=".catalog-install-", delete=False) as stream:
+        staged = Path(stream.name)
+        try:
+            stream.write(json.dumps(record, indent=2) + "\n")
+            stream.close()
+            staged.replace(destination)
+        finally:
+            staged.unlink(missing_ok=True)
+
+
 def refresh_health(root: Path) -> bool:
-    path = root / ".local/catalog-install.json"
-    installation = read_record(path)
-    if not health_enabled(installation):
-        return True
     try:
-        installation["health"] = self_check(root, installation)
-        staged = path.with_suffix(".health.tmp")
-        staged.write_text(json.dumps(installation, indent=2) + "\n")
-        staged.replace(path)
+        path = root / ".local/catalog-install.json"
+        installation = read_record(path)
+        if not health_enabled(installation):
+            return True
+        snapshot = self_check(root, installation)
+        with installation_lock(root):
+            current = read_record(path)
+            if current != installation or not health_enabled(current):
+                return True
+            write_locked_installation(root, {**current, "health": snapshot})
         return True
-    except OSError:
+    except Exception:
+        _logger.debug("Optional catalog health check unavailable", exc_info=True)
         return False
 
 
@@ -231,7 +304,7 @@ def latest_status(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "author": author,
             "created_at": comment.get("created_at"),
             "url": comment.get("html_url"),
-            "status": observed_fields(fields) or {"catalog": "unknown"},
+            "status": safe_fields(fields) or {"catalog": "unknown"},
         }
     return list(latest.values())
 
