@@ -320,6 +320,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
                 raise ValueError("Existing loaded launchd job preserved; inspect it with launchctl print and unload your old job before enabling this checkout's updater")
     # Native MCP inspection starts health-check children; validate the updater
     # first so a rejected updater does not touch Chrome's native cache/state.
+    health_refreshed = True
     chrome_plan = None if refresh_instructions else chrome_mcp.prepare(ROOT, home, claude)
     chrome_outputs = [{"path": str(entry["path"]), "state": entry["state"]}
                       for entry in chrome_plan["entries"]] if chrome_plan else []
@@ -339,7 +340,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
         if scheduled and not scheduled_at:
             scheduled_at = dt.datetime.now(dt.timezone.utc).isoformat()
         installation = json.dumps({"home": str(home), "codex": str(codex), "claude": str(claude),
-                                   "health_status": previous_installation.get("health_status", False) if health_status is None else health_status,
+                                   "health_status": previous_installation.get("health_status") if health_status is None else health_status,
                                    "scheduled_updater": scheduled, "scheduled_at": scheduled_at,
                                    "updater_plist": str(launch_path) if scheduled else None,
                                    "instruction_hashes": {entry["path"]: entry["sha256"] for entry in outputs},
@@ -370,7 +371,8 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
                     subprocess.run(["launchctl", "bootstrap", domain, str(launch_path)], check=True)
                 except subprocess.CalledProcessError as error:
                     raise ValueError("Catalog installed; scheduled updater activation failed. Rerun --write --updater from a logged-in GUI session") from error
-        github_catalog_health.refresh_health(ROOT)
+        if not refresh_instructions:
+            health_refreshed = github_catalog_health.refresh_health(ROOT)
     else:
         outputs = instruction_preview + hook_preview
     # Avoid printing private instruction text/diffs in the normal install output.
@@ -385,6 +387,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
             "disabled_migrated_handlers": hook_outputs.disabled_migrated_handlers if hook_outputs else [],
             "codex_hook_setup": "skipped; existing definitions unchanged" if skip_codex_hooks else "alert retirement evaluated" if refresh_instructions else "prepared",
             "hook_trust": sync.HOOK_TRUST_NOTICE,
+            "health_check": "complete" if health_refreshed else "unknown",
             "health_notice": github_catalog_health.health_notice(previous_installation.get("health_status", False) if health_status is None or not write else health_status)}
 
 

@@ -1507,8 +1507,7 @@ def generic_close_fixture(*, reject_labels: bool | str = False, verified_checkou
             if command == ["git", "remote", "get-url", "origin"]:
                 return subprocess.CompletedProcess(command, 0, "https://github.com/owner/repo.git", "")
             raise AssertionError((command, kwargs))
-        with patch.object(github_api.github_catalog_health, "catalog_version", return_value="unknown"), \
-                patch.object(subprocess, "run", git), \
+        with patch.object(subprocess, "run", git), \
                 patch.object(github_issue.github_identity, "acts_as_own_user", return_value=False), \
                 patch.object(github_issue.github_identity, "active_auth_fallback_allowed", return_value=False):
             yield callback, records, comments, state_writes, comment_writes

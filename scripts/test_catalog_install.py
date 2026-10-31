@@ -79,12 +79,18 @@ class InstallTests(unittest.TestCase):
             installer.install(self.home, self.codex, self.claude, write=True, updater=False, health_status=True)
             self.assertEqual(check.call_count, 1)
             installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
-            self.assertEqual(check.call_count, 2)
+            self.assertEqual(check.call_count, 1)
             installer.install(self.home, self.codex, self.claude, write=True, updater=False, health_status=False)
-            self.assertEqual(check.call_count, 2)
+            self.assertEqual(check.call_count, 1)
             record = json.loads((self.catalog / ".local/catalog-install.json").read_text())
             self.assertFalse(record["health_status"])
             self.assertNotIn("health", record)
+
+    def test_optional_health_failure_does_not_fail_installation(self) -> None:
+        with mock.patch.object(installer.github_catalog_health, "refresh_health", return_value=False):
+            result = self.install()
+        self.assertEqual(result["health_check"], "unknown")
+        self.assertTrue((self.catalog / ".local/catalog-install.json").exists())
 
     @staticmethod
     def legacy_alerts():
@@ -1460,6 +1466,22 @@ class UpdateTests(unittest.TestCase):
         self.assertIn(diagnostic, result["reason"])
         self.assertIn(diagnostic, runtime.status_line(self.checkout))
 
+    def test_updater_health_suggestion_reaches_startup_once(self) -> None:
+        local = self.checkout / ".local"
+        local.mkdir()
+        (local / "catalog-install.json").write_text(json.dumps({"health_status": None}))
+        (local / "catalog-update.json").write_text(json.dumps({"state": "current", "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(), "health_notice_pending": True}))
+        with mock.patch.object(runtime, "instruction_warning", return_value=""):
+            self.assertTrue(runtime.status_line(self.checkout, observe=True))
+            self.assertEqual(runtime.status_line(self.checkout, observe=True), "")
+        self.assertTrue(json.loads((local / "catalog-update.json").read_text())["health_notice_shown"])
+
+    def test_health_failure_keeps_successful_update_current(self) -> None:
+        with mock.patch.object(runtime.github_catalog_health, "refresh_health", return_value=False):
+            result = runtime.update(self.checkout)
+        self.assertEqual(result["state"], "current")
+        self.assertEqual(result["health_check"], "unknown")
+
     def test_clean_main_fast_forwards_and_status_goes_quiet(self):
         self.advance()
         command("git", "fetch", "-q", "origin", cwd=self.checkout)
@@ -1471,7 +1493,7 @@ class UpdateTests(unittest.TestCase):
 
     def test_landing_after_startup_does_not_report_inflight_instruction_refresh_as_stale(self) -> None:
         home = self.base / "home"
-        installation = {"home": str(home), "codex": str(home / ".codex"), "claude": str(home / ".claude")}
+        installation = {"health_status": False, "home": str(home), "codex": str(home / ".codex"), "claude": str(home / ".claude")}
         local = self.checkout / ".local"
         local.mkdir()
         (local / "catalog-install.json").write_text(json.dumps(installation))

@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import io
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,6 +27,7 @@ class HealthTests(unittest.TestCase):
             snapshot = {
                 "catalog": "a" * 40,
                 "updater": "fail",
+                "checked": str(int(dt.datetime.now(dt.UTC).timestamp())),
                 "private": "/secret/home",
                 "codex": "private-name",
                 "behind": "12",
@@ -73,6 +76,78 @@ class HealthTests(unittest.TestCase):
             hooks.pop("PreToolUse")
             path.write_text(json.dumps({"hooks": hooks}))
             self.assertEqual(health.hooks_status(path, root), "fail")
+
+    def test_supported_plugin_and_inline_codex_installations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "catalog"
+            claude = Path(temporary) / "claude"
+            root.mkdir()
+            (root / ".claude-plugin").mkdir()
+            (root / ".claude-plugin/plugin.json").write_text(json.dumps({"name": "fixture"}))
+            (root / "hooks").mkdir()
+            source = Path(__file__).resolve().parents[3] / "hooks/hooks.json"
+            (root / "hooks/hooks.json").write_bytes(source.read_bytes())
+            (claude / "skills").mkdir(parents=True)
+            (claude / "skills/shared").symlink_to(root, target_is_directory=True)
+            self.assertEqual(health.installed_hooks(root, claude, "claude"), "pass")
+            (claude / "settings.json").write_text(json.dumps({"enabledPlugins": {"fixture@skills-dir": False}}))
+            self.assertEqual(health.installed_hooks(root, claude, "claude"), "fail")
+            config = claude / "config.toml"
+            config.write_text(
+                "".join(
+                    f'[[hooks.{event}]]\n[[hooks.{event}.hooks]]\ncommand="uv run {root}/hooks/{script}"\n'
+                    for event, script in (("PreToolUse", "command_policy_hook.py"), ("SessionStart", "direction_check_hook.py"))
+                )
+            )
+            self.assertEqual(health.installed_hooks(root, claude, "codex"), "pass")
+            config.write_text(config.read_text() + "[features]\nhooks=false\n")
+            self.assertEqual(health.installed_hooks(root, claude, "codex"), "fail")
+
+    def test_old_snapshots_and_optional_write_failure(self) -> None:
+        fields = {
+            "checked": str(int((dt.datetime.now(dt.UTC) - dt.timedelta(days=2)).timestamp())),
+            "updater": "pass",
+            "codex_hooks": "pass",
+            "behind": "0",
+        }
+        observed = health.observed_fields(fields)
+        self.assertEqual(observed["updater"], "unknown")
+        self.assertEqual(observed["codex_hooks"], "unknown")
+        self.assertEqual(observed["behind"], "unknown")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / ".local").mkdir()
+            (root / ".local/catalog-install.json").write_text(json.dumps({"health_status": True}))
+            (root / ".local/catalog-install.health.tmp").mkdir()
+            with mock.patch.object(health, "self_check", return_value={}):
+                self.assertFalse(health.refresh_health(root))
+
+    def test_reader_pagination_bounds_and_malformed_response(self) -> None:
+        row = {"user": {"login": "fixture"}, "body": "", "created_at": "2026-10-31"}
+        responses = [subprocess.CompletedProcess([], 0, json.dumps([row] * count), "") for count in (100, 1)]
+        with (
+            mock.patch.object(health.sys, "argv", ["reader", "--repo", "fixture/repo", "--pages", "2"]),
+            mock.patch.object(health.subprocess, "run", side_effect=responses) as request,
+            mock.patch("sys.stdout", new_callable=io.StringIO) as stream,
+        ):
+            self.assertEqual(health.main(), 0)
+            report = json.loads(stream.getvalue())
+            self.assertEqual(report["comments_read"], 101)
+            self.assertFalse(report["older_comments_omitted"])
+            self.assertEqual(request.call_count, 2)
+        with (
+            mock.patch.object(health.sys, "argv", ["reader", "--repo", "fixture/repo", "--pages", "1"]),
+            mock.patch.object(health.subprocess, "run", return_value=responses[0]),
+            mock.patch("sys.stdout", new_callable=io.StringIO) as stream,
+        ):
+            health.main()
+            self.assertTrue(json.loads(stream.getvalue())["older_comments_omitted"])
+        with (
+            mock.patch.object(health.sys, "argv", ["reader", "--repo", "fixture/repo"]),
+            mock.patch.object(health.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "invalid", "")),
+        ):
+            with self.assertRaises(SystemExit):
+                health.main()
 
     def test_updater_requires_recent_success(self) -> None:
         with (

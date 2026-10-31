@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -71,12 +72,23 @@ def marker_fields(root: Path = ROOT) -> str:
     if health_enabled(installation):
         snapshot = installation.get("health", {})
         if isinstance(snapshot, dict) and snapshot.get("catalog") == version:
-            fields.update(safe_fields(snapshot))
+            fields.update(observed_fields(snapshot))
     return " ".join(f"{key}={value}" for key, value in fields.items())
 
 
-def hooks_status(path: Path, root: Path) -> str:
-    settings = read_record(path)
+def observed_fields(snapshot: dict[str, Any]) -> dict[str, str]:
+    fields = safe_fields(snapshot)
+    try:
+        age = dt.datetime.now(dt.UTC).timestamp() - int(fields["checked"])
+        if 0 <= age < dt.timedelta(hours=12).total_seconds():
+            return fields
+    except (KeyError, ValueError):
+        pass
+    return {key: "unknown" if key in STATUS_KEYS | {"behind"} else value for key, value in fields.items()}
+
+
+def hooks_status(path: Path, root: Path, settings: dict[str, Any] | None = None) -> str:
+    settings = read_record(path) if settings is None else settings
     if settings.get("disableAllHooks"):
         return "fail"
     groups = settings.get("hooks", {})
@@ -95,7 +107,10 @@ def hooks_status(path: Path, root: Path) -> str:
             and any(
                 isinstance(handler, dict)
                 and handler.get("enabled") is not False
-                and str(root) in str(handler.get("command", ""))
+                and (
+                    str(root) in str(handler.get("command", ""))
+                    or (path == root / "hooks/hooks.json" and "${CLAUDE_PLUGIN_ROOT}" in str(handler.get("command", "")))
+                )
                 and script in str(handler.get("command", ""))
                 for handler in group["hooks"]
             )
@@ -103,6 +118,31 @@ def hooks_status(path: Path, root: Path) -> str:
         ):
             return "fail"
     return "pass"
+
+
+def installed_hooks(root: Path, directory: Path, harness: str) -> str:
+    if harness == "claude":
+        settings = read_record(directory / "settings.json")
+        plugin = read_record(root / ".claude-plugin/plugin.json").get("name")
+        enabled = settings.get("enabledPlugins", {})
+        if settings.get("disableAllHooks") or (isinstance(enabled, dict) and enabled.get(f"{plugin}@skills-dir") is False):
+            return "fail"
+        if plugin and (directory / "skills/shared").resolve() == root.resolve():
+            return hooks_status(root / "hooks/hooks.json", root)
+        return "unknown"
+    try:
+        config_path = directory / "config.toml"
+        config = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
+    except (OSError, ValueError):
+        return "unknown"
+    features = config.get("features", {})
+    if not isinstance(features, dict):
+        return "unknown"
+    if features.get("hooks") is False:
+        return "fail"
+    inline = hooks_status(config_path, root, config)
+    registered = hooks_status(directory / "hooks.json", root)
+    return "pass" if "pass" in {inline, registered} else "unknown"
 
 
 def self_check(root: Path, installation: dict[str, Any]) -> dict[str, str]:
@@ -115,9 +155,9 @@ def self_check(root: Path, installation: dict[str, Any]) -> dict[str, str]:
     for harness in VERSION_KEYS:
         match = re.search(r"\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?\b", output([harness, "--version"]))
         fields[harness] = match[0] if match else "unknown"
-    for harness, filename in (("codex", "hooks.json"), ("claude", "settings.json")):
+    for harness in VERSION_KEYS:
         directory = installation.get(harness)
-        fields[f"{harness}_hooks"] = hooks_status(Path(directory) / filename, root) if isinstance(directory, str) else "unknown"
+        fields[f"{harness}_hooks"] = installed_hooks(root, Path(directory), harness) if isinstance(directory, str) else "unknown"
     behind = output(
         [
             "git",
@@ -152,15 +192,19 @@ def self_check(root: Path, installation: dict[str, Any]) -> dict[str, str]:
     return safe_fields(fields)
 
 
-def refresh_health(root: Path) -> None:
+def refresh_health(root: Path) -> bool:
     path = root / ".local/catalog-install.json"
     installation = read_record(path)
     if not health_enabled(installation):
-        return
-    installation["health"] = self_check(root, installation)
-    staged = path.with_suffix(".health.tmp")
-    staged.write_text(json.dumps(installation, indent=2) + "\n")
-    staged.replace(path)
+        return True
+    try:
+        installation["health"] = self_check(root, installation)
+        staged = path.with_suffix(".health.tmp")
+        staged.write_text(json.dumps(installation, indent=2) + "\n")
+        staged.replace(path)
+        return True
+    except OSError:
+        return False
 
 
 def health_notice(enabled: bool) -> str:
@@ -169,7 +213,7 @@ def health_notice(enabled: bool) -> str:
     return (
         "Catalog health sharing is off. Consider turning it on so maintainers can suggest fixes for your setup. "
         "It shares only status codes and versions in public GitHub comments. "
-        "Your Director can enable it with scripts/install-catalog.py --write --health-status; disable with --no-health-status."
+        "Tell your Director about this choice; enable it only at their request. Your Director can enable it with scripts/install-catalog.py --write --health-status; disable with --no-health-status."
     )
 
 
@@ -187,7 +231,7 @@ def latest_status(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "author": author,
             "created_at": comment.get("created_at"),
             "url": comment.get("html_url"),
-            "status": safe_fields(fields) or {"catalog": "unknown"},
+            "status": observed_fields(fields) or {"catalog": "unknown"},
         }
     return list(latest.values())
 
@@ -216,7 +260,10 @@ def main() -> int:
         )
         if result.returncode:
             raise SystemExit("Could not read recent comments; coverage unknown")
-        rows = json.loads(result.stdout)
+        try:
+            rows = json.loads(result.stdout)
+        except ValueError:
+            raise SystemExit("Invalid comments response; coverage unknown") from None
         if not isinstance(rows, list):
             raise SystemExit("Invalid comments response; coverage unknown")
         comments.extend(rows)
@@ -230,7 +277,7 @@ def main() -> int:
                 "comments_read": len(comments),
                 "older_comments_omitted": truncated,
                 "directors": latest_status(comments),
-                "identity": "comment authors; shared bot accounts do not identify individual Directors",
+                "identity": "self-reported comment authors; shared bot accounts do not identify individual Directors",
             },
             indent=2,
         )
