@@ -20,29 +20,28 @@ class CatalogLandingTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.config: dict[str, Any] = {
-            "repo": "owner/catalog",
-            "issue": 1,
-            "source_worktree": str(self.root),
-            "failure_argv": ["existing-sender"],
-        }
+        self.config: dict[str, Any] = {"repo": "owner/catalog", "issue": 1, "source_worktree": str(self.root)}
+        runtime = patch.object(Operation, "run", return_value={"status": "already_current", "after_sha": "tip"})
+        runtime.start()
+        self.addCleanup(runtime.stop)
 
     def test_discovery_preserves_first_parent_order_and_refuses_missing_cursor(self) -> None:
-        with patch.object(landing, "git", side_effect=["", "tip", "tip\nbatch\nprevious\nolder"]):
-            self.assertEqual(landing.pending_landings(self.root, "previous"), ["batch", "tip"])
-        with patch.object(landing, "git", side_effect=["", "tip", "tip\nother"]):
-            with self.assertRaises(GateFailed):
-                landing.pending_landings(self.root, "previous")
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        commits = []
+        for number in range(3):
+            subprocess.run(["git", "-C", str(self.root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                            "commit", "-q", "--allow-empty", "-m", str(number)], check=True)
+            commits.append(landing.git(self.root, "rev-parse", "HEAD"))
+        self.assertEqual(landing.pending_landings(self.root, commits[0], commits[-1]), commits[1:])
+        with self.assertRaises(GateFailed):
+            landing.pending_landings(self.root, "absent", commits[-1])
 
     def test_interrupted_bootstrap_retains_its_landing_and_posts_before_advancing(self) -> None:
-        with (
-            patch.object(landing, "pending_landings", return_value=["first"]) as discover,
-            patch.object(landing, "landing_pull", return_value=2),
-            patch.object(landing, "git", return_value="script.py"),
-            patch.object(landing, "verify", return_value={"ok": True, "runtime_sha": "tip"}) as verify,
-            patch.object(landing, "post_result", side_effect=[GateFailed("report", "interrupted"), "comment"]) as post,
-            patch.object(landing, "alert_failure"),
-        ):
+        with (patch.object(landing, "pending_landings", return_value=["first"]) as discover,
+              patch.object(landing, "landing_pull", return_value=2),
+              patch.object(landing, "git", return_value="script.py"),
+              patch.object(landing, "verify", return_value={"ok": True, "runtime_sha": "tip"}) as verify,
+              patch.object(landing, "post_result", side_effect=[GateFailed("report", "interrupted"), "comment"]) as post):
             with self.assertRaises(GateFailed):
                 landing.poll(self.config, self.root)
             self.assertIsNone(json.loads((self.root / "cursor.json").read_text())["last_sha"])
@@ -52,73 +51,50 @@ class CatalogLandingTests(unittest.TestCase):
             self.assertEqual(post.call_count, 2)
             self.assertEqual(json.loads((self.root / "cursor.json").read_text())["last_sha"], "first")
 
-    def test_failed_harness_alerts_and_resumes_same_journal_only_on_explicit_recovery(self) -> None:
-        with (
-            patch.object(landing, "pending_landings", return_value=["first", "second"]),
-            patch.object(landing, "landing_pull", return_value=2),
-            patch.object(landing, "git", return_value="script.py"),
-            patch.object(landing, "verify", side_effect=[{"ok": False, "gate": "smoke"}, {"ok": True}, {"ok": True}]) as verify,
-            patch.object(landing, "post_result", return_value="comment"),
-            patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "sent", "")) as sender,
-        ):
+    def test_failed_harness_resumes_same_batch_only_on_explicit_recovery(self) -> None:
+        with (patch.object(landing, "pending_landings", return_value=["first", "second"]),
+              patch.object(landing, "landing_pull", return_value=2),
+              patch.object(landing, "git", return_value="script.py"),
+              patch.object(landing, "verify", side_effect=[{"ok": False, "gate": "smoke"}, {"ok": True}]) as verify,
+              patch.object(landing, "post_result", return_value="comment")):
             self.assertFalse(landing.poll(self.config, self.root)["ok"])
             self.assertFalse(landing.poll(self.config, self.root)["ok"])
             self.assertEqual(verify.call_count, 1)
-            self.assertEqual(sender.call_count, 1)
             self.assertTrue(landing.poll(self.config, self.root, resume_failed=True)["ok"])
-            self.assertEqual(verify.call_count, 3)
+            self.assertEqual(verify.call_count, 2)
             self.assertEqual(json.loads((self.root / "cursor.json").read_text())["last_sha"], "second")
-            self.assertEqual(sender.call_count, 1)
+            self.assertEqual(verify.call_args.args[1].state["identity"], [self.config["repo"], "first", "second"])
 
-    def test_documentation_skip_requires_runtime_reconciliation(self) -> None:
-        with (
-            patch.object(landing, "reconcile_runtime", return_value=(self.root, "runtime")) as reconcile,
-            patch.object(landing, "verify_smoke") as smoke,
-        ):
-            result = landing.verify(
-                {**self.config, "landing_sha": "target", "documentation_only": True}, Operation(self.root, ["docs"])
-            )
-            self.assertTrue(result["ok"])
-            reconcile.assert_called_once()
-            smoke.assert_not_called()
+    def test_only_human_documentation_skips_smoke_after_runtime_reconciliation(self) -> None:
+        for index, files in enumerate(("README.md\ndocs/guide.md", "skills/thing/SKILL.md", "instructions/global.md", "README.md\nscript.py")):
+            with (self.subTest(files=files), patch.object(landing, "pending_landings", return_value=["first", "second"]),
+                  patch.object(landing, "landing_pull", return_value=2), patch.object(landing, "git", return_value=files),
+                  patch.object(landing, "reconcile_runtime", return_value=(self.root, "tip")) as reconcile,
+                  patch.object(landing, "verify_smoke", return_value="handoff") as smoke,
+                  patch.object(landing, "post_result", return_value="comment")):
+                evidence = self.root / str(index)
+                result = landing.poll(self.config, evidence)
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["landings"], ["first", "second"])
+                reconcile.assert_called_once()
+                self.assertEqual(smoke.call_count, 0 if files.startswith("README.md\ndocs/") else 2)
 
-    def test_mixed_change_runs_harnesses_and_completed_poll_does_no_more_work(self) -> None:
-        with (
-            patch.object(landing, "pending_landings", side_effect=[["first", "second"], []]),
-            patch.object(landing, "landing_pull", return_value=2),
-            patch.object(landing, "git", side_effect=["guide.md", "guide.md\nscript.py"]),
-            patch.object(landing, "reconcile_runtime", return_value=(self.root, "tip")),
-            patch.object(landing, "verify_smoke", return_value="handoff") as smoke,
-            patch.object(landing, "post_result", return_value="comment") as post,
-            patch.object(landing, "alert_failure") as alert,
-        ):
-            result = landing.poll(self.config, self.root)
-            self.assertEqual([row["landing_sha"] for row in result["landings"]], ["first", "second"])
-            self.assertEqual(smoke.call_count, 2)
-            self.assertEqual(post.call_count, 2)
+    def test_completed_batch_checks_again_without_repeating_smoke_or_posting(self) -> None:
+        with (patch.object(landing, "pending_landings", side_effect=[["first", "second"], []]),
+              patch.object(landing, "landing_pull", return_value=2), patch.object(landing, "git", return_value="script.py"),
+              patch.object(landing, "verify", return_value={"ok": True}) as verify,
+              patch.object(landing, "post_result", return_value="comment") as post):
+            self.assertEqual(landing.poll(self.config, self.root)["landings"], ["first", "second"])
             self.assertEqual(landing.poll(self.config, self.root)["landings"], [])
-            self.assertEqual(post.call_count, 2)
-            alert.assert_not_called()
+            self.assertEqual(verify.call_count, 1)
+            self.assertEqual(post.call_count, 1)
 
-    def test_discovery_failure_is_reported_without_claiming_coverage(self) -> None:
-        with (
-            patch.object(landing, "pending_landings", side_effect=GateFailed("discovery", "unavailable")),
-            patch.object(landing, "post_result", return_value="comment") as post,
-            patch.object(landing, "alert_failure") as alert,
-        ):
-            result = landing.poll(self.config, self.root)
-            self.assertFalse(result["ok"])
-            self.assertEqual(post.call_args.args[2]["landings"], [])
-            alert.assert_called_once()
-            self.assertFalse((self.root / "cursor.json").exists())
-
-    def test_uncertain_failure_notification_never_replays_after_restart(self) -> None:
-        with patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("sender", 120)) as sender:
-            with self.assertRaises(subprocess.TimeoutExpired):
-                landing.alert_failure(self.config, Operation(self.root, ["failure"]), "comment")
+    def test_discovery_failures_remain_failed_without_saving_a_sticky_verification(self) -> None:
+        with patch.object(landing, "pending_landings", side_effect=[GateFailed("discovery", "unavailable"), []]):
             with self.assertRaises(GateFailed):
-                landing.alert_failure(self.config, Operation(self.root, ["failure"]), "comment")
-            self.assertEqual(sender.call_count, 1)
+                landing.poll(self.config, self.root)
+            self.assertFalse((self.root / "cursor.json").exists())
+            self.assertTrue(landing.poll(self.config, self.root)["ok"])
 
 
 if __name__ == "__main__":

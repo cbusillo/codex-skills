@@ -1102,7 +1102,8 @@ through the [existing service setup](#persistent-supervisor-services):
 "catalog": {
   "argv": ["/absolute/path/to/uv", "run", "/runtime/catalog/skills/supervisor/scripts/catalog_landing.py", "--poll", "--config", "/private/catalog-landing.json", "--evidence", "/private/catalog-evidence"],
   "cwd": "/runtime/catalog",
-  "restart_seconds": 60
+  "restart_seconds": 60,
+  "failure_argv": ["/absolute/path/to/uv", "run", "/runtime/catalog/skills/supervisor/scripts/discord_digest.py"]
 }
 ```
 
@@ -1111,29 +1112,35 @@ below, with `source_worktree` pointing to the durable runtime checkout. Omit
 `pr` and `landing_sha`: polling resolves them from default-branch first-parent
 history and exact merged-PR evidence. Set `notify_config` to the existing
 service configuration so cleanup reads the current Supervisor identity.
-`failure_argv` is the existing sender's absolute argument array, accepting
-Markdown on stdin, to the channel Chris and the Supervisor already use, for
-example `["/absolute/path/to/uv", "run", "/runtime/catalog/skills/supervisor/scripts/discord_digest.py"]`.
+The service entry's `failure_argv` uses the existing sender, accepting Markdown
+on stdin, to the channel Chris and the Supervisor already use.
 No new account, recipient registry or delivery service is created.
 
 The first run checks the current landing and explicitly leaves earlier history
 unverified. Later runs enumerate every first-parent landing since the saved
-cursor, deduplicate batch PRs by SHA, and record each SHA separately. They
-reconcile the runtime, run both fresh harnesses, close smoke sessions normally,
-and post verification on the merged PR. The comment names the landing and
-actual runtime SHA; a newer runtime proves containment, not an earlier runtime's
-behavior. Only a nonempty diff consisting entirely of Markdown may skip live
-sessions. Cursor advancement requires verification, cleanup and the posted
-comment. Success needs no Supervisor action.
+cursor and verify the latest runtime once for that batch. They reconcile through
+the runtime helper, run both fresh harnesses, close smoke sessions normally,
+and post verification on the configured owning issue, listing every covered
+SHA. The comment names the landing and actual runtime SHA; a newer runtime proves containment, not an earlier runtime's
+behavior. Only a nonempty diff confined to `README.md` and Markdown under `docs/` may
+skip live sessions; skill instructions still need smoke checks. Cursor advancement
+requires verification, cleanup and the posted comment. Success needs no Supervisor action.
 
-Failures post the failed gate and notify that existing channel, then stop under
-the runner's reconciliation marker. Read private evidence and reconcile any
+Verification failures post the failed gate. The existing runner notifies that
+channel on any failed child or stale reconciliation marker, including an
+interrupted run or a helper that cannot start, then keeps the
+service stopped. Read private evidence and reconcile any
 uncertain launch, request, comment or notification before recovery. Resume a
 failed verification explicitly with the same command plus `--resume-failed`,
 using the same evidence directory; this reuses launch and closeout journals.
 After it succeeds, clear the runner's `catalog` marker and restart that job
 through the existing service route. Never remove a journal or replay an
-uncertain mutation to clear a failure.
+uncertain mutation to clear a failure. The runner reserves each notice before
+sending; uncertain delivery is never replayed. After verifying its actual channel
+message, `services.py clear --failure-delivered-url <exact-Discord-message-URL>`
+records that evidence and archives the notice before clearing the stop. A later
+failure gets its own notice. Reader failures before verification keep no saved
+failed verification, so the existing clear/restart route can retry those reads.
 
 For one bounded manual verification or recovery:
 

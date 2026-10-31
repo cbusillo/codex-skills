@@ -129,10 +129,10 @@ def reconcile_runtime(config: dict, operation: Operation) -> tuple[Path, str]:
     return runtime, head
 
 
-def verify(config: dict, operation: Operation) -> dict:
+def verify(config: dict, operation: Operation, *, documentation_only: bool = False) -> dict:
     runtime, head = reconcile_runtime(config, operation)
     landing = config["landing_sha"]
-    if config.get("documentation_only"):
+    if documentation_only:
         return {
             "ok": True,
             "landing_sha": landing,
@@ -334,14 +334,19 @@ def git(source: Path, *args: str) -> str:
     return subprocess.run(["git", "-C", str(source), *args], capture_output=True, text=True, check=True, timeout=120).stdout.strip()
 
 
-def pending_landings(source: Path, previous: str | None) -> list[str]:
-    git(source, "fetch", "origin", "main")
-    tip = git(source, "rev-parse", "origin/main")
+def pending_landings(source: Path, previous: str | None, tip: str) -> list[str]:
     if previous is None:
         return [tip]
     history = git(source, "rev-list", "--first-parent", tip).splitlines()
     require(previous in history, "discovery", "last verified landing is absent from default-branch history")
-    return list(reversed(history[: history.index(previous)]))
+    return list(reversed(history[:history.index(previous)]))
+
+
+def documentation_only(source: Path, landings: list[str]) -> bool:
+    files = git(source, "diff-tree", "--no-commit-id", "--name-only", "-r", landings[0] + "^", landings[-1]).splitlines()
+    return bool(files) and all(
+        Path(path).suffix.lower() == ".md" and (path == "README.md" or path.startswith("docs/")) for path in files
+    )
 
 
 def landing_pull(reader: GitHubReader, repo: str, landing: str) -> int:
@@ -361,15 +366,16 @@ def post_result(config: dict, operation: Operation, result: dict) -> str:
     body = operation.evidence / "result.md"
     outcome = "PASSED" if result["ok"] else "FAILED"
     body.write_text(
-        f"Catalog landing verification {outcome}: `{config.get('landing_sha', 'discovery')}`\n\n"
-        f"Landings covered: {json.dumps(result['landings'])}. Runtime SHA: `{result.get('runtime_sha', 'UNKNOWN')}`.\n"
+        f"Catalog runtime verification {outcome}: `{result.get('runtime_sha', 'UNKNOWN')}`\n\n"
+        f"Landings covered by containment: {json.dumps(result['landings'])}.\n"
         + ("Bootstrap: earlier history is unverified.\n" if result.get("bootstrap") else "")
         + (f"Smoke skipped: {result['smoke_skipped']}.\n" if result.get("smoke_skipped") else "")
         + "\n".join(result.get("smoke_handoffs", []))
         + (
             f"\nFailed gate: {result.get('gate', 'verification')}. Inspect the retained service evidence.\n"
             if not result["ok"]
-            else "\nRuntime reconciliation and normal smoke closeout completed.\n"
+            else "\nRuntime reconciliation completed. Live smoke and closeout: "
+            + ("skipped for documentation only.\n" if result.get("smoke_skipped") else "completed on the runtime SHA above.\n")
         )
     )
     posted = operation.run(
@@ -377,7 +383,7 @@ def post_result(config: dict, operation: Operation, result: dict) -> str:
         [
             str(Path(config["source_worktree"]) / "skills/github/scripts/gh-comment"),
             "issue",
-            str(config.get("pr", config["issue"])),
+            str(config["issue"]),
             "--repo",
             config["repo"],
             "--body-file",
@@ -388,90 +394,47 @@ def post_result(config: dict, operation: Operation, result: dict) -> str:
     return posted["url"]
 
 
-def alert_failure(config: dict, operation: Operation, url: str) -> None:
-    step = operation.state["steps"].get("alert")
-    if step:
-        require(step.get("complete") is True, "alert", "previous failure notification needs reconciliation; never replay")
-        return
-    operation.state["steps"]["alert"] = {"complete": False}
-    save_state(operation.path, operation.state)
-    message = f"Catalog landing verification FAILED. Supervisor attention required: {url}\n"
-    sent = subprocess.run(config["failure_argv"], input=message, capture_output=True, text=True, timeout=120)
-    save_state(operation.evidence / "alert.json", {"exit_code": sent.returncode, "stdout": sent.stdout, "stderr": sent.stderr})
-    require(sent.returncode == 0, "alert", "failure notification did not complete; inspect retained evidence")
-    operation.state["steps"]["alert"] = {"complete": True}
-    save_state(operation.path, operation.state)
-
-
-def report(config: dict, operation: Operation, result: dict) -> str:
-    try:
-        url = post_result(config, operation, result)
-    except (OSError, ValueError, KeyError, SubprocessError):
-        alert_failure(config, operation, f"https://github.com/{config['repo']}/issues/{config['issue']}")
-        raise
-    if not result["ok"]:
-        alert_failure(config, operation, url)
-    return url
-
-
 def poll(config: dict, evidence: Path, *, resume_failed: bool = False) -> dict:
-    require(bool(config.get("failure_argv")), "configuration", "configure the existing Director/Supervisor failure sender")
     source = Path(config["source_worktree"])
     state_path = evidence / "cursor.json"
     with closure.store_lock(evidence / "poll", create=True):
         state: dict = json.loads(state_path.read_text()) if state_path.exists() else {"repo": config["repo"], "last_sha": None}
         require(state.get("repo") == config["repo"], "identity", "cursor belongs to another repository")
-        try:
-            landings = state.get("pending") or pending_landings(source, state["last_sha"])
-        except (OSError, ValueError, SubprocessError) as error:
-            operation = Operation(evidence / "discovery", [config["repo"], "discovery"])
-            result = {**receipt("discovery", operation.evidence, error, gate="discovery"), "landings": []}
-            return {**result, "verification_url": report(config, operation, result)}
+        discovery = Operation(evidence / "discovery", [config["repo"], "discovery"])
+        runtime = discovery.run("runtime", ["uv", "run", str(source / "skills/github/scripts/reconcile-runtime-checkout.py"),
+                                           "--repo", config["repo"]], timeout=660)
+        require(runtime.get("status") in {"synchronized", "already_current"}, "discovery", "runtime reconciliation incomplete")
+        landings = state.get("pending") or pending_landings(source, state["last_sha"], runtime["after_sha"])
+        if not landings:
+            return {"ok": True, "landings": []}
         state["pending"] = landings
         save_state(state_path, state)
-        completed = []
-        for landing in landings:
-            with closure.store_lock(evidence / landing / "verification", create=True):
-                operation = Operation(evidence / landing, [config["repo"], landing])
-                current = {**config, "landing_sha": landing}
-                result_path = operation.evidence / "result.json"
-                saved: dict = json.loads(result_path.read_text()) if result_path.exists() else {}
-                if saved and (saved["ok"] or not resume_failed):
-                    result = saved
-                else:
-                    try:
-                        reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
-                        current["pr"] = landing_pull(reader, config["repo"], landing)
-                        files = git(source, "diff-tree", "--no-commit-id", "--name-only", "-r", landing + "^", landing).splitlines()
-                        current["documentation_only"] = bool(files) and all(Path(path).suffix.lower() == ".md" for path in files)
-                        if config.get("notify_config"):
-                            from services import supervisor_recipient
-
-                            current["supervisor_session"] = supervisor_recipient(Path(config["notify_config"]))["session_id"]
-                        result = verify(current, operation)
-                    except (
-                        OSError,
-                        ValueError,
-                        KeyError,
-                        TypeError,
-                        AttributeError,
-                        SubprocessError,
-                        GitHubReadError,
-                        GitHubReadShapeError,
-                    ) as error:
-                        result = receipt(landing, operation.evidence, error, gate=operation.gate)
-                    result.update(landings=[landing], bootstrap=state["last_sha"] is None, pr=current.get("pr"))
-                    save_state(result_path, result)
-                if result.get("pr"):
-                    current["pr"] = result["pr"]
-                url = report(current, operation, result)
-                if not result["ok"]:
-                    return {**result, "verification_url": url}
-                state["last_sha"] = landing
-                state["pending"] = state["pending"][1:]
+        landing = landings[-1]
+        with closure.store_lock(evidence / landing / "verification", create=True):
+            operation = Operation(evidence / landing, [config["repo"], *landings])
+            current = {**config, "landing_sha": landing}
+            result_path = operation.evidence / "result.json"
+            saved: dict = json.loads(result_path.read_text()) if result_path.exists() else {}
+            if saved and (saved["ok"] or not resume_failed):
+                result = saved
+            else:
+                try:
+                    reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
+                    current["pr"] = landing_pull(reader, config["repo"], landing)
+                    if config.get("notify_config"):
+                        from services import supervisor_recipient
+                        current["supervisor_session"] = supervisor_recipient(Path(config["notify_config"]))["session_id"]
+                    result = verify(current, operation, documentation_only=documentation_only(source, landings))
+                except (OSError, ValueError, KeyError, TypeError, AttributeError, SubprocessError,
+                        GitHubReadError, GitHubReadShapeError) as error:
+                    result = receipt(landing, operation.evidence, error, gate=operation.gate)
+                result.update(landings=landings, bootstrap=state["last_sha"] is None)
+                save_state(result_path, result)
+            url = post_result(current, operation, result)
+            if result["ok"]:
+                state.update(last_sha=landing, pending=[])
                 save_state(state_path, state)
-                completed.append({"landing_sha": landing, "verification_url": url})
-        return {"ok": True, "landings": completed}
+            return {**result, "verification_url": url}
 
 
 def main() -> int:
