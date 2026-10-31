@@ -10,10 +10,12 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from unittest import mock
 
 import q_number_guard as guard
+import question_record as record
 
 NUMBERED = """**Q590 — Move the nightly sync to the CM host?** I recommend yes: it stops the
 double import. On yes, the agent moves the job and checks one night's run. Ongoing cost: none. An experienced developer would do the same."""
@@ -61,6 +63,10 @@ class GuardTests(unittest.TestCase):
         self.home = tempfile.TemporaryDirectory()
         self.addCleanup(self.home.cleanup)
         self.env = {"CODE_HOME": self.home.name}
+        self.enterContext(mock.patch.object(record.question_id, "configured_queue", return_value="example/direction#9"))
+        self.enterContext(mock.patch.object(record.delivery.oq, "default_decision_authors", return_value=["fixture-automation"]))
+        self.original_read_question = guard.read_question
+        self.read_question = self.enterContext(mock.patch.object(guard, "read_question", side_effect=ValueError("unavailable")))
 
     def run_hook(self, payload):
         stdin = io.StringIO(payload if isinstance(payload, str) else json.dumps(payload))
@@ -71,6 +77,26 @@ class GuardTests(unittest.TestCase):
     def logged(self):
         path = guard.log_path(self.env)
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    @staticmethod
+    def registered_question(number: str = "Q590") -> dict:
+        value = {
+            "version": record.VERSION,
+            "issue": "https://github.com/example/product/issues/3",
+            "decision": "Should we move the nightly sync?",
+            "basis": "The current host duplicates imports.",
+            "options": [
+                {"answer": "Move", "changes": "Move the job", "cost": 0, "next": "Check the next run"},
+                {"answer": "Wait", "changes": "Keep the job", "cost": "Daily review", "next": "Review failures"},
+            ],
+            "recommendation": "Move",
+            "comparison": "An experienced developer would remove the duplicate import.",
+            "manual": "Answer with one option",
+        }
+        url = value["issue"] + "#issuecomment-17"
+        source = {"body": record.question_id.number_heading(record.render(value), number), "url": url,
+                  "author": "fixture-automation", "issue": value["issue"]}
+        return source
 
     def test_numbered_question_passes(self):
         self.assertEqual(self.run_hook(stop(last_assistant_message=NUMBERED)), "")
@@ -84,6 +110,69 @@ class GuardTests(unittest.TestCase):
                 self.assertEqual(decision["decision"], "block")
                 self.assertTrue(decision["reason"])
                 self.assertEqual(self.run_hook(stop(last_assistant_message=message, stop_hook_active=True)), "")
+
+    def test_registered_structured_question_supplies_relay_context(self) -> None:
+        source = self.registered_question()
+        with mock.patch.object(guard, "read_question", return_value=source):
+            for heading in ("**Q590 — Should we move the nightly sync?**", source["body"].splitlines()[0]):
+                with self.subTest(heading=heading):
+                    self.assertEqual(self.run_hook(stop(last_assistant_message=f"{heading} {source['url']}")), "")
+
+    def test_registered_legacy_question_and_new_ask_do_not_bypass_context(self) -> None:
+        source = self.registered_question()
+        messages = [
+            "**Q590 — Should we move the nightly sync?** Should I also replace its runner?",
+            "**Q590 — Should we move the nightly sync? And should I also replace its runner?**",
+            "**Q591 — Should we replace the runner?**",
+            "**Q590 — Should we move the nightly sync?** Your call on the runner too.",
+        ]
+        for message in messages:
+            with self.subTest(message=message):
+                with mock.patch.object(guard, "read_question", return_value=source):
+                    self.assertIn("block", self.run_hook(stop(last_assistant_message=f"{message} {source['url']}")))
+        for changes in ({"body": "**Q590 — Should we move the nightly sync?**"}, {"author": "stranger"}):
+            with self.subTest(changes=changes), mock.patch.object(guard, "read_question", return_value={**source, **changes}):
+                self.assertIn("block", self.run_hook(stop(last_assistant_message=f"**Q590 — Should we move the nightly sync?** {source['url']}")))
+
+    def test_unknown_registered_question_lookup_falls_back_to_context_check(self) -> None:
+        source = self.registered_question()
+        message = "**Q590 — Should we move the sync?**"
+        self.assertIn("block", self.run_hook(stop(last_assistant_message=message)))
+        self.read_question.assert_not_called()
+        self.assertIn("block", self.run_hook(stop(last_assistant_message=f"{message} {source['url']}")))
+
+    def test_direct_source_read_validates_identity_and_transport(self) -> None:
+        source = self.registered_question()
+        body = {"html_url": source["url"], "body": source["body"], "user": {"login": source["author"]}}
+        for changed, successful in (({}, True), ({"html_url": source["url"] + "1"}, True), ({}, False)):
+            with self.subTest(changed=changed, successful=successful), mock.patch.object(guard.subprocess, "Popen") as launch:
+                child = launch.return_value.__enter__.return_value
+                child.communicate.return_value = (json.dumps({"ok": successful, "outcome_certainty": "confirmed",
+                                                             "body": {**body, **changed}}), None)
+                child.returncode = 0
+                with mock.patch.object(guard, "read_question", side_effect=self.original_read_question):
+                    output = self.run_hook(stop(last_assistant_message=f"**Q590 — Move the sync?** {source['url']}"))
+                self.assertEqual(output == "", successful and not changed)
+
+    def test_slow_authentication_child_is_stopped_at_the_lookup_deadline(self) -> None:
+        helper = Path(self.home.name, "slow-read.py")
+        helper.write_text("import signal\nsignal.pause()\n")
+        with mock.patch.object(guard, "API_HELPER", helper):
+            with self.assertRaises(guard.subprocess.TimeoutExpired):
+                self.original_read_question(self.registered_question()["url"], time.time() + 0.1)
+
+    def test_missing_lookup_import_and_null_author_keep_the_block(self) -> None:
+        source = self.registered_question()
+        for failure in (ImportError("missing sibling"), AttributeError("unknown author"), SyntaxError("broken sibling")):
+            with self.subTest(failure=failure), mock.patch.object(guard, "read_question", side_effect=failure):
+                self.assertIn("block", self.run_hook(stop(last_assistant_message=f"**Q590 — Move the sync?** {source['url']}")))
+
+    def test_unrelated_trusted_comment_does_not_hide_the_record(self) -> None:
+        source = self.registered_question()
+        other = {**source, "body": "Status update", "url": source["url"] + "1"}
+        with mock.patch.object(guard, "read_question", side_effect=[other, source]):
+            self.assertEqual(self.run_hook(stop(last_assistant_message=
+                f"**Q590 — Move the sync?** {other['url']} {source['url']}")), "")
 
     def test_context_correction_uses_shared_guidance(self) -> None:
         guidance = Path(self.home.name, "guidance.md")

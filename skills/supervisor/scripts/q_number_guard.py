@@ -10,11 +10,17 @@ import datetime as dt
 import json
 import os
 import re
+import signal
 import stat
+import subprocess
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Mapping
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 
 NUMBERED = re.compile(r"[*][*]Q[0-9]{3,}\b")
 # Quoted material repeats old questions; only the reply's own words count. Only a
@@ -47,6 +53,8 @@ REASON = (
     "allocate one with `uv run <direction-skill-dir>/scripts/question_id.py next` and repeat "
     "the reply with it. If the reply asks him nothing, end the turn again unchanged."
 )
+LOOKUP_TIMEOUT = 3
+API_HELPER = Path(__file__).resolve().parents[2] / "github/scripts/github_api.py"
 
 
 def asks_director(text: str) -> bool:
@@ -66,8 +74,93 @@ def missing_context(message: str) -> str | None:
         return REASON if has_context else f"{REASON} {director_question_rule()}"
     if has_context:
         return None
+    if not has_unnumbered_ask(text) and registered_records_cover(message):
+        return None
     return (f"{director_question_rule()} "
             "Repeat the reply. If the reply asks nothing, end the turn again unchanged.")
+
+
+def has_unnumbered_ask(text: str) -> bool:
+    if any(match[0].count("?") > 1 for match in re.finditer(NUMBERED.pattern + r"[^*\n]*\*\*", text)):
+        return True
+    text = re.sub(NUMBERED.pattern + r"[^*?\n]*\?\*\*", " ", text)
+    questions = [match[0] for match in SENTENCE.finditer(text)
+                 if not ANSWERED.match(text, match.end()) and ADDRESSED.search(match[0].strip(" \t*_-"))]
+    if any(not NUMBERED.search(question) for question in questions):
+        return True
+    for ask in ASK.finditer(text):
+        if not NEGATED.search(text, endpos=ask.start()):
+            start = max(text.rfind(separator, 0, ask.start()) for separator in ".!?:;\n") + 1
+            if not NUMBERED.search(text[start:ask.end()]):
+                return True
+    return False
+
+
+def read_question(url: str, deadline: float) -> dict:
+    from question_record import delivery
+
+    match = delivery.COMMENT_URL.fullmatch(url)
+    if match is None:
+        raise ValueError("question source link is invalid")
+    if time.time() >= deadline:
+        raise TimeoutError("question lookup deadline elapsed")
+    command = [sys.executable, str(API_HELPER), "call", "--method", "GET",
+               f"/repos/{match[1]}/issues/comments/{match[3]}", "--operation", "github.read", "--read"]
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True,
+                          env={**os.environ, "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH": "1",
+                               "GITHUB_RETRY_DEADLINE_AT": str(deadline)}) as child:
+        try:
+            output, _ = child.communicate(timeout=max(0, deadline - time.time()))
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                child.wait()
+            raise
+    payload = json.loads(output)
+    if child.returncode or payload.get("ok") is not True or payload.get("outcome_certainty") != "confirmed":
+        raise ValueError("question source read is unavailable")
+    comment = payload["body"]
+    if comment["html_url"] != url:
+        raise ValueError("question source identity changed")
+    return {"body": comment["body"], "url": url, "author": comment["user"]["login"],
+            "issue": f"https://github.com/{match[1]}/issues/{match[2]}"}
+
+
+def registered_records_cover(message: str) -> bool:
+    if "github.com/" not in message:
+        return False
+    try:
+        import question_record
+
+        links = dict.fromkeys(match[0] for match in question_record.delivery.COMMENT_URL.finditer(message))
+        if not links:
+            return False
+        queue = question_record.question_id.configured_queue()
+        if not queue:
+            return False
+        deadline = time.time() + LOOKUP_TIMEOUT
+        owner = queue.split("/", 1)[0]
+        trusted = {
+            owner.casefold(),
+            *(author.casefold() for author in question_record.delivery.oq.default_decision_authors()),
+        }
+        requested_ids = {match[0].strip("*") for match in NUMBERED.finditer(QUOTED.sub(" ", message))}
+        registered_ids = set()
+        for url in links:
+            source = read_question(url, deadline)
+            if source["author"].casefold() not in trusted:
+                continue
+            try:
+                registered_ids.add(question_record.read_record(source)["question_id"])
+            except ValueError:
+                continue
+            if requested_ids <= registered_ids:
+                return True
+        return False
+    except (OSError, ValueError, KeyError, TypeError, ImportError, AttributeError, SyntaxError, RuntimeError,
+            IndexError, subprocess.SubprocessError):
+        return False
 
 
 def director_question_rule() -> str:
