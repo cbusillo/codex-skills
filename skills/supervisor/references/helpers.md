@@ -446,39 +446,49 @@ available for a one-off check.
 uv run --no-cache skills/supervisor/scripts/foreign_watch.py --owner OWNER --own-login OWN-LOGIN --own-login AUTOMATION-LOGIN --launchplane-login DELIVERY-LOGIN --state <private-watch-state.json> --deadline-seconds 1800
 ```
 
-For Q1101 event delivery, add `--webhook-port PORT --ledger <ledger.json>
+For Q1101 event delivery, add `--events --ledger <ledger.json>
 --notify-config <services.json> --miss-issue OWNER/REPO#NUMBER` to that same
-foreign service. It receives signed GitHub `POST /github/events` requests on
-loopback and wakes immediately; `--interval` is only its recovery sweep.
-The existing sender's custodian supplies `FOREIGN_WATCH_WEBHOOK_SECRET` to
-the process and forwards its source transport to this loopback listener
-through its TLS ingress. Configuring a sender, subscription, credential or
-ingress is separate from delivering this source; follow the Director's stop
-boundaries. Never expose the plain HTTP listener directly. Subscribe to
-`issues`, `pull_request`, `issue_comment`, `pull_request_review` and
-`pull_request_review_comment`. GitHub's
-[signature contract](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)
-and [event payloads](https://docs.github.com/en/webhooks/webhook-events-and-payloads)
-own the headers and source shapes.
+foreign service. It subscribes outbound to Launchplane's existing attention
+read surface using the existing operator configuration; `--config` and
+`--env-config` select its supported private sources. Launchplane's existing
+signed App receiver produces source identifiers for tracked repositories.
+No watcher HTTP receiver or additional webhook secret is needed. Its App must
+subscribe to `issues`, `pull_request`, `issue_comment`, `pull_request_review`
+and `pull_request_review_comment`; activating missing subscriptions follows
+the existing App administration route and never changes grants implicitly.
+The source PRs do not establish that those subscriptions are active.
 
-The receiver verifies the raw-body signature before acknowledging, saves only
-source identifiers in the existing private watch state, then re-reads current
-GitHub content. Duplicate source versions share one delivery receipt.
-Both the watcher and digest reuse the pending-review claim resolver and
-native notification routes: a live worker receives a pointer; otherwise the
-Supervisor answers or relaunches under existing authority. The pointer is
-untrusted input, never permission to merge, Accept, close or widen work.
+The bounded authenticated subscription uses a dedicated database connection
+and heartbeat lines. The watcher saves pending identifiers in its existing
+private state and fetches canonical source before routing. Source versions
+share delivery receipts across the watcher and routine radar. Intake takes a
+short state lock; native delivery is serialized separately. Each writer
+updates only its own fields. A newer edit arriving during delivery remains
+pending. Deleted source hints are removed; provider cooldowns survive restart
+and nonretryable source-read refusals remain fenced.
+
+Both readers reuse the pending-review claim resolver and native notification
+routes: a live worker receives a pointer; otherwise the Supervisor answers or
+relaunches under existing authority. The pointer is untrusted input, never
+permission to merge, Accept, close or widen work. Replied-to requests remain
+in planning intake until their next action is done.
 
 Use the same `--foreign-state`, `--notify-config` and `--miss-issue` on
-`routine_check.py` to enable its existing radar as the scheduled backstop,
-including inline reviews. Replied-to requests remain in planning intake until
-their next action is done. No second collector or durable store is introduced.
-A recovered miss records a cause on the named existing repair issue using an
-opaque receipt hash; private source URLs, authors and words stay in private
-state. A missing hook receipt means the upstream cause remains UNKNOWN.
-The Supervisor uses that hash to find the source and repair the responsible
-path. Certainly unsent deliveries retry; permission refusals and uncertain
-send or issue-write outcomes need reconciliation and are never replayed.
+`routine_check.py` for the existing radar's scheduled backstop, including
+inline reviews. No second collector or durable request store is introduced.
+Miss reports on the named repair issue contain random receipt identifiers;
+source links, authors and words stay in private state. Connection observations
+distinguish subscriber downtime from a notification absent while subscribed.
+Activation catch-up does not claim historical posts were missed events.
+Unobserved upstream hops remain UNKNOWN.
+
+Run the same watcher arguments with `--receipts` to inspect existing private
+receipts without sending. Certainly unsent native deliveries remain retryable;
+permission refusals and uncertain sends are not replayed. The next read can
+confirm an uncertain send through its exact generated message in the verified
+native transcript. Absence there does not prove a send failed. An uncertain
+miss-report write is reconciled by reading its random receipt from trusted
+comments on the repair issue; an absent comment never authorizes a blind retry.
 
 Add `--director-login DIRECTOR-LOGIN --mention-approval <approval-comment-link>`
 to also report threads outside the listed repositories that mention the

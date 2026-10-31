@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-import hashlib
-import hmac
 import json
 import math
+import uuid
 import os
 import re
 import subprocess
@@ -21,7 +20,6 @@ import threading
 import time
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime, timedelta
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -41,7 +39,7 @@ else:
 from github_review_markers import PRODUCT_REVIEW_MARKER
 from oq import QUESTION_PREFIXES
 from pending_reviews import ReviewError, atomic_text, bind_session
-from session_record import load_ledger, session_status
+from session_record import load_ledger, read_jsonl, session_status, text_content
 
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 MENTIONS = "director-mentions"  # watermark key; not a repository name
@@ -55,114 +53,97 @@ OWNER_REVIEW = re.compile(r"<!-- launchplane:owner-review (\{.*\}) -->")
 PULL_COMMENT = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(\d+)#issuecomment-\d+")
 BRIEF_RULES = Path(__file__).resolve().parents[1] / "references" / "brief-rules.md"
 MESSAGE_EVENTS = {"issues", "pull_request", "issue_comment", "pull_request_review_comment", "pull_request_review"}
-MAX_WEBHOOK_BYTES = 1024 * 1024
-
-
-def webhook_hint(args: Any, repos: list[str] | None, event: str, body: bytes, signature: str, secret: str) -> dict | None:
-    expected = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    if not secret or not hmac.compare_digest(expected, signature):
-        raise PermissionError("invalid webhook signature")
-    if event not in MESSAGE_EVENTS:
-        return None
-    payload = json.loads(body)
-    repo = payload["repository"]["full_name"]
-    if (
-        not isinstance(repo, str)
-        or not REPOSITORY.fullmatch(repo)
-        or repo.split("/")[0].casefold() != args.owner.casefold()
-        or repos is not None
-        and repo.casefold() not in {value.casefold() for value in repos}
-    ):
-        raise ValueError("webhook repository is outside this watch")
-    if payload.get("action") not in {"opened", "created", "edited", "submitted"}:
-        return None
-    fields = {"issues": "issue", "pull_request": "pull_request", "pull_request_review": "review"}
-    field = fields.get(event, "comment")
-    source = payload[field]
-    key = "number" if event in {"issues", "pull_request"} else "id"
-    if type(source[key]) is not int or source[key] <= 0:
-        raise ValueError("webhook source needs a positive ID")
-    hint = {"repository": {"full_name": repo}, "action": payload["action"], field: {key: source[key]}}
+def enqueue_event(args: Any, repos: list[str] | None, hint: dict) -> None:
+    repo = hint["repository"]
+    if not isinstance(repo, str) or not REPOSITORY.fullmatch(repo) :
+        raise ValueError("event repository is malformed")
+    if repo.split("/")[0].casefold() != args.owner.casefold():
+        return
+    if repos is not None and repo.casefold() not in {value.casefold() for value in repos}:
+        return
+    kinds = {"request": "issues", "change": "pull_request", "comment": "issue_comment", "review_comment": "pull_request_review_comment", "review": "pull_request_review"}
+    event = kinds[hint["source_kind"]]
+    identifier = hint["source_id"]
+    if type(identifier) is not int or identifier <= 0:
+        raise ValueError("event source needs a positive ID")
+    field = {"issues": "issue", "pull_request": "pull_request", "pull_request_review": "review"}.get(event, "comment")
+    payload = {"repository": {"full_name": repo}, "action": "created", field: {"number" if event in {"issues", "pull_request"} else "id": identifier}}
     if event == "pull_request_review":
-        number = payload["pull_request"]["number"]
-        if type(number) is not int or number <= 0:
-            raise ValueError("webhook review needs a positive PR number")
-        hint["pull_request"] = {"number": number}
-    hint["changes"] = {key: {} for key in ("title", "body") if key in payload.get("changes", {})}
-    return {"event": event, "payload": hint}
-
-
-def receive_webhook(args: Any, repos: list[str] | None, event: str, body: bytes, signature: str, secret: str) -> bool:
-    hint = webhook_hint(args, repos, event, body, signature, secret)
-    if hint is None:
-        return False
-    with watch_lock(args.state):
+        payload["pull_request"] = {"number": hint["request_number"]}
+    row = {"event": event, "payload": payload, "delivery_id": hint["delivery_id"]}
+    key = json.dumps([repo.casefold(), event, identifier])
+    with watch_lock(args.state, wait=True):
         state = json.loads(args.state.read_text()) if args.state.exists() else {}
-        pending = state.setdefault("pending_events", {})
-        pending[hashlib.sha256(event.encode() + body).hexdigest()] = hint
+        state.setdefault("pending_events", {})[key] = row
         atomic_text(args.state, json.dumps(state) + "\n")
-    return True
 
 
-def webhook_server(args: Any, repos: list[str] | None, wake: threading.Event) -> HTTPServer:
-    secret = os.environ.get("FOREIGN_WATCH_WEBHOOK_SECRET", "")
-    if not secret:
-        raise ValueError("FOREIGN_WATCH_WEBHOOK_SECRET must be configured by the existing sender's custodian")
+def receive_events(args: Any, repos: list[str] | None, wake: threading.Event, stop: threading.Event) -> None:
+    from attention_events import messages
 
-    class Handler(BaseHTTPRequestHandler):
-        def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
-            return
-
-        # noinspection PyPep8Naming
-        def do_POST(self) -> None:
-            self.connection.settimeout(3)
-            try:
-                if self.path != "/github/events":
-                    self.send_error(404)
+    while not stop.is_set():
+        try:
+            for hint in messages(args):
+                if stop.is_set():
                     return
-                length = int(self.headers.get("Content-Length", "0"))
-                if not 0 < length <= MAX_WEBHOOK_BYTES or self.headers.get("Transfer-Encoding"):
-                    self.send_error(413)
-                    return
-                body = self.rfile.read(length)
-                if len(body) != length:
-                    raise ValueError("incomplete webhook body")
-                accepted = receive_webhook(
-                    args,
-                    repos,
-                    self.headers.get("X-GitHub-Event", ""),
-                    body,
-                    self.headers.get("X-Hub-Signature-256", ""),
-                    secret,
-                )
-            except PermissionError:
-                self.send_error(401)
-            except (ValueError, KeyError, TypeError):
-                self.send_error(400)
-            except OSError:
-                self.send_error(503)
-            else:
-                self.send_response(202)
-                self.end_headers()
-                if accepted:
+                if hint.get("type") in {"connected", "heartbeat", "disconnected"}:
+                    with watch_lock(args.state, wait=True):
+                        state = json.loads(args.state.read_text()) if args.state.exists() else {}
+                        observed = utc_now()
+                        state.setdefault("event_started_at", observed)
+                        intervals = state.setdefault("event_connections", [])
+                        if hint["type"] == "connected":
+                            intervals.append({"start": observed, "end": observed})
+                            state["event_connections"] = intervals[-64:]
+                        elif intervals:
+                            intervals[-1]["end"] = observed
+                        state["event_transport"] = "disconnected" if hint["type"] == "disconnected" else "connected"
+                        atomic_text(args.state, json.dumps(state) + "\n")
+                    continue
+                if hint.get("type") == "message":
+                    enqueue_event(args, repos, hint)
                     wake.set()
-
-    def handler(request: Any, client_address: Any, server: HTTPServer) -> BaseHTTPRequestHandler:
-        return Handler(request, client_address, server)
-
-    return HTTPServer(("127.0.0.1", args.webhook_port), handler)
+        except PermissionError as error:
+            print(json.dumps({"event_error": redact_string(str(error)), "permission_denied": True}), flush=True)
+            stop.set()
+            wake.set()
+            return
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            with watch_lock(args.state, wait=True):
+                state = json.loads(args.state.read_text()) if args.state.exists() else {}
+                state["event_transport"] = "disconnected"
+                atomic_text(args.state, json.dumps(state) + "\n")
+            print(json.dumps({"event_error": redact_string(type(error).__name__)}), flush=True)
+            stop.wait(5)
 
 
 def drain_events(args: Any, repos: list[str] | None, deadline: float) -> None:
     with watch_lock(args.state, wait=True):
         state = json.loads(args.state.read_text()) if args.state.exists() else {}
         pending = dict(state.get("pending_events", {}))
+    if float(state.get("next_event_read_at", 0)) > time.time():
+        return
     for key, hint in pending.items():
         if time.monotonic() >= deadline:
             break
+        if hint.get("fenced"):
+            continue
         event_args = argparse.Namespace(**{**vars(args), "event": hint["event"], "event_payload": hint["payload"]})
         try:
             complete = event_pass(event_args, repos, deadline) == 0
+        except GitHubReadError as error:
+            if error.result.status in {404, 410}:
+                complete = True
+            else:
+                failure = read_error(hint["payload"]["repository"]["full_name"], error)
+                with watch_lock(args.state, wait=True):
+                    state = json.loads(args.state.read_text())
+                    state["next_event_read_at"] = failure.get("retry_at") or time.time() + 60
+                    if not failure["retryable"]:
+                        state["pending_events"][key]["fenced"] = True
+                    atomic_text(args.state, json.dumps(state) + "\n")
+                print(json.dumps({"event_error": failure}), flush=True)
+                break
         except (*READ_ERRORS, subprocess.SubprocessError):
             print(json.dumps({"error": "message event read or routing failed; retained for sweep"}), flush=True)
             continue
@@ -176,13 +157,13 @@ def drain_events(args: Any, repos: list[str] | None, deadline: float) -> None:
 
 def watch_events(args: Any, repos: list[str] | None, initial: str, deadline: float) -> int:
     wake = threading.Event()
-    server = webhook_server(args, repos, wake)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    stop = threading.Event()
+    thread = threading.Thread(target=receive_events, args=(args, repos, wake, stop), daemon=True)
     thread.start()
     sweep_args = argparse.Namespace(**{**vars(args), "once": True})
     next_sweep = time.monotonic()
     try:
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and not stop.is_set():
             wake.clear()
             drain_events(args, repos, deadline)
             if time.monotonic() >= next_sweep:
@@ -190,11 +171,11 @@ def watch_events(args: Any, repos: list[str] | None, initial: str, deadline: flo
                 sweep_args.since = None
                 next_sweep = time.monotonic() + args.interval
             wake.wait(max(0, min(next_sweep, deadline) - time.monotonic()))
+        failed = stop.is_set()
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
-    return 0
+        stop.set()
+        thread.join(timeout=25)
+    return int(failed)
 
 
 def timestamp(value: str) -> datetime:
@@ -288,7 +269,7 @@ def read_opened(reader, repo: str, since: str) -> list[dict]:
         params={"since": query_since, "state": "all"},
         required_query_params={"since": query_since},
     )
-    return [opening_message(reader, issue) for issue in issues if issue["user"] is None or issue["user"]["type"] != "Bot"]
+    return [opening_message(reader, issue) for issue in issues]
 
 
 def opening_message(reader: GitHubReader, source: dict) -> dict:
@@ -319,7 +300,7 @@ def installed_repositories(reader, owner: str) -> list[str]:
 
 
 def read_error(repo: str, error: Exception) -> dict:
-    diagnostics = getattr(error, "diagnostics", {})
+    diagnostics = error.diagnostics if isinstance(error, GitHubReadError) else {}
     return {
         "repository": repo,
         "error": "read incomplete",
@@ -441,7 +422,19 @@ def cover(watermarks, repos, initial: str, rewind: bool) -> None:
             watermarks[repo] = initial
 
 
+def save_deliveries(path: Path, deliveries: dict) -> None:
+    with watch_lock(path, wait=True):
+        state = json.loads(path.read_text()) if path.exists() else {}
+        state["message_deliveries"] = deliveries
+        atomic_text(path, json.dumps(state) + "\n")
+
+
 def save_state(path: Path, watermarks, mention_seen=None, dispatched=(), deliveries=None):
+    with watch_lock(path, wait=True):
+        save_state_locked(path, watermarks, mention_seen, dispatched, deliveries)
+
+
+def save_state_locked(path: Path, watermarks, mention_seen=None, dispatched=(), deliveries=None):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     state = json.loads(path.read_text()) if path.exists() else {}
     atomic_text(
@@ -544,20 +537,12 @@ def event_pass(args: Any, repos: list[str] | None, deadline: float) -> int:
         print(json.dumps({"notices": [], "errors": [], "coverage_gaps": []}), flush=True)
         return 0
     repo, comment = source
-    with watch_lock(args.state, wait=True):
+    with watch_lock(args.state.with_name(args.state.name + ".routing"), wait=True):
         deliveries = load_deliveries(args.state)
         notice = make_notice(repo, comment, args.own_login, args.launchplane_login)
         notices = [notice] if notice else []
-        state = json.loads(args.state.read_text()) if args.state.exists() else {}
-
         def persist() -> None:
-            save_state(
-                args.state,
-                state.get("watermarks", {}),
-                state.get("mention_seen", {}),
-                state.get("change_requests_dispatched", []),
-                deliveries,
-            )
+            save_deliveries(args.state, deliveries)
 
         if args.ledger:
             route_notices(args, notices, deliveries, reader, event=True, persist=persist)
@@ -601,6 +586,44 @@ def make_notice(repo: str, comment: dict, own_logins: list[str], launchplane_log
 
 def delivery_key(notice: dict) -> str:
     return json.dumps([notice["url"], timestamp(notice["updated_at"]).isoformat()])
+
+
+def missed_event_cause(args: Any, notice: dict) -> str:
+    with watch_lock(args.state, wait=True):
+        state = json.loads(args.state.read_text()) if args.state.exists() else {}
+    at = timestamp(notice["updated_at"])
+    if state.get("event_started_at") and at < timestamp(state["event_started_at"]):
+        return ""
+    intervals = state.get("event_connections", [])
+    for index, interval in enumerate(intervals):
+        end = utc_now() if index == len(intervals) - 1 and state.get("event_transport") == "connected" else interval["end"]
+        if timestamp(interval["start"]) <= at <= timestamp(end):
+            return "not_notified_while_subscribed"
+    return "subscriber_disconnected"
+
+
+def reconcile_delivery(args: Any, receipt: dict) -> None:
+    if receipt.get("status") != "attempted" or not receipt.get("delivery_message"):
+        return
+    try:
+        entries = [*load_ledger(args.ledger), supervisor_recipient(args)]
+        matching = [entry for entry in entries if entry["session_id"] == receipt.get("recipient")]
+        if len(matching) != 1:
+            return
+        status = session_status(matching[0])
+        records = read_jsonl(Path(status["transcript"]))
+        for record in records:
+            payload = record.get("payload", {})
+            message = (
+                payload.get("message") if record.get("type") == "event_msg" and payload.get("type") == "user_message"
+                else text_content(record.get("message", {}).get("content")) if record.get("type") == "user"
+                else None
+            )
+            if message == receipt["delivery_message"]:
+                receipt.update(status="sent", reconciled="native_transcript")
+                return
+    except (*READ_ERRORS, subprocess.SubprocessError):
+        print(json.dumps({"routing_receipt": "native_reconciliation_unavailable"}), flush=True)
 
 
 class Recipient(NamedTuple):
@@ -652,15 +675,29 @@ def supervisor_recipient(args: Any) -> dict:
     return supervisor
 
 
-def audit_miss(args: Any, notice: dict, receipt: dict, persist: Any) -> None:
-    if receipt.get("audit_status") in {"sent", "attempted"}:
+def audit_miss(args: Any, receipt: dict, persist: Any) -> None:
+    if receipt.get("audit_status") == "sent":
         return
+    if receipt.get("audit_status") == "attempted":
+        repo, number = args.miss_issue.split("#")
+        reader = GitHubReader(operation="github.supervisor.foreign_watch", strict_actor=True, gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 30)
+        try:
+            comments = reader.paged_json(f"repos/{repo}/issues/{number}/comments", step_prefix="routing_miss_reconciliation")
+            matching = [row for row in comments if row.get("user", {}).get("login", "").casefold() in {value.casefold() for value in args.own_login} and f"private receipt {receipt['audit_token']}." in row.get("body", "")]
+            if len(matching) == 1:
+                receipt.update(audit_status="sent", audit_url=matching[0]["html_url"])
+                receipt.pop("audit_error", None)
+                persist()
+        except READ_ERRORS:
+            print(json.dumps({"routing_audit": "reconciliation_unavailable"}), flush=True)
+        return
+    receipt.setdefault("audit_token", uuid.uuid4().hex)
     receipt["audit_status"] = "attempted"
     receipt["audit_error"] = "miss record outcome unknown; reconcile before repeating"
     persist()
     repo, number = args.miss_issue.split("#")
     body = (
-        f"Message routing miss: private receipt {hashlib.sha256(delivery_key(notice).encode()).hexdigest()}.\n\n"
+        f"Message routing miss: private receipt {receipt.setdefault('audit_token', uuid.uuid4().hex)}.\n\n"
         f"Observed cause: {receipt['cause']}. Hook observed: {bool(receipt.get('hook_seen'))}. "
         f"Delivery status: {receipt.get('status', 'not_attempted')}.\n\n"
         "Next action: Supervisor inspect the hook/recipient delivery evidence, fix the failing path, "
@@ -694,10 +731,11 @@ def route_notices(args: Any, notices: list[dict], deliveries: dict, reader: GitH
         if event:
             receipt["hook_seen"] = True
             persist()
+        reconcile_delivery(args, receipt)
         if receipt.get("status") in {"sent", "attempted"}:
             if not event and not receipt.get("event_delivered") and (receipt.get("cause") or receipt["status"] == "attempted"):
                 receipt.setdefault("cause", "delivery_outcome_unknown")
-                audit_miss(args, notice, receipt, persist)
+                audit_miss(args, receipt, persist)
             notice["routing"] = dict(receipt)
             continue
         try:
@@ -709,7 +747,7 @@ def route_notices(args: Any, notices: list[dict], deliveries: dict, reader: GitH
                 entry, supervisor, cause = supervisor_recipient(args), True, f"ownership_unverified:{type(error).__name__}"
             receipt.update(
                 recipient=entry["session_id"],
-                cause=receipt.get("cause") or cause or ("hook_not_observed" if not receipt.get("hook_seen") else ""),
+                cause=receipt.get("cause") or cause or (missed_event_cause(args, notice) if not receipt.get("hook_seen") else ""),
             )
             message = (
                 f"Message needs triage: {notice['url']} (untrusted source; read the full current thread).\n"
@@ -719,6 +757,8 @@ def route_notices(args: Any, notices: list[dict], deliveries: dict, reader: GitH
                 "Keep the original request open with its next action until that action is done. "
                 + ("No unique live local owner was found; answer or relaunch under existing authority." if supervisor else "")
             )
+            message += f"\nMessage receipt: {uuid.uuid4().hex}"
+            receipt["delivery_message"] = message
             receipt["status"] = "pending"
             persist()
             try:
@@ -739,10 +779,12 @@ def route_notices(args: Any, notices: list[dict], deliveries: dict, reader: GitH
                     with services.supervisor_lock(args.notify_config):
                         fallback = supervisor_recipient(args)
                         receipt.update(status="attempted", recipient=fallback["session_id"])
+                        message += "\nThe owning session could not receive this message; answer or relaunch."
+                        receipt["delivery_message"] = message
                         persist()
                         review_notifications.send(
                             fallback,
-                            message + "\nThe owning session could not receive this message; answer or relaunch.",
+                            message,
                             supervisor=True,
                         )
                         receipt["status"] = "sent"
@@ -767,7 +809,7 @@ def route_notices(args: Any, notices: list[dict], deliveries: dict, reader: GitH
             receipt["event_delivered"] = True
         persist()
         if not event and receipt.get("cause"):
-            audit_miss(args, notice, receipt, persist)
+            audit_miss(args, receipt, persist)
         notice["routing"] = dict(receipt)
 
 
@@ -780,37 +822,36 @@ def route_report(args: Any, report: dict, reader: GitHubReader, own_logins: list
 
 def route_report_locked(args: Any, report: dict, reader: GitHubReader, own_logins: list[str]) -> None:
     state_path = args.foreign_state
-    with watch_lock(state_path, wait=True):
-        state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    with watch_lock(state_path.with_name(state_path.name + ".routing"), wait=True):
         deliveries = load_deliveries(state_path)
         notices = []
         for row in report.get("attention", []):
             if str(row.get("repo", "")).split("/")[0].casefold() != args.owner.casefold():
                 continue
+            version = row["updated_at"]
+            if row.get("comment_kind") in {"issue_body", "review"}:
+                number = int(row["number"])
+                endpoint = f"issues/{number}" if row["comment_kind"] == "issue_body" else f"pulls/{number}/reviews/{row['comment_id']}"
+                source = reader.get_json(f"repos/{row['repo']}/{endpoint}", step="radar_message_version")
+                version = message_edit_time(reader, source)
             notices.append(
                 {
                     "repository": row["repo"],
                     "url": row["comment_url"],
-                    "updated_at": row["updated_at"],
+                    "updated_at": version,
                     "author": row["author"],
                     "kind": "foreign",
                     "untrusted": True,
                 }
             )
-        routing_args = argparse.Namespace(**{**vars(args), "own_login": own_logins})
+        routing_args = argparse.Namespace(**{**vars(args), "own_login": own_logins, "state": state_path})
         route_notices(
             routing_args,
             notices,
             deliveries,
             reader,
             event=False,
-            persist=lambda: save_state(
-                state_path,
-                state.get("watermarks", {}),
-                state.get("mention_seen", {}),
-                state.get("change_requests_dispatched", []),
-                deliveries,
-            ),
+            persist=lambda: save_deliveries(state_path, deliveries),
         )
         routing = {notice["url"]: notice.get("routing", {}) for notice in notices}
         for row in report.get("attention", []):
@@ -833,7 +874,11 @@ def main() -> int:
     parser.add_argument("--interval", type=float, default=300)
     parser.add_argument("--deadline-seconds", type=float, default=1800)
     parser.add_argument("--once", action="store_true")
-    parser.add_argument("--webhook-port", type=int, help="receive signed GitHub events at 127.0.0.1:PORT/github/events")
+    parser.add_argument("--events", action="store_true", help="subscribe to Launchplane attention hints using existing operator configuration")
+    parser.add_argument("--config")
+    parser.add_argument("--env-config")
+    parser.add_argument("--url")
+    parser.add_argument("--receipts", action="store_true", help="read existing delivery receipts without sending or changing state")
     parser.add_argument("--ledger", type=Path)
     parser.add_argument("--notify-config", type=Path)
     parser.add_argument("--miss-issue", help="existing internal repair/ Supervisor issue, OWNER/REPO#NUMBER")
@@ -844,8 +889,8 @@ def main() -> int:
     repos = list(dict.fromkeys(args.repo)) if args.repo else None
     if repos and any(not REPOSITORY.fullmatch(repo) or repo.split("/")[0].casefold() != args.owner.casefold() for repo in repos):
         parser.error("repositories must belong to the configured Director")
-    if args.webhook_port is not None and (not 0 < args.webhook_port < 65536 or not args.ledger):
-        parser.error("--webhook-port needs a valid TCP port and routing configuration")
+    if args.events and not args.ledger:
+        parser.error("--events needs routing configuration")
     if any((args.ledger, args.notify_config, args.miss_issue)) and not all((args.ledger, args.notify_config, args.miss_issue)):
         parser.error("routing needs --ledger, --notify-config and --miss-issue together")
     if args.miss_issue and not re.fullmatch(rf"{re.escape(args.owner)}/[A-Za-z0-9_.-]+#[1-9][0-9]*", args.miss_issue, re.I):
@@ -853,9 +898,13 @@ def main() -> int:
     deadline = time.monotonic() + args.deadline_seconds
     initial = args.since or utc_now()
     try:
+        if args.receipts:
+            with watch_lock(args.state, wait=True):
+                print(json.dumps(load_deliveries(args.state)))
+            return 0
         timestamp(initial)
         with watch_lock(args.state.with_name(args.state.name + ".sweep")):
-            if args.webhook_port is not None:
+            if args.events:
                 return watch_events(args, repos, initial, deadline)
             return watch(args, repos, initial, deadline)
     except READ_ERRORS as error:
@@ -893,7 +942,7 @@ def watch(args, repos, initial, deadline):
                 args, watched, watermarks, seen, args.own_login, started, reader
             )
             notices, errors = dispatch_once(notices, dispatched) + mentions, errors + mention_errors
-        with watch_lock(args.state, wait=True):
+        with watch_lock(args.state.with_name(args.state.name + ".routing"), wait=True):
             deliveries = load_deliveries(args.state)
             checkpoint = json.loads(args.state.read_text()) if args.state.exists() else {}
             if getattr(args, "ledger", None):
@@ -903,13 +952,7 @@ def watch(args, repos, initial, deadline):
                     deliveries,
                     reader,
                     event=False,
-                    persist=lambda: save_state(
-                        args.state,
-                        checkpoint.get("watermarks", {}),
-                        checkpoint.get("mention_seen", {}),
-                        checkpoint.get("change_requests_dispatched", []),
-                        deliveries,
-                    ),
+                    persist=lambda: save_deliveries(args.state, deliveries),
                 )
             print(json.dumps({"notices": notices, "errors": errors, "coverage_gaps": gaps, "untrusted": True}), flush=True)
             if not any(row.get("routing", {}).get("status") == "pending" for row in notices):

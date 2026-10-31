@@ -131,11 +131,12 @@ class WatchTests(unittest.TestCase):
     def test_issue_or_pull_request_opened_by_an_outside_person_is_a_notice(self):
         reader = Mock()
         reader.paged_json.side_effect = feeds([], opened_items=[
-            opened(), opened("director"), opened("dependabot[bot]", "Bot"), opened(created="2026-10-09T11:00:00Z")])
+            opened(), opened("director"), opened("client-agent[bot]", "Bot"), opened(created="2026-10-09T11:00:00Z")])
         notices, errors, _ = self.scan(reader)
         self.assertEqual(errors, [])
         self.assertEqual([(n["author"], n["url"], n["excerpt"]) for n in notices],
-                         [("client", "https://github.com/director/project/pull/50", "Add tvOS support")])
+                         [(author, "https://github.com/director/project/pull/50", "Add tvOS support")
+                          for author in ("client", "client-agent[bot]")])
 
     def test_worker_questions_surface_on_the_next_scan_without_ordinary_own_posts(self) -> None:
         reader = Mock()

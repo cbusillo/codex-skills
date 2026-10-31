@@ -5,21 +5,24 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
-import hmac
-import http.client
 import io
 import json
 import tempfile
 import threading
 import unittest
-from contextlib import closing, nullcontext, redirect_stdout
+from contextlib import nullcontext, redirect_stdout
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock, patch
 
 import foreign_watch as watch
 import routine_check
+if TYPE_CHECKING:
+    from skills.github.scripts.github_plan_claim import marker
+    from skills.github.scripts.github_api import ApiResult
+else:
+    from github_plan_claim import marker
+    from github_api import ApiResult
 
 REPO = "director/project"
 URL = f"https://github.com/{REPO}/issues/7#issuecomment-42"
@@ -51,7 +54,7 @@ def claim(identifier: int = 1, session: str = SESSION, branch: str = BRANCH) -> 
         "user": {"login": "agent[bot]"},
         "created_at": "2026-10-31T01:00:00Z",
         "updated_at": "2026-10-31T01:00:00Z",
-        "body": f"<!-- github-plan:claim {json.dumps(record)} -->",
+        "body": marker(record),
     }
 
 
@@ -71,7 +74,7 @@ class MessageRoutingTests(unittest.TestCase):
             event="issue_comment",
             event_payload={},
         )
-        self.entry = {
+        self.entry: dict[str, Any] = {
             "repository": REPO,
             "supervisor_owned": True,
             "issue": 7,
@@ -86,6 +89,7 @@ class MessageRoutingTests(unittest.TestCase):
         self.enterContext(patch_attr(watch.services, "supervisor_lock", side_effect=lambda _: nullcontext()))
         self.status = self.enterContext(patch_attr(watch, "session_status", return_value={"safe_verdict": False}))
         self.reader = Mock()
+        self.enterContext(patch_attr(watch, "GitHubReader", return_value=self.reader))
         self.reader.get_json.return_value = {"number": 7}
         self.reader.paged_json.return_value = [claim()]
         self.persist = Mock()
@@ -175,7 +179,7 @@ class MessageRoutingTests(unittest.TestCase):
             for _ in range(2):
                 watch.route_notices(self.args, [notice()], deliveries, self.reader, event=True, persist=self.persist)
             self.assertEqual(sender.call_count, 1)
-            self.assertTrue(all(row["status"] == "attempted" for row in seen[0].values()))
+            self.assertIn(watch.delivery_key(notice()), seen[0])
             changed = {**notice(), "updated_at": "2026-10-31T02:01:00Z"}
             watch.route_notices(self.args, [changed], deliveries, self.reader, event=True, persist=self.persist)
             self.assertEqual(sender.call_count, 2)
@@ -280,43 +284,66 @@ class MessageRoutingTests(unittest.TestCase):
         self.assertEqual(report["attention"][0]["comment_url"], URL)
         self.assertTrue(report["routing_errors"])
 
-    def test_signed_http_event_durably_wakes_existing_watch_and_routes_canonical_source(self) -> None:
-        self.args.webhook_port = 0
-        secret = "synthetic-test-secret"
-        wake = threading.Event()
-        payload = {"repository": {"full_name": REPO}, "action": "created", "comment": {"id": 42, "body": "secret words"}}
-        body = json.dumps(payload).encode()
-        signature = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-        with patch.dict(watch.os.environ, {"FOREIGN_WATCH_WEBHOOK_SECRET": secret}):
-            server = watch.webhook_server(self.args, [REPO], wake)
-        server.timeout = 3
-        self.addCleanup(server.server_close)
+    def test_intake_progresses_during_delivery_and_keeps_a_newer_edit(self) -> None:
+        hint = {"repository": REPO, "source_kind": "comment", "source_id": 42, "request_number": 7, "delivery_id": "one"}
+        watch.enqueue_event(self.args, [REPO], hint)
         self.reader.get_json.return_value = {"html_url": URL, "updated_at": STAMP, "body": "canonical", "user": {"login": "client"}}
-        for signed, expected in (("sha256=wrong", 401), (signature, 202), (signature, 202)):
-            thread = threading.Thread(target=server.handle_request)
-            thread.start()
-            with closing(http.client.HTTPConnection(*server.server_address, timeout=3)) as connection:
-                connection.request(
-                    "POST", "/github/events", body, {"X-GitHub-Event": "issue_comment", "X-Hub-Signature-256": signed}
-                )
-                response = connection.getresponse()
-                self.assertEqual(response.status, expected)
-                response.read()
-            thread.join(timeout=3)
-        self.assertTrue(wake.is_set())
-        state = self.args.state.read_text()
-        self.assertNotIn(payload["comment"]["body"], state)
-        self.assertEqual(len(json.loads(state)["pending_events"]), 1)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def send(*_args: Any, **_kwargs: Any) -> None:
+            entered.set()
+            release.wait(3)
+
         with (
             patch_attr(watch, "GitHubReader", return_value=self.reader),
             patch_attr(watch, "recipient", return_value=(self.entry, False, "")),
-            patch_attr(watch.review_notifications, "send") as sender,
+            patch_attr(watch.review_notifications, "send", side_effect=send),
             redirect_stdout(io.StringIO()),
         ):
+            thread = threading.Thread(target=watch.drain_events, args=(self.args, [REPO], watch.time.monotonic() + 30))
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                watch.enqueue_event(self.args, [REPO], {**hint, "delivery_id": "two"})
+            finally:
+                release.set()
+                thread.join(3)
+        pending = json.loads(self.args.state.read_text())["pending_events"]
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(next(iter(pending.values()))["delivery_id"], "two")
+
+    def test_uncertain_native_send_is_confirmed_by_its_exact_user_message(self) -> None:
+        receipts = {}
+        with patch_attr(watch.review_notifications, "send", side_effect=ValueError("unknown send")) as send:
+            watch.route_notices(self.args, [notice()], receipts, self.reader, event=True, persist=self.persist)
+            receipt = receipts[watch.delivery_key(notice())]
+            Path(self.entry["transcript"]).write_text(json.dumps({"type": "event_msg", "payload": {"type": "user_message", "message": receipt["delivery_message"]}}) + "\n")
+            self.status.return_value = {"safe_verdict": False, "transcript": self.entry["transcript"]}
+            watch.route_notices(self.args, [notice()], receipts, self.reader, event=True, persist=self.persist)
+        send.assert_called_once()
+        self.assertEqual(receipt["status"], "sent")
+
+    def test_misses_distinguish_downtime_and_subscribed_intervals_without_historical_noise(self) -> None:
+        self.args.state.write_text(json.dumps({"event_started_at": STAMP, "event_connections": [{"start": STAMP, "end": STAMP}], "event_transport": "disconnected"}))
+        self.assertFalse(watch.missed_event_cause(self.args, {**notice(), "updated_at": "2026-10-30T00:00:00Z"}))
+        self.assertNotEqual(watch.missed_event_cause(self.args, notice()), watch.missed_event_cause(self.args, {**notice(), "updated_at": "2026-10-31T03:00:00Z"}))
+
+    def test_deleted_source_leaves_pending_and_provider_cooldown_survives_restart(self) -> None:
+        hint = {"repository": REPO, "source_kind": "comment", "source_id": 42, "request_number": 7, "delivery_id": "one"}
+        watch.enqueue_event(self.args, [REPO], hint)
+        gone = watch.GitHubReadError("gone", result=Mock(spec=ApiResult, status=404), diagnostics={})
+        with patch_attr(watch, "event_pass", side_effect=gone):
             watch.drain_events(self.args, [REPO], watch.time.monotonic() + 30)
-            sender.assert_called_once()
-            self.assertIn(URL, sender.call_args.args[1])
         self.assertFalse(json.loads(self.args.state.read_text())["pending_events"])
+        watch.enqueue_event(self.args, [REPO], hint)
+        retry_at = watch.time.time() + 300
+        limited = watch.GitHubReadError("cooldown", result=Mock(spec=ApiResult, status=429, failure=Mock(retryable=True)), diagnostics={"requests": [{"retryAt": retry_at}]})
+        with patch_attr(watch, "event_pass", side_effect=limited) as event:
+            watch.drain_events(self.args, [REPO], watch.time.monotonic() + 30)
+            watch.drain_events(self.args, [REPO], watch.time.monotonic() + 30)
+        event.assert_called_once()
+        self.assertEqual(json.loads(self.args.state.read_text())["next_event_read_at"], retry_at)
 
     def test_opening_event_and_sweep_use_actual_body_edit_and_equivalent_timestamps(self) -> None:
         source = {
