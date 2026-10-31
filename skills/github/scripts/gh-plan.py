@@ -2657,6 +2657,8 @@ def cmd_release(args: argparse.Namespace) -> None:
         record = github_plan_release.source_record(preflight["source"])
         body = (f"Handoff from {record['worker']}\n\nSource claim: {args.claim_comment}\nSession: {args.session}"
                 + (f"\n\n{handoff}" if handoff else ""))
+    else:
+        body += f"\n\nSession: {args.session}"
     retained_prs = release_retained_prs(issue, preflight["source"], expected_actor,
         handoff=handoff, declared=declared, excluded=excluded, ended_at=existing["created_at"] if existing is not None else None)
     if retained_prs:
