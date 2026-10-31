@@ -81,11 +81,10 @@ def request_seen(entry: dict, text: str, after: int) -> bool:
 
 
 def reconcile_runtime(config: dict, operation: Operation) -> tuple[Path, str]:
-    repo, pr, landing = config["repo"], config["pr"], config["landing_sha"]
+    repo, landing = config["repo"], config["landing_sha"]
     require(len(landing) == 40 and all(char in "0123456789abcdef" for char in landing), "landing", "requires a full landing SHA")
     reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
-    pull = reader.get_json(f"/repos/{repo}/pulls/{pr}", step="catalog_landing")
-    require(pull.get("merged") is True and pull.get("merge_commit_sha") == landing, "landing", "PR does not prove this landing SHA")
+    landing_pull(reader, repo, landing, expected_pr=config.get("pr"))
     source, runtime = Path(config["source_worktree"]), Path(config["runtime_worktree"])
     runtime_receipt = operation.run(
         "runtime",
@@ -361,17 +360,23 @@ def documentation_only(source: Path, landings: list[str]) -> bool:
     )
 
 
-def landing_pull(reader: GitHubReader, repo: str, landing: str) -> int:
-    pulls = reader.paged_json(f"/repos/{repo}/commits/{landing}/pulls", step_prefix="landing_pulls")
-    matches = [
-        pull["number"]
-        for pull in pulls
-        if pull.get("merged_at")
-        and pull.get("merge_commit_sha") == landing
-        and pull.get("base", {}).get("repo", {}).get("full_name") == repo
-    ]
-    require(bool(matches), "discovery", "default-branch commit has no exact merged PR")
-    return max(matches)
+def landing_pull(reader: GitHubReader, repo: str, landing: str, *, expected_pr: int | None = None) -> int:
+    deadline = reader.deadline_at if reader.deadline_at is not None else time.time() + 120
+    while time.time() < deadline:
+        pulls = reader.paged_json(f"/repos/{repo}/commits/{landing}/pulls", step_prefix="landing_pulls")
+        matches = [
+            pull["number"]
+            for pull in pulls
+            if pull.get("merged_at")
+            and pull.get("merge_commit_sha") == landing
+            and pull.get("base", {}).get("repo", {}).get("full_name") == repo
+            and (expected_pr is None or pull["number"] == expected_pr)
+        ]
+        if matches:
+            return max(matches)
+        time.sleep(min(2, max(0, deadline - time.time())))
+    configured = f" matching configured PR {expected_pr}" if expected_pr is not None else ""
+    raise GateFailed("discovery", f"default-branch commit {landing} has no exact merged PR{configured} after discovery deadline")
 
 
 def post_result(config: dict, operation: Operation, result: dict) -> str:
@@ -502,8 +507,6 @@ def poll(config: dict, evidence: Path, *, supersede_failed: bool = False) -> dic
             else:
                 if saved:
                     post_result(current, operation, saved)
-                reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
-                current["pr"] = landing_pull(reader, config["repo"], landing)
                 skip_smoke = documentation_only(source, landings)
                 bound, head = reconcile_runtime(current, operation)
                 try:
