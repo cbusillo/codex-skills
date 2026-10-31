@@ -357,8 +357,9 @@ proves recording: if the receipt is missing, report completion as unconfirmed
 and include the diagnostic. Audit exit 3 reports findings; use its receipts to
 determine whether completion was recorded.
 Loading this skill for a wording review or a direction-file change alone does
-not perform the daily procedure or weekly audit. Say which was actually done;
-do not stamp a turn just because direction was discussed.
+not perform the daily procedure or weekly audit. Say what this session did,
+and do not stamp a turn just because direction was discussed. Whether a turn
+or audit is still owed comes from the marker, not this session: read it first.
 
 A `--weekly` receipt lists `repos` audited, `unread` (each with its reason),
 `held` and `weekly_recorded`, with every repository's own audit under
