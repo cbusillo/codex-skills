@@ -28,7 +28,7 @@ decisions, statuses, board contents or narrative; open linked records for action
    repeated `--thread` adds full-history reads. Keep Client-agent identities in
    the existing people index. The digest reads current board, sessions, questions,
    radar and live watch output without waiting for the watch process to exit.
-   Unanswered comments, registered open queue questions, staffing requests and
+   Unanswered comments, registered open queue questions, agent next actions and
    coverage errors repeat until settled at source. Unregistered question hints
    appear as one count with a source link, not as queue entries. Watch history
    seeds full-history radar threads and question sources; fresh source
@@ -45,9 +45,9 @@ decisions, statuses, board contents or narrative; open linked records for action
    lifecycle lines are recognized; an unrecovered stop remains a coverage error.
    That notification window does not prune unanswered comment/question sources.
    No digest state file is needed.
-   `STAFF NOW` on an open program issue is a staffing candidate, not launch
-   authority; verify its linked items and ownership. Once staffed, reply
-   `Staffed: <request-comment-link>` on the program issue to clear the candidate.
+   Staffing is the item's own Next actor and concrete Next action, ranked by
+   `next`. Agent role names without a current claim are available work, subject
+   to the normal ownership check. There is no separate staffing-comment queue.
    Route Client and Client-agent comments to the owning worker for an answer.
    Open full source comments before acting; register/present questions through
    the existing queue rules. Optional routing writes the existing watch receipts

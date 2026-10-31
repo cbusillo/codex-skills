@@ -375,9 +375,8 @@ message.
 
 Use `Closes #123` by default when the PR's merge completes the issue's
 deliverable. Use `Refs #123` when the PR delivers only part of a multi-PR issue,
-and before handoff split every remaining step into an open sub-issue that names
-its next actor, or record the event it waits on;
-[`ready`](cli-reference.md#ready-handoffs) refuses otherwise.
+and keep its next concrete action and actor current. Record a wait only when
+the remaining work needs a person, decision or external event.
 Qualify either keyword as `OWNER/repo#N` when its issue is in another repository.
 Superseded or competing PRs also retain non-closing references under the
 [canonical implementation procedure](#superseded-or-competing-prs).

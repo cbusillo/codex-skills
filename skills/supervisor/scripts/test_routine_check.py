@@ -87,8 +87,8 @@ class RoutineCheckTests(unittest.TestCase):
             output = routine_check.digest({"comments": {"attention": rows}})
             self.assertEqual(opening.url in output, len(comments) == 1)
 
-    def test_held_accept_and_staff_now_survive_unchanged_checks(self) -> None:
-        staffing = comment("STAFF NOW, two independent source slices: OPW406 and Devkit313", ident=6532738729)
+    def test_held_accept_and_agent_next_action_survive_unchanged_checks(self) -> None:
+        staffing = comment("## Current Status\nNext actor: agent:integrator\nNext action: Finish the two source slices.", ident=6532738729)
         program = goal_board.child_row(child(277, comments=[staffing]), TRUSTED)
         url = "https://github.com/cbusillo/odoo-tenant-cm/pull/290#issuecomment-6531928916"
         client_comment = routine_check.radar.normalize_issue_comment(
@@ -132,7 +132,7 @@ class RoutineCheckTests(unittest.TestCase):
         for _ in range(2):
             output = routine_check.digest(sources)
             self.assertIn(client["comment_url"], output)
-            self.assertIn(staffing["url"], output)
+            self.assertIn(program["url"], output)
             self.assertIn("worker", output)
             self.assertIn("question", output)
 
@@ -217,15 +217,6 @@ class RoutineCheckTests(unittest.TestCase):
             with log.open("a") as stream:
                 stream.write('\n{"ok":true,"landings":[]}\n{"event":"completed","exit_code":0}')
             self.assertFalse(routine_check.watch_report(log, service=True)["errors"])
-
-    def test_staffing_clears_only_after_its_targeted_reply(self) -> None:
-        request = comment("STAFF NOW: take the next source slice")
-        unrelated = comment(f"Staffed: {request['url']}0", ident=2)
-        node = child(277, comments=[request, unrelated])
-        self.assertTrue(goal_board.child_row(node, TRUSTED)["staffing_requests"])
-        node["comments"]["nodes"].append(comment(f"Staffed the requested slices: {request['url']}", ident=3))
-        node["comments"]["totalCount"] += 1
-        self.assertFalse(goal_board.child_row(node, TRUSTED)["staffing_requests"])
 
     def test_watch_notifications_do_not_accumulate_bot_noise(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -315,9 +306,9 @@ class RoutineCheckTests(unittest.TestCase):
             self.assertIn(good_url, output)
             self.assertIn("source unread", output)
 
-    def test_selected_reader_404_preserves_staffing_rows_and_unknown_authority_is_explicit(self) -> None:
+    def test_selected_reader_404_preserves_next_action_and_unknown_authority_is_explicit(self) -> None:
         reader_module = routine_check.github_read
-        request = comment("STAFF NOW: take the next source slice")
+        request = comment("## Current Status\nNext actor: agent\nNext action: Take the next source slice.")
         program = child(277, comments=[request])
         args = argparse.Namespace(
             owner="owner",
@@ -344,7 +335,7 @@ class RoutineCheckTests(unittest.TestCase):
             patch.object(routine_check.oq, "default_decision_authors", return_value=["Shiny-Code-App[bot]"]),
         ):
             report = routine_check.build_readers(args, {})["board"]()
-            self.assertIn(request["url"], routine_check.digest({"board": report}))
+            self.assertIn(program["url"], routine_check.digest({"board": report}))
             with patch.object(routine_check.oq, "default_decision_authors", return_value=[]):
                 report = routine_check.build_readers(args, {})["board"]()
             self.assertFalse(report["coverage"]["complete"])

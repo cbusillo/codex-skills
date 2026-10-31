@@ -460,40 +460,15 @@ class OverdueTriggerTests(unittest.TestCase):
             "number": number, "state": "open", "user": {"login": "example"}, "body": body,
             "html_url": f"https://github.com/example/catalog/issues/{number}"}}
 
-    def test_passed_parked_until_and_waiting_for_dates_are_reported(self):
-        records = [
-            self.issue(1, "State: parked.\nParked until: October 13, 2026 (3 days of validated running)."),
-            self.issue(2, "Waiting for: the measurement after 2026-10-14T22:24:00Z."),
-            self.issue(3, "Parked until: 2026-10-30, when the window opens."),
-            self.issue(4, "Waiting for: None for the local checks (2026-10-12 scope comment)."),
-            self.issue(5, "Waiting for: the Client's DNS change; since 2026-10-01"),
-            self.issue(6, "Parked until: `next` skips a due follow-up a second time."),
-        ]
-        rows = [r for r in self.report(records)["findings"] if r["kind"] == "passed_dated_wait"]
-        self.assertEqual({r["number"] for r in rows}, {1, 2})
-        self.assertTrue(all(r["age_hours"] >= 2 and r["next_actor"] for r in rows))
-
-    def test_structured_wait_record_supersedes_prose(self):
-        reviewed = sweep.github_plan_wait.reviewed
-        records = [
-            self.issue(1, "Parked until: 2026-10-13.", structured=reviewed(evidence="Released by the Director")),
-            self.issue(2, None, structured=reviewed(evidence="Parked", waiting_for="A quiet week of backups",
-                                                    ends_when="2026-10-14, compare consecutive backups")),
-            self.issue(3, None, structured=reviewed(evidence="Parked", waiting_for="A quiet week of backups",
-                                                    ends_when="2026-10-20, compare consecutive backups")),
-        ]
-        rows = [r for r in self.report(records)["findings"] if r["kind"] == "passed_dated_wait"]
-        self.assertEqual({r["number"] for r in rows}, {2})
-
     def test_next_action_routed_to_the_supervisor_is_listed_oldest_first_per_repository(self):
         """codex-skills#2024: 199 issues handed their next step back to the Supervisor unseen."""
         records = [
-            self.issue(1, "Next action: Supervisor routes PR #9 through the merge train."),
-            self.issue(2, "- **Next action:** The Supervisor brings Q426 to Chris."),
+            self.issue(1, "Next actor: agent:supervisor\nNext action: Supervisor routes PR #9 through the merge train."),
+            self.issue(2, "Next actor: agent:supervisor\n- **Next action:** The Supervisor brings Q426 to Chris."),
             self.issue(3, "Next action: Next agent refreshes PR #9 against main."),
             self.issue(4, "State: active.\nWaiting for: the Supervisor's ledger week."),
         ]
-        other = self.issue(5, "Next action: When claim 61 goes quiet, the Supervisor releases it.")
+        other = self.issue(5, "Next actor: agent:supervisor\nNext action: When claim 61 goes quiet, the Supervisor releases it.")
         other["repo"] = "example/other"
         records.append(other)
         for record, edited in zip(records, ["2026-10-13T00:00:00Z", "2026-10-11T00:00:00Z", "2026-10-11T00:00:00Z",
@@ -523,7 +498,7 @@ class OverdueTriggerTests(unittest.TestCase):
                     "html_url": f"https://github.com/example/catalog/issues/{number}#issuecomment-{cid}"}
         def waiting(number, cid, days_ago, actor, evidence="Refused install; by-hand steps in an earlier comment"):
             return comment(number, cid, days_ago, sweep.github_plan_wait.marker(
-                reviewed(evidence=evidence, waiting_for=actor, ends_when="The helper is installed")))
+                {"version": 1, "state": "waiting", "evidence": evidence, "waits": [{"waiting_for": actor, "ends_when": "The helper is installed"}]}))
         question = comment(5, 50, 6, "Director question: Q900. Run `make install` here? After it runs, worktrees retire.")
         records = [
             self.issue(1, comments=[waiting(1, 10, 5, "Chris or the Supervisor")]),
@@ -560,26 +535,11 @@ class OverdueTriggerTests(unittest.TestCase):
         parsed = [r for r in digest_summary.parse(sweep.markdown(result))[2] if r["kind"] == "unasked_director_wait"]
         self.assertEqual([r["person"] for r in parsed], [True] * 6)
 
-    def test_next_action_counts_only_the_supervisor_as_an_actor(self):
-        """codex-skills#2096: a path or description naming the Supervisor is not a handoff to it."""
-        routed = [
-            "Supervisor; existing fleet owner records the event result.",
-            "The Supervisor (who holds the enqueue log) posts the receipt here.",
-            "At the recorded event the Supervisor posts both counts.",
-            "CP806-C1 follows CI, waits for the Supervisor's OpenAI review on #875, then runs ready.",
-            "After CI, handoff to the Supervisor for landing.",
-        ]
-        quiet = [
-            "Next agent fixes skills/supervisor/scripts/digest_summary.py.",
-            "Agent selects the next fixture cluster; the five duplicated supervisor terminal graphs are resolved.",
-            "An agent replaces Supervisor accepted-first hand ordering with automatic batching.",
-            "Next agent fixes the Supervisor scripts and runs their tests.",
-            "The merge train lands PR #3854; nothing further for the Supervisor to route.",
-        ]
-        for text in routed:
-            self.assertEqual(sweep.supervisor_next_action(f"## Current Status\nNext action: {text}"), text)
-        for text in quiet:
-            self.assertIsNone(sweep.supervisor_next_action(f"## Current Status\nNext action: {text}"), text)
+    def test_supervisor_routing_uses_the_current_actor_instead_of_action_wording(self) -> None:
+        for action in ("Route the reviewed change.", "Fix skills/supervisor/scripts/tool.py."):
+            body = f"## Current Status\nNext actor: agent:supervisor\nNext action: {action}"
+            self.assertEqual(sweep.supervisor_next_action(body), action)
+            self.assertIsNone(sweep.supervisor_next_action(body.replace("agent:supervisor", "agent")))
 
     def test_status_fields_stay_on_their_own_line(self):
         """codex-skills#2096: an empty field never reads the next field as its value."""
@@ -591,6 +551,8 @@ class OverdueTriggerTests(unittest.TestCase):
 class FakeReader:
     def __init__(self):
         self.paths = []
+        self.gh_cmd = "fake-gh"
+        self.deadline_at = 10000000000.0
         self.remaining = 1000
         self.limit = None
         self.pages = {}
@@ -631,6 +593,96 @@ class InventoryTests(unittest.TestCase):
 
     def collect(self, **kwargs):
         return sweep.collect(["test/repo"], reader=self.reader, now=self.now, **kwargs)
+
+    def applying_reader(self) -> None:
+        original = self.reader.get_json
+
+        def read(path: str, *, step: str) -> Any:
+            if "/actions/workflows?" in path:
+                return {"workflows": [], "total_count": 0}
+            return original(path, step=step)
+
+        self.reader.get_json = read
+
+    def test_applying_release_recheck_accepts_stop_and_keeps_the_read_deadline(self) -> None:
+        self.applying_reader()
+        event = {"version": 1, "kind": "release_published", "repo": "test/repo", "minimum_tag": "v1.0", "evidence": "Release window"}
+        item = {"number": 1, "state": "closed", "comments": 0, "user": {"login": "test"},
+                "body": sweep.github_plan_trigger.marker(event), "html_url": "https://github.com/test/repo/issues/1"}
+        self.reader.pages[("repos/test/repo/issues", 1, "closed")] = [item]
+        self.reader.repositories["repos/test/repo/issues/1"] = item
+        self.reader.pages[("repos/test/repo/releases", 1, None)] = [
+            {"tag_name": "v1.0", "draft": False, "prerelease": False, "published_at": self.now.isoformat()}]
+        original_apply = sweep.direction_next.apply
+        posts = unittest.mock.Mock()
+
+        def apply(repo: str, number: int, action: dict, **kwargs: Any) -> bool:
+            return original_apply(repo, number, action, **kwargs, run=unittest.mock.Mock(), post=posts)
+
+        with (patch.object(sweep.github_read, "GitHubReader", return_value=self.reader),
+              patch.object(sweep.direction_next, "apply", side_effect=apply),
+              patch.object(sweep.direction_next.github_issue, "set_issue_state", side_effect=lambda *_args, **_kwargs: item.update(state="open")) as reopen,
+              patch.object(sweep.direction_next.github_issue, "edit_issue")):
+            result = self.collect(apply_next=True, director="test")
+        reopen.assert_called_once()
+        self.assertTrue(any(row["kind"] == "reopen" and row["applied"] for row in result["actions"]))
+        self.assertFalse(any(gap["reason"] == "next_action_failed" for gap in result["coverage_gaps"]))
+        self.assertFalse(any(row["kind"] == "reopen_trigger_fired" for row in result["findings"]))
+
+    def test_one_unreadable_record_does_not_stop_later_actions(self) -> None:
+        self.applying_reader()
+        clear = sweep.github_plan_wait.marker(sweep.github_plan_wait.reviewed(evidence="Available agent step"))
+        items = [{"number": number, "state": "open", "comments": 0, "user": {"login": "test"},
+                  "updated_at": "2026-10-10T00:00:00Z", "body": "## Current Status\nNext actor: agent\nNext action: Finish.\n" + clear}
+                 for number in (1, 2)]
+        self.reader.pages[("repos/test/repo/issues", 1, "open")] = items
+        self.reader.repositories["repos/test/repo/issues/2"] = items[1]
+        failure = sweep.direction_next.github_issue._local_error(
+            "fixture read refusal", operation="github.issue.edit", cause="authorization_denied", failed_step="labels")
+        with (patch.object(sweep.github_read, "GitHubReader", return_value=self.reader),
+              patch.object(sweep.direction_next, "apply", side_effect=[failure, True]) as apply):
+            result = self.collect(apply_next=True, director="test")
+        self.assertEqual(apply.call_count, 2)
+        self.assertEqual([row["number"] for row in result["actions"]], [2])
+        self.assertTrue(any(gap["reason"] == "next_action_failed" for gap in result["coverage_gaps"]))
+
+    def test_archived_reopen_triggers_are_reported_without_writes(self) -> None:
+        self.applying_reader()
+        self.reader.repositories["repos/test/repo"]["archived"] = True
+        event = {"version": 1, "kind": "date", "at": "2026-01-01", "evidence": "Historical checkpoint"}
+        self.reader.pages[("repos/test/repo/issues", 1, "closed")] = [{
+            "number": 1, "state": "closed", "comments": 0, "user": {"login": "test"}, "body": sweep.github_plan_trigger.marker(event)}]
+        with (patch.object(sweep.github_read, "GitHubReader", return_value=self.reader),
+              patch.object(sweep.direction_next, "apply") as apply):
+            result = self.collect(apply_next=True, director="test")
+        apply.assert_not_called()
+        self.assertTrue(any(row["kind"] == "reopen_trigger_fired" for row in result["findings"]))
+
+    def test_applying_scheduled_job_uses_the_latest_pair_for_each_workflow(self) -> None:
+        self.applying_reader()
+        original = self.reader.get_json
+        pair = [{"id": number, "workflow_id": 7, "event": "schedule", "run_number": number,
+                 "status": "completed", "conclusion": "failure"} for number in (2, 1)]
+
+        def read(path: str, *, step: str) -> Any:
+            if "/actions/workflows?" in path:
+                return {"workflows": [{"id": 7, "state": "active"}], "total_count": 1}
+            if "/actions/workflows/7/runs?" in path:
+                return {"workflow_runs": pair, "total_count": 200}
+            if path.startswith("search/issues?"):
+                return {"incomplete_results": False, "items": []}
+            return original(path, step=step)
+
+        self.reader.get_json = read
+        with (patch.object(sweep.github_read, "GitHubReader", return_value=self.reader),
+              patch.object(sweep.direction_next, "scheduled_issue", return_value={"issue": {"number": 8}}) as intake):
+            result = self.collect(apply_next=True, director="test")
+        intake.assert_called_once_with("test/repo", pair, candidates=[])
+        self.assertTrue(any(row["kind"] == "scheduled_job" for row in result["actions"]))
+
+    def test_applying_scope_must_name_the_director_account(self) -> None:
+        with self.assertRaises(audit.AuditError):
+            self.collect(apply_next=True)
 
     def test_daily_collector_computes_tooling_share_and_sender_keeps_it(self) -> None:
         pulls: dict[int, dict[str, Any]] = {number: {"number": number, "title": "Tool change", "body": "Removed: unused code" if number % 2 else "",
@@ -854,7 +906,7 @@ class InventoryTests(unittest.TestCase):
         for repo in ("test/repo", "test/other"):
             self.reader.pages[(f"repos/{repo}/issues", 1, "open")] = [{
                 "number": 1, "state": "open", "comments": 1,
-                "body": "## Current Status\nNext action: Supervisor routes the reviewed change.",
+                "body": "## Current Status\nNext actor: agent:supervisor\nNext action: Supervisor routes the reviewed change.",
                 "user": {"login": "test"}}]
         original = self.reader.get_json
 
@@ -892,7 +944,7 @@ class InventoryTests(unittest.TestCase):
 
     def test_supervisor_routed_status_is_aged_from_its_body_edit(self):
         self.reader.pages[("repos/test/repo/issues", 1, "open")] = [{
-            "number": 1, "state": "open", "body": "## Current Status\nNext action: Supervisor routes PR #2.",
+            "number": 1, "state": "open", "body": "## Current Status\nNext actor: agent:supervisor\nNext action: Supervisor routes PR #2.",
             "user": {"login": "test"}, "updated_at": self.now.isoformat()}]
         self.reader.graphql_json = lambda *args, **kwargs: SimpleNamespace(ok=True, body={"data": {"repository": {
             "issue": {"lastEditedAt": "2026-10-14T00:00:00Z", "createdAt": "2026-10-01T00:00:00Z"}}}})
@@ -997,7 +1049,7 @@ class InventoryTests(unittest.TestCase):
                 reader.pages[("repos/test/repo/issues", 1, "open")] = [{"number": n, "state": "open"} for n in range(1, 50)]
                 reader.pages[("repos/test/repo/issues", 1, "open")][0].update({
                     "user": {"login": "test"}, "body": sweep.github_plan_wait.marker(sweep.github_plan_wait.reviewed(
-                        evidence="A later comment may clear this body marker", waiting_for="Supervisor", ends_when="Reply recorded"))})
+                        evidence="A later comment may clear this body marker", waiting_for="Client", ends_when="Reply recorded"))})
                 original = reader.get_json
                 def read(path, *, step):
                     if "/comments?" in path:

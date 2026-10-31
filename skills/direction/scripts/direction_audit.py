@@ -2165,6 +2165,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--history-days", type=int, default=30, help="closed-promise history window; open work and indexed reopen triggers have no age cutoff")
     parser.add_argument("--max-requests", type=int, default=800, help="stranded sweep's global request budget")
     parser.add_argument("--deadline-seconds", type=float, default=600, help="stranded sweep's total read deadline")
+    parser.add_argument("--apply-next", action="store_true", help="Apply reversible next-record actions in the Director's repositories")
     parser.add_argument("--stranded-format", choices=("json", "markdown"), default="json")
     parser.add_argument("--worktree-root", type=pathlib.Path,
                         help="flag finished task worktrees under this root; defaults to the host's configured hostHelper root")
@@ -2181,6 +2182,8 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--weekly requires --owner OWNER")
     if (args.stranded_owner or args.stranded_repo or args.question_queue or args.worktree_root) and not args.stranded_work_only:
         parser.error("stranded inventory scope requires --stranded-work-only")
+    if args.apply_next and not args.stranded_work_only:
+        parser.error("--apply-next requires --stranded-work-only")
     if args.stranded_work_only:
         if args.stale_waits_only or args.prune_unadopted or args.apply_prune or args.remove_missing_repo:
             parser.error("--stranded-work-only cannot run another audit mode")
@@ -2216,7 +2219,7 @@ def main(argv: list[str] | None = None) -> int:
             owner=args.stranded_owner, director_names=tuple(args.director_name),
             question_queue=args.question_queue,
             policy_reader=lambda repo: direction_stranded.train_policy(repo, deadline_at=deadline_at),
-            director=args.owner, worktree_root=worktree_root,
+            director=args.owner, worktree_root=worktree_root, apply_next=args.apply_next,
         )
         print(direction_stranded.markdown(result) if args.stranded_format == "markdown" else json.dumps(result, indent=2))
         return 0 if result["complete"] else 3

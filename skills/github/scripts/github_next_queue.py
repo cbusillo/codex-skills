@@ -19,7 +19,7 @@ import github_plan_wait
 import github_direction_next
 import github_next_pr
 from github_plan_status.discussion import current_status, status_field
-from github_plan_status import next_actor
+from github_plan_status import next_actor, waits
 from github_plan_status.references import linked_issues
 
 
@@ -67,6 +67,8 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
                 conflicts.extend(source_conflicts)
         wait = github_plan_wait.current(
             {"body": discussion.get("body") or "", "user": {"login": discussion.get("author") or ""}}, comments, trusted)
+        original_wait = wait
+        wait = waits.project_dates(wait)
         if resume_from:
             source_item = resume_source or item
             source_comments = ([{**comment, "user": {"login": comment.get("author") or ""}}
@@ -94,7 +96,7 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
             ended_branches=github_plan_claim.ended_artifact_branches(ended, comments, ownership.get("pulls") or []))
     except (ValueError, KeyError, TypeError) as exc:
         return {**row, "error": "unreadable_ownership_or_wait", "detail": str(exc)}
-    return {**row, "conflicts": conflicts, "artifacts": artifacts, "wait": wait}
+    return {**row, "conflicts": conflicts, "artifacts": artifacts, "wait": wait, "event_completed": wait != original_wait and wait["state"] == "clear"}
 
 
 def released_actor(actor: str, discussion: dict[str, Any], trusted: set[str]) -> bool:
@@ -141,6 +143,8 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
     row["wait_review_required"] = wait["state"] == "review"
     if wait["state"] == "waiting":
         return {**row, "state": "waiting", "reason": "recorded_wait", "wait": wait}
+    if facts["event_completed"] and actor and actor.startswith("event:"):
+        actor = row["next_actor"] = "agent"
     if actor and actor.startswith(("person:", "event:")):
         return {**row, "state": "waiting", "reason": "recorded_next_actor"}
     if projected.get("reason") in {"current_head_ready", "current_head_client_wait"}:
@@ -155,8 +159,8 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
         return {**row, "state": "review", "reason": projected["reason"]}
     if not status_known:
         return {**row, "state": "review", "reason": "incomplete_discussion"}
-    if (actor == "agent" or not next_actor.fields(status)) and projected.get("next_actor") == "agent":
-        actor = row["next_actor"] = "agent"
+    if ((actor or "").startswith("agent") or not next_actor.fields(status)) and projected.get("next_actor") == "agent":
+        actor = row["next_actor"] = actor or "agent"
         row["next_action"] = row["next_action"] or projected["next_action"]
         row["wait_review_required"] = False
         wait = github_plan_wait.reviewed(evidence="Saved Client acceptance ends the current-head Client handoff wait.")
@@ -165,7 +169,6 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
     if actor.startswith("agent:"):
         if released_actor(actor, discussion, trusted):
             return {**row, "state": "needs_status", "reason": "next_actor_session_released"}
-        return {**row, "state": "underway", "reason": "recorded_next_actor"}
     if wait["state"] == "review":
         return {**row, "state": "review", "reason": "wait_review_required", "wait_review_required": True}
     if not ownership.get("complete"):
