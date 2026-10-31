@@ -23,6 +23,7 @@ class CatalogLandingTests(unittest.TestCase):
         self.config: dict[str, Any] = {"repo": "owner/catalog", "issue": 1, "source_worktree": str(self.root),
                                        "runtime_worktree": str(self.root), "ledger": str(self.root / "ledger.json"),
                                        "supervisor_session": "controller"}
+        self.original_run = Operation.run
         runtime = patch.object(Operation, "run", side_effect=lambda gate, *args, **kwargs:
                                {"ok": True} if gate.startswith("supersede_") else {"status": "already_current", "after_sha": "tip"})
         self.runner = runtime.start()
@@ -66,10 +67,11 @@ class CatalogLandingTests(unittest.TestCase):
             self.assertFalse(landing.poll(self.config, self.root)["ok"])
             self.assertFalse(landing.poll(self.config, self.root)["ok"])
             self.assertEqual(verify.call_count, 1)
-            self.assertTrue(landing.poll(self.config, self.root, resume_failed=True)["ok"])
+            result = landing.poll(self.config, self.root, resume_failed=True)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["landings"], ["first", "second"])
             self.assertEqual(verify.call_count, 2)
             self.assertEqual(json.loads((self.root / "cursor.json").read_text())["last_sha"], "second")
-            self.assertEqual(json.loads((self.root / "second/result.json").read_text())["landings"], ["first", "second"])
 
     def test_only_human_documentation_skips_smoke_after_runtime_reconciliation(self) -> None:
         for index, files in enumerate(("README.md\ndocs/guide.md", "skills/thing/SKILL.md", "instructions/global.md", "README.md\nscript.py")):
@@ -103,45 +105,42 @@ class CatalogLandingTests(unittest.TestCase):
             self.assertTrue(landing.poll(self.config, self.root)["ok"])
 
 
-    def test_supersede_revalidates_exact_retired_sources_and_includes_new_fix(self) -> None:
+    def test_supersede_preserves_failed_attempt_and_includes_new_fix_only_after_closeout(self) -> None:
         with (patch.object(landing, "pending_landings", side_effect=[["B"], ["C"]]),
               patch.object(landing, "landing_pull", return_value=2), patch.object(landing, "git", return_value="script.py"),
               patch.object(landing, "verify", side_effect=[{"ok": False, "gate": "smoke_acknowledgement"}, {"ok": True}]) as verify,
-              patch.object(landing, "post_result", return_value="comment")):
+              patch.object(landing, "post_result", return_value="comment"),
+              patch.object(landing, "require_closed_smokes", side_effect=[GateFailed("closeout", "unfinished"), None]) as closeout):
             self.assertFalse(landing.poll(self.config, self.root)["ok"])
-            old = Operation(self.root / "B", [self.config["repo"], "B"])
-            source = {"session_id": "old-native", "generation": "original", "ledger": str(Path(self.config["ledger"]).resolve())}
-            old.state["steps"].update(codex_launch={"complete": True}, codex_source=source)
-            landing.save_state(old.path, old.state)
-            close = old.evidence / "codex-closeout"
-            close.mkdir()
-            journal = {"identity": [source["ledger"], source["session_id"]], "generation": source["generation"]}
-            landing.save_state(close / "operation.json", journal)
+            old = verify.call_args.args[1]
+            retained = {path: path.read_bytes() for path in old.evidence.glob("*.json")}
             with self.assertRaises(GateFailed):
                 landing.poll(self.config, self.root, supersede_failed=True)
             self.assertEqual(verify.call_count, 1)
-            journal["retired_generation"] = "another-generation"
-            landing.save_state(close / "operation.json", journal)
-            with self.assertRaises(GateFailed):
-                landing.poll(self.config, self.root, supersede_failed=True)
-            journal["retired_generation"] = source["generation"]
-            landing.save_state(close / "operation.json", journal)
-            old.state["steps"]["request"] = {"complete": False}
-            landing.save_state(old.path, old.state)
-            with self.assertRaises(GateFailed):
-                landing.poll(self.config, self.root, supersede_failed=True)
-            old.state["steps"]["request"] = {"complete": True}
-            landing.save_state(old.path, old.state)
             result = landing.poll(self.config, self.root, supersede_failed=True)
             self.assertTrue(result["ok"])
             self.assertEqual(result["landings"], ["B", "C"])
             self.assertEqual(json.loads((self.root / "cursor.json").read_text())["last_sha"], "C")
-            self.assertFalse(json.loads((old.evidence / "result.json").read_text())["ok"])
+            self.assertEqual({path: path.read_bytes() for path in old.evidence.glob("*.json")}, retained)
             self.assertNotEqual(verify.call_args.args[1].evidence, old.evidence)
-            rechecks = [call for call in self.runner.call_args_list if call.args[0].startswith("supersede_")]
-            self.assertEqual(len(rechecks), 1)
-            self.assertIn(str(close), rechecks[0].args[1])
-            self.assertIn(source["session_id"], rechecks[0].args[1])
+            self.assertEqual(closeout.call_count, 2)
+
+    def test_unknown_report_is_settled_by_exact_read_without_another_write(self) -> None:
+        operation = Operation(self.root, ["report"])
+        result = {"ok": True, "landings": ["landing"], "runtime_sha": "runtime"}
+        with patch.object(Operation, "run", self.original_run), patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("comment", 360)):
+            with self.assertRaises(GateFailed):
+                landing.post_result(self.config, operation, result)
+        report = (self.root / "result.md").read_text()
+        posted = {"user": {"login": "agent[bot]"}, "body": report, "html_url": "original-comment"}
+        with (patch.object(Operation, "run", self.original_run), patch.object(subprocess, "run") as write,
+              patch.object(landing.github_identity, "automation_login", return_value="agent[bot]"),
+              patch.object(landing.GitHubReader, "paged_json", side_effect=[[], [posted, posted], [posted]])):
+            for _ in range(2):
+                with self.assertRaises(GateFailed):
+                    landing.post_result(self.config, operation, result)
+            self.assertEqual(landing.post_result(self.config, operation, result), posted["html_url"])
+            write.assert_not_called()
 
     def test_prelaunch_read_failure_retries_without_explicit_resume(self) -> None:
         with (patch.object(landing, "pending_landings", return_value=["first"]),

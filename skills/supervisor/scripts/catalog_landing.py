@@ -248,6 +248,7 @@ def verify_smoke(config: dict, operation: Operation, harness: str, provider: str
                 "--without-browser", *extra,
             ],
             once=True,
+            timeout=360,
         )
     if harness == "claude":
         native = json.loads((operation.evidence / "claude-native.json").read_text())
@@ -256,12 +257,7 @@ def verify_smoke(config: dict, operation: Operation, harness: str, provider: str
         entries = [row for row in load_ledger(ledger) if row["session_id"] == launch["native_session_id"]]
         require(len(entries) == 1, phase, "fresh Codex native registration is missing")
         entry = entries[0]
-    source = {"session_id": entry["session_id"], "ledger": str(ledger.resolve()),
-              "generation": fingerprint({key: value for key, value in release.closure_identity(entry).items() if key != "handoff_url"})}
-    require(operation.state["steps"].get(harness + "_source", source) == source,
-            "identity", "smoke source generation changed")
-    operation.state["steps"][harness + "_source"] = source
-    save_state(operation.path, operation.state)
+    record_smoke_source(operation, harness, entry, ledger)
     if not operation.state["steps"].get(harness + "_handoff_request"):
         acknowledgement = observe(entry, landing)
         records = read_jsonl(Path(entry["transcript"]))
@@ -319,6 +315,15 @@ def verify_smoke(config: dict, operation: Operation, harness: str, provider: str
     return close_smoke(config, operation, harness, runtime)
 
 
+def record_smoke_source(operation: Operation, harness: str, entry: dict, ledger: Path) -> None:
+    source = {"session_id": entry["session_id"], "ledger": str(ledger.resolve()),
+              "generation": fingerprint({key: value for key, value in release.closure_identity(entry).items() if key != "handoff_url"})}
+    require(operation.state["steps"].get(harness + "_source", source) == source,
+            "identity", "smoke source generation changed")
+    operation.state["steps"][harness + "_source"] = source
+    save_state(operation.path, operation.state)
+
+
 def close_smoke(config: dict, operation: Operation, harness: str, runtime: Path) -> str:
     handoff = operation.state["steps"][harness + "_handoff"]
     completed = operation.state["steps"].get(harness + "_closeout")
@@ -369,6 +374,9 @@ def landing_pull(reader: GitHubReader, repo: str, landing: str) -> int:
 
 
 def post_result(config: dict, operation: Operation, result: dict) -> str:
+    import github_api
+    import github_comment
+
     body = operation.evidence / "result.md"
     outcome = "PASSED" if result["ok"] else "FAILED"
     body.write_text(
@@ -388,8 +396,23 @@ def post_result(config: dict, operation: Operation, result: dict) -> str:
             + ("skipped for documentation only.\n" if result.get("smoke_skipped") else "both sessions acknowledged the landing and closed normally.\n")
         )
     )
+    operation_id = fingerprint(result)
+    body.write_text(github_api.body_with_operation_marker(body.read_text(), operation_id))
+    phase = "report_" + operation_id
+    prior = operation.state["steps"].get(phase)
+    if prior and prior.get("complete") is not True:
+        reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
+        comments = reader.paged_json(f"/repos/{config['repo']}/issues/{config['issue']}/comments", step_prefix="report_reconciliation")
+        canonical = lambda text: github_comment.OPERATION_MARKER_LINE_RE.sub("", text).rstrip()
+        matches = [row for row in comments
+                   if (row.get("user") or {}).get("login") == github_identity.automation_login()
+                   and github_api.body_has_operation_marker(row.get("body"), operation_id)
+                   and canonical(row["body"]) == canonical(body.read_text())]
+        require(len(matches) == 1, "report", "original report is missing or ambiguous; no write replayed")
+        operation.state["steps"][phase] = {"complete": True, "result": {"url": matches[0]["html_url"]}}
+        save_state(operation.path, operation.state)
     posted = operation.run(
-        "report_" + fingerprint(result),
+        phase,
         [
             str(Path(config["source_worktree"]) / "skills/github/scripts/gh-comment"),
             "issue",
@@ -400,6 +423,7 @@ def post_result(config: dict, operation: Operation, result: dict) -> str:
             str(body),
         ],
         once=True,
+        timeout=360,
     )
     return posted["url"]
 

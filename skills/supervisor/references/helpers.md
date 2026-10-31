@@ -1132,7 +1132,9 @@ Verification failures post the failed gate. The existing runner notifies that
 channel on any failed child or stale reconciliation marker, including an
 interrupted run or a helper that cannot start, then keeps the
 service stopped. Read private evidence and reconcile any
-uncertain launch, request, comment or notification before recovery. Resume a
+uncertain launch, request, comment or notification before recovery. An uncertain
+report is settled automatically only by one exact marker/body/author match on
+the owning issue; missing or ambiguous matches never cause another post. Resume a
 failed verification explicitly with the same command plus `--resume-failed`,
 using the same evidence directory; this reuses launch and closeout journals.
 A completed bad acknowledgement needs a fresh attempt. First get each preserved
@@ -1153,8 +1155,8 @@ clear`, inspect its retained evidence, resolve uncertain delivery at the existin
 channel, and ensure the failure is visible there. For a certainly unsent notice,
 fix the sender and deliver once through that existing route. Clear archives the
 original notice without relabeling it delivered or resending it; a later stopped
-episode gets its own notice. Prelaunch read failures keep no saved failed
-verification, so the existing clear/restart route retries those reads.
+episode gets its own notice. After shared transport retries are exhausted, prelaunch read failures stop
+visibly but keep no saved failed verification, so the existing clear/restart route retries those reads.
 
 For one bounded manual verification or recovery:
 
