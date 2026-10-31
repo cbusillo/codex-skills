@@ -93,7 +93,7 @@
     "trace_id"
   ],
   "product-status-read": [
-    "product",
+    "products",
     "status",
     "trace_id"
   ],

@@ -6161,11 +6161,7 @@ def _project_lane_status(value: object) -> dict[str, object]:
     return projected
 
 
-def summarize_product_status_read(*, request: dict[str, object], provider_payload: dict[str, Any]) -> dict[str, object]:
-    _require_read_fields("product-status-read", provider_payload, required=frozenset({"status", "trace_id", "product"}))
-    product = _require_dict(provider_payload["product"])
-    if product.get("product") != request["product"]:
-        raise LaunchplaneSafetyError("invalid_response")
+def _project_product_status(product: dict[str, Any]) -> dict[str, object]:
     environments, warnings = product.get("environments"), product.get("warnings")
     if not isinstance(environments, list) or not isinstance(warnings, list):
         raise LaunchplaneSafetyError("invalid_response")
@@ -6174,11 +6170,24 @@ def summarize_product_status_read(*, request: dict[str, object], provider_payloa
         lane = _require_dict(value)
         lanes.append({"environment": public_identifier(lane.get("environment")), **_project_lane_status(lane.get("lane_status"))})
     product_warnings = [public_service_text(value, max_length=16000) for value in warnings]
+    return {"product": public_identifier(product.get("product")), "lanes": lanes, "warnings": product_warnings,
+            "warning_text_redacted": product_warnings != warnings}
+
+
+def summarize_product_status_read(*, request: dict[str, object], provider_payload: dict[str, Any]) -> dict[str, object]:
+    _require_read_fields("product-status-read", provider_payload, required=frozenset({"status", "trace_id", "products"}))
+    products = provider_payload["products"]
+    if not isinstance(products, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    selected = [_require_dict(product) for product in products]
+    if request.get("product"):
+        selected = [product for product in selected if product.get("product") == request["product"]]
+        if len(selected) != 1:
+            raise LaunchplaneSafetyError("invalid_response")
     payload = base_payload(status=public_code(provider_payload.get("status")), operation="product-status-read", request=request)
-    payload["result"] = {"product": public_identifier(product["product"]), "lanes": lanes, "warnings": product_warnings,
-                         "warning_text_redacted": product_warnings != warnings}
+    payload["result"] = {"products": [_project_product_status(product) for product in selected]}
     payload["summary"] = {"trace_id": public_trace_id(provider_payload["trace_id"]),
-                          "recommendation": "Service-computed Product Ops sidebar status. Use each tone and description; preserve missing and stale states. No authority to change a lane."}
+                          "recommendation": "Service-computed Product Ops sidebar status for caller-visible products. Use each tone and description; preserve missing and stale states. No authority to change a lane."}
     assert_public_safe_shape(payload["result"])
     assert_public_safe_shape(payload["summary"])
     return payload
@@ -11939,7 +11948,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         testing_hold_read.add_argument(argument, required=True)
 
     product_status_read = subparsers.add_parser("product-status-read", help="Read every lane's service-computed Product Ops sidebar tone, reasons and product warnings.")
-    product_status_read.add_argument("--product", required=True)
+    product_status_read.add_argument("--product", help="Limit output to this product from the caller-visible inventory.")
 
     product_environment_read = subparsers.add_parser(
         "product-environment-read",
@@ -12901,8 +12910,10 @@ def main(argv: list[str]) -> int:
             }
             return execute_lane_config_read(args=args, operation=args.command, request=request)
         if args.command == "product-status-read":
-            path = _product_read_path(args.command, product=args.product)
-            request = {"product": _request_identifier(args.product), "payload_source": "operator_argument"}
+            path = _product_read_path(args.command)
+            request = {"payload_source": "operator_argument"}
+            if args.product:
+                request["product"] = _request_identifier(args.product)
             return execute_product_read(args=args, operation=args.command, request=request, path=path)
         if args.command == "product-environment-read":
             path = _product_read_path(

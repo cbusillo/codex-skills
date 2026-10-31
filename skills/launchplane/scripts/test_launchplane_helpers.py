@@ -12774,7 +12774,7 @@ def test_tolerant_projection_scans_validated_identifier_without_dropping_it() ->
 def _product_status_response() -> dict[str, Any]:
     return {
         "status": "ok", "trace_id": "launchplane_req_status",
-        "product": {"product": "example-product", "warnings": ["Preview refresh failed"], "environments": [
+        "products": [{"product": "example-product", "warnings": ["Preview refresh failed"], "environments": [
             {"environment": "testing", "lane_status": {
                 "evaluated_at": "2026-01-01T00:00:00+00:00",
                 "current": {"sidebar_tone": "verified", "description": "Healthy", "attention_reasons": [], "warning_reasons": []},
@@ -12785,7 +12785,7 @@ def _product_status_response() -> dict[str, Any]:
                 "evaluated_at": "2026-01-01T00:00:00+00:00", "transitions": [],
                 "current": {"sidebar_tone": "danger", "description": "Alert; DNS; A critical incident is open", "attention_reasons": ["A critical incident is open"], "warning_reasons": []},
             }},
-        ]},
+        ]}],
     }
 
 
@@ -12794,18 +12794,18 @@ def test_product_status_read_returns_service_sidebar_results_and_product_warning
     status, payload, calls = _run_product_read(["product-status-read", "--product", "example-product"], response)
     assert status == 0 and len(calls) == 1, payload
     assert calls[0]["path"] == contract.helper_command_path("product-status-read").format(product="example-product")
-    lanes = payload["result"]["lanes"]
-    expected = response["product"]["environments"][0]["lane_status"]["transitions"][0]["signal"]
+    lanes = payload["result"]["products"][0]["lanes"]
+    expected = response["products"][0]["environments"][0]["lane_status"]["transitions"][0]["signal"]
     assert lanes[0]["tone"] == expected["sidebar_tone"]
     assert lanes[0]["description"] == expected["description"]
-    assert lanes[1]["attention_reasons"] == response["product"]["environments"][1]["lane_status"]["current"]["attention_reasons"]
-    assert payload["result"]["warnings"] == response["product"]["warnings"]
+    assert lanes[1]["attention_reasons"] == response["products"][0]["environments"][1]["lane_status"]["current"]["attention_reasons"]
+    assert payload["result"]["products"][0]["warnings"] == response["products"][0]["warnings"]
 
 
 @pytest.mark.parametrize("mutation", ["missing_status", "missing_warnings", "wrong_product", "bad_tone", "missing_reasons"])
 def test_product_status_read_never_turns_incomplete_or_wrong_product_evidence_green(mutation: str) -> None:
     response = _product_status_response()
-    product = response["product"]
+    product = response["products"][0]
     lane = product["environments"][1]
     if mutation == "missing_status":
         del lane["lane_status"]
@@ -12823,10 +12823,20 @@ def test_product_status_read_never_turns_incomplete_or_wrong_product_evidence_gr
 
 def test_product_status_read_redacts_private_prose_and_discloses_the_change() -> None:
     response = _product_status_response()
-    response["product"]["warnings"] = ["Preview refresh failed: https://private.example.invalid/path"]
-    response["product"]["environments"][1]["lane_status"]["current"]["attention_reasons"] = ["Read https://private.example.invalid/incident"]
+    response["products"][0]["warnings"] = ["Preview refresh failed: https://private.example.invalid/path"]
+    response["products"][0]["environments"][1]["lane_status"]["current"]["attention_reasons"] = ["Read https://private.example.invalid/incident"]
     status, payload, _ = _run_product_read(["product-status-read", "--product", "example-product"], response)
     assert status == 0, payload
     assert "private.example.invalid" not in json.dumps(payload)
-    assert payload["result"]["warning_text_redacted"]
-    assert payload["result"]["lanes"][1]["text_redacted"]
+    assert payload["result"]["products"][0]["warning_text_redacted"]
+    assert payload["result"]["products"][0]["lanes"][1]["text_redacted"]
+
+
+def test_product_status_read_returns_the_visible_fleet_without_a_product_filter() -> None:
+    response = _product_status_response()
+    other = copy.deepcopy(response["products"][0])
+    other["product"] = "second-product"
+    response["products"].append(other)
+    status, payload, calls = _run_product_read(["product-status-read"], response)
+    assert status == 0 and len(calls) == 1, payload
+    assert [product["product"] for product in payload["result"]["products"]] == [product["product"] for product in response["products"]]

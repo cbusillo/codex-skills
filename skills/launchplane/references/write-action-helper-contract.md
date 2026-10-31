@@ -525,8 +525,8 @@ installed local helper bindings.
   Use `product-status-read` for the sidebar's status rather than deriving a
   color from this diagnostic projection. Missing or truncated inputs stay unknown.
 
-- `product-status-read --product PRODUCT` makes one product-overview read and
-  returns every recorded lane's service-computed sidebar `tone` and `description`,
+- `product-status-read [--product PRODUCT]` makes one product-inventory read and
+  returns each caller-visible product and every recorded lane's service-computed sidebar `tone` and `description`,
   attention and warning reasons, plus non-info product warnings. It uses the same
   `lane_status` result and expiry transitions the UI renders, with no local health
   algorithm. `evaluated_at` identifies the source read and `valid_until` is the
