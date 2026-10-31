@@ -321,6 +321,9 @@ once with a reason naming the rule. For numbered questions it checks the
 [shared question guidance](../../references/talking-with-the-director.md#director-questions),
 reading that section into its correction when context is missing, or linking
 to it when the section cannot be read.
+Relays linking their structured question record reuse its saved context. The hook
+validates the trusted source with the existing question-record reader; new asks
+still need context. A bounded, unavailable lookup keeps the text-check fallback.
 `stop_hook_active` lets the retry through.
 Quoted text, code and links are ignored, as is a question the reply answers in
 place ("Merged yet? No, CI is running."), so a status report that quotes an old
