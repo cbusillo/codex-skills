@@ -40,9 +40,9 @@ def collect(readers: dict[str, Callable[[], dict]]) -> dict[str, dict]:
     return results
 
 
-def watch_report(path: Path, *, window: str = radar.DEFAULT_WINDOW, now: datetime | None = None) -> dict:
+def watch_report(path: Path, *, service: bool = False, window: str = radar.DEFAULT_WINDOW, now: datetime | None = None) -> dict:
     notices: dict[str, dict] = {}
-    latest: dict = {"errors": ["foreign watch log has no complete reports"], "coverage_gaps": []}
+    latest: dict = {"errors": ["log has no complete reports"], "coverage_gaps": []}
     incomplete = []
     runner_error = None
     for number, line in enumerate(path.read_text().splitlines(), 1):
@@ -55,7 +55,12 @@ def watch_report(path: Path, *, window: str = radar.DEFAULT_WINDOW, now: datetim
             continue
         if isinstance(row, dict) and row.get("event") in {"started", "completed", "stopped", "reconciliation_required"}:
             if row["event"] in {"stopped", "reconciliation_required"} or row["event"] == "completed" and row.get("exit_code") != 0:
-                runner_error = f"watcher stopped: {row['event']} (exit {row.get('exit_code')})"
+                runner_error = f"service stopped: {row['event']} (exit {row.get('exit_code')})"
+        elif service and isinstance(row, dict) and type(row.get("ok")) is bool:
+            latest = {"errors": [] if row["ok"] else [f"verification failed at {row.get('gate', 'unknown gate')}"],
+                      "coverage_gaps": []}
+            if row["ok"]:
+                runner_error = None
         elif isinstance(row, dict) and row.get("error"):
             latest = {"errors": [row["error"]], "coverage_gaps": []}
         elif isinstance(row, dict) and all(isinstance(row.get(key), list) for key in ("notices", "errors", "coverage_gaps")):
@@ -287,6 +292,7 @@ def main() -> int:
     parser.add_argument("--queue", required=True)
     parser.add_argument("--ledger", type=Path, required=True)
     parser.add_argument("--foreign-log", type=Path, required=True)
+    parser.add_argument("--service-log", type=Path, action="append", default=[])
     parser.add_argument("--capacity-state", type=Path)
     parser.add_argument("--foreign-state", type=Path, help="enable message routing with the existing watch state")
     parser.add_argument("--notify-config", type=Path)
@@ -307,7 +313,8 @@ def main() -> int:
         config = radar.rollup.load_config(args.radar_config)
         return watch_report(args.foreign_log, window=str(config.get("comment_window") or radar.DEFAULT_WINDOW))
 
-    sources = collect({"watch": read_watch})
+    service_readers = {f"service {path}": lambda path=path: watch_report(path, service=True) for path in args.service_log}
+    sources = collect({"watch": read_watch, **service_readers})
     sources.update(collect(build_readers(args, sources["watch"])))
     print(digest(sources))
     return int(

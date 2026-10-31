@@ -13,10 +13,14 @@ from unittest.mock import patch
 
 import catalog_landing as landing
 from check_operation import GateFailed, Operation
+from skills.github.scripts import github_api
 
 
 class CatalogLandingTests(unittest.TestCase):
     def setUp(self) -> None:
+        metadata = patch.dict(vars(github_api.github_catalog_health), {"marker_fields": lambda: "catalog=unknown"})
+        metadata.start()
+        self.addCleanup(metadata.stop)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
@@ -44,6 +48,7 @@ class CatalogLandingTests(unittest.TestCase):
             landing.pending_landings(self.root, "absent", commits[-1])
 
     def test_interrupted_bootstrap_retains_its_landing_and_posts_before_advancing(self) -> None:
+        self.config["notify_config"] = str(self.root / "unbound-services.json")
         with (patch.object(landing, "pending_landings", return_value=["first"]) as discover,
               patch.object(landing, "landing_pull", return_value=2),
               patch.object(landing, "git", return_value="script.py"),
@@ -55,6 +60,7 @@ class CatalogLandingTests(unittest.TestCase):
             self.assertTrue(landing.poll(self.config, self.root)["ok"])
             self.assertEqual(discover.call_count, 1)
             self.assertEqual(verify.call_count, 1)
+            self.assertEqual(verify.call_args.args[0]["supervisor_session"], self.config["supervisor_session"])
             self.assertEqual(post.call_count, 2)
             self.assertEqual(json.loads((self.root / "cursor.json").read_text())["last_sha"], "first")
 
@@ -103,6 +109,13 @@ class CatalogLandingTests(unittest.TestCase):
                 landing.poll(self.config, self.root)
             self.assertFalse((self.root / "cursor.json").exists())
             self.assertTrue(landing.poll(self.config, self.root)["ok"])
+
+    def test_missing_supervisor_identity_stops_before_runtime_or_launch(self) -> None:
+        self.config.pop("supervisor_session")
+        with patch.object(landing, "pending_landings", return_value=[]), self.assertRaises(GateFailed) as failure:
+            landing.poll(self.config, self.root)
+        self.assertEqual(failure.exception.gate, "identity")
+        self.runner.assert_not_called()
 
 
     def test_supersede_preserves_failed_attempt_and_includes_new_fix_only_after_closeout(self) -> None:

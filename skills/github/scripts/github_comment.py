@@ -36,7 +36,7 @@ PER_PAGE = 100
 MAX_PAGES = 1000
 RECONCILIATION_CLOCK_SKEW_SECONDS = 5
 OPERATION_MARKER_LINE_RE = re.compile(
-    rf"(?m)^[ \t]*{re.escape(github_api_core.OPERATION_MARKER_PREFIX)}[0-9a-f]+ -->[ \t]*(?:\r?\n)?"
+    rf"(?m)^[ \t]*{re.escape(github_api_core.OPERATION_MARKER_PREFIX)}[0-9a-f]+(?: [^<>\r\n]*)? -->[ \t]*(?:\r?\n)?"
 )
 MENTION_RE = re.compile(r"(?<!\w)@(?P<login>[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}(?:/[A-Za-z0-9_-]+)?)")
 QUIET_MENTION_OPEN, QUIET_MENTION_CLOSE = "<code>", "</code>"

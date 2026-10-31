@@ -18,6 +18,9 @@ decisions, statuses, board contents or narrative; open linked records for action
    --miss-issue OWNER/REPO#NUMBER` to route missed messages through the existing
    watcher receipts and record their causes on the existing repair issue.
    Routing errors preserve radar evidence and repeat as coverage errors.
+   Add `--service-log <render-output>/logs/catalog.jsonl` for the catalog job.
+   Other services may use different log formats. Missing or malformed logs are
+   coverage errors; stopped jobs repeat until recovery produces a successful report.
    Add `--capacity-state` when configured, `--source OWNER/REPO#NUMBER` for
    question anchors outside the queue, and `--radar-config` for existing private
    [comment-radar configuration](../../github-work-rollup/SKILL.md#external-comment-radar).
