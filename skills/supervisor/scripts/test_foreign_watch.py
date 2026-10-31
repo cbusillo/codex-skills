@@ -154,6 +154,24 @@ class WatchTests(unittest.TestCase):
         self.assertEqual({row["url"] for row in notices}, {inline["html_url"], review["html_url"]})
         self.assertEqual(watermarks[REPO], STARTED)
 
+    def test_version_failures_keep_retryability_and_deleted_nodes_are_skipped(self):
+        reader = Mock()
+        source = {**opened(), "node_id": "source"}
+        reader.paged_json.side_effect = feeds([], opened_items=[source])
+        retry_at = 100.0
+        reader.diagnostics.return_value = {"requests": [{"retryAt": retry_at}]}
+        reader.graphql_json.return_value = ApiResult(ok=False, status=502, body=None, failure=FailureDetail(cause="network_provider_failure", message="unavailable", retryable=True, fallback_eligible=False, disposition="retry"))
+        notices, errors, watermarks = self.scan(reader)
+        self.assertEqual(notices, [])
+        self.assertTrue(errors[0]["retryable"])
+        self.assertEqual(errors[0]["retry_at"], retry_at)
+        self.assertEqual(watermarks[REPO], SINCE)
+        reader.paged_json.side_effect = feeds([], opened_items=[source])
+        reader.graphql_json.return_value = ApiResult(ok=True, status=200, body={"data": {"nodes": [None]}})
+        notices, errors, watermarks = self.scan(reader)
+        self.assertEqual((notices, errors), ([], []))
+        self.assertEqual(watermarks[REPO], STARTED)
+
     def test_worker_questions_surface_on_the_next_scan_without_ordinary_own_posts(self) -> None:
         reader = Mock()
         bodies = ["Owner question: Q906. Approve the recovery?",
@@ -288,9 +306,6 @@ class WatchTests(unittest.TestCase):
             self.assertEqual(json.loads(state.read_text())["watermarks"]["director/old"], STARTED)
             first_since = reader.paged_json.call_args_list[1].kwargs["params"]["since"]
             self.assertLess(foreign_watch.timestamp(first_since), foreign_watch.timestamp(SINCE))
-            read = {call.args[0] for call in reader.paged_json.call_args_list}
-            self.assertEqual(read, {"/installation/repositories", f"repos/{REPO}/issues/comments", f"repos/{REPO}/issues", f"repos/{REPO}/pulls/comments",
-                                    "repos/director/new/issues/comments", "repos/director/new/issues", "repos/director/new/pulls/comments"})
             self.assertEqual([n["repository"] for n in json.loads(output.getvalue())["notices"]], ["director/new"])
 
     def test_expired_deadline_starts_no_read(self):

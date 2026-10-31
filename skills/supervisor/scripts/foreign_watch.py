@@ -86,7 +86,7 @@ def receive_events(args: Any, repos: list[str] | None, wake: threading.Event, st
         from attention_events import ConfigurationError, messages
 
         while not stop.is_set():
-            connected = False
+            healthy = False
             disconnected = False
             try:
                 for hint in messages(args):
@@ -94,9 +94,9 @@ def receive_events(args: Any, repos: list[str] | None, wake: threading.Event, st
                         return
                     kind = hint.get("type")
                     if kind == "connected":
-                        connected = True
                         connection_observation(args, connected=True)
                     elif kind == "heartbeat":
+                        healthy = True
                         connection_observation(args, connected=True)
                     elif kind == "disconnected":
                         disconnected = True
@@ -111,7 +111,7 @@ def receive_events(args: Any, repos: list[str] | None, wake: threading.Event, st
                                 print(json.dumps({"notices": [], "errors": [{"repository": hint["repository"], "error": "event buffer full; scheduled sweep recovers", "source_id": hint["source_id"], "retryable": True}], "coverage_gaps": []}), flush=True)
                             wake.set()
                 connection_observation(args, connected=False)
-                if disconnected or not connected:
+                if disconnected or not healthy:
                     stop.wait(5)
             except (PermissionError, ConfigurationError) as error:
                 print(json.dumps({"event_error": redact_string(str(error))}), flush=True)
@@ -257,16 +257,21 @@ def read_opened(reader, repo: str, since: str, client_agents=()) -> list[dict]:
         params={"since": query_since, "state": "all"},
         required_query_params={"since": query_since},
     )
-    messages = []
+    messages, bot_reviews = [], []
     for issue in issues:
         user = issue.get("user") or {}
         if user.get("type") != "Bot" or user.get("login", "").casefold() in client_agents:
-            messages.append(opening_message(reader, issue))
+            messages.append({**issue, "body": f"{issue['title']}\n{issue.get('body') or ''}"})
         if "pull_request" in issue:
             for review in reader.paged_json(f"repos/{repo}/pulls/{issue['number']}/reviews", step_prefix="foreign_reviews"):
-                if (review.get("body") or "").strip():
-                    messages.append({**review, "updated_at": message_edit_time(reader, review)})
-    return messages
+                user = review.get("user") or {}
+                if not (review.get("body") or "").strip():
+                    continue
+                if user.get("type") == "Bot" and user.get("login", "").casefold() not in client_agents:
+                    bot_reviews.append({**review, "updated_at": review.get("submitted_at") or review["created_at"]})
+                else:
+                    messages.append(review)
+    return versioned_messages(reader, messages) + bot_reviews
 
 
 def read_inline_comments(reader: GitHubReader, repo: str, since: str) -> list[dict]:
@@ -279,22 +284,25 @@ def read_inline_comments(reader: GitHubReader, repo: str, since: str) -> list[di
     )
 
 
-def opening_message(reader: GitHubReader, source: dict) -> dict:
-    return {**source, "updated_at": message_edit_time(reader, source), "body": f"{source['title']}\n{source.get('body') or ''}"}
-
-
-def message_edit_time(reader: GitHubReader, source: dict) -> str:
-    edited = None
-    if source.get("node_id"):
+def versioned_messages(reader: GitHubReader, sources: list[dict]) -> list[dict]:
+    versions = {}
+    identifiers = list(dict.fromkeys(source["node_id"] for source in sources if source.get("node_id")))
+    for offset in range(0, len(identifiers), 100):
+        batch = identifiers[offset:offset + 100]
         result = reader.graphql_json(
-            "query($id: ID!) { node(id: $id) { ... on Issue { lastEditedAt } ... on PullRequest { lastEditedAt } ... on PullRequestReview { lastEditedAt } } }",
-            {"id": source["node_id"]},
-            step="foreign_opening_version",
+            "query($ids: [ID!]!) { nodes(ids: $ids) { ... on Issue { lastEditedAt } ... on PullRequest { lastEditedAt } ... on PullRequestReview { lastEditedAt } } }",
+            {"ids": batch}, step="foreign_message_versions",
         )
         if not result.ok:
-            raise ValueError("opening message version unavailable")
-        edited = result.body["data"]["node"]["lastEditedAt"]
-    return edited or source.get("created_at") or source["submitted_at"]
+            raise GitHubReadError("message versions unavailable", result=result, diagnostics=reader.diagnostics())
+        nodes = result.body["data"]["nodes"]
+        if not isinstance(nodes, list) or len(nodes) != len(batch):
+            raise ValueError("message versions have incomplete coverage")
+        versions.update(zip(batch, nodes, strict=True))
+    return [
+        {**source, "updated_at": (versions.get(source.get("node_id")) or {}).get("lastEditedAt") or source.get("created_at") or source["submitted_at"]}
+        for source in sources if not source.get("node_id") or versions[source["node_id"]] is not None
+    ]
 
 
 def installed_repositories(reader, owner: str) -> list[str]:
@@ -508,10 +516,13 @@ def read_message_hint(reader: GitHubReader, hint: dict) -> tuple[str, dict] | No
     if kind == "review" and not (comment.get("body") or "").strip():
         return None
     comment = {**comment, "updated_at": comment.get("updated_at") or comment.get("submitted_at")}
-    if kind in {"request", "change"}:
-        comment = opening_message(reader, comment)
-    elif kind == "review":
-        comment["updated_at"] = message_edit_time(reader, comment)
+    if kind in {"request", "change", "review"}:
+        if kind in {"request", "change"}:
+            comment["body"] = f"{comment['title']}\n{comment.get('body') or ''}"
+        versioned = versioned_messages(reader, [comment])
+        if not versioned:
+            return None
+        [comment] = versioned
     if not re.fullmatch(rf"https://github\.com/{re.escape(repo)}/(?:issues|pull)/[1-9][0-9]*(?:#(?:issuecomment-|discussion_r|pullrequestreview-)[1-9][0-9]*)?", comment["html_url"], re.I):
         raise ValueError("event readback is outside its source repository")
     return repo, comment
@@ -599,8 +610,10 @@ def maintain_receipts(args: Any, deliveries: dict, persist: Any) -> None:
     persist()
 
 
-def reconcile_delivery(args: Any, receipt: dict) -> None:
+def reconcile_delivery(args: Any, receipt: dict, *, explicit: bool = False) -> None:
     if receipt.get("status") != "attempted" or receipt.get("cause") == "permission_denied" or not receipt.get("delivery_message"):
+        return
+    if receipt.get("audit_status") == "sent" and not explicit:
         return
     try:
         entries = [*load_ledger(args.ledger), supervisor_recipient(args)]
@@ -608,6 +621,9 @@ def reconcile_delivery(args: Any, receipt: dict) -> None:
         if len(matching) != 1:
             return
         status = session_status(matching[0])
+        if status.get("safe_verdict") and not explicit:
+            return
+        token = re.search(r"(?m)^Message receipt: [0-9a-f]{32}$", receipt["delivery_message"])
         records = read_jsonl(Path(status["transcript"]))
         for record in records:
             payload = record.get("payload", {})
@@ -616,7 +632,7 @@ def reconcile_delivery(args: Any, receipt: dict) -> None:
                 else text_content(record.get("message", {}).get("content")) if record.get("type") == "user"
                 else None
             )
-            if message == receipt["delivery_message"]:
+            if isinstance(message, str) and (token.group() in message.replace("\r\n", "\n").splitlines() if token else message == receipt["delivery_message"]):
                 receipt.update(status="sent", reconciled="native_transcript")
                 return
     except (*READ_ERRORS, subprocess.SubprocessError):
@@ -681,7 +697,7 @@ def audit_miss(args: Any, receipt: dict, persist: Any) -> None:
         reader = GitHubReader(operation="github.supervisor.foreign_watch", strict_actor=True, gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 30)
         try:
             comments = reader.paged_json(f"repos/{repo}/issues/{number}/comments", step_prefix="routing_miss_reconciliation")
-            matching = [row for row in comments if (row.get("user") or {}).get("login", "").casefold() in {value.casefold() for value in args.own_login} and f"private receipt {receipt['audit_token']}." in row.get("body", "")]
+            matching = [row for row in comments if (row.get("user") or {}).get("login", "").casefold() in {value.casefold() for value in args.own_login} and f"private receipt {receipt['audit_token']}." in (row.get("body") or "")]
             if len(matching) == 1:
                 receipt.update(audit_status="sent", audit_url=matching[0]["html_url"])
                 receipt.pop("audit_error", None)
@@ -699,8 +715,9 @@ def audit_miss(args: Any, receipt: dict, persist: Any) -> None:
         f"Observed cause: {receipt.get('miss_cause') or receipt.get('cause') or 'unknown'}. Hook observed: {bool(receipt.get('hook_seen'))}. "
         f"Subscriber at backstop observation: {receipt.get('subscriber_observed', 'unknown')}. "
         f"Delivery status: {receipt.get('status', 'not_attempted')}.\n\n"
-        "Next action: Supervisor inspect the hook/recipient delivery evidence, fix the failing path, "
-        "and keep the original request open until its next action is done. A missing hook receipt "
+        "Next action: Supervisor inspect the hook/recipient delivery evidence and fix any reproduced failure, "
+        "and keep the original request open until its next action is done. Planned connection renewals "
+        "or subscriber downtime may explain a missing receipt; it does not by itself prove a broken path. A missing hook receipt "
         "does not identify which upstream hop failed; that part remains UNKNOWN."
     )
     try:
@@ -751,7 +768,7 @@ def route_notices(args: Any, notices: list[dict], deliveries: dict, reader: GitH
         reconcile_delivery(args, receipt)
         persist()
         if receipt.get("status") in {"sent", "attempted"}:
-            notice["routing"] = dict(receipt)
+            notice["routing"] = receipt
             continue
         try:
             try:
@@ -823,7 +840,7 @@ def route_notices(args: Any, notices: list[dict], deliveries: dict, reader: GitH
         if event and receipt.get("status") == "attempted":
             receipt.setdefault("backstop_at", utc_now())
         persist()
-        notice["routing"] = dict(receipt)
+        notice["routing"] = receipt
 
 
 def route_report(args: Any, report: dict, reader: GitHubReader, own_logins: list[str]) -> None:
@@ -920,6 +937,8 @@ def main() -> int:
         if args.reconcile:
             with watch_lock(args.state.with_name(args.state.name + ".routing"), wait=True):
                 receipts = load_deliveries(args.state)
+                for receipt in receipts.values():
+                    reconcile_delivery(args, receipt, explicit=True)
                 maintain_receipts(args, receipts, lambda: save_deliveries(args.state, receipts))
                 save_deliveries(args.state, receipts)
                 print(json.dumps(receipts))

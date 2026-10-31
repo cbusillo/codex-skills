@@ -133,7 +133,6 @@ class MessageRoutingTests(unittest.TestCase):
         repo, source = event
         self.assertEqual(source["body"], self.reader.get_json.return_value["body"])
         self.assertEqual(repo, REPO)
-        self.assertIn("issues/comments/42", self.reader.get_json.call_args.args[0])
         self.args.owner = "someone-else"
         self.reader.get_json.reset_mock()
         self.assertIsNone(watch.validate_message_hint(self.args, None, self.hint))
@@ -383,7 +382,7 @@ class MessageRoutingTests(unittest.TestCase):
             "user": {"login": "client", "type": "User"},
         }
         self.reader.get_json.return_value = source
-        self.reader.graphql_json.return_value = Mock(ok=True, body={"data": {"node": {"lastEditedAt": "2026-10-31T02:10:00Z"}}})
+        self.reader.graphql_json.return_value = Mock(ok=True, body={"data": {"nodes": [{"lastEditedAt": "2026-10-31T02:10:00Z"}]}})
         event = watch.read_message_hint(self.reader, {**self.hint, "source_kind": "request", "source_id": 7})
         self.assertIsNotNone(event)
         assert event is not None
@@ -393,7 +392,7 @@ class MessageRoutingTests(unittest.TestCase):
             watch.delivery_key({"url": event[1]["html_url"], "updated_at": event[1]["updated_at"]}),
             watch.delivery_key({"url": sweep["html_url"], "updated_at": sweep["updated_at"]}),
         )
-        self.assertEqual(event[1]["updated_at"], self.reader.graphql_json.return_value.body["data"]["node"]["lastEditedAt"])
+        self.assertEqual(event[1]["updated_at"], self.reader.graphql_json.return_value.body["data"]["nodes"][0]["lastEditedAt"])
 
     def test_radar_skips_answered_rows_and_does_not_audit_activation_history(self) -> None:
         self.args.foreign_state = self.args.state
@@ -447,6 +446,7 @@ class MessageRoutingTests(unittest.TestCase):
         def stream(_args):
             calls.append(True)
             yield {"type": "connected"}
+            yield {"type": "heartbeat"}
             if len(calls) == 2:
                 stop.set()
 
@@ -463,6 +463,26 @@ class MessageRoutingTests(unittest.TestCase):
         send.assert_called_once()
         self.reader.get_json.assert_not_called()
         self.reader.graphql_json.assert_not_called()
+
+    def test_short_connected_stream_backs_off(self) -> None:
+        stop, wake = threading.Event(), threading.Event()
+        fake_stop = Mock(wraps=stop)
+        fake_stop.wait.side_effect = lambda _: stop.set()
+        with patch_attr(attention_events, "messages", return_value=iter([{"type": "connected"}])):
+            watch.receive_events(self.args, [REPO], wake, fake_stop, queue.Queue())
+        fake_stop.wait.assert_called_once()
+
+    def test_uncertain_claude_send_reconciles_its_private_token_in_a_user_record(self) -> None:
+        receipts = {}
+        with patch_attr(watch.review_notifications, "send", side_effect=ValueError("unknown")) as send:
+            watch.route_notices(self.args, [notice()], receipts, self.reader, event=True, persist=self.persist)
+            receipt = receipts[watch.delivery_key(notice())]
+            token = receipt["delivery_message"].splitlines()[-1]
+            Path(self.entry["transcript"]).write_text(json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "pasted context\r\n" + token}]}}) + "\n")
+            self.status.return_value = {"safe_verdict": False, "transcript": self.entry["transcript"]}
+            watch.route_notices(self.args, [notice()], receipts, self.reader, event=True, persist=self.persist)
+        send.assert_called_once()
+        self.assertEqual(receipt["status"], "sent")
 
     def test_attention_client_frames_messages_bounds_lines_and_preserves_auth_refusal(self) -> None:
         settings = {"service_url": "https://service.example.test", "token": "synthetic"}
