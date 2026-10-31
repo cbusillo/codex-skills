@@ -519,8 +519,8 @@ has ended before re-arming; retain an uncertain process and its unread output.
 Concurrent watchers using that state file refuse before reading GitHub. The
 helper reads one since-scoped repository issue-comment listing per pass
 (including PR timeline comments) and one since-scoped issue listing, so an
-issue or PR that an outside person opens is a notice (bot-opened ones are
-not), paginating through the shared reader within
+issue or PR that an outside person or Client agent opens is a notice,
+paginating through the shared reader within
 the wall-clock deadline. It uses the shared bulk quota reserve, identity,
 conditional cache and retry policy; no separate quota probe or history scan.
 A failed, partial or malformed read preserves that repository's watermark.

@@ -26,7 +26,7 @@ def messages(args: Any) -> Iterator[dict]:
     if not settings["token"]:
         raise ValueError("existing Launchplane operator configuration is required")
     request = urllib.request.Request(
-        operator.build_url(settings["service_url"], "/v1/attention/requests/events"),
+        operator.build_url(settings["service_url"], operator.helper_command_path("attention-events-read")),
         headers={"Accept": "application/x-ndjson", "Authorization": f"Bearer {settings['token']}"},
     )
     try:
