@@ -789,7 +789,7 @@ service admission.
 process cleanup and reconciliation markers for a separate daily launchd job.
 It calls the existing direction audit in stranded Markdown mode with `--apply-next`,
 then invokes the configured sender. The sweep handles recorded next actions
-before the digest. `scan_args` must name the owner with `--stranded-owner`.
+before the digest. `scan_args` must name the Director's GitHub account with `--stranded-owner`.
 It contains no credentials. The Supervisor
 installs and starts it after merge; preparing or rendering a job never starts it.
 Use the installed runtime catalog, never a task worktree.

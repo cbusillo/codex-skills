@@ -116,7 +116,7 @@ def test_saved_current_head_acceptance_ends_only_the_client_handoff_wait() -> No
                 elif expected == "review" and actor not in (None, "agent", "agent:integrator"):
                     assert queued["state"] == "needs_status"
                 elif expected == "review":
-                    assert queued["state"] == ("underway" if actor == "agent:integrator" else "available")
+                    assert queued["state"] == "available"
                     assert queued["next_actor"] == (actor or "agent")
                     assert queued["claim_required"] and not queued["ownership_complete"]
                 else:
