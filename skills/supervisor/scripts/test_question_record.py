@@ -115,6 +115,14 @@ class QuestionRecordTests(unittest.TestCase):
         self.assertEqual(result["recipient"], self.args.owner)
         self.fetch.assert_not_called()
 
+    def test_not_planned_decision_instructions_can_be_presented_as_a_question(self) -> None:
+        value = question()
+        value["options"][0]["next"] = "React with thumbs-up to: Director decision: Close example/product#3 as not planned."
+        self.args.dry_run = True
+        result = self.create(value)
+        self.assertIn(value["options"][0]["next"], result["text"])
+        self.storage.create.assert_not_called()
+
     def test_queue_configuration_and_writer_disagreement_refuse_before_post(self) -> None:
         self.args.queue = "example/direction#9"
         with patch.object(record.question_id, "configured_queue", return_value="example/direction#10"):

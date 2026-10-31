@@ -25,6 +25,7 @@ from contextlib import contextmanager
 from contextlib import redirect_stdout
 from contextlib import redirect_stderr
 from io import StringIO
+from itertools import product
 from pathlib import Path
 from typing import Any, Callable, Optional
 from unittest.mock import patch
@@ -2544,17 +2545,19 @@ def test_close_not_planned_refuses_direction_milestone_work_without_owner_commen
         assert "repository owner 'owner'" in message and "Holds in use" in message, message
         assert exc.failure.failed_step == "check_owner_decision", exc.failure
         assert exc.failure.write_outcome == "not_started", exc.failure
+        plan.github_comment_core.validate_planning_references(message, "owner/repo")
     else:
         raise AssertionError("not-planned close of direction milestone work must need the owner's comment")
 
 
 def test_close_not_planned_allows_direction_milestone_work_with_owner_comment() -> None:
-    comments = [owner_comment("OWNER", "2026-09-21T00:00:00Z")]
-    _plan, calls, output = owner_decision_close(reason="not_planned", milestone="Holds in use", comments=comments)
-    payload = json.loads(output.getvalue())
-    decision = payload["closed"]["owner_decision"]
-    assert decision["required"] is True and decision["status_updated_at"] == "2026-09-20T00:00:00Z", decision
-    assert calls[:4] == ["direction", "last_edited", "comments", "close"], calls
+    for reference in ("#10", "owner/repo#10"):
+        comments = [owner_comment("OWNER", "2026-09-21T00:00:00Z") | {"body": f"Close {reference} as not planned."}]
+        _plan, calls, output = owner_decision_close(reason="not_planned", milestone="Holds in use", comments=comments)
+        payload = json.loads(output.getvalue())
+        decision = payload["closed"]["owner_decision"]
+        assert decision["required"] is True and decision["status_updated_at"] == "2026-09-20T00:00:00Z", decision
+        assert calls[:4] == ["direction", "last_edited", "comments", "close"], calls
 
 
 def recorded_decision(role: str = "Owner") -> dict[str, Any]:
@@ -2570,9 +2573,12 @@ def approving_reaction() -> dict[str, Any]:
 
 
 def test_close_not_planned_accepts_owner_reaction_on_unedited_decision() -> None:
-    for role in ("Director", "Owner"):
+    for role, reference in product(("Director", "Owner"), ("#10", "owner/repo#10")):
+        comment = recorded_decision(role) | {"body": f"{role} decision: Close {reference} as not planned."}
+        if reference != "#10":
+            load_plan_module().github_comment_core.validate_planning_references(comment["body"], "owner/repo")
         _plan, calls, output = owner_decision_close(
-            reason="not_planned", milestone="Holds in use", comments=[recorded_decision(role)],
+            reason="not_planned", milestone="Holds in use", comments=[comment],
             reactions=[approving_reaction()],
         )
         decision = json.loads(output.getvalue())["closed"]["owner_decision"]
@@ -2595,6 +2601,8 @@ def test_close_not_planned_rejects_unqualified_reactions() -> None:
             (comment, reaction | {"created_at": "2026-09-21T00:00:00"}, None),
             (comment | {"body": f"{role} question: Close #10 as not planned."}, reaction, None),
             (comment | {"body": f"{role} decision: Close #11 as not planned."}, reaction, None),
+            (comment | {"body": f"{role} decision: Close other/repo#10 as not planned."}, reaction, None),
+            (comment | {"body": f"{role} decision: Close owner/repo#11 as not planned."}, reaction, None),
             (comment | {"body": f"{role} decision: Close #10 as completed."}, reaction, None),
             (comment | {"node_id": None}, reaction, None),
             (comment, reaction, "2026-09-19T00:00:00Z"),  # same-second edit

@@ -7358,9 +7358,9 @@ def owner_reaction_decision(
 ) -> dict[str, Any] | None:
     # An exact first line binds the reaction to this issue and this action.
     body = comment.get("body")
-    if not isinstance(body, str) or body.splitlines()[:1] not in (
-        [f"Director decision: Close #{number} as not planned."],
-        [f"Owner decision: Close #{number} as not planned."],
+    if not isinstance(body, str) or not re.fullmatch(
+        rf"(?:Director|Owner) decision: Close (?:{re.escape(issue_repo)})?#{number} as not planned\.",
+        body.splitlines()[0] if body else "",
     ):
         return None
     comment_id = comment.get("id")
@@ -7537,7 +7537,7 @@ def check_owner_decides_not_planned(
             and author.casefold() == repo_owner.casefold()
             and isinstance(created_at, str)
             and created_at > status_updated_at
-            and re.fullmatch(rf"(?:(?:Director|Owner) decision: )?Close #{number} as not planned\.",
+            and re.fullmatch(rf"(?:(?:Director|Owner) decision: )?Close (?:{re.escape(issue_repo)})?#{number} as not planned\.",
                              str(comment.get("body") or "").splitlines()[0].rstrip() if comment.get("body") else "") is not None
         ):
             return {
@@ -7575,8 +7575,8 @@ def check_owner_decides_not_planned(
         f"last Current Status update ({status_updated_at}) records the decision. Review and correct missing scope-cut evidence "
         "through this helper first. On a scope cut, --comment or --comment-file attests that the requirement is "
         "agent-added beyond the agreed outcome. For Director-admitted work, the Director can post a comment starting with "
-        f'"Close #{number} as not planned.", or react with thumbs-up to an unedited comment whose first line is '
-        f"\"Director decision: Close #{number} as not planned.\", then rerun; do not close it another way."
+        f'"Close {issue_repo}#{number} as not planned.", or react with thumbs-up to an unedited comment whose first line is '
+        f"\"Director decision: Close {issue_repo}#{number} as not planned.\", then rerun; do not close it another way."
     )
 
 
