@@ -1022,7 +1022,7 @@ idempotency = "conditional"
 retry_eligibility = "manual"
 reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "No GraphQL; the existing comment transport owns fingerprint dedupe and unknown-write reconciliation. A confirmed exact release is reported without a second write."
-source_refs = ["github/scripts/gh-plan.py:cmd_release", "github/scripts/github_plan_release.py:exact_source_release", "github/scripts/github_plan_claim.py:released_claim_id", "github/scripts/github_comment.py:_comment_impl"]
+source_refs = ["github/scripts/gh-plan.py:cmd_release", "github/scripts/github_plan_release.py:exact_source_release", "github/scripts/github_plan_status/discussion.py:released_claim_id", "github/scripts/github_comment.py:_comment_impl"]
 test_refs = ["github/scripts/test_gh_plan_release.py:test_release_posts_the_exact_directive_with_handoff_below_it", "github/scripts/test_gh_plan_release.py:test_release_refuses_records_this_session_does_not_own_without_writing", "github/scripts/test_gh_plan_release.py:test_claim_names_the_release_command_for_its_own_comment"]
 
 [[operations]]
