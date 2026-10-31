@@ -17,7 +17,7 @@ from subprocess import SubprocessError
 import account_choice
 import iterm_tab
 import session_liveness
-from check_changes import save_state
+from check_changes import fingerprint, save_state
 from check_operation import (
     GateFailed,
     GitHubReader,
@@ -129,8 +129,7 @@ def reconcile_runtime(config: dict, operation: Operation) -> tuple[Path, str]:
     return runtime, head
 
 
-def verify(config: dict, operation: Operation, *, skip_smoke: bool = False) -> dict:
-    runtime, head = reconcile_runtime(config, operation)
+def verify(config: dict, operation: Operation, runtime: Path, head: str, *, skip_smoke: bool = False) -> dict:
     landing = config["landing_sha"]
     if skip_smoke:
         return {
@@ -170,6 +169,7 @@ def verify(config: dict, operation: Operation, *, skip_smoke: bool = False) -> d
         "reason": str(failures[0]) if failures else None,
         "landing_sha": landing,
         "runtime_sha": head,
+        "runtime_after_sha": git(runtime, "rev-parse", "HEAD"),
         "smoke_handoffs": handoffs,
         "harnesses": results,
     }
@@ -256,6 +256,12 @@ def verify_smoke(config: dict, operation: Operation, harness: str, provider: str
         entries = [row for row in load_ledger(ledger) if row["session_id"] == launch["native_session_id"]]
         require(len(entries) == 1, phase, "fresh Codex native registration is missing")
         entry = entries[0]
+    source = {"session_id": entry["session_id"], "ledger": str(ledger.resolve()),
+              "generation": fingerprint({key: value for key, value in release.closure_identity(entry).items() if key != "handoff_url"})}
+    require(operation.state["steps"].get(harness + "_source", source) == source,
+            "identity", "smoke source generation changed")
+    operation.state["steps"][harness + "_source"] = source
+    save_state(operation.path, operation.state)
     if not operation.state["steps"].get(harness + "_handoff_request"):
         acknowledgement = observe(entry, landing)
         records = read_jsonl(Path(entry["transcript"]))
@@ -367,19 +373,23 @@ def post_result(config: dict, operation: Operation, result: dict) -> str:
     outcome = "PASSED" if result["ok"] else "FAILED"
     body.write_text(
         f"Catalog runtime verification {outcome}: `{result.get('runtime_sha', 'UNKNOWN')}`\n\n"
-        f"Landings covered by containment: {json.dumps(result['landings'])}.\n"
+        f"Landings requested: {json.dumps(result['landings'])}.\n"
+        f"Runtime reconciled to `{result.get('runtime_sha', 'UNKNOWN')}`; "
+        f"HEAD observed after smoke: `{result.get('runtime_after_sha', 'not measured')}`.\n"
+        "Coverage is containment; per-session loaded SHA was not measured.\n"
         + ("Bootstrap: earlier history is unverified.\n" if result.get("bootstrap") else "")
+        + (f"Supersedes failed verification: {result['superseded_url']}\n" if result.get("superseded_url") else "")
         + (f"Smoke skipped: {result['smoke_skipped']}.\n" if result.get("smoke_skipped") else "")
         + "\n".join(result.get("smoke_handoffs", []))
         + (
             f"\nFailed gate: {result.get('gate', 'verification')}. Inspect the retained service evidence.\n"
             if not result["ok"]
             else "\nRuntime reconciliation completed. Live smoke and closeout: "
-            + ("skipped for documentation only.\n" if result.get("smoke_skipped") else "completed on the runtime SHA above.\n")
+            + ("skipped for documentation only.\n" if result.get("smoke_skipped") else "both sessions acknowledged the landing and closed normally.\n")
         )
     )
     posted = operation.run(
-        "report_" + outcome.lower(),
+        "report_" + fingerprint(result),
         [
             str(Path(config["source_worktree"]) / "skills/github/scripts/gh-comment"),
             "issue",
@@ -394,7 +404,32 @@ def post_result(config: dict, operation: Operation, result: dict) -> str:
     return posted["url"]
 
 
-def poll(config: dict, evidence: Path, *, resume_failed: bool = False) -> dict:
+def require_closed_smokes(config: dict, operation: Operation) -> None:
+    steps = operation.state["steps"]
+    require(not any(step.get("complete") is False for step in steps.values()),
+            "supersede", "resolve every uncertain mutation in the original journal before superseding")
+    for harness in ("codex", "claude"):
+        if not steps.get(harness + "_launch"):
+            continue
+        source = steps.get(harness + "_source")
+        if not isinstance(source, dict):
+            raise GateFailed("supersede", "original smoke source is missing")
+        require(source["ledger"] == str(Path(config["ledger"]).resolve()), "supersede", "original ledger changed")
+        close_evidence = operation.evidence / (harness + "-closeout")
+        closed = json.loads((close_evidence / "operation.json").read_text())
+        require(closed.get("identity") == [source["ledger"], source["session_id"]]
+                and closed.get("generation") == source["generation"] == closed.get("retired_generation"),
+                "supersede", "exact original smoke generation has not completed normal closeout")
+        result = operation.run("supersede_" + harness, [
+            "uv", "run", str(Path(config["runtime_worktree"]) / "skills/supervisor/scripts/session_closeout.py"),
+            "--ledger", source["ledger"], "--session-id", source["session_id"],
+            "--supervisor-session", config["supervisor_session"], "--owner", config["repo"].split("/")[0],
+            "--evidence", str(close_evidence),
+        ], timeout=3600)
+        require(result.get("ok") is True, "supersede", "original smoke closeout revalidation failed")
+
+
+def poll(config: dict, evidence: Path, *, resume_failed: bool = False, supersede_failed: bool = False) -> dict:
     source = Path(config["source_worktree"])
     state_path = evidence / "cursor.json"
     with closure.store_lock(evidence / "poll", create=True):
@@ -404,35 +439,56 @@ def poll(config: dict, evidence: Path, *, resume_failed: bool = False) -> dict:
         runtime = discovery.run("runtime", ["uv", "run", str(source / "skills/github/scripts/reconcile-runtime-checkout.py"),
                                            "--repo", config["repo"]], timeout=660)
         require(runtime.get("status") in {"synchronized", "already_current"}, "discovery", "runtime reconciliation incomplete")
+        current: dict = dict(config)
+        if config.get("notify_config"):
+            from services import supervisor_recipient
+            current["supervisor_session"] = supervisor_recipient(Path(config["notify_config"]))["session_id"]
         landings = state.get("pending") or pending_landings(source, state["last_sha"], runtime["after_sha"])
+        superseded = state.get("superseded")
+        superseded_url = state.get("superseded_url")
+        if supersede_failed:
+            require(bool(state.get("pending") and state.get("attempt")), "supersede", "no failed attempt to supersede")
+            old = Operation(evidence / state["attempt"], [config["repo"], *landings])
+            old_result = json.loads((old.evidence / "result.json").read_text())
+            require(old_result.get("ok") is False,
+                    "supersede", "only a failed verification can be superseded")
+            with closure.store_lock(old.evidence / "verification", create=True):
+                require_closed_smokes(current, old)
+            superseded = str(old.evidence)
+            superseded_url = old.state["steps"].get("report_" + fingerprint(old_result), {}).get("result", {}).get("url")
+            landings += pending_landings(source, landings[-1], runtime["after_sha"])
+            state.update(attempt=landings[-1] + "-" + uuid.uuid4().hex,
+                         superseded=superseded, superseded_url=superseded_url)
         if not landings:
             return {"ok": True, "landings": []}
-        state["pending"] = landings
-        save_state(state_path, state)
         landing = landings[-1]
-        with closure.store_lock(evidence / landing / "verification", create=True):
-            operation = Operation(evidence / landing, [config["repo"], *landings])
-            current: dict = {**config, "landing_sha": landing}
+        state["pending"] = landings
+        state.setdefault("attempt", landing)
+        save_state(state_path, state)
+        with closure.store_lock(evidence / state["attempt"] / "verification", create=True):
+            operation = Operation(evidence / state["attempt"], [config["repo"], *landings])
+            current["landing_sha"] = landing
             result_path = operation.evidence / "result.json"
             saved: dict = json.loads(result_path.read_text()) if result_path.exists() else {}
             if saved and (saved["ok"] or not resume_failed):
                 result = saved
             else:
+                reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
+                current["pr"] = landing_pull(reader, config["repo"], landing)
+                skip_smoke = documentation_only(source, landings)
+                bound, head = reconcile_runtime(current, operation)
                 try:
-                    reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
-                    current["pr"] = landing_pull(reader, config["repo"], landing)
-                    if config.get("notify_config"):
-                        from services import supervisor_recipient
-                        current["supervisor_session"] = supervisor_recipient(Path(config["notify_config"]))["session_id"]
-                    result = verify(current, operation, skip_smoke=documentation_only(source, landings))
+                    result = verify(current, operation, bound, head, skip_smoke=skip_smoke)
                 except (OSError, ValueError, KeyError, TypeError, AttributeError, SubprocessError,
                         GitHubReadError, GitHubReadShapeError) as error:
                     result = receipt(landing, operation.evidence, error, gate=operation.gate)
-                result.update(landings=landings, bootstrap=state["last_sha"] is None)
+                result.update(landings=landings, bootstrap=state["last_sha"] is None, superseded=superseded, superseded_url=superseded_url)
                 save_state(result_path, result)
             url = post_result(current, operation, result)
             if result["ok"]:
                 state.update(last_sha=landing, pending=[])
+                for key in ("attempt", "superseded", "superseded_url"):
+                    state.pop(key, None)
                 save_state(state_path, state)
             return {**result, "verification_url": url}
 
@@ -442,20 +498,25 @@ def main() -> int:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--poll", action="store_true", help="check new default-branch landings through the existing service runner")
-    parser.add_argument("--resume-failed", action="store_true", help="resume reconciled verification with its existing journal")
+    recovery = parser.add_mutually_exclusive_group()
+    recovery.add_argument("--resume-failed", action="store_true", help="resume reconciled verification with its existing journal")
+    recovery.add_argument("--supersede-failed", action="store_true", help="start fresh only after exact old smoke sessions closed normally")
     args = parser.parse_args()
+    if (args.resume_failed or args.supersede_failed) and not args.poll:
+        parser.error("recovery flags require --poll; bounded verification reuses its original evidence directly")
     os.umask(0o077)
     identity = "unknown"
     try:
         config = json.loads(args.config.read_text())
         if args.poll:
-            result = poll(config, args.evidence, resume_failed=args.resume_failed)
+            result = poll(config, args.evidence, resume_failed=args.resume_failed, supersede_failed=args.supersede_failed)
             print(json.dumps(result, separators=(",", ":")))
             return int(not result["ok"])
         identity = config["landing_sha"]
         with closure.store_lock(args.evidence / "verification", create=True):
             operation = Operation(args.evidence, [config["repo"], identity])
-            proof = verify(config, operation)
+            bound, head = reconcile_runtime(config, operation)
+            proof = verify(config, operation, bound, head)
         result = {**receipt(identity, args.evidence), **proof}
     except (
         OSError,

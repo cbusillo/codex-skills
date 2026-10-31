@@ -20,10 +20,16 @@ class CatalogLandingTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.config: dict[str, Any] = {"repo": "owner/catalog", "issue": 1, "source_worktree": str(self.root)}
-        runtime = patch.object(Operation, "run", return_value={"status": "already_current", "after_sha": "tip"})
-        runtime.start()
+        self.config: dict[str, Any] = {"repo": "owner/catalog", "issue": 1, "source_worktree": str(self.root),
+                                       "runtime_worktree": str(self.root), "ledger": str(self.root / "ledger.json"),
+                                       "supervisor_session": "controller"}
+        runtime = patch.object(Operation, "run", side_effect=lambda gate, *args, **kwargs:
+                               {"ok": True} if gate.startswith("supersede_") else {"status": "already_current", "after_sha": "tip"})
+        self.runner = runtime.start()
         self.addCleanup(runtime.stop)
+        reconcile = patch.object(landing, "reconcile_runtime", return_value=(self.root, "tip"))
+        reconcile.start()
+        self.addCleanup(reconcile.stop)
 
     def test_discovery_preserves_first_parent_order_and_refuses_missing_cursor(self) -> None:
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
@@ -63,7 +69,7 @@ class CatalogLandingTests(unittest.TestCase):
             self.assertTrue(landing.poll(self.config, self.root, resume_failed=True)["ok"])
             self.assertEqual(verify.call_count, 2)
             self.assertEqual(json.loads((self.root / "cursor.json").read_text())["last_sha"], "second")
-            self.assertEqual(verify.call_args.args[1].state["identity"], [self.config["repo"], "first", "second"])
+            self.assertEqual(json.loads((self.root / "second/result.json").read_text())["landings"], ["first", "second"])
 
     def test_only_human_documentation_skips_smoke_after_runtime_reconciliation(self) -> None:
         for index, files in enumerate(("README.md\ndocs/guide.md", "skills/thing/SKILL.md", "instructions/global.md", "README.md\nscript.py")):
@@ -95,6 +101,65 @@ class CatalogLandingTests(unittest.TestCase):
                 landing.poll(self.config, self.root)
             self.assertFalse((self.root / "cursor.json").exists())
             self.assertTrue(landing.poll(self.config, self.root)["ok"])
+
+
+    def test_supersede_revalidates_exact_retired_sources_and_includes_new_fix(self) -> None:
+        with (patch.object(landing, "pending_landings", side_effect=[["B"], ["C"]]),
+              patch.object(landing, "landing_pull", return_value=2), patch.object(landing, "git", return_value="script.py"),
+              patch.object(landing, "verify", side_effect=[{"ok": False, "gate": "smoke_acknowledgement"}, {"ok": True}]) as verify,
+              patch.object(landing, "post_result", return_value="comment")):
+            self.assertFalse(landing.poll(self.config, self.root)["ok"])
+            old = Operation(self.root / "B", [self.config["repo"], "B"])
+            source = {"session_id": "old-native", "generation": "original", "ledger": str(Path(self.config["ledger"]).resolve())}
+            old.state["steps"].update(codex_launch={"complete": True}, codex_source=source)
+            landing.save_state(old.path, old.state)
+            close = old.evidence / "codex-closeout"
+            close.mkdir()
+            journal = {"identity": [source["ledger"], source["session_id"]], "generation": source["generation"]}
+            landing.save_state(close / "operation.json", journal)
+            with self.assertRaises(GateFailed):
+                landing.poll(self.config, self.root, supersede_failed=True)
+            self.assertEqual(verify.call_count, 1)
+            journal["retired_generation"] = "another-generation"
+            landing.save_state(close / "operation.json", journal)
+            with self.assertRaises(GateFailed):
+                landing.poll(self.config, self.root, supersede_failed=True)
+            journal["retired_generation"] = source["generation"]
+            landing.save_state(close / "operation.json", journal)
+            old.state["steps"]["request"] = {"complete": False}
+            landing.save_state(old.path, old.state)
+            with self.assertRaises(GateFailed):
+                landing.poll(self.config, self.root, supersede_failed=True)
+            old.state["steps"]["request"] = {"complete": True}
+            landing.save_state(old.path, old.state)
+            result = landing.poll(self.config, self.root, supersede_failed=True)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["landings"], ["B", "C"])
+            self.assertEqual(json.loads((self.root / "cursor.json").read_text())["last_sha"], "C")
+            self.assertFalse(json.loads((old.evidence / "result.json").read_text())["ok"])
+            self.assertNotEqual(verify.call_args.args[1].evidence, old.evidence)
+            rechecks = [call for call in self.runner.call_args_list if call.args[0].startswith("supersede_")]
+            self.assertEqual(len(rechecks), 1)
+            self.assertIn(str(close), rechecks[0].args[1])
+            self.assertIn(source["session_id"], rechecks[0].args[1])
+
+    def test_prelaunch_read_failure_retries_without_explicit_resume(self) -> None:
+        with (patch.object(landing, "pending_landings", return_value=["first"]),
+              patch.object(landing, "landing_pull", side_effect=[GateFailed("read", "unavailable"), 2]),
+              patch.object(landing, "git", return_value="script.py"),
+              patch.object(landing, "verify", return_value={"ok": True}) as verify,
+              patch.object(landing, "post_result", return_value="comment")):
+            with self.assertRaises(GateFailed):
+                landing.poll(self.config, self.root)
+            self.assertFalse((self.root / "first/result.json").exists())
+            self.assertTrue(landing.poll(self.config, self.root)["ok"])
+            verify.assert_called_once()
+
+    def test_smoke_records_both_runtime_observations_without_claiming_loaded_version(self) -> None:
+        with patch.object(landing, "verify_smoke", return_value="handoff"), patch.object(landing, "git", return_value="after"):
+            result = landing.verify({**self.config, "landing_sha": "target"}, Operation(self.root, ["runtime"]), self.root, "before")
+            self.assertEqual((result["runtime_sha"], result["runtime_after_sha"]), ("before", "after"))
+            self.assertTrue(result["ok"])
 
 
 if __name__ == "__main__":

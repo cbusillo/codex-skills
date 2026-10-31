@@ -101,7 +101,7 @@ def render(config_path, catalog, output):
             "EnvironmentVariables": {"PATH": f"{Path(config['uv']).parent}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"},
             "RunAtLoad": True,
             "KeepAlive": False,
-            "ExitTimeOut": 30,
+            "ExitTimeOut": 180,
             "StandardOutPath": str(log_dir / f"{name}.jsonl"),
             "StandardErrorPath": str(log_dir / f"{name}.stderr.log"),
         }
@@ -342,7 +342,6 @@ def main(argv=None):
     clear = sub.add_parser("clear", help="clear a stop marker after reconciliation")
     clear.add_argument("--config", type=Path, required=True)
     clear.add_argument("--service", choices=SERVICES + OPTIONAL_SERVICES, required=True)
-    clear.add_argument("--failure-delivered-url", help="record the verified channel notice when its original delivery was uncertain")
     bind = sub.add_parser("bind", help="bind notifications to this actual Supervisor session")
     bind.add_argument("--config", type=Path, required=True)
     bind.add_argument("--transcript", type=Path, help="exact source path when own-account discovery is ambiguous")
@@ -370,14 +369,6 @@ def main(argv=None):
             with service_lock(config_path, args.service):
                 notice = marker.with_suffix(".notice.json")
                 if notice.exists():
-                    saved = json.loads(notice.read_text())
-                    if args.failure_delivered_url:
-                        if not re.fullmatch(r"https://discord\.com/channels/(?:@me|[0-9]+)/[0-9]+/[0-9]+", args.failure_delivered_url):
-                            raise ValueError("requires the exact verified Discord message URL")
-                        saved.update(complete=True, delivery_url=args.failure_delivered_url)
-                        save_state(notice, saved)
-                    if saved.get("complete") is not True:
-                        raise ValueError("reconcile the notice and supply --failure-delivered-url before clearing")
                     notice.rename(notice.with_name(f"{notice.stem}.{uuid.uuid4().hex}.json"))
                 marker.unlink(missing_ok=True)
                 emit("reconciled", service=args.service)

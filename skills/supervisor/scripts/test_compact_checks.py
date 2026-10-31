@@ -239,6 +239,9 @@ class OperationTests(unittest.TestCase):
                     catalog_landing.verify_smoke(config, check_operation.Operation(self.root, ["landing"]), "codex", "openai", self.root)
                 self.assertEqual(failure.exception.gate, "response")
         self.assertEqual(launches, 1)
+        saved = check_operation.Operation(self.root, ["landing"]).state["steps"]["codex_source"]
+        self.assertEqual(saved["session_id"], entry["session_id"])
+        self.assertEqual(saved["ledger"], str(ledger.resolve()))
         iterm_tab.validate_brief_rules((self.root / "codex-brief.txt").read_text())
 
     def test_native_request_and_registered_launch_resolve_without_replay(self) -> None:

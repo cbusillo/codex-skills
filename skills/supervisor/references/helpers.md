@@ -1122,8 +1122,9 @@ unverified. Later runs enumerate every first-parent landing since the saved
 cursor and verify the latest runtime once for that batch. They reconcile through
 the runtime helper, run both fresh harnesses, close smoke sessions normally,
 and post verification on the configured owning issue, listing every covered
-SHA. The comment names the landing and actual runtime SHA; a newer runtime proves containment, not an earlier runtime's
-behavior. Only a nonempty diff confined to `README.md` and Markdown under `docs/` may
+SHA. The comment records HEAD before and after smoke; neither observation
+measures a session's loaded SHA. A newer runtime proves containment, not an
+earlier runtime's behavior. Only a nonempty diff confined to `README.md` and Markdown under `docs/` may
 skip live sessions; skill instructions still need smoke checks. Cursor advancement
 requires verification, cleanup and the posted comment. Success needs no Supervisor action.
 
@@ -1134,14 +1135,26 @@ service stopped. Read private evidence and reconcile any
 uncertain launch, request, comment or notification before recovery. Resume a
 failed verification explicitly with the same command plus `--resume-failed`,
 using the same evidence directory; this reuses launch and closeout journals.
-After it succeeds, clear the runner's `catalog` marker and restart that job
-through the existing service route. Never remove a journal or replay an
+A completed bad acknowledgement needs a fresh attempt. First get each preserved
+session's normal handoff and run `session_closeout.py` with the exact native ID
+and the original `<attempt>/<harness>-closeout` evidence directory. The saved
+`<harness>_source` gives its native ID, original ledger and generation. Once all
+old sessions have retired, run the poll command with `--supersede-failed`. It
+revalidates those exact closeouts through the existing helper, refuses changed
+generations or uncertain mutations, includes later landings, and preserves the
+old attempt while starting fresh sessions. It can retry the same tip after an
+environment repair. It never skips missing merged-PR proof or rewritten history.
+
+After recovery succeeds, clear the runner's `catalog` marker and restart that
+job through the existing service route. Never remove a journal or replay an
 uncertain mutation to clear a failure. The runner reserves each notice before
-sending; uncertain delivery is never replayed. After verifying its actual channel
-message, `services.py clear --failure-delivered-url <exact-Discord-message-URL>`
-records that evidence and archives the notice before clearing the stop. A later
-failure gets its own notice. Reader failures before verification keep no saved
-failed verification, so the existing clear/restart route can retry those reads.
+sending and never replays an uncertain delivery. Before explicit `services.py
+clear`, inspect its retained evidence, resolve uncertain delivery at the existing
+channel, and ensure the failure is visible there. For a certainly unsent notice,
+fix the sender and deliver once through that existing route. Clear archives the
+original notice without relabeling it delivered or resending it; a later stopped
+episode gets its own notice. Prelaunch read failures keep no saved failed
+verification, so the existing clear/restart route retries those reads.
 
 For one bounded manual verification or recovery:
 
