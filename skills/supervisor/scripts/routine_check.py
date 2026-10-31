@@ -132,6 +132,8 @@ def digest(sources: dict[str, dict]) -> str:
         lines.append(f"UNREGISTERED {len(unregistered)}: {pointer(unregistered[0])}")
     comments = sources.get("comments", {})
     for row in comments.get("attention", []):
+        if row.get("later_reply_url") or (row.get("comment_kind") == radar.OPENING_POST and row.get("thread_has_replies")):
+            continue
         lines.append(f"COMMENT {pointer(row)}: {' '.join((row.get('body_excerpt') or row.get('body') or '').split())[:180]}")
     for row in comments.get("unasked_director_waits", []):
         lines.append(f"WAIT {pointer(row)}")
