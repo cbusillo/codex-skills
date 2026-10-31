@@ -12,6 +12,7 @@ import asyncio
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 import json
+import fcntl
 import os
 from pathlib import Path
 from typing import Any
@@ -894,6 +895,7 @@ def main():
     parser.add_argument("--transcript-root", type=Path, action="append", default=[])
     args = parser.parse_args()
     reports = []
+    lock_stream = None
     try:
         if args.mode == "backfill" and args.checkout_root is None:
             raise ValueError("backfill requires --checkout-root for canonical release preflight")
@@ -980,6 +982,12 @@ def main():
             repos = sorted({r for r, _ in issues})
         else:
             issues, repos = discover(reader, args.owner, entries, args.repo)
+        if args.mode == "backfill" and args.apply:
+            lock_stream = os.fdopen(os.open(str(args.closed_log) + ".release.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600), "w")
+            try:
+                fcntl.flock(lock_stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise closure.LeaseBusy("another backfill is posting releases for this log") from error
         for entry in entries:
             try:
                 reports.append(release_session(reader, entry, actor, args.supervisor_session, issues,
@@ -991,8 +999,9 @@ def main():
                                 "retryable": isinstance(error, closure.LeaseBusy),
                                 "next_action": "inspect records before retry"})
         ok = not any("error" in r or r.get("issue_refusals") or r.get("pr_claim_handoffs") for r in reports)
+        incomplete = [r for r in reports if "error" in r or r.get("issue_refusals") or r.get("pr_claim_handoffs")]
         print(json.dumps({"ok": ok, "reports": reports, "repositories_checked": repos,
-                          "retryable": any(r.get("retryable") is True for r in reports),
+                          "retryable": bool(incomplete) and all(r.get("retryable") is True for r in incomplete),
                           "needs_reconciliation": any(r.get("retained_status_claims") or r.get("issue_refusals") or r.get("pr_claim_handoffs") or "error" in r for r in reports),
                           "coverage": "exact verified inventory claims" if all(e.get("_inventory") for e in entries) else "explicit scope" if args.repo else "accessible repositories under the requested owner",
                           "outside_scope": "other repository owners and other automation App identities; use their configured evidence-backed release-claim route"}))
@@ -1007,6 +1016,9 @@ def main():
                           "next_action": ("retry after the shared closure log is available" if retryable else
                                           "inspect posted records and remaining claims; do not replay an uncertain write")}))
         return 1
+    finally:
+        if lock_stream is not None:
+            lock_stream.close()
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ import os
 import contextlib
 import io
 import itertools
+import fcntl
 import importlib
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -127,6 +128,42 @@ class ReleaseTests(unittest.TestCase):
             result = json.loads(output.getvalue())
             self.assertFalse(result["ok"])
             self.assertTrue(result["needs_reconciliation"])
+
+    def test_backfill_posting_contention_never_posts(self) -> None:
+        log = self.root / "closed.json"
+        log.write_text(json.dumps([self.entry]))
+        argv = ["helper", "backfill", "--closed-log", str(log), "--supervisor-session", "supervisor",
+                "--owner", "test", "--checkout-root", str(self.root), "--confirm-session-ended",
+                "--transcript-root", str(self.root), "--apply"]
+        output = io.StringIO()
+        with Path(str(log) + ".release.lock").open("w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch.object(helper.sys, "argv", argv), \
+                    patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
+                    patch.object(helper, "discover", return_value=([], ["test/a"])) as discover, \
+                    patch.object(helper, "release_session") as release, contextlib.redirect_stdout(output):
+                self.assertEqual(helper.main(), 1)
+            discover.assert_called_once()
+            release.assert_not_called()
+        self.assertTrue(json.loads(output.getvalue())["retryable"])
+
+    def test_mixed_busy_and_uncertain_release_is_not_retryable(self) -> None:
+        log = self.root / "closed.json"
+        log.write_text(json.dumps([self.entry, {**self.entry, "session_id": "other-source"}]))
+        argv = ["helper", "backfill", "--closed-log", str(log), "--supervisor-session", "supervisor",
+                "--owner", "test", "--checkout-root", str(self.root), "--confirm-session-ended",
+                "--transcript-root", str(self.root), "--apply"]
+        output = io.StringIO()
+        with patch.object(helper.sys, "argv", argv), \
+                patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
+                patch.object(helper, "validate_closure"), \
+                patch.object(helper, "discover", return_value=([], ["test/a"])), \
+                patch.object(helper, "release_session", side_effect=[closure.LeaseBusy("busy"),
+                    helper.PartialRelease("uncertain", {"attestation": "posted"})]), contextlib.redirect_stdout(output):
+            self.assertEqual(helper.main(), 1)
+        result = json.loads(output.getvalue())
+        self.assertFalse(result["retryable"])
+        self.assertTrue(result["needs_reconciliation"])
 
     def test_pr_release_handoff_refuses_a_checkout_for_another_repository(self):
         handoff = dict(self.reader.get_json.return_value)
