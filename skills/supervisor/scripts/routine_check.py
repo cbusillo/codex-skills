@@ -248,6 +248,8 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
         result["ok"] = result["ok"] and not errors
         if getattr(args, "foreign_state", None):
             foreign_watch.route_report(args, result, github_reader(), [*settings["self_logins"], *settings["bot_logins"]])
+            result["coverage"]["errors"].extend(result.get("routing_errors", []))
+            result["ok"] = result["ok"] and not result.get("routing_errors")
         return result
 
     return {

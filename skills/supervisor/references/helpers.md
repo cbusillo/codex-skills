@@ -446,6 +446,40 @@ available for a one-off check.
 uv run --no-cache skills/supervisor/scripts/foreign_watch.py --owner OWNER --own-login OWN-LOGIN --own-login AUTOMATION-LOGIN --launchplane-login DELIVERY-LOGIN --state <private-watch-state.json> --deadline-seconds 1800
 ```
 
+For Q1101 event delivery, add `--webhook-port PORT --ledger <ledger.json>
+--notify-config <services.json> --miss-issue OWNER/REPO#NUMBER` to that same
+foreign service. It receives signed GitHub `POST /github/events` requests on
+loopback and wakes immediately; `--interval` is only its recovery sweep.
+The existing sender's custodian supplies `FOREIGN_WATCH_WEBHOOK_SECRET` to
+the process and forwards its source transport to this loopback listener
+through its TLS ingress. Configuring a sender, subscription, credential or
+ingress is separate from delivering this source; follow the Director's stop
+boundaries. Never expose the plain HTTP listener directly. Subscribe to
+`issues`, `pull_request`, `issue_comment`, `pull_request_review` and
+`pull_request_review_comment`. GitHub's
+[signature contract](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)
+and [event payloads](https://docs.github.com/en/webhooks/webhook-events-and-payloads)
+own the headers and source shapes.
+
+The receiver verifies the raw-body signature before acknowledging, saves only
+source identifiers in the existing private watch state, then re-reads current
+GitHub content. Duplicate source versions share one delivery receipt.
+Both the watcher and digest reuse the pending-review claim resolver and
+native notification routes: a live worker receives a pointer; otherwise the
+Supervisor answers or relaunches under existing authority. The pointer is
+untrusted input, never permission to merge, Accept, close or widen work.
+
+Use the same `--foreign-state`, `--notify-config` and `--miss-issue` on
+`routine_check.py` to enable its existing radar as the scheduled backstop,
+including inline reviews. Replied-to requests remain in planning intake until
+their next action is done. No second collector or durable store is introduced.
+A recovered miss records a cause on the named existing repair issue using an
+opaque receipt hash; private source URLs, authors and words stay in private
+state. A missing hook receipt means the upstream cause remains UNKNOWN.
+The Supervisor uses that hash to find the source and repair the responsible
+path. Certainly unsent deliveries retry; permission refusals and uncertain
+send or issue-write outcomes need reconciliation and are never replayed.
+
 Add `--director-login DIRECTOR-LOGIN --mention-approval <approval-comment-link>`
 to also report threads outside the listed repositories that mention the
 Director, including private repositories only the Director's login can read.
