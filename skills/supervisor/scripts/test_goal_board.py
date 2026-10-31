@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 
 import goal_board
 from skills.github.scripts.github_api import ApiResult
-from skills.github.scripts import github_plan_body, github_plan_wait, github_plan_status, github_plan_claim
+from skills.github.scripts import github_plan_body, github_plan_graph, github_plan_wait, github_plan_status, github_plan_claim
 
 BOT = {"__typename": "Bot", "login": "shiny-code-app"}
 TRUSTED = {"owner", "shiny-code-app[bot]"}
@@ -136,9 +136,8 @@ class GoalBoardTests(unittest.TestCase):
         parent = child(10, prs=[pr(90)])
         parent["subIssuesSummary"] = {"total": 1, "completed": 0}
         expanded = {**parent, "subIssues": {"totalCount": 1, "nodes": [child(11, comments=[source, release])]}}
-        self.reader.graphql_json.side_effect = [ApiResult(ok=True, status=200, body=body) for body in (
-            listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[parent])), details(t10=expanded))]
-        board = goal_board.goal_board(self.reader, "owner", trusted=TRUSTED, wait_trusted=TRUSTED)
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
+                            details(t1=track(1, children=[parent]), t10=expanded))
         row = board["tracks"][0]
         self.assertTrue(board["coverage"]["complete"], board)
         self.assertEqual([item["number"] for item in row["groups"]["waiting"]], [10])
@@ -473,6 +472,70 @@ class GoalBoardTests(unittest.TestCase):
         self.assertEqual(self.reader.graphql_json.call_args_list[0].args[1]["cursor"], None)
         self.assertEqual(self.reader.graphql_json.call_args_list[1].args[1]["cursor"], "c1")
 
+    def test_pr_handoff_after_first_comment_page_is_read(self) -> None:
+        waiting = comment("Engineering ready; waiting for the Client's acceptance")
+        ready = comment(f"Ready for the merge train\n\nHead: {HEAD}", at="2026-10-16T11:00:00Z", ident=101)
+        pull = pr(100, comments=[waiting])
+        pull["url"] = "https://github.com/owner/other/pull/100"
+        stranger = comment(f"Ready for the merge train\n\nHead: {OLD}", ident=102,
+                           author={"__typename": "User", "login": "stranger"}, at="2026-10-16T12:00:00Z")
+        history = [waiting, *(comment("Progress", ident=ident) for ident in range(2, 101)), ready, stranger]
+        pull["comments"]["totalCount"] = len(history)
+        self.reader.paged_json.return_value = [github_plan_graph.rest_comment(item) for item in history]
+
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
+                            details(t1=track(1, children=[child(10, prs=[pull])])))
+
+        observed = board["tracks"][0]["children"][0]["open_prs"][0]
+        self.assertEqual(observed["handoff"], "ready")
+        self.assertEqual(self.reader.paged_json.call_args.args, ("/repos/owner/other/issues/100/comments",))
+
+    def test_incomplete_or_failed_pr_history_stays_unknown(self) -> None:
+        ready = comment(f"Ready for the merge train\n\nHead: {HEAD}")
+        for failure in (None, ValueError("missing page")):
+            with self.subTest(failure=failure):
+                pull = pr(100, comments=[ready])
+                pull["comments"]["totalCount"] = 101
+                self.reader.paged_json.side_effect = failure
+                self.reader.paged_json.return_value = [github_plan_graph.rest_comment(ready)]
+                board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
+                                    details(t1=track(1, children=[child(10, prs=[pull])])))
+                self.assertFalse(board["coverage"]["complete"])
+                self.assertEqual(board["tracks"][0]["children"][0]["open_prs"][0]["handoff"], goal_board.UNKNOWN)
+
+    def test_pr_history_failure_preserves_other_prs_and_descendants(self) -> None:
+        ready = comment(f"Ready for the merge train\n\nHead: {HEAD}")
+        unread_pr = pr(90, comments=[ready])
+        unread_pr["comments"]["totalCount"] = 101
+        parent = child(10, prs=[unread_pr, pr(91, comments=[ready])])
+        parent["subIssuesSummary"] = {"total": 1, "completed": 0}
+        expanded = {**parent, "subIssues": {"totalCount": 1, "nodes": [child(11, prs=[pr(92, comments=[ready])])]}}
+        self.reader.paged_json.return_value = []
+        self.reader.graphql_json.side_effect = [ApiResult(ok=True, status=200, body=body) for body in (
+            listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[parent])), details(t10=expanded))]
+        board = goal_board.goal_board(self.reader, "owner", trusted=TRUSTED, wait_trusted=TRUSTED)
+        rows = board["tracks"][0]["children"]
+        self.assertFalse(board["coverage"]["complete"])
+        self.assertEqual([pull["handoff"] for pull in rows[0]["open_prs"]], [goal_board.UNKNOWN, "ready"])
+        self.assertEqual(rows[1]["open_prs"][0]["handoff"], "ready")
+        self.assertFalse(rows[1]["unread"])
+
+    def test_child_discussion_failure_does_not_skip_descendant_reads(self) -> None:
+        parent = child(10)
+        parent["subIssuesSummary"] = {"total": 1, "completed": 0}
+        expanded = {**parent, "subIssues": {"totalCount": 1, "nodes": [child(11)]}}
+        def read_comments(_reader: Any, node: dict) -> None:
+            if node["number"] == parent["number"]:
+                raise ValueError("missing child page")
+
+        with patch.object(goal_board, "complete_comments", side_effect=read_comments):
+            board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
+                                details(t1=track(1, children=[parent]), t10=expanded))
+        rows = board["tracks"][0]["children"]
+        self.assertTrue(rows[0]["unread"])
+        self.assertFalse(rows[1]["unread"])
+        self.assertEqual(rows[1]["number"], 11)
+
     def test_failed_or_partial_track_read_says_unknown_and_never_complete(self):
         board = self.replay(listing([{"number": 1, "title": "Track: One"}, {"number": 2, "title": "Track: Two"}]),
                             ApiResult(ok=False, status=502, body=None))
@@ -497,6 +560,7 @@ class GoalBoardTests(unittest.TestCase):
         many_labels["labels"] = {"totalCount": 60, "nodes": [{"name": "area"}]}
         long_pr = pr(100, comments=[comment("CI is green")])
         long_pr["comments"]["totalCount"] = 80
+        self.reader.paged_json.return_value = []
         board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
                             details(t1=track(1, children=[many_labels, child(12, prs=[long_pr])])))
         self.assertFalse(board["coverage"]["complete"])
@@ -510,8 +574,10 @@ class GoalBoardTests(unittest.TestCase):
         decided = track(1, comments=[comment("Director decision: yes")])
         decided["comments"]["totalCount"] = 145
         decided["lastEditedAt"] = "2026-10-16T12:00:00Z"
-        ready = pr(100, comments=[comment(f"Ready for the merge train\n\nHead: {HEAD}")])
+        ready = pr(100, comments=[comment(f"Ready for the merge train\n\nHead: {HEAD}", ident=80)])
         ready["comments"]["totalCount"] = 80
+        history = [*(comment("Progress", ident=ident) for ident in range(1, 80)), ready["comments"]["nodes"][0]]
+        self.reader.paged_json.return_value = [github_plan_graph.rest_comment(item) for item in history]
         decided["subIssues"] = {"totalCount": 1, "nodes": [child(12, prs=[ready])]}
         board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=decided))
         self.assertFalse(board["coverage"]["complete"])
