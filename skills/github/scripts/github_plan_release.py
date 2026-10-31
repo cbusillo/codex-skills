@@ -5,6 +5,8 @@
 """Evidence-backed release of automation claims from closed sessions."""
 from __future__ import annotations
 
+from github_plan_status.discussion import stamp
+
 from datetime import datetime
 from dataclasses import dataclass
 from collections.abc import Callable
@@ -104,13 +106,6 @@ def related_sessions_match(text: str, session: str) -> bool:
             if not re.fullmatch(rf"{re.escape(session)}\.?", value):
                 return False
     return True
-
-
-def stamp(value: Any) -> datetime:
-    parsed = datetime.fromisoformat(value)
-    if parsed.tzinfo is None:
-        raise ValueError("Release evidence requires timezone-qualified timestamps")
-    return parsed
 
 
 def source_record(source: dict[str, Any], *, legacy: bool = False,

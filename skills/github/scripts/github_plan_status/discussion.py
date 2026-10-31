@@ -16,18 +16,14 @@ def stamp(value: Any) -> datetime:
 
 
 def section_map(body: str) -> dict[str, str]:
-    from .waits import live_lines as visible_lines
-
     sections: dict[str, str] = {}
-    name = None
-    for _, line in visible_lines(body, prefix=""):
-        heading = re.match(r"^##\s+(.+?)\s*$", line)
-        if heading:
-            name = heading[1].strip()
-            sections[name] = ""
-        elif name is not None:
-            sections[name] += line + "\n"
-    return {key: value.strip() for key, value in sections.items()}
+    matches = list(re.finditer(r"(?m)^##\s+(.+?)\s*$", body or ""))
+    for idx, match in enumerate(matches):
+        name = match.group(1).strip()
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
+        sections[name] = body[start:end].strip()
+    return sections
 
 
 def current_status(discussion: dict[str, Any], trusted: set[str], *, body_recorded_at: str | None = None) -> str:
@@ -148,11 +144,9 @@ def exact_released_sources(comments: list[dict[str, Any]]) -> list[tuple[int, di
     return found
 
 
-def released_actor(actor: str, discussion: dict[str, Any], trusted: set[str]) -> bool:
-    comments = [{**comment, "user": {"login": comment.get("author") or ""}}
-                for comment in discussion.get("comments", [])]
-    relevant = [index for index, comment in enumerate(comments)
+def released_actor(actor: str, *, effective_comments: list[dict[str, Any]], trusted: set[str]) -> bool:
+    relevant = [index for index, comment in enumerate(effective_comments)
                 if str((comment.get("user") or {}).get("login") or "").casefold() in trusted
                 and any(record["session"] == actor.removeprefix("agent:")
                         for record in records(comment.get("body") or ""))]
-    return bool(relevant and relevant[-1] in {index for index, _, _ in exact_released_sources(comments)})
+    return bool(relevant and relevant[-1] in {index for index, _, _ in exact_released_sources(effective_comments)})

@@ -297,11 +297,10 @@ result under `escalation_open` below, even in an unadopted repository or one
 without a recent push. Reuse results already judged in this session and report
 the search's coverage limits as the daily procedure describes.
 
-Report request intake effectiveness and efficiency together in the weekly check:
-missed or waiting requests found by the existing scheduled sweep, false reopens,
+Report request intake effectiveness and efficiency together in the weekly audit:
+missed or waiting requests found by the existing scheduled sweep, false reopens (no real new request),
 and observed time and tool cost per request. Use existing source issues and
-Supervisor evidence; say which measurements are unavailable. Do not improve one
-measure at the other's expense or add a second request store.
+Supervisor evidence; say which measurements are unavailable. Do not add a second request store.
 
 Once per weekly audit, also search the open `friction` issues the same way
 (`"user:OWNER label:friction"`) and report its coverage limits. Give them to a

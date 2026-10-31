@@ -23,10 +23,6 @@ from github_plan_status import next_actor
 from github_plan_status.references import linked_issues
 
 
-
-
-
-
 def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[str],
                     resume_from: int | None = None, resume_source: dict[str, Any] | None = None,
                     expired_sessions: set[str] | frozenset[str] = frozenset()) -> dict[str, Any]:
@@ -108,8 +104,7 @@ def released_actor(actor: str, discussion: dict[str, Any], trusted: set[str]) ->
 
     comments = effective_comments([{**comment, "user": {"login": comment.get("author") or ""}}
                                    for comment in discussion.get("comments", [])])
-    return shared_released_actor(actor, {**discussion, "comments": comments}, trusted)
-
+    return shared_released_actor(actor, effective_comments=comments, trusted=trusted)
 
 
 def is_scoping_track(item: dict[str, Any]) -> bool:

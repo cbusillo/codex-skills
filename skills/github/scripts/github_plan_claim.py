@@ -15,14 +15,13 @@ import time
 from typing import Any, Callable
 
 try:
-    from github_plan_status.discussion import live_lines, records, without_operation_marker, released_claim_id, exact_released_sources
+    from github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources
     from github_plan_status.references import pr_issue_reference as pr_issue_reference
 except ModuleNotFoundError:
-    from skills.github.scripts.github_plan_status.discussion import live_lines, records, without_operation_marker, released_claim_id, exact_released_sources
+    from skills.github.scripts.github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources
     from skills.github.scripts.github_plan_status.references import pr_issue_reference as pr_issue_reference
 
 
-MARKER = "github-plan:claim "
 LEASE_TAKEOVER_PREFIX = "Lease takeover: claim "
 EMPTY_HOLDERS = {"none", "unassigned", "unclaimed", "not assigned", "n/a", "-", "nobody", "no one", "no-one"}
 
@@ -89,16 +88,10 @@ def marker(claim: dict[str, str]) -> str:
     return "<!-- " + MARKER + json.dumps(claim, sort_keys=True).replace(">", "\\u003e") + " -->"
 
 
-
-
-
-
 def same_owner(record: dict[str, Any], claim: dict[str, Any]) -> bool:
     return (all(record.get(key) == claim[key] for key in ("worker", "session", "branch"))
             and all(record.get(key) == claim.get(key)
                     for key in ("refresh_pr", "retained_handoff", "resume_from")))
-
-
 
 
 def legacy_release_worker(text: str) -> str | None:
@@ -106,8 +99,6 @@ def legacy_release_worker(text: str) -> str | None:
     text = without_operation_marker("\n".join(text.splitlines()))
     match = re.fullmatch(r"Released by (\S+)", text)
     return match.group(1) if match else None
-
-
 
 
 def resumed_status(status: str, comments: list[dict[str, Any]], source_id: int | None) -> str:
@@ -306,8 +297,6 @@ def has_ownership_assertion(text: str, *, own_claim: dict[str, str] | None = Non
                     continue
         return True
     return False
-
-
 
 
 def released_successor_route(
