@@ -47,13 +47,14 @@ def reviewed(*, evidence: str, waiting_for: str | list[str] | None = None,
         raise ValueError("Each --waiting-for requires a corresponding --ends-when")
     if any(agent_step(actor) for actor in actors):
         raise ValueError("Agent and Supervisor steps belong in Next actor and Next action, not --waiting-for")
-    record = {"version": 1, "state": "waiting" if waiting_for else "clear", "evidence": evidence,
+    record: dict[str, Any] = {"version": 1, "state": "waiting" if waiting_for else "clear", "evidence": evidence,
               "waits": [{"waiting_for": actor, "ends_when": end} for actor, end in zip(actors, endings)]}
     if not_before is not None or event is not None:
         from . import events
         if not actors or (not_before is not None and event is not None):
             raise ValueError("Supply a wait and either --not-before or --event")
         event = {"version": 1, "kind": "date", "at": not_before, "evidence": evidence} if not_before is not None else event
+        assert event is not None
         events.validate(event)
         if event.get("state") == "clear" or event.get("kind") == "recurrence":
             raise ValueError("A wait needs a machine-checkable event")

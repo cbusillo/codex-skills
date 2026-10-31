@@ -20,9 +20,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "skills/github/scripts"))
 from skills.github.scripts.github_plan_status import events, next_actor, waits
-import github_comment
-import github_issue
-import github_api
+from skills.github.scripts import github_comment, github_issue, github_api
 
 
 @contextmanager
@@ -64,7 +62,7 @@ def actions(
         actor
         and actor.startswith("agent")
         and record["wait"]["state"] == "clear"
-        and updated
+        and isinstance(updated, str)
         and "plan:blocked" not in labels
         and not blocked
     ):
@@ -72,9 +70,9 @@ def actions(
         key = hashlib.sha256(json.dumps([actor, record["action"]]).encode()).hexdigest()[:20]
         marker = f"<!-- github-plan:next-nudge {key} -->"
         nudged = any(
-            marker in comment.get("body", "")
-            and ((comment.get("user") or {}).get("login") or comment.get("author") or "").casefold() in trusted
-            for comment in comments
+            marker in entry.get("body", "")
+            and ((entry.get("user") or {}).get("login") or entry.get("author") or "").casefold() in trusted
+            for entry in comments
         )
         if timestamp.tzinfo is None:
             raise ValueError("Next record activity time lacks a timezone")
@@ -192,7 +190,7 @@ def scheduled_issue(
         return run(repo, ["create", title], body)
     item = exact[0]
     reported = f"Reported scheduled run: {latest['id']}"
-    if reported in item.get("body", "") or any(reported in comment.get("body", "") for comment in item.get("_comments", [])):
+    if reported in item.get("body", "") or any(reported in entry.get("body", "") for entry in item.get("_comments", [])):
         return {"issue": item, "already_reported": True}
     if item.get("state") == "closed":
         github_issue.set_issue_state(item["number"], state="open", state_reason="reopened", repo=repo)

@@ -551,6 +551,8 @@ class OverdueTriggerTests(unittest.TestCase):
 class FakeReader:
     def __init__(self):
         self.paths = []
+        self.gh_cmd = "fake-gh"
+        self.deadline_at = 10000000000.0
         self.remaining = 1000
         self.limit = None
         self.pages = {}
@@ -593,8 +595,6 @@ class InventoryTests(unittest.TestCase):
         return sweep.collect(["test/repo"], reader=self.reader, now=self.now, **kwargs)
 
     def applying_reader(self) -> None:
-        self.reader.gh_cmd = "fake-gh"
-        self.reader.deadline_at = 10000000000.0
         original = self.reader.get_json
 
         def read(path: str, *, step: str) -> Any:

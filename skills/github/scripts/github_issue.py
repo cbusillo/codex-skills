@@ -976,7 +976,7 @@ def _edit_issue_impl(
     normalized_remove_labels = _split_values(remove_labels)
     if any(label.casefold() == "direction" for label in normalized_remove_labels):
         reader = github_read.GitHubReader(gh_cmd=gh_cmd, expected_actor=expected_actor,
-                                         operation=operation, cache_enabled=False)
+                                         operation=operation)
         try:
             issue = reader.get_json(f"/repos/{resolved_repo}/issues/{number}", step="direction_route")
             comments = reader.paged_json(f"/repos/{resolved_repo}/issues/{number}/comments", step_prefix="direction_route")
@@ -997,7 +997,7 @@ def _edit_issue_impl(
             route = next_actor.record(issue, comments, github_plan_wait.authors(resolved_repo, expected_actor=expected_actor))
         except (github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError, KeyError, TypeError) as exc:
             failure = getattr(getattr(exc, "result", None), "failure", None)
-            raise _local_error(str(exc), operation=operation, cause=failure.cause if failure else "invalid_response",
+            raise _local_error(str(exc), operation=operation, cause=getattr(failure, "cause", "invalid_response"),
                                actor=actor, expected_actor=expected_actor, completed_steps=steps, failed_step="direction_route") from exc
         if next_actor.direction(route["actor"], route["wait"]):
             raise _local_error("Current Next actor or structured wait still routes this issue to direction",

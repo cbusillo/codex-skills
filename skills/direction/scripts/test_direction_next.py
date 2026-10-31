@@ -190,7 +190,9 @@ class NextSweepTests(unittest.TestCase):
                 listing=Mock(return_value=comments),
                 run=Mock(),
             )
-        self.assertEqual(events.current(item, comments, TRUSTED)["state"], "clear")
+        current = events.current(item, comments, TRUSTED)
+        assert current is not None
+        self.assertEqual(current["state"], "clear")
         item["state"] = "closed"
         self.assertEqual(actions(item, comments), [])
 
