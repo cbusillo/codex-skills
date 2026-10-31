@@ -47,7 +47,21 @@ def stopped_daemon_remedy(home):
             f"run {command}, then retry; never stop or restart a live daemon")
 
 
-def source_endpoint(session, home, *, transcript=None):
+def require_resume_available(session: str) -> None:
+    saved = closure.source_records({session}).get(session)
+    generation = saved.get("resumed_generation") if saved else None
+    if generation is not None and (not isinstance(generation, dict) or not generation):
+        raise ValueError("native resumed generation is unavailable; preserve the source")
+    if generation and not session_liveness.generation_ended(generation):
+        raise ValueError("resumed client remains; finish register --receipt-file without launching another client")
+    for _pid, _tty, command in session_liveness.inventory():
+        argv = session_liveness.harness_arguments(command)
+        sources, _kind, _exact = session_liveness.invocation(argv or [])
+        if session in [session_liveness.native_uuid(source) for source in sources]:
+            raise ValueError("native resume client remains; preserve its terminal and finish registration without relaunching")
+
+
+def source_endpoint(session, home, *, transcript=None, for_resume=False):
     """Validate native recovery identity without taking a lease or changing state."""
     from github_plan_sessions import configured_homes
     import session_record
@@ -66,6 +80,8 @@ def source_endpoint(session, home, *, transcript=None):
         session_record.session_status({"session_id": session, "harness": "codex", "transcript": str(path)})
     if closure.closed_log().exists():
         closure.resume_record(session, closure.log_rows(), check_claims=False)
+    if for_resume:
+        require_resume_available(session)
     endpoint = closure.daemon_endpoint(home)
     try:
         info = endpoint.stat()
@@ -324,7 +340,8 @@ class Ingress:
                                         # remains until verified closure, including when
                                         # metadata publication needs an exact retry.
                                         raw = json.dumps({"id": identity, "error": {"code": -32603,
-                                            "message": "native resume succeeded but launch metadata was not recorded; preserve this source and retry the exact resume: " + str(error)}})
+                                            "message": "native resume succeeded but launch metadata was not recorded; preserve this terminal; "
+                                                       "inspect publication evidence and register the retained receipt once verified; do not launch another client: " + str(error)}})
                                 await client.send(raw)
                             finally:
                                 await release(guarded)
