@@ -1564,7 +1564,14 @@ returns the resumed generation's metadata. `iterm_tab.py new --resume-session-id
 refreshes that exact source's ledger row under the source lease and ledger lock,
 preserving its native thread, account, transcript, verified handoff and other
 workers' rows. A changed source or unverified generation leaves the ledger
-unchanged and retains the launch for reconciliation. A later `finish` accepts that new
+unchanged and retains the launch for reconciliation. Missing metadata and a busy
+source lease retry within the launch deadline. A submitted launch whose registration
+remains pending uses `iterm_tab.py register --receipt-file <retained-launch.json>
+--ledger <original-ledger.json>`, accepting either its launch object or full failure
+receipt. Registration only rereads that exact terminal and published generation;
+it never resumes or sends input. An already recorded matching row succeeds without
+rewriting it. Missing authoritative generation publication stays UNKNOWN.
+A later `finish` accepts that new
 generation, never the old receipt. Terminal `/resume` input names this route
 instead for a single-line Codex command; Claude targets retain their own resume
 command, and multiline pasted reference text is unchanged. When successor
@@ -2175,12 +2182,9 @@ uv run skills/supervisor/scripts/iterm_tab.py --backend tmux send --session-id <
 uv run skills/supervisor/scripts/codex-session.py status --session-id <native-id>
 ```
 
-Preserve input and inspect the idle prompt before a fresh safe turn. Keep native
-`session_id`, transcript and handoff; store the terminal ID only in
-`tmux_session_id`/`iterm_session_id`, with this recovery's verified PID/TTY and
-generation. Missing launch identity needs `status` and PID/TTY verification,
-never old metadata. A partially completed native resume retains its connection
-and invalidation; retry that exact resume for metadata, preserving the source.
+Preserve input and inspect the idle prompt before a fresh safe turn. The launcher's
+[automatic registration and retained-receipt recovery](#terminal-launches)
+preserve native custody without hand-editing the ledger or launching a second client.
 Keep actual recovery exit times and earlier evidence; uncertain launches keep
 their exact pane without replay, account switching or daemon restart.
 Retained direct-binding Codex sessions without native daemon proof use the full

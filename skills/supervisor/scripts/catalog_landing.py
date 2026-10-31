@@ -470,10 +470,11 @@ def superseded_closeout(operation: Operation, harness: str, source: dict) -> tup
     matches = []
     for path in operation.evidence.glob(harness + "-closeout-*/operation.json"):
         journal = json.loads(path.read_text())
+        if journal.get("identity") != [source["ledger"], source["session_id"]]:
+            continue
         require(not any(step.get("complete") is False for step in journal["steps"].values()),
                 "supersede", "recovery closeout has an uncertain mutation")
-        if (journal.get("identity") == [source["ledger"], source["session_id"]]
-                and journal.get("generation") == generation == journal.get("retired_generation")):
+        if journal.get("generation") == generation == journal.get("retired_generation"):
             matches.append(path.parent)
     require(len(matches) == 1, "supersede", "requires one exact retired recovery closeout journal")
     return matches[0], generation

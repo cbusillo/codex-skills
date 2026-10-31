@@ -876,7 +876,7 @@ while True:
         transcript.parent.mkdir(parents=True)
         transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": native}}) + "\n")
         self.ledger.write_text(json.dumps([{"session_id": native, "harness": "codex", "supervisor_owned": True,
-                                          "codex_home": str(home), "transcript": str(transcript)}]))
+                                          "codex_home": str(home), "transcript": str(transcript), "pid": 123}]))
         helper = self.root / "codex-session.py"
         helper.write_text('''import json, os, sys
 print("RESUMED:" + json.dumps({"argv": sys.argv[1:], "home": os.environ["CODEX_HOME"], "account_path": os.environ["FIXTURE_ACCOUNT_PATH"]}), flush=True)
@@ -896,6 +896,7 @@ for line in sys.stdin:
               patch("codex_session_proxy.source_endpoint"),
               patch.object(iterm_tab, "inspect_codex_daemon"),
               patch.object(iterm_tab, "source_launch_metadata", side_effect=lambda row, _: row),
+              patch.object(session_liveness, "process_absent", return_value=True),
               patch.object(iterm_tab, "register_resumed_launch") as register,
               patch.object(iterm_tab, "startup_prompt_window", return_value=0)):
             row = self.operate("new", window_id=self.window, resume_session_id=native, ledger=self.ledger,

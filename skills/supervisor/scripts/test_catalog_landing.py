@@ -290,7 +290,7 @@ class CatalogLandingTests(unittest.TestCase):
                                                       if key != "handoff_url"})
         for failure in (None, "missing_closure", "account", "transcript", "native_launch", "ownership", "handoff", "original_generation",
                         "live_original", "uncertain_original", "uncertain_resume", "unretired_resume", "missing_journal", "duplicate_journal",
-                        "no_original_journal", "late_registration"):
+                        "no_original_journal", "missing_recorded_original", "late_registration", "unrelated_uncertain"):
             with self.subTest(failure=failure):
                 operation = Operation(self.root / str(failure), ["landing"])
                 landing.record_smoke_source(operation, "codex", original, Path(self.config["ledger"]))
@@ -311,8 +311,10 @@ class CatalogLandingTests(unittest.TestCase):
                 if failure == "uncertain_original":
                     old.state["steps"]["quit"]["complete"] = False
                 landing.save_state(old.path, old.state)
-                if failure == "no_original_journal":
+                if failure in {"no_original_journal", "missing_recorded_original"}:
                     old.path.unlink()
+                if failure == "missing_recorded_original":
+                    operation.state["steps"]["codex_closeout"] = {"complete": True}
                 closed = dict(resumed)
                 if failure in {"account", "transcript", "ownership", "handoff"}:
                     key = {"account": "codex_home", "ownership": "supervisor_owned",
@@ -331,13 +333,18 @@ class CatalogLandingTests(unittest.TestCase):
                     duplicate = operation.evidence / "codex-closeout-duplicate"
                     duplicate.mkdir()
                     landing.save_state(duplicate / "operation.json", recovery.state)
+                if failure == "unrelated_uncertain":
+                    unrelated = operation.evidence / "codex-closeout-unrelated"
+                    unrelated.mkdir()
+                    landing.save_state(unrelated / "operation.json", {"identity": ["other", "native"],
+                                       "steps": {"quit": {"complete": False}}})
                 retained = {path: path.read_bytes() for path in (old.path, recovery.path) if path.exists()}
                 with (patch.object(landing.closure, "ownership", return_value=nullcontext()),
                       patch.object(landing.closure, "source_records", return_value={} if failure == "missing_closure" else {"native": closed}),
                       patch.object(landing, "read_launch_receipt", return_value=original),
                       patch.object(landing.session_liveness, "process_absent", return_value=failure != "live_original"),
                       patch.object(operation, "run", return_value={"ok": True}) as revalidate):
-                    if failure not in {None, "no_original_journal", "late_registration"}:
+                    if failure not in {None, "no_original_journal", "late_registration", "unrelated_uncertain"}:
                         with self.assertRaises(GateFailed) as refusal:
                             landing.require_closed_smokes(self.config, operation)
                         self.assertEqual(refusal.exception.gate, "supersede")

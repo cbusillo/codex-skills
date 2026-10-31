@@ -179,7 +179,8 @@ class ResumeLaunchTests(unittest.TestCase):
         sock.bind(str(self.endpoint))
         self.endpoint.chmod(0o600)
         self.entry = {"session_id": self.session, "harness": "codex", "supervisor_owned": True,
-                      "codex_home": str(self.home), "transcript": str(transcript)}
+                      "codex_home": str(self.home), "transcript": str(transcript), "pid": 123}
+        self.enterContext(patch.object(session_liveness, "process_absent", return_value=True))
         self.ledger = self.root / "ledger.json"
         self.ledger.write_text(json.dumps([self.entry]))
         self.args = SimpleNamespace(resume_session_id=self.session, ledger=self.ledger,
@@ -211,6 +212,15 @@ class ResumeLaunchTests(unittest.TestCase):
         self.assertEqual(self.inspect.call_args.args[0], self.home)
         self.start.assert_not_called()
         self.assertEqual(choices[0]["resume_session_id"], self.session)
+
+    def test_missing_or_live_original_pid_refuses_before_launch_preparation(self) -> None:
+        for pid in (None, 0, True, 123):
+            with self.subTest(pid=pid), patch.object(session_liveness, "process_absent", return_value=False):
+                self.ledger.write_text(json.dumps([{**self.entry, "pid": pid}]))
+                with self.assertRaises(ValueError):
+                    iterm_tab.prepare_launches(self.args)
+        self.select.assert_not_called()
+        self.prepare.assert_not_called()
 
     def test_supervisor_owned_resume_supplies_the_label_to_its_child(self) -> None:
         commands, _ = iterm_tab.prepare_launches(self.args)
@@ -387,6 +397,7 @@ class ProviderLaunchTests(unittest.TestCase):
     def test_launch_output_omits_target_project_and_expands_home_for_redaction(self):
         choice = {"provider": "anthropic", "env": {"CLAUDE_CONFIG_DIR": "~/fixture-account"},
                   "tool_directory": "/private/fixture-project",
+                  "resume_source": {"transcript": "/private/fixture-project/native.jsonl"},
                   "tools": {"warnings": [str(Path.home() / "fixture-account") + " unavailable"]}}
         result = json.dumps(account_choice.public(choice))
         self.assertNotIn("fixture-project", result)

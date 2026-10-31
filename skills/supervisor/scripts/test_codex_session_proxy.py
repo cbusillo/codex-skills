@@ -4,6 +4,8 @@
 # ///
 """Real argv, private sockets and a disposable native client exercise ingress ownership."""
 import asyncio
+import io
+from contextlib import redirect_stdout
 from argparse import Namespace
 import json
 import os
@@ -124,8 +126,10 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
         import iterm_tab
         import session_liveness
         import session_record
+        import account_choice
+        import check_changes
 
-        for failure in (None, "changed_source", "account", "transcript", "metadata", "live_original"):
+        for failure in (None, "changed_source", "account", "transcript", "metadata", "live_original", "stale_flag", "iterm"):
             with self.subTest(failure=failure), ReceiptFixture() as f:
                 ledger = f.root / "ledger.json"
                 source = {**f.entry, "backend": "tmux", "tmux_session_id": "old-terminal",
@@ -148,10 +152,19 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     ledger.write_text(json.dumps([{**source, "pid": 999}, unrelated]))
                 before = json.loads(ledger.read_text())
                 result = {"session_id": "new-terminal", "tty": "/dev/resumed-tty", "backend": "tmux",
-                          "tmux_socket": "supervisor", "window_id": "window", "tab_id": "tab"}
+                          "tmux_socket": "supervisor", "window_id": "window", "tab_id": "tab", "account": account_choice.public(choice)}
+                if failure == "stale_flag":
+                    result["launch_identity_unavailable"] = True
+                if failure == "iterm":
+                    result.pop("backend")
+                    result.pop("tty")
+                    result.pop("tmux_socket")
+                terminal = {**result, "tty": "/dev/resumed-tty"}
                 with (patch.object(closure, "process_started_at", return_value=born),
-                      patch.object(session_liveness, "process_absent", return_value=failure != "live_original")):
-                    if failure:
+                      patch.object(session_liveness, "process_absent", return_value=failure != "live_original"),
+                      patch.object(iterm_tab, "LAUNCH_TIMEOUT", 0),
+                      patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps([terminal])))):
+                    if failure not in (None, "stale_flag", "iterm"):
                         with self.assertRaises(ValueError):
                             await iterm_tab.register_fresh_launch(Namespace(ledger=ledger, resume_session_id=f.session), result, choice)
                         self.assertEqual(json.loads(ledger.read_text()), before)
@@ -163,8 +176,51 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                             self.assertEqual(current[key], source[key])
                         self.assertEqual(current["pid"], metadata["launch_pid"])
                         self.assertEqual(current["launch_generation"], metadata["launch_generation"])
-                        self.assertEqual(current["tmux_session_id"], result["session_id"])
+                        self.assertEqual(current["iterm_session_id" if failure == "iterm" else "tmux_session_id"], result["session_id"])
                         self.assertTrue(result["ledger_recorded"])
+                        with patch.object(check_changes, "save_state", side_effect=AssertionError("repeat registration rewrote ledger")):
+                            await iterm_tab.register_fresh_launch(Namespace(ledger=ledger), result, None)
+                            envelope = f.root / "resume-failure.json"
+                            envelope.write_text(json.dumps({"failed_launch": {"launch": result}}))
+                            with (patch.object(sys, "argv", ["iterm_tab.py", "register", "--receipt-file", str(envelope), "--ledger", str(ledger)]),
+                                  redirect_stdout(io.StringIO()) as output):
+                                await asyncio.to_thread(iterm_tab.main)
+                            self.assertTrue(json.loads(output.getvalue())["ledger_recorded"])
+
+    async def test_resume_registration_retries_only_metadata_and_ownership_reads(self) -> None:
+        import iterm_tab
+        import session_liveness
+        import session_record
+
+        for pending in ("metadata", "ownership"):
+            with self.subTest(pending=pending), ReceiptFixture() as f:
+                ledger = f.root / "ledger.json"
+                ledger.write_text(json.dumps([f.entry]))
+                choice = {"provider": "openai", "env": {"CODEX_HOME": str(f.home)}, "resume_session_id": f.session,
+                          "resume_source": session_record.normalize_ledger_entry(ledger, f.entry)}
+                born = datetime(2026, 10, 1, 3, tzinfo=timezone.utc)
+                with closure.ownership(f.session, create=True):
+                    closure.resumed_launch(f.session, {"codex_home": str(f.home), "launch_pid": 456, "launch_generation": "resumed",
+                                           "launch_started_at": born.isoformat()}, str(f.transcript), "new-tty")
+                rows = closure.log_rows()
+                ownership = closure.ownership
+                calls = 0
+
+                def acquire(session: str, *, create: bool = False) -> object:
+                    nonlocal calls
+                    calls += 1
+                    if pending == "ownership" and calls == 1:
+                        raise closure.LeaseBusy("fixture lease busy")
+                    return ownership(session, create=create)
+
+                result = {"session_id": "terminal", "tty": "new-tty", "window_id": "window", "tab_id": "tab"}
+                with (patch.object(closure, "ownership", side_effect=acquire),
+                      patch.object(closure, "log_rows", side_effect=[[], rows] if pending == "metadata" else [rows]),
+                      patch.object(closure, "process_started_at", return_value=born),
+                      patch.object(session_liveness, "process_absent", return_value=True)):
+                    await iterm_tab.register_fresh_launch(Namespace(ledger=ledger, resume_session_id=f.session), result, choice)
+                self.assertEqual(calls, 2)
+                self.assertTrue(result["ledger_recorded"])
 
     def test_concurrent_launch_ledger_appends_preserve_both_workers(self) -> None:
         import iterm_tab

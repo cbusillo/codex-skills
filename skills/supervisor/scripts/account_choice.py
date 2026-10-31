@@ -541,7 +541,7 @@ def prune_receipts(directory, now, *, max_bytes=1024):
 
 def public(choice):
     """Launch output contains environment names, never private paths."""
-    result = {**{k: v for k, v in choice.items() if k not in {"env", "storage_root", "receipt_app", "gui", "tools", "require_browser", "tool_directory"}},
+    result = {**{k: v for k, v in choice.items() if k not in {"env", "storage_root", "receipt_app", "gui", "tools", "require_browser", "tool_directory", "resume_source"}},
               "env_keys": sorted(choice["env"])}
     if "tools" in choice:
         tools = choice["tools"]
