@@ -59,7 +59,6 @@ class CatalogLandingTests(unittest.TestCase):
     def test_interrupted_bootstrap_retains_its_landing_and_posts_before_advancing(self) -> None:
         self.config["notify_config"] = str(self.root / "unbound-services.json")
         with (patch.object(landing, "pending_landings", return_value=["first"]) as discover,
-              patch.object(landing, "landing_pull", return_value=2),
               patch.object(landing, "git", return_value="script.py"),
               patch.object(landing, "verify", return_value={"ok": True, "runtime_sha": "tip"}) as verify,
               patch.object(landing, "post_result", side_effect=[GateFailed("report", "interrupted"), "comment"]) as post):
@@ -101,21 +100,20 @@ class CatalogLandingTests(unittest.TestCase):
                 "base": {"repo": {"full_name": self.config["repo"]}}}
         with (patch.object(landing.time, "time", side_effect=lambda: elapsed),
               patch.object(landing.time, "sleep", side_effect=advance),
-              patch.object(landing.GitHubReader, "paged_json", side_effect=[[], [{**pull, "merge_commit_sha": branch}], [pull]])):
-            self.assertEqual(landing.landing_pull(landing.GitHubReader(deadline_at=10), self.config["repo"], merge), pull["number"])
+              patch.object(landing.GitHubReader, "paged_json", side_effect=[[], [{**pull, "number": 999}], [pull]])):
+            self.assertEqual(landing.landing_pull(landing.GitHubReader(deadline_at=10), self.config["repo"], merge,
+                                                  expected_pr=pull["number"]), pull["number"])
 
     def test_runtime_reconciliation_uses_the_same_retrying_exact_pr_proof(self) -> None:
         self.config.update(pr=2, landing_sha="a" * 40)
         pull = {"number": 2, "merged_at": "merged", "merge_commit_sha": self.config["landing_sha"],
                 "base": {"repo": {"full_name": self.config["repo"]}}}
         with (patch.object(landing.GitHubReader, "paged_json", side_effect=[[], [pull]]),
-              patch.object(landing.GitHubReader, "get_json", return_value={"merged": False}) as detail,
               patch.object(landing.time, "sleep"),
               patch.object(Operation, "run", side_effect=GateFailed("runtime", "fixture"))):
             with self.assertRaises(GateFailed) as failure:
                 reconcile_runtime(self.config, Operation(self.root, ["runtime"]))
             self.assertEqual(failure.exception.gate, "runtime")
-            detail.assert_not_called()
 
     def test_unmatched_direct_push_exhausts_discovery_deadline_without_accepting_related_pr(self) -> None:
         elapsed = 0.0
@@ -153,7 +151,6 @@ class CatalogLandingTests(unittest.TestCase):
             return SimpleNamespace(pid=123, returncode=code, poll=lambda: code)
 
         with (patch.object(landing, "pending_landings", return_value=["first", "second"]),
-              patch.object(landing, "landing_pull", return_value=2),
               patch.object(landing, "git", return_value="script.py"),
               patch.object(landing, "verify", side_effect=[{"ok": False, "gate": "codex_handoff_request",
                   "reason": "transcript changed during read; check again"}, {"ok": True}]) as verify,
@@ -207,7 +204,7 @@ class CatalogLandingTests(unittest.TestCase):
     def test_only_human_documentation_skips_smoke_after_runtime_reconciliation(self) -> None:
         for index, files in enumerate(("README.md\ndocs/guide.md", "skills/thing/SKILL.md", "instructions/global.md", "README.md\nscript.py")):
             with (self.subTest(files=files), patch.object(landing, "pending_landings", return_value=["first", "second"]),
-                  patch.object(landing, "landing_pull", return_value=2), patch.object(landing, "git", return_value=files),
+                  patch.object(landing, "git", return_value=files),
                   patch.object(landing, "reconcile_runtime", return_value=(self.root, "tip")) as reconcile,
                   patch.object(landing, "verify_smoke", return_value="handoff") as smoke,
                   patch.object(landing, "post_result", return_value="comment")):
@@ -220,7 +217,7 @@ class CatalogLandingTests(unittest.TestCase):
 
     def test_completed_batch_checks_again_without_repeating_smoke_or_posting(self) -> None:
         with (patch.object(landing, "pending_landings", side_effect=[["first", "second"], []]),
-              patch.object(landing, "landing_pull", return_value=2), patch.object(landing, "git", return_value="script.py"),
+              patch.object(landing, "git", return_value="script.py"),
               patch.object(landing, "verify", return_value={"ok": True}) as verify,
               patch.object(landing, "post_result", return_value="comment") as post):
             self.assertEqual(landing.poll(self.config, self.root)["landings"], ["first", "second"])
@@ -245,7 +242,7 @@ class CatalogLandingTests(unittest.TestCase):
 
     def test_supersede_preserves_failed_attempt_and_includes_new_fix_only_after_closeout(self) -> None:
         with (patch.object(landing, "pending_landings", side_effect=[["B"], ["C"]]),
-              patch.object(landing, "landing_pull", return_value=2), patch.object(landing, "git", return_value="script.py"),
+              patch.object(landing, "git", return_value="script.py"),
               patch.object(landing, "verify", side_effect=[{"ok": False, "gate": "smoke_acknowledgement"}, {"ok": True}]) as verify,
               patch.object(landing, "post_result", return_value="comment"),
               patch.object(landing, "require_closed_smokes", side_effect=[GateFailed("closeout", "unfinished"), None]) as closeout):
@@ -282,7 +279,7 @@ class CatalogLandingTests(unittest.TestCase):
 
     def test_prelaunch_read_failure_retries_without_explicit_resume(self) -> None:
         with (patch.object(landing, "pending_landings", return_value=["first"]),
-              patch.object(landing, "landing_pull", side_effect=[GateFailed("read", "unavailable"), 2]),
+              patch.object(landing, "reconcile_runtime", side_effect=[GateFailed("read", "unavailable"), (self.root, "tip")]),
               patch.object(landing, "git", return_value="script.py"),
               patch.object(landing, "verify", return_value={"ok": True}) as verify,
               patch.object(landing, "post_result", return_value="comment")):
@@ -301,7 +298,6 @@ class CatalogLandingTests(unittest.TestCase):
 
         with (patch.object(Operation, "run", run),
               patch.object(landing, "pending_landings", return_value=["first"]),
-              patch.object(landing, "landing_pull", return_value=2),
               patch.object(landing, "git", return_value="script.py"),
               patch.object(landing, "verify", side_effect=[{"ok": False}, {"ok": True}]) as verify,
               patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("comment", 360)) as write,

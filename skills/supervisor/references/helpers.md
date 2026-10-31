@@ -1198,7 +1198,7 @@ requires verification, cleanup and the posted comment. Success needs no Supervis
 Transcript changes during observation retry within the existing acknowledgement
 or handoff deadline. Stable malformed data and expired deadlines still fail.
 Missing exact merged-PR associations retry within the discovery reader's deadline;
-an unmatched result at expiry names the rejected first-parent SHA. Runtime
+an unmatched result at expiry names the rejected landing SHA. Runtime
 reconciliation uses the same lookup for its configured PR. Transport failures
 retain the shared reader's retry and refusal policy.
 Verification failures post the failed gate. The existing runner notifies that

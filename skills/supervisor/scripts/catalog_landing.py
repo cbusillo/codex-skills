@@ -81,10 +81,10 @@ def request_seen(entry: dict, text: str, after: int) -> bool:
 
 
 def reconcile_runtime(config: dict, operation: Operation) -> tuple[Path, str]:
-    repo, pr, landing = config["repo"], config["pr"], config["landing_sha"]
+    repo, landing = config["repo"], config["landing_sha"]
     require(len(landing) == 40 and all(char in "0123456789abcdef" for char in landing), "landing", "requires a full landing SHA")
     reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
-    landing_pull(reader, repo, landing, expected_pr=pr)
+    landing_pull(reader, repo, landing, expected_pr=config.get("pr"))
     source, runtime = Path(config["source_worktree"]), Path(config["runtime_worktree"])
     runtime_receipt = operation.run(
         "runtime",
@@ -375,7 +375,8 @@ def landing_pull(reader: GitHubReader, repo: str, landing: str, *, expected_pr: 
         if matches:
             return max(matches)
         time.sleep(min(2, max(0, deadline - time.time())))
-    raise GateFailed("discovery", f"default-branch commit {landing} has no exact merged PR after discovery deadline")
+    configured = f" matching configured PR {expected_pr}" if expected_pr is not None else ""
+    raise GateFailed("discovery", f"default-branch commit {landing} has no exact merged PR{configured} after discovery deadline")
 
 
 def post_result(config: dict, operation: Operation, result: dict) -> str:
@@ -506,8 +507,6 @@ def poll(config: dict, evidence: Path, *, supersede_failed: bool = False) -> dic
             else:
                 if saved:
                     post_result(current, operation, saved)
-                reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
-                current["pr"] = landing_pull(reader, config["repo"], landing)
                 skip_smoke = documentation_only(source, landings)
                 bound, head = reconcile_runtime(current, operation)
                 try:
