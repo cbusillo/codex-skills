@@ -245,7 +245,7 @@ A reply or acknowledgement never completes a request. Keep the original issue
 open with its next action until that action is done; link a duplicate to its
 open canonical work record. A reply does not clear a recorded wait.
 
-The Supervisor or intake owner reuses [global next](references/global-next.md)
+The Supervisor or intake agent reuses [global next](references/global-next.md)
 on each routine check: `gh-plan.py --repo OWNER/direction next`. Its open-state
 inventory includes unlabelled issues, imported feedback and Client-agent reports.
 Read `needs_status`, candidates, underway work, waits and exclusions,
@@ -253,7 +253,7 @@ not only `available_candidates`. Increase `--limit` until candidate rows match
 `candidate_count`, and follow incomplete graph, discovery and candidate coverage
 before calling intake clear within the accessible repositories. Workers apply
 triage only to reports on their assigned item or routed to them; portfolio
-discovery belongs to the intake owner.
+discovery belongs to the intake agent.
 
 ## Choose Work
 
