@@ -242,12 +242,15 @@ Client release acceptance in force.
 
 A reply or acknowledgement never completes a request. Keep the original issue
 open with its next action until that action is done; link a duplicate to its
-open canonical work record. On each check, use `gh-plan.py search
-"is:issue is:open user:OWNER" --state open` alongside `next`, without a planning
-label, unanswered-comment or recent-activity filter, so acknowledged and
-untriaged requests remain visible. Follow incomplete search coverage before
-claiming the intake is clear. Record person/event waits through `wait`; a reply
-does not clear them.
+open canonical work record. On each intake check, use `gh-plan.py search
+"user:OWNER" --state open --limit 1000` alongside `next`, without planning-label,
+author, unanswered-comment or recent-activity filters. Imported feedback and
+Client-agent requests can be automation-authored. Require `count == total_count`
+and `incomplete_results == false`; increase the limit or partition by repository
+and creation range until every partition is complete, respecting GitHub's 1000
+search-result cap. Reconcile requests with their existing next actions and
+`next`; a reply never removes unfinished work from this open-state check.
+Record person/event waits through `wait`; a reply does not clear them.
 
 ## Choose Work
 

@@ -54,7 +54,7 @@ Rules for this brief (every Supervisor brief carries them):
   Accessibility and Screen Recording permissions remain the Director's.
   If already on that GUI route, report the exact missing-tool state to the
   Supervisor for diagnosis instead of repeating the relaunch.
-- Triage new reports within one check under
+- At the next work check, triage new reports on your assigned item under
   [planning intake](../../github-plan/SKILL.md#triage-incoming-reports), keeping
   acknowledged requests open and surfaced until their next action is done.
   Read the item in full first, every comment and linked issue, then re-check
