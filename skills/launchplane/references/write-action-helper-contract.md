@@ -532,7 +532,7 @@ installed local helper bindings.
   algorithm. `evaluated_at` identifies the source read and `valid_until` is the
   next computed transition, if any. A lane omitted from the complete product
   overview is not recorded, as with the sidebar's absent-lane icon. Missing status
-  reports `lane_status_unavailable`; malformed status or warning inputs fail the read; they never become a green result. Private
+  reports `lane_status_unavailable`; malformed selected status or warning inputs fail the read; they never become a green result. Private
   prose is redacted with `text_redacted` or `warning_text_redacted` disclosed.
   This read grants no authority to change a lane or clear an incident.
 

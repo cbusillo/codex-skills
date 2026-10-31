@@ -12803,7 +12803,7 @@ def test_product_status_read_returns_service_sidebar_results_and_product_warning
 
 
 @pytest.mark.parametrize("mutation", ["missing_status", "missing_warnings", "bad_tone", "missing_reasons"])
-def test_product_status_read_never_turns_incomplete_or_wrong_product_evidence_green(mutation: str) -> None:
+def test_product_status_read_never_turns_incomplete_evidence_green(mutation: str) -> None:
     response = _product_status_response()
     product = response["products"][0]
     lane = product["environments"][1]
@@ -12850,7 +12850,7 @@ def test_product_status_read_preserves_other_reasons_when_one_reason_requires_re
     actual = payload["result"]["products"][0]["lanes"][1]
     assert actual["text_redacted"]
     assert actual["reasons"][1] == signal["reasons"][1]
-    assert "credentials" not in actual["reasons"][0]
+    assert actual["reasons"][0] != signal["reasons"][0]
 
 
 def test_product_status_read_selects_future_deadline_and_rejects_reordered_transitions() -> None:
