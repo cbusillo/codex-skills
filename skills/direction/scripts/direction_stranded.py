@@ -652,10 +652,17 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
         try:
             trusted = bots | {allowed}
             status_body_time(record)
+            changed = False
             for action in direction_next.actions(item, record["comments"], trusted=trusted, now=now, one=one, listing=listing):
-                applied = direction_next.apply(repo, item["number"], action, trusted=trusted, now=now,
-                                               one=fresh_one, listing=fresh_listing, prepare_source=prepare_source)
+                with direction_next.deadline(reader.deadline_at):
+                    applied = direction_next.apply(repo, item["number"], action, trusted=trusted, now=now,
+                                                   one=fresh_one, listing=fresh_listing, prepare_source=prepare_source)
+                changed |= applied
                 applied_actions.append({"repo": repo, "number": item["number"], "kind": action["kind"], "applied": applied})
+            if changed:
+                item.update(fresh_one(f"repos/{repo}/issues/{item['number']}"))
+                record["comments"] = fresh_listing(f"repos/{repo}/issues/{item['number']}/comments")
+                status_body_time(record, source_reader=fresh)
         except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError, github_read.GitHubReadError,
                 github_read.GitHubReadShapeError, direction_next.github_issue.IssueError, direction_next.github_comment.CommentError) as exc:
             gaps.append({"source": f"{repo}#{item['number']}", "reason": "next_action_failed", "detail": str(exc)})
@@ -691,7 +698,8 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                         item["_comments"] = [row for row in fresh_listing(f"repos/{repo}/issues/{item['number']}/comments")
                                              if login(row) in bots | {allowed}]
                         candidates.append(item)
-                    outcome = direction_next.scheduled_issue(repo, pair, candidates=candidates)
+                    with direction_next.deadline(reader.deadline_at):
+                        outcome = direction_next.scheduled_issue(repo, pair, candidates=candidates)
                     applied_actions.append({"repo": repo, "kind": "scheduled_job", "result": outcome})
         except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError, github_read.GitHubReadError,
                 github_read.GitHubReadShapeError, direction_next.github_issue.IssueError, direction_next.github_comment.CommentError) as exc:
@@ -934,7 +942,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                 record["comments"] = valid_comments
                 if comments_complete:
                     apply_record(record)
-                if state != "open":
+                if item.get("state") == "closed":
                     record["trigger_only"] = metadata["archived"] or not recent
                     if "pull_request" not in item and comments_complete:
                         try:

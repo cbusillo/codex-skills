@@ -8,10 +8,12 @@ import datetime as dt
 import hashlib
 import json
 import pathlib
+import os
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable
+from contextlib import contextmanager
+from collections.abc import Callable, Iterator
 from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -20,6 +22,23 @@ sys.path.insert(0, str(ROOT / "skills/github/scripts"))
 from skills.github.scripts.github_plan_status import events, next_actor, waits
 import github_comment
 import github_issue
+import github_api
+
+
+@contextmanager
+def deadline(deadline_at: float | None) -> Iterator[None]:
+    previous = os.environ.get("GITHUB_RETRY_DEADLINE_AT")
+    if deadline_at is not None:
+        os.environ["GITHUB_RETRY_DEADLINE_AT"] = str(min(deadline_at, float(previous)) if previous else deadline_at)
+    try:
+        if github_api.remaining_retry_timeout_seconds() <= 0:
+            raise ValueError("next_action_deadline_exceeded")
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("GITHUB_RETRY_DEADLINE_AT", None)
+        else:
+            os.environ["GITHUB_RETRY_DEADLINE_AT"] = previous
 
 
 def actions(
@@ -40,7 +59,15 @@ def actions(
         result.append({"kind": "resolve", "before": record["wait"], "after": resolved})
     actor = record["actor"]
     updated = item.get("updated_at")
-    if actor and actor.startswith("agent") and record["wait"]["state"] == "clear" and updated and "plan:blocked" not in labels:
+    blocked = (item.get("issue_dependencies_summary") or {}).get("blocked_by", 0)
+    if (
+        actor
+        and actor.startswith("agent")
+        and record["wait"]["state"] == "clear"
+        and updated
+        and "plan:blocked" not in labels
+        and not blocked
+    ):
         timestamp = dt.datetime.fromisoformat(updated.replace("Z", "+00:00"))
         key = hashlib.sha256(json.dumps([actor, record["action"]]).encode()).hexdigest()[:20]
         marker = f"<!-- github-plan:next-nudge {key} -->"
@@ -79,14 +106,17 @@ def command(repo: str, args: list[str], body: str | None = None) -> dict[str, An
             path = pathlib.Path(scratch) / "body.md"
             path.write_text(body)
             argv.extend(["--body-file", str(path)])
-        completed = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+        timeout = min(60, github_api.remaining_retry_timeout_seconds())
+        if timeout <= 0:
+            raise ValueError("next_action_deadline_exceeded")
+        completed = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
         if completed.returncode:
             raise ValueError(completed.stdout.strip() or completed.stderr.strip() or "Next action failed")
         return json.loads(completed.stdout)
 
 
 def comment(repo: str, number: int, body: str) -> None:
-    github_comment.comment("issue", number, body, repo=repo, dedupe_body=True)
+    github_comment.comment("issue", number, body, repo=repo)
 
 
 def apply(
@@ -120,10 +150,9 @@ def apply(
         run(repo, ["reconcile-status", str(number), "--apply"])
     elif kind == "resolve":
         record = next_actor.record(current, comments, trusted)
-        status = ""
         if action["after"]["state"] == "clear" and (record["actor"] or "").startswith("event:"):
-            status = "## Current Status\n\n" + next_actor.write(record["status"], "agent") + "\n\n"
-        post(repo, number, status + "The recorded event completed.\n\n" + waits.marker(action["after"]))
+            run(repo, ["update-section", str(number), "Current Status"], next_actor.write(record["status"], "agent"))
+        post(repo, number, "The recorded event completed.\n\n" + waits.marker(action["after"]))
         run(repo, ["reconcile-status", str(number), "--apply"])
     elif kind == "direction":
         github_issue.edit_issue(number, repo=repo, add_labels=["direction"])
@@ -143,7 +172,7 @@ def scheduled_issue(
 ) -> dict[str, Any]:
     latest = pair[0]
     marker = f"Scheduled job ID: {latest['workflow_id']}"
-    title = f"Scheduled job: {latest['name']} failed twice"
+    title = f"Scheduled job {latest['workflow_id']}: {latest['name']} failed twice"
     exact = [item for item in candidates if marker in item.get("body", "").splitlines() or item.get("title") == title]
     if len(exact) > 1:
         raise ValueError("Multiple issues track the same scheduled job")

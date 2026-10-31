@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import os
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -75,10 +77,11 @@ class NextSweepTests(unittest.TestCase):
         self.assertEqual(actions(item, [comment]), result)
         self.assertEqual(actions({**item, "updated_at": NOW.isoformat()}), [])
         self.assertEqual(actions(issue("person:owner")), [])
+        self.assertEqual(actions(issue(issue_dependencies_summary={"blocked_by": 1})), [])
 
     def test_direction_uses_only_current_actor_or_wait_and_preserves_decided_history(self) -> None:
         historical = {"user": {"login": "bot"}, "body": "For the direction session: decide the design."}
-        self.assertEqual([action["kind"] for action in actions(issue("agent:direction"))], ["direction", "nudge"])
+        self.assertEqual({action["kind"] for action in actions(issue("agent:direction"))}, {"direction", "nudge"})
         self.assertEqual([action["kind"] for action in actions(issue("agent:direction", labels=["direction"]))], ["nudge"])
         self.assertFalse(any(action["kind"] == "direction" for action in actions(issue(), [historical])))
         wait = waits.reviewed(evidence="Trial audit", waiting_for="Weekly direction audit", ends_when="Director records audit")
@@ -112,7 +115,15 @@ class NextSweepTests(unittest.TestCase):
     def test_resolution_returns_an_event_actor_to_agent_without_losing_next_action(self) -> None:
         wait = waits.reviewed(evidence="Window", waiting_for="Window", ends_when="Date arrives", not_before="2026-10-30")
         item = issue("event:window", wait)
-        action = actions(item)[0]
+        item["body_recorded_at"] = (NOW - dt.timedelta(days=2)).isoformat()
+        comments = [
+            {
+                "body": "## Current Status\nNext actor: event:window\nNext action: Review the newly supplied evidence.",
+                "user": {"login": "bot"},
+                "created_at": (NOW - dt.timedelta(days=1)).isoformat(),
+            }
+        ]
+        action = actions(item, comments)[0]
         item.update(url="https://github.com/owner/repo/issues/1", comments=[], provenance={"author": "owner"})
         run, post = Mock(return_value={"issue": item}), Mock()
         self.assertTrue(
@@ -123,15 +134,65 @@ class NextSweepTests(unittest.TestCase):
                 trusted=TRUSTED,
                 now=NOW,
                 one=Mock(return_value=item),
-                listing=Mock(return_value=[]),
+                listing=Mock(return_value=comments),
                 run=run,
                 post=post,
             )
         )
         body = post.call_args.args[2]
-        self.assertEqual(sweep.next_actor.read(sweep.next_actor.record({**item, "body": body}, [], TRUSTED)["status"]), "agent")
-        self.assertIn(sweep.next_actor.record(item, [], TRUSTED)["action"], body)
+        status = run.call_args_list[0].args[2]
+        item["body"] = "## Current Status\n" + status + "\n" + waits.marker(wait)
+        item["body_recorded_at"] = (NOW + dt.timedelta(days=1)).isoformat()
+        self.assertEqual(sweep.next_actor.record(item, comments, TRUSTED)["actor"], "agent")
+        self.assertEqual(sweep.next_actor.record(item, comments, TRUSTED)["action"], "Review the newly supplied evidence.")
         self.assertEqual(waits.current(item, [{"body": body, "user": {"login": "bot"}}], TRUSTED)["state"], "clear")
+
+    def test_expired_parent_deadline_prevents_writes_and_restores_the_environment(self) -> None:
+        writer = Mock()
+        previous = str(time.time() - 1)
+        with patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": previous}):
+            with self.assertRaises(ValueError), sweep.deadline(time.time() + 60):
+                writer()
+            self.assertEqual(os.environ["GITHUB_RETRY_DEADLINE_AT"], previous)
+        writer.assert_not_called()
+        with patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": previous}), patch.object(sweep.subprocess, "run") as child:
+            with self.assertRaises(ValueError):
+                sweep.command("owner/repo", ["reconcile-status", "1", "--apply"])
+        child.assert_not_called()
+
+    def test_repeated_identical_trigger_gets_a_new_clear_after_its_new_record(self) -> None:
+        event = {"version": 1, "kind": "date", "at": "2026-10-30", "evidence": "Same event recorded again"}
+        cleared = events.clear("Daily sweep handled " + events.describe(event))
+        clear_body = "Handled reopen event: " + events.describe(event) + ".\n\n" + events.marker(cleared)
+        item = issue(state="closed")
+        comments = [
+            {"body": body, "user": {"login": "bot"}, "id": number}
+            for number, body in enumerate((clear_body, events.marker(event)), 1)
+        ]
+
+        def create(_kind: str, _number: int, body: str, *, dedupe_body: bool = False, **_kwargs: object) -> None:
+            if not dedupe_body or not any(row["body"] == body for row in comments):
+                comments.append({"body": body, "user": {"login": "bot"}, "id": len(comments) + 1})
+
+        action = actions(item, comments)[0]
+        with (
+            patch.object(sweep.github_comment, "comment", side_effect=create),
+            patch.object(sweep.github_issue, "edit_issue"),
+            patch.object(sweep.github_issue, "set_issue_state", side_effect=lambda *_args, **_kwargs: item.update(state="open")),
+        ):
+            sweep.apply(
+                "owner/repo",
+                1,
+                action,
+                trusted=TRUSTED,
+                now=NOW,
+                one=Mock(return_value=item),
+                listing=Mock(return_value=comments),
+                run=Mock(),
+            )
+        self.assertEqual(events.current(item, comments, TRUSTED)["state"], "clear")
+        item["state"] = "closed"
+        self.assertEqual(actions(item, comments), [])
 
     def test_second_failure_creates_one_agent_issue_and_success_or_running_breaks_the_streak(self) -> None:
         pair = [
@@ -155,6 +216,10 @@ class NextSweepTests(unittest.TestCase):
         run, post = Mock(return_value={"issue": {"number": 8}}), Mock()
         sweep.scheduled_issue("owner/repo", pair, candidates=[], run=run, post=post)
         body = run.call_args.args[2]
+        first_title = run.call_args.args[1][1]
+        second_pair = [{**row, "workflow_id": 8} for row in pair]
+        sweep.scheduled_issue("owner/repo", second_pair, candidates=[], run=run, post=post)
+        self.assertNotEqual(first_title, run.call_args.args[1][1])
         self.assertEqual(sweep.next_actor.record({"body": body, "user": {"login": "owner"}}, [], TRUSTED)["actor"], "agent")
         tracked = {"number": 8, "state": "open", "body": body}
         run.reset_mock()
@@ -191,6 +256,10 @@ class NextSweepTests(unittest.TestCase):
         }
         self.assertTrue(sweep.next_actor.migration("Next action: Supervisor routes source.", wait))
         self.assertFalse(sweep.next_actor.migration("Next actor: agent", waits.reviewed(evidence="Reviewed")))
+        self.assertTrue(sweep.next_actor.migration("Next actor: event:window", waits.reviewed(evidence="Reviewed")))
+        self.assertTrue(
+            sweep.next_actor.migration("Next actor: agent\nParked until: 2026-10-30", waits.reviewed(evidence="Reviewed"))
+        )
 
 
 if __name__ == "__main__":

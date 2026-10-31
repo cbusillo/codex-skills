@@ -6199,7 +6199,7 @@ class ClaimTests(unittest.TestCase):
                 patch.object(github_identity, "configured_bot_logins", return_value=[TEST_BOT]):
             PLAN.cmd_wait(self.args)
         result = self.emitted.call_args.args[0]
-        self.assertEqual({row["number"] for row in result["review_required"]}, {43, 44})
+        self.assertEqual({row["number"] for row in result["review_required"]}, {42, 43, 44})
         self.assertEqual(result["checked"], 3)
         self.assertEqual(result["writes"], [])
 

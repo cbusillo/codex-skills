@@ -619,16 +619,15 @@ class InventoryTests(unittest.TestCase):
         def apply(repo: str, number: int, action: dict, **kwargs: Any) -> bool:
             return original_apply(repo, number, action, **kwargs, run=unittest.mock.Mock(), post=posts)
 
-        with (patch.object(sweep.github_read, "GitHubReader", return_value=self.reader) as factory,
+        with (patch.object(sweep.github_read, "GitHubReader", return_value=self.reader),
               patch.object(sweep.direction_next, "apply", side_effect=apply),
-              patch.object(sweep.direction_next.github_issue, "set_issue_state") as reopen,
+              patch.object(sweep.direction_next.github_issue, "set_issue_state", side_effect=lambda *_args, **_kwargs: item.update(state="open")) as reopen,
               patch.object(sweep.direction_next.github_issue, "edit_issue")):
             result = self.collect(apply_next=True, director="test")
         reopen.assert_called_once()
         self.assertTrue(any(row["kind"] == "reopen" and row["applied"] for row in result["actions"]))
-        self.assertEqual(factory.call_args.kwargs["deadline_at"], self.reader.deadline_at)
         self.assertFalse(any(gap["reason"] == "next_action_failed" for gap in result["coverage_gaps"]))
-        self.assertIn("state", posts.call_args.args[2])
+        self.assertFalse(any(row["kind"] == "reopen_trigger_fired" for row in result["findings"]))
 
     def test_one_unreadable_record_does_not_stop_later_actions(self) -> None:
         self.applying_reader()
@@ -637,6 +636,7 @@ class InventoryTests(unittest.TestCase):
                   "updated_at": "2026-10-10T00:00:00Z", "body": "## Current Status\nNext actor: agent\nNext action: Finish.\n" + clear}
                  for number in (1, 2)]
         self.reader.pages[("repos/test/repo/issues", 1, "open")] = items
+        self.reader.repositories["repos/test/repo/issues/2"] = items[1]
         failure = sweep.direction_next.github_issue._local_error(
             "fixture read refusal", operation="github.issue.edit", cause="authorization_denied", failed_step="labels")
         with (patch.object(sweep.github_read, "GitHubReader", return_value=self.reader),

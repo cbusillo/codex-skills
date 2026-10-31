@@ -102,6 +102,10 @@ def migration(status: str, wait: dict) -> list[str]:
         actor = None
     if actor is None:
         missing.append("Record the current Next actor")
+    if (actor or "").startswith("event:") and wait["state"] == "clear":
+        missing.append("Review the event actor and record its explicit wait or next agent action")
+    if re.search(r"(?im)^\s*Parked until:", status) and not any("event" in entry for entry in wait["waits"]):
+        missing.append("Review the parked date and record its explicit event")
     dated = re.compile(r"(?i)\b(?:\d{4}-\d{2}-\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2})\b")
     for entry in wait["waits"]:
         if "event" not in entry and "release" not in entry and (dated.search(entry["waiting_for"] + " " + entry["ends_when"]) or
