@@ -199,14 +199,18 @@ comment's attention flag after its latest edit. Keep its unfinished request
 open and surfaced through [planning intake](../github-plan/SKILL.md#triage-incoming-reports).
 A reply targets an exact comment link or an
 inline-review thread with one eligible external comment; automation may also
-use an unambiguous single-author mention. Comments without a targeted reply
+use an unambiguous single-author mention. A reply opening with a person's
+unambiguous people-index name and a comma or colon also addresses their earlier
+comments on that thread, including comments from their indexed agents.
+Comments without a targeted reply
 stay flagged, including on closed threads. Director reactions, question or
 decision records, unrelated later comments, generic closeout posts, labels and
 notifications do not answer a comment. Director awareness is diagnostic only;
 it is not required to clear attention. Decisions needing the Director still go
 through numbered Director questions. Edits/new comments reopen attention;
 incomplete coverage is never an all-clear. Each `gh` call has a timeout, and
-all thread and reaction reads share one deadline; a read that misses either
+repository comments are read one page at a time, retaining earlier candidates
+if a later page fails. All thread and reaction reads share one deadline; a read that misses either
 bound is reported as degraded coverage rather than stalling the report.
 
 Add `--outbound --self-login LOGIN` to find replies in repositories the Director

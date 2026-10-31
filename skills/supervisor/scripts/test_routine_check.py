@@ -110,6 +110,20 @@ class RoutineCheckTests(unittest.TestCase):
             self.assertIn(str(error), output)
             self.assertIn("watch offline", output)
 
+    def test_digest_lists_registered_queue_and_summarizes_unregistered_questions(self) -> None:
+        registered = {"url": "registered-question", "registration_url": "registration", "delivery": "unacknowledged"}
+        discovered = [{"url": f"discovered-{number}"} for number in range(50)]
+        output = routine_check.digest({
+            "board": {"tracks": [{"open_questions": [{"url": "historical-board-question"}]}]},
+            "questions": {"queue": "owner/direction#98", "questions": [registered, *discovered]},
+        })
+        self.assertEqual(sum(line.startswith("QUESTION ") for line in output.splitlines()), 1)
+        self.assertIn("registered-question", output)
+        self.assertNotIn("historical-board-question", output)
+        self.assertIn("UNREGISTERED 50", output)
+        self.assertIn("discovered-0", output)
+        self.assertNotIn("discovered-49", output)
+
     def test_missing_and_partial_watch_logs_are_coverage_errors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "watch.jsonl"

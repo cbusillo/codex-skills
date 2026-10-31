@@ -16,7 +16,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -1091,6 +1091,73 @@ def test_held_accept_from_client_agent_stays_visible_until_targeted_answer(
     assert payload["attention"] == []
 
 
+@pytest.mark.parametrize("reply_author", ["cbusillo", "fixture-automation"])
+@pytest.mark.parametrize("author", ["casey-client", "client-agent[bot]"])
+@pytest.mark.parametrize("address,ambiguous,answered", [
+    ("Casey,", False, True), ("Hi Casey Client:", False, True),
+    ("I told Casey,", False, False), ("Casey,", True, False),
+])
+def test_named_reply_answers_person_and_agent_comments_until_next_edit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reply_author: str, author: str,
+    address: str, ambiguous: bool, answered: bool,
+) -> None:
+    feedback = api_comment(1, author, "2026-07-25T18:00:00Z", "Inventory menus are missing.")
+    followup = api_comment(2, author, "2026-07-25T18:01:00Z", "My printers is empty too.")
+    other = api_comment(3, "another-person", "2026-07-25T18:02:00Z", "A separate question.")
+    response = api_comment(4, reply_author, "2026-07-25T18:10:00Z",
+        f"{address} the menus are fixed. Please sign out and back in. An empty printer list is expected.")
+    for row in (feedback, followup, other, response):
+        row["issue_url"] = "https://api.github.com/repos/example/repo/issues/42"
+        row["html_url"] = f"https://github.com/example/repo/issues/42#issuecomment-{row['id']}"
+    fake = FakeGitHub({
+        "repos/example/repo/issues/42": opening(number=42, author="cbusillo"),
+        "repos/example/repo/issues/42/comments": [feedback, followup, other, response],
+    })
+    patch_radar(monkeypatch, "run_json", fake)
+    index = people_index(tmp_path)
+    if ambiguous:
+        index.write_text(index.read_text().replace("preferred_reference: Pat", "preferred_reference: Casey"))
+    settings = portfolio_settings(thread=["example/repo#42"], people_index=index, include_handled=True)
+    payload = github_unanswered_comments.collect_payload(settings)
+    expected = {other["id"]} if answered else {feedback["id"], followup["id"], other["id"]}
+    assert {row["comment_id"] for row in payload["attention"]} == expected
+    feedback["updated_at"] = "2026-07-25T18:11:00Z"
+    payload = github_unanswered_comments.collect_payload(settings)
+    assert {row["comment_id"] for row in payload["attention"]} == expected | {feedback["id"]}
+
+
+@pytest.mark.parametrize("fail_page", [None, 3])
+def test_repository_comment_pages_preserve_results_when_large_read_fails(
+    monkeypatch: pytest.MonkeyPatch, fail_page: int | None,
+) -> None:
+    messages = [api_comment(number, "outside-user", "2026-07-25T18:00:00Z",
+        issue_url="https://api.github.com/repos/example/repo/issues/42") for number in range(1, 202)]
+    reads = []
+
+    def read(command: list[str]) -> object:
+        endpoint = command[2]
+        if "/issues/comments?" not in endpoint:
+            return []
+        if "--paginate" in command:
+            raise github_unanswered_comments.rollup.RollupError("large repository aggregate read timed out")
+        query = parse_qs(urlsplit(endpoint).query)
+        page = int(query["page"][0])
+        page_size = int(query["per_page"][0])
+        reads.append(page)
+        if page == fail_page:
+            raise github_unanswered_comments.rollup.RollupError("large repository page failed")
+        return messages[(page - 1) * page_size:page * page_size]
+
+    patch_radar(monkeypatch, "run_json", read)
+    candidates, errors = github_unanswered_comments.repository_activity(
+        "example/repo", datetime(2026, 7, 1, tzinfo=UTC),
+        datetime(2026, 7, 26, tzinfo=UTC), {"cbusillo"}, {"fixture-automation"},
+    )
+    assert reads == [1, 2, 3]
+    assert len(candidates[("example/repo", 42)]) == (200 if fail_page else len(messages))
+    assert bool(errors) == bool(fail_page)
+
+
 def test_outside_pull_request_opened_in_window_needs_attention(monkeypatch) -> None:
     # Reproduces BD_to_AVP#880: an outside contributor opens a PR and nobody comments.
     pull = opening()
@@ -1171,7 +1238,8 @@ def test_watch_hints_retain_old_client_agents_until_reply_and_ignore_unrelated_b
     monkeypatch.setitem(vars(github_unanswered_comments), "authenticated_login", lambda: "fixture-automation")
     monkeypatch.setitem(vars(github_unanswered_comments), "resolve_repositories", lambda _settings: [])
     monkeypatch.setitem(vars(github_unanswered_comments), "people_identities", lambda *_: {
-        "director_names": [], "director_ambiguous": False, "automation": {client.author: "Client"}, "status": "loaded"})
+        "director_names": [], "director_ambiguous": False, "automation": {client.author: "Client"},
+        "address_names": {}, "status": "loaded"})
     monkeypatch.setitem(vars(github_unanswered_comments), "collect_candidate_reactions",
                         lambda candidates, _deadline: ({row.global_key: [] for row in candidates}, {}, []))
     requested = []
@@ -1543,7 +1611,7 @@ def test_closed_bot_answer_is_handled_without_personal_awareness(app_ready_discu
     assert result["publicly_addressed"] is True
 
 
-def api_comment(comment_id, author, created_at, body="Reply", **extra):
+def api_comment(comment_id: int, author: str, created_at: str, body: str = "Reply", **extra: Any) -> dict[str, Any]:
     return {"id": comment_id, "user": {"login": author, "type": "User"},
             "node_id": f"NODE_{comment_id}", "issue_url": "https://api.github.com/repos/outside/project/issues/33",
             "created_at": created_at, "updated_at": created_at, "body": body,
