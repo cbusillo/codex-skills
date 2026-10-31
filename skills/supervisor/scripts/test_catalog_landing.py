@@ -23,6 +23,7 @@ from session_record import TranscriptChanged
 from skills.github.scripts import github_api
 
 operation_run = Operation.run
+reconcile_runtime = landing.reconcile_runtime
 
 
 class CatalogLandingTests(unittest.TestCase):
@@ -58,7 +59,6 @@ class CatalogLandingTests(unittest.TestCase):
     def test_interrupted_bootstrap_retains_its_landing_and_posts_before_advancing(self) -> None:
         self.config["notify_config"] = str(self.root / "unbound-services.json")
         with (patch.object(landing, "pending_landings", return_value=["first"]) as discover,
-              patch.object(landing, "landing_pull", return_value=2),
               patch.object(landing, "git", return_value="script.py"),
               patch.object(landing, "verify", return_value={"ok": True, "runtime_sha": "tip"}) as verify,
               patch.object(landing, "post_result", side_effect=[GateFailed("report", "interrupted"), "comment"]) as post):
@@ -71,6 +71,69 @@ class CatalogLandingTests(unittest.TestCase):
             self.assertEqual(verify.call_args.args[0]["supervisor_session"], self.config["supervisor_session"])
             self.assertEqual(post.call_count, 2)
             self.assertEqual(json.loads((self.root / "cursor.json").read_text())["last_sha"], "first")
+
+    def test_merge_squash_and_train_history_retries_delayed_landing_association(self) -> None:
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        tree = landing.git(self.root, "write-tree")
+
+        def commit(subject: str, *parents: str) -> str:
+            return landing.git(self.root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                               "commit-tree", tree, "-m", subject, *[arg for parent in parents for arg in ("-p", parent)])
+
+        previous = commit("previous verified landing")
+        branch = commit("lead fix", previous)
+        branch = commit("lead follow-up", branch)
+        merge = commit("Merge pull request #3223", previous, branch)
+        squash = commit("Direction skill: owed turn (#3221)", merge)
+        squash_merge = commit("Merge pull request #3225", merge, squash)
+        train_branch = commit("product fix", squash_merge)
+        train = commit("Launchplane merge train: merge PR #3229", squash_merge, train_branch)
+        train_merge = commit("Merge pull request #3230", squash_merge, train)
+        self.assertEqual(landing.pending_landings(self.root, previous, train_merge), [merge, squash_merge, train_merge])
+        elapsed = 0.0
+
+        def advance(seconds: float) -> None:
+            nonlocal elapsed
+            elapsed += seconds
+
+        pull: dict[str, Any] = {"number": 3223, "merged_at": "merged", "merge_commit_sha": merge,
+                                "base": {"repo": {"full_name": self.config["repo"]}}}
+        with (patch.object(landing.time, "time", side_effect=lambda: elapsed),
+              patch.object(landing.time, "sleep", side_effect=advance),
+              patch.object(landing.GitHubReader, "paged_json", side_effect=[[], [{**pull, "number": 999}], [pull]])):
+            self.assertEqual(landing.landing_pull(landing.GitHubReader(deadline_at=10), self.config["repo"], merge,
+                                                  expected_pr=pull["number"]), pull["number"])
+
+    def test_runtime_reconciliation_uses_the_same_retrying_exact_pr_proof(self) -> None:
+        self.config.update(pr=2, landing_sha="a" * 40)
+        pull = {"number": 2, "merged_at": "merged", "merge_commit_sha": self.config["landing_sha"],
+                "base": {"repo": {"full_name": self.config["repo"]}}}
+        with (patch.object(landing.GitHubReader, "paged_json", side_effect=[[], [pull]]),
+              patch.object(landing.time, "sleep"),
+              patch.object(Operation, "run", side_effect=GateFailed("runtime", "fixture"))):
+            with self.assertRaises(GateFailed) as failure:
+                reconcile_runtime(self.config, Operation(self.root, ["runtime"]))
+            self.assertEqual(failure.exception.gate, "runtime")
+
+    def test_unmatched_direct_push_exhausts_discovery_deadline_without_accepting_related_pr(self) -> None:
+        elapsed = 0.0
+
+        def advance(seconds: float) -> None:
+            nonlocal elapsed
+            elapsed += seconds
+
+        unrelated = {"number": 2, "merged_at": "merged", "merge_commit_sha": "other",
+                     "base": {"repo": {"full_name": self.config["repo"]}}}
+        with (patch.object(landing.time, "time", side_effect=lambda: elapsed),
+              patch.object(landing.time, "sleep", side_effect=advance),
+              patch.object(landing.GitHubReader, "paged_json", return_value=[unrelated]) as read):
+            reader = landing.GitHubReader(deadline_at=3)
+            with self.assertRaises(GateFailed) as failure:
+                landing.landing_pull(reader, self.config["repo"], "direct-push")
+            self.assertEqual(failure.exception.gate, "discovery")
+            self.assertIn("direct-push", str(failure.exception))
+            self.assertGreater(read.call_count, 1)
+            self.assertLessEqual(elapsed, reader.deadline_at)
 
     def test_cleared_service_rechecks_failed_batch_instead_of_replaying_failure(self) -> None:
         config = self.root / "services.json"
@@ -88,7 +151,6 @@ class CatalogLandingTests(unittest.TestCase):
             return SimpleNamespace(pid=123, returncode=code, poll=lambda: code)
 
         with (patch.object(landing, "pending_landings", return_value=["first", "second"]),
-              patch.object(landing, "landing_pull", return_value=2),
               patch.object(landing, "git", return_value="script.py"),
               patch.object(landing, "verify", side_effect=[{"ok": False, "gate": "codex_handoff_request",
                   "reason": "transcript changed during read; check again"}, {"ok": True}]) as verify,
@@ -142,7 +204,7 @@ class CatalogLandingTests(unittest.TestCase):
     def test_only_human_documentation_skips_smoke_after_runtime_reconciliation(self) -> None:
         for index, files in enumerate(("README.md\ndocs/guide.md", "skills/thing/SKILL.md", "instructions/global.md", "README.md\nscript.py")):
             with (self.subTest(files=files), patch.object(landing, "pending_landings", return_value=["first", "second"]),
-                  patch.object(landing, "landing_pull", return_value=2), patch.object(landing, "git", return_value=files),
+                  patch.object(landing, "git", return_value=files),
                   patch.object(landing, "reconcile_runtime", return_value=(self.root, "tip")) as reconcile,
                   patch.object(landing, "verify_smoke", return_value="handoff") as smoke,
                   patch.object(landing, "post_result", return_value="comment")):
@@ -155,7 +217,7 @@ class CatalogLandingTests(unittest.TestCase):
 
     def test_completed_batch_checks_again_without_repeating_smoke_or_posting(self) -> None:
         with (patch.object(landing, "pending_landings", side_effect=[["first", "second"], []]),
-              patch.object(landing, "landing_pull", return_value=2), patch.object(landing, "git", return_value="script.py"),
+              patch.object(landing, "git", return_value="script.py"),
               patch.object(landing, "verify", return_value={"ok": True}) as verify,
               patch.object(landing, "post_result", return_value="comment") as post):
             self.assertEqual(landing.poll(self.config, self.root)["landings"], ["first", "second"])
@@ -180,7 +242,7 @@ class CatalogLandingTests(unittest.TestCase):
 
     def test_supersede_preserves_failed_attempt_and_includes_new_fix_only_after_closeout(self) -> None:
         with (patch.object(landing, "pending_landings", side_effect=[["B"], ["C"]]),
-              patch.object(landing, "landing_pull", return_value=2), patch.object(landing, "git", return_value="script.py"),
+              patch.object(landing, "git", return_value="script.py"),
               patch.object(landing, "verify", side_effect=[{"ok": False, "gate": "smoke_acknowledgement"}, {"ok": True}]) as verify,
               patch.object(landing, "post_result", return_value="comment"),
               patch.object(landing, "require_closed_smokes", side_effect=[GateFailed("closeout", "unfinished"), None]) as closeout):
@@ -217,7 +279,7 @@ class CatalogLandingTests(unittest.TestCase):
 
     def test_prelaunch_read_failure_retries_without_explicit_resume(self) -> None:
         with (patch.object(landing, "pending_landings", return_value=["first"]),
-              patch.object(landing, "landing_pull", side_effect=[GateFailed("read", "unavailable"), 2]),
+              patch.object(landing, "reconcile_runtime", side_effect=[GateFailed("read", "unavailable"), (self.root, "tip")]),
               patch.object(landing, "git", return_value="script.py"),
               patch.object(landing, "verify", return_value={"ok": True}) as verify,
               patch.object(landing, "post_result", return_value="comment")):
@@ -236,7 +298,6 @@ class CatalogLandingTests(unittest.TestCase):
 
         with (patch.object(Operation, "run", run),
               patch.object(landing, "pending_landings", return_value=["first"]),
-              patch.object(landing, "landing_pull", return_value=2),
               patch.object(landing, "git", return_value="script.py"),
               patch.object(landing, "verify", side_effect=[{"ok": False}, {"ok": True}]) as verify,
               patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("comment", 360)) as write,
