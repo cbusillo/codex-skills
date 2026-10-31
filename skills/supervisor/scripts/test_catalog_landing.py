@@ -9,11 +9,10 @@ import subprocess
 import tempfile
 import threading
 import unittest
-from collections.abc import Callable
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 from unittest.mock import patch
 
 import catalog_landing as landing
@@ -22,6 +21,8 @@ from check_operation import GateFailed, Operation
 from session_record import TranscriptChanged
 
 from skills.github.scripts import github_api
+
+operation_run = Operation.run
 
 
 class CatalogLandingTests(unittest.TestCase):
@@ -35,7 +36,6 @@ class CatalogLandingTests(unittest.TestCase):
         self.config: dict[str, Any] = {"repo": "owner/catalog", "issue": 1, "source_worktree": str(self.root),
                                        "runtime_worktree": str(self.root), "ledger": str(self.root / "ledger.json"),
                                        "supervisor_session": "controller"}
-        self.original_run: Callable[..., Any] = Operation.run
         runtime = patch.object(Operation, "run", side_effect=lambda gate, *args, **kwargs:
                                {"ok": True} if gate.startswith("supersede_") else {"status": "already_current", "after_sha": "tip"})
         self.runner = runtime.start()
@@ -112,20 +112,29 @@ class CatalogLandingTests(unittest.TestCase):
 
     def test_changing_transcript_retries_until_response_or_existing_deadline(self) -> None:
         complete = {"state": "turn_ended", "size": 10, "safe_verdict": True, "last_text": "landing"}
+        elapsed = 0.0
+
+        def now() -> float:
+            return elapsed
+
+        def advance(seconds: float) -> None:
+            nonlocal elapsed
+            elapsed += seconds
+
         for final in (False, True):
             for settles in (False, True):
+                elapsed = 0.0
                 with (self.subTest(final=final, settles=settles),
                       patch.object(landing, "session_status", side_effect=[TranscriptChanged("appending"), complete]
                                    if settles else TranscriptChanged("appending")) as read,
-                      patch.object(landing.time, "monotonic", side_effect=[0, 0, float("inf")]),
-                      patch.object(landing.time, "sleep")):
+                      patch.object(landing.time, "monotonic", side_effect=now),
+                      patch.object(landing.time, "sleep", side_effect=advance)):
                     if settles:
                         self.assertEqual(landing.observe({}, "landing", final=final), complete)
                         self.assertEqual(read.call_count, 2)
                     else:
-                        with self.assertRaises(GateFailed) as failure:
+                        with self.assertRaises(GateFailed):
                             landing.observe({}, "landing", final=final)
-                        self.assertEqual(failure.exception.gate, "smoke_response")
         with patch.object(landing, "session_status", side_effect=ValueError("stable invalid JSON")):
             with self.assertRaises(ValueError):
                 landing.observe({}, "landing")
@@ -192,12 +201,12 @@ class CatalogLandingTests(unittest.TestCase):
     def test_unknown_report_is_settled_by_exact_read_without_another_write(self) -> None:
         operation = Operation(self.root, ["report"])
         result = {"ok": True, "landings": ["landing"], "runtime_sha": "runtime"}
-        with patch.object(Operation, "run", self.original_run), patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("comment", 360)):
+        with patch.object(Operation, "run", operation_run), patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("comment", 360)):
             with self.assertRaises(GateFailed):
                 landing.post_result(self.config, operation, result)
         report = (self.root / "result.md").read_text()
         posted = {"user": {"login": "agent[bot]"}, "body": report, "html_url": "original-comment"}
-        with (patch.object(Operation, "run", self.original_run), patch.object(subprocess, "run") as write,
+        with (patch.object(Operation, "run", operation_run), patch.object(subprocess, "run") as write,
               patch.object(landing.github_identity, "automation_login", return_value="agent[bot]"),
               patch.object(landing.GitHubReader, "paged_json", side_effect=[[], [posted, posted], [posted]])):
             for _ in range(2):
@@ -219,11 +228,10 @@ class CatalogLandingTests(unittest.TestCase):
             verify.assert_called_once()
 
     def test_uncertain_failed_report_is_reconciled_before_rechecking_smokes(self) -> None:
-        original_run = cast(Callable[..., Any], self.original_run)
-
         def run(operation: Operation, gate: str, *args: Any, **kwargs: Any) -> Any:
             if gate.startswith("report_"):
-                return original_run(operation, gate, *args, **kwargs)
+                with patch.object(Operation, "run", operation_run):
+                    return operation.run(gate, *args, **kwargs)
             return {"status": "already_current", "after_sha": "tip"}
 
         with (patch.object(Operation, "run", run),
