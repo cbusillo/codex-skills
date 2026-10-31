@@ -967,9 +967,8 @@ lifecycle behavior.
 ## Situational Awareness (Context)
 
 For lane health, use `uv run scripts/launchplane-write-action.py
-product-status-read [--product PRODUCT]`. It returns the service-computed Product
-Ops sidebar tones and reasons for every recorded lane, plus product warnings. Omit `--product` to read the
-whole caller-visible inventory in one request.
+product-status-read`. It returns the service-computed Product
+Ops sidebar tones and reasons for every recorded lane, plus product warnings. It reads the whole caller-visible inventory in one request.
 Do not reconstruct colors from diagnostic reads or run frontend source locally.
 
 Use the context helper to identify product mapping, deploy evidence, and

@@ -12777,13 +12777,13 @@ def _product_status_response() -> dict[str, Any]:
         "products": [{"product": "example-product", "warnings": ["Preview refresh failed"], "environments": [
             {"environment": "testing", "lane_status": {
                 "evaluated_at": "2026-01-01T00:00:00+00:00",
-                "current": {"sidebar_tone": "verified", "description": "Healthy", "attention_reasons": [], "warning_reasons": []},
+                "current": {"sidebar_tone": "verified", "description": "Healthy", "reasons": [], "attention_reasons": [], "warning_reasons": []},
                 "transitions": [{"after": "2026-01-01T00:01:00+00:00", "signal": {
-                    "sidebar_tone": "stale", "description": "Stale evidence; awaiting current observations", "attention_reasons": [], "warning_reasons": []}}],
+                    "sidebar_tone": "stale", "description": "Stale evidence; awaiting current observations", "reasons": [], "attention_reasons": [], "warning_reasons": []}}],
             }},
             {"environment": "prod", "lane_status": {
                 "evaluated_at": "2026-01-01T00:00:00+00:00", "transitions": [],
-                "current": {"sidebar_tone": "danger", "description": "Alert; DNS; A critical incident is open", "attention_reasons": ["A critical incident is open"], "warning_reasons": []},
+                "current": {"sidebar_tone": "danger", "description": "Alert; DNS; A critical incident is open", "reasons": ["A critical incident is open"], "attention_reasons": ["A critical incident is open"], "warning_reasons": []},
             }},
         ]}],
     }
@@ -12791,9 +12791,9 @@ def _product_status_response() -> dict[str, Any]:
 
 def test_product_status_read_returns_service_sidebar_results_and_product_warnings_in_one_read() -> None:
     response = _product_status_response()
-    status, payload, calls = _run_product_read(["product-status-read", "--product", "example-product"], response)
+    status, payload, calls = _run_product_read(["product-status-read"], response)
     assert status == 0 and len(calls) == 1, payload
-    assert calls[0]["path"] == contract.helper_command_path("product-status-read").format(product="example-product")
+    assert calls[0]["path"] == contract.helper_command_path("product-status-read")
     lanes = payload["result"]["products"][0]["lanes"]
     expected = response["products"][0]["environments"][0]["lane_status"]["transitions"][0]["signal"]
     assert lanes[0]["tone"] == expected["sidebar_tone"]
@@ -12802,7 +12802,7 @@ def test_product_status_read_returns_service_sidebar_results_and_product_warning
     assert payload["result"]["products"][0]["warnings"] == response["products"][0]["warnings"]
 
 
-@pytest.mark.parametrize("mutation", ["missing_status", "missing_warnings", "wrong_product", "bad_tone", "missing_reasons"])
+@pytest.mark.parametrize("mutation", ["missing_status", "missing_warnings", "bad_tone", "missing_reasons"])
 def test_product_status_read_never_turns_incomplete_or_wrong_product_evidence_green(mutation: str) -> None:
     response = _product_status_response()
     product = response["products"][0]
@@ -12811,13 +12811,11 @@ def test_product_status_read_never_turns_incomplete_or_wrong_product_evidence_gr
         del lane["lane_status"]
     elif mutation == "missing_warnings":
         del product["warnings"]
-    elif mutation == "wrong_product":
-        product["product"] = "other-product"
     elif mutation == "bad_tone":
         lane["lane_status"]["current"]["sidebar_tone"] = "green"
     else:
         del lane["lane_status"]["current"]["attention_reasons"]
-    status, payload, _ = _run_product_read(["product-status-read", "--product", "example-product"], response)
+    status, payload, _ = _run_product_read(["product-status-read"], response)
     assert status == 1 and not payload["result"]
 
 
@@ -12825,7 +12823,7 @@ def test_product_status_read_redacts_private_prose_and_discloses_the_change() ->
     response = _product_status_response()
     response["products"][0]["warnings"] = ["Preview refresh failed: https://private.example.invalid/path"]
     response["products"][0]["environments"][1]["lane_status"]["current"]["attention_reasons"] = ["Read https://private.example.invalid/incident"]
-    status, payload, _ = _run_product_read(["product-status-read", "--product", "example-product"], response)
+    status, payload, _ = _run_product_read(["product-status-read"], response)
     assert status == 0, payload
     assert "private.example.invalid" not in json.dumps(payload)
     assert payload["result"]["products"][0]["warning_text_redacted"]
@@ -12840,3 +12838,32 @@ def test_product_status_read_returns_the_visible_fleet_without_a_product_filter(
     status, payload, calls = _run_product_read(["product-status-read"], response)
     assert status == 0 and len(calls) == 1, payload
     assert [product["product"] for product in payload["result"]["products"]] == [product["product"] for product in response["products"]]
+
+
+def test_product_status_read_preserves_other_reasons_when_one_reason_requires_redaction() -> None:
+    response = _product_status_response()
+    signal = response["products"][0]["environments"][1]["lane_status"]["current"]
+    signal["description"] = "Warning; Stored shop credentials have no integration allowance; Public route observation incomplete"
+    signal["reasons"] = ["Stored shop credentials have no integration allowance", "Public route observation incomplete"]
+    status, payload, _ = _run_product_read(["product-status-read"], response)
+    assert status == 0, payload
+    actual = payload["result"]["products"][0]["lanes"][1]
+    assert actual["text_redacted"]
+    assert actual["reasons"][1] == signal["reasons"][1]
+    assert "credentials" not in actual["reasons"][0]
+
+
+def test_product_status_read_selects_future_deadline_and_rejects_reordered_transitions() -> None:
+    from datetime import timedelta
+    response = _product_status_response()
+    status_source = response["products"][0]["environments"][0]["lane_status"]
+    future = (datetime.now().astimezone() + timedelta(days=1)).isoformat()
+    status_source["transitions"][0]["after"] = future
+    status, payload, _ = _run_product_read(["product-status-read"], response)
+    assert status == 0, payload
+    lane = payload["result"]["products"][0]["lanes"][0]
+    assert lane["tone"] == status_source["current"]["sidebar_tone"]
+    assert datetime.fromisoformat(lane["valid_until"]) == datetime.fromisoformat(future)
+    status_source["transitions"].append({**status_source["transitions"][0], "after": status_source["evaluated_at"]})
+    status, payload, _ = _run_product_read(["product-status-read"], response)
+    assert status == 1 and not payload["result"]

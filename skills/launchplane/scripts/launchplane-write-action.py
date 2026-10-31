@@ -6126,7 +6126,9 @@ def summarize_path_check(
 
 
 def _project_lane_status(value: object) -> dict[str, object]:
-    status = _require_dict(value)
+    if not isinstance(value, dict):
+        raise LaunchplaneSafetyError("lane_status_unavailable")
+    status = value
     evaluated_at = _utc_timestamp(status.get("evaluated_at"))
     if not evaluated_at:
         raise LaunchplaneSafetyError("invalid_response")
@@ -6135,13 +6137,18 @@ def _project_lane_status(value: object) -> dict[str, object]:
     if not isinstance(transitions, list):
         raise LaunchplaneSafetyError("invalid_response")
     now = datetime.now(UTC)
+    previous_after = None
     valid_until = None
     for value in transitions:
         transition = _require_dict(value)
         after = _utc_timestamp(transition.get("after"))
         if not after:
             raise LaunchplaneSafetyError("invalid_response")
-        if datetime.fromisoformat(after.replace("Z", "+00:00")) < now:
+        parsed_after = datetime.fromisoformat(after.replace("Z", "+00:00"))
+        if previous_after is not None and parsed_after <= previous_after:
+            raise LaunchplaneSafetyError("invalid_response")
+        previous_after = parsed_after
+        if parsed_after < now:
             signal = _require_dict(transition.get("signal"))
         elif valid_until is None:
             valid_until = after
@@ -6150,12 +6157,12 @@ def _project_lane_status(value: object) -> dict[str, object]:
         raise LaunchplaneSafetyError("invalid_response")
     projected: dict[str, object] = {"tone": tone, "evaluated_at": evaluated_at, "valid_until": valid_until}
     redacted = False
-    for field in ("description", "attention_reasons", "warning_reasons"):
+    for field in ("description", "reasons", "attention_reasons", "warning_reasons"):
         values = [signal.get(field)] if field == "description" else signal.get(field)
         if not isinstance(values, list):
             raise LaunchplaneSafetyError("invalid_response")
         texts = [public_service_text(value, max_length=16000) for value in values]
-        redacted |= texts != values
+        redacted |= texts != [" ".join(value.split()) for value in values]
         projected[field] = texts[0] if field == "description" else texts
     projected["text_redacted"] = redacted
     return projected
@@ -6171,7 +6178,7 @@ def _project_product_status(product: dict[str, Any]) -> dict[str, object]:
         lanes.append({"environment": public_identifier(lane.get("environment")), **_project_lane_status(lane.get("lane_status"))})
     product_warnings = [public_service_text(value, max_length=16000) for value in warnings]
     return {"product": public_identifier(product.get("product")), "lanes": lanes, "warnings": product_warnings,
-            "warning_text_redacted": product_warnings != warnings}
+            "warning_text_redacted": product_warnings != [" ".join(value.split()) for value in warnings]}
 
 
 def summarize_product_status_read(*, request: dict[str, object], provider_payload: dict[str, Any]) -> dict[str, object]:
@@ -6180,10 +6187,6 @@ def summarize_product_status_read(*, request: dict[str, object], provider_payloa
     if not isinstance(products, list):
         raise LaunchplaneSafetyError("invalid_response")
     selected = [_require_dict(product) for product in products]
-    if request.get("product"):
-        selected = [product for product in selected if product.get("product") == request["product"]]
-        if len(selected) != 1:
-            raise LaunchplaneSafetyError("invalid_response")
     payload = base_payload(status=public_code(provider_payload.get("status")), operation="product-status-read", request=request)
     payload["result"] = {"products": [_project_product_status(product) for product in selected]}
     payload["summary"] = {"trace_id": public_trace_id(provider_payload["trace_id"]),
@@ -11948,7 +11951,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         testing_hold_read.add_argument(argument, required=True)
 
     product_status_read = subparsers.add_parser("product-status-read", help="Read every lane's service-computed Product Ops sidebar tone, reasons and product warnings.")
-    product_status_read.add_argument("--product", help="Limit output to this product from the caller-visible inventory.")
 
     product_environment_read = subparsers.add_parser(
         "product-environment-read",
@@ -12912,8 +12914,6 @@ def main(argv: list[str]) -> int:
         if args.command == "product-status-read":
             path = _product_read_path(args.command)
             request = {"payload_source": "operator_argument"}
-            if args.product:
-                request["product"] = _request_identifier(args.product)
             return execute_product_read(args=args, operation=args.command, request=request, path=path)
         if args.command == "product-environment-read":
             path = _product_read_path(

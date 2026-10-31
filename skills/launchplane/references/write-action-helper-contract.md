@@ -525,14 +525,14 @@ installed local helper bindings.
   Use `product-status-read` for the sidebar's status rather than deriving a
   color from this diagnostic projection. Missing or truncated inputs stay unknown.
 
-- `product-status-read [--product PRODUCT]` makes one product-inventory read and
+- `product-status-read` makes one product-inventory read and
   returns each caller-visible product and every recorded lane's service-computed sidebar `tone` and `description`,
-  attention and warning reasons, plus non-info product warnings. It uses the same
+  sidebar reasons and attention and warning reasons, plus product warnings. It uses the same
   `lane_status` result and expiry transitions the UI renders, with no local health
   algorithm. `evaluated_at` identifies the source read and `valid_until` is the
   next computed transition, if any. A lane omitted from the complete product
   overview is not recorded, as with the sidebar's absent-lane icon. Missing status
-  or warning inputs fail the read; they never become a green result. Private
+  reports `lane_status_unavailable`; malformed status or warning inputs fail the read; they never become a green result. Private
   prose is redacted with `text_redacted` or `warning_text_redacted` disclosed.
   This read grants no authority to change a lane or clear an incident.
 
