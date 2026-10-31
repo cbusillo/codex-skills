@@ -14,6 +14,9 @@ decisions, statuses, board contents or narrative; open linked records for action
    uv run skills/supervisor/scripts/routine_check.py --owner OWNER --queue OWNER/direction#NUMBER --ledger <ledger.json> --foreign-log <watch.jsonl>
    ```
 
+   Add `--service-log <render-output>/logs/catalog.jsonl` for the catalog job;
+   repeat it for other configured service logs. Missing or malformed logs are
+   coverage errors; stopped jobs repeat until recovery produces a successful report.
    Add `--capacity-state` when configured, `--source OWNER/REPO#NUMBER` for
    question anchors outside the queue, and `--radar-config` for existing private
    [comment-radar configuration](../../github-work-rollup/SKILL.md#external-comment-radar).

@@ -463,9 +463,6 @@ def poll(config: dict, evidence: Path, *, resume_failed: bool = False, supersede
                                            "--repo", config["repo"]], timeout=660)
         require(runtime.get("status") in {"synchronized", "already_current"}, "discovery", "runtime reconciliation incomplete")
         current: dict = dict(config)
-        if config.get("notify_config"):
-            from services import supervisor_recipient
-            current["supervisor_session"] = supervisor_recipient(Path(config["notify_config"]))["session_id"]
         landings = state.get("pending") or pending_landings(source, state["last_sha"], runtime["after_sha"])
         superseded = state.get("superseded")
         superseded_url = state.get("superseded_url")

@@ -44,6 +44,7 @@ class CatalogLandingTests(unittest.TestCase):
             landing.pending_landings(self.root, "absent", commits[-1])
 
     def test_interrupted_bootstrap_retains_its_landing_and_posts_before_advancing(self) -> None:
+        self.config["notify_config"] = str(self.root / "unbound-services.json")
         with (patch.object(landing, "pending_landings", return_value=["first"]) as discover,
               patch.object(landing, "landing_pull", return_value=2),
               patch.object(landing, "git", return_value="script.py"),
@@ -55,6 +56,7 @@ class CatalogLandingTests(unittest.TestCase):
             self.assertTrue(landing.poll(self.config, self.root)["ok"])
             self.assertEqual(discover.call_count, 1)
             self.assertEqual(verify.call_count, 1)
+            self.assertEqual(verify.call_args.args[0]["supervisor_session"], self.config["supervisor_session"])
             self.assertEqual(post.call_count, 2)
             self.assertEqual(json.loads((self.root / "cursor.json").read_text())["last_sha"], "first")
 

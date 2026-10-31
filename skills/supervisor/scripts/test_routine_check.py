@@ -4,6 +4,8 @@
 # dependencies = ["aiohttp==3.14.5", "PyYAML==6.0.3"]
 # ///
 import argparse
+from contextlib import redirect_stdout
+from io import StringIO
 import json
 import os
 import tempfile
@@ -187,6 +189,35 @@ class RoutineCheckTests(unittest.TestCase):
                 self.assertIn("watch restart refused", output)
                 self.assertIn("incomplete", output)
 
+    def test_service_failures_repeat_until_a_completed_success_after_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "catalog.jsonl"
+            foreign = Path(directory) / "foreign.jsonl"
+            foreign.write_text(json.dumps({"notices": [], "errors": [], "coverage_gaps": []}))
+            rows = [
+                {"event": "started", "pid": 10},
+                {"ok": False, "gate": "smoke_response"},
+                {"event": "completed", "exit_code": 1},
+                {"event": "reconciliation_required", "exit_code": 1},
+            ]
+            log.write_text("\n".join(json.dumps(row) for row in rows))
+            for _ in range(2):
+                output = routine_check.digest({"catalog": routine_check.watch_report(log, service=True)})
+                self.assertIn("smoke_response", output)
+                self.assertIn("stopped", output)
+            with (patch("sys.argv", ["routine_check.py", "--owner", "owner", "--queue", "owner/direction#1",
+                                     "--ledger", str(Path(directory) / "ledger.json"), "--foreign-log", str(foreign),
+                                     "--service-log", str(log)]),
+                  patch.object(routine_check, "build_readers", return_value={}), redirect_stdout(StringIO()) as stdout):
+                self.assertEqual(routine_check.main(), 1)
+            self.assertIn(f"ERROR service {log}", stdout.getvalue())
+            with log.open("a") as stream:
+                stream.write('\n{"event":"started","pid":11}\n{"event":"completed","exit_code":0}')
+            self.assertIn("ERROR", routine_check.digest({"catalog": routine_check.watch_report(log, service=True)}))
+            with log.open("a") as stream:
+                stream.write('\n{"ok":true,"landings":[]}\n{"event":"completed","exit_code":0}')
+            self.assertNotIn("ERROR", routine_check.digest({"catalog": routine_check.watch_report(log, service=True)}))
+
     def test_staffing_clears_only_after_its_targeted_reply(self) -> None:
         request = comment("STAFF NOW: take the next source slice")
         unrelated = comment(f"Staffed: {request['url']}0", ident=2)
@@ -226,7 +257,7 @@ class RoutineCheckTests(unittest.TestCase):
             self.assertNotIn("ERROR", output)
             with log.open("a") as stream:
                 stream.write('\n{"event":"completed","exit_code":2}\n{"event":"reconciliation_required","exit_code":2}')
-            self.assertIn("watcher stopped", routine_check.digest({"watch": routine_check.watch_report(log, now=now)}))
+            self.assertIn("stopped", routine_check.digest({"watch": routine_check.watch_report(log, now=now)}))
             with log.open("a") as stream:
                 stream.write('\n{"notices":[],"errors":[],"coverage_gaps":[]}')
             self.assertNotIn("ERROR", routine_check.digest({"watch": routine_check.watch_report(log, now=now)}))
