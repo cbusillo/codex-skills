@@ -2151,12 +2151,18 @@ def cmd_show(args: argparse.Namespace) -> None:
         source_clear = (source_facts is None or (source_facts["complete"] and not source_facts.get("error")
                         and not source_facts["conflicts"] and (args.read_only or not source_facts["recipients"])))
         claim_error = None
+        milestone_admission = None
         if not args.read_only:
             try:
                 check_claim_wait({**issue, "claim_wait": wait}, claim_current_status(issue, read_plan_sections(issue)[0], comments), config)
                 admission, admission_links, _ = claim_admission_options(args)
                 if admission == "milestone":
-                    milestone_claim_track(issue, admission_links)
+                    track = milestone_claim_track(issue, admission_links)
+                    milestone_admission = {
+                        "scope": github_direction_next.compact_list_issue(track["repo"], track),
+                        "admission_arguments": ["--admission", admission,
+                            *[token for link in admission_links for token in ("--admission-link", link)]],
+                    }
             except PlanError as error:
                 claim_error = {"code": getattr(error, "code", "claim_preflight_unavailable"),
                                "message": str(error), **(error.payload if isinstance(error.payload, dict) else {})}
@@ -2166,6 +2172,7 @@ def cmd_show(args: argparse.Namespace) -> None:
                         and (args.read_only or not facts["recipients"])
                         and source_clear and (args.read_only or derived["status"] == "active")),
             "status": derived["status"], "ownership": facts,
+            **({"milestone_admission": milestone_admission} if milestone_admission else {}),
             **({"error": claim_error} if claim_error else {}),
             **({"resume_source": source_facts} if source_facts else {}),
         }
@@ -2865,7 +2872,9 @@ def claim_admission_options(args: argparse.Namespace) -> tuple[str | None, list[
     if None in admission_targets.values():
         raise PlanError("--admission-link must be https://github.com/OWNER/REPO/issues/N or "
                         "https://github.com/OWNER/REPO/pull/N, optionally followed by #issuecomment-ID "
-                        "(N and ID are positive integers)")
+                        "(N and ID are positive integers)" +
+                        (". For qualifying native milestone scope, use --admission milestone without --admission-link; "
+                         "otherwise cite a valid Track issue, not a milestone-page URL." if admission == "milestone" else ""))
     if admission_unlinked is not None and (admission != "milestone" or not admission_unlinked.strip()
                                            or any(c in admission_unlinked for c in "\n\r")):
         raise PlanError("--admission-unlinked records one nonempty line for milestone admission")

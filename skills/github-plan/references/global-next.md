@@ -38,6 +38,11 @@ Read for `next` in a repository owner's direction repository, including explicit
    whole-plan parent wait remains excluded. Parent discussions are refreshed
    on the next selection. Comments can reveal a wait or completed implementation despite
    active labels. A partial ownership inventory never proves freedom to start.
+   Native milestone paths appear in `via` and `overall_milestone_context`.
+   Use `--admission milestone` without repeating a Track citation when native
+   scope qualifies. The existing launcher preflight returns the checked
+   `milestone_admission.scope` and `admission_arguments`; it performs no graph
+   write. Ranking alone does not establish claim admission.
 4. In a repository the Director owns, a request authored by the product's
    recorded Client ranks within that
    product's current overall milestone.

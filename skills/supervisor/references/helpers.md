@@ -1509,7 +1509,9 @@ both backends run `gh-plan.py show <anchor> --full --launch-check`, reusing
 source-ranking or delivery-history reads. Follow the
 [brief admission format](../SKILL.md#the-pattern); its kind and exact evidence
 URLs reach the claim's own admission and wait checks without writing planning
-state. Active source or
+state. For qualifying native milestone work, `Admission: milestone` needs no
+repeated Track URL; preflight returns its verified scope and supported arguments.
+Other admission kinds retain their required citations. Active source or
 operational work can launch; a blocker, structured wait, live
 claim, retained delivery or incomplete read refuses. The existing claim lease
 reader recognizes expiry as a changed ownership fact. No new launch-state record
