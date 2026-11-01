@@ -159,8 +159,7 @@ Rules for this brief (every Supervisor brief carries them):
   stay a stop boundary under the overall
   [DIRECTION.md](https://github.com/cbusillo/direction/blob/main/DIRECTION.md#stop-boundaries).
 - When you need the Director, create every new Director question on the item with
-  `uv run <supervisor-skill-dir>/scripts/oq.py create --record-file FILE --owner OWNER`
-  under [Director Questions](../../references/talking-with-the-director.md#director-questions),
+  [`oq.py create`](../../references/talking-with-the-director.md#director-questions),
   rather than authoring a prose question comment. Re-present existing questions
   with their original Q and source link; do not create them again. Leave presentation
   to the Supervisor; never use a
