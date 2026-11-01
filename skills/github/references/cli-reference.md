@@ -553,6 +553,7 @@ optional `body`. Its supported operations are:
 | PATCH | empty string | Boolean branch-cleanup and merge flags above, using REST names |
 | PATCH | empty string | `{"archived":true}` alone |
 | PUT | `/actions/permissions/fork-pr-contributor-approval` | `{"approval_policy":"all_external_contributors"}` only |
+| PUT | `/actions/runners/ID/labels` | `{"labels":["custom-label"]}` (empty array removes custom labels) |
 | DELETE | `/collaborators/USERNAME` | None |
 | DELETE | `/invitations/ID` | None |
 | POST | `/rulesets` | Complete custom tag ruleset |
@@ -571,6 +572,19 @@ then use the existing `plan`, digest-bound `apply` and `readback` commands above
 Only `all_external_contributors` is writable; reads accept all three documented
 policies. This route changes no other Actions setting and grants no authority
 by itself. See GitHub's [fork contributor approval API](https://docs.github.com/en/rest/actions/permissions#set-fork-pr-contributor-approval-permissions-for-a-repository).
+
+For separately authorized runner relabeling, use `plan` with exactly
+`PUT /actions/runners/ID/labels` and a body containing only `labels`, an array
+of unique custom label names. The saved plan includes the runner ID, name,
+prior custom labels and automatic labels. Review it before digest-bound
+`apply --confirm-owner-admin-write`, then run `readback`. Each snapshot verifies
+the repository owner and exact runner identity; readback compares label names
+and types independently of order and server-assigned label IDs, preserving
+automatic labels. Save every prior plan before a batch begins; undo is a new
+reviewed plan using its saved custom labels. Stop on drift, denial or uncertain
+write and read back the original plan before any retry. This supports only
+label replacement, with no registration, deletion or new standing authority.
+See GitHub's [runner label API](https://docs.github.com/en/rest/actions/self-hosted-runners#set-custom-labels-for-a-self-hosted-runner-for-a-repository).
 
 For example, an explicitly approved collaborator removal uses
 `{"method":"DELETE","path":"/collaborators/USERNAME"}`. Its paged before

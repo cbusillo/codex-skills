@@ -49,6 +49,11 @@ class OwnerClient:
         self.actions_app: dict[str, Any] = {"id": 731, "slug": "github-actions"}
         self.calls: list[tuple[str, str, Any]] = []
         self.approval: Any = {"approval_policy": "first_time_contributors"}
+        self.runner: dict[str, Any] = {
+            "id": 41,
+            "name": "runner-one",
+            "labels": [{"name": "Linux", "type": "read-only"}, {"name": "general", "type": "custom"}],
+        }
         self.drop_write = False
         self.fail_write = False
 
@@ -68,6 +73,14 @@ class OwnerClient:
             raise rules.RulesetError(
                 "permission denied", cause="permission_denied", payload={"api_result": {"failure": {"write_outcome": "rejected"}}}
             )
+        if path == "/repos/owner/repo/actions/runners/41/labels":
+            if method == "PUT" and not self.drop_write:
+                self.runner["labels"] = [item for item in self.runner["labels"] if item["type"] == "read-only"] + [
+                    {"name": name, "type": "custom"} for name in (body or {})["labels"]
+                ]
+            return {"total_count": len(self.runner["labels"]), "labels": copy.deepcopy(self.runner["labels"])}
+        if method == "GET" and path == "/repos/owner/repo/actions/runners/41":
+            return copy.deepcopy(self.runner)
         if path.endswith("/actions/permissions/fork-pr-contributor-approval"):
             if method == "PUT" and not self.drop_write:
                 self.approval = copy.deepcopy(body)
@@ -137,6 +150,107 @@ class OwnerAdminTests(unittest.TestCase):
 
     def apply(self, plan: dict[str, Any], *, confirm: bool = True, readback: bool = False) -> dict[str, Any]:
         return self.cli.run_plan(self.client, plan, rules.check_plan_digest(plan), apply=not readback, confirm=confirm)
+
+    def test_runner_labels_plan_apply_readback_and_restore_preserve_automatic_labels(self) -> None:
+        path = "/actions/runners/41/labels"
+        prior = copy.deepcopy(self.client.runner)
+        desired = {"labels": ["general", "candidate"]}
+        plan = self.plan({"method": "PUT", "path": path, "body": desired})
+        self.assertEqual(plan["before"]["value"]["id"], prior["id"])
+        self.assertEqual(plan["before"]["value"]["name"], prior["name"])
+        self.assertFalse(self.client.writes)
+        with self.assertRaises(rules.RulesetError):
+            self.apply(plan, readback=True)
+        self.assertTrue(self.apply(plan)["verified"])
+        self.client.runner["labels"].reverse()
+        self.assertTrue(self.apply(plan, readback=True)["verified"])
+        self.assertFalse(self.apply(plan)["changed"])
+        self.assertEqual(self.client.writes, [("PUT", f"/repos/owner/repo{path}", desired)])
+        self.assertEqual(self.client.calls[-1][:2], ("GET", "/repos/owner/repo/actions/runners/41"))
+        custom = [item["name"] for item in prior["labels"] if item["type"] == "custom"]
+        self.assertTrue(self.apply(self.plan({"method": "PUT", "path": path, "body": {"labels": custom}}))["verified"])
+        self.assertEqual(self.client.runner, prior)
+        self.assertTrue(self.apply(self.plan({"method": "PUT", "path": path, "body": {"labels": []}}))["verified"])
+        self.assertEqual(self.client.runner["labels"], [item for item in prior["labels"] if item["type"] == "read-only"])
+
+    def test_runner_labels_reject_other_operations_and_malformed_payloads(self) -> None:
+        request = {"method": "PUT", "path": "/actions/runners/41/labels", "body": {"labels": ["candidate"]}}
+        for body in (
+            None,
+            {},
+            {"labels": "candidate"},
+            {"labels": [""]},
+            {"labels": [1]},
+            {"labels": ["candidate", "CANDIDATE"]},
+            {"labels": [], "other": True},
+        ):
+            with self.subTest(body=body), self.assertRaises(rules.RulesetError):
+                self.plan({**request, "body": body})
+        for method in ("POST", "DELETE", "PATCH", "GET"):
+            with self.subTest(method=method), self.assertRaises(rules.RulesetError):
+                self.plan({**request, "method": method})
+        for path in (
+            "/actions/runners/0/labels",
+            "/actions/runners/41/labels/x",
+            "/actions/runners/41/labels?x=1",
+            "/actions/runners/41",
+            "/orgs/owner/actions/runners/41/labels",
+        ):
+            with self.subTest(path=path), self.assertRaises(rules.RulesetError):
+                self.plan({**request, "path": path})
+        self.assertFalse(self.client.calls)
+
+    def test_runner_labels_keep_digest_confirmation_owner_identity_and_drift_guards(self) -> None:
+        plan = self.plan({"method": "PUT", "path": "/actions/runners/41/labels", "body": {"labels": ["candidate"]}})
+        with self.assertRaises(rules.RulesetError):
+            self.apply(plan, confirm=False)
+        with self.assertRaises(rules.RulesetError):
+            self.cli.run_plan(self.client, plan, "wrong", apply=True, confirm=True)
+        for replacement in ({"id": 42}, {"name": "other-runner"}, {"labels": [{"name": "new", "type": "custom"}]}):
+            prior = copy.deepcopy(self.client.runner)
+            self.client.runner.update(replacement)
+            with self.subTest(replacement=replacement), self.assertRaises(rules.RulesetError):
+                self.apply(plan)
+            self.client.runner = prior
+        self.client.repository["owner"]["login"] = "other"
+        with self.assertRaises(rules.RulesetError):
+            self.apply(plan)
+        self.assertFalse(self.client.writes)
+
+    def test_runner_labels_reject_malformed_live_and_saved_snapshots(self) -> None:
+        request = {"method": "PUT", "path": "/actions/runners/41/labels", "body": {"labels": ["candidate"]}}
+        baseline = self.plan(request)
+        for replacement in (
+            {"id": True},
+            {"name": None},
+            {"labels": None},
+            {"labels": [{"name": "x", "type": "unknown"}]},
+            {"labels": [{"name": None, "type": "custom"}]},
+            {"labels": [{"name": "x", "type": "custom"}] * 2},
+        ):
+            prior = copy.deepcopy(self.client.runner)
+            self.client.runner.update(replacement)
+            with self.subTest(replacement=replacement):
+                with self.assertRaises(rules.RulesetError):
+                    self.plan(request)
+                edited = copy.deepcopy(baseline)
+                edited["before"]["value"].update(replacement)
+                with self.assertRaises(rules.RulesetError):
+                    self.apply(edited)
+            self.client.runner = prior
+        self.assertFalse(self.client.writes)
+
+    def test_runner_labels_denied_write_and_bad_readback_never_retry(self) -> None:
+        plan = self.plan({"method": "PUT", "path": "/actions/runners/41/labels", "body": {"labels": ["candidate"]}})
+        for flag, cause in (("fail_write", "permission_denied"), ("drop_write", "post_write_verification_failed")):
+            setattr(self.client, flag, True)
+            write_count = len(self.client.writes)
+            with self.subTest(flag=flag), self.assertRaises(rules.RulesetError) as caught:
+                self.apply(plan)
+            self.assertEqual(caught.exception.cause, cause)
+            self.assertEqual(len(self.client.writes), write_count + 1)
+            self.assertTrue(caught.exception.payload["write_attempted"])
+            setattr(self.client, flag, False)
 
     def test_fork_approval_read_plan_apply_and_readback(self) -> None:
         path = "/actions/permissions/fork-pr-contributor-approval"

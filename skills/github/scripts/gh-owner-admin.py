@@ -21,6 +21,7 @@ SETTINGS = {
     "deleteBranchOnMerge": "delete_branch_on_merge",
 }
 MERGE_METHODS = {"merge": "allow_merge_commit", "squash": "allow_squash_merge", "rebase": "allow_rebase_merge"}
+RUNNER_LABELS_PATH = re.compile(r"/actions/runners/([1-9][0-9]*)/labels")
 FORK_APPROVAL_PATH = "/actions/permissions/fork-pr-contributor-approval"
 FORK_APPROVAL_POLICIES = {
     "first_time_contributors_new_to_github",
@@ -128,6 +129,10 @@ def validate_request(value: Any) -> dict[str, Any]:
     elif method == "PUT" and path == FORK_APPROVAL_PATH:
         if body != {"approval_policy": "all_external_contributors"}:
             fail("fork approval PUT accepts only approval_policy: all_external_contributors")
+    elif method == "PUT" and RUNNER_LABELS_PATH.fullmatch(value["path"]):
+        if not isinstance(body, dict) or set(body) != {"labels"}:
+            fail("runner labels PUT accepts only a labels array")
+        check_label_names(value["body"]["labels"], cause="validation_error")
     elif method == "DELETE" and (
         re.fullmatch(r"/collaborators/[A-Za-z0-9][A-Za-z0-9-]{0,38}", path) or re.fullmatch(r"/invitations/[1-9][0-9]*", path)
     ):
@@ -157,9 +162,40 @@ def validate_request(value: Any) -> dict[str, Any]:
     else:
         fail(
             "unsupported owner-admin request; use repository settings, archive, fork approval, collaborator DELETE "
-            "or custom tag rulesets"
+            "runner labels PUT or custom tag rulesets"
         )
     return {"method": method, "path": path, **({"body": copy.deepcopy(body)} if body is not None else {})}
+
+
+def check_label_names(value: Any, *, cause: str) -> None:
+    if not isinstance(value, list) or any(not isinstance(name, str) or not name.strip() for name in value):
+        fail("label names must be nonempty strings", cause)
+    if len({name.casefold() for name in value}) != len(value):
+        fail("duplicate label names", cause)
+
+
+def check_runner_snapshot(value: Any, path: str, *, cause: str) -> None:
+    match = RUNNER_LABELS_PATH.fullmatch(path)
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"id", "name", "labels"}
+        or not match
+        or type(value["id"]) is not int
+        or value["id"] != int(match[1])
+        or not isinstance(value["name"], str)
+        or not value["name"]
+        or not isinstance(value["labels"], list)
+        or any(
+            not isinstance(item, dict) or set(item) != {"name", "type"} or item["type"] not in ("custom", "read-only")
+            for item in value["labels"]
+        )
+    ):
+        fail("invalid runner identity or labels", cause)
+    check_label_names([item["name"] for item in value["labels"]], cause=cause)
+
+
+def sorted_labels(labels: list[dict[str, str]]) -> list[dict[str, str]]:
+    return sorted(labels, key=lambda item: (item["type"], item["name"]))
 
 
 def is_archive(body: Any) -> bool:
@@ -223,6 +259,23 @@ def snapshot(client: Any, repo: str, request: dict[str, Any]) -> dict[str, Any]:
     repository = owned_repository(client, repo, allow_archived=request["method"] == "PATCH" and is_archive(request.get("body")))
     path, method = request["path"], request["method"]
     identity = {"id": repository["id"], "full_name": repository["full_name"].casefold()}
+    if RUNNER_LABELS_PATH.fullmatch(path):
+        runner = client.request(
+            "GET", f"/repos/{rules.repo_path(repo)}{path.removesuffix('/labels')}", operation="github.owner.admin.read"
+        )
+        if not isinstance(runner, dict):
+            fail("invalid runner response", "invalid_response")
+        labels = runner.get("labels")
+        if not isinstance(labels, list) or any(not isinstance(item, dict) for item in labels):
+            raise rules.RulesetError("invalid runner labels response", cause="invalid_response")
+        value: dict[str, Any] = {
+            "id": runner.get("id"),
+            "name": runner.get("name"),
+            "labels": [{"name": item.get("name"), "type": item.get("type")} for item in labels],
+        }
+        check_runner_snapshot(value, path, cause="invalid_response")
+        value["labels"] = sorted_labels(value["labels"])
+        return {"repository": identity, "value": value}
     if path == FORK_APPROVAL_PATH:
         value = client.request(
             "GET",
@@ -317,7 +370,14 @@ def build_plan(repo: str, request: dict[str, Any], before: dict[str, Any]) -> di
     if not isinstance(before, dict) or set(before) != {"repository", "value"}:
         fail("invalid plan snapshot")
     after = copy.deepcopy(before)
-    if request["path"] == FORK_APPROVAL_PATH:
+    if RUNNER_LABELS_PATH.fullmatch(request["path"]):
+        check_runner_snapshot(before["value"], request["path"], cause="validation_error")
+        automatic = [item for item in before["value"]["labels"] if item["type"] == "read-only"]
+        after["value"]["labels"] = sorted_labels(
+            automatic + [{"name": name, "type": "custom"} for name in request["body"]["labels"]]
+        )
+        check_runner_snapshot(after["value"], request["path"], cause="validation_error")
+    elif request["path"] == FORK_APPROVAL_PATH:
         check_fork_approval(before["value"], cause="validation_error")
         if set(before["value"]) != {"approval_policy"}:
             fail("invalid fork approval snapshot")
