@@ -1209,7 +1209,10 @@ retain the shared reader's retry and refusal policy.
 Verification failures post the failed gate. The existing runner notifies that
 channel on any failed child or stale reconciliation marker, including an
 interrupted run or a helper that cannot start, then keeps the
-service stopped. Read private evidence and reconcile any
+service stopped. Retryable runtime discovery and reconciliation reads leave a bounded
+receipt and retry on the next poll without advancing the cursor or reporting a
+failed verification. A retry requires explicit proof that the runtime was not
+mutated; pending uncertain mutations still stop the service. Read private evidence and reconcile any
 uncertain launch, request, comment or notification before recovery. An uncertain
 report is settled automatically only by one exact marker/body/author match on
 the owning issue; missing or ambiguous matches never cause another post. After

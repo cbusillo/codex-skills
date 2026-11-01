@@ -39,6 +39,7 @@ __all__ = [
     "automation_only_gh_prefix_args",
     "Operation",
     "GateFailed",
+    "RetryableGate",
     "receipt",
 ]
 
@@ -47,6 +48,10 @@ class GateFailed(ValueError):
     def __init__(self, gate: str, reason: str) -> None:
         super().__init__(reason)
         self.gate = gate
+
+
+class RetryableGate(GateFailed):
+    pass
 
 
 class Operation:
@@ -60,7 +65,7 @@ class Operation:
             raise GateFailed("identity", "evidence belongs to another target or launch generation")
         self.state: dict[str, Any] = state
 
-    def run(self, gate: str, command: list[str], *, once: bool = False, timeout: int = 120) -> Any:
+    def run(self, gate: str, command: list[str], *, once: bool = False, timeout: int = 120, retry_read: bool = False) -> Any:
         self.gate = gate
         saved = self.state["steps"].get(gate)
         if once and saved:
@@ -83,6 +88,9 @@ class Operation:
         except ValueError:
             payload = None
         if result.returncode:
+            if (retry_read and not once and isinstance(payload, dict) and payload.get("status") == "retryable"
+                    and payload.get("runtime_mutated") is False):
+                raise RetryableGate(gate, f"{payload.get('reason_code', 'retryable')}; inspect {gate}.json")
             if once and isinstance(payload, dict) and payload.get("mutation_started") is False:
                 self.state["steps"].pop(gate, None)
                 save_state(self.path, self.state)
@@ -97,4 +105,5 @@ class Operation:
 def receipt(identity: str, evidence: Path, error: Exception | None = None, *, gate: str = "complete") -> dict:
     return {"ok": error is None, "identity": identity,
             "gate": error.gate if isinstance(error, GateFailed) else gate,
-            "reason": str(error) if error else None, "evidence": str(evidence.resolve())}
+            "reason": str(error) if error else None, "evidence": str(evidence.resolve()),
+            **({"retryable": True} if isinstance(error, RetryableGate) else {})}
