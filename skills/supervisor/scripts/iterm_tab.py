@@ -1744,7 +1744,7 @@ async def register_fresh_launch(args: argparse.Namespace, result: dict, choice: 
         await register_resumed_launch(path, result, choice)
         return
     native = result.get("claude_native") or (choice or {}).get("claude_native")
-    if native:
+    if isinstance(native, dict):
         result["claude_native"] = native
         entry = await asyncio.to_thread(register_claude_launch, result, native, path)
         result.update(native_session_id=entry["session_id"], transcript=entry["transcript"], ledger_recorded=True)

@@ -194,16 +194,19 @@ def verify_smoke(config: dict, operation: Operation, harness: str, provider: str
             operation.gate = phase
             failure = json.loads(json.loads((operation.evidence / (phase + ".json")).read_text())["stdout"])
             retained = failure.get("failed_launch", {})
-            require(harness == "codex" and retained.get("phase") == "register_ledger", phase,
+            require(retained.get("phase") == "register_ledger", phase,
                     "launch is uncertain; inspect its retained receipt without relaunching")
             launch = retained["launch"]
-            entry = terminal_entry(ledger, "tmux_session_id", launch["session_id"])
-            native = read_launch_receipt(Path(launch["native_receipt"]))
-            expected = {**launch, **native, "harness": "codex", "supervisor_owned": True,
-                        "tmux_session_id": launch["session_id"]}
-            identity = lambda row: {key: value for key, value in release.closure_identity(row).items() if key != "handoff_url"}
-            require(entry["session_id"] == native["session_id"] and identity(entry) == identity(expected), phase,
-                    "registered source differs from the retained launch generation")
+            if harness == "claude":
+                native = iterm_tab.register_claude_launch(launch, launch["claude_native"], ledger)
+            else:
+                entry = terminal_entry(ledger, "tmux_session_id", launch["session_id"])
+                native = read_launch_receipt(Path(launch["native_receipt"]))
+                expected = {**launch, **native, "harness": "codex", "supervisor_owned": True,
+                            "tmux_session_id": launch["session_id"]}
+                identity = lambda row: {key: value for key, value in release.closure_identity(row).items() if key != "handoff_url"}
+                require(entry["session_id"] == native["session_id"] and identity(entry) == identity(expected), phase,
+                        "registered source differs from the retained launch generation")
             saved = {"complete": True, "result": {**launch, "native_session_id": native["session_id"]}}
             operation.state["steps"][phase] = saved
             save_state(operation.path, operation.state)
