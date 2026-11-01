@@ -2406,11 +2406,30 @@ def test_empty_track_scoping_uses_reviewed_records_instead_of_summary() -> None:
         with global_fixture([track_issue], [], {}, clear_waits=[track_issue]) as (module, result, _reads):
             with patch.multiple(module, annotate_next_queue=module.real_annotate_next_queue,
                 read_queue_ownership=lambda _: observed, wait_authors=lambda _: {"someone"},
-                next_status_body_time=Mock(side_effect=AssertionError("Track prose ordering is not needed"))):
+                ):
                 module.cmd_next(next_args())
-        assert [(item["repo"], item["number"]) for item in result["available_candidates"]] == [(track_issue["repo"], track_issue["number"])]
-        assert not result["needs_status"] and not result["underway"]
-    scoped = result["available_candidates"][0]
+        if actor == "agent:old-session":
+            assert not result["available_candidates"]
+            assert [row["number"] for row in result["needs_status"]] == [track_issue["number"]]
+        else:
+            assert [(item["repo"], item["number"]) for item in result["available_candidates"]] == [(track_issue["repo"], track_issue["number"])]
+            assert not result["needs_status"]
+        assert not result["underway"]
+    scoped = result["needs_status"][0]
+    scoped["discussion"]["body"] = scoped["discussion"]["body"].replace("agent:old-session", "agent")
+    routed = copy.deepcopy(scoped)
+    routed.pop("queue")
+    routed["discussion"].update(body="## Current Status\nNext actor: agent:old-worker",
+                                  updated_at="2026-10-30T00:00:00Z")
+    routed["discussion"].pop("body_recorded_at", None)
+    routed["discussion"]["comments"].append({"id": 10002, "author": "someone",
+        "created_at": "2026-10-29T00:00:00Z", "body": "## Current Status\nNext actor: agent"})
+    provenance = Mock(return_value="2026-10-28T00:00:00Z")
+    with patch.multiple(module, read_queue_ownership=lambda _: observed, wait_authors=lambda _: {"someone"},
+                        next_status_body_time=provenance):
+        module.real_annotate_next_queue([routed], next_args())
+    assert routed["queue"]["state"] == "available"
+    provenance.assert_called_once()
     for condition, expected in (("claim", "underway"), ("wait", "waiting"), ("incomplete", "review")):
         row = copy.deepcopy(scoped)
         row.pop("queue")
@@ -2424,7 +2443,7 @@ def test_empty_track_scoping_uses_reviewed_records_instead_of_summary() -> None:
         row["discussion"]["comments"].append({"id": 10001, "author": "someone", "body": body,
             "created_at": "2026-10-29T12:00:00Z", "updated_at": "2026-10-29T12:00:00Z"})
         with patch.multiple(module, read_queue_ownership=lambda _: evidence, wait_authors=lambda _: {"someone"},
-            next_status_body_time=Mock(side_effect=AssertionError("Track prose ordering is not needed"))):
+            ):
             module.real_annotate_next_queue([row], next_args())
         assert row["queue"]["state"] == expected
         assert not module.project_local_queue([row], [])["available_candidates"]

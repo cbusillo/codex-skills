@@ -1314,10 +1314,14 @@ def check_launch_issue(brief: str) -> None:
     if len(declarations) > 1:
         raise ValueError("An execution brief needs one Admission line naming the claim kind and its evidence links")
     admission = re.match(r"([\w-]*)(.*)", declarations[0]) if declarations else None
+    heading = next((line for line in brief.splitlines() if line.strip() and not line.startswith("GUI task:")), "")
+    worker = re.search(r"\bTrial token:[ \t]*(\S+)", heading)
     helper = Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py"
     for mode, anchor in dict.fromkeys(anchors):
         repo = "/".join(anchor.split("/")[3:5])
         argv = ["uv", "run", str(helper), "--repo", repo, "show", anchor, "--full", "--launch-check"]
+        if worker:
+            argv.extend(["--worker", worker[1].rstrip(".;")])
         if mode.casefold() == "read-only anchor":
             argv.append("--read-only")
         if admission and mode.casefold() != "read-only anchor":
@@ -1338,7 +1342,7 @@ def check_launch_issue(brief: str) -> None:
                 raise ValueError(f"Launch refused for {anchor}: {error.get('code', 'claim_preflight')}: "
                                  f"{error.get('message', error)}")
             facts = check.get("ownership") or {}
-            evidence = (facts.get("detail") or facts.get("conflicts") or facts.get("artifacts")
+            evidence = (facts.get("detail") or facts.get("conflicts") or facts.get("artifacts") or facts.get("recipients")
                         or check.get("resume_source") or facts.get("error") or check.get("status"))
             raise ValueError(f"Launch refused for {anchor}: {check.get('status', 'unknown')}, "
                              f"{evidence}; dispatch only after the relevant fact changes. "

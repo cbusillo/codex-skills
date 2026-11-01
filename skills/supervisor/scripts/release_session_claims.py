@@ -390,11 +390,14 @@ def scan_start(entries):
     return (min(timestamps) - timedelta(seconds=1)).isoformat()
 
 
-def belongs_to_session(body, session):
+def belongs_to_session(body: str, session: str) -> bool:
+    body = claim.unquoted_text(body)
     if session not in body:
         return False
-    return any(r["session"] == session for r in claim.records(body)) or (
-        session in body and claim.has_ownership_assertion(body)
+    if any(record["session"] == session for record in claim.records(body)):
+        return True
+    return (
+        claim.has_ownership_assertion(body)
         and release.related_sessions_match(body, session)
     )
 
@@ -481,7 +484,7 @@ def active_claims(reader, repo, number, session, actor, *, comments=None, verifi
                        and not claim.records(r.get("body") or "")
                        and re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", r.get("body") or "")
                        and (r.get("user") or {}).get("login") == actor
-                       and release.related_sessions_match(r.get("body") or "", session, require_explicit=True, include_quotes=False)]
+                       and release.related_sessions_match(claim.unquoted_text(r.get("body") or ""), session, require_explicit=True, include_quotes=False)]
             unresolved = [r["id"] for r in comments if r["id"] in active_ids and r["id"] not in related
                           and not claim.records(r.get("body") or "")
                           and re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", r.get("body") or "")
@@ -505,7 +508,7 @@ def handoff(reader, entry, actor):
         raise ValueError("handoff identity or canonical issue differs")
     if entry.get("_inventory") and (
             release.stamp(evidence.get("updated_at") or evidence.get("created_at")) > release.stamp(entry["ended_at"])
-            or not release.related_sessions_match(evidence.get("body") or "", entry["session_id"])):
+            or not release.related_sessions_match(claim.unquoted_text(evidence.get("body") or ""), entry["session_id"])):
         raise ValueError("inventory handoff changed after closure or names another native session; preserve the original inventory and use the source's evidence-backed release-claim route")
     return evidence
 

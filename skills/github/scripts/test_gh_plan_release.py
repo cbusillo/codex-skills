@@ -1879,7 +1879,8 @@ class OwnReleaseTests(ReleaseHarness):
         self.f.issue["pull_request"] = {}
         self.f.issue["body"] += "\nNext actor: agent:old-owner\n"
         original = self.f.issue["body"]
-        self.run_own_release()
+        with patch.object(PLAN, "api_json", side_effect=self.f.read_api):
+            self.run_own_release()
         self.assertEqual(self.f.issue["body"], original)
         self.assertTrue(release.related_sessions_match(self.f.comments[-1]["body"], self.args.session))
         self.assertFalse(release.related_sessions_match(self.f.comments[-1]["body"], "other-" + self.args.session))

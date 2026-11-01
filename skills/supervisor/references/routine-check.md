@@ -46,8 +46,10 @@ decisions, statuses, board contents or narrative; open linked records for action
    That notification window does not prune unanswered comment/question sources.
    No digest state file is needed.
    Staffing is the item's own Next actor and concrete Next action, ranked by
-   `next`. Agent role names without a current claim are available work, subject
-   to the normal ownership check. There is no separate staffing-comment queue.
+   `next`. Generic agent roles are available work, subject to the ownership
+   check. A specifically named worker or session without a claim needs custody
+   reconciliation; launch its recorded Trial token, or confirm the handoff before
+   updating Next actor. There is no separate staffing-comment queue.
    Route Client and Client-agent comments to the owning worker for an answer.
    Open full source comments before acting; register/present questions through
    the existing queue rules. Optional routing writes the existing watch receipts

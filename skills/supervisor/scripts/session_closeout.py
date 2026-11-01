@@ -36,9 +36,9 @@ from session_record import load_ledger, normalize_ledger_entry, session_status
 SCRIPTS = Path(__file__).resolve().parent
 
 if TYPE_CHECKING:
-    from skills.github.scripts.github_plan_claim import live_lines
+    from skills.github.scripts.github_plan_claim import live_lines, unquoted_text
 else:
-    from github_plan_claim import live_lines
+    from github_plan_claim import live_lines, unquoted_text
 
 
 def require(condition: bool, gate: str, reason: str) -> None:
@@ -47,7 +47,7 @@ def require(condition: bool, gate: str, reason: str) -> None:
 
 
 def explicit_session(body: str, session: str) -> bool:
-    return claim_release.related_sessions_match(body, session, require_explicit=True)
+    return claim_release.related_sessions_match(unquoted_text(body), session, require_explicit=True)
 
 
 async def native_idle(entry: dict) -> None:
@@ -109,7 +109,7 @@ def projected_handoff(comment: dict, evidence: list[dict], actor: str, session: 
     body = comment.get("body") or ""
     if (not isinstance(comment.get("created_at"), str) or comment.get("created_at") != comment.get("updated_at")
             or (comment.get("user") or {}).get("login") != actor or live_lines(body)
-            or re.match(r"(?i)^Claimed by\b", body.strip()) or not claim_release.related_sessions_match(body, session)):
+            or re.match(r"(?i)^Claimed by\b", body.strip()) or not claim_release.related_sessions_match(unquoted_text(body), session)):
         return False
     return any(row.get("expected_actor") == actor and isinstance(posted := row.get("comment"), dict)
                and posted.get("author") == actor and posted.get("id") == comment.get("id")

@@ -91,7 +91,7 @@ class CompleteInventoryTests(unittest.TestCase):
         self.assertEqual(queue.classify(row, observed, trusted={"owner"})["state"], "underway")
         source["body"] = "## Current Status\nNext actor: agent\n" + claim.marker(record)
         source["_graph_comments"] = []
-        self.assertEqual(queue.classify(row, observed, trusted={"owner"})["state"], "available")
+        self.assertEqual(queue.classify(row, observed, trusted={"owner"})["state"], "underway")
         observed["records"] = []
         missing = queue.classify(row, observed, trusted={"owner"})
         self.assertEqual(missing["reason"], "source_custody_unread")
