@@ -95,6 +95,7 @@ def validate_planning_references(body: object, repo: str) -> None:
         return
     if not isinstance(body, str):
         return
+
     def qualified_label(match: re.Match[str]) -> str:
         return match[0].replace("[", f"[{match['owner']}/", 1)
 
@@ -106,7 +107,7 @@ def validate_planning_references(body: object, repo: str) -> None:
     )
     ambiguous = list(dict.fromkeys(re.findall(
         r"(?<![\w/#.-])[\w.-]+#\d+(?!\d)|(?<![\w/#])#\d+(?!\d)|(?<![\w/#.-])PR[1-9]\d*(?![\w-])"
-        r"|(?<!\\)\[[1-9]\d*](?=\(https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/[1-9]\d*\b)",
+        r"|(?<!\\)\[[ \t]*[1-9]\d*[ \t]*](?=\([ \t]*<?https?://(?:www\.)?github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/[1-9]\d*\b)",
         body, re.IGNORECASE,
     )))
     if ambiguous:

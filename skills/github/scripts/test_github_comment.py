@@ -1025,7 +1025,10 @@ def test_planning_reference_boundaries_preserve_qualified_repository_names() -> 
                  "[my-repo#42](https://github.com/owner/other-repo/issues/42)",
                  "[my-repo#42](https://github.com/owner/my-repo/issues/420)",
                  "[#42](https://github.com/owner/my-repo/issues/42)",
-                 "[42](https://github.com/owner/my-repo/issues/42)",
+                 *(f"[42]({scheme}://{host}/owner/my-repo/issues/42)"
+                   for scheme in ("http", "https") for host in ("github.com", "www.github.com")),
+                 "[42](<https://github.com/owner/my-repo/issues/42>)",
+                 "[ 42 ](https://github.com/owner/my-repo/issues/42)",
                  "[my-repo#42](https://example.org/owner/my-repo/issues/42)",
                  '[my-repo#42](https://github.com/owner/my-repo/issues/42 "See #77")',
                  "[my-repo#42](https://github.com/owner/my-repo/issues/42) and #77"):
