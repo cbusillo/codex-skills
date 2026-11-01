@@ -69,6 +69,7 @@ def plan_args(path: Path, kind: str = "none") -> list[str]:
 def invoke(args: list[str], *, read_body: Any = None, post_error: Any = None, read_error: Any = None) -> Invocation:
     output = io.StringIO()
     fixture_repo = Path(args[args.index("--profile-request-file") + 1]).parent / "repo"
+    fixture_repo.mkdir(exist_ok=True)
     with (
         patch.object(helper, "active_repo_root", return_value=fixture_repo),
         patch.object(
