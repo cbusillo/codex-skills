@@ -1118,14 +1118,17 @@ class ReleaseTests(ReleaseHarness):
 
     def test_native_session_fields_allow_harness_labels_but_reject_ambiguous_ids(self) -> None:
         session = "81687039-a90a-4107-a144-29bd815ce6ba"
-        other = "01a195be-e612-7ae3-ab03-41d0e7c0b0df"
+        other = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
         for field in ("Session: {}", "- **Session:** Claude Code `{}`", "Native session ID: Codex {}",
-                      "| Session | Claude Code `{}` |", "Thread ID: {} (Claude Code)"):
+                      "| Session | Claude Code `{}` |", "Thread ID: {} (Claude Code)",
+                      "Session: Codex CLI `{}`", "Session: Claude Code CLI {}", "Session: Codex desktop {}",
+                      "Session: Antigravity {}"):
             with self.subTest(field=field):
                 self.assertTrue(release.related_sessions_match(field.format(session), session, require_explicit=True))
                 for value in (other, "prefix-" + session, session + "-suffix", session + " or " + other):
                     self.assertFalse(release.related_sessions_match(field.format(value), session, require_explicit=True))
-        for body in ("No session field", f"```\nSession: {session}\n```", f"Session: {session}\nSession: {other}"):
+        for body in ("No session field", f"```\nSession: {session}\n```", f"Session: {session}\nSession: {other}",
+                     f"Previous session: {session}", f"Prior native session ID: {session}"):
             self.assertFalse(release.related_sessions_match(body, session, require_explicit=True))
         self.assertTrue(release.related_sessions_match("No session field", session))
 

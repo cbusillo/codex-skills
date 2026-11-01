@@ -1279,16 +1279,24 @@ class ReleaseTests(unittest.TestCase):
             helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
 
     def test_related_followup_is_passed_to_existing_release_gate(self):
-        for field in ("Session: source-session", "- Session: Claude Code `source-session`"):
+        session = "81687039-a90a-4107-a144-29bd815ce6ba"
+        source = {**self.source, "body": helper.claim.marker({**SOURCE, "session": session})}
+        for field in (f"Session: {session}", f"- Session: Claude Code CLI `{session}`"):
             with self.subTest(field=field):
-                self.reader.paged_json.return_value = [self.source, comment(2, "Claimed by trial\n" + field)]
-                found = helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
+                self.reader.paged_json.return_value = [source, comment(2, "Claimed by trial\n" + field)]
+                found = helper.active_claims(self.reader, "test/a", 1, session, ACTOR)
                 self.assertEqual(found[0][1], [2])
 
     def test_related_alias_without_exact_session_is_not_released(self):
-        for body in ("Claimed by trial", "Claimed by trial\nSession: another-session"):
+        for body in ("Claimed by trial", "Claimed by trial\nSession: another-session",
+                     "Claimed by trial\nPrevious session: source-session", "Claimed by trial\n> Session: source-session"):
             self.reader.paged_json.return_value = [self.source, comment(2, body)]
             self.assertEqual(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)[0][1], [])
+
+    def test_formatted_other_session_followup_is_not_unresolved_for_this_source(self) -> None:
+        self.reader.paged_json.return_value = [self.source, comment(2, "Claimed by trial\n- **Session:** Claude Code `other-session`")]
+        found = helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
+        self.assertEqual(found[0][2], [])
 
     def test_earlier_exact_native_hand_claim_uses_issue_and_pr_backfill_release_gate(self):
         source = {**self.source, "created_at": "2026-01-01T00:00:20Z", "updated_at": "2026-01-01T00:00:20Z"}

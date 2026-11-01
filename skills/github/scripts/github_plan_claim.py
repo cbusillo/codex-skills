@@ -216,6 +216,47 @@ def ownership_text(text: str, *, strip_quotes: bool = True) -> str:
     return re.sub(r"\x00(\d+)\x00", lambda match: code[int(match.group(1))], text)
 
 
+def session_fields(text: str, *, include_quotes: bool = True) -> list[str]:
+    prose = ownership_text(text, strip_quotes=False)
+    fence = None
+    previous = ""
+    values = []
+    fields = re.compile(
+        r"\b(?:Native[ \t_-]*)?(?:Session(?:[ \t_-]*ID)?|Thread[ \t_-]*ID)\b"
+        r"(?:[ \t]*[:=][ \t]*|[ \t]+[—-][ \t]+)"
+        r"|\|[ \t]*(?:Session(?:[ \t_-]*ID)?|Thread[ \t_-]*ID)[ \t]*\|[ \t]*", re.IGNORECASE,
+    )
+    for raw in prose.splitlines():
+        line = re.sub(r"^\s*(?:>\s*)+", "", raw)
+        context = previous + "\n" + line
+        previous = line
+        opener = re.match(r" {0,3}(`{3,}|~{3,})", line)
+        if fence:
+            if re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*", line):
+                fence = None
+            continue
+        if opener:
+            fence = opener.group(1)
+            continue
+        if not include_quotes and raw.lstrip().startswith(">"):
+            continue
+        matches = list(fields.finditer(line))
+        for index, field in enumerate(matches):
+            if human_session_reference(context, len(context) - len(line) + field.start()):
+                continue
+            if re.search(r"\b(?:previous|prior|from)[ \t]+$", line[:field.start()], re.IGNORECASE):
+                continue
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(line)
+            values.append(line[field.end():end].split("|", 1)[0].strip())
+    return values
+
+
+def session_identifiers(value: str) -> set[str]:
+    tokens = [token.strip("()<>").removesuffix(".") for token in re.findall(r"[^\s,;|]+", value)]
+    native = {token for token in tokens if re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", token, re.IGNORECASE)}
+    return native or {value}
+
+
 def human_session_reference(text: str, position: int) -> bool:
     if not re.match(r"session[ \t]*:", text[position:], re.IGNORECASE):
         return False
@@ -487,7 +528,7 @@ def discussion_evidence(
                     header = re.match(r"Claimed by:?\s+(\S+)", prior_prose, re.IGNORECASE)
                     if header and header.group(1) == legacy_worker and has_ownership_assertion(prior_text):
                         sessions = [
-                            session.strip() for session in re.findall(r"(?im)\bSession:[ \t]*([^\n]+)", prior_prose)
+                            session for field in session_fields(prior_text) for session in session_identifiers(field)
                             if session.strip() and session.strip().casefold().strip("().,;<> \t")
                             not in EMPTY_HOLDERS | {"unknown", "tbd", "session", "session-id", "not recorded",
                                                    "unavailable", "pending", "?", "—", "–"}

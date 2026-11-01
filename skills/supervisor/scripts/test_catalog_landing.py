@@ -31,8 +31,8 @@ reconcile_runtime = landing.reconcile_runtime
 class CatalogLandingTests(unittest.TestCase):
     def test_real_formatted_handoff_recovers_without_relaunch_or_resend(self) -> None:
         comment = json.loads((Path(__file__).parent / "fixtures/catalog-smoke-handoff.json").read_text())
-        session = comment["native_session_id"]
-        self.config["landing_sha"] = comment["landing_sha"]
+        session = "81687039-a90a-4107-a144-29bd815ce6ba"
+        self.config["landing_sha"] = "f0d6d9fce970cad1af47aaf7a9ca63b10b4d8061"
         entry = {"session_id": session, "harness": "claude", "transcript": str(self.root / "native.jsonl"),
                  "supervisor_owned": True, "tmux_session_id": "terminal", "pid": 8, "tty": "ttys001"}
         Path(self.config["ledger"]).write_text(json.dumps([entry]))
@@ -51,7 +51,9 @@ class CatalogLandingTests(unittest.TestCase):
               patch.object(session_closeout.release, "handoff", return_value=comment)):
             self.assertEqual(landing.verify_smoke(self.config, operation, "claude", "anthropic", self.root), comment["html_url"])
             self.runner.assert_called_once()
-            self.assertEqual(self.runner.call_args.args[0], "claude_closeout")
+            command = self.runner.call_args.args[1]
+            self.assertEqual(command[command.index("--session-id") + 1], session)
+            self.assertEqual(command[command.index("--handoff-url") + 1], comment["html_url"])
             session_closeout.verify_handoff({**entry, "handoff_url": comment["html_url"]}, args, operation, retired=True)
 
     def setUp(self) -> None:
