@@ -4519,6 +4519,17 @@ class ClaimTests(unittest.TestCase):
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_legacy_alias_keeps_author_chronology_and_unknown_identity_guards(self):
+        self.setUp()
+        session = "81687039-a90a-4107-a144-29bd815ce6ba"
+        self.comments = [
+            {"id": 1, "body": f"Claimed by old-worker\nSession: {session}\nPrevious session: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+             "user": {"login": TEST_BOT}},
+            {"id": 2, "body": f"Claimed by old-worker\nSession: {session}", "user": {"login": TEST_BOT}},
+            {"id": 3, "body": "Released by old-worker", "user": {"login": TEST_BOT}},
+        ]
+        with self.assertRaises(PLAN.ClassifiedPlanError):
+            self.run_claim()
+        self.assert_no_writes()
         for extra, succeeds in (
             ({"id": 2, "body": "Claimed by old-worker\nSession: other-session", "user": {"login": "another-author"}}, False),
             ({"id": 2, "body": "Claimed by old-worker", "user": {"login": TEST_BOT}}, False),

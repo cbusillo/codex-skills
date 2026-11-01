@@ -487,7 +487,7 @@ def active_claims(reader, repo, number, session, actor, *, comments=None, verifi
                           and re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", r.get("body") or "")
                           and (r.get("user") or {}).get("login") == actor
                           and (belongs_to_session(r.get("body") or "", session)
-                               or not claim.session_fields(r.get("body") or "", include_quotes=False))]
+                               or not claim.session_fields(r.get("body") or "", include_quotes=False, current_only=True))]
             sources.append((c, related, unresolved))
     if diagnostic is not None:
         diagnostic.source_groups = sources

@@ -1297,6 +1297,8 @@ class ReleaseTests(unittest.TestCase):
         self.reader.paged_json.return_value = [self.source, comment(2, "Claimed by trial\n- **Session:** Claude Code `other-session`")]
         found = helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
         self.assertEqual(found[0][2], [])
+        self.reader.paged_json.return_value = [self.source, comment(2, "Claimed by trial\nPrevious session: another-session")]
+        self.assertEqual(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)[0][2], [2])
 
     def test_earlier_exact_native_hand_claim_uses_issue_and_pr_backfill_release_gate(self):
         source = {**self.source, "created_at": "2026-01-01T00:00:20Z", "updated_at": "2026-01-01T00:00:20Z"}

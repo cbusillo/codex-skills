@@ -1070,7 +1070,8 @@ class ReleaseTests(ReleaseHarness):
             self.f.run_claim()
 
     def test_related_followup_session_must_match_source_closure(self):
-        for field in ("Session: {}", "**Session:** `{}`", "> Session: {}", "Session: {}.", "Session: {} (capacity work)", "Session ID: {}", "Native session ID: {}", "session={}", "session_id: {}", "sessionId: {}", "Session-ID: {}", "Thread ID: {}", "Session — {}", "| Session | {} |", "Session: {}; PR #99", "(Session: {})"):
+        for field in ("Session: {}", "**Session:** `{}`", "> Session: {}", "Session: {}.", "Session: {} (capacity work)", "Session ID: {}", "Native session ID: {}", "session={}", "session_id: {}", "sessionId: {}", "Session-ID: {}", "Thread ID: {}", "Session — {}", "| Session | {} |", "Session: {}; PR #99", "(Session: {})",
+                      "Handoff from session: {}", "Continuing from session: {}", "Previous session: {}", "Prior native session ID: {}"):
             for session in ("session-b", "different-native-session"):
                 with self.subTest(field=field, session=session):
                     self.setUp()
@@ -1122,14 +1123,18 @@ class ReleaseTests(ReleaseHarness):
         for field in ("Session: {}", "- **Session:** Claude Code `{}`", "Native session ID: Codex {}",
                       "| Session | Claude Code `{}` |", "Thread ID: {} (Claude Code)",
                       "Session: Codex CLI `{}`", "Session: Claude Code CLI {}", "Session: Codex desktop {}",
-                      "Session: Antigravity {}"):
+                      "Session: Antigravity {}", "Handoff from session: {}"):
             with self.subTest(field=field):
                 self.assertTrue(release.related_sessions_match(field.format(session), session, require_explicit=True))
                 for value in (other, "prefix-" + session, session + "-suffix", session + " or " + other):
                     self.assertFalse(release.related_sessions_match(field.format(value), session, require_explicit=True))
         for body in ("No session field", f"```\nSession: {session}\n```", f"Session: {session}\nSession: {other}",
-                     f"Previous session: {session}", f"Prior native session ID: {session}"):
+                     f"Previous session: {session}", f"Prior native session ID: {session}",
+                     f"Session: {session}\nPrevious session: {other}"):
             self.assertFalse(release.related_sessions_match(body, session, require_explicit=True))
+        for label in ("Previous session", "Prior native session ID"):
+            self.assertTrue(release.related_sessions_match(f"{label}: {session}", session))
+            self.assertFalse(release.related_sessions_match(f"{label}: {other}", session))
         self.assertTrue(release.related_sessions_match("No session field", session))
 
     def test_human_session_link_is_not_a_standalone_ownership_assertion(self) -> None:

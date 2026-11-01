@@ -83,7 +83,7 @@ def related_sessions_match(text: str, session: str, *, require_explicit: bool = 
             token = re.match(r"[^\s,;|]+", value)
             if token is None or not re.fullmatch(rf"{re.escape(session)}\.?", token[0].strip("()<>")):
                 return False
-    return bool(fields) or not require_explicit
+    return not require_explicit or bool(claim.session_fields(text, include_quotes=include_quotes, current_only=True))
 
 
 def source_record(source: dict[str, Any], *, legacy: bool = False,

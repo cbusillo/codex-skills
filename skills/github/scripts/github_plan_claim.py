@@ -216,7 +216,7 @@ def ownership_text(text: str, *, strip_quotes: bool = True) -> str:
     return re.sub(r"\x00(\d+)\x00", lambda match: code[int(match.group(1))], text)
 
 
-def session_fields(text: str, *, include_quotes: bool = True) -> list[str]:
+def session_fields(text: str, *, include_quotes: bool = True, current_only: bool = False) -> list[str]:
     prose = ownership_text(text, strip_quotes=False)
     fence = None
     previous = ""
@@ -244,7 +244,7 @@ def session_fields(text: str, *, include_quotes: bool = True) -> list[str]:
         for index, field in enumerate(matches):
             if human_session_reference(context, len(context) - len(line) + field.start()):
                 continue
-            if re.search(r"\b(?:previous|prior|from)[ \t]+$", line[:field.start()], re.IGNORECASE):
+            if current_only and re.search(r"\b(?:previous|prior)[ \t]+$", line[:field.start()], re.IGNORECASE):
                 continue
             end = matches[index + 1].start() if index + 1 < len(matches) else len(line)
             values.append(line[field.end():end].split("|", 1)[0].strip())
