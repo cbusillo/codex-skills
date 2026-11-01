@@ -4,6 +4,7 @@
 # dependencies = []
 # ///
 import io
+import argparse
 import json
 import subprocess
 import tempfile
@@ -42,7 +43,7 @@ class CatalogLandingTests(unittest.TestCase):
                                         claude_request_time={"value": landing.claim_release.stamp(comment["created_at"]).timestamp() - 11})
         actor = comment["user"]["login"]
         reader = SimpleNamespace(paged_json=lambda *_, **__: [comment])
-        args = SimpleNamespace(session_id=session, handoff_url=comment["html_url"])
+        args = argparse.Namespace(session_id=session, handoff_url=comment["html_url"])
         self.runner.side_effect = None
         self.runner.return_value = {"ok": True}
         with (patch.object(landing, "observe"), patch.object(landing, "GitHubReader", return_value=reader),

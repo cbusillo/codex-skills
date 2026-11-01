@@ -1130,12 +1130,19 @@ class ReleaseTests(ReleaseHarness):
                     self.assertFalse(release.related_sessions_match(field.format(value), session, require_explicit=True))
         for body in ("No session field", f"```\nSession: {session}\n```", f"Session: {session}\nSession: {other}",
                      f"Previous session: {session}", f"Prior native session ID: {session}",
+                     f"Previous Codex session: {session}", f"Prior Claude Code session: {session}",
+                     f"previous-session: {session}", f"Earlier session: {session}", f"Original session: {session}",
+                     f"Superseded session: {session}",
                      f"Session: {session}\nPrevious session: {other}"):
             self.assertFalse(release.related_sessions_match(body, session, require_explicit=True))
         for label in ("Previous session", "Prior native session ID"):
             self.assertTrue(release.related_sessions_match(f"{label}: {session}", session))
             self.assertFalse(release.related_sessions_match(f"{label}: {other}", session))
         self.assertTrue(release.related_sessions_match("No session field", session))
+        self.assertTrue(release.related_sessions_match(
+            f"Changes in this session:\n- Finished the work.\n| Session | |\n- Session: Claude Code `{session}`", session,
+            require_explicit=True,
+        ))
 
     def test_human_session_link_is_not_a_standalone_ownership_assertion(self) -> None:
         for prose in (

@@ -235,7 +235,7 @@ def session_fields(text: str, *, include_quotes: bool = True, current_only: bool
             if re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*", line):
                 fence = None
             continue
-        if opener:
+        if opener is not None:
             fence = opener.group(1)
             continue
         if not include_quotes and raw.lstrip().startswith(">"):
@@ -244,10 +244,13 @@ def session_fields(text: str, *, include_quotes: bool = True, current_only: bool
         for index, field in enumerate(matches):
             if human_session_reference(context, len(context) - len(line) + field.start()):
                 continue
-            if current_only and re.search(r"\b(?:previous|prior)[ \t]+$", line[:field.start()], re.IGNORECASE):
+            if current_only and re.search(r"\b(?:previous|prior|earlier|original|superseded)\b[^:|;\n]*$",
+                                          line[:field.start()], re.IGNORECASE):
                 continue
             end = matches[index + 1].start() if index + 1 < len(matches) else len(line)
-            values.append(line[field.end():end].split("|", 1)[0].strip())
+            value = line[field.end():end].split("|", 1)[0].strip()
+            if value:
+                values.append(value)
     return values
 
 
