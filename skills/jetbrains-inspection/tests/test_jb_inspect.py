@@ -147,6 +147,30 @@ class RunningIdeRetirementTests(unittest.TestCase):
         self.args.offline_only = True
         self.retire()
 
+    def test_unreadable_unrelated_mount_allows_retirement(self) -> None:
+        self.file_stderr = self.unstattable_mount("/Volumes/.timemachine/NAS._smb._tcp.local./backup/TimeMachine")
+        self.retire()
+
+    def test_open_file_through_another_spelling_of_the_worktree_refuses_retirement(self) -> None:
+        alias = self.home / "alias"
+        alias.symlink_to(self.root.parent)
+        self.file_stderr = self.unstattable_mount("/Volumes/backup")
+        self.args.dry_run = False
+        for spelling in (alias / self.root.name, Path(str(self.root).swapcase())):
+            with self.subTest(spelling=spelling):
+                if not spelling.exists():
+                    continue
+                self.open_files = f"p123\0\nfcwd\0n{spelling}\0\n"
+                with self.assertRaises(jb_inspect.InspectError):
+                    jb_inspect.command_remove_worktree(self.args)
+                self.assertTrue(self.root.is_dir())
+
+    @staticmethod
+    def unstattable_mount(mount: Path | str) -> str:
+        return (f"lsof: WARNING: can't stat() smbfs file system {mount}\n"
+                "      Output information may be incomplete.\n"
+                '      assuming "dev=36000019" from mount table\n')
+
     def test_desktop_ide_open_or_recorded_worktree_refuses_retirement(self) -> None:
         self.open_files = f"p123\0\nfcwd\0n{self.root}-other/source.py\0\n"
         self.assertTrue(jb_inspect.command_remove_worktree(self.args)["offline_cleanup_proved"])
@@ -187,6 +211,12 @@ class RunningIdeRetirementTests(unittest.TestCase):
                                       ("p123\0\nfcwd\0n/Volumes/Developer-Artifacts -- /source.py\0\n", None, ""),
                                       ("p123\0\nfcwd\0n/Volumes/Developer-Artifacts (/dev/disk9s1)\0\n", None, ""),
                                       (self.open_files, None, "permission denied"),
+                                      (self.open_files, None, self.unstattable_mount(self.root.parent)),
+                                      (self.open_files, None, self.unstattable_mount(self.root / "mounted")),
+                                      (self.open_files, None, self.unstattable_mount(jb_inspect.mount_point_of(self.root))),
+                                      (self.open_files, None, self.unstattable_mount("/Volumes/backup") + "lsof: WARNING: other\n"),
+                                      (self.open_files, None, self.unstattable_mount("/Volumes/back\\\\up")),
+                                      (self.open_files, None, "      Output information may be incomplete.\n"),
                                       (self.open_files, FileNotFoundError("lsof"), ""),
                                       (self.open_files, subprocess.TimeoutExpired("lsof", 5), "")):
             with self.subTest(output=output, error=error, stderr=stderr):
