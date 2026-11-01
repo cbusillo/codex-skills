@@ -59,8 +59,6 @@ def plan_args(path: Path, kind: str = "none") -> list[str]:
         "example",
         "--kind",
         kind,
-        "--reason",
-        "Declare the disposable testing application's state",
         "--profile-request-file",
         str(path),
     ] + (["--container-path", "/app/data"] if kind == "volume" else [])
@@ -288,6 +286,25 @@ def test_state_plan_requires_an_active_generic_testing_lane(tmp_path: Path, fiel
     assert planned.code != 0
     assert not path.exists()
     planned.post.assert_not_called()
+
+
+def test_review_shows_both_volume_paths_before_a_correction(tmp_path: Path) -> None:
+    current = profile()
+    old_path = "/app/old-data"
+    new_path = "/app/task-state"
+    current["lanes"][0]["generic_web_testing_state"] = {"kind": "volume", "container_path": old_path}
+    path = tmp_path / "private-request.json"
+    args = plan_args(path, "volume")
+    args[args.index("--container-path") + 1] = new_path
+    planned = invoke(args, read_body=response(current))
+    assert planned.code == 0
+    assert planned.output["result"]["container_path_before"] == old_path
+    assert planned.output["result"]["container_path_after"] == new_path
+    corrected = copy.deepcopy(current)
+    corrected["lanes"][0]["generic_web_testing_state"]["container_path"] = new_path
+    applied = invoke(reviewed_args(path, planned.output), read_body=response(corrected))
+    assert applied.code == 0
+    assert applied.post.call_args.kwargs["body"] == corrected
 
 
 if __name__ == "__main__":

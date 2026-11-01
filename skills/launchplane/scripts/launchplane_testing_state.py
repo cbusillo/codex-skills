@@ -18,7 +18,7 @@ from typing import Any
 PLAN_COMMAND = "testing-state-dry-run"
 APPLY_COMMAND = "testing-state-apply"
 COMMANDS = frozenset({PLAN_COMMAND, APPLY_COMMAND})
-INTENT_FIELDS = {"product", "context", "kind", "container_path", "reason"}
+INTENT_FIELDS = {"product", "context", "kind", "container_path"}
 
 
 def add_parser(subparsers: Any) -> None:
@@ -27,7 +27,6 @@ def add_parser(subparsers: Any) -> None:
     plan.add_argument("--context", required=True)
     plan.add_argument("--kind", choices=("none", "volume"), required=True)
     plan.add_argument("--container-path", default="")
-    plan.add_argument("--reason", required=True)
     apply = subparsers.add_parser(APPLY_COMMAND, help="Apply the exact saved testing state declaration.")
     apply.add_argument("--idempotency-key", required=True)
     apply.add_argument("--reviewed-dry-run", action="store_true")
@@ -45,6 +44,15 @@ def service_fingerprint(h: Any, settings: dict[str, str]) -> str:
     return h.metadata_review_digest({"service_url": settings["service_url"].strip().rstrip("/")})
 
 
+def checked_container_path(h: Any, path: str) -> str:
+    if not path:
+        return ""
+    if not path.startswith("/") or any(part in {".", "..", ""} for part in path[1:].split("/")):
+        raise ValueError("invalid_testing_state_path")
+    h.public_identifier(path[1:])
+    return h.PublicIdentifier(path)
+
+
 def validate_intent(h: Any, intent: dict[str, Any]) -> dict[str, str]:
     if set(intent) != INTENT_FIELDS or not all(isinstance(value, str) for value in intent.values()):
         raise ValueError("invalid_testing_state_request")
@@ -52,15 +60,12 @@ def validate_intent(h: Any, intent: dict[str, Any]) -> dict[str, str]:
         if not h.PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(intent[field]):
             raise ValueError("invalid_" + field)
         h.public_identifier(intent[field])
-    if intent["kind"] not in {"none", "volume"} or not intent["reason"].strip() or len(intent["reason"]) > 1000:
+    if intent["kind"] not in {"none", "volume"}:
         raise ValueError("invalid_testing_state_request")
     path = intent["container_path"]
     if (intent["kind"] == "none" and path) or (intent["kind"] == "volume" and not path):
         raise ValueError("invalid_testing_state_path")
-    if path:
-        h.public_identifier(path.removeprefix("/"))
-        if not path.startswith("/") or any(part in {".", "..", ""} for part in path[1:].split("/")):
-            raise ValueError("invalid_testing_state_path")
+    intent["container_path"] = checked_container_path(h, path)
     return intent
 
 
@@ -103,7 +108,7 @@ def replacement_profile(profile: dict[str, Any], intent: dict[str, str]) -> dict
 
 
 def request_summary(h: Any, intent: dict[str, str]) -> dict[str, object]:
-    request: dict[str, object] = {key: value for key, value in intent.items() if key != "reason"}
+    request: dict[str, object] = dict(intent)
     request.update(instance="testing", payload_source="private_file")
     h.assert_public_safe_shape(request)
     return request
@@ -152,6 +157,9 @@ def execute_plan(h: Any, args: argparse.Namespace) -> int:
             "product": intent["product"],
             "context": intent["context"],
             "kind_before": h.public_identifier(previous_kind),
+            "container_path_before": checked_container_path(h, previous.get("container_path", ""))
+            if isinstance(previous, dict)
+            else "",
             "kind_after": intent["kind"],
             "container_path_after": intent["container_path"],
             "profile_sha256": profile_digest(profile),
@@ -294,7 +302,12 @@ def execute_apply(h: Any, args: argparse.Namespace) -> int:
     except urllib.error.HTTPError as error:
         try:
             if 400 <= error.code < 500 and error.code != 408:
-                h.emit_http_error_payload(operation=APPLY_COMMAND, request=request, exc=error)
+                refusal = h.summarize_http_error(operation=APPLY_COMMAND, request=request, exc=error)
+                refusal["summary"]["recommendation"] += (
+                    " This refusal describes this attempt only. Preserve any earlier unknown request, review and original key; it does not settle that earlier outcome."
+                )
+                h.assert_public_safe_shape(refusal["summary"])
+                h.emit(refusal)
                 return 1
             summary = h.summarize_http_error(operation=APPLY_COMMAND, request=request, exc=error)["summary"]
             diagnostics = {key: value for key, value in summary.items() if key in {"trace_id", "http_status", "error_code"}}
@@ -318,6 +331,12 @@ def execute_apply(h: Any, args: argparse.Namespace) -> int:
     output["summary"]["recommendation"] = (
         "Preserve the unchanged private request file, reviewed evidence and original key. Recover only by explicitly replaying those same inputs. Do not read a new profile into this request, change identity or choose a new key."
     )
+    output["warnings"] = [
+        h.warning(
+            "testing_state_outcome_unknown",
+            "Recover only by explicitly replaying the identical private request, saved review and original key. A later refusal does not by itself settle an earlier unknown attempt.",
+        )
+    ]
     h.emit(output)
     return 1
 
