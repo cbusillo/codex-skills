@@ -549,14 +549,18 @@ def poll(config: dict, evidence: Path, *, supersede_failed: bool = False) -> dic
 
 
 def retryable_poll(evidence: Path, error: RetryableGate) -> dict:
-    cursor = evidence / "cursor.json"
-    state = json.loads(cursor.read_text()) if cursor.exists() else {}
-    if state.get("attempt"):
-        for path in (evidence / state["attempt"]).rglob("operation.json"):
-            journal = json.loads(path.read_text())
-            require(not any(step.get("complete") is False for step in journal["steps"].values()),
-                    "reconciliation", "pending attempt has an uncertain mutation")
-    return receipt("discovery", evidence, error)
+    with closure.store_lock(evidence / "poll", create=True):
+        cursor = evidence / "cursor.json"
+        state = json.loads(cursor.read_text()) if cursor.exists() else {}
+        attempt = state.get("attempt")
+        if attempt:
+            with closure.store_lock(evidence / attempt / "verification", create=True):
+                for path in (evidence / attempt).rglob("operation.json"):
+                    journal = json.loads(path.read_text())
+                    settled = (closeout_mutations_settled(journal) if journal.get("generation") else
+                               not any(step.get("complete") is False for step in journal["steps"].values()))
+                    require(settled, "reconciliation", "pending attempt has an uncertain mutation")
+        return receipt((state.get("pending") or ["discovery"])[-1], evidence, error)
 
 
 def main() -> int:

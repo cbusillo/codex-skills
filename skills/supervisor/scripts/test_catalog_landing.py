@@ -334,6 +334,10 @@ class CatalogLandingTests(unittest.TestCase):
             uncertain.state["steps"]["quit"] = {"complete": False}
             landing.save_state(uncertain.path, uncertain.state)
             self.assertEqual(landing.main(), 1)
+            uncertain.state.update(generation={"session": "original"}, retired_generation={"session": "original"})
+            landing.save_state(uncertain.path, uncertain.state)
+            self.assertEqual(landing.main(), 0)
+            self.assertEqual(landing.retryable_poll(self.root, error)["identity"], cursor["pending"][-1])
             verify.assert_not_called()
             post.assert_not_called()
 
