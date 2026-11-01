@@ -29,7 +29,7 @@ preflight refusal can be repeated after its prerequisite is resolved.
 
 ## Handoff record
 
-Each Director's handoffs, takeover comments and pilot lessons go to that
+Each Director's handoffs, takeover comments and lessons go to that
 Director's own record, never to an issue in another person's repository.
 Read it at takeover:
 
