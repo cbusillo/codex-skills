@@ -5280,7 +5280,7 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
         if repo not in evidence:
             evidence[repo] = read_queue_ownership(repo)
         complete = (item.get("discussion") or {}).get("complete")
-        if isinstance(complete, bool) and complete and not github_next_queue.is_scoping_track(item):
+        if isinstance(complete, bool) and complete:
             try:
                 body_time = next_status_body_time(item, trusted)
                 if body_time is not None:
