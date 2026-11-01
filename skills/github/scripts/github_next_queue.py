@@ -147,7 +147,8 @@ def is_scoping_track(item: dict[str, Any]) -> bool:
 
 
 def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[str], status_known: bool = True,
-             acceptance_reader: Callable[[str, int, str], bool] | None = None) -> dict[str, Any]:
+             acceptance_reader: Callable[[str, int, str], bool] | None = None,
+             decision_reader: Callable[[dict[str, Any], str], list[dict[str, Any]]] | None = None) -> dict[str, Any]:
     discussion = item.get("discussion") or {}
     scoping = is_scoping_track(item)
     status = current_status(discussion, trusted, body_recorded_at=discussion.get("body_recorded_at")) if status_known and not scoping else ""
@@ -175,6 +176,14 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
     conflicts, artifacts, wait = facts["conflicts"], facts["artifacts"], facts["wait"]
     row["wait_review_required"] = wait["state"] == "review"
     if wait["state"] == "waiting":
+        decisions = decision_reader(wait, item["repo"]) if decision_reader and str(item.get("state", "")).casefold() == "open" else []
+        if decisions:
+            return {**row, "state": "needs_status", "reason": "recorded_decision_requires_reconciliation", "wait": wait,
+                    "recorded_decisions": decisions, "recorded_next_actor": row["next_actor"],
+                    "recorded_next_action": row["next_action"], "next_actor": "agent",
+                    "ownership_evidence": [*conflicts, *artifacts, *facts["recipients"]],
+                    "next_action": f"Read the recorded answers and reconcile their actual conditions with gh-plan.py --repo {item['repo']} wait {item['number']}; "
+                                   "preserve every other hold and service readback. Existing wait/--wait-resolved evidence is required before dependent work."}
         return {**row, "state": "waiting", "reason": "recorded_wait", "wait": wait}
     if facts["event_completed"] and actor and actor.startswith("event:"):
         actor = row["next_actor"] = "agent"

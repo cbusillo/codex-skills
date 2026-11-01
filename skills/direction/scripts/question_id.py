@@ -22,28 +22,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-QUESTION = re.compile(r"\bQ([1-9][0-9]*)\b")
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from skills.github.scripts.github_plan_status import questions as question_records
+
+QUESTION = question_records.QUESTION
+QUESTION_HEADING = question_records.QUESTION_HEADING
+heading_id = question_records.heading_id
+
 ITEM = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*")
 COUNTER_BRANCH = "state/director-questions"
 COUNTER_FILE = "counter.json"
 RESERVED_RANGE = re.compile(r"^\s*(?:Reserved|Reserving)\s+Q([1-9][0-9]*)\s*(?:[-–—]|through|to)\s*Q([1-9][0-9]*)\b", re.IGNORECASE)
-QUESTION_HEADING = re.compile(r"^\s*\**(?:Owner|Director) question:[ \t*]*")
 NUMBER_HELP = ("Keep an existing question's source unchanged and re-present its original Q ID and link. "
                "For a new, never-posted question without a usable receipt, use question_id.py next; "
                "obtain exact-text approval again if the previously approved text contained the old number.")
-
-
-def heading_id(body: str) -> str | None:
-    heading = QUESTION_HEADING.match(body)
-    match = QUESTION.match(body, heading.end()) if heading else None
-    if not match:
-        return None
-    # Preserve legacy bare question IDs. Q1 through Q4 also name calendar
-    # quarters, so those labels need a separator before question text.
-    if int(match[1]) > 4:
-        return match[0]
-    suffix = body[match.end():].lstrip(" *\t")
-    return match[0] if not suffix or suffix[0] in ".—–" else None
 
 
 def number_heading(body: str, question: str) -> str:
