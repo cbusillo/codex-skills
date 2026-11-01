@@ -76,35 +76,14 @@ class IssueReleaseRefusal(ValueError):
     """This issue's retained work conflicts; closure of the source is still checked separately."""
 
 
-def related_sessions_match(text: str, session: str) -> bool:
-    """Compare explicit session fields outside fenced examples."""
-    prose = claim.ownership_text(text, strip_quotes=False)
-    fence = None
-    previous = ""
-    for line in prose.splitlines():
-        line = re.sub(r"^\s*(?:>\s*)+", "", line)
-        context = previous + "\n" + line
-        previous = line
-        opener = re.match(r" {0,3}(`{3,}|~{3,})", line)
-        if fence:
-            if re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*", line):
-                fence = None
-            continue
-        if opener:
-            fence = opener.group(1)
-            continue
-        fields = (
-            r"\b(?:Native[ \t_-]*)?(?:Session(?:[ \t_-]*ID)?|Thread[ \t_-]*ID)\b"
-            r"(?:[ \t]*[:=][ \t]*|[ \t]+[—-][ \t]+)([^\s,;|]+)"
-            r"|\|[ \t]*(?:Session(?:[ \t_-]*ID)?|Thread[ \t_-]*ID)[ \t]*\|[ \t]*([^\s|]+)"
-        )
-        for field in re.finditer(fields, line, re.IGNORECASE):
-            if claim.human_session_reference(context, len(context) - len(line) + field.start()):
-                continue
-            value = (field.group(1) or field.group(2)).strip("()<>")
-            if not re.fullmatch(rf"{re.escape(session)}\.?", value):
+def related_sessions_match(text: str, session: str, *, require_explicit: bool = False, include_quotes: bool = True) -> bool:
+    fields = claim.session_fields(text, include_quotes=include_quotes)
+    for field in fields:
+        for value in claim.session_identifiers(field):
+            token = re.match(r"[^\s,;|]+", value)
+            if token is None or not re.fullmatch(rf"{re.escape(session)}\.?", token[0].strip("()<>")):
                 return False
-    return True
+    return not require_explicit or bool(claim.session_fields(text, include_quotes=include_quotes, current_only=True))
 
 
 def source_record(source: dict[str, Any], *, legacy: bool = False,

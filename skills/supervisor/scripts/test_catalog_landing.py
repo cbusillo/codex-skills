@@ -4,6 +4,7 @@
 # dependencies = []
 # ///
 import io
+import argparse
 import json
 import subprocess
 import tempfile
@@ -18,6 +19,7 @@ from unittest.mock import patch
 
 import catalog_landing as landing
 import services
+import session_closeout
 from check_operation import GateFailed, Operation
 from session_record import TranscriptChanged
 
@@ -28,6 +30,33 @@ reconcile_runtime = landing.reconcile_runtime
 
 
 class CatalogLandingTests(unittest.TestCase):
+    def test_real_formatted_handoff_recovers_without_relaunch_or_resend(self) -> None:
+        comment = json.loads((Path(__file__).parent / "fixtures/catalog-smoke-handoff.json").read_text())
+        session = "81687039-a90a-4107-a144-29bd815ce6ba"
+        self.config["landing_sha"] = "f0d6d9fce970cad1af47aaf7a9ca63b10b4d8061"
+        entry = {"session_id": session, "harness": "claude", "transcript": str(self.root / "native.jsonl"),
+                 "supervisor_owned": True, "tmux_session_id": "terminal", "pid": 8, "tty": "ttys001"}
+        Path(self.config["ledger"]).write_text(json.dumps([entry]))
+        operation = Operation(self.root, ["landing"])
+        operation.state["steps"].update(claude_launch={"complete": True, "result": {"native_session_id": session}},
+                                        claude_handoff_request={"complete": True}, claude_acknowledgement={"size": 1},
+                                        claude_request_time={"value": landing.claim_release.stamp(comment["created_at"]).timestamp() - 11})
+        actor = comment["user"]["login"]
+        reader = SimpleNamespace(paged_json=lambda *_, **__: [comment])
+        args = argparse.Namespace(session_id=session, handoff_url=comment["html_url"])
+        self.runner.side_effect = None
+        self.runner.return_value = {"ok": True}
+        with (patch.object(landing, "observe"), patch.object(landing, "GitHubReader", return_value=reader),
+              patch.object(landing.github_identity, "automation_login", return_value=actor),
+              patch.object(session_closeout, "GitHubReader", return_value=reader),
+              patch.object(session_closeout.release, "handoff", return_value=comment)):
+            self.assertEqual(landing.verify_smoke(self.config, operation, "claude", "anthropic", self.root), comment["html_url"])
+            self.runner.assert_called_once()
+            command = self.runner.call_args.args[1]
+            self.assertEqual(command[command.index("--session-id") + 1], session)
+            self.assertEqual(command[command.index("--handoff-url") + 1], comment["html_url"])
+            session_closeout.verify_handoff({**entry, "handoff_url": comment["html_url"]}, args, operation, retired=True)
+
     def setUp(self) -> None:
         metadata = patch.dict(vars(github_api.github_catalog_health), {"marker_fields": lambda: "catalog=unknown"})
         metadata.start()

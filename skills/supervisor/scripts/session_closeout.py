@@ -47,7 +47,7 @@ def require(condition: bool, gate: str, reason: str) -> None:
 
 
 def explicit_session(body: str, session: str) -> bool:
-    return claim_release.related_sessions_match(body, session) and not claim_release.related_sessions_match(body, "other-" + session)
+    return claim_release.related_sessions_match(body, session, require_explicit=True)
 
 
 async def native_idle(entry: dict) -> None:
