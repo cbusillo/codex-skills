@@ -98,8 +98,8 @@ def render(record: dict[str, Any], *, legacy: bool = False) -> str:
             ]
             if legacy
             else [
-                f"  - **{label}:** {text(option['changes'])} "
-                f"Ongoing cost: {text(option['cost'])}. After this answer: {text(option['next'])}",
+                f"  - **{label}:** {text(option['changes']).rstrip('.')}. "
+                f"Ongoing cost: {text(option['cost']).rstrip('.')}. After this answer: {text(option['next'])}",
             ]
         )
     lines.extend(
@@ -173,12 +173,7 @@ class GitHubComments:
         return {**source, "issue": f"https://github.com/{match[1]}/issues/{match[2]}"}
 
 
-def create(
-    record: Any,
-    args: argparse.Namespace,
-    storage: QuestionStorage,
-    fetch: DiscussionReader,
-) -> dict[str, Any]:
+def create(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetch: DiscussionReader) -> dict[str, Any]:
     errors = validation_errors(record)
     configured = question_id.configured_queue()
     queue = args.queue or configured
@@ -186,7 +181,7 @@ def create(
         errors.append("--queue disagrees with configured question queue")
     if queue and (not delivery.oq.ITEM.fullmatch(queue) or queue.split("/", 1)[0].casefold() != args.owner.casefold()):
         errors.append("queue must belong to the configured Director")
-    body = render(record) if not errors else ""
+    body = render(record, legacy=True) if not errors else ""
     target = ISSUE_URL.fullmatch(record["issue"]) if body else None
     if body and target:
         try:
@@ -201,10 +196,7 @@ def create(
     if errors:
         raise ValueError("Invalid Director question:\n" + "\n".join(f"- {error}" for error in errors))
     if args.dry_run:
-        return {
-            "text": body.split("<!-- director-question:record ", 1)[0].strip(),
-            "registration": "dry_run",
-        }
+        return {"text": render(record).split("<!-- director-question:record ", 1)[0].strip().removeprefix("Director question: "), "registration": "dry_run"}
     assert target is not None
     repo = target[1]
     actor = github_comment.authenticated_actor(
@@ -223,34 +215,16 @@ def create(
             view = read_record(source)
             if source["author"].casefold() not in trusted or view["record"] != record:
                 raise ValueError("saved question disagrees with the requested record or writer")
-        except (
-            OSError,
-            ValueError,
-            KeyError,
-            TypeError,
-            subprocess.SubprocessError,
-        ) as error:
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
             raise ValueError(f"Question saved at {url}; source readback failed: {error}") from error
     if not queue:
         return {**view, "registration": "not_configured", "recipient": args.owner}
     request = SimpleNamespace(
-        queue=queue,
-        owner=args.owner,
-        decision_author=args.decision_author,
-        items=[url],
-        register=True,
-        ack=None,
-        delivery_url=None,
+        queue=queue, owner=args.owner, decision_author=args.decision_author, items=[url], register=True, ack=None, delivery_url=None
     )
     try:
         report = delivery.run_queue(request, fetch)
-    except (
-        OSError,
-        ValueError,
-        KeyError,
-        TypeError,
-        subprocess.SubprocessError,
-    ) as error:
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         raise ValueError(f"Question saved at {url}; queue registration failed: {error}") from error
     if not report["complete"]:
         raise ValueError(f"Question saved at {url}; queue registration is incomplete: {json.dumps(report)}")
@@ -268,11 +242,7 @@ def main(argv: list[str], fetch: DiscussionReader) -> int:
     new = commands.add_parser("create")
     new.add_argument("--record-file", type=Path, required=True)
     new.add_argument("--owner", required=True)
-    new.add_argument(
-        "--decision-author",
-        action="append",
-        default=delivery.oq.default_decision_authors(),
-    )
+    new.add_argument("--decision-author", action="append", default=delivery.oq.default_decision_authors())
     new.add_argument("--queue")
     new.add_argument("--dry-run", action="store_true")
     show = commands.add_parser("show-question")
@@ -294,21 +264,11 @@ def main(argv: list[str], fetch: DiscussionReader) -> int:
     except github_comment.CommentError as error:
         print(
             json.dumps(
-                github_comment.terminal_failure(
-                    error,
-                    "github.question.create",
-                    expected_actor=github_comment.EXPECTED_ACTOR,
-                )
+                github_comment.terminal_failure(error, "github.question.create", expected_actor=github_comment.EXPECTED_ACTOR)
             ),
             file=sys.stderr,
         )
         return 1
-    except (
-        OSError,
-        ValueError,
-        KeyError,
-        TypeError,
-        subprocess.SubprocessError,
-    ) as error:
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

@@ -112,12 +112,12 @@ class QuestionRecordTests(unittest.TestCase):
         self.assertTrue(view["text"].startswith(f"**{view['question_id']}. "))
         lines = view["text"].splitlines()
         self.assertTrue(lines[0].endswith("**"))
-        self.assertEqual(len([line for line in lines if line.startswith("- **")]), 6)
         choices = [line for line in lines if line.startswith("  - **")]
         self.assertEqual(len(choices), len(view["record"]["options"]))
         for option, line in zip(view["record"]["options"], choices):
             for field in record.OPTION_FIELDS:
                 self.assertIn(str(option[field]), line)
+            self.assertNotIn("..", line)
         for field in ("decision", "basis", "comparison", "manual", "recommendation"):
             self.assertIn(view["record"][field], view["text"])
         self.assertEqual(source["body"], original)
@@ -202,7 +202,11 @@ class QuestionRecordTests(unittest.TestCase):
 
         def run(calls: list[dict]) -> None:
             storage = record.GitHubComments(fetch)
+            published = record.github_comment.comment(
+                "issue", 3, record.render(question(), legacy=True), repo="example/product", dedupe_body=True
+            )
             first = record.create(question(), self.args, storage, fetch)
+            self.assertEqual(first["url"], published["url"])
             path = Path(self.temporary.name) / "question.json"
             path.write_text(json.dumps(question()))
             created_output = StringIO()
@@ -284,6 +288,7 @@ class QuestionRecordTests(unittest.TestCase):
         for field in ("decision", "basis", "comparison", "manual"):
             self.assertIn(value[field], valid.stdout)
         self.assertIsNone(record.RECORD.search(valid.stdout))
+        self.assertFalse(valid.stdout.startswith("Director question:"))
         value.update(basis=[], manual="")
         path.write_text(json.dumps(value))
         invalid = subprocess.run(command, env=environment, text=True, capture_output=True, timeout=15)

@@ -69,18 +69,21 @@ The terminal text and `show-question`'s `text` use this shape:
 - **Context:** <basis, short>
 - **In simple terms:** <the recommended option's changes, one plain sentence>
 - **Options:**
-  - **<answer>:** <what changes>; Ongoing cost: <cost>; After this answer: <next>
+  - **<answer>:** <what changes>. Ongoing cost: <cost>. After this answer: <next>
 - **A senior developer would:** <comparison>
 - **Recommendation:** <recommended answer>. <comparison explaining why>
 - **You do:** <manual>
+
+Owning issue: <original issue URL>
 ```
 
 Keep `basis`, `changes` and `comparison` short and plain. The existing record
 supplies the explanation and recommendation reason; no extra field is needed.
-Saved comments retain the `Director question:` heading used by the numbering
-helpers. The returned text starts with `**Q` so cards recognise it. Existing
+Saved comments retain their original format for numbering and repeat-create
+deduplication. The returned text starts with `**Q` so cards recognise it. Existing
 structured sources keep their number and link and render in this shape too;
-reading does not rewrite them.
+reading does not rewrite them. A dry run shows the same bullets without a Q
+number, because previews allocate nothing.
 
 The command posts, numbers, registers in the configured queue, and returns
 numbered terminal text and the original link. `--queue OWNER/REPO#NUMBER` must
