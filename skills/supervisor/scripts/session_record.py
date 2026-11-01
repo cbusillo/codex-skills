@@ -273,6 +273,8 @@ def posted_comments(entry: dict) -> list[dict]:
         payload = record.get("payload", {})
         outputs = []
         item = payload.get("item", {})
+        if not isinstance(item, dict):
+            raise TypeError("tool item must be an object")
         if (payload.get("type") == "item_completed" and item.get("type") == "CommandExecution"
                 and item.get("status") == "completed" and item.get("exit_code") == 0):
             outputs.append(item.get("aggregated_output"))

@@ -78,7 +78,9 @@ def handoff_command(text: str) -> argparse.Namespace | None:
     if any(not handoff_body_preparation(node) for node in statements[:-1]):
         return None
     if last.type == "redirected_statement" and any(
-            redirect.type != "file_redirect" or redirect.children[0].type != "<" or shell_generated(redirect)
+            not ((redirect.type == "file_redirect" and redirect.children[0].type == "<" and not shell_generated(redirect))
+                 or (redirect.type == "heredoc_redirect" and any(
+                     body.type == "heredoc_body" and quoted_heredoc(body) for body in redirect.named_children)))
             for redirect in last.children_by_field_name("redirect")):
         return None
     if not argv or Path(argv[0]).name != "gh-comment" or any(flag in argv for flag in ("-h", "--help")):
@@ -112,6 +114,9 @@ def handoff_comments(source: dict) -> list[dict]:
     if source.get("native_child", source["session_id"]) != source["session_id"] or claude_agent(records) is not None:
         return []
     outputs = tool_outputs(records, followups=False)
+    errored = {block.get("tool_use_id") for row in records
+               for content in [(row.get("message") or {}).get("content")] if isinstance(content, list)
+               for block in content if isinstance(block, dict) and block.get("is_error") is True}
     found = []
     for call in tool_details(records):
         if call.name not in {"command", "bash", "exec_command", "shell_command", "shell", "local_shell_call"}:
@@ -119,9 +124,7 @@ def handoff_comments(source: dict) -> list[dict]:
         item = execution_item(records[call.index])
         if item and (item.get("status") != "completed" or item.get("exit_code") != 0):
             continue
-        if any(block.get("tool_use_id") == call.identifier and block.get("is_error") is True
-               for row in records for content in [(row.get("message") or {}).get("content")]
-               if isinstance(content, list) for block in content if isinstance(block, dict)):
+        if call.identifier in errored:
             continue
         results = native_results(outputs.get(call.identifier, []))
         if len(results) != 1:

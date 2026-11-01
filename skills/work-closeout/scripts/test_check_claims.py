@@ -3643,7 +3643,7 @@ class HandoffProjectionTests(unittest.TestCase):
         incidents = [row for row in json.loads(fixture.read_text()) if not row.get("ended_at")]
         for incident in incidents:
             for harness in ("codex", "claude"):
-                for variant in (None, "case", "copied", "redirected", "outer_redirect", "extra_output", "wrong_target", "failed", "unconfirmed", "nested", "async", "child", "help", "malformed"):
+                for variant in (None, "case", "copied", "redirected", "outer_redirect", "extra_output", "wrong_target", "failed", "unconfirmed", "nested", "async", "child", "help", "malformed", "heredoc", "unquoted_heredoc", "header", "running"):
                     with self.subTest(worker=incident["token"], harness=harness, variant=variant):
                         result = json.loads(json.dumps(incident["posts"][0]))
                         number = incident["issue"] + (variant == "wrong_target")
@@ -3652,7 +3652,10 @@ class HandoffProjectionTests(unittest.TestCase):
                         command = writer
                         if incident["token"] == "OPW345-1101":
                             command = f"cat > /evidence/stop.md <<'EOF'\n{incident['comments'][0]['body']}\nEOF\n{writer}"
-                        if variant == "copied":
+                        if variant in {"heredoc", "unquoted_heredoc"}:
+                            marker = "'EOF'" if variant == "heredoc" else "EOF"
+                            command = f"gh-comment issue {number} --repo {repo} <<{marker}\n{incident['comments'][0]['body']}\nEOF"
+                        elif variant == "copied":
                             command = "cat /evidence/predecessor.json"
                         elif variant == "redirected":
                             command = writer + " > /evidence/own.json; cat /evidence/predecessor.json"
@@ -3681,6 +3684,13 @@ class HandoffProjectionTests(unittest.TestCase):
                                            "type": "tool_use", "id": "post", "name": "Bash", "input": {"command": command}}]}},
                                        {"type": "user", "sessionId": session, "message": {"content": [{
                                            "type": "tool_result", "tool_use_id": "post", "content": output, "is_error": variant == "failed"}]}}])
+                        if variant in {"header", "running"} and harness == "codex":
+                            status = "Process exited with code 0" if variant == "header" else "Process running with session ID 17"
+                            records = [{"type": "session_meta", "payload": {"id": session}},
+                                       {"payload": {"type": "function_call", "name": "functions.exec_command", "call_id": "post",
+                                                    "arguments": json.dumps({"cmd": command})}},
+                                       {"payload": {"type": "function_call_output", "call_id": "post",
+                                                    "output": f"Wall time: 0.1 seconds\n{status}\nOutput:\n{output}"}}]
                         if variant == "malformed":
                             records = ([{"type": "session_meta", "payload": {"id": session}},
                                         {"payload": {"type": "function_call", "name": "functions.exec_command", "call_id": "post",
@@ -3695,7 +3705,7 @@ class HandoffProjectionTests(unittest.TestCase):
                         with contextlib.redirect_stdout(io.StringIO()) as captured:
                             projected = helper.history.handoff_comments(entry)
                         self.assertEqual(captured.getvalue(), "")
-                        self.assertEqual(bool(projected), variant in {None, "case"})
+                        self.assertEqual(bool(projected), variant in {None, "case", "heredoc", "header"} or (variant == "running" and harness == "claude"))
                         if projected:
                             self.assertEqual(projected[0]["source_session"], session)
                             self.assertEqual(projected[0]["comment"]["url"], incident["comments"][0]["html_url"])

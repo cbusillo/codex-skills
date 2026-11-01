@@ -143,6 +143,8 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
             evidence = no_claim_handoffs(entry, operation)
             scoped = [row for row in evidence if str(row.get("repository") or "").casefold() == repo.casefold()
                       and row.get("number") == number]
+            if evidence and evidence[-1] not in scoped:
+                scoped = []
             candidates = [comment for comment in comments if (comment.get("user") or {}).get("login") == actor
                           and not live_lines(comment.get("body") or "")
                           and not re.match(r"(?i)^Claimed by\b", (comment.get("body") or "").strip())

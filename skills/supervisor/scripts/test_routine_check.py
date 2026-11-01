@@ -1,14 +1,16 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["aiohttp==3.14.5", "PyYAML==6.0.3"]
+# dependencies = ["aiohttp==3.14.5", "PyYAML==6.0.3", "tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
 # ///
 import argparse
 from contextlib import redirect_stdout
 from io import StringIO
+import importlib
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from dataclasses import replace
@@ -20,9 +22,12 @@ from unittest.mock import Mock, patch
 
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "work-closeout/scripts"))
+
 import goal_board
 import routine_check
 import session_closeout
+claim_transcripts: Any = importlib.import_module("claim_transcripts")
 from check_operation import GateFailed, Operation
 from test_goal_board import TRUSTED, child, comment
 
@@ -413,7 +418,7 @@ class RoutineCheckTests(unittest.TestCase):
     def test_real_no_claim_stops_select_only_a_source_bound_original_comment(self) -> None:
         incidents = json.loads((Path(__file__).parent / "fixtures/closeout-native-posts.json").read_text())
         for incident in (row for row in incidents if not row.get("ended_at")):
-            for variant in (None, "case", "elsewhere", "ambiguous", "copied", "wrong_actor", "edited", "conflicting_session", "failed_check", "claims_remain"):
+            for variant in (None, "case", "elsewhere", "ambiguous", "copied", "wrong_actor", "edited", "conflicting_session", "failed_check", "claims_remain", "later_elsewhere"):
                 with self.subTest(worker=incident["token"], variant=variant), tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
                     entry = {key: incident[key] for key in ("repository", "issue", "session_id")}
@@ -431,8 +436,6 @@ class RoutineCheckTests(unittest.TestCase):
                     actor = comments[0]["user"]["login"]
                     if variant == "case":
                         evidence[0]["repository"] = entry["repository"].upper()
-                    elif variant == "copied":
-                        evidence = []
                     elif variant == "wrong_actor":
                         evidence[0]["expected_actor"] = "another[bot]"
                     elif variant == "edited":
@@ -442,7 +445,23 @@ class RoutineCheckTests(unittest.TestCase):
                     elif variant == "ambiguous":
                         comments.append({**comments[0], "id": 99, "html_url": comments[0]["html_url"].rsplit("-", 1)[0] + "-99"})
                         evidence.append({**evidence[0], "comment": {**evidence[0]["comment"], "id": 99, "url": comments[1]["html_url"]}})
-                    checked = {**incident["claims"], "handoff_comments": evidence}
+                    if variant == "later_elsewhere":
+                        evidence.append({**evidence[0], "number": number + 1})
+                    records = []
+                    for index, row in enumerate(evidence):
+                        created = {**post, "repo": row["repository"], "number": row["number"],
+                                   "expected_actor": row["expected_actor"], "comment": row["comment"]}
+                        identity = f"post-{index}"
+                        command = f"gh-comment issue {row['number']} --repo {row['repository']} --body-file /evidence/stop.md"
+                        if variant == "copied":
+                            command = "cat /evidence/predecessor.json"
+                        records.extend([
+                            {"type": "assistant", "sessionId": entry["session_id"], "message": {"content": [{
+                                "type": "tool_use", "id": identity, "name": "Bash", "input": {"command": command}}]}},
+                            {"type": "user", "sessionId": entry["session_id"], "message": {"content": [{
+                                "type": "tool_result", "tool_use_id": identity, "content": json.dumps(created)}]}}])
+                    projected = claim_transcripts.handoff_comments({"session_id": entry["session_id"], "_transcript_records": records})
+                    checked = {**incident["claims"], "handoff_comments": projected}
                     if variant == "claims_remain":
                         checked["released_claims"] = [{"claim_comment": 1}]
                     operation = Operation(root / "evidence", [entry["session_id"]])

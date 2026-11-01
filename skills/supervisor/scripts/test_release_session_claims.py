@@ -777,7 +777,7 @@ class ReleaseTests(unittest.TestCase):
         for incident in (row for row in incidents if row.get("ended_at")):
             for harness in ("codex", "claude"):
                 for changed in (None, "header", "prose", "unconfirmed", "wrong_source", "wrong_comment", "late_receipt",
-                                "edited", "assistant", "expected_actor", "failed_tool", "wrong_native", "missing_transcript"):
+                                "edited", "assistant", "expected_actor", "failed_tool", "wrong_native", "missing_transcript", "malformed_item"):
                     with self.subTest(worker=incident["token"], harness=harness, changed=changed):
                         posts = json.loads(json.dumps(incident["posts"]))
                         candidate = json.loads(json.dumps(incident["comments"][-1]))
@@ -815,6 +815,8 @@ class ReleaseTests(unittest.TestCase):
                             else:
                                 records.append({"type": "user", "sessionId": native, "timestamp": post["observed_at"], "message": {
                                     "content": [{"type": "tool_result", "is_error": changed == "failed_tool", "content": output}]}})
+                        if changed == "malformed_item":
+                            records.append({"payload": {"type": "item_completed", "item": 7}})
                         self.transcript.write_text("".join(json.dumps(row) + "\n" for row in records))
                         entry = {"session_id": session, "harness": harness, "transcript": str(self.transcript),
                                  "ended_at": incident["ended_at"], "_finish_scope": "accessible repositories under the requested owner"}
