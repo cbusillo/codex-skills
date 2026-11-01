@@ -23,6 +23,23 @@ from github_plan_status import next_actor, waits
 from github_plan_status.references import linked_issues
 
 
+def compact_output(value: Any) -> Any:
+    if isinstance(value, list):
+        return [compact_output(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    result = {}
+    for key, item in value.items():
+        if key == "discussion" and isinstance(item, dict):
+            result[key] = {
+                **compact_output({name: detail for name, detail in item.items() if name not in {"body", "comments"}}),
+                "comment_count": len(item.get("comments", [])),
+            }
+        else:
+            result[key] = compact_output(item)
+    return result
+
+
 def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[str],
                     resume_from: int | None = None, resume_source: dict[str, Any] | None = None,
                     expired_sessions: set[str] | frozenset[str] = frozenset()) -> dict[str, Any]:

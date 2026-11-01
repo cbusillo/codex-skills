@@ -2268,6 +2268,17 @@ retrying until planning stalls.
 
 ### Planning: Next Work
 
+`next` returns one JSON envelope with compact discussion summaries by default.
+Rows retain identity, counts, actor/action, blockers, sources and coverage;
+`discussion.comment_count` counts the comments read, and `discussion.complete`
+still reports whether that evidence was complete. Use `next --full-output` for
+the expanded discussion bodies and comments in the same envelope. Output detail
+does not change reads, ranking or authority. Local selection reuses its complete
+discussion read for ownership; both local and global reads default to all
+comments. An explicit `--comment-limit` remains a partial-evidence diagnostic,
+never proof that later comments contain no hold. Repository batch reads retain
+their separate cold-read use; full output does not replace their transport.
+
 Global `next` includes `milestone_closure_reviews` independently of selectable
 work. All roots are read before descendant traversal spends its scan allowance.
 These carry each Track's proof from its body. Track Current Status is not a

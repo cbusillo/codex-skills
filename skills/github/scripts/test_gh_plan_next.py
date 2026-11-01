@@ -809,7 +809,7 @@ def next_failure(module: Any, args: Any, *, code: str) -> dict[str, Any]:
 
 
 def next_args(*, repo: str | None = "someone/direction", scan_limit: int | None = 50, milestone: str | None = None) -> Any:
-    return type("Args", (), {"repo": repo, "milestone": milestone, "limit": 10, "scan_limit": scan_limit})()
+    return type("Args", (), {"repo": repo, "milestone": milestone, "limit": 10, "scan_limit": scan_limit, "full_output": True})()
 
 
 def test_global_next_follows_cross_owner_blockers_and_reports_partial_waits() -> None:
@@ -3184,6 +3184,61 @@ def test_source_discovery_precedes_optional_proof_warmup() -> None:
 
 
 TESTS.append(test_source_discovery_precedes_optional_proof_warmup)
+
+
+def test_next_output_summarizes_discussions_without_changing_selection_or_coverage() -> None:
+    module = load_module()
+    payload: dict[str, Any] = {"ok": True, "candidate_count": 1, "candidates": [{
+        "repo": "owner/repo", "number": 7, "url": "https://github.com/owner/repo/issues/7",
+        "queue": {"next_actor": "agent", "next_action": "Inspect the report", "state": "review"},
+        "discussion": {"body": "Original request", "comments": [{"body": "Later evidence"}],
+                       "complete": False, "parents": [{"discussion": {"body": "Parent request", "comments": [], "complete": True}}]},
+    }], "candidate_coverage": {"complete": False, "warning": "Unread source"}}
+    args = module.build_parser().parse_args(["next"])
+    with patch.object(module, "emit") as emit:
+        module.emit_next(payload, args)
+        compact = emit.call_args.args[0]
+        assert compact["candidate_count"] == payload["candidate_count"]
+        assert compact["candidate_coverage"] == payload["candidate_coverage"]
+        assert compact["candidates"][0]["queue"] == payload["candidates"][0]["queue"]
+        discussion = compact["candidates"][0]["discussion"]
+        assert not discussion["complete"] and discussion["comment_count"] == 1
+        assert "body" not in discussion and "comments" not in discussion
+        assert "body" not in discussion["parents"][0]["discussion"]
+        args.full_output = True
+        module.emit_next(payload, args)
+        full = emit.call_args.args[0]
+        assert {key: value for key, value in full.items() if key != "output_detail"} == payload
+        assert payload["candidates"][0]["discussion"]["body"]
+
+
+def test_local_next_reuses_complete_discussion_for_ownership() -> None:
+    module = load_module()
+    raw = issue(21)
+    raw.update(user={"login": "owner"}, body="## Current Status\nNext actor: agent\nNext action: Inspect the report")
+    comments = [{"user": {"login": "owner"}, "body": "Earlier evidence"} for _ in range(120)]
+    comments.append({"user": {"login": "owner"}, "body": module.github_plan_wait.marker(
+        module.github_plan_wait.reviewed(evidence="Complete discussion reviewed"))})
+    with local_next_fixture(module, [raw], read_relationships=lambda *_: (
+            "automation-gh", relationships(), [])) as result:
+        collect = module.collect_paged_rest_items
+        def read(path: str, **kwargs: Any) -> Any:
+            return ("automation-gh", comments) if path.endswith("/comments") else collect(path, **kwargs)
+        with patch.object(module, "collect_paged_rest_items", side_effect=read) as reads, patch.multiple(
+            module, annotate_next_queue=module.real_annotate_next_queue,
+            read_queue_ownership=lambda _repo: {"complete": True, "coverage": {}, "pulls": []},
+            next_status_body_time=lambda *_: None,
+            get_issue=Mock(side_effect=AssertionError("Candidate issue was already read")),
+        ):
+            args = next_args(repo="owner/repo")
+            args.full_output = False
+            module.cmd_next(args)
+            assert len([call for call in reads.call_args_list if call.args[0].endswith("/comments")]) == 1
+            assert result["available_candidates"][0]["discussion"]["comment_count"] == len(comments)
+
+
+TESTS.extend([test_next_output_summarizes_discussions_without_changing_selection_or_coverage,
+              test_local_next_reuses_complete_discussion_for_ownership])
 
 def main() -> None:
     for test in TESTS:

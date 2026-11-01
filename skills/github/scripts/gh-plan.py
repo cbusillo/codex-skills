@@ -4932,6 +4932,12 @@ def next_dependabot_work(
 
 
 
+def emit_next(payload: dict[str, Any], args: argparse.Namespace) -> None:
+    full = getattr(args, "full_output", False)
+    emit({**(payload if full else github_next_queue.compact_output(payload)),
+          "output_detail": "full" if full else "compact"})
+
+
 def cmd_next(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     if github_direction_next.is_direction_repository(repo):
@@ -5044,15 +5050,16 @@ def cmd_next(args: argparse.Namespace) -> None:
         except PlanError as exc:
             relationship_error = next_source_error(exc)
         wait_error = None
-        comment_limit = getattr(args, "comment_limit", None) or 100
+        comment_limit: int | None = getattr(args, "comment_limit", None)
+        comments: list[dict[str, Any]] = []
         try:
             if "_graph_comments" in issue:
                 comments = issue["_graph_comments"]
             else:
                 _, comments = collect_paged_rest_items(
-                    f"/repos/{repo}/issues/{issue['number']}/comments", query={}, limit=comment_limit + 1,
+                    f"/repos/{repo}/issues/{issue['number']}/comments", query={}, limit=comment_limit + 1 if comment_limit is not None else None,
                     bucket="rest_core", step_prefix="next_issue_comments")
-            if len(comments) > comment_limit:
+            if comment_limit is not None and len(comments) > comment_limit:
                 wait_error = "Discussion exceeded the comment read bound"
             else:
                 wait = current_wait(issue, comments, repo)
@@ -5075,6 +5082,7 @@ def cmd_next(args: argparse.Namespace) -> None:
             relationship_error=relationship_error,
             structured_wait=wait,
         )
+        evaluated["discussion"] = github_direction_next.discussion_snapshot(issue, comments, complete=wait_error is None)
         if wait_error is not None:
             evaluated.update(wait_error=wait_error, wait_evidence_complete=False)
         if relationship_error is not None:
@@ -5122,10 +5130,10 @@ def cmd_next(args: argparse.Namespace) -> None:
         notes.append("project_focus_truncated")
     if dependency_degraded_count:
         notes.append("dependency_reads_degraded")
-    dependabot = next_dependabot_work([{"repo": repo}], scan_limit=args.scan_limit, limit=args.limit, comment_limit=getattr(args, "comment_limit", None) or 100)
+    dependabot = next_dependabot_work([{"repo": repo}], scan_limit=args.scan_limit, limit=args.limit, comment_limit=getattr(args, "comment_limit", None))
     queue_context = annotate_next_queue(candidates, args)
     queue_result = project_local_queue(candidates, excluded)
-    emit({
+    emit_next({
         "ok": True,
         "actor": actor,
         "repo": repo,
@@ -5162,7 +5170,7 @@ def cmd_next(args: argparse.Namespace) -> None:
         "running_agent": agent,
         "notes": notes,
         **dependabot,
-    })
+    }, args)
 
 
 def next_pr_acceptance(repo: str, number: int, head: str) -> bool:
@@ -5227,8 +5235,6 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
                 "repositories": {repo: value for result in results for repo, value in result["repositories"].items()}}
     evidence: dict[str, dict[str, Any]] = {}
     comment_limit = getattr(args, "comment_limit", None)
-    if comment_limit is None and NEXT_READS is None:
-        comment_limit = 100
     # Prepare canonical discussions before batching one native observation per
     # repository. Only this invocation shares it; the next read starts afresh.
     for item in items:
@@ -6324,7 +6330,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     payload["recommended_next_action"] = recommendation
     if not incidents["context"]["complete"]:
         raise ClassifiedPlanError("live_breakage_unread", "Live-breakage native paths or ancestry are incomplete; priority remains unknown", payload=payload)
-    emit(payload)
+    emit_next(payload, args)
 
 
 def resolve_project(owner: str, title_or_number: str, *, recoverable: bool = False) -> tuple[str, int, dict[str, Any] | None]:
@@ -7743,6 +7749,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_deps)
 
     p = sub.add_parser("next", help="Rank the next actionable durable plans")
+    p.add_argument("--full-output", action="store_true", help="Include full discussion bodies and comments; default rows retain counts, sources and coverage")
     p.add_argument("--batch-read", action="store_true", help="Explicit repository graph batch; REST remains the unchanged-read route")
     repository_scope.add_include_archived_argument(p)
     p.add_argument("--agent", choices=github_agent.FAMILIES, help="Running family; defaults to harness detection")
