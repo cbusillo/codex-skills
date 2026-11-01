@@ -14,13 +14,17 @@ from typing import Any
 
 COMMAND = "testing-rebuild-submit"
 PLAN_COMMAND = "testing-rebuild-dry-run"
-COMMANDS = frozenset({COMMAND, PLAN_COMMAND})
+READ_COMMAND = "testing-rebuild-operation-read"
+COMMANDS = frozenset({COMMAND, PLAN_COMMAND, READ_COMMAND})
 COPY_SOURCES = {
     "empty": "empty",
     "production": "production_restore",
     "upstream": "upstream_restore",
 }
-IMMUTABLE_IMAGE_RE = re.compile(r"[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]+)?(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[a-f0-9]{64}")
+IMAGE_COMPONENT = r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*"
+IMMUTABLE_IMAGE_RE = re.compile(
+    rf"(?:[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]+)?/)?{IMAGE_COMPONENT}(?:/{IMAGE_COMPONENT})*@sha256:[a-f0-9]{{64}}"
+)
 
 
 def generic_body(body: dict[str, object]) -> dict[str, object] | None:
@@ -32,6 +36,9 @@ def generic_body(body: dict[str, object]) -> dict[str, object] | None:
 
 
 def add_parser(subparsers: Any) -> None:
+    parser = subparsers.add_parser(READ_COMMAND, help="Read one native testing rebuild operation.")
+    parser.add_argument("--product", required=True)
+    parser.add_argument("--operation-id", required=True)
     for command in (PLAN_COMMAND, COMMAND):
         parser = subparsers.add_parser(command, help="Inspect or queue the native testing rebuild at its existing address.")
         parser.add_argument("--product", required=True)
@@ -149,7 +156,9 @@ def execute_plan(h: Any, args: argparse.Namespace, request: dict[str, object], b
         output = h.base_payload(status="ok", operation=PLAN_COMMAND, request=request)
         output["result"] = project_plan(h, response, body, service_url=settings["service_url"])
         output["summary"] = {**h.service_response_diagnostics(response),
-            "recommendation": "Inspect this admission evidence and save it for submit. The worker must still verify the new copy before cutover."}
+            "recommendation": ("The service cannot execute this rebuild yet. Check its retained prerequisites before a new preflight; do not submit."
+                if output["result"]["status"] == "pending" else
+                "Inspect this admission evidence and save it for submit. The worker must still verify the new copy before cutover.")}
         h.emit(output)
         return 0
     except urllib.error.HTTPError as error:
@@ -184,7 +193,7 @@ def aligned_receipt(h: Any, response: dict[str, Any], body: dict[str, object], k
     return operation
 
 
-def compact_receipt(h: Any, response: dict[str, Any], body: dict[str, object]) -> dict[str, object]:
+def compact_receipt(h: Any, response: dict[str, Any], body: dict[str, object]) -> dict[str, dict[str, object]]:
     operation = h._require_dict(response.get("operation"))
     if operation.get("product") != body["product"] or operation.get("instance") != "testing":
         raise h.LaunchplaneSafetyError("invalid_response")
@@ -196,6 +205,43 @@ def compact_receipt(h: Any, response: dict[str, Any], body: dict[str, object]) -
     result.update(updated_at=h.public_timestamp(operation.get("updated_at")), attempt=attempt)
     h.assert_public_safe_shape(result)
     return {"operation": result}
+
+
+def execute_read(h: Any, args: argparse.Namespace) -> int:
+    product = h._required_argument(args, "product")
+    operation_id = h._required_argument(args, "operation_id")
+    for value in (product, operation_id):
+        if not h.PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(value):
+            raise ValueError("invalid_request")
+    request = {"product": h.public_identifier(product), "operation_id": h.public_identifier(operation_id)}
+    settings = h.prepare_operator_settings(args=args, operation=READ_COMMAND, request=request)
+    if settings is None:
+        return 2
+    response = None
+    try:
+        response = h.request_launchplane_read(service_url=settings["service_url"],
+            path=h.internal_helper_path(READ_COMMAND).format(**request), settings=settings, query={}, timeout=args.timeout)
+        result = compact_receipt(h, response, request)
+        if result["operation"]["operation_id"] != operation_id:
+            raise h.LaunchplaneSafetyError("invalid_response")
+        output = h.base_payload(status="ok", operation=READ_COMMAND, request=request)
+        output["result"] = result
+        output["summary"] = h.service_response_diagnostics(response)
+        h.emit(output)
+        return 0
+    except urllib.error.HTTPError as error:
+        h.emit_http_error_payload(operation=READ_COMMAND, request=request, exc=error)
+    except h.ServiceResponseError as error:
+        output = h.unavailable_payload(operation=READ_COMMAND, request=request, status="unavailable", code="invalid_response", message="The native operation response was unavailable.")
+        output["summary"] = h.service_response_diagnostics(error)
+        h.emit(output)
+    except h.LaunchplaneSafetyError as error:
+        h.emit_safety_error_payload(operation=READ_COMMAND, request=request, exc=error, provider_payload=response)
+    except ValueError:
+        h.emit_invalid_response(operation=READ_COMMAND, request=request, diagnostics=h.service_response_diagnostics(response))
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as error:
+        h.emit_read_transport_error(operation=READ_COMMAND, request=request, timeout=args.timeout, exc=error)
+    return 1
 
 
 def replay_diagnostics(h: Any, response: dict[str, Any]) -> dict[str, object]:
@@ -229,6 +275,8 @@ def rejection(h: Any, request: dict[str, object], error: urllib.error.HTTPError)
 
 
 def execute(h: Any, args: argparse.Namespace) -> int:
+    if args.command == READ_COMMAND:
+        return execute_read(h, args)
     request, body = intent(h, args)
     if args.command == PLAN_COMMAND:
         return execute_plan(h, args, request, body)
@@ -262,7 +310,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         output["result"] = result
         output["summary"] = {
             "recommendation": (
-                "Read this operation with target-replacement-operation-read. Acceptance is not "
+                f"Read this operation with {READ_COMMAND + ' --product ' + str(body['product']) if native_body is not None else 'target-replacement-operation-read'}. Acceptance is not "
                 "completion. Preserve its operation ID and original idempotency key."
             ),
             **h.service_response_diagnostics(response),
@@ -297,7 +345,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     output["summary"].update(diagnostics)
     output["summary"].update(operation_reference)
     output["summary"]["recommendation"] = (
-        "If an operation ID is present, read it with target-replacement-operation-read. "
+        f"If an operation ID is present, read it with {READ_COMMAND + ' --product ' + str(body['product']) if generic_body(body) is not None else 'target-replacement-operation-read'}. "
         "Otherwise explicitly recover by submitting the identical original arguments, "
         "reviewed evidence and idempotency key. Do not generate a new key or change intent."
     )

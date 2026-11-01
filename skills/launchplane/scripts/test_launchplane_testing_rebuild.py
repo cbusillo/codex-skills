@@ -180,6 +180,37 @@ def test_generic_pending_preflight_cannot_queue_a_rebuild() -> None:
     settings.assert_not_called()
 
 
+@pytest.mark.parametrize("field,value", [("operation_id", "original-operation"), ("operation_id", "other"), ("product", "foreign")])
+def test_native_operation_read_checks_exact_product_and_operation(field: str, value: str) -> None:
+    response = {"trace_id": "launchplane_req_native_read", "operation": {
+        "operation_id": "original-operation", "product": "example", "instance": "testing",
+        "status": "queued", "phase": "created", "attempt": 0, "updated_at": "2026-10-17T00:00:00Z",
+        "private": "PRIVATE_SENTINEL",
+    }}
+    response["operation"][field] = value
+    code, output, post, read, _ = invoke(args=[rebuild.READ_COMMAND, "--product", "example",
+        "--operation-id", "original-operation"], read_body=response)
+    assert (code == 0) is (field == "operation_id" and value == "original-operation")
+    post.assert_not_called()
+    assert read.call_args.kwargs["path"] == contract.internal_helper_path(rebuild.READ_COMMAND).format(
+        product="example", operation_id="original-operation")
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
+@pytest.mark.parametrize("repository", ["nginx", "example/a--b", "registry.example:5000/a__b/site"])
+def test_generic_image_forms_are_sent_unchanged(repository: str) -> None:
+    args = generic_arguments(rebuild.PLAN_COMMAND)
+    image = repository + "@sha256:" + "b" * 64
+    args[args.index("--artifact-id") + 1] = image
+    response = generic_inputs()
+    response["artifact_id"] = image
+    code, output, post, read, _ = invoke(args=args, read_body=response)
+    assert code == 0
+    assert output["result"]["artifact_id"] == image
+    post.assert_not_called()
+    read.assert_called_once()
+
+
 @pytest.mark.parametrize("response", [{}, {"operation": {"product": "other", "instance": "testing"}}])
 def test_generic_uncertain_receipt_preserves_original_request_without_retry(response: Any) -> None:
     code, output, post, read, _ = invoke(response, args=generic_arguments(), evidence=generic_evidence())

@@ -770,12 +770,16 @@ installed local helper bindings.
   code and trace and stops the action. There is no legacy rebuild,
   alternate identity or workflow fallback.
 
-  The receipt must agree with the submitted product, testing instance,
-  original key and build/source intent. Output reuses the bounded operation
+  The Odoo receipt must agree with the submitted product, testing instance,
+  original key and build/source intent. Odoo output reuses the bounded operation
   projection below, retaining the operation ID and service trace while dropping
   raw authorization, poll URLs and request/provider evidence. Acceptance is not
-  completion. Poll `target-replacement-operation-read --operation-id ID` using
-  that original ID until the service reports its outcome. Failure alone does
+  completion. Poll `target-replacement-operation-read --operation-id ID` for
+  Odoo or `testing-rebuild-operation-read --product PRODUCT --operation-id ID`
+  for generic-web, using that original ID until the service reports its outcome.
+  The native read checks the exact product and ID and returns compact progress;
+  it does not attest restored data, health or retirement beyond those fields.
+  Failure alone does
   not authorize a different rebuild. A verified normal terminal engine result
   (`fail`/`failed`, `finished_at`, and `candidate_private_readiness_failed`) may
   permit a separately reviewed request under existing authority after the
