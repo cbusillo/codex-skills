@@ -231,9 +231,9 @@ Cloud environment IDs in private configuration or the private handoff record,
 never in this catalog. The linked shared rules own claims, worktrees, checks,
 review and PR handoff; this template adds only the Cloud pass specifics.
 
-For each launch, set `cloud_environment` and `task_prompt` from the resolved
-private configuration and bounded task. Keep the printed path with its task ID;
-separate shell calls must use that path as their working directory.
+For each launch, resolve `cloud_environment` from private configuration and set
+`task_prompt` to the bounded task. Keep the printed scratch path with its task ID;
+use it for every later Cloud command because the CLI writes `error.log` there.
 
 ```sh
 task_scratch=$(mktemp -d "${TMPDIR:-/tmp}/codex-cloud.XXXXXX") &&
@@ -251,8 +251,8 @@ Goal and finish line: __BOUNDED_PASS_GOAL_AND_OBSERVABLE_FINISH__
 Cloud environment: resolve __REPOSITORIES__ through __PRIVATE_CONFIG_OR_HANDOFF_REFERENCE__.
 
 1. Read the anchor and pass issue in full. Leave the anchor unclaimed; claim the pass issue with the admission and evidence above under the shared rules before launching work.
-2. Select independent tasks with an exact reproduction or bounded question, relevant paths and a focused verification command suited to the environment's runtime and dependencies; skip unsuitable work. Ask for implementation diffs for code work and disposable evidence for analysis or test runs, allowing a justified no-change result. Launch from the scratch directory above and keep its path with the task ID for all later Cloud commands: the CLI writes error.log there. Send only public-safe source and instructions, never private data, credentials or local evidence. Keep private environment mappings out of Cloud prompts and public results.
-3. Check each result against current code and the pass goal. Discard wrong proposals with a reason; keep useful diagnosis on the issue without applying its evidence file as maintained source. For accepted source, claim its linked owning issue before creating its task worktree under the shared rules, then use git -C <owning-task-worktree> apply; do not use codex cloud apply from a checkout.
+2. Select independent tasks with an exact reproduction or bounded question, relevant paths, reachable inputs and a focused verification command suited to the runtime and dependencies; skip unsuitable work. Ask for implementation diffs for code work and disposable evidence for analysis or test runs; preserve justified no-change outcomes in corrective prompts too. Launch with the scratch example above. Send only public-safe source and instructions, never private data, credentials or local evidence. Keep private environment mappings out of Cloud prompts and public results.
+3. Check each result against current code and the pass goal. Discard wrong proposals with a reason; keep useful diagnosis on the pass issue without applying its evidence file as maintained source. For accepted source, claim its linked owning issue before creating its task worktree under the shared rules, then use git -C <owning-task-worktree> apply; do not use codex cloud apply from a checkout.
 4. For accepted source, run affected tests locally, plus the shared rules' required safety modules, lint, type checks and inspection. Get and weigh another provider's review through model-review. Within the shared PR cap and pace, hand each PR off through its repository's merge path. Close result issues with their completing PRs; link the pass as context, without closing it from a result PR.
 5. Post a short tally on __TRIAL_RECORD_URL__: tasks launched, source accepted/adapted/discarded (with reasons), useful reports, environment/transport failures and PR links. Prefer removal; report Removed: and Net lines: per result, explaining growth. Keep details and Current Status on the pass issue. Close it when its finish line is met; otherwise name the remaining actor or event. Close out and release result and pass claims under the shared rules.
 
