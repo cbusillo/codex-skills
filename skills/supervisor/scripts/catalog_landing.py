@@ -552,10 +552,10 @@ def retryable_poll(evidence: Path, error: RetryableGate) -> dict:
     with closure.store_lock(evidence / "poll", create=True):
         cursor = evidence / "cursor.json"
         state = json.loads(cursor.read_text()) if cursor.exists() else {}
-        attempt = state.get("attempt")
-        if attempt:
-            with closure.store_lock(evidence / attempt / "verification", create=True):
-                for path in (evidence / attempt).rglob("operation.json"):
+        if state.get("attempt"):
+            attempt = evidence / state["attempt"]
+            with closure.store_lock(attempt / "verification", create=True):
+                for path in attempt.rglob("operation.json"):
                     journal = json.loads(path.read_text())
                     settled = (closeout_mutations_settled(journal) if journal.get("generation") else
                                not any(step.get("complete") is False for step in journal["steps"].values()))
