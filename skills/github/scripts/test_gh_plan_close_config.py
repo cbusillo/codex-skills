@@ -107,8 +107,9 @@ class NotPlannedScopeTests(unittest.TestCase):
 
     def test_director_milestone_admission_survives_agent_reassignment(self) -> None:
         self.events.insert(0, {"event": "milestoned", "actor": {"login": "fixture"}})
-        with self.assertRaises(PLAN.PlanError):
+        with self.assertRaises(PLAN.PlanError) as caught:
             self.check()
+        PLAN.github_comment_core.validate_planning_references(str(caught.exception), "fixture/target")
 
     def test_unknown_or_missing_milestone_history_refuses(self) -> None:
         for events in ([], [{"event": "milestoned"}],
