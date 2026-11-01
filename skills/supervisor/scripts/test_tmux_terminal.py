@@ -1247,15 +1247,17 @@ for line in sys.stdin:
                 self.assertEqual(scripts[0].exists(), created)
                 scripts[0].unlink(missing_ok=True)
 
-    def test_receipt_failure_retains_exact_staged_pane_without_starting_agent(self):
+    def test_receipt_failure_creates_no_pane(self):
+        before = self.terminal.list()
         with patch.object(account_choice, "record_launch", side_effect=OSError("storage full")):
             with self.assertRaises(iterm_tab.LaunchFailure) as caught:
                 self.launch()
+        self.assertFalse(caught.exception.detail["mutation_started"])
         detail = caught.exception.detail["failed_launch"]
         self.assertEqual(detail["submission"], "not_attempted")
         self.assertFalse(detail["receipt_written"])
-        self.assertNotIn("READY:", "\n".join(self.terminal.read(detail["session_id"])["screen"]))
-        self.assertFalse(self.terminal.select(detail["session_id"])["dead"])
+        self.assertIsNone(detail["session_id"])
+        self.assertEqual(self.terminal.list(), before)
 
     def test_batch_retains_completed_launch_and_failed_identity(self):
         count = 0
@@ -1275,7 +1277,8 @@ for line in sys.stdin:
         detail = caught.exception.detail
         self.assertEqual(len(detail["launched"]), 1)
         self.wait_screen(detail["launched"][0]["session_id"], "READY:")
-        self.assertNotEqual(detail["launched"][0]["session_id"], detail["failed_launch"]["session_id"])
+        self.assertIsNone(detail["failed_launch"]["session_id"])
+        self.assertTrue(detail["mutation_started"])
 
     def test_cli_read_and_native_close_without_iterm_connection(self):
         row = self.launch()

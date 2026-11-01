@@ -43,6 +43,7 @@ GOOGLE_ACCOUNT_BINDING = "existing-agy-login"
 SNAPSHOT_TIMEOUT_SECONDS = 60
 RECORD_LAUNCH_TIMEOUT_SECONDS = 30
 LAUNCHER = "supervisor"
+GUI_RECEIPT_DIRECTORY = "Supervisor GUI Receipts"
 OWN_RECEIPT = re.compile(r"^\d{8}T\d{6}Z-supervisor-[0-9a-f]{32}\.json$")
 APP_RECEIPT = re.compile(rf"^\d{{8}}T\d{{6}}Z-{LAUNCHER}-[0-9A-Za-z]+\.json$")
 
@@ -444,8 +445,13 @@ def prepare_launch(choice):
                          "check write access to the reader's storage root before retrying") from error
 
 
+class PartialReceiptFailure(ValueError):
+    def __init__(self, target: Path, error: OSError) -> None:
+        self.target = target
+        super().__init__(f"count receipt written at {target}; GUI receipt failed: {type(error).__name__}: {error}")
+
+
 def record_launch(choice, now=None, runner=None):
-    """Write immediately before submitting a launch; retain on an uncertain submit."""
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     provider, account_id = choice["provider"], choice.get("account_id")
     if not isinstance(account_id, str) or not re.fullmatch(rf"{provider}-[0-9a-f]{{1,64}}", account_id):
@@ -456,21 +462,23 @@ def record_launch(choice, now=None, runner=None):
     if choice.get("receipt_app") is not None:
         target = directory / record_through_app(choice["receipt_app"], receipt, runner)
         if "gui" in choice:
-            write_gui_receipt(directory.parent, target.name, receipt, choice["gui"], now)
+            try:
+                write_gui_receipt(target.name, receipt, choice["gui"], now)
+            except OSError as error:
+                raise PartialReceiptFailure(target, error) from error
         return target
     # A bad root must not create a replacement Context Panel store.
     directory.mkdir(mode=0o700, exist_ok=True)
     prune_receipts(directory, now)
     target = directory / f"{now:%Y%m%dT%H%M%SZ}-{LAUNCHER}-{uuid.uuid4().hex}.json"
     if "gui" in choice:
-        write_gui_receipt(directory.parent, target.name, receipt, choice["gui"], now)
+        write_gui_receipt(target.name, receipt, choice["gui"], now)
     write_launch_receipt(target, receipt)
     return target
 
 
-def write_gui_receipt(root, name, receipt, gui, now):
-    """The private GUI receipt is written directly; GUI launches run from the Supervisor's terminal."""
-    gui_directory = root / "Supervisor GUI Receipts"
+def write_gui_receipt(name: str, receipt: dict, gui: dict, now: datetime) -> None:
+    gui_directory = Path(gui["state_path"]).parent / GUI_RECEIPT_DIRECTORY
     gui_directory.mkdir(mode=0o700, exist_ok=True)
     prune_receipts(gui_directory, now, max_bytes=16 * 1024)
     write_launch_receipt(gui_directory / name, {**receipt, "gui": gui})

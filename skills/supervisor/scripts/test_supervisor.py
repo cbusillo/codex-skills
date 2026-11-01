@@ -1755,7 +1755,8 @@ class AccountChoiceTests(unittest.TestCase):
             name = "20261003T160000Z-supervisor-" + "a" * 32 + ".json"
             runner = Mock(return_value=subprocess.CompletedProcess([], 0, name + "\n", ""))
             choice["storage_root"] = root
-            choice["gui"] = {"app": "Codex"}
+            choice["gui"] = {"app": "Codex", "state_path": str(root / "private" / "gui.json")}
+            (root / "private").mkdir()
             path = account_choice.record_launch(choice, NOW, runner=runner)
             argv, options = runner.call_args.args[0], runner.call_args.kwargs
             self.assertEqual(argv, [str(app), "--record-launch", "--launcher", "supervisor"])
@@ -1765,8 +1766,8 @@ class AccountChoiceTests(unittest.TestCase):
             self.assertLessEqual(len(options["input"].encode()), 1024)
             self.assertEqual(path, root / "Launch Receipts" / name)
             self.assertFalse((root / "Launch Receipts").exists())  # the app wrote it, not this process
-            gui = json.loads((root / "Supervisor GUI Receipts" / name).read_text())
-            self.assertEqual(gui["gui"], {"app": "Codex"})
+            gui = json.loads((root / "private" / account_choice.GUI_RECEIPT_DIRECTORY / name).read_text())
+            self.assertEqual(gui["gui"], choice["gui"])
 
     def test_app_writer_failures_refuse_without_a_receipt(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -4005,10 +4006,12 @@ class TerminalTests(unittest.TestCase):
                 except (ValueError, OSError) as error:
                     detail = getattr(error, "detail", {})
             self.assertEqual(detail["launched"][0]["session_id"], "session-0")
-            self.assertEqual(detail["failed_launch"]["tab_id"], "tab-1")
+            self.assertIsNone(detail["failed_launch"]["tab_id"])
+            self.assertEqual(window.async_create_tab.await_count, 1)
+            self.assertTrue(detail["mutation_started"])
             self.assertFalse(detail["failed_launch"]["receipt_written"])
             self.assertEqual(detail["failed_launch"]["submission"], "not_attempted")
-            self.assertNotIn("private-root", json.dumps(detail))
+            self.assertIn("private-root", detail["reason"])
             terminals[1].async_send_text.assert_not_awaited()
 
     def test_receipt_failure_prevents_command_submission(self):
