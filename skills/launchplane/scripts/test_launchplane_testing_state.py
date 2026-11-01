@@ -8,7 +8,6 @@ import hashlib
 import io
 import json
 import stat
-import sys
 import urllib.error
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -322,4 +321,4 @@ def test_supported_long_application_path_is_preserved_without_identifier_truncat
 
 
 if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, *sys.argv[1:]]))
+    raise SystemExit(pytest.main([__file__]))
