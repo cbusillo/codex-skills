@@ -12,12 +12,13 @@ import urllib.error
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from unittest.mock import patch
 
-import pytest
-
-from test_launchplane_helpers import contract, write_action as helper
 import launchplane_testing_rebuild as rebuild
+import pytest
+from test_launchplane_helpers import contract
+from test_launchplane_helpers import write_action as helper
 
 SERVICE_URL = "https://plane.example.invalid"
 
@@ -69,7 +70,7 @@ def review_evidence(source="empty"):
         "result": rebuild.project_plan(helper, plan_receipt(source), body, service_url=SERVICE_URL)}
 
 
-def invoke(body=None, *, args=None, error=None, reviewed=True, change_evidence=None, service_url=SERVICE_URL):
+def invoke(body=None, *, args=None, error=None, reviewed=True, change_evidence=None, service_url=SERVICE_URL, evidence=None, read_body=None):
     output = io.StringIO()
     with (
         TemporaryDirectory() as directory,
@@ -78,13 +79,13 @@ def invoke(body=None, *, args=None, error=None, reviewed=True, change_evidence=N
             "service_url": service_url,
         }) as settings,
         patch.object(helper, "request_launchplane", return_value=body, side_effect=error) as post,
-        patch.object(helper, "request_launchplane_read") as read,
+        patch.object(helper, "request_launchplane_read", return_value=read_body) as read,
         redirect_stdout(output),
     ):
         (Path(directory) / "repo").mkdir()
         args = list(arguments() if args is None else args)
         if reviewed and args[0] == rebuild.COMMAND:
-            evidence = review_evidence(args[args.index("--copy-source") + 1])
+            evidence = evidence or review_evidence(args[args.index("--copy-source") + 1])
             if change_evidence:
                 change_evidence(evidence)
             path = Path(directory) / "review.json"
@@ -93,6 +94,100 @@ def invoke(body=None, *, args=None, error=None, reviewed=True, change_evidence=N
                 "--dry-run-evidence-file", str(path)]
         code = helper.main(args)
     return code, json.loads(output.getvalue()), post, read, settings
+
+
+GENERIC_IMAGE = "ghcr.io/example/site@sha256:" + "b" * 64
+
+
+def generic_arguments(command: str = rebuild.COMMAND) -> list[str]:
+    args = arguments(command=command)
+    args[args.index("--artifact-id") + 1] = GENERIC_IMAGE
+    return args
+
+
+def generic_inputs() -> dict[str, Any]:
+    return {**plan_receipt()["result"], "artifact_id": GENERIC_IMAGE,
+        "restore_applicable": False, "original_scope": "PRIVATE_SENTINEL"}
+
+
+def generic_evidence() -> dict[str, Any]:
+    request, body = rebuild.intent(helper, helper.parse_args(generic_arguments()))
+    return {"status": "ok", "operation": rebuild.PLAN_COMMAND, "request": request,
+        "result": rebuild.project_plan(helper, generic_inputs(), body, service_url=SERVICE_URL)}
+
+
+def test_generic_plan_reads_native_inputs_and_preserves_nonapplicable_restore() -> None:
+    code, output, post, read, _ = invoke(args=generic_arguments(rebuild.PLAN_COMMAND), read_body=generic_inputs())
+    assert code == 0
+    post.assert_not_called()
+    assert read.call_args.kwargs["path"] == contract.internal_helper_path("generic-testing-rebuild-inputs").format(product="example")
+    assert read.call_args.kwargs["query"] == {"data_source_mode": "empty"}
+    assert output["result"]["restore_applicable"] is False
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
+def test_generic_submit_uses_native_body_and_compact_receipt_without_a_second_call() -> None:
+    response = {"trace_id": "launchplane_req_generic", "operation": {
+        "operation_id": "generic-operation", "product": "example", "instance": "testing",
+        "status": "queued", "phase": "created", "updated_at": "2026-10-17T00:00:00Z", "attempt": 0,
+    }}
+    code, output, post, read, _ = invoke(response, args=generic_arguments(), evidence=generic_evidence())
+    assert code == 0
+    post.assert_called_once()
+    read.assert_not_called()
+    sent = post.call_args.kwargs
+    assert sent["path"] == contract.internal_helper_path("generic-testing-rebuild-submit").format(product="example")
+    assert sent["body"] == {"artifact_id": GENERIC_IMAGE, "source_git_ref": "a" * 40,
+        "data_source_mode": "empty", "reason": "Rebuild the disposable testing copy"}
+    assert sent["idempotency_key"] == "original-rebuild"
+    assert output["result"]["operation"] == response["operation"]
+
+
+@pytest.mark.parametrize("image", ["ghcr.io/example/site:latest", "https://example/site@sha256:" + "b" * 64,
+    "user:password@example/site@sha256:" + "b" * 64, "example/site@sha256:abcd"])
+def test_mutable_or_malformed_generic_image_refuses_before_transport(image: str) -> None:
+    args = generic_arguments(rebuild.PLAN_COMMAND)
+    args[args.index("--artifact-id") + 1] = image
+    code, _, post, read, settings = invoke(args=args)
+    assert code != 0
+    settings.assert_not_called()
+    post.assert_not_called()
+    read.assert_not_called()
+
+
+@pytest.mark.parametrize("field,value", [("artifact_id", "ghcr.io/example/site@sha256:" + "c" * 64),
+    ("source_git_ref", "c" * 40), ("instance", "prod")])
+def test_generic_plan_refuses_when_service_selected_different_inputs(field: str, value: str) -> None:
+    response = generic_inputs()
+    response[field] = value
+    code, output, post, read, _ = invoke(args=generic_arguments(rebuild.PLAN_COMMAND), read_body=response)
+    assert code != 0
+    assert output["status"] != "ok"
+    post.assert_not_called()
+    read.assert_called_once()
+
+
+def test_generic_pending_preflight_cannot_queue_a_rebuild() -> None:
+    response = generic_inputs()
+    response["status"] = "pending"
+    code, output, _, _, _ = invoke(args=generic_arguments(rebuild.PLAN_COMMAND), read_body=response)
+    assert code == 0
+    assert output["result"]["status"] == "pending"
+    code, _, post, read, settings = invoke(args=generic_arguments(), evidence=output)
+    assert code != 0
+    post.assert_not_called()
+    read.assert_not_called()
+    settings.assert_not_called()
+
+
+@pytest.mark.parametrize("response", [{}, {"operation": {"product": "other", "instance": "testing"}}])
+def test_generic_uncertain_receipt_preserves_original_request_without_retry(response: Any) -> None:
+    code, output, post, read, _ = invoke(response, args=generic_arguments(), evidence=generic_evidence())
+    assert code != 0
+    assert output["status"] == "outcome_unknown"
+    assert "operation_id" not in output["summary"]
+    post.assert_called_once()
+    read.assert_not_called()
 
 
 @pytest.mark.parametrize("source", ["empty", "production", "upstream"])
@@ -337,7 +432,7 @@ def test_malformed_accepted_response_preserves_bounded_diagnostics(partial_body)
     diagnostics = {"http_status": 202}
     if partial_body:
         error = http.client.IncompleteRead(b"PRIVATE_SENTINEL")
-        setattr(error, "http_status", diagnostics["http_status"])
+        error.http_status = diagnostics["http_status"]
     else:
         diagnostics["trace_id"] = "launchplane_req_broken"
         error = helper.ServiceResponseError(diagnostics)
