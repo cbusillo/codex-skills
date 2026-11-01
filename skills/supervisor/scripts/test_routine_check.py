@@ -474,7 +474,7 @@ class RoutineCheckTests(unittest.TestCase):
                 with self.assertRaises(GateFailed):
                     session_closeout.no_claim_handoff(incident, Operation(Path(directory), [incident["session_id"]]), "cbusillo")
                 self.assertEqual(write.call_count, 1)
-            posted = {**incident["comments"][0], "body": f"Session: {incident['session_id']}\nSupervisor handoff"}
+            posted: dict[str, Any] = {**incident["comments"][0], "body": f"Session: {incident['session_id']}\nSupervisor handoff"}
             reader = SimpleNamespace(paged_json=Mock(return_value=[posted]), get_json=Mock(return_value=posted))
             with (patch.object(session_closeout, "GitHubReader", return_value=reader),
                   patch.object(session_closeout.github_identity, "automation_login", return_value=posted["user"]["login"])):
