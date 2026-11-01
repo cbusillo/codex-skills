@@ -1941,22 +1941,21 @@ def ensure_labels(
 
 def cmd_index(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
-    config = load_config(repo)
-    label = args.label or config["labels"]["plan"]
     actor, data = collect_paged_rest_items(
         f"/repos/{repo}/issues",
         query={
-            "labels": label,
+            **({"labels": args.label} if args.label else {}),
             "state": args.state,
             "sort": "updated",
             "direction": "desc",
         },
         bucket="rest_core",
         step_prefix="list_plan_issues",
-        limit=args.limit,
+        limit=args.limit + 1,
         issue_only=True,
     )
-    items = [compact_list_issue(repo, item) for item in data]
+    truncated = len(data) > args.limit
+    items = [compact_list_issue(repo, item) for item in data[:args.limit]]
     try:
         _, metadata = api_json("GET", f"/repos/{repo}", bucket="rest_core", failed_step="inventory_repository")
         context = github_read.repository_disposition(metadata)
@@ -1965,7 +1964,9 @@ def cmd_index(args: argparse.Namespace) -> None:
         context = github_read.repository_disposition(None)
     if not repository_scope.includes_repository(context, include_archived=getattr(args, "include_archived", False)):
         items = []
+        truncated = False
     emit({"ok": True, "actor": actor, "repo": repo, "repository": context,
+          "truncated": truncated, "inventory_complete": not truncated,
           "count": len(items), "plans": [{**item, "repository": context} for item in items]})
 
 
@@ -4952,7 +4953,6 @@ def cmd_next(args: argparse.Namespace) -> None:
     actor: str | None = None
     milestone_scope: dict[str, Any] | None = None
     issue_query: dict[str, Any] = {
-        "labels": config["labels"]["plan"],
         "state": "open",
         "sort": "created",
         "direction": "asc",
@@ -4990,7 +4990,7 @@ def cmd_next(args: argparse.Namespace) -> None:
         milestone_scope = milestone_result["milestone"]
         issue_query["milestone"] = milestone_scope["number"]
 
-    graph = read_planning_graph(repo, labels=[config["labels"]["plan"]],
+    graph = read_planning_graph(repo,
         milestone=issue_query.get("milestone"), limit=NEXT_PLAN_INVENTORY_LIMIT + 1) if getattr(args, "batch_read", False) else None
     if graph is not None:
         page_actor, issues = BATCH_READ_CONTEXT["diagnostics"]["actor"], graph
@@ -5091,7 +5091,8 @@ def cmd_next(args: argparse.Namespace) -> None:
             dependency_degraded_count += 1
             if truncated_relationships:
                 evaluated["truncated_relationships"] = truncated_relationships
-        (candidates if disposition == "candidate" else excluded).append(evaluated)
+        triage = evaluated.get("exclusion") == "wait_review_required" and wait_error is None
+        (candidates if disposition == "candidate" or triage else excluded).append(evaluated)
 
     wait_context = next_wait_context(issues, scan_limit=args.scan_limit,
                                      inventory_complete=not inventory_truncated and not scan_truncated,
@@ -5277,7 +5278,9 @@ def project_local_queue(candidates: list[dict[str, Any]], excluded: list[dict[st
     groups: dict[str, Any] = {"candidates": [], "available_candidates": [], "underway": [], "verification_only": [], "scope_review": [], "needs_status": [], "waiting": [], "excluded": list(excluded)}
     for item in candidates:
         state = (item.get("queue") or {}).get("state", "review")
-        if state in {"underway", "needs_status"}:
+        if state == "needs_status" or (state == "review" and (item.get("queue") or {}).get("wait_review_required")):
+            groups["needs_status"].append(item)
+        elif state == "underway":
             groups[state].append(item)
         elif state == "waiting":
             if item["queue"].get("reason") == "recorded_next_actor":
@@ -7613,7 +7616,7 @@ def build_parser() -> argparse.ArgumentParser:
         parser_class=github_api_core.TerminalArgumentParser,
     )
 
-    p = sub.add_parser("index", help="Compact plan issue index, no bodies")
+    p = sub.add_parser("index", help="Compact issue index, no bodies")
     repository_scope.add_include_archived_argument(p)
     p.add_argument("--state", default="open", choices=["open", "closed", "all"])
     p.add_argument("--limit", type=positive_limit, default=20)

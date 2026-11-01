@@ -1174,7 +1174,6 @@ def test_plan_index_paginates_filters_prs_and_honors_limit() -> None:
 
     plan.api_json = fake_api_json
     plan.gh_json = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("index must not use gh issue list"))
-    plan.load_config = lambda _repo: {"labels": {"plan": "plan"}}
     output = StringIO()
     with redirect_stdout(output):
         plan.cmd_index(types.SimpleNamespace(repo="owner/repo", state="open", limit=3, label=None))
@@ -1187,7 +1186,6 @@ def test_plan_index_paginates_filters_prs_and_honors_limit() -> None:
     assert payload["plans"][0]["milestone"] == "Wave 1", payload
     assert len(calls) == 2, calls
     assert calls[0]["query"] == {
-        "labels": ["plan"],
         "state": ["open"],
         "sort": ["updated"],
         "direction": ["desc"],

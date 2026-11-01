@@ -31,7 +31,7 @@ commands:
   - name: github-plan-index
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "index"]
-    purpose: Lists durable planning issues through paged REST reads with compact status, label, and milestone fields.
+    purpose: Lists issues through paged REST reads with compact status, label, and milestone fields.
   - name: github-plan-search
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "search", "<query>"]
@@ -82,12 +82,12 @@ policy:
       match:
         argv_prefix: ["gh", "issue", "list"]
       action: require_preferred
-      message: Raw `gh issue list` misses the planning helper's compact fields, label defaults, issue-only filtering, and stable REST pagination. Use the GitHub plan helper for planning issue indexes.
+      message: Raw `gh issue list` misses the planning helper's compact fields, inventory coverage, issue-only filtering, and stable REST pagination. Use the GitHub plan helper for issue indexes.
       preferred:
         - kind: script
           path: ../github/scripts/gh-plan.py
           example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "index"]
-          purpose: Lists durable planning issues with compact status, label, and milestone fields while excluding pull requests.
+          purpose: Lists issues with compact status, label, and milestone fields while excluding pull requests.
     - id: prefer-gh-plan-search-for-issue-search
       match:
         argv_prefix: ["gh", "search", "issues"]
@@ -257,6 +257,12 @@ not only `available_candidates`. Increase `--limit` until candidate rows match
 before calling intake clear within the accessible repositories. Workers apply
 triage only to reports on their assigned item or routed to them; portfolio
 discovery belongs to the intake agent.
+
+Repository-local `next` and `index` also inventory every open issue by default.
+Use local `needs_status` for ordinary agent triage, preserving real holds and
+claim checks before implementation. An explicit `index --label` remains a
+filtered query; a truncated inventory requires a larger bound before calling
+intake clear.
 
 ## Choose Work
 
