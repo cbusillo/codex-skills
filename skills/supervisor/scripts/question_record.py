@@ -22,7 +22,9 @@ from skills.github.scripts import github_comment
 
 VERSION = 1
 COMMENT_LIMIT = 65536
-ISSUE_URL = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/([1-9][0-9]*)")
+ISSUE_URL = re.compile(
+    r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/([1-9][0-9]*)"
+)
 RECORD = re.compile(r"<!-- director-question:record (\{[^\n]*}) -->")
 TEXT_FIELDS = ("issue", "decision", "basis", "recommendation", "comparison", "manual")
 OPTION_FIELDS = ("answer", "changes", "cost", "next")
@@ -38,7 +40,9 @@ def validation_errors(record: Any) -> list[str]:
     for field in TEXT_FIELDS:
         if not isinstance(record.get(field), str) or not record[field].strip():
             errors.append(f"{field} must be nonempty text")
-    if isinstance(record.get("issue"), str) and not ISSUE_URL.fullmatch(record["issue"]):
+    if isinstance(record.get("issue"), str) and not ISSUE_URL.fullmatch(
+        record["issue"]
+    ):
         errors.append("issue must be an exact GitHub issue URL")
     unknown = set(record) - {"version", "options", *TEXT_FIELDS}
     if unknown:
@@ -56,7 +60,9 @@ def validation_errors(record: Any) -> list[str]:
             if field == "cost" and type(value) in (int, float) and value == 0:
                 continue
             if not isinstance(value, str) or not value.strip():
-                errors.append(f"options[{index}].{field} must be nonempty text (cost also accepts zero)")
+                errors.append(
+                    f"options[{index}].{field} must be nonempty text (cost also accepts zero)"
+                )
         if set(option) - set(OPTION_FIELDS):
             errors.append(f"options[{index}] has unknown fields")
         answer = option.get("answer")
@@ -65,33 +71,68 @@ def validation_errors(record: Any) -> list[str]:
             if key in answers:
                 errors.append(f"options[{index}].answer is duplicated")
             answers.append(key)
-    if isinstance(record.get("recommendation"), str) and record["recommendation"].strip().casefold() not in answers:
+    if (
+        isinstance(record.get("recommendation"), str)
+        and record["recommendation"].strip().casefold() not in answers
+    ):
         errors.append("recommendation must name one option's answer")
     return errors
 
 
-def render(record: dict[str, Any]) -> str:
+def render(record: dict[str, Any], *, legacy: bool = False) -> str:
     def text(value: Any) -> str:
-        return str(value).replace("<!--", "&lt;!--")
+        value = str(value) if legacy else " ".join(str(value).split())
+        return value.replace("<!--", "&lt;!--")
 
-    lines = [f"Director question: **{text(record['decision'])}**", "", text(record["basis"]), ""]
+    recommended = next(
+        option
+        for option in record["options"]
+        if option["answer"].strip().casefold()
+        == record["recommendation"].strip().casefold()
+    )
+    lines = [f"Director question: **{text(record['decision'])}**", ""]
+    lines.extend(
+        [text(record["basis"]), ""]
+        if legacy
+        else [
+            f"- **Context:** {text(record['basis'])}",
+            f"- **In simple terms:** {text(recommended['changes'])}",
+            "- **Options:**",
+        ]
+    )
     for option in record["options"]:
-        recommended = option["answer"].strip().casefold() == record["recommendation"].strip().casefold()
+        label = f"{text(option['answer'])}{' (recommended)' if option is recommended else ''}"
         lines.extend(
             [
-                f"**{text(option['answer'])}{' (recommended)' if recommended else ''}:** {text(option['changes'])}",
+                f"**{label}:** {text(option['changes'])}",
                 f"Ongoing cost: {text(option['cost'])}. After this answer: {text(option['next'])}",
                 "",
+            ]
+            if legacy
+            else [
+                f"  - **{label}:** {text(option['changes'])} "
+                f"Ongoing cost: {text(option['cost'])}. After this answer: {text(option['next'])}",
             ]
         )
     lines.extend(
         [
             f"Experienced developer: {text(record['comparison'])}",
             f"By hand: {text(record['manual'])}",
-            f"Owning issue: {record['issue']}",
+        ]
+        if legacy
+        else [
+            f"- **A senior developer would:** {text(record['comparison'])}",
+            f"- **Recommendation:** {text(recommended['answer'])}. {text(record['comparison'])}",
+            f"- **You do:** {text(record['manual'])}",
+            "",
         ]
     )
-    encoded = json.dumps(record, sort_keys=True).replace("<", "\\u003c").replace(">", "\\u003e")
+    lines.append(f"Owning issue: {record['issue']}")
+    encoded = (
+        json.dumps(record, sort_keys=True)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+    )
     return "\n".join(lines) + f"\n\n<!-- director-question:record {encoded} -->\n"
 
 
@@ -105,16 +146,26 @@ def read_record(source: dict[str, Any]) -> dict[str, Any]:
     if errors:
         raise ValueError("\n".join(errors))
     number = question_id.heading_id(body)
-    if not number or github_comment.canonical_comment_body(body) != question_id.number_heading(render(record), number).strip():
-        raise ValueError("source text disagrees with its record or has no number; read the source before repairing it")
+    if not number or github_comment.canonical_comment_body(body) not in {
+        question_id.number_heading(render(record, legacy=legacy), number).strip()
+        for legacy in (False, True)
+    }:
+        raise ValueError(
+            "source text disagrees with its record or has no number; read the source before repairing it"
+        )
     if record["issue"].casefold() != source["issue"].casefold():
         raise ValueError("record issue disagrees with its source")
+    rendered = (
+        question_id.number_heading(render(record), number)
+        .split("<!-- director-question:record ", 1)[0]
+        .strip()
+    )
     return {
         "record": record,
         "author": source["author"],
         "question_id": number,
         "url": source["url"],
-        "text": body.split("<!-- director-question:record ", 1)[0].strip(),
+        "text": rendered.removeprefix("Director question: "),
     }
 
 
@@ -133,11 +184,15 @@ class GitHubComments:
         match = ISSUE_URL.fullmatch(issue)
         if match is None:
             raise ValueError("invalid issue URL")
-        result = github_comment.comment("issue", int(match[2]), body, repo=match[1], dedupe_body=True)
+        result = github_comment.comment(
+            "issue", int(match[2]), body, repo=match[1], dedupe_body=True
+        )
         return result["url"]
 
     def read(self, url: str) -> dict[str, Any]:
-        source = next((c for c in self.fetch(delivery.source_item(url)) if c["url"] == url), None)
+        source = next(
+            (c for c in self.fetch(delivery.source_item(url)) if c["url"] == url), None
+        )
         if source is None:
             raise ValueError(f"source question is unavailable: {url}")
         match = delivery.COMMENT_URL.fullmatch(url)
@@ -145,13 +200,21 @@ class GitHubComments:
         return {**source, "issue": f"https://github.com/{match[1]}/issues/{match[2]}"}
 
 
-def create(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetch: DiscussionReader) -> dict[str, Any]:
+def create(
+    record: Any,
+    args: argparse.Namespace,
+    storage: QuestionStorage,
+    fetch: DiscussionReader,
+) -> dict[str, Any]:
     errors = validation_errors(record)
     configured = question_id.configured_queue()
     queue = args.queue or configured
     if args.queue and configured and args.queue.casefold() != configured.casefold():
         errors.append("--queue disagrees with configured question queue")
-    if queue and (not delivery.oq.ITEM.fullmatch(queue) or queue.split("/", 1)[0].casefold() != args.owner.casefold()):
+    if queue and (
+        not delivery.oq.ITEM.fullmatch(queue)
+        or queue.split("/", 1)[0].casefold() != args.owner.casefold()
+    ):
         errors.append("queue must belong to the configured Director")
     body = render(record) if not errors else ""
     target = ISSUE_URL.fullmatch(record["issue"]) if body else None
@@ -162,13 +225,20 @@ def create(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
         except ValueError as error:
             errors.append(str(error))
         if question_id.heading_id(body):
-            errors.append("decision must not supply a question number; the confirmed source owns numbering")
+            errors.append(
+                "decision must not supply a question number; the confirmed source owns numbering"
+            )
         if len(body.encode()) + 128 > COMMENT_LIMIT:
             errors.append("record and rendered text exceed the GitHub comment limit")
     if errors:
-        raise ValueError("Invalid Director question:\n" + "\n".join(f"- {error}" for error in errors))
+        raise ValueError(
+            "Invalid Director question:\n" + "\n".join(f"- {error}" for error in errors)
+        )
     if args.dry_run:
-        return {"text": body.split("<!-- director-question:record ", 1)[0].strip(), "registration": "dry_run"}
+        return {
+            "text": body.split("<!-- director-question:record ", 1)[0].strip(),
+            "registration": "dry_run",
+        }
     assert target is not None
     repo = target[1]
     actor = github_comment.authenticated_actor(
@@ -179,27 +249,55 @@ def create(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
     )
     trusted = {author.casefold() for author in [args.owner, *args.decision_author]}
     if actor.casefold() not in trusted:
-        raise ValueError("question writer must be the Director or a configured --decision-author")
+        raise ValueError(
+            "question writer must be the Director or a configured --decision-author"
+        )
     with delivery.queue_lock():
         url = storage.create(record["issue"], body)
         try:
             source = storage.read(url)
             view = read_record(source)
             if source["author"].casefold() not in trusted or view["record"] != record:
-                raise ValueError("saved question disagrees with the requested record or writer")
-        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
-            raise ValueError(f"Question saved at {url}; source readback failed: {error}") from error
+                raise ValueError(
+                    "saved question disagrees with the requested record or writer"
+                )
+        except (
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            subprocess.SubprocessError,
+        ) as error:
+            raise ValueError(
+                f"Question saved at {url}; source readback failed: {error}"
+            ) from error
     if not queue:
         return {**view, "registration": "not_configured", "recipient": args.owner}
     request = SimpleNamespace(
-        queue=queue, owner=args.owner, decision_author=args.decision_author, items=[url], register=True, ack=None, delivery_url=None
+        queue=queue,
+        owner=args.owner,
+        decision_author=args.decision_author,
+        items=[url],
+        register=True,
+        ack=None,
+        delivery_url=None,
     )
     try:
         report = delivery.run_queue(request, fetch)
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
-        raise ValueError(f"Question saved at {url}; queue registration failed: {error}") from error
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        subprocess.SubprocessError,
+    ) as error:
+        raise ValueError(
+            f"Question saved at {url}; queue registration failed: {error}"
+        ) from error
     if not report["complete"]:
-        raise ValueError(f"Question saved at {url}; queue registration is incomplete: {json.dumps(report)}")
+        raise ValueError(
+            f"Question saved at {url}; queue registration is incomplete: {json.dumps(report)}"
+        )
     row = next((q for q in report["questions"] if q["url"] == url), None)
     if not isinstance(row, dict):
         return {**view, "registration": "answered", "queue": queue}
@@ -209,12 +307,18 @@ def create(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
 
 
 def main(argv: list[str], fetch: DiscussionReader) -> int:
-    parser = argparse.ArgumentParser(description="Create or read one structured Director question")
+    parser = argparse.ArgumentParser(
+        description="Create or read one structured Director question"
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     new = commands.add_parser("create")
     new.add_argument("--record-file", type=Path, required=True)
     new.add_argument("--owner", required=True)
-    new.add_argument("--decision-author", action="append", default=delivery.oq.default_decision_authors())
+    new.add_argument(
+        "--decision-author",
+        action="append",
+        default=delivery.oq.default_decision_authors(),
+    )
     new.add_argument("--queue")
     new.add_argument("--dry-run", action="store_true")
     show = commands.add_parser("show-question")
@@ -236,11 +340,21 @@ def main(argv: list[str], fetch: DiscussionReader) -> int:
     except github_comment.CommentError as error:
         print(
             json.dumps(
-                github_comment.terminal_failure(error, "github.question.create", expected_actor=github_comment.EXPECTED_ACTOR)
+                github_comment.terminal_failure(
+                    error,
+                    "github.question.create",
+                    expected_actor=github_comment.EXPECTED_ACTOR,
+                )
             ),
             file=sys.stderr,
         )
         return 1
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        subprocess.SubprocessError,
+    ) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
