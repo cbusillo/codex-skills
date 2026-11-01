@@ -76,11 +76,11 @@ class IssueReleaseRefusal(ValueError):
     """This issue's retained work conflicts; closure of the source is still checked separately."""
 
 
-def related_sessions_match(text: str, session: str) -> bool:
-    """Compare explicit session fields outside fenced examples."""
+def related_sessions_match(text: str, session: str, *, require_explicit: bool = False) -> bool:
     prose = claim.ownership_text(text, strip_quotes=False)
     fence = None
     previous = ""
+    found = False
     for line in prose.splitlines():
         line = re.sub(r"^\s*(?:>\s*)+", "", line)
         context = previous + "\n" + line
@@ -93,18 +93,23 @@ def related_sessions_match(text: str, session: str) -> bool:
         if opener:
             fence = opener.group(1)
             continue
+        harness = r"(?:(?:Claude(?:[ \t]+Code)?|Codex)[ \t]+)?"
         fields = (
             r"\b(?:Native[ \t_-]*)?(?:Session(?:[ \t_-]*ID)?|Thread[ \t_-]*ID)\b"
-            r"(?:[ \t]*[:=][ \t]*|[ \t]+[—-][ \t]+)([^\s,;|]+)"
-            r"|\|[ \t]*(?:Session(?:[ \t_-]*ID)?|Thread[ \t_-]*ID)[ \t]*\|[ \t]*([^\s|]+)"
+            r"(?:[ \t]*[:=][ \t]*|[ \t]+[—-][ \t]+)" + harness + r"([^\s,;|]+)"
+            r"|\|[ \t]*(?:Session(?:[ \t_-]*ID)?|Thread[ \t_-]*ID)[ \t]*\|[ \t]*" + harness + r"([^\s|]+)"
         )
         for field in re.finditer(fields, line, re.IGNORECASE):
             if claim.human_session_reference(context, len(context) - len(line) + field.start()):
                 continue
+            found = True
             value = (field.group(1) or field.group(2)).strip("()<>")
             if not re.fullmatch(rf"{re.escape(session)}\.?", value):
                 return False
-    return True
+            native_ids = re.findall(r"\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b", line[field.end():], re.IGNORECASE)
+            if any(value != session for value in native_ids):
+                return False
+    return found or not require_explicit
 
 
 def source_record(source: dict[str, Any], *, legacy: bool = False,

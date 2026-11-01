@@ -1116,6 +1116,19 @@ class ReleaseTests(ReleaseHarness):
                     self.assertFalse(release.related_sessions_match(field.format(value), "session-b"))
             self.assertTrue(release.related_sessions_match(field.format("session-b"), "session-b"))
 
+    def test_native_session_fields_allow_harness_labels_but_reject_ambiguous_ids(self) -> None:
+        session = "81687039-a90a-4107-a144-29bd815ce6ba"
+        other = "01a195be-e612-7ae3-ab03-41d0e7c0b0df"
+        for field in ("Session: {}", "- **Session:** Claude Code `{}`", "Native session ID: Codex {}",
+                      "| Session | Claude Code `{}` |", "Thread ID: {} (Claude Code)"):
+            with self.subTest(field=field):
+                self.assertTrue(release.related_sessions_match(field.format(session), session, require_explicit=True))
+                for value in (other, "prefix-" + session, session + "-suffix", session + " or " + other):
+                    self.assertFalse(release.related_sessions_match(field.format(value), session, require_explicit=True))
+        for body in ("No session field", f"```\nSession: {session}\n```", f"Session: {session}\nSession: {other}"):
+            self.assertFalse(release.related_sessions_match(body, session, require_explicit=True))
+        self.assertTrue(release.related_sessions_match("No session field", session))
+
     def test_human_session_link_is_not_a_standalone_ownership_assertion(self) -> None:
         for prose in (
             "Next actor: Chris uses his existing administrator session: https://example.test/admin",

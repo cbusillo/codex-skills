@@ -1293,6 +1293,10 @@ prompt. Each initial completed native acknowledgement must name the landing,
 use no tools and arrive within two minutes; launcher return and echoed input
 alone do not pass. It then sends one targeted handoff request to each idle empty
 prompt, saves its exact native-session issue handoff, and delegates normal closeout.
+Handoff selection, normal closeout and claim cleanup share the native-session
+field reader. Harness labels and Markdown formatting may surround the exact ID;
+missing, wrong or conflicting IDs do not identify a smoke. Author, landing and
+request-time checks still bind the selected comment to that attempt.
 A saved handoff reruns closeout directly, preserving its URL and native ID even
 after retirement. Manual recovery reuses `<catalog-evidence>/<harness>-closeout`.
 A Codex `register_ledger` failure preserves its launch object:

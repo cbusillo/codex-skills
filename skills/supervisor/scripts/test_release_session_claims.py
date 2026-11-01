@@ -1279,9 +1279,11 @@ class ReleaseTests(unittest.TestCase):
             helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
 
     def test_related_followup_is_passed_to_existing_release_gate(self):
-        self.reader.paged_json.return_value = [self.source, comment(2, "Claimed by trial\nSession: source-session")]
-        found = helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
-        self.assertEqual(found[0][1], [2])
+        for field in ("Session: source-session", "- Session: Claude Code `source-session`"):
+            with self.subTest(field=field):
+                self.reader.paged_json.return_value = [self.source, comment(2, "Claimed by trial\n" + field)]
+                found = helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
+                self.assertEqual(found[0][1], [2])
 
     def test_related_alias_without_exact_session_is_not_released(self):
         for body in ("Claimed by trial", "Claimed by trial\nSession: another-session"):

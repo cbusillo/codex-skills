@@ -481,7 +481,7 @@ def active_claims(reader, repo, number, session, actor, *, comments=None, verifi
                        and not claim.records(r.get("body") or "")
                        and re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", r.get("body") or "")
                        and (r.get("user") or {}).get("login") == actor
-                       and re.search(rf"(?m)^Session: {re.escape(session)}[ \t]*$", r.get("body") or "")]
+                       and release.related_sessions_match(r.get("body") or "", session, require_explicit=True)]
             unresolved = [r["id"] for r in comments if r["id"] in active_ids and r["id"] not in related
                           and not claim.records(r.get("body") or "")
                           and re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", r.get("body") or "")
