@@ -2806,14 +2806,29 @@ def ide_process_tree_pids(launcher_names: tuple[str, ...]) -> list[int]:
         pids.update(children)
 
 
-def offline_ide_open_files(pids: list[int]) -> dict[int, list[str]]:
+LSOF_UNSTATTABLE_MOUNT = re.compile(r"lsof: WARNING: can't stat\(\) \S+ file system (/.+)")
+LSOF_WARNING_DETAIL = re.compile(r'\s+(?:Output information may be incomplete\.|assuming "dev=[0-9A-Fa-f]+" from mount table)')
+
+
+def require_lsof_warnings_outside(root: Path, stderr: str) -> None:
+    for line in stderr.splitlines():
+        if not line.strip() or LSOF_WARNING_DETAIL.fullmatch(line):
+            continue
+        mount = LSOF_UNSTATTABLE_MOUNT.fullmatch(line)
+        if mount is None:
+            raise ValueError("Incomplete open-file discovery")
+        mount_path = Path(os.path.normpath(mount[1]))
+        if root.is_relative_to(mount_path) or mount_path.is_relative_to(root):
+            raise ValueError("Open-file discovery cannot read the worktree's file system")
+
+
+def offline_ide_open_files(pids: list[int], root: Path) -> dict[int, list[str]]:
     if not pids:
         return {}
     try:
         result = subprocess.run(["lsof", "-nP", "-a", "-p", ",".join(map(str, pids)), "-Fpfnt0"],
                                 capture_output=True, text=True, timeout=5, check=True)
-        if result.stderr.strip():
-            raise ValueError("Incomplete open-file discovery")
+        require_lsof_warnings_outside(root, result.stderr)
         files: dict[int, list[str]] = {}
         current = None
         file_type = None
@@ -2927,7 +2942,7 @@ def offline_retirement_records(root: Path) -> list[str]:
                     raise InspectError("IDE cache ownership is invalid; retain the worktree.", 3,
                                        {"offline_retirement_record": str(marker)})
                 require_unrelated(marker, [record["worktree_path"]])
-        for pid, paths in offline_ide_open_files(pids).items():
+        for pid, paths in offline_ide_open_files(pids, root).items():
             if any(refers_to_worktree(path) for path in paths):
                 raise InspectError("A running IDE holds this worktree open; retain it until the IDE releases it.", 3,
                                    {"offline_retirement_ide_pids": [pid]})
