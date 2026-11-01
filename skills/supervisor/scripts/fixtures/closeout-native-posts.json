@@ -207,7 +207,30 @@
         "repo": "cbusillo/odoo-tenant-opw",
         "observed_at": "2026-11-01T08:01:08.505Z"
       }
-    ]
+    ],
+    "claims": {
+      "blocked": [],
+      "checked_at": 1793521528.414701,
+      "claims_clear": true,
+      "coverage": {
+        "complete": true,
+        "owners": [
+          "cbusillo"
+        ],
+        "repositories": [],
+        "scope": "session claim journals, recorded transcript claims, and the session's claim records found by GitHub search",
+        "search_errors": []
+      },
+      "ok": true,
+      "operation": "work-closeout.claims",
+      "released_claims": [],
+      "request_count": 1,
+      "session_ids": [
+        "01a1961c-524a-72f1-9c15-6ae7fd65fb6e"
+      ],
+      "settled_invocations": [],
+      "unresolved_invocations": []
+    }
   },
   {
     "token": "LP5427B-1101",
@@ -249,6 +272,29 @@
         "repo": "cbusillo/launchplane",
         "observed_at": "2026-11-01T08:00:08.427Z"
       }
-    ]
+    ],
+    "claims": {
+      "blocked": [],
+      "checked_at": 1793521882.619002,
+      "claims_clear": true,
+      "coverage": {
+        "complete": true,
+        "owners": [
+          "cbusillo"
+        ],
+        "repositories": [],
+        "scope": "session claim journals, recorded transcript claims, and the session's claim records found by GitHub search",
+        "search_errors": []
+      },
+      "ok": true,
+      "operation": "work-closeout.claims",
+      "released_claims": [],
+      "request_count": 1,
+      "session_ids": [
+        "01a1961d-2eb0-7df0-b250-288eba48c771"
+      ],
+      "settled_invocations": [],
+      "unresolved_invocations": []
+    }
   }
 ]

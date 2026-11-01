@@ -201,26 +201,67 @@ def text_content(content) -> str:
     )
 
 
-def output_objects(value: object) -> Iterator[dict]:
-    if isinstance(value, str):
-        try:
-            decoded = json.loads(value)
-        except ValueError:
-            for line in value.splitlines():
-                if line.lstrip().startswith(("{", "[")):
-                    try:
-                        yield from output_objects(json.loads(line))
-                    except ValueError:
-                        continue
-        else:
-            yield from output_objects(decoded)
-    elif isinstance(value, list):
-        for item in value:
-            yield from output_objects(item)
-    elif isinstance(value, dict):
+def output_objects(value: object, *, document: bool = False) -> Iterator[dict]:
+    if isinstance(value, dict):
         yield value
         for nested in value.values():
+            yield from output_objects(nested, document=document)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from output_objects(nested, document=document)
+    elif isinstance(value, str):
+        if document:
+            decoder = json.JSONDecoder()
+            for match in re.finditer(r"(?m)^[ \t]*(?=[{\[])", value):
+                try:
+                    nested, _end = decoder.raw_decode(value, match.end())
+                except ValueError:
+                    continue
+                yield from output_objects(nested, document=True)
+            return
+        for line in value.splitlines():
+            if not line.lstrip().startswith(("{", "[")):
+                continue
+            try:
+                nested = json.loads(line)
+            except ValueError:
+                continue
             yield from output_objects(nested)
+
+
+def native_results(blocks: list[object], *, document: bool = False) -> list[dict]:
+    results = []
+    for block in blocks:
+        parts = block if isinstance(block, list) else [block]
+        for part in parts:
+            if isinstance(part, dict) and part.get("type") in {"input_text", "text"}:
+                part = part.get("text")
+            if isinstance(part, str):
+                try:
+                    part = json.loads(part)
+                except ValueError:
+                    header = re.match(
+                        r"(?:Warning: truncated output \(original token count: \d+\)\n)?"
+                        r"(?:Total output lines: \d+\n\n)?(?:Chunk ID: [^\n]+\n)?"
+                        r"Wall time: [0-9.]+ seconds\n"
+                        r"(?:Process exited with code (?P<exit>-?\d+)\n)?"
+                        r"(?:Process running with session ID (?P<process>-?\d+)\n)?"
+                        r"(?:Original token count: \d+\n)?Output:",
+                        part,
+                    )
+                    if header is None:
+                        if not document:
+                            continue
+                        part = {"output": part}
+                    else:
+                        part = {
+                            "exit_code": int(header["exit"]) if header["exit"] is not None else None,
+                            "session_id": int(header["process"]) if header["process"] is not None else None,
+                            "output": part[header.end():],
+                        }
+            if isinstance(part, dict):
+                results.append(part)
+    return results
 
 
 def posted_comments(entry: dict) -> list[dict]:
@@ -242,9 +283,11 @@ def posted_comments(entry: dict) -> list[dict]:
             if isinstance(content, list):
                 outputs.extend(block.get("content") for block in content
                                if block.get("type") == "tool_result" and block.get("is_error") is not True)
-        for value in output_objects(outputs):
+        results = [value for value in native_results(outputs, document=True)
+                   if value.get("is_error") is not True and ("exit_code" not in value or value["exit_code"] == 0)]
+        for value in output_objects(results, document=True):
             if (value.get("ok") is True and value.get("outcome_certainty") == "confirmed"
-                    and value.get("operation") in {"github.plan.release", "github.comment.issue"}):
+                    and value.get("operation") == "github.plan.release"):
                 found.append({**value, "observed_at": record.get("timestamp")})
     after = path.stat()
     if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):

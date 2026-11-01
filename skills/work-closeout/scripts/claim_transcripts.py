@@ -23,9 +23,9 @@ import tree_sitter_bash
 from tree_sitter import Language, Node, Parser
 
 if TYPE_CHECKING:
-    from skills.supervisor.scripts.session_record import output_objects as values
+    from skills.supervisor.scripts.session_record import native_results, output_objects as values
 else:
-    from session_record import output_objects as values
+    from session_record import native_results, output_objects as values
 
 CLOSED_STDIN_SINCE = (0, 87, 0)
 UNFINISHED_CLAIM = "unfinished_claim"
@@ -539,38 +539,6 @@ def literal_javascript_shell_parts(text: str, *, whole_result: bool = False) -> 
         if tokens[:1] == [";"]:
             tokens = tokens[1:]
     return parts
-
-
-def native_results(blocks: list[object]) -> list[dict]:
-    results = []
-    for block in blocks:
-        parts = block if isinstance(block, list) else [block]
-        for part in parts:
-            if isinstance(part, dict) and part.get("type") in {"input_text", "text"}:
-                part = part.get("text")
-            if isinstance(part, str):
-                try:
-                    part = json.loads(part)
-                except ValueError:
-                    header = re.match(
-                        r"(?:Warning: truncated output \(original token count: \d+\)\n)?"
-                        r"(?:Total output lines: \d+\n\n)?(?:Chunk ID: [^\n]+\n)?"
-                        r"Wall time: [0-9.]+ seconds\n"
-                        r"(?:Process exited with code (?P<exit>-?\d+)\n)?"
-                        r"(?:Process running with session ID (?P<process>-?\d+)\n)?"
-                        r"(?:Original token count: \d+\n)?Output:",
-                        part,
-                    )
-                    if header is None:
-                        continue
-                    part = {
-                        "exit_code": int(header["exit"]) if header["exit"] is not None else None,
-                        "session_id": int(header["process"]) if header["process"] is not None else None,
-                        "output": part[header.end():],
-                    }
-            if isinstance(part, dict):
-                results.append(part)
-    return results
 
 
 def whole_shell_parts(text: str, javascript: bool, name: str) -> list[str] | None:

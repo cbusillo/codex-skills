@@ -596,6 +596,7 @@ def finished_claims(reader, entry, actor, issues, apply):
     """Consume one canonical release proof per source; never manufacture a release."""
     released, refused, retained_status = [], [], []
     ended = release.stamp(entry["ended_at"])
+    posted = None
     for repo, number in issues:
         reader.deadline_at = time.time() + entry.get("_read_deadline_seconds", 600)
         identity = {"repository": repo, "issue": number}
@@ -651,8 +652,14 @@ def finished_claims(reader, entry, actor, issues, apply):
                     if receipt is not None:
                         eligible = "_release_evidence" in candidate
                     else:
-                        eligible = (release.stamp(candidate.get("updated_at") or candidate.get("created_at")) <= ended
-                                    or observed_post(entry, candidate, actor, source_id=source["id"]))
+                        eligible = release.stamp(candidate.get("updated_at") or candidate.get("created_at")) <= ended
+                        if not eligible:
+                            if posted is None:
+                                try:
+                                    posted = session_record.posted_comments(entry)
+                                except (ValueError, TypeError, KeyError, OSError):
+                                    posted = []
+                            eligible = observed_post(entry, candidate, actor, source_id=source["id"], posted=posted)
                     if not eligible or not release.related_sessions_match(candidate.get("body") or "", entry["session_id"]):
                         continue
                     evidence = candidate
@@ -696,28 +703,24 @@ def finished_claims(reader, entry, actor, issues, apply):
     return report
 
 
-def observed_post(entry: dict, candidate: dict, actor: str, *, source_id: int | None = None) -> bool:
+def observed_post(entry: dict, candidate: dict, actor: str, *, source_id: int, posted: list[dict]) -> bool:
     if (not entry.get("transcript") or not isinstance(candidate.get("created_at"), str)
             or candidate.get("created_at") != candidate.get("updated_at")
             or (candidate.get("user") or {}).get("login") != actor):
         return False
-    for posted in session_record.posted_comments(entry):
-        evidence = posted.get("handoff_comment") if source_id is not None else posted.get("comment")
+    for result in posted:
+        evidence = result.get("handoff_comment")
         if not isinstance(evidence, dict):
             continue
         if (evidence.get("id") != candidate.get("id") or evidence.get("url") != candidate.get("html_url")
-                or evidence.get("author") != actor or posted.get("expected_actor") != actor
+                or evidence.get("author") != actor or result.get("expected_actor") != actor
                 or evidence.get("created_at") != evidence.get("updated_at")):
             continue
-        if source_id is not None:
-            if (posted.get("operation") != "github.plan.release" or posted.get("source_claim") != source_id
-                    or posted.get("release_state") != "confirmed" or "release_readback" not in posted.get("completed_steps", [])):
-                continue
-        elif (posted.get("operation") != "github.comment.issue" or posted.get("comment_action") != "created"
-              or candidate.get("issue_url") != f"https://api.github.com/repos/{posted.get('repo')}/issues/{posted.get('number')}"):
+        if (result.get("operation") != "github.plan.release" or result.get("source_claim") != source_id
+                or result.get("release_state") != "confirmed" or "release_readback" not in result.get("completed_steps", [])):
             continue
         try:
-            observed = release.stamp(posted.get("observed_at"))
+            observed = release.stamp(result.get("observed_at"))
         except (TypeError, ValueError):
             continue
         if not entry.get("ended_at") or observed <= release.stamp(entry["ended_at"]):
