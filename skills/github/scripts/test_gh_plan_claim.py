@@ -1058,6 +1058,26 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(caught.exception.payload["recorded_decisions"][0]["decision_comments"][0]["body"], self.comments[1]["body"])
         self.assert_no_writes()
 
+    def test_retained_handoff_reports_the_answer_and_keeps_every_wait(self) -> None:
+        self.refresh_fixture()
+        url = "https://github.com/owner/repo/pull/99#issuecomment-700"
+        wait = wait_record.reviewed(evidence=url, waiting_for=["Director", "Service readback"],
+            ends_when=["Decision is reconciled", "Service identity verified"])
+        self.target_comments["/repos/owner/repo/issues/99/comments"] = [
+            {"id": 700, "html_url": url, "user": {"login": TEST_BOT}, "body": "Director question: Q700. Continue?"},
+            {"id": 701, "html_url": url.replace("700", "701"), "user": {"login": TEST_BOT},
+             "body": "Director decision: Q700. Stage after service readback; no production change."},
+            {"id": 702, "user": {"login": TEST_BOT}, "body": wait_record.marker(wait)}]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        error = caught.exception
+        self.assertEqual(error.code, "claim_wait_unresolved")
+        self.assertEqual(error.payload["structured_wait"], wait)
+        records = error.payload["recovery_requirements"]["requirements"][0]["records"]
+        self.assertEqual(records[0]["structured_wait"], wait)
+        self.assertEqual(records[0]["recorded_decisions"], error.payload["recorded_decisions"])
+        self.assert_no_writes()
+
     def test_canonical_wait_refusal_identifies_its_own_record(self):
         for kind, cross_repo in product(("issue", "pr"), (False, True)):
             with self.subTest(kind=kind, cross_repo=cross_repo):

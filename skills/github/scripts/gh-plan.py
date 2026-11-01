@@ -2190,13 +2190,34 @@ def current_wait(issue: dict[str, Any], comments: list[dict[str, Any]], repo: st
 def seed_decision_discussion(repo: str, number: int, discussion: dict[str, Any]) -> None:
     complete = discussion.get("complete")
     if isinstance(complete, bool) and complete:
-        DECISION_DISCUSSIONS.setdefault((repo.casefold(), number), discussion)
+        key = repo.casefold(), number
+        if not DECISION_DISCUSSIONS.get(key, {}).get("complete"):
+            DECISION_DISCUSSIONS[key] = discussion
 
 
 def question_evidence_urls(wait: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(url for token in re.findall(r'https://[^\s<>"()]+', wait.get("evidence", ""))
         if github_plan_questions.COMMENT_URL.fullmatch(url := token.rstrip(".,;:]"))))
 
+
+
+def read_decision_discussion(repo: str, number: int) -> dict[str, Any]:
+    def read() -> dict[str, Any]:
+        try:
+            _, source = get_issue(str(number), repo)
+            _, comments = collect_paged_rest_items(f"/repos/{repo}/issues/{number}/comments", query={},
+                bucket="rest_core", step_prefix="wait_decision_comments")
+            return github_direction_next.discussion_snapshot(source, comments, complete=True)
+        except PlanError as source_error:
+            raise_if_cancelled(source_error)
+            return {"complete": False, "error": str(source_error)}
+
+    try:
+        return NEXT_READS.observe(f"wait_decision:{repo.casefold()}#{number}", read) if NEXT_READS else read()
+    except github_next_reads.ReadDeadline as budget_error:
+        assert NEXT_READS is not None
+        NEXT_READS.budget_stop("read_budget_exhausted", error=budget_error)
+        return {"complete": False, "error": str(budget_error)}
 
 def recorded_wait_decisions(wait: dict[str, Any], _repo: str) -> list[dict[str, Any]]:
     if wait.get("state") != "waiting":
@@ -2208,14 +2229,7 @@ def recorded_wait_decisions(wait: dict[str, Any], _repo: str) -> list[dict[str, 
         repo, number = match[1], int(match[2])
         key = repo.casefold(), number
         if key not in DECISION_DISCUSSIONS:
-            try:
-                _, source = get_issue(str(number), repo)
-                _, comments = collect_paged_rest_items(f"/repos/{repo}/issues/{number}/comments", query={},
-                    bucket="rest_core", step_prefix="wait_decision_comments")
-                seed_decision_discussion(repo, number, github_direction_next.discussion_snapshot(source, comments, complete=True))
-            except PlanError as exc:
-                raise_if_cancelled(exc)
-                DECISION_DISCUSSIONS[key] = {"complete": False, "error": str(exc)}
+            DECISION_DISCUSSIONS.setdefault(key, read_decision_discussion(repo, number))
         discussion = DECISION_DISCUSSIONS[key]
         comments = discussion.get("comments", [])
         if discussion.get("complete") is not True or any(
@@ -2909,15 +2923,20 @@ def check_claim_wait(waiting_issue: dict[str, Any], waiting_status: str, config:
     has_wait, error = evaluate_claim_wait(waiting_issue, waiting_status, config,
                                           wait_resolved=wait_resolved, record_status=record_status)
     if error is not None:
-        decisions = recorded_wait_decisions(error.payload["structured_wait"], waiting_issue["repo"])
-        if decisions:
-            raise ClassifiedPlanError(error.code,
-                f"Recorded decision requires agent reconciliation: {', '.join(url for decision in decisions for url in decision['answers'])}. "
-                "Read every actual answer and preserve all other conditions; no wait has been cleared. " + str(error),
-                payload={**error.payload, "recorded_decisions": decisions}) from error
-        raise error
+        raise annotate_claim_wait_error(error)
+
     return has_wait
 
+
+
+def annotate_claim_wait_error(error: ClassifiedPlanError) -> ClassifiedPlanError:
+    decisions = recorded_wait_decisions(error.payload["structured_wait"], error.payload["waiting_record"]["repo"])
+    if not decisions:
+        return error
+    return ClassifiedPlanError(error.code,
+        f"Recorded decision requires agent reconciliation: {', '.join(url for decision in decisions for url in decision['answers'])}. "
+        "Read every actual answer and preserve all other conditions; no wait has been cleared. " + str(error),
+        payload={**error.payload, "recorded_decisions": decisions})
 
 def claim_admission_options(args: argparse.Namespace) -> tuple[str | None, list[str], str | None]:
     admission = getattr(args, "admission", None)
@@ -3020,6 +3039,8 @@ def claim_once(args: argparse.Namespace) -> None:
             waiting_repo, waiting_number = record["repo"], record["number"]
             records.append({**record, "structured_wait": waiting_error.payload["structured_wait"],
                             "review_required": waiting_error.payload["review_required"],
+                            **({"recorded_decisions": waiting_error.payload["recorded_decisions"]}
+                               if "recorded_decisions" in waiting_error.payload else {}),
                             "review_command": f"gh-plan.py --repo {waiting_repo} wait {waiting_number}"})
         if not records:
             return None
@@ -3702,9 +3723,11 @@ def claim_once(args: argparse.Namespace) -> None:
                 target, sections.get("Current Status", ""), phase["target_config"],
                 wait_resolved=args.wait_resolved,
                 record_status=claim_current_status(target, sections, target_comments))
-            evaluated_waits[pull_number] = evaluation
-            if evaluation[1] is not None:
-                known_wait_errors.append(evaluation[1])
+            has_wait, target_wait_error = evaluation
+            if target_wait_error is not None:
+                target_wait_error = annotate_claim_wait_error(target_wait_error)
+                known_wait_errors.append(target_wait_error)
+            evaluated_waits[pull_number] = has_wait, target_wait_error
         aggregate_wait_requirement = wait_requirement(known_wait_errors)
         for ended in ended_owners:
             ended["pull_requests"] = [f"https://github.com/{target_repo}/pull/{p['number']}" for p in target_pulls
@@ -5319,6 +5342,8 @@ def read_queue_ownership(repo: str) -> dict[str, Any]:
 def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *, parallel: bool = True) -> dict[str, Any]:
     """Read ownership once per repository; project every evaluated current step."""
     if parallel and NEXT_READS is not None and NEXT_READS.workers > 1:
+        for item in items:
+            seed_decision_discussion(item["repo"], item["number"], item.get("discussion") or {})
         groups: dict[str, list[dict[str, Any]]] = {}
         for item in items:
             groups.setdefault(item["repo"], []).append(item)
@@ -6098,7 +6123,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         unread("work_graph_unread", "Track graph nodes are unread; milestones are unknown", graph_context=graph_coverage)
     # Establish useful native-frontier evidence before optional portfolio work.
     NEXT_READS.start_phase("milestone_ownership")
-    graph_queue_context = annotate_next_queue([*ranked["candidates"], *decision_wait_items(ranked["excluded"])], args)
+    graph_queue_context = annotate_next_queue(ranked["candidates"], args)
 
     def evidence_complete(queue: dict[str, Any], waits: dict[str, Any], focuses: list[dict[str, Any]]) -> bool:
         return bool(waits.get("complete") and all(item.get("complete") is True
@@ -6280,7 +6305,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     discoveries.extend(pull_items)
     NEXT_READS.start_phase("ownership")
     queue_context = annotate_next_queue(list({(entry["repo"].casefold(), entry["number"]): entry
-        for entry in [*ranked["candidates"], *discoveries]}.values()), args)
+        for entry in [*ranked["candidates"], *discoveries, *decision_wait_items(ranked["excluded"])]}.values()), args)
     for item in pull_items:
         discussion = item.get("discussion") or {}
         discussion.update(ancestry_complete=True, parents=[])

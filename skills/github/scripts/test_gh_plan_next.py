@@ -3319,7 +3319,7 @@ TESTS.append(test_recorded_answers_require_exact_trusted_source_and_preserve_all
 
 
 def test_answered_wait_is_reconciliation_in_local_and_global_selection_without_unblocking_dependents() -> None:
-    for scope in ("local", "global"):
+    for scope in ("local", "global", "discovery", "incident"):
         module = load_module()
         repo = "owner/repo" if scope == "local" else "someone/product"
         director = repo.split("/")[0]
@@ -3355,9 +3355,14 @@ def test_answered_wait_is_reconciliation_in_local_and_global_selection_without_u
             raw["user"] = {"login": director}
             dependent = global_issue(repo, 22, body="## Current Status\nNext actor: agent\nNext action: Dependent implementation.")
             root = active_track("someone/direction", 1, "First", f"Next actor: agent\nNext action: {repo}#21.")
-            with global_fixture([root], [raw, dependent], {
-                    (root["repo"], 1): relationships(sub_issues=[raw, dependent]),
-                    (repo, 22): relationships(blocked_by=[raw])}, comments={(repo, 21): comments}) as (module, result, _reads):
+            edges = {(repo, 22): relationships(blocked_by=[raw])}
+            if scope == "global":
+                edges[(root["repo"], 1)] = relationships(sub_issues=[raw, dependent])
+            if scope == "incident":
+                raw["labels"].append({"name": module.github_direction_next.LIVE_BREAKAGE_LABEL})
+            with global_fixture([root], [raw, dependent], edges,
+                    discovered=[raw, dependent] if scope != "global" else [],
+                    comments={(repo, 21): comments}) as (module, result, _reads):
                 with patch.multiple(module, annotate_next_queue=module.real_annotate_next_queue,
                     read_queue_ownership=lambda _: observed, next_status_body_time=lambda *_: None,
                     milestone_direction_repo=lambda _: f"{director}/direction", wait_authors=lambda _: {director}):
@@ -3373,6 +3378,51 @@ def test_answered_wait_is_reconciliation_in_local_and_global_selection_without_u
 
 
 TESTS.append(test_answered_wait_is_reconciliation_in_local_and_global_selection_without_unblocking_dependents)
+
+
+def test_parallel_answer_diagnostics_read_one_source_and_keep_a_successful_snapshot() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    module = load_module()
+    url = "https://github.com/owner/repo/issues/21#issuecomment-700"
+    source = {**issue(21), "user": {"login": "owner"}}
+    comments = [{"id": 700, "html_url": url, "user": {"login": "owner"}, "body": "Director question: Q700. Continue?"},
+                {"id": 701, "html_url": url.replace("700", "701"), "user": {"login": "owner"},
+                 "body": "Director decision: Q700. Stage only."}]
+    wait = module.github_plan_wait.reviewed(evidence=url, waiting_for="Director", ends_when="Actual answer reconciled")
+    barrier = Barrier(2)
+
+    class ConcurrentMisses(dict[tuple[str, int], dict[str, Any]]):
+        def __contains__(self, key: object) -> bool:
+            present = super().__contains__(key)
+            if not present:
+                barrier.wait(timeout=5)
+            return present
+
+    with module.github_next_reads.NextReads(workers=2, seconds=0) as reads, patch.multiple(module,
+            NEXT_READS=reads, DECISION_DISCUSSIONS=ConcurrentMisses(), milestone_direction_repo=lambda _: "owner/direction",
+            wait_authors=lambda _: {"owner"}, get_issue=Mock(return_value=("bot", source)),
+            collect_paged_rest_items=Mock(return_value=("bot", comments))):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda repo: module.recorded_wait_decisions(wait, repo), ("owner/a", "owner/b")))
+        assert results[0] == results[1] and results[0]
+        module.get_issue.assert_called_once()
+        module.collect_paged_rest_items.assert_called_once()
+    module.DECISION_DISCUSSIONS.clear()
+    complete = module.github_direction_next.discussion_snapshot(source, comments, complete=True)
+    def fail_after_verified_read(*_args: Any) -> Any:
+        module.seed_decision_discussion("owner/repo", 21, complete)
+        raise module.PlanError("Other source read failed")
+    with patch.multiple(module, get_issue=fail_after_verified_read, milestone_direction_repo=lambda _: "owner/direction",
+                        wait_authors=lambda _: {"owner"}):
+        assert module.recorded_wait_decisions(wait, "owner/a")
+    module.DECISION_DISCUSSIONS[("owner/repo", 21)] = {"complete": False}
+    module.seed_decision_discussion("owner/repo", 21, complete)
+    assert module.DECISION_DISCUSSIONS[("owner/repo", 21)]["complete"]
+
+
+TESTS.append(test_parallel_answer_diagnostics_read_one_source_and_keep_a_successful_snapshot)
 
 def main() -> None:
     for test in TESTS:
