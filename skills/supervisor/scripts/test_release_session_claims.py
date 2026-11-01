@@ -790,7 +790,7 @@ class ReleaseTests(unittest.TestCase):
                             elif changed == "late_receipt":
                                 post["observed_at"] = candidate["created_at"]
                         if changed == "edited":
-                            candidate["updated_at"] = (helper.release.stamp(candidate["created_at"]) + timedelta(minutes=1)).isoformat()
+                            candidate["updated_at"] = (datetime.fromisoformat(candidate["created_at"]) + timedelta(minutes=1)).isoformat()
                         session = incident["session_id"]
                         records = [{"type": "session_meta", "payload": {"id": session}}] if harness == "codex" else []
                         for post in posts:
@@ -811,7 +811,7 @@ class ReleaseTests(unittest.TestCase):
                         self.reader.get_json.return_value = {"body": ""}
                         self.reader.paged_json.side_effect = None
                         self.reader.paged_json.return_value = [incident["comments"][0], candidate]
-                        with patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run:
+                        with patch_attribute(helper, "comment") as write, patch_attribute(helper, "run_release") as run:
                             report = helper.finished_claims(self.reader, entry, candidate["user"]["login"],
                                                            [(incident["repository"], incident["issue"])], False)
                         self.assertEqual(bool(report["issue_refusals"]), changed is not None)

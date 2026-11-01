@@ -14,14 +14,18 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 import claim_history
-from session_record import output_objects as values
 import claim_javascript
 import github_plan_claim_log as claim_log
 import tree_sitter_bash
 from tree_sitter import Language, Node, Parser
+
+if TYPE_CHECKING:
+    from skills.supervisor.scripts.session_record import output_objects as values
+else:
+    from session_record import output_objects as values
 
 CLOSED_STDIN_SINCE = (0, 87, 0)
 UNFINISHED_CLAIM = "unfinished_claim"

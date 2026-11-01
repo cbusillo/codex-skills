@@ -99,7 +99,8 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
     operation.gate = "handoff"
     reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 60)
     actor = github_identity.automation_login()
-    require(bool(actor), "handoff", "configured automation identity is unknown")
+    if not actor:
+        raise GateFailed("handoff", "configured automation identity is unknown")
     selected = getattr(args, "handoff_url", None) or entry.get("handoff_url") or operation.state.get("handoff", {}).get("url")
     require(not entry.get("handoff_url") or entry["handoff_url"] == selected, "handoff", "recorded handoff differs; preserve it")
     if not selected:

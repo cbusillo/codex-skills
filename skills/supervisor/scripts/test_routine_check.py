@@ -425,7 +425,7 @@ class RoutineCheckTests(unittest.TestCase):
                         elif changed == "wrong_comment":
                             posted["comment"]["id"] += 1
                         elif changed == "edited":
-                            comments[0]["updated_at"] += ".changed"
+                            comments[0]["updated_at"] = (datetime.fromisoformat(comments[0]["created_at"]) + timedelta(minutes=1)).isoformat()
                         elif changed == "conflicting_session":
                             comments[0]["body"] += "\nSession: another\n"
                         elif changed == "ambiguous":
