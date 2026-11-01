@@ -2806,14 +2806,46 @@ def ide_process_tree_pids(launcher_names: tuple[str, ...]) -> list[int]:
         pids.update(children)
 
 
-def offline_ide_open_files(pids: list[int]) -> dict[int, list[str]]:
+LSOF_UNSTATTABLE_MOUNT = re.compile(r"lsof: WARNING: can't stat\(\) \S+ file system (/.+)")
+LSOF_WARNING_DETAIL = re.compile(r'\s+(?:Output information may be incomplete\.|assuming "dev=[0-9A-Fa-f]+" from mount table)')
+
+
+DF_MOUNT_LINE = re.compile(r".*?\s+\d+\s+\d+\s+\d+\s+\d+%\s+(/.*)")
+
+
+def mount_point_of(path: Path) -> str:
+    lines = subprocess.run(["df", "-P", str(path)], capture_output=True, text=True, timeout=5, check=True).stdout.splitlines()
+    mount = DF_MOUNT_LINE.fullmatch(lines[-1]) if len(lines) == 2 else None
+    if mount is None:
+        raise ValueError("Cannot identify the worktree's mount point")
+    return mount[1]
+
+
+def require_lsof_warnings_outside(root: Path, stderr: str) -> None:
+    root_mount = None
+    after_warning = False
+    for line in stderr.splitlines():
+        if after_warning and LSOF_WARNING_DETAIL.fullmatch(line):
+            continue
+        mount = LSOF_UNSTATTABLE_MOUNT.fullmatch(line)
+        if mount is None or "\\" in mount[1] or "^" in mount[1]:
+            raise ValueError("Incomplete open-file discovery")
+        after_warning = True
+        root_mount = root_mount or mount_point_of(root)
+        mount_path = os.path.normpath(mount[1]).casefold()
+        worktree_path = os.path.normpath(root).casefold()
+        if (mount_path == os.path.normpath(root_mount).casefold() or Path(worktree_path).is_relative_to(mount_path)
+                or Path(mount_path).is_relative_to(worktree_path)):
+            raise ValueError("Open-file discovery cannot read the worktree's file system")
+
+
+def offline_ide_open_files(pids: list[int], root: Path) -> dict[int, list[str]]:
     if not pids:
         return {}
     try:
         result = subprocess.run(["lsof", "-nP", "-a", "-p", ",".join(map(str, pids)), "-Fpfnt0"],
                                 capture_output=True, text=True, timeout=5, check=True)
-        if result.stderr.strip():
-            raise ValueError("Incomplete open-file discovery")
+        require_lsof_warnings_outside(root, result.stderr)
         files: dict[int, list[str]] = {}
         current = None
         file_type = None
@@ -2872,7 +2904,23 @@ def offline_retirement_records(root: Path) -> list[str]:
         value = urllib.parse.unquote(value.removeprefix("file://"))
         value = value.replace("$USER_HOME$", str(Path.home()))
         path = Path(os.path.expanduser(value))
-        return path.is_absolute() and (Path(os.path.normpath(path)).is_relative_to(root) or path.resolve().is_relative_to(root))
+        return path.is_absolute() and (Path(os.path.normpath(path)).is_relative_to(root) or path.resolve().is_relative_to(root)
+                                       or within_root_identity(path))
+
+    root_status = root.stat() if root.exists() else None
+    root_identity = (root_status.st_dev, root_status.st_ino) if root_status else None
+
+    def within_root_identity(candidate: Path) -> bool:
+        if root_identity is None:
+            return False
+        for ancestor in (candidate, *candidate.parents):
+            try:
+                status = ancestor.stat()
+            except OSError:
+                continue
+            if (status.st_dev, status.st_ino) == root_identity:
+                return True
+        return False
 
     def require_unrelated(path: Path, values: list[str]) -> None:
         checked.append(str(path))
@@ -2927,7 +2975,7 @@ def offline_retirement_records(root: Path) -> list[str]:
                     raise InspectError("IDE cache ownership is invalid; retain the worktree.", 3,
                                        {"offline_retirement_record": str(marker)})
                 require_unrelated(marker, [record["worktree_path"]])
-        for pid, paths in offline_ide_open_files(pids).items():
+        for pid, paths in offline_ide_open_files(pids, root).items():
             if any(refers_to_worktree(path) for path in paths):
                 raise InspectError("A running IDE holds this worktree open; retain it until the IDE releases it.", 3,
                                    {"offline_retirement_ide_pids": [pid]})
