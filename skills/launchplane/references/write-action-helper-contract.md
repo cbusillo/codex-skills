@@ -720,8 +720,11 @@ installed local helper bindings.
   A returned integration or scope set that differs from the explicit request
   makes client selection coverage unknown while retaining the server's facts.
 - `testing-rebuild-dry-run --product --copy-source --artifact-id --source-git-ref
-  --reason` reads the native preflight through
-  `POST /v1/drivers/odoo/target-replacement-plan`. It records no artifact,
+  --reason` reads Odoo preflight through
+  `POST /v1/drivers/odoo/target-replacement-plan`. An immutable generic-web
+  image reference (`registry/repository@sha256:<digest>`) selects
+  `GET /v1/products/{product}/testing-rebuild/inputs` instead. The returned
+  build and source must match the requested pair. It records no artifact,
   allocation, lease or provider effect. Its bounded receipt identifies the
   testing lane's address origin, build/source, observation time and pending
   candidate verification. It does not attest a healthy successor or completed
@@ -730,7 +733,8 @@ installed local helper bindings.
   `testing-rebuild-submit` with those same intent arguments plus
   `--idempotency-key --reviewed-dry-run --expected-plan-digest
   --dry-run-evidence-file` queues one testing rebuild through
-  `POST /v1/drivers/odoo/target-replacement-apply`. It fixes the instance to
+  `POST /v1/drivers/odoo/target-replacement-apply` for Odoo or
+  `POST /v1/products/{product}/testing-rebuild` for generic-web. It fixes the instance to
   `testing`, strategy to `replace-and-cutover` and health verification on.
   `--copy-source` is `empty`, `production` (sanitized production copy) or
   `upstream` (the lane's configured upstream). The build/source pair must use
@@ -749,6 +753,14 @@ installed local helper bindings.
   or repair routing through separate manual writes. The service rechecks current
   authority and copy safety before effects.
 
+  Generic-web inspection preserves whether restore applies. A `pending`
+  preflight cannot authorize submission. The deployed service decides which
+  state and deployment types it can execute. Its compact native admission
+  receipt supplies the operation ID and progress, rather than an echo of the
+  private request. Acceptance is not completion. Recover an uncertain native
+  submission only with the identical arguments, reviewed evidence and original
+  key; the helper never retries or falls back to another route.
+
   Use the configured service identity and existing service authorization.
   These commands add no grant and never invoke a provider or local live-target
   CLI. They require a deployed service with native testing rebuild and preflight/
@@ -758,13 +770,19 @@ installed local helper bindings.
   code and trace and stops the action. There is no legacy rebuild,
   alternate identity or workflow fallback.
 
-  The receipt must agree with the submitted product, testing instance,
-  original key and build/source intent. Output reuses the bounded operation
+  The Odoo receipt must agree with the submitted product, testing instance,
+  original key and build/source intent. Odoo output reuses the bounded operation
   projection below, retaining the operation ID and service trace while dropping
   raw authorization, poll URLs and request/provider evidence. Acceptance is not
-  completion. Poll `target-replacement-operation-read --operation-id ID` using
-  that original ID until the service reports its outcome. Failure alone does
-  not authorize a different rebuild. A verified normal terminal engine result
+  completion. Poll `target-replacement-operation-read --operation-id ID` for
+  Odoo or `testing-rebuild-operation-read --product PRODUCT --operation-id ID`
+  for generic-web, using that original ID until the service reports its outcome.
+  The native read checks the exact product and ID and returns compact progress;
+  it does not attest restored data, health or retirement beyond those fields.
+  Failure alone does
+  not authorize a different rebuild. The compact generic read alone cannot
+  qualify a fresh request after failure; retain the original operation and key.
+  For Odoo, a verified normal terminal engine result
   (`fail`/`failed`, `finished_at`, and `candidate_private_readiness_failed`) may
   permit a separately reviewed request under existing authority after the
   prerequisite is corrected and deployed and fresh preflight is eligible.
