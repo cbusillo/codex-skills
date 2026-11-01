@@ -160,11 +160,15 @@ from prose or merged PRs.
 
 - `agent` can enter `available_candidates` when the existing direction,
   ownership and structured-wait checks pass.
-- `agent:<session or role>` is `underway`. If the latest relevant claim for that
-  session on this record has an exact authored release, the actor needs fresh
-  status instead. A newer unreleased reacquisition by that session remains owned.
-  A role is a recorded assignment and stays underway until its actor is updated;
-  branch disappearance does not end that assignment.
+- A specifically named `agent:<worker or session>` without a claim is
+  `needs_status`: reconcile that recipient's custody before assigning a new
+  worker. It proves an assignment, not active execution. Generic Supervisor,
+  integrator, direction and harness roles do not reserve a project. Use the
+  existing claim on each slice actually executed. Claims, exact authored releases
+  and existing local lease expiry use the same interpretation in selection,
+  launch and claim; unknown remote lease evidence stays unknown. An ended
+  recipient needs fresh status, while live peers and retained custody still veto
+  duplicate work. Quoted diagnosis cannot attribute a session's ownership.
 - `person:<login>` and `event:<observable>` are `waiting`.
 - A missing, malformed or duplicate field goes in `needs_status`, unless a wait
   or observed claim already determines its disposition. A caller review

@@ -15,10 +15,12 @@ import time
 from typing import Any, Callable
 
 try:
-    from github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources
+    from github_plan_status import next_actor
+    from github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources, ownership_context, unquoted_text, released_actor
     from github_plan_status.references import pr_issue_reference as pr_issue_reference
 except ModuleNotFoundError:
-    from skills.github.scripts.github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources
+    from skills.github.scripts.github_plan_status import next_actor
+    from skills.github.scripts.github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources, ownership_context, unquoted_text, released_actor
     from skills.github.scripts.github_plan_status.references import pr_issue_reference as pr_issue_reference
 
 
@@ -482,7 +484,7 @@ def takeover_sources(comments: list[dict[str, Any]]) -> dict[int, int]:
 
 def discussion_evidence(
     status: str, comments: list[dict[str, Any]], claim: dict[str, str], *, resume_from: int | None = None,
-    ended_claims: set[int] | None = None,
+    ended_claims: set[int] | None = None, check_recipient: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     from github_plan_release import effective_comments
     comments = effective_comments(comments)
@@ -500,6 +502,13 @@ def discussion_evidence(
     status_records = records(status)
     ended_records = [record for c in comments if c.get("id") in (ended_claims or set())
                      for record in records(c.get("body") or "")]
+    recipient = next_actor.recipient(status) if check_recipient else None
+    if (recipient and recipient not in {claim["worker"], claim["session"]}
+            and not any(recipient in {record["worker"], record["session"]} for record in ended_records)
+            and not released_actor(f"agent:{recipient}", effective_comments=comments,
+                trusted={str((comment.get("user") or {}).get("login") or "").casefold() for comment in comments})):
+        conflicts.append({"source": "recorded_recipient", "worker": recipient,
+                          "next_action": "Reconcile this recipient's custody before assigning another worker"})
     for record in status_records:
         if record in ended_records:
             continue

@@ -227,7 +227,7 @@ class CloseConfigTests(unittest.TestCase):
                      read_only: bool = False, expired_sessions: set[str] | None = None,
                      source_comments: list[dict] | None = None, admission: str | None = None,
                      admission_links: list[str] | None = None, milestone: dict | None = None,
-                     track: dict | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+                     track: dict | None = None, actor: str | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         target = "fixture/target"
         configs = {repo: copy.deepcopy(PLAN.DEFAULT_CONFIG) for repo in ("fixture/local", target)}
         configs[target]["labels"] = {key: f"target:{key}" for key in configs[target]["labels"]}
@@ -237,6 +237,8 @@ class CloseConfigTests(unittest.TestCase):
                  "body": f"Original human request.\n## Current Status\nState: Blocked.\nNext action: {action}",
                  "labels": [{"name": names[key]} for key in ("plan", "blocked")]}
         issue["milestone"] = milestone
+        if actor:
+            issue["body"] += f"\nNext actor: {actor}"
         comments: list[dict[str, Any]] = [{"id": 1, "user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker(
             PLAN.github_plan_wait.reviewed(evidence="Target discussion reviewed; no person wait"))}]
         comments.extend(comments_extra or [])
@@ -377,6 +379,14 @@ class CloseConfigTests(unittest.TestCase):
             self.assertTrue(result["issue"]["launch_check"]["allowed"])
         result, _, _ = self.show_fixture(launch=True, read_only=True, admission="milestone")
         self.assertTrue(result["issue"]["launch_check"]["allowed"])
+
+    def test_named_recipient_is_routing_work_before_an_execution_launch(self) -> None:
+        for actor in ("agent:ODOO20LEAD2-1027", "agent:native-session"):
+            for read_only in (False, True):
+                result, _, _ = self.show_fixture(launch=True, actor=actor, read_only=read_only)
+                check = result["issue"]["launch_check"]
+                self.assertEqual(check["allowed"], read_only)
+                self.assertEqual(check["ownership"]["conflicts"][0]["source"], "recorded_recipient")
 
     def test_launch_returns_actionable_admission_argument_errors(self) -> None:
         for kind, links in (("own project", []), ("TBD", []), ("repeat-stop", []),

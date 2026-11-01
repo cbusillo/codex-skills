@@ -360,6 +360,17 @@ def test_next_actor_routes_work_without_prose_inference() -> None:
     row = item()
     row["discussion"]["body"] = row["discussion"]["body"].replace("Next actor: agent\n", "")
     assert classify(row)["state"] == "needs_status"
+    for actor in ("agent:ODOO20LEAD2-1027", "agent:native-session"):
+        row = item(actor=actor)
+        result = classify(row)
+        assert result["state"] == "needs_status"
+        assert result["certainty"] == "assignment_only"
+        assert result["next_actor"] == actor
+        assert result["ownership_evidence"][0]["source"] == "recorded_recipient"
+        conflicts, _ = claim.discussion_evidence(
+            queue.current_status(row["discussion"], {"owner"}), [],
+            {"worker": "new-worker", "session": "new-session", "branch": "work/new", "claimed_at": ""})
+        assert conflicts == result["ownership_evidence"]
     row = item()
     row["discussion"]["body"] += "\nNext actor: person:owner\n"
     assert classify(row)["state"] == "needs_status"
@@ -375,6 +386,7 @@ def test_latest_claim_for_named_session_decides_released_actor_status() -> None:
     assert classify(row)["state"] == "underway"
     row["discussion"]["comments"][-1]["author"] = "bot"
     assert classify(row)["state"] == "needs_status"
+
     other = {**source, "session": "other-session", "claimed_at": "2026-10-02T00:00:00Z"}
     row["discussion"]["comments"].extend([
         {"id": 3, "author": "bot", "created_at": other["claimed_at"], "body": claim.marker(other)},
@@ -387,6 +399,17 @@ def test_latest_claim_for_named_session_decides_released_actor_status() -> None:
     assert classify(row)["state"] == "underway"
     row["discussion"]["comments"].append(
         {"id": 6, "author": "bot", "created_at": "2026-10-03T00:01:00Z", "body": "Released claim 5"})
+    assert classify(row)["state"] == "needs_status"
+
+def test_expired_local_lease_and_worker_alias_use_the_same_ended_claim() -> None:
+    row = item(actor="agent:worker")
+    source = {"worker": "worker", "session": "native-session", "branch": "work/source", "claimed_at": "2026-10-01T00:00:00Z"}
+    row["discussion"]["comments"] = [{"id": 1, "author": "bot", "created_at": source["claimed_at"], "body": claim.marker(source)}]
+    with patch.object(claim, "expired_lease_sessions", return_value={source["session"]}):
+        assert classify(row)["state"] == "needs_status"
+    with patch.object(claim, "expired_lease_sessions", return_value=set()):
+        assert classify(row)["state"] == "underway"
+    row["discussion"]["comments"].append({"id": 2, "author": "bot", "created_at": "2026-10-01T00:01:00Z", "body": "Released claim 1"})
     assert classify(row)["state"] == "needs_status"
 
 

@@ -27,6 +27,17 @@ def section_map(body: str) -> dict[str, str]:
     return sections
 
 
+def unquoted_text(text: str) -> str:
+    from .waits import live_lines as visible_lines
+
+    return "\n".join(line for _, line in visible_lines(text, prefix="") if not line.lstrip().startswith(">"))
+
+
+def ownership_context(text: str) -> str:
+    text = unquoted_text(text)
+    return section_map(text).get("Current Status", text)
+
+
 def current_status(discussion: dict[str, Any], trusted: set[str], *, body_recorded_at: str | None = None) -> str:
     def timestamp(value: Any) -> datetime | None:
         try:
@@ -34,13 +45,13 @@ def current_status(discussion: dict[str, Any], trusted: set[str], *, body_record
             return parsed if parsed is not None and parsed.tzinfo is not None else None
         except ValueError:
             return None
-    status = section_map(discussion.get("body") or "").get("Current Status")
+    status = section_map(unquoted_text(discussion.get("body") or "")).get("Current Status")
     has_body_status = status is not None
     body_time = timestamp(body_recorded_at or discussion.get("updated_at"))
     for comment in discussion.get("comments", []):
         if str(comment.get("author") or "").casefold() not in trusted:
             continue
-        found = section_map(comment.get("body") or "").get("Current Status")
+        found = section_map(unquoted_text(comment.get("body") or "")).get("Current Status")
         comment_time = timestamp(comment.get("created_at"))
         if found is not None and (not has_body_status or (comment_time is not None and (body_time is None or comment_time >= body_time))):
             status = found
@@ -148,7 +159,7 @@ def exact_released_sources(comments: list[dict[str, Any]]) -> list[tuple[int, di
 def released_actor(actor: str, *, effective_comments: list[dict[str, Any]], trusted: set[str]) -> bool:
     relevant = [index for index, comment in enumerate(effective_comments)
                 if str((comment.get("user") or {}).get("login") or "").casefold() in trusted
-                and any(record["session"] == actor.removeprefix("agent:")
+                and any(actor.removeprefix("agent:") in {record["session"], record["worker"]}
                         for record in records(comment.get("body") or ""))]
     return bool(relevant and relevant[-1] in {index for index, _, _ in exact_released_sources(effective_comments)})
 

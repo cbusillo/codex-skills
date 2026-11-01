@@ -2146,8 +2146,11 @@ def cmd_show(args: argparse.Namespace) -> None:
         facts = github_next_queue.ownership_facts(candidate, observed,
             trusted=wait_authors(issue["repo"]), resume_from=resume_id, resume_source=source_item,
             expired_sessions=github_plan_claim.expired_lease_sessions(comments))
+        def execution_conflicts(ownership: dict[str, Any]) -> list[dict[str, Any]]:
+            return [conflict for conflict in ownership.get("conflicts", [])
+                    if not (args.read_only and conflict.get("source") == "recorded_recipient")]
         source_clear = (source_facts is None or (source_facts["complete"] and not source_facts.get("error")
-                        and not source_facts["conflicts"]))
+                        and not execution_conflicts(source_facts)))
         claim_error = None
         if not args.read_only:
             try:
@@ -2160,7 +2163,7 @@ def cmd_show(args: argparse.Namespace) -> None:
                                "message": str(error), **(error.payload if isinstance(error.payload, dict) else {})}
         result["launch_check"] = {
             "allowed": (claim_error is None and derived["relationships_complete"] and facts["complete"] and not facts.get("error")
-                        and not facts["conflicts"] and (args.read_only or not facts["artifacts"])
+                        and not execution_conflicts(facts) and (args.read_only or not facts["artifacts"])
                         and source_clear and (args.read_only or derived["status"] == "active")),
             "status": derived["status"], "ownership": facts,
             **({"error": claim_error} if claim_error else {}),

@@ -1630,6 +1630,13 @@ class ReleaseTests(unittest.TestCase):
     def test_discovery_finds_status_only_native_ownership(self):
         self.reader.paged_json.side_effect = lambda path, **_kw: [{"number": 9, "body": "Claimed by trial\nSession: source-session"}] if path.endswith("/issues") else []
         self.assertEqual(helper.discover(self.reader, "test", [self.entry], ["test/a"])[0], [("test/a", 9)])
+        for quoted in ("> Session: source-session", "```\nSession: source-session\n```",
+                       "<blockquote>\nSession: source-session\n</blockquote>"):
+            for body in ("## Diagnosis\n" + quoted, "## Current Status\nNext actor: agent\n## Diagnosis\n" + quoted):
+                with self.subTest(body=body):
+                    self.reader.paged_json.side_effect = lambda path, **_kw: [{"number": 9, "body": body}] if path.endswith("/issues") else []
+                    self.assertEqual(helper.discover(self.reader, "test", [self.entry], ["test/a"])[0], [])
+                    self.assertFalse(helper.belongs_to_session(body, "source-session"))
 
     def test_legacy_and_status_only_sources_are_reported_instead_of_skipped(self):
         for field in ("Session: source-session", "Session ID: source-session"):

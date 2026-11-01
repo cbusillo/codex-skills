@@ -5882,6 +5882,15 @@ class ClaimTests(unittest.TestCase):
                 self.assertIn("post", self.events)
                 self.assertIn(status, self.emitted.call_args.args[0]["previous_current_status"])
 
+    def test_named_recipient_without_a_claim_requires_custody_reconciliation(self) -> None:
+        self.issue["body"] += "Next actor: agent:existing-worker\n"
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+        self.assertTrue(any(row["source"] == "recorded_recipient"
+                            for row in caught.exception.payload["competing_evidence"]))
+        self.assert_no_writes()
+
     def test_global_invalid_wait_selection_still_requires_actual_claim_resolution(self):
         import test_gh_plan_next as selection
         root = selection.track("someone/direction", 1, "First")

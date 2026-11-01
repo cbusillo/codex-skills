@@ -408,6 +408,10 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.issue["body"] = helper.claim.marker(SOURCE)
         with self.assertRaises(ValueError):
             self.check()
+        for quote in (f"> Session: {SESSION}", f"```\nSession: {SESSION}\n```",
+                      f"<blockquote>\nSession: {SESSION}\n</blockquote>"):
+            self.issue["body"] = "## Current Status\nNext actor: agent\n## Diagnosis\n" + quote
+            self.assertEqual(self.check(), [])
 
     def test_other_session_claims_remain_untouched(self):
         self.comments = [comment(20, helper.claim.marker({**SOURCE, "session": "other-session"}))]
