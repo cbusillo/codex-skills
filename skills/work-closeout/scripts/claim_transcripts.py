@@ -4,7 +4,10 @@
 # ///
 from __future__ import annotations
 
+import argparse
 import ast
+from contextlib import redirect_stderr, redirect_stdout
+import io
 import json
 import re
 import shlex
@@ -23,8 +26,12 @@ import tree_sitter_bash
 from tree_sitter import Language, Node, Parser
 
 if TYPE_CHECKING:
+    from skills.github.scripts import github_comment as comment_cli
+    from skills.github.scripts.github_api import ArgumentParsingError
     from skills.supervisor.scripts.session_record import native_results, output_objects as values
 else:
+    import github_comment as comment_cli
+    from github_api import ArgumentParsingError
     from session_record import native_results, output_objects as values
 
 CLOSED_STDIN_SINCE = (0, 87, 0)
@@ -53,6 +60,96 @@ def read_records(path: Path) -> list[dict]:
             if isinstance(row, dict):
                 records.append(row)
     return records
+
+
+def handoff_command(text: str) -> argparse.Namespace | None:
+    root = Parser(Language(tree_sitter_bash.language())).parse(text.encode()).root_node
+    statements = [node for node in root.named_children if node.type != "comment"]
+    if root.has_error or not statements or any(child.type == "&" for child in root.children):
+        return None
+    last = statements[-1]
+    command = last.child_by_field_name("body") if last.type == "redirected_statement" else last
+    if command is None or command.type != "command" or shell_generated(command):
+        return None
+    argv = command_argv(command)
+    if (len(statements) == 1 and last.type == "command" and len(argv) == 3
+            and Path(argv[0]).name in {"sh", "bash", "zsh"} and argv[1] in {"-c", "-lc"}):
+        return handoff_command(argv[2])
+    if any(not handoff_body_preparation(node) for node in statements[:-1]):
+        return None
+    if last.type == "redirected_statement" and any(
+            redirect.type != "file_redirect" or redirect.children[0].type != "<" or shell_generated(redirect)
+            for redirect in last.children_by_field_name("redirect")):
+        return None
+    if not argv or Path(argv[0]).name != "gh-comment" or any(flag in argv for flag in ("-h", "--help")):
+        return None
+    try:
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            args = comment_cli.build_parser().parse_args(argv[1:])
+    except (ArgumentParsingError, SystemExit):
+        return None
+    if (not args.repo or not claim_log.REPOSITORY_PATTERN.fullmatch(args.repo) or args.number <= 0
+            or args.edit_last or args.edit_comment is not None or args.attach or args.create_if_none):
+        return None
+    return args
+
+
+def handoff_body_preparation(node: Node) -> bool:
+    if node.type != "redirected_statement":
+        return False
+    command = node.child_by_field_name("body")
+    redirects = node.children_by_field_name("redirect")
+    if command is None or command_argv(command) != ["cat"] or len(redirects) != 2:
+        return False
+    files = [item for item in redirects if item.type == "file_redirect"]
+    documents = [item for item in redirects if item.type == "heredoc_redirect"]
+    return (len(files) == len(documents) == 1 and files[0].children[0].type == ">" and not shell_generated(files[0])
+            and any(body.type == "heredoc_body" and quoted_heredoc(body) for body in documents[0].named_children))
+
+
+def handoff_comments(entry: dict) -> list[dict]:
+    records = entry["_transcript_records"]
+    if entry.get("native_child", entry["session_id"]) != entry["session_id"] or claude_agent(records) is not None:
+        return []
+    outputs = tool_outputs(records, followups=False)
+    found = []
+    for call in tool_details(records):
+        if call.name not in {"command", "bash", "exec_command", "shell_command", "shell", "local_shell_call"}:
+            continue
+        item = execution_item(records[call.index])
+        if item and (item.get("status") != "completed" or item.get("exit_code") != 0):
+            continue
+        if any(block.get("tool_use_id") == call.identifier and block.get("is_error") is True
+               for row in records for content in [(row.get("message") or {}).get("content")]
+               if isinstance(content, list) for block in content if isinstance(block, dict)):
+            continue
+        results = native_results(outputs.get(call.identifier, []))
+        if len(results) != 1:
+            continue
+        result = results[0]
+        if "output" in result:
+            if result.get("exit_code") != 0 or isinstance(result.get("session_id"), int):
+                continue
+            try:
+                result = json.loads(result["output"])
+            except (ValueError, TypeError):
+                continue
+        if (not isinstance(result, dict) or result.get("ok") is not True or result.get("outcome_certainty") != "confirmed"
+                or result.get("operation") not in {"github.comment.issue", "github.comment.pr"}
+                or result.get("comment_action") != "created"):
+            continue
+        try:
+            sources = shell_texts(call.text, call.javascript)
+            if sources.opaque or len(sources.commands) != 1 or sources.commands[0].interactive:
+                continue
+            target = handoff_command(sources.commands[0].text)
+        except (ValueError, TypeError):
+            continue
+        if (target is not None and result.get("operation") == f"github.comment.{target.kind}"
+                and str(result.get("repo") or "").casefold() == target.repo.casefold() and result.get("number") == target.number):
+            found.append({"source_session": entry["session_id"], "expected_actor": result.get("expected_actor"),
+                          "repository": target.repo.casefold(), "number": target.number, "comment": result.get("comment")})
+    return list({json.dumps(row, sort_keys=True): row for row in found}.values())
 
 
 def metadata(records: list[dict]) -> dict:

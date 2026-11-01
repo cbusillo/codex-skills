@@ -411,6 +411,7 @@ def check(
     deadline = time.time() + read_timeout
     source_deadline = time.monotonic() + read_timeout
     native_sessions = {entry["session_id"] for entry in entries}
+    source_transcripts = {(entry["session_id"], Path(entry["transcript"]).resolve()) for entry in entries}
     targets: dict[str, set[tuple[str, int]]] = {}
     discoveries: dict[str, list[dict]] = {}
     unresolved = []
@@ -481,6 +482,9 @@ def check(
         },
         "request_count": sum(len(selected.requests) for selected in readers.values()),
         "released_claims": released,
+        "handoff_comments": [row for entry in expanded
+                             if (entry["session_id"], Path(entry["transcript"]).resolve()) in source_transcripts
+                             for row in history.handoff_comments(entry)],
         "blocked": blocked,
         "unresolved_invocations": unresolved,
         "settled_invocations": settled,

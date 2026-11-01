@@ -723,7 +723,7 @@ def observed_post(entry: dict, candidate: dict, actor: str, *, source_id: int, p
             observed = release.stamp(result.get("observed_at"))
         except (TypeError, ValueError):
             continue
-        if not entry.get("ended_at") or observed <= release.stamp(entry["ended_at"]):
+        if observed <= release.stamp(entry["ended_at"]):
             return True
     return False
 

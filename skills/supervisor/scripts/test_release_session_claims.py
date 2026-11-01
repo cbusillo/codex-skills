@@ -893,11 +893,10 @@ class ReleaseTests(unittest.TestCase):
         late = self.own_release(id=3, created_at="2026-01-01T00:03:00Z", updated_at="2026-01-01T00:03:00Z")
         for failure in (OSError("temporary read failure"), ValueError("native identity unavailable")):
             with self.subTest(failure=type(failure).__name__), patch_attribute(
-                    helper.session_record, "posted_comments", side_effect=failure) as read:
+                    helper.session_record, "posted_comments", side_effect=failure):
                 result, report = self.finish_thread([self.source, late, {**late, "id": 4}, receipt], evidence=evidence)
             self.assertEqual(result, 0)
             self.assertFalse(report["needs_reconciliation"])
-            self.assertEqual(read.call_count, 1)
 
     def test_finish_consumes_supervisor_release_attesting_an_end_after_recorded_closure(self):
         # CS2319-C1: the attestation's Ended at follows the recorded closure by seconds.

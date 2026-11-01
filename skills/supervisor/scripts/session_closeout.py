@@ -88,50 +88,46 @@ def ready(entry: dict, supervisor: str) -> dict:
     return status
 
 
-def no_claim_handoff(entry: dict, operation: Operation, owner: str | None) -> str | None:
+def no_claim_handoffs(entry: dict, operation: Operation) -> list[dict]:
     path = operation.evidence / "claims.json"
     if not path.exists():
-        return None
-    if not owner or entry["repository"].split("/")[0].casefold() != owner.casefold():
-        return None
+        return []
     receipt_data = json.loads(path.read_text())
     checked = json.loads(receipt_data.get("stdout") or "{}")
     if (receipt_data.get("exit_code") != 0 or checked.get("ok") is not True
             or checked.get("claims_clear") is not True or checked.get("coverage", {}).get("complete") is not True
             or checked.get("session_ids") != [entry["session_id"]] or checked.get("released_claims") != []
             or checked.get("blocked") != [] or checked.get("unresolved_invocations") != []):
-        return None
-    require(all(step.get("complete") is True for step in operation.state["steps"].values()),
-            "handoff", "previous mutation requires reconciliation; preserve its journal")
-    body = operation.evidence / "no-claim-handoff.md"
-    body.write_text(
-        f"Supervisor closeout handoff.\n\nSession: {entry['session_id']}\n\n"
-        "The source finished with no claims to release. Its complete pre-exit claim check is clear.\n"
-        "Existing work and custody remain on this issue.\n"
-    )
-    posted = operation.run("no_claim_handoff", [
-        str(SCRIPTS.parents[1] / "github/scripts/gh-comment"), "issue", str(entry["issue"]),
-        "--repo", entry["repository"], "--body-file", str(body),
-    ], once=True)
-    require(posted.get("ok") is True, "handoff", "no-claim handoff was not confirmed; preserve its journal")
-    url = posted.get("comment", {}).get("url")
-    require(isinstance(url, str) and re.fullmatch(
-        rf"https://github\.com/{re.escape(entry['repository'])}/issues/{entry['issue']}#issuecomment-[1-9]\d*", url) is not None,
-        "handoff", "no-claim handoff target differs; preserve its journal")
-    return url
+        return []
+    rows = checked.get("handoff_comments", [])
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict) and row.get("source_session") == entry["session_id"]]
+
+
+def projected_handoff(comment: dict, evidence: list[dict], actor: str, session: str) -> bool:
+    body = comment.get("body") or ""
+    if (not isinstance(comment.get("created_at"), str) or comment.get("created_at") != comment.get("updated_at")
+            or (comment.get("user") or {}).get("login") != actor or live_lines(body)
+            or re.match(r"(?i)^Claimed by\b", body.strip()) or not claim_release.related_sessions_match(body, session)):
+        return False
+    return any(row.get("expected_actor") == actor and isinstance(posted := row.get("comment"), dict)
+               and posted.get("author") == actor and posted.get("id") == comment.get("id")
+               and posted.get("url") == comment.get("html_url") and posted.get("created_at") == posted.get("updated_at")
+               and str(comment.get("issue_url") or "").casefold()
+               == f"https://api.github.com/repos/{row.get('repository')}/issues/{row.get('number')}".casefold()
+               for row in evidence)
 
 
 def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, *, retired: bool) -> None:
     operation.gate = "handoff"
-    saved = operation.state["steps"].get("no_claim_handoff")
-    require(not saved or saved.get("complete") is True,
-            "handoff", "previous no-claim handoff POST requires reconciliation; preserve its journal")
     reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 60)
     actor = github_identity.automation_login()
     if not actor:
         raise GateFailed("handoff", "configured automation identity is unknown")
     selected = getattr(args, "handoff_url", None) or entry.get("handoff_url") or operation.state.get("handoff", {}).get("url")
     require(not entry.get("handoff_url") or entry["handoff_url"] == selected, "handoff", "recorded handoff differs; preserve it")
+    evidence = None
     if not selected:
         repo, number = entry.get("repository"), entry.get("issue")
         require(isinstance(repo, str) and release.REPO.fullmatch(repo) is not None
@@ -143,12 +139,18 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
                       and explicit_session(comment.get("body") or "", args.session_id)
                       and not live_lines(comment.get("body") or "")
                       and not re.match(r"(?i)^Claimed by\b", (comment.get("body") or "").strip())]
-        if not candidates and not retired:
-            selected = no_claim_handoff(entry, operation, getattr(args, "owner", None))
-        require(bool(selected) or len(candidates) == 1, "handoff",
+        if not candidates:
+            evidence = no_claim_handoffs(entry, operation)
+            scoped = [row for row in evidence if str(row.get("repository") or "").casefold() == repo.casefold()
+                      and row.get("number") == number]
+            candidates = [comment for comment in comments if (comment.get("user") or {}).get("login") == actor
+                          and not live_lines(comment.get("body") or "")
+                          and not re.match(r"(?i)^Claimed by\b", (comment.get("body") or "").strip())
+                          and projected_handoff(comment, scoped, actor, args.session_id)]
+        require(len(candidates) == 1, "handoff",
                 f"requires one posted handoff; found {len(candidates)} candidates: {[row.get('html_url') for row in candidates]}; "
                 "verify the source and select its exact --handoff-url")
-        selected = selected or candidates[0]["html_url"]
+        selected = candidates[0]["html_url"]
     require(isinstance(selected, str), "handoff", "handoff URL is missing")
     require(operation.state.get("handoff", {}).get("url", selected) == selected,
             "handoff", "journal already records another handoff; preserve its evidence")
@@ -156,7 +158,10 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
     require(bool(match), "handoff", "handoff URL is malformed")
     proposed = {**entry, "handoff_url": selected}
     handoff = release.handoff(reader, proposed, actor)
-    require(explicit_session(handoff.get("body") or "", args.session_id), "handoff", "handoff must name this native session")
+    if not explicit_session(handoff.get("body") or "", args.session_id):
+        evidence = evidence if evidence is not None else no_claim_handoffs(entry, operation)
+        require(projected_handoff(handoff, evidence, actor, args.session_id),
+                "handoff", "handoff must name this native session or have its source-bound write proof")
     operation.state["handoff"] = {"url": selected, "session_id": args.session_id, "author": actor,
                                   "revision": fingerprint(handoff)}
     save_state(operation.path, operation.state)

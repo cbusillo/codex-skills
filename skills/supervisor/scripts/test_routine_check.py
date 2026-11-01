@@ -410,79 +410,59 @@ class RoutineCheckTests(unittest.TestCase):
             reader.paged_json.assert_not_called()
             self.assertEqual(entry["handoff_url"], url)
 
-    def test_no_claim_ownership_stops_get_a_journaled_supervisor_handoff(self) -> None:
+    def test_real_no_claim_stops_select_only_a_source_bound_original_comment(self) -> None:
         incidents = json.loads((Path(__file__).parent / "fixtures/closeout-native-posts.json").read_text())
         for incident in (row for row in incidents if not row.get("ended_at")):
-            with self.subTest(worker=incident["token"]), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                entry = {key: incident[key] for key in ("repository", "issue", "session_id")}
-                transcript = root / "successor.jsonl"
-                transcript.write_text("\n".join(json.dumps(row) for row in [
-                    {"type": "session_meta", "payload": {"id": entry["session_id"]}},
-                    {"timestamp": incident["posts"][0]["observed_at"], "payload": {"type": "item_completed", "item": {
-                        "type": "CommandExecution", "status": "completed", "exit_code": 0,
-                        "aggregated_output": json.dumps(incident["posts"][0])}}},
-                ]) + "\n")
-                entry.update(transcript=str(transcript), harness="codex")
-                ledger = root / "ledger.json"
-                ledger.write_text(json.dumps([entry]))
-                args = argparse.Namespace(ledger=ledger, session_id=entry["session_id"], owner="cbusillo")
-                operation = Operation(root / "evidence", [entry["session_id"]])
-                (operation.evidence / "claims.json").write_text(json.dumps(
-                    {"exit_code": 0, "stdout": json.dumps(incident["claims"]), "stderr": ""}))
-                actor = incident["comments"][0]["user"]["login"]
-                url = f"https://github.com/{entry['repository']}/issues/{entry['issue']}#issuecomment-99"
-                handoff: dict[str, Any] = {"id": 99, "html_url": url, "user": {"login": actor},
-                                           "issue_url": f"https://api.github.com/repos/{entry['repository']}/issues/{entry['issue']}"}
-
-                def publish(argv: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
-                    handoff["body"] = Path(argv[argv.index("--body-file") + 1]).read_text()
-                    return subprocess.CompletedProcess(argv, 0, json.dumps({"ok": True, "comment": {"url": url}}), "")
-
-                reader = SimpleNamespace(paged_json=Mock(return_value=incident["comments"]), get_json=Mock(return_value=handoff))
-                with (patch.object(session_closeout, "GitHubReader", return_value=reader),
-                      patch.object(session_closeout.github_identity, "automation_login", return_value=actor),
-                      patch.object(subprocess, "run", side_effect=publish) as write):
-                    session_closeout.verify_handoff(entry, args, operation, retired=False)
-                    self.assertTrue(session_closeout.explicit_session(handoff["body"], entry["session_id"]))
-                    self.assertEqual(json.loads(ledger.read_text())[0]["handoff_url"], url)
-                    self.assertTrue(operation.state["steps"]["no_claim_handoff"]["complete"])
-                    session_closeout.verify_handoff(entry, args, operation, retired=False)
-                    self.assertEqual(write.call_count, 1)
-
-    def test_no_claim_handoff_keeps_incomplete_claims_and_uncertain_posts(self) -> None:
-        incidents = json.loads((Path(__file__).parent / "fixtures/closeout-native-posts.json").read_text())
-        incident = next(row for row in incidents if not row.get("ended_at"))
-        for change in ({"ok": False}, {"claims_clear": False}, {"coverage": {"complete": False}},
-                       {"session_ids": ["another"]}, {"released_claims": [{"claim_comment": 1}]},
-                       {"blocked": ["unknown"]}, {"unresolved_invocations": [{"session": incident["session_id"]}]}):
-            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
-                operation = Operation(Path(directory), [incident["session_id"]])
-                (operation.evidence / "claims.json").write_text(json.dumps({
-                    "exit_code": 0, "stdout": json.dumps({**incident["claims"], **change}), "stderr": ""}))
-                with patch.object(subprocess, "run") as write:
-                    self.assertIsNone(session_closeout.no_claim_handoff(incident, operation, "cbusillo"))
-                    write.assert_not_called()
-        with tempfile.TemporaryDirectory() as directory:
-            operation = Operation(Path(directory), [incident["session_id"]])
-            (operation.evidence / "claims.json").write_text(json.dumps({
-                "exit_code": 0, "stdout": json.dumps(incident["claims"]), "stderr": ""}))
-            with patch.object(subprocess, "run", side_effect=TimeoutError("POST result unknown")) as write:
-                self.assertIsNone(session_closeout.no_claim_handoff(incident, operation, "another-owner"))
-                with self.assertRaises(GateFailed):
-                    session_closeout.no_claim_handoff(incident, operation, "cbusillo")
-                with self.assertRaises(GateFailed):
-                    session_closeout.no_claim_handoff(incident, Operation(Path(directory), [incident["session_id"]]), "cbusillo")
-                self.assertEqual(write.call_count, 1)
-            posted: dict[str, Any] = {**incident["comments"][0], "body": f"Session: {incident['session_id']}\nSupervisor handoff"}
-            reader = SimpleNamespace(paged_json=Mock(return_value=[posted]), get_json=Mock(return_value=posted))
-            with (patch.object(session_closeout, "GitHubReader", return_value=reader),
-                  patch.object(session_closeout.github_identity, "automation_login", return_value=posted["user"]["login"])):
-                with self.assertRaises(GateFailed):
-                    session_closeout.verify_handoff(incident, argparse.Namespace(session_id=incident["session_id"]),
-                                                   Operation(Path(directory), [incident["session_id"]]), retired=True)
-
-
+            for variant in (None, "case", "elsewhere", "ambiguous", "copied", "wrong_actor", "edited", "conflicting_session", "failed_check", "claims_remain"):
+                with self.subTest(worker=incident["token"], variant=variant), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    entry = {key: incident[key] for key in ("repository", "issue", "session_id")}
+                    ledger = root / "ledger.json"
+                    ledger.write_text(json.dumps([entry]))
+                    comments = json.loads(json.dumps(incident["comments"]))
+                    number = entry["issue"] + (variant == "elsewhere")
+                    if variant == "elsewhere":
+                        comments[0]["issue_url"] = f"https://api.github.com/repos/{entry['repository']}/issues/{number}"
+                        comments[0]["html_url"] = comments[0]["html_url"].replace(f"/issues/{entry['issue']}#", f"/issues/{number}#")
+                    post = incident["posts"][0]
+                    evidence = [{"source_session": entry["session_id"], "expected_actor": post["expected_actor"],
+                                 "repository": entry["repository"], "number": number,
+                                 "comment": {**post["comment"], "url": comments[0]["html_url"]}}]
+                    actor = comments[0]["user"]["login"]
+                    if variant == "case":
+                        evidence[0]["repository"] = entry["repository"].upper()
+                    elif variant == "copied":
+                        evidence = []
+                    elif variant == "wrong_actor":
+                        evidence[0]["expected_actor"] = "another[bot]"
+                    elif variant == "edited":
+                        comments[0]["updated_at"] = (datetime.fromisoformat(comments[0]["created_at"]) + timedelta(minutes=1)).isoformat()
+                    elif variant == "conflicting_session":
+                        comments[0]["body"] += "\nSession: another\n"
+                    elif variant == "ambiguous":
+                        comments.append({**comments[0], "id": 99, "html_url": comments[0]["html_url"].rsplit("-", 1)[0] + "-99"})
+                        evidence.append({**evidence[0], "comment": {**evidence[0]["comment"], "id": 99, "url": comments[1]["html_url"]}})
+                    checked = {**incident["claims"], "handoff_comments": evidence}
+                    if variant == "claims_remain":
+                        checked["released_claims"] = [{"claim_comment": 1}]
+                    operation = Operation(root / "evidence", [entry["session_id"]])
+                    (operation.evidence / "claims.json").write_text(json.dumps({
+                        "exit_code": 1 if variant == "failed_check" else 0, "stdout": json.dumps(checked), "stderr": ""}))
+                    args = argparse.Namespace(ledger=ledger, session_id=entry["session_id"],
+                                              handoff_url=comments[0]["html_url"] if variant == "elsewhere" else None)
+                    reader = SimpleNamespace(paged_json=Mock(return_value=comments), get_json=Mock(return_value=comments[0]))
+                    with (patch.object(session_closeout, "GitHubReader", return_value=reader),
+                          patch.object(session_closeout.github_identity, "automation_login", return_value=actor),
+                          patch.object(subprocess, "run") as mutation):
+                        if variant not in {None, "case", "elsewhere"}:
+                            with self.assertRaises(GateFailed):
+                                session_closeout.verify_handoff(entry, args, operation, retired=False)
+                            self.assertEqual(json.loads(ledger.read_text()), [entry])
+                        else:
+                            session_closeout.verify_handoff(entry, args, operation, retired=False)
+                            self.assertEqual(entry["handoff_url"], comments[0]["html_url"])
+                            self.assertEqual(operation.state["steps"], {})
+                        mutation.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()
