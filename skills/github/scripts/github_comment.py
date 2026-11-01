@@ -95,7 +95,21 @@ def validate_planning_references(body: object, repo: str) -> None:
         return
     if not isinstance(body, str):
         return
-    ambiguous = list(dict.fromkeys(re.findall(r"(?<![\w/#.-])[\w.-]+#\d+(?!\d)|(?<![\w/#])#\d+(?!\d)|(?<![\w/#.-])PR[1-9]\d*(?![\w-])", body, re.IGNORECASE)))
+
+    def qualified_label(match: re.Match[str]) -> str:
+        return match[0].replace("[", f"[{match['owner']}/", 1)
+
+    body = re.sub(
+        r"(?<!\\)\[(?P<repo>[\w.-]+)#(?P<number>[1-9]\d*)]"
+        r"\(https://github\.com/(?P<owner>[\w.-]+)/(?P=repo)/(?:issues|pull)/(?P=number)/?"
+        r"(?:[?#][^\s()]*)?(?:[ \t]+\"[^\"\n]*\")?\)",
+        qualified_label, body, flags=re.IGNORECASE,
+    )
+    ambiguous = list(dict.fromkeys(re.findall(
+        r"(?<![\w/#.-])[\w.-]+#\d+(?!\d)|(?<![\w/#])#\d+(?!\d)|(?<![\w/#.-])PR[1-9]\d*(?![\w-])"
+        r"|(?<!\\)\[[ \t]*[1-9]\d*[ \t]*](?=\([ \t]*<?https?://(?:www\.)?github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/[1-9]\d*\b)",
+        body, re.IGNORECASE,
+    )))
     if ambiguous:
         raise ValueError(
             f"Ambiguous issue references: {', '.join(ambiguous)}. "

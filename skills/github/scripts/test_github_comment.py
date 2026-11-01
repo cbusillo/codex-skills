@@ -1015,9 +1015,23 @@ def test_exact_edit_invalid_combinations_fail_before_network() -> None:
 
 def test_planning_reference_boundaries_preserve_qualified_repository_names() -> None:
     for text in ("owner/repo#77", "owner/my-repo#42", "my-owner/my.repo#5", "owner/node.appletv-remote#7",
-                 "https://github.com/owner/my-repo/issues/42", "https://github.com/owner/repo/pull/77#issuecomment-5"):
+                 "https://github.com/owner/my-repo/issues/42", "https://github.com/owner/repo/pull/77#issuecomment-5",
+                 "[my-repo#42](https://github.com/owner/my-repo/issues/42)",
+                 "[repo#77](https://github.com/owner/repo/pull/77#issuecomment-5)",
+                 "[MY-REPO#42](https://github.com/owner/my-repo/issues/42)",
+                 '[my-repo#42](https://github.com/other/my-repo/issues/42 "evidence")'):
         github_comment.validate_planning_references(text, "owner/my-repo")
-    for text in ("#77", "other-repo#77", "other.repo#77", "PR77", "\n#77", "\t#77", "&#35;1", "-#77", ".#77"):
+    for text in ("#77", "other-repo#77", "other.repo#77", "PR77", "\n#77", "\t#77", "&#35;1", "-#77", ".#77",
+                 "[my-repo#42](https://github.com/owner/other-repo/issues/42)",
+                 "[my-repo#42](https://github.com/owner/my-repo/issues/420)",
+                 "[#42](https://github.com/owner/my-repo/issues/42)",
+                 *(f"[42]({scheme}://{host}/owner/my-repo/issues/42)"
+                   for scheme in ("http", "https") for host in ("github.com", "www.github.com")),
+                 "[42](<https://github.com/owner/my-repo/issues/42>)",
+                 "[ 42 ](https://github.com/owner/my-repo/issues/42)",
+                 "[my-repo#42](https://example.org/owner/my-repo/issues/42)",
+                 '[my-repo#42](https://github.com/owner/my-repo/issues/42 "See #77")',
+                 "[my-repo#42](https://github.com/owner/my-repo/issues/42) and #77"):
         try:
             github_comment.validate_planning_references(text, "owner/my-repo")
         except ValueError:

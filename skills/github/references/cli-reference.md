@@ -1050,7 +1050,10 @@ condition, not authority to close protected work or perform the triggered action
 
 Use `OWNER/REPO#N` or a full GitHub issue/PR URL in authored planning text and
 explicit comments, including local references such as `owner/current-repo#42`.
-Bare numbers and ownerless repository references refuse before posting because
+An existing Markdown link may display `repo#N` when its full GitHub issue or PR
+target names the same repository and number; the target supplies the GitHub account.
+Keep the repository name in that label; a numeric-only issue label loses context.
+Bare numbers and unlinked ownerless repository references refuse before posting because
 a matching local number cannot establish the intended repository. Use plain
 words such as "rank 1" for prose that is not an issue reference.
 
