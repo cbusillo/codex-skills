@@ -1382,12 +1382,24 @@ def validate_computer_use_launch(args: argparse.Namespace, commands: list[str], 
                              "use --computer-use unused for source-only mentions")
 
 
+def fresh_claude_session(text: str) -> tuple[str, str]:
+    import session_liveness
+    words = launch_words(text)
+    if (launch_agent(text) != "claude" or session_liveness.claude_invocation(words).kind is not None
+            or "--" in words or any(word.startswith("--session-id") for word in words)):
+        raise ValueError("fresh Claude --ledger registration needs a fresh claude launch without --session-id, "
+                         "resume or a prompt in the run file")
+    session = str(uuid.uuid4())
+    return f"{text} --session-id {session}", session
+
+
 def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict | None]]:
     """Validate the full batch and prepare accounts before creating terminals."""
     if getattr(args, "resume_session_id", None):
         return prepare_resume(args)
-    if getattr(args, "ledger", None) and getattr(args, "account_provider", None) != "openai":
-        raise ValueError("fresh --ledger registration needs --account-provider openai")
+    provider = getattr(args, "account_provider", None)
+    if getattr(args, "ledger", None) and provider not in {"openai", "anthropic"}:
+        raise ValueError("fresh --ledger registration needs --account-provider openai or anthropic")
     if not getattr(args, "command_file", None):
         raise ValueError("new launches require --command-file or --resume-session-id")
     if getattr(args, "require_browser", False) and getattr(args, "without_browser", False):
@@ -1397,9 +1409,13 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         raise ValueError("--require-browser needs --account-provider anthropic or openai")
     files = args.command_file if isinstance(args.command_file, list) else [args.command_file]
     command_texts = [read_launch_text(path).rstrip("\n") for path in files]
+    claude_sessions = []
     if getattr(args, "ledger", None):
         read_launch_ledger(args.ledger)
-        if any(not codex_daemon_without_ingress(text) for text in command_texts):
+        if provider == "anthropic":
+            command_texts, claude_sessions = zip(*map(fresh_claude_session, command_texts))
+            command_texts = list(command_texts)
+        elif any(not codex_daemon_without_ingress(text) for text in command_texts):
             raise ValueError("fresh --ledger registration needs managed Codex --remote launches")
     for text in command_texts:
         validate_text(text)
@@ -1463,7 +1479,10 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
             override = "marketplaces.openai-bundled.source=" + json.dumps(str(source_path))
             if choices[0].get("tools", {}).get("route") != "local":
                 command_texts[0] += " --no-daemon -c " + shlex.quote(override)
-        if getattr(args, "ledger", None):
+        for choice, session in zip(choices, claude_sessions):
+            home = choice["env"].get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))
+            choice["claude_native"] = {"session_id": session, "home": str(Path(home).expanduser())}
+        if getattr(args, "ledger", None) and provider == "openai":
             if any(choice.get("tools", {}).get("route") == "local" for choice in choices):
                 raise ValueError("fresh --ledger registration needs the managed remote route")
             args.ledger.parent.mkdir(parents=True, exist_ok=True)
@@ -1724,6 +1743,12 @@ async def register_fresh_launch(args: argparse.Namespace, result: dict, choice: 
             raise ValueError("resume registration needs the verified source choice")
         await register_resumed_launch(path, result, choice)
         return
+    native = result.get("claude_native") or (choice or {}).get("claude_native")
+    if isinstance(native, dict):
+        result["claude_native"] = native
+        entry = await asyncio.to_thread(register_claude_launch, result, native, path)
+        result.update(native_session_id=entry["session_id"], transcript=entry["transcript"], ledger_recorded=True)
+        return
     from codex_session_proxy import read_launch_receipt
     if choice is None:
         choice = {"provider": "openai", "env": {"CODEX_HOME": result["codex_home"]}}
@@ -1759,9 +1784,10 @@ async def register_fresh_launch(args: argparse.Namespace, result: dict, choice: 
 def register_claude_launch(launch: dict, native: dict, ledger: Path) -> dict:
     import session_liveness
     import session_record
+    terminal = "tmux_session_id" if launch.get("backend") == "tmux" else "iterm_session_id"
     existing = [row for row in (session_record.load_ledger(ledger) if ledger.exists() else []) if row["session_id"] == native["session_id"]]
     if existing:
-        entry = session_record.terminal_entry(ledger, "tmux_session_id", launch["session_id"])
+        entry = session_record.terminal_entry(ledger, terminal, launch["session_id"])
         if (len(existing) != 1 or entry["session_id"] != native["session_id"] or entry["harness"] != "claude"
                 or entry["tty"] != launch["tty"].removeprefix("/dev/")):
             raise ValueError("native Claude identity belongs to another terminal")
@@ -1776,16 +1802,18 @@ def register_claude_launch(launch: dict, native: dict, ledger: Path) -> dict:
         raise ValueError("exact fresh Claude transcript is unavailable; preserve its terminal")
     processes = [row for row in session_liveness.inventory() if row[1] == launch["tty"].removeprefix("/dev/")
                  and session_liveness.harness_family((session_liveness.harness_arguments(row[2]) or [""])[0]) == "claude"]
-    exact = [row for row in processes if row[0] == launch["pid"]]
-    if not exact:
-        import tmux_terminal
-        parents = tmux_terminal.process_parents()
-        exact = [row for row in processes if tmux_terminal.belongs_to(row[0], launch["pid"], parents)]
-    processes = exact
+    if launch.get("pid"):
+        exact = [row for row in processes if row[0] == launch["pid"]]
+        if not exact:
+            import tmux_terminal
+            parents = tmux_terminal.process_parents()
+            exact = [row for row in processes if tmux_terminal.belongs_to(row[0], launch["pid"], parents)]
+        processes = exact
     if len(processes) != 1:
         raise ValueError("fresh Claude process identity is ambiguous")
-    entry = {**launch, "session_id": native["session_id"], "tmux_session_id": launch["session_id"],
+    entry = {**launch, "session_id": native["session_id"], terminal: launch["session_id"],
              "transcript": str(paths[0]), "pid": processes[0][0], "harness": "claude", "supervisor_owned": True}
+    entry.pop("claude_native", None)
     session_record.session_status(entry)
     append_launch_ledger(ledger, entry)
     return entry
@@ -1952,12 +1980,13 @@ async def operate(app, args):
                       "tab_id": tab.tab_id, "session_id": session.session_id}
             if choice:
                 result["account"] = account_choice.public(choice)
-            if choice and choice.get("provider") == "openai":
+            if choice and (choice.get("provider") == "openai" or choice.get("claude_native")):
                 try:
                     result["tty"] = await session.async_get_variable("tty")
                 except (AttributeError, OSError, ValueError):
                     result["launch_identity_unavailable"] = True
-                source_launch_metadata(result, choice)
+                if choice.get("provider") == "openai":
+                    source_launch_metadata(result, choice)
             try:
                 await register_fresh_launch(args, result, choice)
             except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:

@@ -1453,6 +1453,14 @@ to finish registration without relaunching. Duplicate registration refuses.
 identity, including after the client exits; no transcript globbing is needed.
 Keep retained receipts while their workers need recovery, then remove them
 with normal task-evidence cleanup.
+For fresh Claude workers, use `--account-provider anthropic --ledger
+/private/launch-ledger.json` with a direct `claude` run file that carries no
+`--session-id`, resume or prompt. The launcher assigns the native session ID,
+waits for that exact transcript under the selected account, matches the Claude
+process on the terminal, and appends the owned row; the receipt reports
+`native_session_id`, `transcript` and `ledger_recorded`. A failure keeps the
+launch object, including `claude_native`, for the same `register --receipt-file`
+recovery.
 Other fresh modes keep their launch procedure. Append their existing native
 ledger entries through `iterm_tab.py register --entry-file <entry.json>
 --ledger <ledger>` so every append shares the lock. Do existing-row maintenance
