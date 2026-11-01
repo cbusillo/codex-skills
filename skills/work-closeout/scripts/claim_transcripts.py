@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 import claim_history
+from session_record import output_objects as values
 import claim_javascript
 import github_plan_claim_log as claim_log
 import tree_sitter_bash
@@ -35,25 +36,6 @@ def closed_stdin_runtime(records: list[dict]) -> bool:
         and tuple(map(int, version.split("."))) >= CLOSED_STDIN_SINCE
         for payload in versions
     )
-
-
-def values(value: object) -> Iterator[dict]:
-    if isinstance(value, dict):
-        yield value
-        for nested in value.values():
-            yield from values(nested)
-    elif isinstance(value, list):
-        for nested in value:
-            yield from values(nested)
-    elif isinstance(value, str):
-        for line in value.splitlines():
-            if not line.lstrip().startswith(("{", "[")):
-                continue
-            try:
-                nested = json.loads(line)
-            except ValueError:
-                continue
-            yield from values(nested)
 
 
 def read_records(path: Path) -> list[dict]:

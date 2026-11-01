@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 import claim_history
@@ -198,6 +199,57 @@ def text_content(content) -> str:
         for c in content
         if isinstance(c, dict) and isinstance(c.get("text"), str)
     )
+
+
+def output_objects(value: object) -> Iterator[dict]:
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            for line in value.splitlines():
+                if line.lstrip().startswith(("{", "[")):
+                    try:
+                        yield from output_objects(json.loads(line))
+                    except ValueError:
+                        continue
+        else:
+            yield from output_objects(decoded)
+    elif isinstance(value, list):
+        for item in value:
+            yield from output_objects(item)
+    elif isinstance(value, dict):
+        yield value
+        for nested in value.values():
+            yield from output_objects(nested)
+
+
+def posted_comments(entry: dict) -> list[dict]:
+    path = Path(entry["transcript"])
+    before = path.stat()
+    records = claim_history.root_records(path, entry["harness"], entry["session_id"], read_jsonl(path))
+    found = []
+    for record in records:
+        payload = record.get("payload", {})
+        outputs = []
+        item = payload.get("item", {})
+        if (payload.get("type") == "item_completed" and item.get("type") == "CommandExecution"
+                and item.get("status") == "completed" and item.get("exit_code") == 0):
+            outputs.append(item.get("aggregated_output"))
+        if payload.get("type") in {"function_call_output", "custom_tool_call_output"}:
+            outputs.append(payload.get("output"))
+        if record.get("type") == "user":
+            content = record.get("message", {}).get("content", [])
+            if isinstance(content, list):
+                outputs.extend(block.get("content") for block in content
+                               if block.get("type") == "tool_result" and block.get("is_error") is not True)
+        for value in output_objects(outputs):
+            if (value.get("ok") is True and value.get("outcome_certainty") == "confirmed"
+                    and value.get("operation") in {"github.plan.release", "github.comment.issue"}):
+                found.append({**value, "observed_at": record.get("timestamp")})
+    after = path.stat()
+    if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
+        raise TranscriptChanged("transcript changed during comment receipt read; check again")
+    return found
 
 
 def strip_claude_exit_tail(records: list[dict]) -> list[dict]:

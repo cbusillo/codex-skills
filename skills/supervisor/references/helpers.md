@@ -2177,6 +2177,10 @@ uv run skills/supervisor/scripts/release_session_claims.py finish --ledger <priv
 
 `--apply` records closure and reports existing releases; finish posts no new
 attestation/release and changes no wait, blocker, status or retained artifact.
+A confirmed release readback in the source's verified native transcript proves
+an unchanged canonical release was observed before the source ended, even when
+the provider's read timestamps disagree with the host clock. Missing native
+proof retains the existing timestamp and release-reconciliation checks.
 Slow verification and runtime-registration probes run outside the shared log
 mutation lock. Busy closure/ownership locks report `retryable: true`; preserve
 records and retry after the holder finishes.

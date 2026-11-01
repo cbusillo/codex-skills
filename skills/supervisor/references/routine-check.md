@@ -59,7 +59,10 @@ decisions, statuses, board contents or narrative; open linked records for action
    ```
 
    The helper finds the automation-authored handoff naming the exact native
-   session on the ledger's issue, journals it and stops on ambiguity. After
+   session on the ledger's issue, journals it and stops on ambiguity. When no
+   such handoff exists, an unchanged comment with a confirmed POST receipt in
+   that source's verified native transcript supplies the same attribution.
+   A no-claim ownership stop needs no extra comment or worker message. After
    verifying the source, use `--handoff-url <actual-comment>` to resolve ambiguity,
    a legacy ledger without an issue pointer, or a handoff on another work issue.
    Keep its receipt or

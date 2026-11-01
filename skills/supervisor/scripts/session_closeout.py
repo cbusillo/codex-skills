@@ -50,6 +50,13 @@ def explicit_session(body: str, session: str) -> bool:
     return claim_release.related_sessions_match(body, session, require_explicit=True)
 
 
+def source_handoff(entry: dict, comment: dict, actor: str) -> bool:
+    body = comment.get("body") or ""
+    return (explicit_session(body, entry["session_id"])
+            or claim_release.related_sessions_match(body, entry["session_id"])
+            and release.observed_post(entry, comment, actor))
+
+
 async def native_idle(entry: dict) -> None:
     if entry["harness"] != "codex":
         return
@@ -101,11 +108,13 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
                 and isinstance(number, int) and not isinstance(number, bool) and number > 0,
                 "handoff", "discovery needs the ledger's exact repository and issue")
         comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="closeout_handoff")
-        candidates = [comment for comment in comments
+        available = [comment for comment in comments
                       if (comment.get("user") or {}).get("login") == actor
-                      and explicit_session(comment.get("body") or "", args.session_id)
                       and not live_lines(comment.get("body") or "")
                       and not re.match(r"(?i)^Claimed by\b", (comment.get("body") or "").strip())]
+        candidates = [comment for comment in available if explicit_session(comment.get("body") or "", args.session_id)]
+        if not candidates:
+            candidates = [comment for comment in available if source_handoff(entry, comment, actor)]
         require(len(candidates) == 1, "handoff",
                 f"requires one posted handoff; found {len(candidates)} candidates: {[row.get('html_url') for row in candidates]}; "
                 "verify the source and select its exact --handoff-url")
@@ -117,7 +126,7 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
     require(bool(match), "handoff", "handoff URL is malformed")
     proposed = {**entry, "handoff_url": selected}
     handoff = release.handoff(reader, proposed, actor)
-    require(explicit_session(handoff.get("body") or "", args.session_id), "handoff", "handoff must name this native session")
+    require(source_handoff(entry, handoff, actor), "handoff", "handoff must name this native session or have its native POST receipt")
     operation.state["handoff"] = {"url": selected, "session_id": args.session_id, "author": actor,
                                   "revision": fingerprint(handoff)}
     save_state(operation.path, operation.state)

@@ -772,6 +772,53 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual([r["claim_comment"] for r in report["reports"][0]["released_claims"]], [self.source["id"]])
         self.assertFalse(report["needs_reconciliation"])
 
+    def test_real_releases_are_proven_by_native_readback_before_exit_despite_provider_clock(self) -> None:
+        incidents = json.loads((Path(__file__).parent / "fixtures/closeout-native-posts.json").read_text())
+        for incident in (row for row in incidents if row.get("ended_at")):
+            for harness in ("codex", "claude"):
+                for changed in (None, "unconfirmed", "wrong_source", "wrong_comment", "late_receipt", "edited", "assistant"):
+                    with self.subTest(worker=incident["token"], harness=harness, changed=changed):
+                        posts = json.loads(json.dumps(incident["posts"]))
+                        candidate = json.loads(json.dumps(incident["comments"][-1]))
+                        for post in posts:
+                            if changed == "unconfirmed":
+                                post["outcome_certainty"] = "unknown"
+                            elif changed == "wrong_source":
+                                post["source_claim"] += 1
+                            elif changed == "wrong_comment":
+                                post["handoff_comment"]["id"] += 1
+                            elif changed == "late_receipt":
+                                post["observed_at"] = candidate["created_at"]
+                        if changed == "edited":
+                            candidate["updated_at"] = (helper.release.stamp(candidate["created_at"]) + timedelta(minutes=1)).isoformat()
+                        session = incident["session_id"]
+                        records = [{"type": "session_meta", "payload": {"id": session}}] if harness == "codex" else []
+                        for post in posts:
+                            if changed == "assistant":
+                                records.append({"type": "assistant", "sessionId": session,
+                                                "message": {"content": [{"type": "text", "text": json.dumps(post)}]}})
+                            elif harness == "codex":
+                                records.append({"timestamp": post["observed_at"], "payload": {"type": "item_completed", "item": {
+                                    "type": "CommandExecution", "status": "completed", "exit_code": 0,
+                                    "aggregated_output": json.dumps(post, indent=2)}}})
+                            else:
+                                records.append({"type": "user", "sessionId": session, "timestamp": post["observed_at"], "message": {
+                                    "content": [{"type": "tool_result", "content": json.dumps(post, indent=2)}]}})
+                        self.transcript.write_text("".join(json.dumps(row) + "\n" for row in records))
+                        entry = {"session_id": session, "harness": harness, "transcript": str(self.transcript),
+                                 "ended_at": incident["ended_at"], "_finish_scope": "accessible repositories under the requested owner"}
+                        self.reader.get_json.side_effect = None
+                        self.reader.get_json.return_value = {"body": ""}
+                        self.reader.paged_json.side_effect = None
+                        self.reader.paged_json.return_value = [incident["comments"][0], candidate]
+                        with patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run:
+                            report = helper.finished_claims(self.reader, entry, candidate["user"]["login"],
+                                                           [(incident["repository"], incident["issue"])], False)
+                        self.assertEqual(bool(report["issue_refusals"]), changed is not None)
+                        self.assertEqual(bool(report["released_claims"]), changed is None)
+                        write.assert_not_called()
+                        run.assert_not_called()
+
     def test_finish_consumes_exact_authored_followup_releases_and_preserves_unresolved_ids(self):
         followup = comment(3, "Claimed by trial\nSession: source-session")
         authored = self.own_release(id=4, body="Released claim 3")
