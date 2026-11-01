@@ -14,7 +14,6 @@ import uuid
 from pathlib import Path
 from subprocess import SubprocessError
 
-import account_choice
 import iterm_tab
 import session_liveness
 from check_changes import fingerprint, save_state
@@ -211,27 +210,7 @@ def verify_smoke(config: dict, operation: Operation, harness: str, provider: str
         launch = saved["result"]
     else:
         command = Path(config["command_files"][harness])
-        extra = ["--ledger", str(ledger)] if harness == "codex" else []
-        if harness == "claude":
-            choice = account_choice.select(
-                provider, config_path=Path(config["account_config"]) if config.get("account_config") else None
-            )
-            native = str(uuid.uuid4())
-            prepared = operation.evidence / "claude-command.txt"
-            text = command.read_text().strip()
-            words = iterm_tab.launch_words(text)
-            require(
-                session_liveness.claude_invocation(words).kind is None
-                and "--" not in words
-                and not any(word.startswith("--session-id") for word in words),
-                phase,
-                "smoke requires a fresh native session",
-            )
-            prepared.write_text(text + " --session-id " + native + "\n")
-            command = prepared
-            extra = ["--account", choice["name"]]
-            home = Path(choice["env"].get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))).expanduser()
-            save_state(operation.evidence / "claude-native.json", {"session_id": native, "home": str(home)})
+        extra = ["--ledger", str(ledger)]
         if config.get("account_config"):
             extra += ["--account-config", config["account_config"]]
         launch = operation.run(
@@ -250,13 +229,9 @@ def verify_smoke(config: dict, operation: Operation, harness: str, provider: str
             once=True,
             timeout=360,
         )
-    if harness == "claude":
-        native = json.loads((operation.evidence / "claude-native.json").read_text())
-        entry = iterm_tab.register_claude_launch(launch, native, ledger)
-    else:
-        entries = [row for row in load_ledger(ledger) if row["session_id"] == launch["native_session_id"]]
-        require(len(entries) == 1, phase, "fresh Codex native registration is missing")
-        entry = entries[0]
+    entries = [row for row in load_ledger(ledger) if row["session_id"] == launch["native_session_id"]]
+    require(len(entries) == 1, phase, "fresh native registration is missing")
+    entry = entries[0]
     record_smoke_source(operation, harness, entry, ledger)
     if not operation.state["steps"].get(harness + "_handoff_request"):
         acknowledgement = observe(entry, landing)

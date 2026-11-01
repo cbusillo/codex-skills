@@ -453,11 +453,19 @@ class OperationTests(unittest.TestCase):
         }) + "\n")
         launch = {"session_id": "owned-terminal", "pid": 8, "tty": "/dev/ttys001", "backend": "tmux"}
         ledger = self.root / "ledger.json"
+        command, session = iterm_tab.fresh_claude_session("cd /repo && exec claude --model opus")
+        self.assertEqual(iterm_tab.launch_words(command)[-2:], ["--session-id", session])
+        with self.assertRaises(ValueError):
+            iterm_tab.fresh_claude_session("claude --resume earlier")
+        result = dict(launch)
         with patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", "claude")]):
-            first = iterm_tab.register_claude_launch(launch, native, ledger)
+            asyncio.run(iterm_tab.register_fresh_launch(argparse.Namespace(ledger=ledger), result, {"claude_native": native}))
             second = iterm_tab.register_claude_launch(launch, native, ledger)
-        self.assertEqual(first["session_id"], second["session_id"])
-        self.assertEqual(len(json.loads(ledger.read_text())), 1)
+        self.assertEqual(result["native_session_id"], second["session_id"])
+        self.assertTrue(result["ledger_recorded"])
+        rows = json.loads(ledger.read_text())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["tmux_session_id"], launch["session_id"])
         with self.assertRaises(ValueError):
             iterm_tab.register_claude_launch({**launch, "session_id": "another-terminal"}, native, ledger)
 
