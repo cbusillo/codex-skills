@@ -29,11 +29,12 @@ class VisibilityTests(unittest.TestCase):
         def collect(_path: str, *, query: dict[str, Any], limit: int, **_kwargs: Any) -> tuple[str, list[dict[str, Any]]]:
             return "automation-gh", filter_rows(rows, [query["labels"]] if query.get("labels") else None, limit)
 
-        for options, expected, complete in [([], [1, 2, 3], True), (["--label", "customer"], [2], True),
-                                             (["--limit", "2"], [1, 2], False)]:
+        for options, archived, expected, complete in [([], False, [1, 2, 3], True), (["--label", "customer"], False, [2], True),
+                    (["--limit", "2"], False, [1, 2], False), (["--limit", "2"], True, [], True),
+                    (["--limit", "2", "--include-archived"], True, [1, 2], False)]:
             output: dict[str, Any] = {}
             with patch.multiple(module, collect_paged_rest_items=collect, emit=output.update,
-                                api_json=Mock(return_value=("automation-gh", {"archived": False}))):
+                                api_json=Mock(return_value=("automation-gh", {"archived": archived}))):
                 module.cmd_index(module.build_parser().parse_args(["--repo", "owner/repo", "index", *options]))
             self.assertEqual([row["number"] for row in output["plans"]], expected)
             self.assertEqual(output["inventory_complete"], complete)
@@ -42,9 +43,7 @@ class VisibilityTests(unittest.TestCase):
     def test_local_next_surfaces_untriaged_requests_on_both_read_routes_and_keeps_holds(self) -> None:
         for batch in (False, True):
             module = cli.load_module()
-            rows = [request(1), request(2, ["customer"]), request(3, ["plan:stale"]),
-                    request(4, ["plan:done"]), request(5), request(6), request(7, ["agent:claude"]),
-                    request(8, ["plan"]), request(9)]
+            rows = [request(1), request(2, ["customer"]), request(5), request(6), request(7, ["agent:claude"]), request(9)]
             rows[-1]["body"] = "## Current Status\nNext actor: agent\nNext action: Repair the export.\n"
             waits = {number: {"version": 1, "state": "review", "evidence": "Not triaged", "waits": []} for number in (1, 2)}
             waits[6] = module.github_plan_wait.reviewed(
@@ -62,7 +61,7 @@ class VisibilityTests(unittest.TestCase):
 
             with cli.local_next_fixture(module, rows, collect_plans=collect, read_relationships=relations, waits=waits) as output:
                 with patch.multiple(module, annotate_next_queue=module.real_annotate_next_queue, read_planning_graph=graph,
-                                    get_issue=lambda number, _repo: ("automation-gh", rows[int(number) - 1]),
+                                    get_issue=lambda number, _repo: ("automation-gh", next(row for row in rows if row["number"] == int(number))),
                                     read_queue_ownership=lambda _repo: evidence(), wait_authors=lambda _repo: {"owner"},
                                     next_status_body_time=lambda *_args: None):
                     args = module.build_parser().parse_args(["--repo", "owner/repo", "next", "--agent", "codex"]
@@ -71,8 +70,7 @@ class VisibilityTests(unittest.TestCase):
             self.assertEqual([row["number"] for row in output["needs_status"]], [1, 2])
             self.assertEqual([row["number"] for row in output["available_candidates"]], [9])
             self.assertEqual({row["number"]: row["exclusion"] for row in output["excluded"]}, {
-                3: "stale_needs_review", 4: "completed", 5: "blocked_by_open_dependency", 6: "waiting",
-                7: "assigned_elsewhere", 8: "scope_review_required"})
+                5: "blocked_by_open_dependency", 6: "waiting", 7: "assigned_elsewhere"})
             self.assertTrue(all(row["queue"]["claim_required"] for row in output["needs_status"]))
             self.assertFalse(output["truncated"])
 

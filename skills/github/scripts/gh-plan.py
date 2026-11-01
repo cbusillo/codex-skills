@@ -1964,6 +1964,7 @@ def cmd_index(args: argparse.Namespace) -> None:
         context = github_read.repository_disposition(None)
     if not repository_scope.includes_repository(context, include_archived=getattr(args, "include_archived", False)):
         items = []
+        truncated = False
     emit({"ok": True, "actor": actor, "repo": repo, "repository": context,
           "truncated": truncated, "inventory_complete": not truncated,
           "count": len(items), "plans": [{**item, "repository": context} for item in items]})
@@ -7606,7 +7607,7 @@ def build_parser() -> argparse.ArgumentParser:
         parser_class=github_api_core.TerminalArgumentParser,
     )
 
-    p = sub.add_parser("index", help="Compact plan issue index, no bodies")
+    p = sub.add_parser("index", help="Compact issue index, no bodies")
     repository_scope.add_include_archived_argument(p)
     p.add_argument("--state", default="open", choices=["open", "closed", "all"])
     p.add_argument("--limit", type=positive_limit, default=20)

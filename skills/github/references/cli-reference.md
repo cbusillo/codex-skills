@@ -2343,8 +2343,10 @@ of evidence; all unread references and incomplete coverage remain explicit.
   triage; it does not admit implementation or bypass claim preflight. Status-label
   scope holds, priority, assignment and real waits retain their existing rules.
 - The command excludes done, stale, actual structured waits, current native
-  blockers, dependency-unknown, and parent plans with open sub-issues. Missing
-  or malformed wait evidence is `wait_review_required`; an unstatused planning
+  blockers, dependency-unknown, and reviewed parent plans with open sub-issues. Missing
+  or malformed wait evidence is `wait_review_required`; complete local discussions
+  needing wait review enter `needs_status`, while unread discussions stay excluded.
+  An unstatused planning
   scope is `scope_review_required`. Each
   exclusion includes a normalized reason and dependency evidence when present.
 - Global traversal still evaluates native blockers and children of waiting or
