@@ -425,7 +425,7 @@ class RoutineCheckTests(unittest.TestCase):
                         comments[0]["issue_url"] = f"https://api.github.com/repos/{entry['repository']}/issues/{number}"
                         comments[0]["html_url"] = comments[0]["html_url"].replace(f"/issues/{entry['issue']}#", f"/issues/{number}#")
                     post = incident["posts"][0]
-                    evidence = [{"source_session": entry["session_id"], "expected_actor": post["expected_actor"],
+                    evidence: list[dict[str, Any]] = [{"source_session": entry["session_id"], "expected_actor": post["expected_actor"],
                                  "repository": entry["repository"], "number": number,
                                  "comment": {**post["comment"], "url": comments[0]["html_url"]}}]
                     actor = comments[0]["user"]["login"]

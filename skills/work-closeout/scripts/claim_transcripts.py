@@ -107,9 +107,9 @@ def handoff_body_preparation(node: Node) -> bool:
             and any(body.type == "heredoc_body" and quoted_heredoc(body) for body in documents[0].named_children))
 
 
-def handoff_comments(entry: dict) -> list[dict]:
-    records = entry["_transcript_records"]
-    if entry.get("native_child", entry["session_id"]) != entry["session_id"] or claude_agent(records) is not None:
+def handoff_comments(source: dict) -> list[dict]:
+    records = source["_transcript_records"]
+    if source.get("native_child", source["session_id"]) != source["session_id"] or claude_agent(records) is not None:
         return []
     outputs = tool_outputs(records, followups=False)
     found = []
@@ -147,7 +147,7 @@ def handoff_comments(entry: dict) -> list[dict]:
             continue
         if (target is not None and result.get("operation") == f"github.comment.{target.kind}"
                 and str(result.get("repo") or "").casefold() == target.repo.casefold() and result.get("number") == target.number):
-            found.append({"source_session": entry["session_id"], "expected_actor": result.get("expected_actor"),
+            found.append({"source_session": source["session_id"], "expected_actor": result.get("expected_actor"),
                           "repository": target.repo.casefold(), "number": target.number, "comment": result.get("comment")})
     return list({json.dumps(row, sort_keys=True): row for row in found}.values())
 

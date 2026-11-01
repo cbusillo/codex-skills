@@ -130,9 +130,9 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
     evidence = None
     if not selected:
         repo, number = entry.get("repository"), entry.get("issue")
-        require(isinstance(repo, str) and release.REPO.fullmatch(repo) is not None
-                and isinstance(number, int) and not isinstance(number, bool) and number > 0,
-                "handoff", "discovery needs the ledger's exact repository and issue")
+        if (not isinstance(repo, str) or release.REPO.fullmatch(repo) is None
+                or not isinstance(number, int) or isinstance(number, bool) or number <= 0):
+            raise GateFailed("handoff", "discovery needs the ledger's exact repository and issue")
         comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="closeout_handoff")
         candidates = [comment for comment in comments
                       if (comment.get("user") or {}).get("login") == actor
