@@ -2810,15 +2810,27 @@ LSOF_UNSTATTABLE_MOUNT = re.compile(r"lsof: WARNING: can't stat\(\) \S+ file sys
 LSOF_WARNING_DETAIL = re.compile(r'\s+(?:Output information may be incomplete\.|assuming "dev=[0-9A-Fa-f]+" from mount table)')
 
 
+def mount_point_of(path: Path) -> Path:
+    device = path.stat().st_dev
+    while path.parent != path and path.parent.stat().st_dev == device:
+        path = path.parent
+    return path
+
+
 def require_lsof_warnings_outside(root: Path, stderr: str) -> None:
+    root_mount = mount_point_of(root)
+    after_warning = False
     for line in stderr.splitlines():
-        if not line.strip() or LSOF_WARNING_DETAIL.fullmatch(line):
+        if after_warning and LSOF_WARNING_DETAIL.fullmatch(line):
             continue
         mount = LSOF_UNSTATTABLE_MOUNT.fullmatch(line)
-        if mount is None:
+        if mount is None or "\\" in mount[1] or "^" in mount[1]:
             raise ValueError("Incomplete open-file discovery")
-        mount_path = Path(os.path.normpath(mount[1]))
-        if root.is_relative_to(mount_path) or mount_path.is_relative_to(root):
+        after_warning = True
+        mount_path = os.path.normpath(mount[1]).casefold()
+        overlaps = [os.path.normpath(path).casefold() for path in (root, root_mount)]
+        if (mount_path == overlaps[1] or Path(overlaps[0]).is_relative_to(mount_path)
+                or Path(mount_path).is_relative_to(overlaps[0])):
             raise ValueError("Open-file discovery cannot read the worktree's file system")
 
 
@@ -2887,7 +2899,23 @@ def offline_retirement_records(root: Path) -> list[str]:
         value = urllib.parse.unquote(value.removeprefix("file://"))
         value = value.replace("$USER_HOME$", str(Path.home()))
         path = Path(os.path.expanduser(value))
-        return path.is_absolute() and (Path(os.path.normpath(path)).is_relative_to(root) or path.resolve().is_relative_to(root))
+        return path.is_absolute() and (Path(os.path.normpath(path)).is_relative_to(root) or path.resolve().is_relative_to(root)
+                                       or within_root_identity(path))
+
+    root_status = root.stat() if root.exists() else None
+    root_identity = (root_status.st_dev, root_status.st_ino) if root_status else None
+
+    def within_root_identity(candidate: Path) -> bool:
+        if root_identity is None:
+            return False
+        for ancestor in (candidate, *candidate.parents):
+            try:
+                status = ancestor.stat()
+            except OSError:
+                continue
+            if (status.st_dev, status.st_ino) == root_identity:
+                return True
+        return False
 
     def require_unrelated(path: Path, values: list[str]) -> None:
         checked.append(str(path))
