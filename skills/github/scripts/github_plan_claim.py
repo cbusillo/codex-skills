@@ -218,7 +218,7 @@ def ownership_text(text: str, *, strip_quotes: bool = True) -> str:
 
 def session_fields(text: str, *, include_quotes: bool = True, current_only: bool = False) -> list[str]:
     prose = ownership_text(text, strip_quotes=False)
-    fence = None
+    fence = ""
     previous = ""
     values = []
     fields = re.compile(
@@ -232,7 +232,7 @@ def session_fields(text: str, *, include_quotes: bool = True, current_only: bool
         previous = line
         if fence:
             if re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*", line):
-                fence = None
+                fence = ""
             continue
         if opener := re.match(r" {0,3}(`{3,}|~{3,})", line):
             fence = opener[1]
