@@ -460,6 +460,15 @@ LOCAL_EXTENSION_ROUTES = {
 }
 
 INTERNAL_HELPER_ROUTES = {
+    "generic-testing-rebuild-inputs": {
+        "method": "GET", "path": "/v1/products/{product}/testing-rebuild/inputs",
+    },
+    "generic-testing-rebuild-submit": {
+        "method": "POST", "path": "/v1/products/{product}/testing-rebuild",
+    },
+    "testing-rebuild-operation-read": {
+        "method": "GET", "path": "/v1/products/{product}/testing-rebuild/operations/{operation_id}",
+    },
     "route-authority-binding-list": {
         "method": "GET", "path": "/v1/route-bindings/records",
     },

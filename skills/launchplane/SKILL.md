@@ -1391,8 +1391,12 @@ reviewed-inspect procedure and verify the situation.
   Read the [service setting contract](references/write-action-helper-contract.md#service-settings)
   before use.
 - Native testing rebuild preflight and submission (`testing-rebuild-dry-run` /
-  `testing-rebuild-submit`) reuse `POST /v1/drivers/odoo/target-replacement-plan`
-  and `POST /v1/drivers/odoo/target-replacement-apply`. The fixed testing-only
+  `testing-rebuild-submit`) use the existing Odoo target-replacement plan/apply
+  routes for Odoo. Immutable generic-web images use
+  `GET /v1/products/{product}/testing-rebuild/inputs` and
+  `POST /v1/products/{product}/testing-rebuild`; poll those operations with
+  `testing-rebuild-operation-read --product --operation-id`, which uses the native
+  product-scoped operation route and returns compact progress. The fixed testing-only
   intent, reviewed evidence, audit reason and recovery protocol are in the
   [helper contract](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads).
   These are bounded helper bindings and require deployed native service support.
