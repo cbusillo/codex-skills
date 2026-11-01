@@ -56,7 +56,7 @@ class QuestionRecordTests(unittest.TestCase):
         self.addCleanup(self.config.stop)
         self.args = argparse.Namespace(queue=None, owner="example", decision_author=[AUTHOR], dry_run=False)
         self.source = {
-            "body": record.question_id.number_heading(record.render(question()), "Q5"),
+            "body": record.question_id.number_heading(record.render(question(), legacy=True), "Q5"),
             "url": question()["issue"] + "#issuecomment-17",
             "author": AUTHOR,
             "issue": question()["issue"],
@@ -97,13 +97,41 @@ class QuestionRecordTests(unittest.TestCase):
         value["options"] += [
             {"answer": f"Option {i}", "changes": "Other action", "cost": "Small upkeep", "next": "Act"} for i in range(6)
         ]
-        self.source["body"] = record.question_id.number_heading(record.render(value), "Q5")
+        self.source["body"] = record.question_id.number_heading(record.render(value, legacy=True), "Q5")
         view = record.read_record(self.source)
         self.assertEqual(view["record"], value)
         self.assertTrue(all(option["answer"] in view["text"] for option in value["options"]))
         self.source["body"] = self.source["body"].replace(value["decision"], "A different decision?", 1)
         with self.assertRaises(ValueError):
             record.read_record(self.source)
+
+    def test_existing_real_question_renders_as_numbered_bullets_without_rewriting_source(self) -> None:
+        source = json.loads(Path(__file__).with_name("fixtures").joinpath("q1160-source.json").read_text())
+        original = source["body"]
+        view = record.read_record(source)
+        self.assertTrue(view["text"].startswith(f"**{view['question_id']}. "))
+        lines = view["text"].splitlines()
+        self.assertTrue(lines[0].endswith("**"))
+        choices = [line for line in lines if line.startswith("  - **")]
+        self.assertEqual(len(choices), len(view["record"]["options"]))
+        for option, line in zip(view["record"]["options"], choices):
+            for field in record.OPTION_FIELDS:
+                self.assertIn(str(option[field]), line)
+            self.assertNotIn("..", line)
+        for field in ("decision", "basis", "comparison", "manual", "recommendation"):
+            self.assertIn(view["record"][field], view["text"])
+        self.assertEqual(source["body"], original)
+        self.assertEqual(view["url"], source["url"])
+        self.storage.read.return_value = source
+        self.args.decision_author.append(source["author"])
+        self.assertEqual(self.create(view["record"])["text"], view["text"])
+        shown = StringIO()
+        with redirect_stdout(shown):
+            self.assertEqual(record.main(["show-question", source["url"]], lambda _item: [source]), 0)
+        self.assertEqual(json.loads(shown.getvalue())["text"], view["text"])
+        source["body"] = original.replace(view["record"]["manual"], "Do something else", 1)
+        with self.assertRaises(ValueError):
+            record.read_record(source)
 
     def test_dry_run_and_no_queue_preserve_truthful_registration(self) -> None:
         self.args.dry_run = True
@@ -174,7 +202,11 @@ class QuestionRecordTests(unittest.TestCase):
 
         def run(calls: list[dict]) -> None:
             storage = record.GitHubComments(fetch)
+            published = record.github_comment.comment(
+                "issue", 3, record.render(question(), legacy=True), repo="example/product", dedupe_body=True
+            )
             first = record.create(question(), self.args, storage, fetch)
+            self.assertEqual(first["url"], published["url"])
             path = Path(self.temporary.name) / "question.json"
             path.write_text(json.dumps(question()))
             created_output = StringIO()
@@ -182,6 +214,7 @@ class QuestionRecordTests(unittest.TestCase):
                 self.assertEqual(record.main(["create", "--record-file", str(path), "--owner", self.args.owner,
                                                "--queue", self.args.queue], fetch), 0)
             self.assertIn(first["url"], created_output.getvalue())
+            self.assertTrue(created_output.getvalue().startswith(f"**{first['question_id']}. "))
             self.assertEqual(sum(c["method"] == "POST" for c in calls), 2)
             record.question_id.verify_number(counter, int(first["question_id"][1:]), first["url"])
             self.assertEqual(record.read_record(storage.read(first["url"]))["text"], first["text"])
@@ -255,6 +288,7 @@ class QuestionRecordTests(unittest.TestCase):
         for field in ("decision", "basis", "comparison", "manual"):
             self.assertIn(value[field], valid.stdout)
         self.assertIsNone(record.RECORD.search(valid.stdout))
+        self.assertFalse(valid.stdout.startswith("Director question:"))
         value.update(basis=[], manual="")
         path.write_text(json.dumps(value))
         invalid = subprocess.run(command, env=environment, text=True, capture_output=True, timeout=15)

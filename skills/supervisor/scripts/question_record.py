@@ -70,27 +70,56 @@ def validation_errors(record: Any) -> list[str]:
     return errors
 
 
-def render(record: dict[str, Any]) -> str:
+def render(record: dict[str, Any], *, legacy: bool = False) -> str:
     def text(value: Any) -> str:
-        return str(value).replace("<!--", "&lt;!--")
+        value = str(value) if legacy else " ".join(str(value).split())
+        return value.replace("<!--", "&lt;!--")
 
-    lines = [f"Director question: **{text(record['decision'])}**", "", text(record["basis"]), ""]
+    def sentence(value: Any) -> str:
+        value = text(value)
+        return value if value.endswith((".", "!", "?", ";")) else value + "."
+
+    recommended = next(
+        option for option in record["options"] if option["answer"].strip().casefold() == record["recommendation"].strip().casefold()
+    )
+    lines = [f"Director question: **{text(record['decision'])}**", ""]
+    lines.extend(
+        [text(record["basis"]), ""]
+        if legacy
+        else [
+            f"- **Context:** {text(record['basis'])}",
+            f"- **In simple terms:** {text(recommended['changes'])}",
+            "- **Options:**",
+        ]
+    )
     for option in record["options"]:
-        recommended = option["answer"].strip().casefold() == record["recommendation"].strip().casefold()
+        label = f"{text(option['answer'])}{' (recommended)' if option is recommended else ''}"
         lines.extend(
             [
-                f"**{text(option['answer'])}{' (recommended)' if recommended else ''}:** {text(option['changes'])}",
+                f"**{label}:** {text(option['changes'])}",
                 f"Ongoing cost: {text(option['cost'])}. After this answer: {text(option['next'])}",
                 "",
+            ]
+            if legacy
+            else [
+                f"  - **{label}:** {sentence(option['changes'])} "
+                f"Ongoing cost: {sentence(option['cost'])} After this answer: {text(option['next'])}",
             ]
         )
     lines.extend(
         [
             f"Experienced developer: {text(record['comparison'])}",
             f"By hand: {text(record['manual'])}",
-            f"Owning issue: {record['issue']}",
+        ]
+        if legacy
+        else [
+            f"- **A senior developer would:** {text(record['comparison'])}",
+            f"- **Recommendation:** {text(recommended['answer'])}. {text(record['comparison'])}",
+            f"- **You do:** {text(record['manual'])}",
+            "",
         ]
     )
+    lines.append(f"Owning issue: {record['issue']}")
     encoded = json.dumps(record, sort_keys=True).replace("<", "\\u003c").replace(">", "\\u003e")
     return "\n".join(lines) + f"\n\n<!-- director-question:record {encoded} -->\n"
 
@@ -105,16 +134,17 @@ def read_record(source: dict[str, Any]) -> dict[str, Any]:
     if errors:
         raise ValueError("\n".join(errors))
     number = question_id.heading_id(body)
-    if not number or github_comment.canonical_comment_body(body) != question_id.number_heading(render(record), number).strip():
+    if not number or github_comment.canonical_comment_body(body) != question_id.number_heading(render(record, legacy=True), number).strip():
         raise ValueError("source text disagrees with its record or has no number; read the source before repairing it")
     if record["issue"].casefold() != source["issue"].casefold():
         raise ValueError("record issue disagrees with its source")
+    rendered = question_id.number_heading(render(record), number).split("<!-- director-question:record ", 1)[0].strip()
     return {
         "record": record,
         "author": source["author"],
         "question_id": number,
         "url": source["url"],
-        "text": body.split("<!-- director-question:record ", 1)[0].strip(),
+        "text": rendered.removeprefix("Director question: "),
     }
 
 
@@ -153,7 +183,7 @@ def create(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
         errors.append("--queue disagrees with configured question queue")
     if queue and (not delivery.oq.ITEM.fullmatch(queue) or queue.split("/", 1)[0].casefold() != args.owner.casefold()):
         errors.append("queue must belong to the configured Director")
-    body = render(record) if not errors else ""
+    body = render(record, legacy=True) if not errors else ""
     target = ISSUE_URL.fullmatch(record["issue"]) if body else None
     if body and target:
         try:
@@ -168,7 +198,7 @@ def create(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
     if errors:
         raise ValueError("Invalid Director question:\n" + "\n".join(f"- {error}" for error in errors))
     if args.dry_run:
-        return {"text": body.split("<!-- director-question:record ", 1)[0].strip(), "registration": "dry_run"}
+        return {"text": render(record).split("<!-- director-question:record ", 1)[0].strip().removeprefix("Director question: "), "registration": "dry_run"}
     assert target is not None
     repo = target[1]
     actor = github_comment.authenticated_actor(
