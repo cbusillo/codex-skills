@@ -460,6 +460,9 @@ LOCAL_EXTENSION_ROUTES = {
 }
 
 INTERNAL_HELPER_ROUTES = {
+    "testing-state-profile-write": {
+        "method": "POST", "path": "/v1/product-profiles",
+    },
     "generic-testing-rebuild-inputs": {
         "method": "GET", "path": "/v1/products/{product}/testing-rebuild/inputs",
     },
