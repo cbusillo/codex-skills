@@ -230,13 +230,12 @@ def session_fields(text: str, *, include_quotes: bool = True, current_only: bool
         line = re.sub(r"^\s*(?:>\s*)+", "", raw)
         context = previous + "\n" + line
         previous = line
-        opener = re.match(r" {0,3}(`{3,}|~{3,})", line)
         if fence:
             if re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*", line):
                 fence = None
             continue
-        if opener is not None:
-            fence = opener.group(1)
+        if opener := re.match(r" {0,3}(`{3,}|~{3,})", line):
+            fence = opener[1]
             continue
         if not include_quotes and raw.lstrip().startswith(">"):
             continue
