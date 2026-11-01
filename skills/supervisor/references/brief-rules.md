@@ -231,9 +231,9 @@ Cloud environment IDs in private configuration or the private handoff record,
 never in this catalog. The linked shared rules own claims, worktrees, checks,
 review and PR handoff; this template adds only the Cloud pass specifics.
 
-For each launch, set `cloud_environment` and `task_prompt` from the resolved
-private configuration and bounded task. Keep the printed path with its task ID;
-separate shell calls must use that path as their working directory.
+For each launch, resolve `cloud_environment` privately and set `task_prompt` to the bounded task.
+Keep the scratch path with the task ID. Run every later Cloud command, including
+status and diff, from that directory: the CLI writes `error.log` there.
 
 ```sh
 task_scratch=$(mktemp -d "${TMPDIR:-/tmp}/codex-cloud.XXXXXX") &&
@@ -251,11 +251,10 @@ Goal and finish line: __BOUNDED_PASS_GOAL_AND_OBSERVABLE_FINISH__
 Cloud environment: resolve __REPOSITORIES__ through __PRIVATE_CONFIG_OR_HANDOFF_REFERENCE__.
 
 1. Read the anchor and pass issue in full. Leave the anchor unclaimed; claim the pass issue with the admission and evidence above under the shared rules before launching work.
-2. Launch several bounded, independent tasks at once using the scratch launch example above, with cloud_environment and task_prompt set for each task. Record each printed scratch path and set every later Cloud command's workdir to it, including status and diff: codex cloud writes error.log in its current directory. Apply accepted diffs with git -C <owning-task-worktree> apply after step 3; do not use codex cloud apply from a checkout. Send only public-safe source and task instructions, never private data, credentials or local evidence. Keep private environment mappings out of Cloud prompts and public results.
-3. Check each result against current code and the pass goal. Discard wrong results with a short reason. For each accepted result, use an owning issue linked to the pass and its own claim in that repository before creating its linked task worktree under the shared rules.
-4. Run only the affected tests locally, plus the shared rules' required safety modules, lint, type checks and inspection. Get and weigh another provider's review through model-review. Within the shared PR cap and pace, hand each PR off through its repository's merge path. Close result issues with their completing PRs; link the pass as context, without closing it from a result PR.
-5. Prefer removal: net maintained lines must go down, or report the growth and why it is needed. Report Removed: and Net lines: for each result.
-6. Post a short tally on __TRIAL_RECORD_URL__: tasks launched, accepted and discarded (with reasons), PR links, Removed: and Net lines:. Keep detailed results on the pass issue and its Current Status current. Close the pass issue when its stated finish line is met; otherwise record the remaining actor or event. Close out and release each result claim and the pass claim under the shared rules.
+2. Select independent tasks with an exact reproduction or bounded question, relevant paths, reachable inputs and a focused verification command suited to the runtime and dependencies; skip unsuitable work. Ask for implementation diffs for code work and disposable evidence for analysis or test runs; preserve justified no-change outcomes in corrective prompts too. Launch with the scratch example above. Send only public-safe source and instructions, never private data, credentials or local evidence. Keep private environment mappings out of Cloud prompts and public results.
+3. Check each result against current code and the pass goal. Discard wrong proposals with a reason; record useful diagnosis and its next action on its owning claimed issue without applying evidence as maintained source. For accepted source, claim its linked owning issue before creating its task worktree under the shared rules, then use git -C <owning-task-worktree> apply; do not use codex cloud apply from a checkout.
+4. For accepted source, run affected tests locally, plus the shared rules' required safety modules, lint, type checks and inspection. Get and weigh another provider's review through model-review. Within the shared PR cap and pace, hand each PR off through its repository's merge path. Close result issues with their completing PRs; link the pass as context, without closing it from a result PR.
+5. Post a short tally on __TRIAL_RECORD_URL__: tasks launched, source accepted/adapted/discarded (with reasons), useful reports, environment/transport failures and PR links. Prefer removal; report Removed: and Net lines: per result, explaining growth. Keep details and Current Status on the pass issue. Close it when its finish line is met; otherwise name the remaining actor or event. Close out and release result and pass claims under the shared rules.
 
 Keep working through compaction. Keep: this brief, the anchor, the pass issue and current step.
 Rules for this brief: https://github.com/cbusillo/codex-skills/blob/main/skills/supervisor/references/brief-rules.md
