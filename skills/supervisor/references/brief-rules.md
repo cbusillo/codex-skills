@@ -158,8 +158,11 @@ Rules for this brief (every Supervisor brief carries them):
   promise what is the Director's to decide. Outbound messages anywhere else
   stay a stop boundary under the overall
   [DIRECTION.md](https://github.com/cbusillo/direction/blob/main/DIRECTION.md#stop-boundaries).
-- When you need Chris, post a `Director question:` comment on the item under
-  [role words](../../references/role-words.md#legacy-identifiers) and leave presentation to the Supervisor; never use a
+- When you need the Director, create every new Director question on the item with
+  `uv run <supervisor-skill-dir>/scripts/oq.py create --record-file FILE --owner OWNER`
+  under [Director Questions](../../references/talking-with-the-director.md#director-questions),
+  rather than authoring a prose question comment. Re-present an existing question
+  with its original Q and source link. Leave presentation to the Supervisor; never use a
   native question UI (`request_user_input`, `request_user_input_async` or
   `AskUserQuestion`) in a Supervisor-launched worker. Quote the exact
   stop-boundary line from the overall or
