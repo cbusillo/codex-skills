@@ -719,6 +719,46 @@ installed local helper bindings.
   and client completeness never certify server or fleet completeness.
   A returned integration or scope set that differs from the explicit request
   makes client selection coverage unknown while retaining the server's facts.
+- `testing-state-dry-run --product --context --kind none|volume
+  --profile-request-file` prepares a one-time generic-web testing state
+  declaration from `GET /v1/product-profiles/{product}`. Volume declarations
+  require `--container-path`; none declarations cannot supply one. It selects
+  only the exact existing testing lane of an active generic-web product.
+
+  Keep the request file outside the repository. The helper creates it privately
+  without overwriting an existing file. It contains the fetched profile,
+  matching strong revision and typed intent for the exact future request.
+  It is immutable request evidence, not runtime configuration. Public output
+  contains the state selection and review digest, never the full profile or
+  private file path. Save that output separately for review.
+
+  `testing-state-apply --profile-request-file --idempotency-key
+  --reviewed-dry-run --expected-plan-digest --dry-run-evidence-file` reconstructs
+  only that testing state edit. It verifies the saved review and original
+  revision, preserves every neighboring field and sends the existing
+  `POST /v1/product-profiles` with `If-Match` and the stable original key.
+  The service atomically compares the profile. An already matching declaration
+  needs only a fresh read, with no profile write. This configures a declaration;
+  it allocates nothing and proves no runtime isolation, rebuild or restore.
+
+  Acceptance and readback are separate: `accepted_unverified` preserves an
+  accepted write when the declaration cannot be read back. On uncertainty,
+  replay only the unchanged private request, saved review and original key
+  through the same configured service identity. Never refresh the profile
+  inside an uncertain request, overwrite its evidence or choose a new key.
+  Original-key replay precedes the service's stale-revision check, so recovery
+  preserves a later neighbor edit. Denials retain their code and trace and stop
+  the action. These commands add no grant or service write route.
+  A later refusal settles only that attempt; it does not settle an earlier
+  unknown write. Preserve the original request until it is resolved. A known
+  stale request with no earlier uncertainty can be reviewed again with a new
+  private file and key. The reviewed declaration may be set or corrected as
+  the existing conditional API permits; its before/after state and path are
+  shown in the plan. Runtime checks still qualify the actual lane separately.
+  If identical replay cannot recover acceptance, stop automatic recovery and
+  retain the evidence for service-side reconciliation. Report the exact missing
+  settlement capability on the owning issue. A no-op read alone does not close
+  the earlier unknown request.
 - `testing-rebuild-dry-run --product --copy-source --artifact-id --source-git-ref
   --reason` reads Odoo preflight through
   `POST /v1/drivers/odoo/target-replacement-plan`. An immutable generic-web
