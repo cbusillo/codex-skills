@@ -42,9 +42,10 @@ def compact_output(value: Any) -> Any:
 
 def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[str],
                     resume_from: int | None = None, resume_source: dict[str, Any] | None = None,
-                    expired_sessions: set[str] | frozenset[str] = frozenset()) -> dict[str, Any]:
+                    expired_sessions: set[str] | frozenset[str] | None = None,
+                    worker: str = "", session: str = "") -> dict[str, Any]:
     discussion = item.get("discussion") or {}
-    status = current_status(discussion, trusted, body_recorded_at=discussion.get("body_recorded_at"))
+    status = current_status(discussion, trusted, body_recorded_at=discussion.get("body_recorded_at"), preserve_markers=True)
     comments = [{**comment, "user": {"login": comment.get("author") or ""}} for comment in discussion.get("comments", [])]
     row = {"complete": ownership.get("complete") is True, "coverage": ownership.get("coverage", {})}
     complete = discussion.get("complete")
@@ -55,10 +56,17 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
     inventory = ownership.get("inventory") or {"local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}
     retained = None
     try:
+        if expired_sessions is None:
+            expired_sessions = github_plan_claim.expired_lease_sessions(comments)
         ended = github_plan_claim.ended_ownership(comments, inventory, expired_sessions)
         conflicts, _ = github_plan_claim.discussion_evidence(status, comments,
             {"worker": "", "session": "", "branch": "", "claimed_at": ""},
             ended_claims={source["claim_id"] for source in ended})
+        recipients = []
+        if recipient := github_plan_claim.recipient_evidence(
+                status, comments, repo=item["repo"], number=item["number"], worker=worker, session=session,
+                ended_claims={source["claim_id"] for source in ended}):
+            recipients.append(recipient)
         if item.get("record_type") == "pull_request":
             pull = next((pull for pull in ownership.get("pulls", []) if pull["number"] == item["number"]), None)
             if not isinstance(pull, dict):
@@ -76,12 +84,19 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
                 if source.get("_graph_comments_complete") is not True:
                     return {**row, "error": "source_claim_discussion_incomplete"}
                 source_comments = source["_graph_comments"]
-                ended_sources = github_plan_claim.ended_ownership(source_comments, inventory, expired_sessions)
-                source_status = current_status(github_direction_next.discussion_snapshot(source, source_comments, complete=True), trusted)
+                ended_sources = github_plan_claim.ended_ownership(source_comments, inventory,
+                    expired_sessions | github_plan_claim.expired_lease_sessions(source_comments))
+                source_status = current_status(github_direction_next.discussion_snapshot(source, source_comments, complete=True), trusted, preserve_markers=True)
                 source_conflicts, _ = github_plan_claim.discussion_evidence(source_status, source_comments,
                     {"worker": "", "session": "", "branch": "", "claimed_at": ""},
                     ended_claims={source["claim_id"] for source in ended_sources})
                 conflicts.extend(source_conflicts)
+                source_recipient = github_plan_claim.recipient_evidence(
+                        source_status, source_comments, repo=source.get("repo") or item["repo"],
+                        number=source["number"], worker=worker, session=session,
+                        ended_claims={entry["claim_id"] for entry in ended_sources})
+                if source_recipient:
+                    recipients.append(source_recipient)
         wait = github_plan_wait.current(
             {"body": discussion.get("body") or "", "user": {"login": discussion.get("author") or ""}}, comments, trusted)
         original_wait = wait
@@ -113,7 +128,8 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
             ended_branches=github_plan_claim.ended_artifact_branches(ended, comments, ownership.get("pulls") or []))
     except (ValueError, KeyError, TypeError) as exc:
         return {**row, "error": "unreadable_ownership_or_wait", "detail": str(exc)}
-    return {**row, "conflicts": conflicts, "artifacts": artifacts, "wait": wait, "event_completed": wait != original_wait and wait["state"] == "clear"}
+    return {**row, "conflicts": conflicts, "artifacts": artifacts, "wait": wait, "ended_ownership": ended, "recipients": recipients,
+            "event_completed": wait != original_wait and wait["state"] == "clear"}
 
 
 def released_actor(actor: str, discussion: dict[str, Any], trusted: set[str]) -> bool:
@@ -172,6 +188,10 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
     if conflicts or artifacts:
         return {**row, "state": "underway", "reason": "existing_claim_or_artifact",
                 "ownership_evidence": [*conflicts, *artifacts], "certainty": "current_or_stale"}
+    if facts["recipients"]:
+        return {**row, "state": "needs_status", "reason": "named_recipient_requires_reconciliation",
+                "ownership_evidence": facts["recipients"], "recorded_next_action": row["next_action"],
+                "next_action": facts["recipients"][0]["next_action"]}
     if projected.get("reason") == "client_acceptance_unavailable":
         return {**row, "state": "review", "reason": projected["reason"]}
     if not status_known:
@@ -184,7 +204,9 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
     if actor is None:
         return {**row, "state": "needs_status", "reason": "next_actor_missing_or_invalid"}
     if actor.startswith("agent:"):
-        if released_actor(actor, discussion, trusted):
+        if (released_actor(actor, discussion, trusted) or any(
+                actor.removeprefix("agent:").casefold() in {record["worker"].casefold(), record["session"].casefold()}
+                for record in facts["ended_ownership"])):
             return {**row, "state": "needs_status", "reason": "next_actor_session_released"}
     if wait["state"] == "review":
         return {**row, "state": "review", "reason": "wait_review_required", "wait_review_required": True}

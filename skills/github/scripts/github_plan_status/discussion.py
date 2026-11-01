@@ -27,26 +27,44 @@ def section_map(body: str) -> dict[str, str]:
     return sections
 
 
-def current_status(discussion: dict[str, Any], trusted: set[str], *, body_recorded_at: str | None = None) -> str:
+def unquoted_text(text: str) -> str:
+    from .waits import live_lines as visible_lines
+
+    text = re.sub(r"(?im)^ {0,3}</?details\b[^>]*>[ \t]*$", "", text)
+    lines = []
+    quoted = False
+    for _, line in visible_lines(text, prefix=""):
+        if line.lstrip().startswith(">"):
+            quoted = True
+            continue
+        if not line.strip() or re.match(r"^ {0,3}(?:#{1,6}\s|[-+*]\s|\d+[.)]\s|<)", line):
+            quoted = False
+        if not quoted:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def current_status(discussion: dict[str, Any], trusted: set[str], *, body_recorded_at: str | None = None,
+                   preserve_markers: bool = False) -> str:
     def timestamp(value: Any) -> datetime | None:
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00")) if isinstance(value, str) else None
             return parsed if parsed is not None and parsed.tzinfo is not None else None
         except ValueError:
             return None
-    status = section_map(discussion.get("body") or "").get("Current Status")
+    status = section_map(unquoted_text(discussion.get("body") or "")).get("Current Status")
     has_body_status = status is not None
-    body_time = timestamp(body_recorded_at or discussion.get("updated_at"))
+    body_time = timestamp(body_recorded_at or discussion.get("body_recorded_at") or discussion.get("updated_at"))
     for comment in discussion.get("comments", []):
         if str(comment.get("author") or "").casefold() not in trusted:
             continue
-        found = section_map(comment.get("body") or "").get("Current Status")
+        found = section_map(unquoted_text(comment.get("body") or "")).get("Current Status")
         comment_time = timestamp(comment.get("created_at"))
         if found is not None and (not has_body_status or (comment_time is not None and (body_time is None or comment_time >= body_time))):
             status = found
             body_time = comment_time
             has_body_status = True
-    return re.sub(r"<!--.*?-->", "", status or "", flags=re.S).strip()
+    return (status or "").strip() if preserve_markers else re.sub(r"<!--.*?-->", "", status or "", flags=re.S).strip()
 
 
 def status_field(status: str, field: str) -> str:
@@ -148,7 +166,7 @@ def exact_released_sources(comments: list[dict[str, Any]]) -> list[tuple[int, di
 def released_actor(actor: str, *, effective_comments: list[dict[str, Any]], trusted: set[str]) -> bool:
     relevant = [index for index, comment in enumerate(effective_comments)
                 if str((comment.get("user") or {}).get("login") or "").casefold() in trusted
-                and any(record["session"] == actor.removeprefix("agent:")
+                and any(actor.removeprefix("agent:").casefold() in {record["session"].casefold(), record["worker"].casefold()}
                         for record in records(comment.get("body") or ""))]
     return bool(relevant and relevant[-1] in {index for index, _, _ in exact_released_sources(effective_comments)})
 

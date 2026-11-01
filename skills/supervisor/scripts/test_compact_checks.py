@@ -336,6 +336,8 @@ class OperationTests(unittest.TestCase):
         self.assertFalse(session_closeout.explicit_session("Catalog landing verified", "native"))
         self.assertTrue(session_closeout.explicit_session("Session: native", "native"))
         self.assertFalse(session_closeout.explicit_session("Session: another", "native"))
+        self.assertTrue(session_closeout.explicit_session("Session: native\n\n> Session: another", "native"))
+        self.assertFalse(session_closeout.explicit_session("> Session: native\n\nSession: another", "native"))
 
     def test_managed_proxy_and_dim_suggestions_use_shared_native_rules(self) -> None:
         proxy = codex_session_proxy.__file__

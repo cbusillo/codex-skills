@@ -227,7 +227,7 @@ class CloseConfigTests(unittest.TestCase):
                      read_only: bool = False, expired_sessions: set[str] | None = None,
                      source_comments: list[dict] | None = None, admission: str | None = None,
                      admission_links: list[str] | None = None, milestone: dict | None = None,
-                     track: dict | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+                     track: dict | None = None, actor: str | None = None, worker: str | None = None, body_time: str | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         target = "fixture/target"
         configs = {repo: copy.deepcopy(PLAN.DEFAULT_CONFIG) for repo in ("fixture/local", target)}
         configs[target]["labels"] = {key: f"target:{key}" for key in configs[target]["labels"]}
@@ -237,6 +237,10 @@ class CloseConfigTests(unittest.TestCase):
                  "body": f"Original human request.\n## Current Status\nState: Blocked.\nNext action: {action}",
                  "labels": [{"name": names[key]} for key in ("plan", "blocked")]}
         issue["milestone"] = milestone
+        if body_time:
+            issue.update(created_at=body_time, last_edited_at=body_time, updated_at="2026-10-27T00:00:00Z")
+        if actor:
+            issue["body"] += f"\nNext actor: {actor}"
         comments: list[dict[str, Any]] = [{"id": 1, "user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker(
             PLAN.github_plan_wait.reviewed(evidence="Target discussion reviewed; no person wait"))}]
         comments.extend(comments_extra or [])
@@ -264,6 +268,7 @@ class CloseConfigTests(unittest.TestCase):
                     "complete": True, "pulls": pulls or [], "coverage": {}, "inventory": {}}), contextlib.redirect_stdout(output):
             PLAN.cmd_show(PLAN.build_parser().parse_args(["--repo", "fixture/local", "show", "fixture/target#7", "--full",
                                                         *(["--launch-check"] if launch else []),
+                                                        *(["--worker", worker] if worker else []),
                                                         *(["--resume-from", str(resume)] if resume else []),
                                                         *(["--read-only"] if read_only else []),
                                                         *(["--admission", admission] if admission else []),
@@ -376,6 +381,23 @@ class CloseConfigTests(unittest.TestCase):
             result, _, _ = self.show_fixture(launch=True, admission=kind, admission_links=[link])
             self.assertTrue(result["issue"]["launch_check"]["allowed"])
         result, _, _ = self.show_fixture(launch=True, read_only=True, admission="milestone")
+        self.assertTrue(result["issue"]["launch_check"]["allowed"])
+
+    def test_named_recipient_is_routing_work_before_an_execution_launch(self) -> None:
+        for actor in ("agent:ODOO20LEAD2-1027", "agent:native-session"):
+            for read_only in (False, True):
+                result, _, _ = self.show_fixture(launch=True, actor=actor, read_only=read_only)
+                check = result["issue"]["launch_check"]
+                self.assertEqual(check["allowed"], read_only)
+                self.assertTrue(any(row["source"] == "recorded_recipient" for row in check["ownership"]["recipients"]))
+            result, _, _ = self.show_fixture(launch=True, actor=actor, worker=actor.removeprefix("agent:"))
+            self.assertTrue(result["issue"]["launch_check"]["allowed"])
+
+    def test_launch_uses_body_edit_time_for_the_current_assignment(self) -> None:
+        result, _, _ = self.show_fixture(launch=True, actor="agent:old-worker", worker="new-worker",
+            body_time="2026-10-01T00:00:00Z", comments_extra=[{
+                "id": 2, "user": {"login": "fixture"}, "created_at": "2026-10-25T00:00:00Z",
+                "body": "## Current Status\nNext actor: agent:new-worker"}])
         self.assertTrue(result["issue"]["launch_check"]["allowed"])
 
     def test_launch_returns_actionable_admission_argument_errors(self) -> None:

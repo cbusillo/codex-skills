@@ -183,6 +183,30 @@ def test_pr_artifacts_cannot_hide_the_recorded_actor_or_missing_owner() -> None:
         assert classify(row, observed)["state"] == ("waiting" if actor == "person:owner" else "underway")
 
 
+def test_linked_source_body_claim_preserves_custody() -> None:
+    row = item()
+    row["record_type"] = "pull_request"
+    source = {"worker": "worker", "session": "native-session", "branch": "work/source", "claimed_at": "2026-10-01T00:00:00Z"}
+    raw = cli.issue(2)
+    raw.update(repo=row["repo"], user={"login": "owner"},
+               body="## Current Status\n" + claim.marker(source), _graph_comments=[], _graph_comments_complete=True)
+    observed = evidence()
+    observed["records"] = [raw]
+    observed["pulls"] = [{"number": row["number"], "state": "open", "title": row["title"], "html_url": row["url"],
+                          "body": "Closes #2", "head": {"ref": "work/source", "sha": "a" * 40, "repo": {"full_name": row["repo"]}},
+                          "base": {"repo": {"full_name": row["repo"]}}}]
+    result = classify(row, observed)
+    assert result["state"] == "underway"
+    assert any(entry.get("record") == source for entry in result["ownership_evidence"])
+    raw.update(body="## Current Status\nNext actor: agent:old-worker", created_at="2026-10-01T00:00:00Z",
+               last_edited_at="2026-10-01T00:00:00Z", updated_at="2026-10-27T00:00:00Z",
+               _graph_comments=[{"id": 8, "user": {"login": "owner"}, "created_at": "2026-10-25T00:00:00Z",
+                                 "body": "## Current Status\nNext actor: agent:new-worker"}])
+    result = classify(row, observed)
+    assert result["state"] == "needs_status"
+    assert [entry["worker"] for entry in result["ownership_evidence"]] == ["new-worker"]
+
+
 def test_direction_list_is_authoritative_and_holds_override_automatic_review() -> None:
     patterns = ['repo', 'family*']
     assert queue.own_project('owner/repo', patterns, 'owner')
@@ -350,6 +374,10 @@ def test_inherited_overall_milestone_orders_work_without_copying_membership() ->
 
 
 def test_next_actor_routes_work_without_prose_inference() -> None:
+    import github_agent
+
+    for role in ("supervisor", "integrator", *github_agent.FAMILIES):
+        assert classify(item(actor=f"agent:{role}"))["state"] == "available"
     for action in ["Implement export.", "Verify the deployed build.", "Supervisor fixes GUI selection.", "#7 owns the source."]:
         assert classify(item(action, "Source delivery is complete"))["state"] == "available"
         assert classify(item(action, actor="agent:integrator"))["state"] == "available"
@@ -360,6 +388,15 @@ def test_next_actor_routes_work_without_prose_inference() -> None:
     row = item()
     row["discussion"]["body"] = row["discussion"]["body"].replace("Next actor: agent\n", "")
     assert classify(row)["state"] == "needs_status"
+    for actor in ("agent:ODOO20LEAD2-1027", "agent:native-session"):
+        row = item(actor=actor)
+        result = classify(row)
+        assert result["state"] == "needs_status"
+        assert result["next_actor"] == actor
+        assert result["ownership_evidence"][0]["source"] == "recorded_recipient"
+        recipient = claim.recipient_evidence(queue.current_status(row["discussion"], {"owner"}), [],
+            repo=row["repo"], number=row["number"], worker="new-worker", session="new-session")
+        assert [recipient] == result["ownership_evidence"]
     row = item()
     row["discussion"]["body"] += "\nNext actor: person:owner\n"
     assert classify(row)["state"] == "needs_status"
@@ -375,6 +412,7 @@ def test_latest_claim_for_named_session_decides_released_actor_status() -> None:
     assert classify(row)["state"] == "underway"
     row["discussion"]["comments"][-1]["author"] = "bot"
     assert classify(row)["state"] == "needs_status"
+
     other = {**source, "session": "other-session", "claimed_at": "2026-10-02T00:00:00Z"}
     row["discussion"]["comments"].extend([
         {"id": 3, "author": "bot", "created_at": other["claimed_at"], "body": claim.marker(other)},
@@ -387,6 +425,17 @@ def test_latest_claim_for_named_session_decides_released_actor_status() -> None:
     assert classify(row)["state"] == "underway"
     row["discussion"]["comments"].append(
         {"id": 6, "author": "bot", "created_at": "2026-10-03T00:01:00Z", "body": "Released claim 5"})
+    assert classify(row)["state"] == "needs_status"
+
+def test_expired_local_lease_and_worker_alias_use_the_same_ended_claim() -> None:
+    row = item(actor="agent:WORKER")
+    source = {"worker": "worker", "session": "native-session", "branch": "work/source", "claimed_at": "2026-10-01T00:00:00Z"}
+    row["discussion"]["comments"] = [{"id": 1, "author": "bot", "created_at": source["claimed_at"], "body": claim.marker(source)}]
+    with patch.object(claim, "expired_lease_sessions", return_value={source["session"]}):
+        assert classify(row)["state"] == "needs_status"
+    with patch.object(claim, "expired_lease_sessions", return_value=set()):
+        assert classify(row)["state"] == "underway"
+    row["discussion"]["comments"].append({"id": 2, "author": "bot", "created_at": "2026-10-01T00:01:00Z", "body": "Released claim 1"})
     assert classify(row)["state"] == "needs_status"
 
 

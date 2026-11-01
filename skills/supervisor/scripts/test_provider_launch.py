@@ -85,6 +85,11 @@ class LaunchIssueTests(unittest.TestCase):
             calls.append(parser.parse_args(argv[argv.index(helper) + 1:]))
             return subprocess.CompletedProcess(argv, 0, json.dumps(cleared))
         with patch.object(iterm_tab.subprocess, "run", side_effect=read):
+            token = "successor-worker"
+            iterm_tab.check_launch_issue(f"Brief from the Supervisor. Trial token: {token}.\n" + brief)
+            self.assertEqual(calls[-1].worker, token)
+            iterm_tab.check_launch_issue(f"GUI task: com.example.fixture\nBrief from the Supervisor. Trial token: {token}.\n" + brief)
+            self.assertEqual(calls[-1].worker, token)
             iterm_tab.check_launch_issue(brief)
             self.assertEqual(calls[-1].issue, brief.split()[-1])
             self.assertFalse(calls[-1].read_only)
@@ -139,6 +144,16 @@ class LaunchIssueTests(unittest.TestCase):
                     iterm_tab.check_launch_issue(anchor)
                 self.assertIn(code, str(caught.exception))
                 self.assertIn(detail, str(caught.exception))
+
+    def test_named_recipient_and_its_recovery_reach_the_launcher(self) -> None:
+        recipient = {"worker": "existing-worker", "next_action": "Fixture supported recovery"}
+        payload = {"ok": True, "issue": {"launch_check": {
+            "allowed": False, "status": "active", "ownership": {"recipients": [recipient]}}}}
+        with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))):
+            with self.assertRaises(ValueError) as caught:
+                iterm_tab.check_launch_issue("Anchor: https://github.com/fixture/repo/issues/7")
+            self.assertIn(recipient["worker"], str(caught.exception))
+            self.assertIn(recipient["next_action"], str(caught.exception))
 
     def test_missing_or_failed_state_read_never_launches(self) -> None:
         for code, output in ((1, "{}"), (0, "{}"), (0, "invalid"), (0, '{"ok": true, "issue": {}}')):

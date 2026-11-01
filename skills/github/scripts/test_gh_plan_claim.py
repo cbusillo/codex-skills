@@ -170,6 +170,11 @@ class ClaimTests(unittest.TestCase):
             return "bot", {}
         if path == "/graphql":
             self.history_reads.append((_method, copy.deepcopy(payload), options))
+            if "number" in payload["variables"]:
+                target = self.targets.get(str(payload["variables"]["number"]), self.issue)
+                return "bot", {"data": {"repository": {"issue": {
+                    "createdAt": target.get("created_at", "2026-10-01T00:00:00Z"),
+                    "lastEditedAt": target.get("last_edited_at")}}}}
             response = self.history_nodes[payload["variables"]["id"]]
             if isinstance(response, Exception):
                 raise response
@@ -233,6 +238,7 @@ class ClaimTests(unittest.TestCase):
     def edit(self, _repo, _number, *, body):
         self.events.append("status")
         self.issue["body"] = body
+        self.issue["last_edited_at"] = datetime.now().astimezone().isoformat()
         self.after_status()
         return "bot", copy.deepcopy(self.issue)
 
@@ -1005,6 +1011,7 @@ class ClaimTests(unittest.TestCase):
                 previous = PLAN.section_map(self.issue["body"])["Current Status"]
                 target = self.targets["99"]
                 target["html_url"] = "https://github.com/owner/repo/pull/99"
+                target["created_at"] = "2026-10-01T00:00:00Z"
                 target_status = "State: Retained source needs its own evidence review."
                 target["body"] += "\n\n## Current Status\n\n" + target_status
                 if merged:
@@ -1019,7 +1026,7 @@ class ClaimTests(unittest.TestCase):
                     {"id": 88, "user": {"login": TEST_BOT}, "body": wait_record.marker(wait)})
                 comment_status = "State: The retained record's current evidence is in this comment."
                 self.target_comments["/repos/owner/repo/issues/99/comments"].append(
-                    {"id": 89, "user": {"login": TEST_BOT},
+                    {"id": 89, "user": {"login": TEST_BOT}, "created_at": "2026-10-03T00:00:00Z",
                      "body": "## Current Status\n\n" + comment_status})
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
@@ -1029,7 +1036,7 @@ class ClaimTests(unittest.TestCase):
                 self.assertEqual(error.payload["structured_wait"], wait)
                 expected_record = {
                     "repo": "owner/repo", "number": target["number"], "record_kind": "pr",
-                    "url": target["html_url"], "current_status": target_status + "\n\n" + comment_status}
+                    "url": target["html_url"], "current_status": comment_status}
                 for key, value in expected_record.items():
                     self.assertEqual(error.payload["waiting_record"][key], value)
                 self.assert_no_writes()
@@ -5881,6 +5888,51 @@ class ClaimTests(unittest.TestCase):
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
                 self.assertIn("post", self.events)
                 self.assertIn(status, self.emitted.call_args.args[0]["previous_current_status"])
+
+    def test_named_recipient_without_a_claim_requires_custody_reconciliation(self) -> None:
+        self.issue["body"] += "Next actor: agent:existing-worker\n"
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+        self.assertTrue(any(row["source"] == "recorded_recipient"
+                            for row in caught.exception.payload["competing_evidence"]))
+        self.assert_no_writes()
+
+    def test_comment_status_uses_the_same_trusted_reader_for_issues_and_prs(self) -> None:
+        for record_type in ("issue", "pull_request"):
+            self.setUp()
+            self.issue["body"] = "The original request, without a managed status"
+            if record_type == "pull_request":
+                self.pr_fixture()
+            self.comments = [{"id": 1, "user": {"login": TEST_BOT},
+                "body": "## Current Status\nNext actor: agent:existing-worker"}]
+            with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                self.run_claim()
+            self.assertEqual(caught.exception.code, "claim_conflict")
+            recipient = next(row for row in caught.exception.payload["competing_evidence"]
+                             if row["source"] == "recorded_recipient")
+            command = recipient["next_action"].split("gh-comment ", 1)[1]
+            remedy = github_comment.build_parser().parse_args(command.split())
+            self.assertEqual((remedy.repo, remedy.number), (self.issue["repo"], self.issue["number"]))
+            self.assert_no_writes()
+
+    def test_later_activity_does_not_replace_trusted_comment_assignment(self) -> None:
+        for record_type in ("issue", "pull_request"):
+            self.setUp()
+            if record_type == "pull_request":
+                self.pr_fixture()
+            self.issue["body"] += "\nNext actor: agent:old-worker\n"
+            self.issue["updated_at"] = "2026-10-26T00:00:00Z"
+            self.comments = [{"id": 1, "user": {"login": TEST_BOT},
+                "created_at": "2026-10-25T00:00:00Z",
+                "body": "## Current Status\nNext actor: agent:existing-worker"}]
+            with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                self.run_claim()
+            self.assertEqual(caught.exception.code, "claim_conflict")
+            recipients = [row["worker"] for row in caught.exception.payload["competing_evidence"]
+                          if row["source"] == "recorded_recipient"]
+            self.assertEqual(recipients, ["existing-worker"])
+            self.assert_no_writes()
 
     def test_global_invalid_wait_selection_still_requires_actual_claim_resolution(self):
         import test_gh_plan_next as selection

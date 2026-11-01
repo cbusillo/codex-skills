@@ -15,10 +15,14 @@ import time
 from typing import Any, Callable
 
 try:
-    from github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources
+    from github_plan_status import next_actor
+    import github_agent
+    from github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources, unquoted_text
     from github_plan_status.references import pr_issue_reference as pr_issue_reference
 except ModuleNotFoundError:
-    from skills.github.scripts.github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources
+    from skills.github.scripts.github_plan_status import next_actor
+    from skills.github.scripts import github_agent
+    from skills.github.scripts.github_plan_status.discussion import MARKER, live_lines, records, without_operation_marker, released_claim_id, exact_released_sources, unquoted_text
     from skills.github.scripts.github_plan_status.references import pr_issue_reference as pr_issue_reference
 
 
@@ -581,6 +585,23 @@ def discussion_evidence(
     return conflicts, owned
 
 
+def recipient_evidence(status: str, comments: list[dict[str, Any]], *,
+                       repo: str, number: int, worker: str = "", session: str = "",
+                       ended_claims: set[int] | None = None) -> dict[str, Any] | None:
+    recipient = next_actor.recipient(status, families=github_agent.FAMILIES)
+    if not recipient or recipient.casefold() in {worker.casefold(), session.casefold()}:
+        return None
+    ended = [record for comment in comments if comment.get("id") in (ended_claims or set())
+             for record in records(comment.get("body") or "")]
+    if any(recipient.casefold() in {record["worker"].casefold(), record["session"].casefold()} for record in ended):
+        return None
+    return {"source": "recorded_recipient", "worker": recipient,
+            "url": f"https://github.com/{repo}/issues/{number}",
+            "next_action": f"Launch the named recipient with gh-plan.py --repo {repo} show {number} --launch-check --worker {recipient}; "
+                           f"otherwise verify custody and post a Current Status section containing Next actor: agent with "
+                           f"gh-comment issue {number} --repo {repo} --body-file FILE"}
+
+
 def expired_lease_sessions(comments: list[dict[str, Any]]) -> set[str]:
     import github_plan_lease
     released = {comments[i]["id"] for i, _, _ in exact_released_sources(comments)} | set(takeover_sources(comments))
@@ -645,9 +666,9 @@ def coordination(conflicts: list[dict[str, Any]], comments: list[dict[str, Any]]
                 holders.append({**record, "claim_url": handoff_url(repo, number, source.get("id")),
                                 "next_action": next_action(record)})
     if not holders:
-        holders = [{"worker": "unknown", "session": c.get("session", "unknown"),
+        holders = [{"worker": c.get("worker", "unknown"), "session": c.get("session", "unknown"),
                     "branch": c.get("branch", "unknown"), "work_record": f"https://github.com/{repo}/issues/{number}",
-                    "next_action": "Identify the artifact's owning session on the work record and coordinate a handoff; preserve it"}
+                    "next_action": c.get("next_action", "Identify the artifact's owning session on the work record and coordinate a handoff; preserve it")}
                    for c in conflicts]
     return holders
 
