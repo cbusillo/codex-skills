@@ -2128,6 +2128,7 @@ def cmd_show(args: argparse.Namespace) -> None:
         result["sections"]["Current Status"] = github_plan_status.render_status(result["sections"]["Current Status"], derived)
     if getattr(args, "launch_check", False):
         candidate = {**result, "discussion": github_direction_next.discussion_snapshot(issue, comments, complete=True)}
+        candidate["discussion"]["body_recorded_at"] = next_status_body_time(candidate, wait_authors(issue["repo"]))
         observed = read_queue_ownership(issue["repo"])
         source_item, source_facts, resume_id = None, None, None
         if args.resume_from:
@@ -2139,18 +2140,16 @@ def cmd_show(args: argparse.Namespace) -> None:
                     raise PlanError("Resume from needs an existing claim comment ID or issue-comment URL")
                 source, _, source_comments, _ = claim_snapshot(str(target[1]), target[0], allow_closed=True)
                 source_item = {**source, "discussion": github_direction_next.discussion_snapshot(source, source_comments, complete=True)}
+                source_item["discussion"]["body_recorded_at"] = next_status_body_time(source_item, wait_authors(target[0]))
                 source_facts = github_next_queue.ownership_facts(source_item,
                     observed if target[0] == issue["repo"] else read_queue_ownership(target[0]), trusted=wait_authors(target[0]),
-                    expired_sessions=github_plan_claim.expired_lease_sessions(source_comments))
+                    expired_sessions=github_plan_claim.expired_lease_sessions(source_comments), worker=getattr(args, "worker", None) or "")
                 resume_id = target[2]
         facts = github_next_queue.ownership_facts(candidate, observed,
             trusted=wait_authors(issue["repo"]), resume_from=resume_id, resume_source=source_item,
-            expired_sessions=github_plan_claim.expired_lease_sessions(comments))
-        def execution_conflicts(ownership: dict[str, Any]) -> list[dict[str, Any]]:
-            return [conflict for conflict in ownership.get("conflicts", [])
-                    if not (args.read_only and conflict.get("source") == "recorded_recipient")]
+            expired_sessions=github_plan_claim.expired_lease_sessions(comments), worker=getattr(args, "worker", None) or "")
         source_clear = (source_facts is None or (source_facts["complete"] and not source_facts.get("error")
-                        and not execution_conflicts(source_facts)))
+                        and not source_facts["conflicts"] and (args.read_only or not source_facts["recipients"])))
         claim_error = None
         if not args.read_only:
             try:
@@ -2163,7 +2162,8 @@ def cmd_show(args: argparse.Namespace) -> None:
                                "message": str(error), **(error.payload if isinstance(error.payload, dict) else {})}
         result["launch_check"] = {
             "allowed": (claim_error is None and derived["relationships_complete"] and facts["complete"] and not facts.get("error")
-                        and not execution_conflicts(facts) and (args.read_only or not facts["artifacts"])
+                        and not facts["conflicts"] and (args.read_only or not facts["artifacts"])
+                        and (args.read_only or not facts["recipients"])
                         and source_clear and (args.read_only or derived["status"] == "active")),
             "status": derived["status"], "ownership": facts,
             **({"error": claim_error} if claim_error else {}),
@@ -2194,12 +2194,12 @@ def _claim_release_evidence(evidence_repo, _number, evidence_id):
 
 
 def claim_current_status(issue: dict[str, Any], sections: dict[str, str], comments: list[dict[str, Any]]) -> str:
-    status = sections.get("Current Status", "")
-    if "pull_request" in issue:
-        comment_status = next((section_map(c.get("body") or "").get("Current Status", "")
-                               for c in reversed(comments) if "Current Status" in section_map(c.get("body") or "")), "")
-        status = "\n\n".join(part for part in (status, comment_status) if part)
-    return status
+    discussion = github_direction_next.discussion_snapshot(issue, comments, complete=True)
+    if "body" not in issue:
+        discussion["body"] = "## Current Status\n" + sections.get("Current Status", "")
+    trusted = wait_authors(issue["repo"])
+    body_time = next_status_body_time({**issue, "discussion": discussion}, trusted)
+    return github_next_queue.current_status(discussion, trusted, body_recorded_at=body_time, preserve_markers=True)
 
 
 def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[dict[str, Any], str, list[dict[str, Any]], bool]:
@@ -2984,6 +2984,10 @@ def claim_once(args: argparse.Namespace) -> None:
         conflicts, owned = github_plan_claim.discussion_evidence(
             current_status, current_comments, claim, resume_from=args.resume_from,
             ended_claims={entry["claim_id"] for entry in ended_owners})
+        if recipient := github_plan_claim.recipient_evidence(current_status, current_comments,
+                trusted=wait_authors(issue_repo), repo=issue_repo, number=number, worker=claim["worker"], session=claim["session"],
+                ended_claims={entry["claim_id"] for entry in ended_owners}):
+            conflicts.append(recipient)
         phase["branch_error"] = (ClassifiedPlanError("claim_ended_branch_reused",
             "Ended ownership requires a new task branch; preserve the retained source branch and worktree")
             if any(entry["branch"] == claim["branch"] and entry["branch"] in branches
@@ -3047,6 +3051,10 @@ def claim_once(args: argparse.Namespace) -> None:
         ended = ended_ownership(peer_comments, source_inventory, takeover=False)
         peer_conflicts, peer_owned = github_plan_claim.discussion_evidence(
             peer_status, peer_comments, claim, ended_claims={entry["claim_id"] for entry in ended})
+        if recipient := github_plan_claim.recipient_evidence(peer_status, peer_comments,
+                trusted=wait_authors(peer_repo), repo=peer_repo, number=peer_number, worker=claim["worker"], session=claim["session"],
+                ended_claims={entry["claim_id"] for entry in ended}):
+            peer_conflicts.append(recipient)
         competing = list(peer_conflicts)
         competing.extend({"source": "native_child_claim", "record": record} for record in peer_owned)
         if competing:
@@ -3650,7 +3658,14 @@ def claim_once(args: argparse.Namespace) -> None:
             target, sections, target_comments = prepared["targets"][pull["number"]]
             # PR status may name the canonical issue being claimed. Keep its
             # holder prose conservative rather than applying issue exclusions.
-            competing, _ = github_plan_claim.discussion_evidence(sections.get("Current Status", ""), target_comments, claim)
+            target_status = claim_current_status(target, sections, target_comments)
+            target_ended = ended_ownership(target_comments, inventory, takeover=False)
+            competing, _ = github_plan_claim.discussion_evidence(target_status, target_comments, claim,
+                ended_claims={entry["claim_id"] for entry in target_ended})
+            if recipient := github_plan_claim.recipient_evidence(target_status, target_comments,
+                    trusted=wait_authors(target_repo), repo=target_repo, number=pull["number"],
+                    worker=claim["worker"], session=claim["session"], ended_claims={entry["claim_id"] for entry in target_ended}):
+                competing.append(recipient)
             if competing:
                 refuse(competing, owner_comments=target_comments, owner_repo=target_repo, owner_number=pull["number"])
             released_target_sessions.update(record["session"] for _, record, _ in
@@ -3675,6 +3690,10 @@ def claim_once(args: argparse.Namespace) -> None:
             competing, _ = github_plan_claim.discussion_evidence(
                 source_status, source_comments, claim, resume_from=args.resume_from,
                 ended_claims={entry["claim_id"] for entry in source_ended})
+            if recipient := github_plan_claim.recipient_evidence(source_status, source_comments,
+                    trusted=wait_authors(issue_repo), repo=issue_repo, number=source_number,
+                    worker=claim["worker"], session=claim["session"], ended_claims={entry["claim_id"] for entry in source_ended}):
+                competing.append(recipient)
             if competing:
                 refuse(competing, owner_comments=source_comments, owner_number=source_number)
         released_target_sessions.update(record["session"] for _, record, _ in
@@ -7638,6 +7657,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("issue")
     p.add_argument("--full", action="store_true", help="Include the entire body instead of selected sections")
     p.add_argument("--launch-check", action="store_true", help="Read current ownership and delivery holds for a new execution worker; never claim")
+    p.add_argument("--worker", help="Intended execution worker for named-recipient routing; does not claim or waive custody checks")
     p.add_argument("--admission", help="Admission the execution worker will claim")
     p.add_argument("--admission-link", action="append", default=[], metavar="URL", help="Exact claim admission evidence; repeat for each occurrence")
     p.add_argument("--read-only", action="store_true", help="Allow a launch check to answer waits without claiming or changing held work")

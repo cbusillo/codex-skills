@@ -94,13 +94,13 @@ def direction(actor: str | None, wait: dict) -> bool:
         routed.search(entry["waiting_for"]) for entry in wait["waits"])
 
 
-def recipient(status: str) -> str | None:
+def recipient(status: str, *, families: tuple[str, ...] = ()) -> str | None:
     try:
         actor = read(status)
     except ValueError:
         return None
     if (not actor or not actor.startswith("agent:")
-            or actor.casefold() in {"agent:supervisor", "agent:integrator", "agent:codex", "agent:claude"}
+            or actor.casefold() in {"agent:supervisor", "agent:integrator", *(f"agent:{family}" for family in families)}
             or direction(actor, {"waits": []})):
         return None
     return actor.removeprefix("agent:")

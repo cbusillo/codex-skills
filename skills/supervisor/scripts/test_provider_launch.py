@@ -85,6 +85,9 @@ class LaunchIssueTests(unittest.TestCase):
             calls.append(parser.parse_args(argv[argv.index(helper) + 1:]))
             return subprocess.CompletedProcess(argv, 0, json.dumps(cleared))
         with patch.object(iterm_tab.subprocess, "run", side_effect=read):
+            token = "successor-worker"
+            iterm_tab.check_launch_issue(f"Brief from the Supervisor. Trial token: {token}.\n" + brief)
+            self.assertEqual(calls[-1].worker, token)
             iterm_tab.check_launch_issue(brief)
             self.assertEqual(calls[-1].issue, brief.split()[-1])
             self.assertFalse(calls[-1].read_only)

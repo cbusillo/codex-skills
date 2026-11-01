@@ -396,9 +396,6 @@ def belongs_to_session(body: str, session: str) -> bool:
         return False
     if any(record["session"] == session for record in claim.records(body)):
         return True
-    body = claim.ownership_context(body)
-    if session not in body:
-        return False
     return (
         claim.has_ownership_assertion(body)
         and release.related_sessions_match(body, session)

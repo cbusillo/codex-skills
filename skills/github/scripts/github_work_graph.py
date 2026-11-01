@@ -31,11 +31,14 @@ BLOCKER_LIMIT = 100
 PR_LIMIT = 5
 PR_COMMENTS = 30
 TRACKS_PER_QUERY = 10
-STATUS_BODY_TIME_QUERY = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){createdAt lastEditedAt}}}"
+STATUS_BODY_TIME_QUERY = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue:issueOrPullRequest(number:$number){... on Issue{createdAt lastEditedAt} ... on PullRequest{createdAt lastEditedAt}}}}"
 
 
 def status_body_time(discussion: dict[str, Any], trusted: set[str], read_edit: Callable[[], Any]) -> str | None:
+    from github_plan_status.discussion import unquoted_text
+
     def status(body: str) -> str:
+        body = unquoted_text(body)
         return re.sub(r"<!--.*?-->", "", github_direction_next.section_map(body).get("Current Status", ""), flags=re.S).strip()
 
     body_status = status(discussion.get("body") or "")

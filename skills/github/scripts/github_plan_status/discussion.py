@@ -30,15 +30,22 @@ def section_map(body: str) -> dict[str, str]:
 def unquoted_text(text: str) -> str:
     from .waits import live_lines as visible_lines
 
-    return "\n".join(line for _, line in visible_lines(text, prefix="") if not line.lstrip().startswith(">"))
+    text = re.sub(r"(?im)^ {0,3}</?details\b[^>]*>[ \t]*$", "", text)
+    lines = []
+    quoted = False
+    for _, line in visible_lines(text, prefix=""):
+        if line.lstrip().startswith(">"):
+            quoted = True
+            continue
+        if not line.strip() or re.match(r"^ {0,3}(?:#{1,6}\s|[-+*]\s|\d+[.)]\s|<)", line):
+            quoted = False
+        if not quoted:
+            lines.append(line)
+    return "\n".join(lines)
 
 
-def ownership_context(text: str) -> str:
-    text = unquoted_text(text)
-    return section_map(text).get("Current Status", text)
-
-
-def current_status(discussion: dict[str, Any], trusted: set[str], *, body_recorded_at: str | None = None) -> str:
+def current_status(discussion: dict[str, Any], trusted: set[str], *, body_recorded_at: str | None = None,
+                   preserve_markers: bool = False) -> str:
     def timestamp(value: Any) -> datetime | None:
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00")) if isinstance(value, str) else None
@@ -57,7 +64,7 @@ def current_status(discussion: dict[str, Any], trusted: set[str], *, body_record
             status = found
             body_time = comment_time
             has_body_status = True
-    return re.sub(r"<!--.*?-->", "", status or "", flags=re.S).strip()
+    return (status or "").strip() if preserve_markers else re.sub(r"<!--.*?-->", "", status or "", flags=re.S).strip()
 
 
 def status_field(status: str, field: str) -> str:

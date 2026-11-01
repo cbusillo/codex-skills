@@ -183,6 +183,23 @@ def test_pr_artifacts_cannot_hide_the_recorded_actor_or_missing_owner() -> None:
         assert classify(row, observed)["state"] == ("waiting" if actor == "person:owner" else "underway")
 
 
+def test_linked_source_body_claim_preserves_custody() -> None:
+    row = item()
+    row["record_type"] = "pull_request"
+    source = {"worker": "worker", "session": "native-session", "branch": "work/source", "claimed_at": "2026-10-01T00:00:00Z"}
+    raw = cli.issue(2)
+    raw.update(repo=row["repo"], user={"login": "owner"},
+               body="## Current Status\n" + claim.marker(source), _graph_comments=[], _graph_comments_complete=True)
+    observed = evidence()
+    observed["records"] = [raw]
+    observed["pulls"] = [{"number": row["number"], "state": "open", "title": row["title"], "html_url": row["url"],
+                          "body": "Closes #2", "head": {"ref": "work/source", "sha": "a" * 40, "repo": {"full_name": row["repo"]}},
+                          "base": {"repo": {"full_name": row["repo"]}}}]
+    result = classify(row, observed)
+    assert result["state"] == "underway"
+    assert any(entry.get("record") == source for entry in result["ownership_evidence"])
+
+
 def test_direction_list_is_authoritative_and_holds_override_automatic_review() -> None:
     patterns = ['repo', 'family*']
     assert queue.own_project('owner/repo', patterns, 'owner')
@@ -350,6 +367,10 @@ def test_inherited_overall_milestone_orders_work_without_copying_membership() ->
 
 
 def test_next_actor_routes_work_without_prose_inference() -> None:
+    import github_agent
+
+    for role in ("supervisor", "integrator", *github_agent.FAMILIES):
+        assert classify(item(actor=f"agent:{role}"))["state"] == "available"
     for action in ["Implement export.", "Verify the deployed build.", "Supervisor fixes GUI selection.", "#7 owns the source."]:
         assert classify(item(action, "Source delivery is complete"))["state"] == "available"
         assert classify(item(action, actor="agent:integrator"))["state"] == "available"
@@ -364,13 +385,11 @@ def test_next_actor_routes_work_without_prose_inference() -> None:
         row = item(actor=actor)
         result = classify(row)
         assert result["state"] == "needs_status"
-        assert result["certainty"] == "assignment_only"
         assert result["next_actor"] == actor
         assert result["ownership_evidence"][0]["source"] == "recorded_recipient"
-        conflicts, _ = claim.discussion_evidence(
-            queue.current_status(row["discussion"], {"owner"}), [],
-            {"worker": "new-worker", "session": "new-session", "branch": "work/new", "claimed_at": ""})
-        assert conflicts == result["ownership_evidence"]
+        recipient = claim.recipient_evidence(queue.current_status(row["discussion"], {"owner"}), [],
+            trusted={"owner"}, repo=row["repo"], number=row["number"], worker="new-worker", session="new-session")
+        assert [recipient] == result["ownership_evidence"]
     row = item()
     row["discussion"]["body"] += "\nNext actor: person:owner\n"
     assert classify(row)["state"] == "needs_status"
