@@ -161,12 +161,13 @@ Rules for this brief (every Supervisor brief carries them):
 - When you need the Director, create every new Director question on the item with
   `uv run <supervisor-skill-dir>/scripts/oq.py create --record-file FILE --owner OWNER`
   under [Director Questions](../../references/talking-with-the-director.md#director-questions),
-  rather than authoring a prose question comment. Re-present an existing question
-  with its original Q and source link. Leave presentation to the Supervisor; never use a
+  rather than authoring a prose question comment. Re-present existing questions
+  with their original Q and source link; do not create them again. Leave presentation
+  to the Supervisor; never use a
   native question UI (`request_user_input`, `request_user_input_async` or
   `AskUserQuestion`) in a Supervisor-launched worker. Quote the exact
   stop-boundary line from the overall or
-  repository DIRECTION.md, then continue with what you can. Write no Q number
+  repository DIRECTION.md in the record's `basis`, then continue with what you can. Write no Q number
   yourself: the comment helpers number it from the
   [shared counter](../../references/talking-with-the-director.md#decisions-holds-and-work-state)
   and keep any number already there. Only a reply from
@@ -205,7 +206,7 @@ How a lead works:
 2. Take the Track's next actionable item in order: not waiting on a person or event, not natively blocked, not owned by another running session. Currently owned by other sessions, leave alone: __OWNED__. Recheck ownership before each claim. Hold exactly one claim at a time.
 3. Use subagents (the Agent tool) for parallel work under your claim: reading and diagnosis, running tests, your own review of record, drafting comments. Only one subagent or you edits files at a time, in your one task worktree.
 4. After each item: post results on the child issue, keep its Current Status current, release the claim, then take the next item. Track comments are for decisions, not per-slice progress.
-5. People waits: when an item needs a person (Chris, a Client, an outside party), record the wait on the item, post a `Director question:` there under [role words](https://github.com/cbusillo/codex-skills/blob/main/skills/references/role-words.md#legacy-identifiers) if it is Chris's, and move to the next item. Never wait idle on a person.
+5. People waits: when an item needs a person (the Director, a Client, an outside party), record the wait on the item, follow the shared brief rules for any Director question, and move to the next item. Never wait idle on a person.
 6. Stop working only when no item on the Track is actionable by an agent or you need the Director; then keep each child's Current Status and structured waits current, close out with work-closeout, and end with a standalone final line: Safe to exit: yes
 
 For work subject to the shared rules' PR cap, instead of opening another PR:
