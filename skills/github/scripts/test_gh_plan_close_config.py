@@ -227,7 +227,8 @@ class CloseConfigTests(unittest.TestCase):
                      read_only: bool = False, expired_sessions: set[str] | None = None,
                      source_comments: list[dict] | None = None, admission: str | None = None,
                      admission_links: list[str] | None = None, milestone: dict | None = None,
-                     track: dict | None = None, actor: str | None = None, worker: str | None = None, body_time: str | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+                     track: dict | None = None, actor: str | None = None, worker: str | None = None, body_time: str | None = None,
+                     ancestry: set[tuple[str, int]] | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         target = "fixture/target"
         configs = {repo: copy.deepcopy(PLAN.DEFAULT_CONFIG) for repo in ("fixture/local", target)}
         configs[target]["labels"] = {key: f"target:{key}" for key in configs[target]["labels"]}
@@ -257,7 +258,7 @@ class CloseConfigTests(unittest.TestCase):
                 get_issue=Mock(side_effect=lambda ref, repo: ("fixture-bot", track if repo == "fixture/direction" else issue)),
                 milestone_direction_repo=Mock(return_value="fixture/direction"),
                 load_direction=Mock(side_effect=lambda repo: "## Milestones\n- `" + ("Launch product" if repo == "fixture/direction" else "Catalog adoption") + "` proves delivery.\n"),
-                milestone_claim_ancestry=Mock(return_value=Mock(nodes=set(), complete=True)),
+                milestone_claim_ancestry=Mock(return_value=Mock(nodes=ancestry or set(), complete=True)),
                 collect_paged_rest_items=Mock(return_value=("fixture-bot", comments)),
                 read_issue_relationships=relationships, wait_authors=Mock(return_value={"fixture"}),
                 claim_snapshot=Mock(return_value=(parent, "", source_comments or [], False))), \
@@ -365,23 +366,38 @@ class CloseConfigTests(unittest.TestCase):
                                    ({"title": "Catalog adoption", "state": "closed"}, False),
                                    ({"title": "Unlisted", "state": "open"}, False)):
             with self.subTest(milestone=milestone):
-                result, _, _ = self.show_fixture(launch=True, admission="milestone", milestone=milestone)
+                result, issue, _ = self.show_fixture(launch=True, admission="milestone", milestone=milestone)
                 check = result["issue"]["launch_check"]
                 self.assertEqual(check["allowed"], allowed)
-                if not allowed:
+                if allowed:
+                    admission = check["milestone_admission"]
+                    self.assertEqual(admission["scope"], PLAN.github_direction_next.compact_list_issue(issue["repo"], issue))
+                    parsed = PLAN.build_parser().parse_args(["show", str(issue["number"]), *admission["admission_arguments"]])
+                    self.assertEqual(PLAN.claim_admission_options(parsed), ("milestone", [], None))
+                else:
                     self.assertEqual(check["error"]["code"], "claim_admission_unlinked")
-        track = {"title": "Track: Launch", "state": "open",
+                    self.assertNotIn("milestone_admission", check)
+        track: dict[str, Any] = {"repo": "fixture/direction", "number": 9, "html_url": "https://github.com/fixture/direction/issues/9",
+                 "title": "Track: Launch", "state": "open",
                  "milestone": {"title": "Launch product", "state": "open"}}
         link = "https://github.com/fixture/direction/issues/9#issuecomment-123"
-        for state in ("open", "closed"):
-            track["state"] = state
-            result, _, _ = self.show_fixture(launch=True, admission="milestone", admission_links=[link], track=track)
-            self.assertEqual(result["issue"]["launch_check"]["allowed"], state == "open")
+        for links, ancestry in (([link], set()), ([], {(track["repo"], track["number"])})):
+            for state in ("open", "closed"):
+                track["state"] = state
+                result, _, _ = self.show_fixture(launch=True, admission="milestone", admission_links=links, track=track, ancestry=ancestry)
+                check = result["issue"]["launch_check"]
+                self.assertEqual(check["allowed"], state == "open")
+                if state == "open":
+                    admission = check["milestone_admission"]
+                    self.assertEqual(admission["scope"], PLAN.github_direction_next.compact_list_issue(track["repo"], track))
+                    parsed = PLAN.build_parser().parse_args(["show", "7", *admission["admission_arguments"]])
+                    self.assertEqual(parsed.admission_link, links)
         for kind in ("spare-capacity", "client-request"):
             result, _, _ = self.show_fixture(launch=True, admission=kind, admission_links=[link])
             self.assertTrue(result["issue"]["launch_check"]["allowed"])
         result, _, _ = self.show_fixture(launch=True, read_only=True, admission="milestone")
         self.assertTrue(result["issue"]["launch_check"]["allowed"])
+        self.assertNotIn("milestone_admission", result["issue"]["launch_check"])
 
     def test_named_recipient_is_routing_work_before_an_execution_launch(self) -> None:
         for actor in ("agent:ODOO20LEAD2-1027", "agent:native-session"):
@@ -403,7 +419,8 @@ class CloseConfigTests(unittest.TestCase):
     def test_launch_returns_actionable_admission_argument_errors(self) -> None:
         for kind, links in (("own project", []), ("TBD", []), ("repeat-stop", []),
                             ("client-request", []),
-                            ("milestone", ["not-a-link"])):
+                            ("milestone", ["not-a-link"]),
+                            ("milestone", ["https://github.com/fixture/target/milestone/3"])):
             with self.subTest(kind=kind, links=links):
                 result, _, _ = self.show_fixture(launch=True, admission=kind, admission_links=links)
                 check = result["issue"]["launch_check"]

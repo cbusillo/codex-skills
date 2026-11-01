@@ -972,11 +972,14 @@ selection is unchanged.
   for diagnosis without making them status authority.
   `--launch-check` also reuses `next`'s current ownership and retained-delivery
   facts, separate from source ranking and source-delivery history.
-  For execution workers, pass their `--admission <kind>` and repeated
+  For execution workers, pass their `--admission <kind>` and any needed
   `--admission-link <URL>` values: the claim's admission-argument validation, milestone
   admission and wait checks run without writes. A refusal returns
   `issue.launch_check.error` with the claim reason and evidence, and makes
   `allowed` false. `--read-only` skips claim admission and waits.
+  Successful milestone checks return `milestone_admission` with the verified
+  compact `scope` and supported `admission_arguments`. Native qualification
+  needs no repeated Track citation or extra lookup.
   `issue.launch_check.allowed` requires active native status and no
   observed claim holder or retained-delivery hold; next-action wording does not gate
   dispatch. `--read-only` permits answering a wait without claiming or changing
@@ -1278,12 +1281,14 @@ When the overall direction's Order admits the work, name the rule with
 the claim comment records it as an `Admission:` line. Use `client-request` for
 a Client's request on a live product, after live breakage and before milestones;
 cite the Client's own issue or request comment with the required `--admission-link`.
-For milestone work, cite its open
-Track in the Director's direction with `--admission-link`. The Director account
+For milestone work, use `--admission milestone`; native parents and blocking
+issues supply Track evidence through the shared graph traversal. Do not repeat
+a Track citation when this qualifies. An open repository milestone listed in
+its merged `DIRECTION.md` and absent from overall direction qualifies through
+native membership instead. Necessary explicit evidence uses a valid open Track
+issue with `--admission-link`, never a milestone-page URL. The Director account
 comes from the same read-only configuration lookup as instruction sync,
-falling back to the repository owner when none is recorded. The helper follows
-native parents and blocking issues using the graph reader's shared traversal
-when no valid Track citation is supplied. Admission records its citation; it
+falling back to the repository owner when none is recorded. Admission records its citation; it
 does not change dependencies or project the Track's status. Deliberate native
 links use `link` under the [milestone contract](../../github-plan/references/milestones.md).
 It revalidates the cited Track before success, including recovery of an existing claim.
@@ -1293,8 +1298,7 @@ Claim a canonical issue for milestone work rather than its PR.
 `--admission-unlinked REASON` is deprecated compatibility context and cannot replace Track evidence.
 Existing paths are preserved. Capacity classification uses that same shared
 native traversal; claim admissions do not replace graph evidence.
-An older partial claim lacking a Track citation can supply it on recovery;
-later flagless recovery finds the Track from its native ancestry. An explicit
+Recovery revalidates native scope or the recorded explicit Track evidence. An explicit
 kind conflicting with the authored claim refuses until that claim is released.
 Ownership, actor authentication, waits and native blockers keep their independent
 checks. A plain `Admission:` line explains why the work was selected and grants
