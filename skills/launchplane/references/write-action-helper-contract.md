@@ -780,7 +780,9 @@ installed local helper bindings.
   The native read checks the exact product and ID and returns compact progress;
   it does not attest restored data, health or retirement beyond those fields.
   Failure alone does
-  not authorize a different rebuild. A verified normal terminal engine result
+  not authorize a different rebuild. The compact generic read alone cannot
+  qualify a fresh request after failure; retain the original operation and key.
+  For Odoo, a verified normal terminal engine result
   (`fail`/`failed`, `finished_at`, and `candidate_private_readiness_failed`) may
   permit a separately reviewed request under existing authority after the
   prerequisite is corrected and deployed and fresh preflight is eligible.

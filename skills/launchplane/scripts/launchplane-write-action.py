@@ -50,6 +50,7 @@ from launchplane_safety import (  # noqa: E402
     safe_urlopen,
     validate_service_url,
 )
+from launchplane_testing_rebuild import summarize_read as summarize_testing_rebuild_read  # noqa: E402
 
 
 SCHEMA_VERSION = "1.0"
@@ -72,6 +73,7 @@ NAMES_ONLY_READS = {
 }
 NAMES_ONLY_MAX_ITEMS = 500
 READ_ONLY_OPERATIONS = {
+    "testing-rebuild-operation-read",
     *NAMES_ONLY_READS,
     "dokploy-inventory-read",
     "merge-train-policy-read",
@@ -6646,6 +6648,7 @@ def summarize_governance_projection_read(
 
 
 PRODUCT_READ_SUMMARIZERS = {
+    "testing-rebuild-operation-read": partial(summarize_testing_rebuild_read, h=sys.modules[__name__]),
     "governance-projection-read": summarize_governance_projection_read,
     "generic-web-deploy-recovery-reference-read": summarize_recovery_reference_read,
     "merge-train-policy-read": summarize_merge_train_policy_read,
@@ -6795,6 +6798,10 @@ def execute_product_read(
         return 0
     except urllib.error.HTTPError as exc:
         emit_http_error_payload(operation=read_operation, request=request, exc=exc)
+        return 1
+    except ServiceResponseError as exc:
+        emit_safety_error_payload(operation=read_operation, request=request,
+            exc=LaunchplaneSafetyError("invalid_response"), provider_payload=exc)
         return 1
     except LaunchplaneSafetyError as exc:
         emit_safety_error_payload(

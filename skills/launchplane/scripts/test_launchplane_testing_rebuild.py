@@ -70,7 +70,7 @@ def review_evidence(source="empty"):
         "result": rebuild.project_plan(helper, plan_receipt(source), body, service_url=SERVICE_URL)}
 
 
-def invoke(body=None, *, args=None, error=None, reviewed=True, change_evidence=None, service_url=SERVICE_URL, evidence=None, read_body=None):
+def invoke(body=None, *, args=None, error=None, reviewed=True, change_evidence=None, service_url=SERVICE_URL, evidence=None, read_body=None, read_error=None):
     output = io.StringIO()
     with (
         TemporaryDirectory() as directory,
@@ -79,7 +79,7 @@ def invoke(body=None, *, args=None, error=None, reviewed=True, change_evidence=N
             "service_url": service_url,
         }) as settings,
         patch.object(helper, "request_launchplane", return_value=body, side_effect=error) as post,
-        patch.object(helper, "request_launchplane_read", return_value=read_body) as read,
+        patch.object(helper, "request_launchplane_read", return_value=read_body, side_effect=read_error) as read,
         redirect_stdout(output),
     ):
         (Path(directory) / "repo").mkdir()
@@ -195,6 +195,20 @@ def test_native_operation_read_checks_exact_product_and_operation(field: str, va
     assert read.call_args.kwargs["path"] == contract.internal_helper_path(rebuild.READ_COMMAND).format(
         product="example", operation_id="original-operation")
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
+@pytest.mark.parametrize("args", [[rebuild.READ_COMMAND, "--product", "example", "--operation-id", "original-operation"],
+    ["product-profile-read", "--product", "example"]])
+def test_shared_read_keeps_malformed_response_diagnostics(args: list[str]) -> None:
+    diagnostics = {"trace_id": "launchplane_req_malformed_read", "http_status": 200}
+    code, output, post, read, _ = invoke(args=args, read_error=helper.ServiceResponseError(diagnostics))
+    assert code != 0
+    assert output["status"] != "outcome_unknown"
+    assert output["request"]["product"] == "example"
+    assert output["summary"]["trace_id"] == diagnostics["trace_id"]
+    assert output["summary"]["http_status"] == diagnostics["http_status"]
+    post.assert_not_called()
+    read.assert_called_once()
 
 
 @pytest.mark.parametrize("repository", ["nginx", "example/a--b", "registry.example:5000/a__b/site"])
