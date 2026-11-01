@@ -9,6 +9,7 @@ import importlib
 import io
 import json
 import os
+import shlex
 import sqlite3
 import tempfile
 import time
@@ -3634,6 +3635,89 @@ print(root)"""
             code = helper.main(["--session", SESSION, "--session", "child", "--transcript", entry["transcript"]])
         self.assertNotEqual(code, 0)
         reader.assert_not_called()
+
+
+class HandoffProjectionTests(unittest.TestCase):
+    def test_real_handoff_posts_require_the_sources_stdout_bound_write(self) -> None:
+        fixture = Path(__file__).resolve().parents[2] / "supervisor/scripts/fixtures/closeout-native-posts.json"
+        incidents = [row for row in json.loads(fixture.read_text()) if not row.get("ended_at")]
+        for incident in incidents:
+            for harness in ("codex", "claude"):
+                for variant in (None, "case", "copied", "redirected", "outer_redirect", "extra_output", "wrong_target", "failed", "unconfirmed", "nested", "async", "child", "help", "malformed", "heredoc", "unquoted_heredoc", "header", "running", "heredoc_tabs", "heredoc_redirect", "heredoc_pipeline", "heredoc_and", "heredoc_or", "heredoc_args", "heredoc_async", "preparation_exec", "preparation_pipeline"):
+                    with self.subTest(worker=incident["token"], harness=harness, variant=variant):
+                        result = json.loads(json.dumps(incident["posts"][0]))
+                        number = incident["issue"] + (variant == "wrong_target")
+                        repo = incident["repository"].upper() if variant == "case" else incident["repository"]
+                        writer = f"gh-comment issue {number} --repo {repo} --body-file /evidence/stop.md"
+                        command = writer
+                        if incident["token"] == "OPW345-1101":
+                            command = f"cat > /evidence/stop.md <<'EOF'\n{incident['comments'][0]['body']}\nEOF\n{writer}"
+                        if variant in {"heredoc", "unquoted_heredoc"}:
+                            marker = "'EOF'" if variant == "heredoc" else "EOF"
+                            command = f"gh-comment issue {number} --repo {repo} <<{marker}\n{incident['comments'][0]['body']}\nEOF"
+                        elif variant and variant.startswith("heredoc_"):
+                            tail = {"heredoc_tabs": "", "heredoc_redirect": " > /evidence/own.json && cat /evidence/prior.json",
+                                    "heredoc_pipeline": " | cat /evidence/prior.json", "heredoc_and": " && cat /evidence/prior.json",
+                                    "heredoc_or": " || cat /evidence/prior.json", "heredoc_args": " --edit-last", "heredoc_async": " &"}[variant]
+                            operator = "<<-" if variant == "heredoc_tabs" else "<<"
+                            command = f"gh-comment issue {number} --repo {repo} {operator}'EOF'{tail}\nstop\nEOF"
+                        elif variant and variant.startswith("preparation_"):
+                            tail = " && cat /evidence/prior.json && exec > /evidence/own.json" if variant == "preparation_exec" else " | cat /evidence/prior.json"
+                            command = f"cat > /evidence/stop.md <<'EOF'{tail}\nstop\nEOF\n{writer}"
+                        elif variant == "copied":
+                            command = "cat /evidence/predecessor.json"
+                        elif variant == "redirected":
+                            command = writer + " > /evidence/own.json; cat /evidence/predecessor.json"
+                        elif variant == "outer_redirect":
+                            command = "/bin/zsh -lc " + shlex.quote(writer) + " > /evidence/own.json"
+                        elif variant == "extra_output":
+                            command = "cat /evidence/predecessor.json; " + writer
+                        elif variant == "async":
+                            command = writer + " &"
+                        elif variant == "help":
+                            command = "gh-comment --he"
+                        elif variant == "unconfirmed":
+                            result["outcome_certainty"] = "unknown"
+                        elif variant == "nested":
+                            result = {"ok": False, "body": result}
+                        session = incident["session_id"]
+                        output = json.dumps(result)
+                        records = ([{"type": "session_meta", "payload": {"id": session}},
+                                    {"type": "event_msg", "timestamp": incident["posts"][0]["observed_at"], "payload": {
+                                        "type": "item_completed", "item": {"id": "post", "type": "CommandExecution",
+                                            "status": "failed" if variant == "failed" else "completed",
+                                            "exit_code": 1 if variant == "failed" else 0,
+                                            "command": ["/bin/zsh", "-lc", command], "aggregated_output": output}}}]
+                                   if harness == "codex" else [
+                                       {"type": "assistant", "sessionId": session, "message": {"content": [{
+                                           "type": "tool_use", "id": "post", "name": "Bash", "input": {"command": command}}]}},
+                                       {"type": "user", "sessionId": session, "message": {"content": [{
+                                           "type": "tool_result", "tool_use_id": "post", "content": output, "is_error": variant == "failed"}]}}])
+                        if variant in {"header", "running"} and harness == "codex":
+                            status = "Process exited with code 0" if variant == "header" else "Process running with session ID 17"
+                            records = [{"type": "session_meta", "payload": {"id": session}},
+                                       {"payload": {"type": "function_call", "name": "functions.exec_command", "call_id": "post",
+                                                    "arguments": json.dumps({"cmd": command})}},
+                                       {"payload": {"type": "function_call_output", "call_id": "post",
+                                                    "output": f"Wall time: 0.1 seconds\n{status}\nOutput:\n{output}"}}]
+                        if variant == "malformed":
+                            records = ([{"type": "session_meta", "payload": {"id": session}},
+                                        {"payload": {"type": "function_call", "name": "functions.exec_command", "call_id": "post",
+                                                     "arguments": json.dumps({"cmd": 5})}},
+                                        {"payload": {"type": "function_call_output", "call_id": "post", "output": "invalid command"}}]
+                                       if harness == "codex" else [
+                                           {"message": {"content": [{"type": "tool_use", "id": "post", "name": "Bash", "input": {"command": 5}}]}},
+                                           {"message": {"content": [{"type": "tool_result", "tool_use_id": "post", "is_error": True, "content": "invalid command"}]}}])
+                        entry = {"session_id": session, "_transcript_records": records}
+                        if variant == "child":
+                            entry["native_child"] = "another-native-child"
+                        with contextlib.redirect_stdout(io.StringIO()) as captured:
+                            projected = helper.history.handoff_comments(entry)
+                        self.assertEqual(captured.getvalue(), "")
+                        self.assertEqual(bool(projected), variant in {None, "case", "heredoc", "heredoc_tabs", "header"} or (variant == "running" and harness == "claude"))
+                        if projected:
+                            self.assertEqual(projected[0]["source_session"], session)
+                            self.assertEqual(projected[0]["comment"]["url"], incident["comments"][0]["html_url"])
 
 
 if __name__ == "__main__":

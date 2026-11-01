@@ -772,6 +772,69 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual([r["claim_comment"] for r in report["reports"][0]["released_claims"]], [self.source["id"]])
         self.assertFalse(report["needs_reconciliation"])
 
+    def test_real_releases_are_proven_by_native_readback_before_exit_despite_provider_clock(self) -> None:
+        incidents = json.loads((Path(__file__).parent / "fixtures/closeout-native-posts.json").read_text())
+        for incident in (row for row in incidents if row.get("ended_at")):
+            for harness in ("codex", "claude"):
+                for changed in (None, "header", "prose", "unconfirmed", "wrong_source", "wrong_comment", "late_receipt",
+                                "edited", "assistant", "expected_actor", "failed_tool", "wrong_native", "missing_transcript", "malformed_item"):
+                    with self.subTest(worker=incident["token"], harness=harness, changed=changed):
+                        posts = json.loads(json.dumps(incident["posts"]))
+                        candidate = json.loads(json.dumps(incident["comments"][-1]))
+                        for post in posts:
+                            if changed == "unconfirmed":
+                                post["outcome_certainty"] = "unknown"
+                            elif changed == "wrong_source":
+                                post["source_claim"] += 1
+                            elif changed == "wrong_comment":
+                                post["handoff_comment"]["id"] += 1
+                            elif changed == "late_receipt":
+                                post["observed_at"] = candidate["created_at"]
+                            elif changed == "expected_actor":
+                                post["expected_actor"] = "another[bot]"
+                        if changed == "edited":
+                            candidate["updated_at"] = (datetime.fromisoformat(candidate["created_at"]) + timedelta(minutes=1)).isoformat()
+                        session = incident["session_id"]
+                        native = "another-native" if changed == "wrong_native" else session
+                        records = [{"type": "session_meta", "payload": {"id": native}}] if harness == "codex" else []
+                        for post in posts:
+                            output = json.dumps(post, indent=2)
+                            if changed == "header":
+                                output = "Wall time: 0.1 seconds\nProcess exited with code 0\nOutput:\n" + output
+                            elif changed == "prose":
+                                output = "Saved release result:\n" + output + "\nDone.\n"
+                            if changed == "assistant":
+                                records.append({"type": "assistant", "sessionId": session,
+                                                "message": {"content": [{"type": "text", "text": json.dumps(post)}]}})
+                            elif harness == "codex" and changed == "header":
+                                records.append({"timestamp": post["observed_at"], "payload": {"type": "function_call_output", "output": output}})
+                            elif harness == "codex":
+                                records.append({"timestamp": post["observed_at"], "payload": {"type": "item_completed", "item": {
+                                    "type": "CommandExecution", "status": "failed" if changed == "failed_tool" else "completed",
+                                    "exit_code": 1 if changed == "failed_tool" else 0, "aggregated_output": output}}})
+                            else:
+                                records.append({"type": "user", "sessionId": native, "timestamp": post["observed_at"], "message": {
+                                    "content": [{"type": "tool_result", "is_error": changed == "failed_tool", "content": output}]}})
+                        if changed == "malformed_item":
+                            records.append({"payload": {"type": "item_completed", "item": 7}})
+                        self.transcript.write_text("".join(json.dumps(row) + "\n" for row in records))
+                        entry = {"session_id": session, "harness": harness, "transcript": str(self.transcript),
+                                 "ended_at": incident["ended_at"], "_finish_scope": "accessible repositories under the requested owner"}
+                        if changed == "missing_transcript":
+                            entry["transcript"] = str(self.root / "missing.jsonl")
+                        self.reader.get_json.side_effect = None
+                        self.reader.get_json.return_value = {"body": ""}
+                        self.reader.paged_json.side_effect = None
+                        self.reader.paged_json.return_value = [incident["comments"][0], candidate]
+                        with patch_attribute(helper, "comment") as write, patch_attribute(helper, "run_release") as run:
+                            report = helper.finished_claims(self.reader, entry, candidate["user"]["login"],
+                                                           [(incident["repository"], incident["issue"])], False)
+                        accepted = changed in {None, "header", "prose"}
+                        self.assertEqual(bool(report["issue_refusals"]), not accepted)
+                        self.assertEqual(bool(report["released_claims"]), accepted)
+                        write.assert_not_called()
+                        run.assert_not_called()
+
     def test_finish_consumes_exact_authored_followup_releases_and_preserves_unresolved_ids(self):
         followup = comment(3, "Claimed by trial\nSession: source-session")
         authored = self.own_release(id=4, body="Released claim 3")
@@ -829,6 +892,13 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertFalse(report["needs_reconciliation"])
         self.assertEqual(report["reports"][0]["released_claims"][0]["claim_comment"], self.source["id"])
+        late = self.own_release(id=3, created_at="2026-01-01T00:03:00Z", updated_at="2026-01-01T00:03:00Z")
+        for failure in (OSError("temporary read failure"), ValueError("native identity unavailable")):
+            with self.subTest(failure=type(failure).__name__), patch_attribute(
+                    helper.session_record, "posted_comments", side_effect=failure):
+                result, report = self.finish_thread([self.source, late, {**late, "id": 4}, receipt], evidence=evidence)
+            self.assertEqual(result, 0)
+            self.assertFalse(report["needs_reconciliation"])
 
     def test_finish_consumes_supervisor_release_attesting_an_end_after_recorded_closure(self):
         # CS2319-C1: the attestation's Ended at follows the recorded closure by seconds.

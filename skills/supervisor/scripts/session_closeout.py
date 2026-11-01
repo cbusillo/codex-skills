@@ -88,24 +88,67 @@ def ready(entry: dict, supervisor: str) -> dict:
     return status
 
 
+def no_claim_handoffs(entry: dict, operation: Operation) -> list[dict]:
+    path = operation.evidence / "claims.json"
+    if not path.exists():
+        return []
+    receipt_data = json.loads(path.read_text())
+    checked = json.loads(receipt_data.get("stdout") or "{}")
+    if (receipt_data.get("exit_code") != 0 or checked.get("ok") is not True
+            or checked.get("claims_clear") is not True or checked.get("coverage", {}).get("complete") is not True
+            or checked.get("session_ids") != [entry["session_id"]] or checked.get("released_claims") != []
+            or checked.get("blocked") != [] or checked.get("unresolved_invocations") != []):
+        return []
+    rows = checked.get("handoff_comments", [])
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict) and row.get("source_session") == entry["session_id"]]
+
+
+def projected_handoff(comment: dict, evidence: list[dict], actor: str, session: str) -> bool:
+    body = comment.get("body") or ""
+    if (not isinstance(comment.get("created_at"), str) or comment.get("created_at") != comment.get("updated_at")
+            or (comment.get("user") or {}).get("login") != actor or live_lines(body)
+            or re.match(r"(?i)^Claimed by\b", body.strip()) or not claim_release.related_sessions_match(body, session)):
+        return False
+    return any(row.get("expected_actor") == actor and isinstance(posted := row.get("comment"), dict)
+               and posted.get("author") == actor and posted.get("id") == comment.get("id")
+               and posted.get("url") == comment.get("html_url") and posted.get("created_at") == posted.get("updated_at")
+               and str(comment.get("issue_url") or "").casefold()
+               == f"https://api.github.com/repos/{row.get('repository')}/issues/{row.get('number')}".casefold()
+               for row in evidence)
+
+
 def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, *, retired: bool) -> None:
     operation.gate = "handoff"
     reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 60)
     actor = github_identity.automation_login()
-    require(bool(actor), "handoff", "configured automation identity is unknown")
+    if not actor:
+        raise GateFailed("handoff", "configured automation identity is unknown")
     selected = getattr(args, "handoff_url", None) or entry.get("handoff_url") or operation.state.get("handoff", {}).get("url")
     require(not entry.get("handoff_url") or entry["handoff_url"] == selected, "handoff", "recorded handoff differs; preserve it")
+    evidence = None
     if not selected:
         repo, number = entry.get("repository"), entry.get("issue")
-        require(isinstance(repo, str) and release.REPO.fullmatch(repo) is not None
-                and isinstance(number, int) and not isinstance(number, bool) and number > 0,
-                "handoff", "discovery needs the ledger's exact repository and issue")
+        if (not isinstance(repo, str) or release.REPO.fullmatch(repo) is None
+                or not isinstance(number, int) or isinstance(number, bool) or number <= 0):
+            raise GateFailed("handoff", "discovery needs the ledger's exact repository and issue")
         comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="closeout_handoff")
         candidates = [comment for comment in comments
                       if (comment.get("user") or {}).get("login") == actor
                       and explicit_session(comment.get("body") or "", args.session_id)
                       and not live_lines(comment.get("body") or "")
                       and not re.match(r"(?i)^Claimed by\b", (comment.get("body") or "").strip())]
+        if not candidates:
+            evidence = no_claim_handoffs(entry, operation)
+            scoped = [row for row in evidence if str(row.get("repository") or "").casefold() == repo.casefold()
+                      and row.get("number") == number]
+            if evidence and evidence[-1] not in scoped:
+                scoped = []
+            candidates = [comment for comment in comments if (comment.get("user") or {}).get("login") == actor
+                          and not live_lines(comment.get("body") or "")
+                          and not re.match(r"(?i)^Claimed by\b", (comment.get("body") or "").strip())
+                          and projected_handoff(comment, scoped, actor, args.session_id)]
         require(len(candidates) == 1, "handoff",
                 f"requires one posted handoff; found {len(candidates)} candidates: {[row.get('html_url') for row in candidates]}; "
                 "verify the source and select its exact --handoff-url")
@@ -117,7 +160,10 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
     require(bool(match), "handoff", "handoff URL is malformed")
     proposed = {**entry, "handoff_url": selected}
     handoff = release.handoff(reader, proposed, actor)
-    require(explicit_session(handoff.get("body") or "", args.session_id), "handoff", "handoff must name this native session")
+    if not explicit_session(handoff.get("body") or "", args.session_id):
+        evidence = evidence if evidence is not None else no_claim_handoffs(entry, operation)
+        require(projected_handoff(handoff, evidence, actor, args.session_id),
+                "handoff", "handoff must name this native session or have its source-bound write proof")
     operation.state["handoff"] = {"url": selected, "session_id": args.session_id, "author": actor,
                                   "revision": fingerprint(handoff)}
     save_state(operation.path, operation.state)
