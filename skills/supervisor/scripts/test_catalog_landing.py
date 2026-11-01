@@ -3,15 +3,15 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-import io
 import argparse
+import io
 import json
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
-from contextlib import nullcontext
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -254,6 +254,92 @@ class CatalogLandingTests(unittest.TestCase):
             self.assertEqual(landing.poll(self.config, self.root)["landings"], [])
             self.assertEqual(verify.call_count, 1)
             self.assertEqual(post.call_count, 1)
+
+    def test_retryable_runtime_reads_keep_service_polling_without_advancing_cursor(self) -> None:
+        failed = {"ok": False, "status": "retryable", "reason_code": "fetch_failed", "runtime_mutated": False}
+        config = self.root / "catalog.json"
+        config.write_text(json.dumps(self.config))
+        service = self.root / "services.json"
+        service.write_text(json.dumps({"uv": "/fixture/uv", "services": {"catalog": {
+            "argv": ["/fixture/catalog"], "cwd": str(self.root), "restart_seconds": 0.001}}}))
+        stopped = threading.Event()
+        log = io.StringIO()
+        cursor = {"repo": self.config["repo"], "last_sha": "previous"}
+        (self.root / "cursor.json").write_text(json.dumps(cursor))
+        responses = [failed, {"status": "already_current", "after_sha": "tip"}]
+
+        def runtime(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess:
+            payload = responses.pop(0)
+            return subprocess.CompletedProcess([], int(payload.get("ok") is False), json.dumps(payload), "")
+
+        def child(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+            with patch.object(sys, "argv", ["catalog", "--poll", "--config", str(config), "--evidence", str(self.root)]):
+                code = landing.main()
+            self.assertEqual(json.loads((self.root / "cursor.json").read_text()), cursor)
+            if not responses:
+                stopped.set()
+            return SimpleNamespace(pid=123, returncode=code, poll=lambda: code)
+
+        with (patch.object(Operation, "run", operation_run), patch.object(subprocess, "run", side_effect=runtime),
+              patch.object(landing, "pending_landings", return_value=[]) as discover,
+              patch.object(landing, "verify") as verify, patch.object(landing, "post_result") as post,
+              patch.object(services.threading, "Event", return_value=stopped),
+              patch.object(services.subprocess, "Popen", side_effect=child), patch.object(services, "stop_child"), redirect_stdout(log)):
+            self.assertEqual(services.main(["run", "--config", str(service), "--service", "catalog"]), 0, log.getvalue())
+            self.assertFalse(services.reconciliation_marker(service, "catalog").exists())
+            discover.assert_called_once()
+            verify.assert_not_called()
+            post.assert_not_called()
+        reports = [row for line in log.getvalue().splitlines() if "ok" in (row := json.loads(line))]
+        self.assertEqual([row["ok"] for row in reports], [False, True])
+        self.assertTrue(reports[0]["retryable"])
+
+    def test_retryable_results_never_relax_mutation_or_failed_result_guards(self) -> None:
+        payload = {"ok": False, "status": "retryable", "reason_code": "fetch_failed", "runtime_mutated": False}
+        with patch.object(Operation, "run", operation_run):
+            for once, retry_read, result in ((True, True, payload), (False, False, payload),
+                                            (False, True, {**payload, "runtime_mutated": True}),
+                                            (False, True, {**payload, "status": "failed"}),
+                                            (False, True, {**payload, "runtime_mutated": None})):
+                with self.subTest(once=once, retry_read=retry_read, result=result), patch.object(
+                        subprocess, "run", return_value=subprocess.CompletedProcess([], 1, json.dumps(result), "")):
+                    with self.assertRaises(GateFailed) as failure:
+                        Operation(self.root / str(once) / str(retry_read) / result["status"], ["test"]).run(
+                            "runtime", ["fixture"], once=once, retry_read=retry_read)
+                    self.assertNotIsInstance(failure.exception, landing.RetryableGate)
+
+    def test_landing_runtime_reconciliation_propagates_retryable_receipt(self) -> None:
+        self.config["landing_sha"] = "a" * 40
+        failed = {"ok": False, "status": "retryable", "reason_code": "fetch_failed", "runtime_mutated": False}
+        with (patch.object(Operation, "run", operation_run), patch.object(landing, "landing_pull"),
+              patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 1, json.dumps(failed), ""))):
+            with self.assertRaises(landing.RetryableGate):
+                reconcile_runtime(self.config, Operation(self.root, ["landing"]))
+
+    def test_retryable_runtime_keeps_pending_attempt_and_stops_for_uncertain_mutations(self) -> None:
+        config = self.root / "catalog.json"
+        config.write_text(json.dumps(self.config))
+        cursor = {"repo": self.config["repo"], "last_sha": "previous", "pending": ["landing"], "attempt": "landing"}
+        (self.root / "cursor.json").write_text(json.dumps(cursor))
+        attempt = Operation(self.root / "landing", [self.config["repo"], "landing"])
+        error = landing.RetryableGate("runtime", "fetch_failed")
+        with (patch.object(sys, "argv", ["catalog", "--poll", "--config", str(config), "--evidence", str(self.root)]),
+              patch.object(landing, "reconcile_runtime", side_effect=error),
+              patch.object(landing, "git", return_value="script.py"), patch.object(landing, "verify") as verify,
+              patch.object(landing, "post_result") as post, redirect_stdout(io.StringIO())):
+            self.assertEqual(landing.main(), 0)
+            self.assertEqual(json.loads((self.root / "cursor.json").read_text()), cursor)
+            self.assertFalse((attempt.evidence / "result.json").exists())
+            uncertain = Operation(attempt.evidence / "codex-closeout", ["smoke"])
+            uncertain.state["steps"]["quit"] = {"complete": False}
+            landing.save_state(uncertain.path, uncertain.state)
+            self.assertEqual(landing.main(), 1)
+            uncertain.state.update(generation={"session": "original"}, retired_generation={"session": "original"})
+            landing.save_state(uncertain.path, uncertain.state)
+            self.assertEqual(landing.main(), 0)
+            self.assertEqual(landing.retryable_poll(self.root, error)["identity"], cursor["pending"][-1])
+            verify.assert_not_called()
+            post.assert_not_called()
 
     def test_discovery_failures_remain_failed_without_saving_a_sticky_verification(self) -> None:
         with patch.object(landing, "pending_landings", side_effect=[GateFailed("discovery", "unavailable"), []]):

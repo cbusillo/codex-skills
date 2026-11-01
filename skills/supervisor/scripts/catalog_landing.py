@@ -23,6 +23,7 @@ from check_operation import (
     GitHubReadError,
     GitHubReadShapeError,
     Operation,
+    RetryableGate,
     automation_only_gh_prefix_args,
     claim_release,
     closure,
@@ -98,7 +99,7 @@ def reconcile_runtime(config: dict, operation: Operation) -> tuple[Path, str]:
             "--landing-sha",
             landing,
         ],
-        timeout=660,
+        timeout=660, retry_read=True,
     )
     require(
         runtime_receipt.get("status") in {"synchronized", "already_current"},
@@ -494,7 +495,7 @@ def poll(config: dict, evidence: Path, *, supersede_failed: bool = False) -> dic
         require(state.get("repo") == config["repo"], "identity", "cursor belongs to another repository")
         discovery = Operation(evidence / "discovery", [config["repo"], "discovery"])
         runtime = discovery.run("runtime", ["uv", "run", str(source / "skills/github/scripts/reconcile-runtime-checkout.py"),
-                                           "--repo", config["repo"]], timeout=660)
+                                           "--repo", config["repo"]], timeout=660, retry_read=True)
         require(runtime.get("status") in {"synchronized", "already_current"}, "discovery", "runtime reconciliation incomplete")
         current: dict = dict(config)
         landings = state.get("pending") or pending_landings(source, state["last_sha"], runtime["after_sha"])
@@ -547,6 +548,21 @@ def poll(config: dict, evidence: Path, *, supersede_failed: bool = False) -> dic
             return {**result, "verification_url": url}
 
 
+def retryable_poll(evidence: Path, error: RetryableGate) -> dict:
+    with closure.store_lock(evidence / "poll", create=True):
+        cursor = evidence / "cursor.json"
+        state = json.loads(cursor.read_text()) if cursor.exists() else {}
+        if state.get("attempt"):
+            attempt = evidence / state["attempt"]
+            with closure.store_lock(attempt / "verification", create=True):
+                for path in attempt.rglob("operation.json"):
+                    journal = json.loads(path.read_text())
+                    settled = (closeout_mutations_settled(journal) if journal.get("generation") else
+                               not any(step.get("complete") is False for step in journal["steps"].values()))
+                    require(settled, "reconciliation", "pending attempt has an uncertain mutation")
+        return receipt((state.get("pending") or ["discovery"])[-1], evidence, error)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify one catalog landing through both fresh native harnesses.")
     parser.add_argument("--config", type=Path, required=True)
@@ -564,9 +580,12 @@ def main() -> int:
         config = json.loads(args.config.read_text())
         require_supervisor_identity(config)
         if args.poll:
-            result = poll(config, args.evidence, supersede_failed=args.supersede_failed)
+            try:
+                result = poll(config, args.evidence, supersede_failed=args.supersede_failed)
+            except RetryableGate as error:
+                result = retryable_poll(args.evidence, error)
             print(json.dumps(result, separators=(",", ":")))
-            return int(not result["ok"])
+            return int(not result["ok"] and not result.get("retryable"))
         identity = config["landing_sha"]
         with closure.store_lock(args.evidence / "verification", create=True):
             operation = Operation(args.evidence, [config["repo"], identity])
