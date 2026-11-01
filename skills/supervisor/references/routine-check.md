@@ -62,7 +62,7 @@ decisions, statuses, board contents or narrative; open linked records for action
    session on the ledger's issue, journals it and stops on ambiguity. When no
    such handoff exists, its fresh complete claim check can provide a
    [source-bound comment projection](../../work-closeout/SKILL.md#claim-disposition)
-   for an unchanged original comment when the source's last confirmed comment
+   for an unchanged original comment when the source's last recognized confirmed `gh-comment`
    write is on the ledger issue. This supported literal command route needs no
    worker message or new comment. After
    verifying the source, use `--handoff-url <actual-comment>` to resolve ambiguity,

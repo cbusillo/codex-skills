@@ -3643,7 +3643,7 @@ class HandoffProjectionTests(unittest.TestCase):
         incidents = [row for row in json.loads(fixture.read_text()) if not row.get("ended_at")]
         for incident in incidents:
             for harness in ("codex", "claude"):
-                for variant in (None, "case", "copied", "redirected", "outer_redirect", "extra_output", "wrong_target", "failed", "unconfirmed", "nested", "async", "child", "help", "malformed", "heredoc", "unquoted_heredoc", "header", "running"):
+                for variant in (None, "case", "copied", "redirected", "outer_redirect", "extra_output", "wrong_target", "failed", "unconfirmed", "nested", "async", "child", "help", "malformed", "heredoc", "unquoted_heredoc", "header", "running", "heredoc_tabs", "heredoc_redirect", "heredoc_pipeline", "heredoc_and", "heredoc_or", "heredoc_args", "heredoc_async", "preparation_exec", "preparation_pipeline"):
                     with self.subTest(worker=incident["token"], harness=harness, variant=variant):
                         result = json.loads(json.dumps(incident["posts"][0]))
                         number = incident["issue"] + (variant == "wrong_target")
@@ -3655,6 +3655,15 @@ class HandoffProjectionTests(unittest.TestCase):
                         if variant in {"heredoc", "unquoted_heredoc"}:
                             marker = "'EOF'" if variant == "heredoc" else "EOF"
                             command = f"gh-comment issue {number} --repo {repo} <<{marker}\n{incident['comments'][0]['body']}\nEOF"
+                        elif variant and variant.startswith("heredoc_"):
+                            tail = {"heredoc_tabs": "", "heredoc_redirect": " > /evidence/own.json && cat /evidence/prior.json",
+                                    "heredoc_pipeline": " | cat /evidence/prior.json", "heredoc_and": " && cat /evidence/prior.json",
+                                    "heredoc_or": " || cat /evidence/prior.json", "heredoc_args": " --edit-last", "heredoc_async": " &"}[variant]
+                            operator = "<<-" if variant == "heredoc_tabs" else "<<"
+                            command = f"gh-comment issue {number} --repo {repo} {operator}'EOF'{tail}\nstop\nEOF"
+                        elif variant and variant.startswith("preparation_"):
+                            tail = " && cat /evidence/prior.json && exec > /evidence/own.json" if variant == "preparation_exec" else " | cat /evidence/prior.json"
+                            command = f"cat > /evidence/stop.md <<'EOF'{tail}\nstop\nEOF\n{writer}"
                         elif variant == "copied":
                             command = "cat /evidence/predecessor.json"
                         elif variant == "redirected":
@@ -3705,7 +3714,7 @@ class HandoffProjectionTests(unittest.TestCase):
                         with contextlib.redirect_stdout(io.StringIO()) as captured:
                             projected = helper.history.handoff_comments(entry)
                         self.assertEqual(captured.getvalue(), "")
-                        self.assertEqual(bool(projected), variant in {None, "case", "heredoc", "header"} or (variant == "running" and harness == "claude"))
+                        self.assertEqual(bool(projected), variant in {None, "case", "heredoc", "heredoc_tabs", "header"} or (variant == "running" and harness == "claude"))
                         if projected:
                             self.assertEqual(projected[0]["source_session"], session)
                             self.assertEqual(projected[0]["comment"]["url"], incident["comments"][0]["html_url"])

@@ -62,6 +62,14 @@ def read_records(path: Path) -> list[dict]:
     return records
 
 
+def handoff_heredoc(redirect: Node) -> bool:
+    kinds = [child.type for child in redirect.children]
+    return (redirect.type == "heredoc_redirect"
+            and kinds in (["<<", "heredoc_start", "heredoc_body", "heredoc_end"],
+                          ["<<-", "heredoc_start", "heredoc_body", "heredoc_end"])
+            and quoted_heredoc(redirect.named_children[1]))
+
+
 def handoff_command(text: str) -> argparse.Namespace | None:
     root = Parser(Language(tree_sitter_bash.language())).parse(text.encode()).root_node
     statements = [node for node in root.named_children if node.type != "comment"]
@@ -79,8 +87,7 @@ def handoff_command(text: str) -> argparse.Namespace | None:
         return None
     if last.type == "redirected_statement" and any(
             not ((redirect.type == "file_redirect" and redirect.children[0].type == "<" and not shell_generated(redirect))
-                 or (redirect.type == "heredoc_redirect" and any(
-                     body.type == "heredoc_body" and quoted_heredoc(body) for body in redirect.named_children)))
+                 or handoff_heredoc(redirect))
             for redirect in last.children_by_field_name("redirect")):
         return None
     if not argv or Path(argv[0]).name != "gh-comment" or any(flag in argv for flag in ("-h", "--help")):
@@ -106,7 +113,7 @@ def handoff_body_preparation(node: Node) -> bool:
     files = [item for item in redirects if item.type == "file_redirect"]
     documents = [item for item in redirects if item.type == "heredoc_redirect"]
     return (len(files) == len(documents) == 1 and files[0].children[0].type == ">" and not shell_generated(files[0])
-            and any(body.type == "heredoc_body" and quoted_heredoc(body) for body in documents[0].named_children))
+            and handoff_heredoc(documents[0]))
 
 
 def handoff_comments(source: dict) -> list[dict]:
