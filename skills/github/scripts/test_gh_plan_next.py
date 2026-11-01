@@ -2483,6 +2483,11 @@ def test_incident_paths_stop_whole_parent_waits_and_report_bounds_and_cycles() -
     with global_fixture([], [leaf, later], edges, discovered=[root]) as (module, result, _reads):
         result.update(next_failure(module, next_args(scan_limit=1), code="live_breakage_unread"))
         assert result["discovery_context"]["incident_context"]["truncated"]
+        args = next_args(scan_limit=1)
+        args.full_output = False
+        compact_failure = next_failure(module, args, code="live_breakage_unread")
+        assert compact_failure["output_detail"] == "compact"
+        assert all("body" not in row.get("discussion", {}) for row in compact_failure["excluded"])
         assert not result["candidate_coverage"]["complete"]
         result.update(next_failure(module, next_args(scan_limit=3), code="live_breakage_unread"))
         assert result["discovery_context"]["incident_context"]["cycles"]
@@ -3126,6 +3131,17 @@ def test_local_next_comment_read_failure_is_wait_review_not_unknown_dependencies
     assert observed["wait_error"], observed
     assert result["dependency_context"]["complete"], result
     assert not observed["blocked_by"], observed
+    with local_next_fixture(module, [issue(21)], read_relationships=lambda *_: (
+            "automation-gh", relationships(), [])) as result:
+        collector = module.collect_paged_rest_items
+        def malformed_wait(path: str, **kwargs: Any) -> Any:
+            if path.endswith("/comments"):
+                return "automation-gh", [{"user": {"login": "owner"}, "body": module.github_plan_wait.PREFIX + "{} -->"}]
+            return collector(path, **kwargs)
+        with patch.object(module, "collect_paged_rest_items", malformed_wait):
+            module.cmd_next(next_args(repo="owner/repo"))
+    observed = result["excluded"][0]
+    assert observed["wait_error"] and observed["discussion"]["complete"]
 
 
 TESTS.extend([
@@ -3195,21 +3211,18 @@ def test_next_output_summarizes_discussions_without_changing_selection_or_covera
                        "complete": False, "parents": [{"discussion": {"body": "Parent request", "comments": [], "complete": True}}]},
     }], "candidate_coverage": {"complete": False, "warning": "Unread source"}}
     args = module.build_parser().parse_args(["next"])
-    with patch.object(module, "emit") as emit:
-        module.emit_next(payload, args)
-        compact = emit.call_args.args[0]
-        assert compact["candidate_count"] == payload["candidate_count"]
-        assert compact["candidate_coverage"] == payload["candidate_coverage"]
-        assert compact["candidates"][0]["queue"] == payload["candidates"][0]["queue"]
-        discussion = compact["candidates"][0]["discussion"]
-        assert not discussion["complete"] and discussion["comment_count"] == 1
-        assert "body" not in discussion and "comments" not in discussion
-        assert "body" not in discussion["parents"][0]["discussion"]
-        args.full_output = True
-        module.emit_next(payload, args)
-        full = emit.call_args.args[0]
-        assert {key: value for key, value in full.items() if key != "output_detail"} == payload
-        assert payload["candidates"][0]["discussion"]["body"]
+    compact = module.next_output(payload, args)
+    assert compact["candidate_count"] == payload["candidate_count"]
+    assert compact["candidate_coverage"] == payload["candidate_coverage"]
+    assert compact["candidates"][0]["queue"] == payload["candidates"][0]["queue"]
+    discussion = compact["candidates"][0]["discussion"]
+    assert not discussion["complete"] and discussion["comment_count"] == 1
+    assert "body" not in discussion and "comments" not in discussion
+    assert "body" not in discussion["parents"][0]["discussion"]
+    args.full_output = True
+    full = module.next_output(payload, args)
+    assert {key: value for key, value in full.items() if key != "output_detail"} == payload
+    assert payload["candidates"][0]["discussion"]["body"]
 
 
 def test_local_next_reuses_complete_discussion_for_ownership() -> None:

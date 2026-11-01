@@ -31,9 +31,10 @@ Read for `next` in a repository owner's direction repository, including explicit
    records it as unavailable coverage.
 3. Apply Choose Work to possible candidates from both sources. Read each full
    discussion, including the latest comments, and current PR/branch/worktree and
-   supported session evidence. A complete `discussion` snapshot is the full
-   issue body and comments; use `show ISSUE --full` when it is incomplete or needs
-   refreshing. Discovered children include bounded parent discussions; a
+   supported session evidence. Default `discussion` summaries carry counts and
+   read coverage, not the body or comments. Read those with `show ISSUE --full`
+   or `next --full-output`; refresh incomplete evidence before acting.
+   Discovered children include parent discussion summaries; a
    whole-plan parent wait remains excluded. Parent discussions are refreshed
    on the next selection. Comments can reveal a wait or completed implementation despite
    active labels. A partial ownership inventory never proves freedom to start.
