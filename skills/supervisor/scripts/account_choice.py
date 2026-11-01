@@ -456,21 +456,20 @@ def record_launch(choice, now=None, runner=None):
     if choice.get("receipt_app") is not None:
         target = directory / record_through_app(choice["receipt_app"], receipt, runner)
         if "gui" in choice:
-            write_gui_receipt(directory.parent, target.name, receipt, choice["gui"], now)
+            write_gui_receipt(target.name, receipt, choice["gui"], now)
         return target
     # A bad root must not create a replacement Context Panel store.
     directory.mkdir(mode=0o700, exist_ok=True)
     prune_receipts(directory, now)
     target = directory / f"{now:%Y%m%dT%H%M%SZ}-{LAUNCHER}-{uuid.uuid4().hex}.json"
     if "gui" in choice:
-        write_gui_receipt(directory.parent, target.name, receipt, choice["gui"], now)
+        write_gui_receipt(target.name, receipt, choice["gui"], now)
     write_launch_receipt(target, receipt)
     return target
 
 
-def write_gui_receipt(root, name, receipt, gui, now):
-    """The private GUI receipt is written directly; GUI launches run from the Supervisor's terminal."""
-    gui_directory = root / "Supervisor GUI Receipts"
+def write_gui_receipt(name: str, receipt: dict, gui: dict, now: datetime) -> None:
+    gui_directory = Path(gui["state_path"]).parent / "Supervisor GUI Receipts"
     gui_directory.mkdir(mode=0o700, exist_ok=True)
     prune_receipts(gui_directory, now, max_bytes=16 * 1024)
     write_launch_receipt(gui_directory / name, {**receipt, "gui": gui})

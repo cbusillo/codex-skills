@@ -169,7 +169,10 @@ class LaunchFailure(ValueError):
 
     def __init__(self, launched, failed, error):
         reason = str(error) if isinstance(error, ValueError) else type(error).__name__
+        if isinstance(error, OSError):
+            reason += f": {error}"
         self.detail = {"status": "launch_failed", "reason": reason,
+                       "mutation_started": bool(launched) or failed.get("mutation_started", bool(failed.get("tab_id"))),
                        "launched": launched, "failed_launch": failed,
                        "next_action": "List and read these tabs before retrying; earlier launches may be running."}
         if isinstance(error, StartupFailure):
@@ -1957,17 +1960,18 @@ async def operate(app, args):
         for command_text, choice in zip(command_texts, choices):
             progress = {"window_id": windows[0].window_id, "tab_id": None,
                         "session_id": None, "receipt_written": False,
-                        "submission": "not_attempted", "phase": "create_tab"}
+                        "submission": "not_attempted", "phase": "write_receipt", "mutation_started": False}
             if choice:
                 progress["account"] = account_choice.public(choice)
             try:
-                tab = await windows[0].async_create_tab(select=False)
-                progress.update(tab_id=tab.tab_id if tab else None, phase="wait_for_session")
-                session = await wait_for_session(app, tab)
-                progress.update(session_id=session.session_id, phase="write_receipt")
                 if choice:
                     account_choice.record_launch(choice)
                     progress["receipt_written"] = True
+                progress.update(phase="create_tab", mutation_started=True)
+                tab = await windows[0].async_create_tab(select=False)
+                progress.update(tab_id=tab.tab_id if tab else None, phase="wait_for_session")
+                session = await wait_for_session(app, tab)
+                progress.update(session_id=session.session_id)
                 progress.update(submission="unknown", phase="submit_command")
                 await submit_iterm_launch(app, session, command_text, prompt_window=startup_prompt_window(choice))
                 progress.update(submission="submitted", phase="startup_observed")

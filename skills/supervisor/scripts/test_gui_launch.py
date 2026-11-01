@@ -169,7 +169,7 @@ class GuiLaunchTests(unittest.TestCase):
         commands, choices = iterm_tab.prepare_launches(self.args)
         gui = choices[0]["gui"]
         count_receipt = account_choice.record_launch(choices[0])
-        receipt = json.loads((count_receipt.parent.parent / "Supervisor GUI Receipts" / count_receipt.name).read_text())
+        receipt = json.loads((self.state.parent / "Supervisor GUI Receipts" / count_receipt.name).read_text())
         self.assertEqual(receipt["gui"], gui)
         self.assertNotIn("gui", json.loads(count_receipt.read_text()))
         self.assertEqual(gui["app"], "com.example.Task")
@@ -288,6 +288,7 @@ class GuiLaunchTests(unittest.TestCase):
                     asyncio.run(iterm_tab.operate(app, self.args) if backend == "iterm"
                                 else tmux_terminal.operate(self.args))
                 failure = raised.exception.detail["failed_launch"]
+                self.assertTrue(raised.exception.detail["mutation_started"])
                 self.assertTrue(failure["account"]["gui"]["token"])
                 self.assertFalse(self.state.exists())
 
@@ -303,7 +304,7 @@ class GuiLaunchTests(unittest.TestCase):
         choices[0]["gui"]["marketplace"]["path"] = "/fixture/" + "long-home/" * 200
         then = datetime.now(timezone.utc) - timedelta(days=2)
         receipt = account_choice.record_launch(choices[0], now=then)
-        gui_receipt = receipt.parent.parent / "Supervisor GUI Receipts" / receipt.name
+        gui_receipt = self.state.parent / "Supervisor GUI Receipts" / receipt.name
         self.assertNotIn(str(self.account), receipt.read_text())
         new_receipt = account_choice.record_launch(choices[0])
         self.assertFalse(receipt.exists())
@@ -312,10 +313,48 @@ class GuiLaunchTests(unittest.TestCase):
 
     def test_gui_receipt_failure_does_not_leave_a_count_receipt(self):
         _, choices = iterm_tab.prepare_launches(self.args)
-        (self.root / "Supervisor GUI Receipts").write_text("occupied fixture")
+        (self.state.parent / "Supervisor GUI Receipts").write_text("occupied fixture")
         with self.assertRaises(OSError):
             account_choice.record_launch(choices[0])
         self.assertEqual(list((self.root / "Launch Receipts").iterdir()), [])
+
+    def test_app_group_gui_receipt_never_reads_or_writes_the_protected_store(self) -> None:
+        _, choices = iterm_tab.prepare_launches(self.args)
+        choice = choices[0]
+        assert choice is not None
+        protected = self.root / "protected-store"
+        protected.write_text("not a directory")
+        choice.update(storage_root=protected, receipt_app="fixture-app")
+        name = "20261101T180000Z-supervisor-" + "a" * 32 + ".json"
+        runner = Mock(return_value=subprocess.CompletedProcess([], 0, name + "\n", ""))
+        receipt = account_choice.record_launch(choice, runner=runner)
+        self.assertEqual(receipt, protected / "Launch Receipts" / name)
+        self.assertEqual(json.loads((self.state.parent / "Supervisor GUI Receipts" / name).read_text())["gui"],
+                         choice["gui"])
+        self.assertNotIn("gui", json.loads(runner.call_args.kwargs["input"]))
+
+    def test_receipt_refusal_precedes_terminal_creation_on_both_backends(self) -> None:
+        self.args.command = "new"
+        self.args.window_id = "fixture"
+        self.args.tmux_socket = "fixture"
+        window = SimpleNamespace(window_id="fixture", async_create_tab=AsyncMock())
+        app = SimpleNamespace(current_terminal_window=None, terminal_windows=[window])
+        terminal = Mock()
+        denied = self.state.parent / "Supervisor GUI Receipts"
+        for backend in ("iterm", "tmux"):
+            with (self.subTest(backend=backend), patch.dict(sys.modules, {"iterm2": SimpleNamespace()}),
+                  patch.object(tmux_terminal, "Terminal", return_value=terminal),
+                  patch.object(account_choice, "record_launch", side_effect=PermissionError(1, "Operation not permitted", str(denied))),
+                  self.assertRaises(iterm_tab.LaunchFailure) as raised):
+                asyncio.run(iterm_tab.operate(app, self.args) if backend == "iterm"
+                            else tmux_terminal.operate(self.args))
+            detail = raised.exception.detail
+            self.assertFalse(detail["mutation_started"])
+            self.assertEqual(detail["failed_launch"]["phase"], "write_receipt")
+            self.assertIn(str(denied), detail["reason"])
+            window.async_create_tab.assert_not_awaited()
+            terminal.run.assert_not_called()
+            self.assertFalse(self.state.exists())
 
     def test_rollback_failure_preserves_original_cause_and_recovery_token(self):
         original = ValueError("fake command staging failure")

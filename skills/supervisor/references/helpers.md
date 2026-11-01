@@ -1368,9 +1368,12 @@ changed. Tests use fake homes, console evidence and child processes only.
 The paired private GUI launch receipt includes `gui`:
 named app, unlocked preflight, marketplace source/link action, process override,
 reservation token and shared state path. It uses the count receipt's filename
-in `<storage root>/Supervisor GUI Receipts/`; Context Panel's existing
+in `Supervisor GUI Receipts/` beside the shared GUI state file; Context Panel's existing
 `Launch Receipts/` record stays count-only and keeps its existing size contract.
-The launcher prunes its own day-old GUI receipts separately. Terminal output
+The launcher prunes its own day-old GUI receipts separately. Receipts are written
+before creating a terminal. A receipt refusal reports its phase and failing path;
+an attempted terminal creation reports `mutation_started: true` and retains any
+known terminal identity for inspection. Terminal output
 gives the app, link action and reservation token without account paths. Keep
 receipts private. The link
 follows replacement at the default home's unversioned path; missing or relocated
