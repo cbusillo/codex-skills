@@ -322,15 +322,6 @@ in the first message, before a denial. Claude auto mode is not launch or train
 authority; its README exception covers only an authorized direct `gh-pr.py merge`.
 The brief decides scope. Never change the Director's settings or work around a denial.
 
-## Pilot Status
-
-Use this Director's [handoff record](references/helpers.md#handoff-record),
-not another person's repository. Shared lessons go to
-[field reports](references/field-reports.md). The pilot ends after two consecutive
-handoffs with no new lesson or widened brief, takeover from a handoff alone
-including checks and digest, and Director questions delivered in one place
-under the shared queue rules. Say whether each handoff contains a new lesson.
-
 ## Harnesses
 
 Use [tmux](references/helpers.md#tmux-launches) for new workers; existing iTerm
@@ -554,7 +545,7 @@ Director's question queue. Say whether any lesson is new. A handoff is incomplet
 until each discovered Track is read or named unknown. Send new public-safe
 shared lessons to field reports too; keep operational contents on their sources.
 
-## Lessons From The Pilot
+## Lessons
 
 Read current time from the system clock. Never hand the Director shell lines;
 verify alignment claims before they reach other people. Before a planned host
