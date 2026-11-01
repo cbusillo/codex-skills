@@ -1766,7 +1766,7 @@ class AccountChoiceTests(unittest.TestCase):
             self.assertLessEqual(len(options["input"].encode()), 1024)
             self.assertEqual(path, root / "Launch Receipts" / name)
             self.assertFalse((root / "Launch Receipts").exists())  # the app wrote it, not this process
-            gui = json.loads((root / "private" / "Supervisor GUI Receipts" / name).read_text())
+            gui = json.loads((root / "private" / account_choice.GUI_RECEIPT_DIRECTORY / name).read_text())
             self.assertEqual(gui["gui"], choice["gui"])
 
     def test_app_writer_failures_refuse_without_a_receipt(self):

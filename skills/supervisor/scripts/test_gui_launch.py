@@ -169,7 +169,7 @@ class GuiLaunchTests(unittest.TestCase):
         commands, choices = iterm_tab.prepare_launches(self.args)
         gui = choices[0]["gui"]
         count_receipt = account_choice.record_launch(choices[0])
-        receipt = json.loads((self.state.parent / "Supervisor GUI Receipts" / count_receipt.name).read_text())
+        receipt = json.loads((self.state.parent / account_choice.GUI_RECEIPT_DIRECTORY / count_receipt.name).read_text())
         self.assertEqual(receipt["gui"], gui)
         self.assertNotIn("gui", json.loads(count_receipt.read_text()))
         self.assertEqual(gui["app"], "com.example.Task")
@@ -304,7 +304,7 @@ class GuiLaunchTests(unittest.TestCase):
         choices[0]["gui"]["marketplace"]["path"] = "/fixture/" + "long-home/" * 200
         then = datetime.now(timezone.utc) - timedelta(days=2)
         receipt = account_choice.record_launch(choices[0], now=then)
-        gui_receipt = self.state.parent / "Supervisor GUI Receipts" / receipt.name
+        gui_receipt = self.state.parent / account_choice.GUI_RECEIPT_DIRECTORY / receipt.name
         self.assertNotIn(str(self.account), receipt.read_text())
         new_receipt = account_choice.record_launch(choices[0])
         self.assertFalse(receipt.exists())
@@ -313,7 +313,7 @@ class GuiLaunchTests(unittest.TestCase):
 
     def test_gui_receipt_failure_does_not_leave_a_count_receipt(self):
         _, choices = iterm_tab.prepare_launches(self.args)
-        (self.state.parent / "Supervisor GUI Receipts").write_text("occupied fixture")
+        (self.state.parent / account_choice.GUI_RECEIPT_DIRECTORY).write_text("occupied fixture")
         with self.assertRaises(OSError):
             account_choice.record_launch(choices[0])
         self.assertEqual(list((self.root / "Launch Receipts").iterdir()), [])
@@ -329,9 +329,27 @@ class GuiLaunchTests(unittest.TestCase):
         runner = Mock(return_value=subprocess.CompletedProcess([], 0, name + "\n", ""))
         receipt = account_choice.record_launch(choice, runner=runner)
         self.assertEqual(receipt, protected / "Launch Receipts" / name)
-        self.assertEqual(json.loads((self.state.parent / "Supervisor GUI Receipts" / name).read_text())["gui"],
+        self.assertEqual(json.loads((self.state.parent / account_choice.GUI_RECEIPT_DIRECTORY / name).read_text())["gui"],
                          choice["gui"])
         self.assertNotIn("gui", json.loads(runner.call_args.kwargs["input"]))
+
+    def test_gui_receipt_failure_reports_the_app_count_receipt(self) -> None:
+        _, choices = iterm_tab.prepare_launches(self.args)
+        choice = choices[0]
+        assert choice is not None
+        choice["receipt_app"] = "fixture-app"
+        denied = self.state.parent / account_choice.GUI_RECEIPT_DIRECTORY
+        denied.write_text("occupied fixture")
+        name = "20261101T180000Z-supervisor-" + "b" * 32 + ".json"
+        runner = Mock(return_value=subprocess.CompletedProcess([], 0, name + "\n", ""))
+        with self.assertRaises(account_choice.PartialReceiptFailure) as raised:
+            account_choice.record_launch(choice, runner=runner)
+        failed = {"phase": "write_receipt", "receipt_written": False, "mutation_started": False}
+        detail = iterm_tab.LaunchFailure([], failed, raised.exception).detail
+        self.assertTrue(detail["failed_launch"]["receipt_written"])
+        self.assertEqual(detail["failed_launch"]["receipt_path"], str(self.root / "Launch Receipts" / name))
+        self.assertIn(str(denied), detail["reason"])
+        self.assertFalse(detail["mutation_started"])
 
     def test_receipt_refusal_precedes_terminal_creation_on_both_backends(self) -> None:
         self.args.command = "new"
@@ -340,7 +358,7 @@ class GuiLaunchTests(unittest.TestCase):
         window = SimpleNamespace(window_id="fixture", async_create_tab=AsyncMock())
         app = SimpleNamespace(current_terminal_window=None, terminal_windows=[window])
         terminal = Mock()
-        denied = self.state.parent / "Supervisor GUI Receipts"
+        denied = self.state.parent / account_choice.GUI_RECEIPT_DIRECTORY
         for backend in ("iterm", "tmux"):
             with (self.subTest(backend=backend), patch.dict(sys.modules, {"iterm2": SimpleNamespace()}),
                   patch.object(tmux_terminal, "Terminal", return_value=terminal),

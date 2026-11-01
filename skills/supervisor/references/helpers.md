@@ -1373,8 +1373,10 @@ in `Supervisor GUI Receipts/` beside the shared GUI state file; Context Panel's 
 The launcher prunes its own day-old GUI receipts separately. Receipts are written
 before creating a terminal. A receipt refusal reports its phase and failing path;
 an attempted terminal creation reports `mutation_started: true` and retains any
-known terminal identity for inspection. Terminal output
-gives the app, link action and reservation token without account paths. Keep
+known terminal identity for inspection. The failure report identifies a
+confirmed count receipt when the paired GUI write fails; terminal
+creation failures also retain their receipt and count conservatively.
+The successful launch summary gives the app, link action and reservation token without account paths. Keep
 receipts private. The link
 follows replacement at the default home's unversioned path; missing or relocated
 targets refuse. CU-T2 established discovery and one Node/Sky state screenshot,

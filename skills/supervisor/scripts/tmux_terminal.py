@@ -438,17 +438,13 @@ async def operate(args):
     results = []
     for command, choice in zip(commands, choices):
         progress = {"window_id": args.window_id, "tab_id": None, "session_id": None,
-                    "receipt_written": False, "submission": "not_attempted", "phase": "write_receipt",
+                    "receipt_written": False, "submission": "not_attempted", "phase": "prepare_terminal",
                     "mutation_started": False,
                     "backend": "tmux", "tmux_socket": args.tmux_socket}
         if choice:
             progress["account"] = account_choice.public(choice)
         launch_script = None
         try:
-            if choice:
-                account_choice.record_launch(choice)
-                progress["receipt_written"] = True
-            progress["phase"] = "prepare_terminal"
             identity = uuid.uuid4().hex
             gate = "start-" + identity
             # The command cannot execute until after remain-on-exit and the receipt.
@@ -462,6 +458,10 @@ async def operate(args):
                 handle.write('rm -f -- "$0" || exit\n' + staged + "\n")
             environment = [argument for key in LAUNCH_ENVIRONMENT_KEYS if key in os.environ
                            for argument in ("-e", key + "=" + os.environ[key])]
+            progress["phase"] = "write_receipt"
+            if choice:
+                account_choice.record_launch(choice)
+                progress["receipt_written"] = True
             progress.update(phase="create_tab", mutation_started=True)
             created = terminal.run("new-window", "-d", "-t", args.window_id + ":", "-n", "agent",
                                    *environment,

@@ -168,6 +168,8 @@ class LaunchFailure(ValueError):
     """Preserve launch identities so a partial batch is never mistaken for refusal."""
 
     def __init__(self, launched, failed, error):
+        if isinstance(error, account_choice.PartialReceiptFailure):
+            failed.update(receipt_written=True, receipt_path=str(error.target))
         reason = str(error) if isinstance(error, ValueError) else type(error).__name__
         if isinstance(error, OSError):
             reason += f": {error}"
