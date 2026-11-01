@@ -258,6 +258,12 @@ before calling intake clear within the accessible repositories. Workers apply
 triage only to reports on their assigned item or routed to them; portfolio
 discovery belongs to the intake agent.
 
+Repository-local `next` and `index` also inventory every open issue by default.
+Use local `needs_status` for ordinary agent triage, preserving real holds and
+claim checks before implementation. An explicit `index --label` remains a
+filtered query; a truncated inventory requires a larger bound before calling
+intake clear.
+
 ## Choose Work
 
 Check known repository-wide Director holds before selection or implementation;

@@ -922,10 +922,13 @@ Planning reads of another repository, such as wait and blocker evidence that
 repository, the same App the transport uses for the request. Write identity
 selection is unchanged.
 
-- `index`: List compact plan issues through paged REST reads, excluding pull
+- `index`: List all open issues by default through paged REST reads, excluding pull
   requests and ordering by most recently updated. Supports `--state`, `--label`,
   and an exact positive `--limit`. Compact states remain normalized as uppercase
   `OPEN` or `CLOSED` values.
+  Only an explicit `--label` filters labels. `truncated` and
+  `inventory_complete` report whether the limit omitted issues; raise `--limit`
+  before treating the index as a complete inventory.
   Inventory output includes freshly read `repository.archived` (boolean or
   null) and `repository.disposition` (`current`, `frozen_historical`, or
   `unknown`), also attached to each plan row. Archived repositories return no plan
@@ -2333,8 +2336,12 @@ Parallel reads near the shared wait-read bound may retain a different subset
 of evidence; all unread references and incomplete coverage remain explicit.
 
 - `next [--milestone <number-or-title>] [--limit <n>] [--scan-limit <n>]`:
-  Rank actionable open plans without mutating labels, relationships, milestones,
+  Inventory every open issue and rank actionable work without mutating labels, relationships, milestones,
   Projects, or workflows. Native `blocked-by` relationships are authoritative.
+  Repository-local REST and batch reads include issues without the planning label.
+  `needs_status` routes untriaged requests and wait reviews to ordinary agent
+  triage; it does not admit implementation or bypass claim preflight. Status-label
+  scope holds, priority, assignment and real waits retain their existing rules.
 - The command excludes done, stale, actual structured waits, current native
   blockers, dependency-unknown, and parent plans with open sub-issues. Missing
   or malformed wait evidence is `wait_review_required`; an unstatused planning
