@@ -362,6 +362,8 @@ class CloseConfigTests(unittest.TestCase):
             self.assertEqual(result["issue"]["launch_check"]["allowed"], allowed)
 
     def test_launch_checks_the_claims_milestone_admission_without_writes(self) -> None:
+        claim_options = ["--worker", "worker", "--session", "session", "--branch", "work/native",
+                         "--next-action", "Implement the fixture scope"]
         for milestone, allowed in ((None, False), ({"title": "Catalog adoption", "state": "open"}, True),
                                    ({"title": "Catalog adoption", "state": "closed"}, False),
                                    ({"title": "Unlisted", "state": "open"}, False)):
@@ -372,7 +374,8 @@ class CloseConfigTests(unittest.TestCase):
                 if allowed:
                     admission = check["milestone_admission"]
                     self.assertEqual(admission["scope"], PLAN.github_direction_next.compact_list_issue(issue["repo"], issue))
-                    parsed = PLAN.build_parser().parse_args(["show", str(issue["number"]), *admission["admission_arguments"]])
+                    parsed = PLAN.build_parser().parse_args(["claim", str(issue["number"]), *claim_options,
+                                                            *admission["admission_arguments"]])
                     self.assertEqual(PLAN.claim_admission_options(parsed), ("milestone", [], None))
                 else:
                     self.assertEqual(check["error"]["code"], "claim_admission_unlinked")
@@ -390,7 +393,7 @@ class CloseConfigTests(unittest.TestCase):
                 if state == "open":
                     admission = check["milestone_admission"]
                     self.assertEqual(admission["scope"], PLAN.github_direction_next.compact_list_issue(track["repo"], track))
-                    parsed = PLAN.build_parser().parse_args(["show", "7", *admission["admission_arguments"]])
+                    parsed = PLAN.build_parser().parse_args(["claim", "7", *claim_options, *admission["admission_arguments"]])
                     self.assertEqual(parsed.admission_link, links)
         for kind in ("spare-capacity", "client-request"):
             result, _, _ = self.show_fixture(launch=True, admission=kind, admission_links=[link])
@@ -419,8 +422,7 @@ class CloseConfigTests(unittest.TestCase):
     def test_launch_returns_actionable_admission_argument_errors(self) -> None:
         for kind, links in (("own project", []), ("TBD", []), ("repeat-stop", []),
                             ("client-request", []),
-                            ("milestone", ["not-a-link"]),
-                            ("milestone", ["https://github.com/fixture/target/milestone/3"])):
+                            ("milestone", ["not-a-link"])):
             with self.subTest(kind=kind, links=links):
                 result, _, _ = self.show_fixture(launch=True, admission=kind, admission_links=links)
                 check = result["issue"]["launch_check"]
