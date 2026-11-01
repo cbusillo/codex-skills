@@ -297,18 +297,16 @@ active issue labels and continuing background jobs do not lift a hold.
    --branch <task-branch> --next-action "<action>"` before creating a
    branch or worktree, adding `--admission <kind>` when the overall Order
    admits the work: live-site breakage, a `client-request` on a live product
-   (cite the Client's own request with `--admission-link`), a named `milestone` item (cite its overall Track
-   with `--admission-link`; admission records its citation without changing the graph), a
+   (cite the Client's own request with `--admission-link`), a native-linked
+   `milestone` item (no repeated Track citation), a
    `repeat-stop` with both occurrences, `own-project` work from the Order's
    weekly own-projects share, or `spare-capacity`. Name the
    real kind: work that clears a milestone blocker is milestone work once
    linked, not spare capacity. Evidence may cite a decision comment, for example
    `--admission spare-capacity --admission-link https://github.com/OWNER/REPO/issues/123#issuecomment-456`.
    The claim retains that exact comment URL; admission grants no authority.
-   A repository milestone absent from overall direction uses its open native
-   milestone membership and that repository's merged `DIRECTION.md` instead;
-   do not invent an overall Track dependency for it.
-   A citation into the overall direction repository must still name a valid Track.
+   Use the [claim admission contract](../github/references/cli-reference.md#planning-claim)
+   for native milestone qualification and necessary explicit Track evidence.
    Claim using exactly the branch the worktree helper will create
    (`work/<task-slug>` for the catalog's `github/scripts/dev-worktree`). Read
    [task worktrees](../github/references/worktrees.md) for its callable path,
