@@ -1259,6 +1259,11 @@ records absence at creation; `create --waiting-for ... --ends-when ...
 issue needs the same one-time review before its first claim. Current Status
 edits do not maintain waits: use `wait` when a hold begins or ends.
 
+`next` can report a verified recorded answer under `needs_status`, with exact
+decision comments and the original wait. Launch and claim return the same
+evidence while still refusing the hold. See [Status Labels](../../github-plan/SKILL.md#status-labels)
+for reconciliation; an answer is never an automatic wait resolution.
+
 For a recorded wait or parked/blocked/stale/done label, pass
 `--wait-resolved "<existing resolution evidence>"` only after verifying its
 condition or a recorded Director release. The same argument can record a

@@ -3273,6 +3273,107 @@ def test_local_next_reuses_complete_discussion_for_ownership() -> None:
 TESTS.extend([test_next_output_summarizes_discussions_without_changing_selection_or_coverage,
               test_local_next_reuses_complete_discussion_for_ownership])
 
+
+def test_recorded_answers_require_exact_trusted_source_and_preserve_all_conditions() -> None:
+    module = load_module()
+    source = issue(21)
+    source.update(user={"login": "owner"})
+    url = source["html_url"] + "#issuecomment-700"
+    question = {"id": 700, "html_url": url, "user": {"login": "owner"},
+                "body": "Director question: Q700. Continue?"}
+    decisions = [{"id": 701 + index, "html_url": source["html_url"] + f"#issuecomment-{701 + index}",
+                  "user": {"login": "owner"}, "body": f"Director decision: Q700. {answer}"}
+                 for index, answer in enumerate(("Yes, after service readback.", "No. Keep the release hold.",
+                                                 "Changed: stage only; acceptance is still required."))]
+    wait = module.github_plan_wait.reviewed(evidence=url, waiting_for=["Director decision", "Release acceptance", "Service readback"],
+        ends_when=["The actual answer is reconciled", "Client accepts", "Service reports the deployed identity"])
+    original = copy.deepcopy(wait)
+    with patch.multiple(module, milestone_direction_repo=lambda _: "owner/direction", wait_authors=lambda _: {"owner"},
+                        get_issue=Mock(return_value=("bot", source)),
+                        collect_paged_rest_items=Mock(return_value=("bot", [question, *decisions]))):
+        found = module.recorded_wait_decisions(wait, "owner/repo")
+        assert [comment["body"] for comment in found[0]["decision_comments"]] == [comment["body"] for comment in decisions]
+        assert found[0]["url"] == url and wait == original
+        module.recorded_wait_decisions(wait, "owner/repo")
+        module.get_issue.assert_called_once()
+        module.collect_paged_rest_items.assert_called_once()
+        for evidence in ("Q700", source["html_url"], url + "9", url.replace("github.com", "example.com")):
+            assert not module.recorded_wait_decisions({**wait, "evidence": evidence}, "owner/repo")
+    for comments in ([{**question, "user": {"login": "outsider"}}, *decisions],
+                     [question, {**decisions[0], "user": {"login": "outsider"}}],
+                     [question, {**question, "id": 800, "html_url": url.replace("700", "800")}, *decisions],
+                     [question, {**decisions[0], "body": "Director decision: Q700. Pending."}]):
+        module.DECISION_DISCUSSIONS.clear()
+        with patch.multiple(module, milestone_direction_repo=lambda _: "owner/direction", wait_authors=lambda _: {"owner"},
+                            get_issue=lambda *_: ("bot", source),
+                            collect_paged_rest_items=lambda *_args, **_kwargs: ("bot", comments)):
+            assert not module.recorded_wait_decisions(wait, "owner/repo")
+    module.DECISION_DISCUSSIONS.clear()
+    with patch.multiple(module, get_issue=Mock(side_effect=module.PlanError("source unread"))):
+        assert not module.recorded_wait_decisions(wait, "owner/repo")
+        assert not module.recorded_wait_decisions(wait, "owner/repo")
+        module.get_issue.assert_called_once()
+
+
+TESTS.append(test_recorded_answers_require_exact_trusted_source_and_preserve_all_conditions)
+
+
+def test_answered_wait_is_reconciliation_in_local_and_global_selection_without_unblocking_dependents() -> None:
+    for scope in ("local", "global"):
+        module = load_module()
+        repo = "owner/repo" if scope == "local" else "someone/product"
+        director = repo.split("/")[0]
+        url = f"https://github.com/{repo}/issues/21#issuecomment-700"
+        wait = module.github_plan_wait.reviewed(evidence=url, waiting_for=["Director decision", "Service readback"],
+            ends_when=["The actual answer is reconciled", "Service identity is verified"])
+        body = "## Current Status\nNext actor: person:director\nNext action: Wait for the decision.\n" + module.github_plan_wait.marker(wait)
+        comments = [{"id": 700, "html_url": url, "user": {"login": director}, "body": "Director question: Q700. Continue?"},
+                    {"id": 701, "html_url": url.replace("700", "701"), "user": {"login": director},
+                     "body": "Director decision: Q700. No production change. Stage only after service readback."}]
+        observed = {"complete": True, "coverage": {}, "pulls": [], "inventory": {
+            "local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}}
+        if scope == "local":
+            raw = issue(21, labels=["plan", "plan:waiting"])
+            raw.update(body=body, user={"login": director})
+            with local_next_fixture(module, [raw], read_relationships=lambda *_: ("bot", relationships(), [])) as result:
+                with patch.multiple(module, collect_paged_rest_items=lambda path, **_: ("bot", comments if path.endswith("/comments") else [raw]),
+                    annotate_next_queue=module.real_annotate_next_queue, read_queue_ownership=lambda _: observed,
+                    next_status_body_time=lambda *_: None, milestone_direction_repo=lambda _: f"{director}/direction",
+                    wait_authors=lambda _: {director}, get_issue=Mock(side_effect=AssertionError("Full source was already read"))):
+                    module.cmd_next(next_args(repo=repo))
+                    first = copy.deepcopy(result)
+                    original_answer = comments[1]["body"]
+                    comments[1]["body"] = "Director decision: Q700. Pending."
+                    result.clear()
+                    module.cmd_next(next_args(repo=repo))
+                    assert not result["needs_status"] and not result["available_candidates"]
+                    result.clear()
+                    result.update(first)
+                    comments[1]["body"] = original_answer
+        else:
+            raw = global_issue(repo, 21, body=body, labels=["plan", "plan:waiting"], wait_reviewed=False)
+            raw["user"] = {"login": director}
+            dependent = global_issue(repo, 22, body="## Current Status\nNext actor: agent\nNext action: Dependent implementation.")
+            root = active_track("someone/direction", 1, "First", f"Next actor: agent\nNext action: {repo}#21.")
+            with global_fixture([root], [raw, dependent], {
+                    (root["repo"], 1): relationships(sub_issues=[raw, dependent]),
+                    (repo, 22): relationships(blocked_by=[raw])}, comments={(repo, 21): comments}) as (module, result, _reads):
+                with patch.multiple(module, annotate_next_queue=module.real_annotate_next_queue,
+                    read_queue_ownership=lambda _: observed, next_status_body_time=lambda *_: None,
+                    milestone_direction_repo=lambda _: f"{director}/direction", wait_authors=lambda _: {director}):
+                    module.cmd_next(next_args())
+            assert not any(row["number"] == 22 and row["repo"] == repo for row in result["available_candidates"])
+        assert any(row["repo"] == repo and row["number"] == 21 for row in result["needs_status"]), (scope, result)
+        found = next(row for row in result["needs_status"] if row["repo"] == repo and row["number"] == 21)
+        assert found["queue"]["next_actor"] == "agent"
+        assert found["queue"]["recorded_next_actor"] == "person:director"
+        assert found["queue"]["wait"] == wait
+        assert found["queue"]["recorded_decisions"][0]["decision_comments"][0]["body"] == comments[1]["body"]
+        assert not any(row["number"] == 21 and row["repo"] == repo for row in result["available_candidates"])
+
+
+TESTS.append(test_answered_wait_is_reconciliation_in_local_and_global_selection_without_unblocking_dependents)
+
 def main() -> None:
     for test in TESTS:
         test()

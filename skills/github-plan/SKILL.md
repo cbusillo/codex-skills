@@ -531,6 +531,13 @@ board derive those values; old prose or hand-applied blocked/waiting labels do
 not override reviewed graph evidence. Maintain waits with `wait` and
 dependencies with `link`/`unlink`, rather than copying blocker lists into
 Current Status. Missing or malformed wait evidence still requires review.
+An exact question-comment URL in wait evidence can surface its recorded answer
+in `next`'s `needs_status` and launch/claim diagnostics. Read the full answer and
+reconcile it through `wait` or evidenced `--wait-resolved` before dependent work.
+Negative, changed and conditional answers remain decisions to reconcile; every
+independent hold and service readback stays in force. Selection never clears a
+wait. Missing, unread or ambiguous source evidence keeps the existing wait or
+review state.
 Landing reconciliation and issue closure refresh native parents and dependents
 without inferring their finish lines or changing human-authored bodies. Open
 `stale`, `done` and unstatused planning scopes retain their review holds, except

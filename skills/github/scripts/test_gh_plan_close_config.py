@@ -242,7 +242,7 @@ class CloseConfigTests(unittest.TestCase):
             issue.update(created_at=body_time, last_edited_at=body_time, updated_at="2026-10-27T00:00:00Z")
         if actor:
             issue["body"] += f"\nNext actor: {actor}"
-        comments: list[dict[str, Any]] = [{"id": 1, "user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker(
+        comments: list[dict[str, Any]] = [{"id": 1, "html_url": issue["html_url"] + "#issuecomment-1", "user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker(
             PLAN.github_plan_wait.reviewed(evidence="Target discussion reviewed; no person wait"))}]
         comments.extend(comments_extra or [])
         relationships = Mock(return_value=("fixture-bot", {"blocked_by": [], "sub_issues": []}))
@@ -420,6 +420,21 @@ class CloseConfigTests(unittest.TestCase):
         self.assertFalse(check["allowed"])
         self.assertEqual(check["error"]["code"], "claim_wait_unresolved")
         self.assertEqual(check["error"]["structured_wait"]["state"], "waiting")
+
+    def test_launch_surfaces_a_recorded_answer_without_resolving_its_wait(self) -> None:
+        url = "https://github.com/fixture/target/issues/7#issuecomment-700"
+        wait = PLAN.github_plan_wait.reviewed(evidence=url, waiting_for=["Director", "Release acceptance"],
+            ends_when=["Decision is reconciled", "Client accepts the release"])
+        comments = [{"id": 700, "html_url": url, "user": {"login": "fixture"}, "body": "Director question: Q700. Continue?"},
+                    {"id": 701, "html_url": url.replace("700", "701"), "user": {"login": "fixture"},
+                     "body": "Director decision: Q700. Stage only. Keep the release hold."},
+                    {"id": 702, "html_url": url.replace("700", "702"), "user": {"login": "fixture"},
+                     "body": PLAN.github_plan_wait.marker(wait)}]
+        result, _, _ = self.show_fixture(launch=True, admission="spare-capacity", comments_extra=comments)
+        check = result["issue"]["launch_check"]
+        self.assertFalse(check["allowed"])
+        self.assertEqual(check["error"]["structured_wait"], wait)
+        self.assertEqual(check["error"]["recorded_decisions"][0]["decision_comments"][0]["body"], comments[1]["body"])
 
     def test_scope_cut_reason_is_read_back_before_closing_even_if_metadata_fails(self) -> None:
         reason = "Remove an extra benchmark after reviewing its agent origin."

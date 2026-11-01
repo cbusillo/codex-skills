@@ -750,12 +750,14 @@ def rank_portfolio_work(
              "excluded": [item for item in checked_excluded if item.get("exclusion")]}
     discoveries = [checked_wait(item) for item in discoveries]
     candidates: list[dict[str, Any]] = []
-    excluded = list(graph.get("excluded", []))
+    needs_reconciliation = [item for item in graph.get("excluded", [])
+                            if (item.get("queue") or {}).get("reason") == "recorded_decision_requires_reconciliation"]
+    excluded = [item for item in graph.get("excluded", []) if item not in needs_reconciliation]
     underway: list[dict[str, Any]] = []
     needs_status: list[dict[str, Any]] = []
     actor_waits: list[dict[str, Any]] = []
     seen = {f"{entry['repo']}#{entry['number']}".casefold() for entry in excluded if entry.get("exclusion") != "outside_direction_tracks"}
-    work = [(entry, False) for entry in graph["candidates"]] + [(entry, True) for entry in discoveries]
+    work = [(entry, False) for entry in [*graph["candidates"], *needs_reconciliation]] + [(entry, True) for entry in discoveries]
     for raw, discovered in work:
         key = f"{raw['repo']}#{raw['number']}".casefold()
         if key in seen:
@@ -763,6 +765,9 @@ def rank_portfolio_work(
         seen.add(key)
         item: dict[str, Any] = {**raw, "availability": "needs_review"}
         item["overall_milestone_context"] = milestone_context(item)
+        if (item.get("queue") or {}).get("reason") == "recorded_decision_requires_reconciliation":
+            needs_status.append(item)
+            continue
         if item.get("exclusion"):
             excluded.append(item)
             continue

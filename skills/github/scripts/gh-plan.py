@@ -69,6 +69,7 @@ import github_plan_release
 import github_plan_landing
 import github_plan_status
 from github_plan_status import next_actor as github_plan_next_actor
+from github_plan_status import questions as github_plan_questions
 import github_agent
 from github_direction_next import (
     normalize_labels,
@@ -95,6 +96,7 @@ CURRENT_IS_WRITE = False
 CURRENT_RETRY_FIELDS: dict[str, Any] = {}
 CURRENT_RETRY_SUMMARY: Optional[github_api_core.RetrySummary] = None
 NEXT_READS: github_next_reads.NextReads | None = None
+DECISION_DISCUSSIONS: dict[tuple[str, int], dict[str, Any]] = {}
 RETRY_SUMMARY_LOCK = threading.Lock()
 PLAN_SECTION_NAMES = frozenset(
     {
@@ -2054,6 +2056,7 @@ def read_planning_graph(repo: str, **kwargs: Any) -> list[dict[str, Any]] | None
 
 
 def cmd_show(args: argparse.Namespace) -> None:
+    DECISION_DISCUSSIONS.clear()
     repo = default_repo(args.repo)
     issue_repo, number = issue_ref(args.issue, repo)
     config = load_config(issue_repo)
@@ -2102,6 +2105,8 @@ def cmd_show(args: argparse.Namespace) -> None:
         }
         for comment in comments
     ]
+    seed_decision_discussion(issue["repo"], issue["number"],
+        github_direction_next.discussion_snapshot(issue, comments, complete=True))
     try:
         wait = current_wait(issue, comments, issue["repo"])
     except (PlanError, ValueError) as exc:
@@ -2182,6 +2187,60 @@ def current_wait(issue: dict[str, Any], comments: list[dict[str, Any]], repo: st
     return github_plan_wait.current(issue, comments, wait_authors(repo))
 
 
+def seed_decision_discussion(repo: str, number: int, discussion: dict[str, Any]) -> None:
+    complete = discussion.get("complete")
+    if isinstance(complete, bool) and complete:
+        DECISION_DISCUSSIONS.setdefault((repo.casefold(), number), discussion)
+
+
+def question_evidence_urls(wait: dict[str, Any]) -> list[str]:
+    return list(dict.fromkeys(url for token in re.findall(r'https://[^\s<>"()]+', wait.get("evidence", ""))
+        if github_plan_questions.COMMENT_URL.fullmatch(url := token.rstrip(".,;:]"))))
+
+
+def recorded_wait_decisions(wait: dict[str, Any], _repo: str) -> list[dict[str, Any]]:
+    if wait.get("state") != "waiting":
+        return []
+    found = []
+    for url in question_evidence_urls(wait):
+        match = github_plan_questions.COMMENT_URL.fullmatch(url)
+        assert match is not None
+        repo, number = match[1], int(match[2])
+        key = repo.casefold(), number
+        if key not in DECISION_DISCUSSIONS:
+            try:
+                _, source = get_issue(str(number), repo)
+                _, comments = collect_paged_rest_items(f"/repos/{repo}/issues/{number}/comments", query={},
+                    bucket="rest_core", step_prefix="wait_decision_comments")
+                seed_decision_discussion(repo, number, github_direction_next.discussion_snapshot(source, comments, complete=True))
+            except PlanError as exc:
+                raise_if_cancelled(exc)
+                DECISION_DISCUSSIONS[key] = {"complete": False, "error": str(exc)}
+        discussion = DECISION_DISCUSSIONS[key]
+        comments = discussion.get("comments", [])
+        if discussion.get("complete") is not True or any(
+                not comment.get("author") or type(comment.get("id")) is not int for comment in comments):
+            continue
+        director = milestone_direction_repo(repo).split("/")[0]
+        trusted = {name.casefold() for name in wait_authors(repo)} | {director.casefold()}
+        sources = [comment for comment in comments if comment.get("url") == url and comment["id"] == int(match[3])]
+        if len(sources) != 1 or sources[0]["author"].casefold() not in trusted:
+            continue
+        question_number = github_plan_questions.heading_id(sources[0]["body"])
+        if question_number and sum(github_plan_questions.heading_id(comment.get("body", "")) == question_number
+                                   for comment in comments) != 1:
+            continue
+        try:
+            matched = [question for question in github_plan_questions.questions(comments, director, trusted, recorded_decisions_only=True)
+                       if question["url"] == url and question["status"] == "answered"]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if len(matched) == 1:
+            answer = matched[0]
+            found.append({**answer, "decision_comments": [comment for comment in comments if comment.get("url") in answer["answers"]]})
+    return found
+
+
 def _claim_release_evidence(evidence_repo, _number, evidence_id):
     try:
         _, evidence = api_json("GET", f"/repos/{evidence_repo}/issues/comments/{evidence_id}",
@@ -2212,6 +2271,8 @@ def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[
         query={}, bucket="rest_core", step_prefix="claim_comments",
     )
     comments = github_plan_release.verified_comments(comments, _claim_release_evidence)
+    seed_decision_discussion(issue["repo"], issue["number"],
+        github_direction_next.discussion_snapshot(issue, comments, complete=True))
     can_update = "pull_request" not in issue and provenance["section_updates_allowed"] and provenance["ownership"] != "contributor_unmanaged"
     status = claim_current_status(issue, sections, comments)
     issue["claim_wait"] = current_wait(issue, comments, issue["repo"])
@@ -2731,7 +2792,7 @@ def claim_reference(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def cmd_claim(args: argparse.Namespace) -> None:
-    """One explicit claim attempt; released work uses --resume-from ORIGINAL."""
+    DECISION_DISCUSSIONS.clear()
     source = getattr(args, "resume_from", None)
     if isinstance(source, str):
         if source.isdecimal() and int(source) > 0:
@@ -2848,6 +2909,12 @@ def check_claim_wait(waiting_issue: dict[str, Any], waiting_status: str, config:
     has_wait, error = evaluate_claim_wait(waiting_issue, waiting_status, config,
                                           wait_resolved=wait_resolved, record_status=record_status)
     if error is not None:
+        decisions = recorded_wait_decisions(error.payload["structured_wait"], waiting_issue["repo"])
+        if decisions:
+            raise ClassifiedPlanError(error.code,
+                f"Recorded decision requires agent reconciliation: {', '.join(url for decision in decisions for url in decision['answers'])}. "
+                "Read every actual answer and preserve all other conditions; no wait has been cleared. " + str(error),
+                payload={**error.payload, "recorded_decisions": decisions}) from error
         raise error
     return has_wait
 
@@ -4962,6 +5029,7 @@ def next_output(payload: dict[str, Any], args: argparse.Namespace) -> dict[str, 
 
 
 def cmd_next(args: argparse.Namespace) -> None:
+    DECISION_DISCUSSIONS.clear()
     repo = default_repo(args.repo)
     if github_direction_next.is_direction_repository(repo):
         if getattr(args, "batch_read", False):
@@ -5156,7 +5224,7 @@ def cmd_next(args: argparse.Namespace) -> None:
     if dependency_degraded_count:
         notes.append("dependency_reads_degraded")
     dependabot = next_dependabot_work([{"repo": repo}], scan_limit=args.scan_limit, limit=args.limit, comment_limit=getattr(args, "comment_limit", None))
-    queue_context = annotate_next_queue(candidates, args)
+    queue_context = annotate_next_queue([*candidates, *decision_wait_items(excluded)], args)
     queue_result = project_local_queue(candidates, excluded)
     emit(next_output({
         "ok": True,
@@ -5273,6 +5341,8 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
         except PlanError as exc:
             item["queue"] = {"state": "review", "reason": "incomplete_discussion", "detail": next_source_error(exc)}
     for item in items:
+        seed_decision_discussion(item["repo"], item["number"], item.get("discussion") or {})
+    for item in items:
         if item.get("queue"):
             continue
         repo = item["repo"]
@@ -5290,13 +5360,22 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
                 item["queue"] = {**github_next_queue.classify(item, evidence[repo], trusted=trusted, status_known=False, acceptance_reader=next_pr_acceptance),
                                  "detail": detail}
                 continue
-        item["queue"] = github_next_queue.classify(item, evidence[repo], trusted=trusted, acceptance_reader=next_pr_acceptance)
+        item["queue"] = github_next_queue.classify(item, evidence[repo], trusted=trusted, acceptance_reader=next_pr_acceptance,
+                                                  decision_reader=recorded_wait_decisions)
     return {"source": "issue_discussion_and_current_claim_pr_branch_reads", "claim_required": True,
             "all_active_sessions_searched": False,
             "repositories": {repo: {"complete": value["complete"], **value["coverage"]} for repo, value in evidence.items()}}
 
 
+def decision_wait_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [item for item in items if str(item.get("state", "")).casefold() == "open"
+            and question_evidence_urls(item.get("structured_wait") or (item.get("derived") or {}).get("structured_wait") or {})]
+
+
 def project_local_queue(candidates: list[dict[str, Any]], excluded: list[dict[str, Any]]) -> dict[str, Any]:
+    reconciliations = [item for item in excluded if (item.get("queue") or {}).get("reason") == "recorded_decision_requires_reconciliation"]
+    candidates = [*candidates, *reconciliations]
+    excluded = [item for item in excluded if item not in reconciliations]
     groups: dict[str, Any] = {"candidates": [], "available_candidates": [], "underway": [], "verification_only": [], "scope_review": [], "needs_status": [], "waiting": [], "excluded": list(excluded)}
     for item in candidates:
         state = (item.get("queue") or {}).get("state", "review")
@@ -6019,7 +6098,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         unread("work_graph_unread", "Track graph nodes are unread; milestones are unknown", graph_context=graph_coverage)
     # Establish useful native-frontier evidence before optional portfolio work.
     NEXT_READS.start_phase("milestone_ownership")
-    graph_queue_context = annotate_next_queue(ranked["candidates"], args)
+    graph_queue_context = annotate_next_queue([*ranked["candidates"], *decision_wait_items(ranked["excluded"])], args)
 
     def evidence_complete(queue: dict[str, Any], waits: dict[str, Any], focuses: list[dict[str, Any]]) -> bool:
         return bool(waits.get("complete") and all(item.get("complete") is True

@@ -1043,6 +1043,21 @@ class ClaimTests(unittest.TestCase):
                 self.args.wait_resolved = "Existing conflict-refresh authorization resolves this wait for source work only."
                 self.run_claim()
 
+    def test_recorded_decision_is_diagnostic_and_never_clears_a_claim_hold(self) -> None:
+        url = "https://github.com/owner/repo/issues/42#issuecomment-700"
+        self.issue["html_url"] = url.split("#")[0]
+        self.wait = wait_record.reviewed(evidence=url, waiting_for=["Director decision", "Service readback"],
+            ends_when=["The actual decision is reconciled", "Service identity is verified"])
+        self.comments = [{"id": 700, "html_url": url, "user": {"login": TEST_BOT}, "body": "Director question: Q700. Continue?"},
+                         {"id": 701, "html_url": url.replace("700", "701"), "user": {"login": TEST_BOT},
+                          "body": "Director decision: Q700. No production change. Stage after service readback."}]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_wait_unresolved")
+        self.assertEqual(caught.exception.payload["structured_wait"], self.wait)
+        self.assertEqual(caught.exception.payload["recorded_decisions"][0]["decision_comments"][0]["body"], self.comments[1]["body"])
+        self.assert_no_writes()
+
     def test_canonical_wait_refusal_identifies_its_own_record(self):
         for kind, cross_repo in product(("issue", "pr"), (False, True)):
             with self.subTest(kind=kind, cross_repo=cross_repo):
