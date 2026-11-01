@@ -73,6 +73,7 @@ NAMES_ONLY_READS = {
 }
 NAMES_ONLY_MAX_ITEMS = 500
 READ_ONLY_OPERATIONS = {
+    "testing-state-dry-run",
     "testing-rebuild-operation-read",
     *NAMES_ONLY_READS,
     "dokploy-inventory-read",
@@ -609,9 +610,10 @@ def build_url(service_url: str, path: str) -> str:
 class _ServiceResponse(dict[str, Any]):
     """Keep transport status outside the service's projected JSON fields."""
 
-    def __init__(self, payload: dict[str, Any], http_status: object) -> None:
+    def __init__(self, payload: dict[str, Any], http_status: object, etag: str = "") -> None:
         super().__init__(payload)
         self.http_status = http_status
+        self.etag = etag
 
 
 class ServiceResponseError(ValueError):
@@ -664,7 +666,9 @@ def _read_service_response(response: Any) -> dict[str, Any]:
         raise ServiceResponseError(service_response_diagnostics(_ServiceResponse({}, status))) from exc
     if not isinstance(payload, dict):
         raise ServiceResponseError(service_response_diagnostics(_ServiceResponse({}, status)))
-    return _ServiceResponse(payload, status)
+    headers = getattr(response, "headers", None)
+    etag = headers.get("ETag", "") if headers is not None else ""
+    return _ServiceResponse(payload, status, etag=etag if isinstance(etag, str) else "")
 
 
 def request_launchplane(
@@ -675,6 +679,7 @@ def request_launchplane(
     body: dict[str, object],
     timeout: float,
     idempotency_key: str = "",
+    if_match: str = "",
 ) -> dict[str, Any]:
     data = json.dumps(body, separators=(",", ":")).encode()
     request = urllib.request.Request(build_url(service_url, path), data=data, method="POST")
@@ -683,6 +688,8 @@ def request_launchplane(
     request.add_header("Authorization", f"Bearer {settings['token']}")
     if idempotency_key:
         request.add_header("Idempotency-Key", idempotency_key)
+    if if_match:
+        request.add_header("If-Match", if_match)
     with safe_urlopen(request, timeout=timeout) as response:
         return _read_service_response(response)
 
@@ -11731,6 +11738,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
     from launchplane_testing_rebuild import add_parser as add_testing_rebuild_parser
     add_testing_rebuild_parser(subparsers)
+    from launchplane_testing_state import add_parser as add_testing_state_parser
+    add_testing_state_parser(subparsers)
     from launchplane_testing_private_ingress import add_parser as add_private_ingress_parser
     add_private_ingress_parser(subparsers)
     from launchplane_disposable_lane import add_parser as add_disposable_lane_parser
@@ -12664,6 +12673,9 @@ def _project_inert_plan(provider: dict[str, Any], body: dict[str, Any]) -> dict[
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     try:
+        from launchplane_testing_state import COMMANDS as testing_state_commands, execute as execute_testing_state
+        if args.command in testing_state_commands:
+            return execute_testing_state(sys.modules[__name__], args)
         from launchplane_testing_rebuild import COMMANDS as testing_rebuild_commands, execute as execute_testing_rebuild
         if args.command in testing_rebuild_commands:
             return execute_testing_rebuild(sys.modules[__name__], args)

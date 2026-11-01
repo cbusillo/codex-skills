@@ -1390,6 +1390,10 @@ reviewed-inspect procedure and verify the situation.
   `--expected-plan-digest`, reviewed acknowledgement and an idempotency key.
   Read the [service setting contract](references/write-action-helper-contract.md#service-settings)
   before use.
+- One-time generic-web testing state setup uses `testing-state-dry-run` and
+  `testing-state-apply`. These preserve neighboring fields through the existing
+  conditional profile API and keep the exact reviewed request privately for
+  original-key replay. Follow the [helper contract](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads).
 - Native testing rebuild preflight and submission (`testing-rebuild-dry-run` /
   `testing-rebuild-submit`) use the existing Odoo target-replacement plan/apply
   routes for Odoo. Immutable generic-web images use
