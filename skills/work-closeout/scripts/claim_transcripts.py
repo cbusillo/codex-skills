@@ -4,7 +4,10 @@
 # ///
 from __future__ import annotations
 
+import argparse
 import ast
+from contextlib import redirect_stderr, redirect_stdout
+import io
 import json
 import re
 import shlex
@@ -14,13 +17,22 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 import claim_history
 import claim_javascript
 import github_plan_claim_log as claim_log
 import tree_sitter_bash
 from tree_sitter import Language, Node, Parser
+
+if TYPE_CHECKING:
+    from skills.github.scripts import github_comment as comment_cli
+    from skills.github.scripts.github_api import ArgumentParsingError
+    from skills.supervisor.scripts.session_record import native_results, output_objects as values
+else:
+    import github_comment as comment_cli
+    from github_api import ArgumentParsingError
+    from session_record import native_results, output_objects as values
 
 CLOSED_STDIN_SINCE = (0, 87, 0)
 UNFINISHED_CLAIM = "unfinished_claim"
@@ -37,25 +49,6 @@ def closed_stdin_runtime(records: list[dict]) -> bool:
     )
 
 
-def values(value: object) -> Iterator[dict]:
-    if isinstance(value, dict):
-        yield value
-        for nested in value.values():
-            yield from values(nested)
-    elif isinstance(value, list):
-        for nested in value:
-            yield from values(nested)
-    elif isinstance(value, str):
-        for line in value.splitlines():
-            if not line.lstrip().startswith(("{", "[")):
-                continue
-            try:
-                nested = json.loads(line)
-            except ValueError:
-                continue
-            yield from values(nested)
-
-
 def read_records(path: Path) -> list[dict]:
     records = []
     with path.open(encoding="utf-8") as stream:
@@ -67,6 +60,106 @@ def read_records(path: Path) -> list[dict]:
             if isinstance(row, dict):
                 records.append(row)
     return records
+
+
+def handoff_heredoc(redirect: Node) -> bool:
+    kinds = [child.type for child in redirect.children]
+    return (redirect.type == "heredoc_redirect"
+            and kinds in (["<<", "heredoc_start", "heredoc_body", "heredoc_end"],
+                          ["<<-", "heredoc_start", "heredoc_body", "heredoc_end"])
+            and quoted_heredoc(redirect.named_children[1]))
+
+
+def handoff_command(text: str) -> argparse.Namespace | None:
+    root = Parser(Language(tree_sitter_bash.language())).parse(text.encode()).root_node
+    statements = [node for node in root.named_children if node.type != "comment"]
+    if root.has_error or not statements or any(child.type == "&" for child in root.children):
+        return None
+    last = statements[-1]
+    command = last.child_by_field_name("body") if last.type == "redirected_statement" else last
+    if command is None or command.type != "command" or shell_generated(command):
+        return None
+    argv = command_argv(command)
+    if (len(statements) == 1 and last.type == "command" and len(argv) == 3
+            and Path(argv[0]).name in {"sh", "bash", "zsh"} and argv[1] in {"-c", "-lc"}):
+        return handoff_command(argv[2])
+    if any(not handoff_body_preparation(node) for node in statements[:-1]):
+        return None
+    if last.type == "redirected_statement" and any(
+            not ((redirect.type == "file_redirect" and redirect.children[0].type == "<" and not shell_generated(redirect))
+                 or handoff_heredoc(redirect))
+            for redirect in last.children_by_field_name("redirect")):
+        return None
+    if not argv or Path(argv[0]).name != "gh-comment" or any(flag in argv for flag in ("-h", "--help")):
+        return None
+    try:
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            args = comment_cli.build_parser().parse_args(argv[1:])
+    except (ArgumentParsingError, SystemExit):
+        return None
+    if (not args.repo or not claim_log.REPOSITORY_PATTERN.fullmatch(args.repo) or args.number <= 0
+            or args.edit_last or args.edit_comment is not None or args.attach or args.create_if_none):
+        return None
+    return args
+
+
+def handoff_body_preparation(node: Node) -> bool:
+    if node.type != "redirected_statement":
+        return False
+    command = node.child_by_field_name("body")
+    redirects = node.children_by_field_name("redirect")
+    if command is None or command_argv(command) != ["cat"] or len(redirects) != 2:
+        return False
+    files = [item for item in redirects if item.type == "file_redirect"]
+    documents = [item for item in redirects if item.type == "heredoc_redirect"]
+    return (len(files) == len(documents) == 1 and files[0].children[0].type == ">" and not shell_generated(files[0])
+            and handoff_heredoc(documents[0]))
+
+
+def handoff_comments(source: dict) -> list[dict]:
+    records = source["_transcript_records"]
+    if source.get("native_child", source["session_id"]) != source["session_id"] or claude_agent(records) is not None:
+        return []
+    outputs = tool_outputs(records, followups=False)
+    errored = {block.get("tool_use_id") for row in records
+               for content in [(row.get("message") or {}).get("content")] if isinstance(content, list)
+               for block in content if isinstance(block, dict) and block.get("is_error") is True}
+    found = []
+    for call in tool_details(records):
+        if call.name not in {"command", "bash", "exec_command", "shell_command", "shell", "local_shell_call"}:
+            continue
+        item = execution_item(records[call.index])
+        if item and (item.get("status") != "completed" or item.get("exit_code") != 0):
+            continue
+        if call.identifier in errored:
+            continue
+        results = native_results(outputs.get(call.identifier, []))
+        if len(results) != 1:
+            continue
+        result = results[0]
+        if "output" in result:
+            if result.get("exit_code") != 0 or isinstance(result.get("session_id"), int):
+                continue
+            try:
+                result = json.loads(result["output"])
+            except (ValueError, TypeError):
+                continue
+        if (not isinstance(result, dict) or result.get("ok") is not True or result.get("outcome_certainty") != "confirmed"
+                or result.get("operation") not in {"github.comment.issue", "github.comment.pr"}
+                or result.get("comment_action") != "created"):
+            continue
+        try:
+            sources = shell_texts(call.text, call.javascript)
+            if sources.opaque or len(sources.commands) != 1 or sources.commands[0].interactive:
+                continue
+            target = handoff_command(sources.commands[0].text)
+        except (ValueError, TypeError):
+            continue
+        if (target is not None and result.get("operation") == f"github.comment.{target.kind}"
+                and str(result.get("repo") or "").casefold() == target.repo.casefold() and result.get("number") == target.number):
+            found.append({"source_session": source["session_id"], "expected_actor": result.get("expected_actor"),
+                          "repository": target.repo.casefold(), "number": target.number, "comment": result.get("comment")})
+    return list({json.dumps(row, sort_keys=True): row for row in found}.values())
 
 
 def metadata(records: list[dict]) -> dict:
@@ -553,38 +646,6 @@ def literal_javascript_shell_parts(text: str, *, whole_result: bool = False) -> 
         if tokens[:1] == [";"]:
             tokens = tokens[1:]
     return parts
-
-
-def native_results(blocks: list[object]) -> list[dict]:
-    results = []
-    for block in blocks:
-        parts = block if isinstance(block, list) else [block]
-        for part in parts:
-            if isinstance(part, dict) and part.get("type") in {"input_text", "text"}:
-                part = part.get("text")
-            if isinstance(part, str):
-                try:
-                    part = json.loads(part)
-                except ValueError:
-                    header = re.match(
-                        r"(?:Warning: truncated output \(original token count: \d+\)\n)?"
-                        r"(?:Total output lines: \d+\n\n)?(?:Chunk ID: [^\n]+\n)?"
-                        r"Wall time: [0-9.]+ seconds\n"
-                        r"(?:Process exited with code (?P<exit>-?\d+)\n)?"
-                        r"(?:Process running with session ID (?P<process>-?\d+)\n)?"
-                        r"(?:Original token count: \d+\n)?Output:",
-                        part,
-                    )
-                    if header is None:
-                        continue
-                    part = {
-                        "exit_code": int(header["exit"]) if header["exit"] is not None else None,
-                        "session_id": int(header["process"]) if header["process"] is not None else None,
-                        "output": part[header.end():],
-                    }
-            if isinstance(part, dict):
-                results.append(part)
-    return results
 
 
 def whole_shell_parts(text: str, javascript: bool, name: str) -> list[str] | None:

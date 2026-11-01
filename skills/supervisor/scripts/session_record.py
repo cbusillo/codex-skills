@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 import claim_history
@@ -198,6 +199,102 @@ def text_content(content) -> str:
         for c in content
         if isinstance(c, dict) and isinstance(c.get("text"), str)
     )
+
+
+def output_objects(value: object, *, document: bool = False) -> Iterator[dict]:
+    if isinstance(value, dict):
+        yield value
+        for nested in value.values():
+            yield from output_objects(nested, document=document)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from output_objects(nested, document=document)
+    elif isinstance(value, str):
+        if document:
+            decoder = json.JSONDecoder()
+            for match in re.finditer(r"(?m)^[ \t]*(?=[{\[])", value):
+                try:
+                    nested, _end = decoder.raw_decode(value, match.end())
+                except ValueError:
+                    continue
+                yield from output_objects(nested, document=True)
+            return
+        for line in value.splitlines():
+            if not line.lstrip().startswith(("{", "[")):
+                continue
+            try:
+                nested = json.loads(line)
+            except ValueError:
+                continue
+            yield from output_objects(nested)
+
+
+def native_results(blocks: list[object], *, document: bool = False) -> list[dict]:
+    results = []
+    for block in blocks:
+        parts = block if isinstance(block, list) else [block]
+        for part in parts:
+            if isinstance(part, dict) and part.get("type") in {"input_text", "text"}:
+                part = part.get("text")
+            if isinstance(part, str):
+                try:
+                    part = json.loads(part)
+                except ValueError:
+                    header = re.match(
+                        r"(?:Warning: truncated output \(original token count: \d+\)\n)?"
+                        r"(?:Total output lines: \d+\n\n)?(?:Chunk ID: [^\n]+\n)?"
+                        r"Wall time: [0-9.]+ seconds\n"
+                        r"(?:Process exited with code (?P<exit>-?\d+)\n)?"
+                        r"(?:Process running with session ID (?P<process>-?\d+)\n)?"
+                        r"(?:Original token count: \d+\n)?Output:",
+                        part,
+                    )
+                    if header is None:
+                        if not document:
+                            continue
+                        part = {"output": part}
+                    else:
+                        part = {
+                            "exit_code": int(header["exit"]) if header["exit"] is not None else None,
+                            "session_id": int(header["process"]) if header["process"] is not None else None,
+                            "output": part[header.end():],
+                        }
+            if isinstance(part, dict):
+                results.append(part)
+    return results
+
+
+def posted_comments(entry: dict) -> list[dict]:
+    path = Path(entry["transcript"])
+    before = path.stat()
+    records = claim_history.root_records(path, entry["harness"], entry["session_id"], read_jsonl(path))
+    found = []
+    for record in records:
+        payload = record.get("payload", {})
+        outputs = []
+        item = payload.get("item", {})
+        if not isinstance(item, dict):
+            raise TypeError("tool item must be an object")
+        if (payload.get("type") == "item_completed" and item.get("type") == "CommandExecution"
+                and item.get("status") == "completed" and item.get("exit_code") == 0):
+            outputs.append(item.get("aggregated_output"))
+        if payload.get("type") in {"function_call_output", "custom_tool_call_output"}:
+            outputs.append(payload.get("output"))
+        if record.get("type") == "user":
+            content = record.get("message", {}).get("content", [])
+            if isinstance(content, list):
+                outputs.extend(block.get("content") for block in content
+                               if block.get("type") == "tool_result" and block.get("is_error") is not True)
+        results = [value for value in native_results(outputs, document=True)
+                   if value.get("is_error") is not True and ("exit_code" not in value or value["exit_code"] == 0)]
+        for value in output_objects(results, document=True):
+            if (value.get("ok") is True and value.get("outcome_certainty") == "confirmed"
+                    and value.get("operation") == "github.plan.release"):
+                found.append({**value, "observed_at": record.get("timestamp")})
+    after = path.stat()
+    if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
+        raise TranscriptChanged("transcript changed during comment receipt read; check again")
+    return found
 
 
 def strip_claude_exit_tail(records: list[dict]) -> list[dict]:

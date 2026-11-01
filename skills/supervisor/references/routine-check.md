@@ -59,7 +59,12 @@ decisions, statuses, board contents or narrative; open linked records for action
    ```
 
    The helper finds the automation-authored handoff naming the exact native
-   session on the ledger's issue, journals it and stops on ambiguity. After
+   session on the ledger's issue, journals it and stops on ambiguity. When no
+   such handoff exists, its fresh complete claim check can provide a
+   [source-bound comment projection](../../work-closeout/SKILL.md#claim-disposition)
+   for an unchanged original comment when the source's last recognized confirmed `gh-comment`
+   write is on the ledger issue. This supported literal command route needs no
+   worker message or new comment. After
    verifying the source, use `--handoff-url <actual-comment>` to resolve ambiguity,
    a legacy ledger without an issue pointer, or a handoff on another work issue.
    Keep its receipt or
