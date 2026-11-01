@@ -755,6 +755,10 @@ installed local helper bindings.
   private file and key. The reviewed declaration may be set or corrected as
   the existing conditional API permits; its before/after state and path are
   shown in the plan. Runtime checks still qualify the actual lane separately.
+  If identical replay cannot recover acceptance, stop automatic recovery and
+  retain the evidence for service-side reconciliation. Report the exact missing
+  settlement capability on the owning issue. A no-op read alone does not close
+  the earlier unknown request.
 - `testing-rebuild-dry-run --product --copy-source --artifact-id --source-git-ref
   --reason` reads Odoo preflight through
   `POST /v1/drivers/odoo/target-replacement-plan`. An immutable generic-web

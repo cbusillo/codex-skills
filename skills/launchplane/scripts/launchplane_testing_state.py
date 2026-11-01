@@ -11,14 +11,17 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import urllib.error
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 PLAN_COMMAND = "testing-state-dry-run"
 APPLY_COMMAND = "testing-state-apply"
 COMMANDS = frozenset({PLAN_COMMAND, APPLY_COMMAND})
 INTENT_FIELDS = {"product", "context", "kind", "container_path"}
+PATH_PATTERN = re.compile(r"/[A-Za-z0-9_./-]+")
+PROTECTED_PATHS = ("/proc", "/sys", "/dev", "/etc", "/run")
 
 
 def add_parser(subparsers: Any) -> None:
@@ -47,10 +50,18 @@ def service_fingerprint(h: Any, settings: dict[str, str]) -> str:
 def checked_container_path(h: Any, path: str) -> str:
     if not path:
         return ""
-    if not path.startswith("/") or any(part in {".", "..", ""} for part in path[1:].split("/")):
+    canonical = PurePosixPath(path)
+    if (
+        str(canonical) != path
+        or ".." in canonical.parts
+        or path == "/"
+        or any(path == prefix or path.startswith(prefix + "/") for prefix in PROTECTED_PATHS)
+    ):
         raise ValueError("invalid_testing_state_path")
-    h.public_identifier(path[1:])
-    return h.PublicIdentifier(path)
+    public = h.public_identifier(path, pattern=PATH_PATTERN)
+    if public != path:
+        raise ValueError("invalid_testing_state_path")
+    return public
 
 
 def validate_intent(h: Any, intent: dict[str, Any]) -> dict[str, str]:
@@ -303,8 +314,12 @@ def execute_apply(h: Any, args: argparse.Namespace) -> int:
         try:
             if 400 <= error.code < 500 and error.code != 408:
                 refusal = h.summarize_http_error(operation=APPLY_COMMAND, request=request, exc=error)
+                if refusal["status"] == "stale" or refusal["summary"].get("error_code") == "product_profile_conflict":
+                    refusal["summary"]["recommendation"] = (
+                        "The reviewed profile changed. Read a fresh profile for a new review only when no earlier attempt remains unresolved."
+                    )
                 refusal["summary"]["recommendation"] += (
-                    " This refusal describes this attempt only. Preserve any earlier unknown request, review and original key; it does not settle that earlier outcome."
+                    " This refusal describes this attempt only. Preserve any earlier unknown request, review and original key; it does not settle that earlier outcome. If identical replay cannot recover acceptance, stop automatic recovery and report the missing service-side settlement capability on the owning issue."
                 )
                 h.assert_public_safe_shape(refusal["summary"])
                 h.emit(refusal)

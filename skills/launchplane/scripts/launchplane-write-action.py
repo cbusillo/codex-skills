@@ -5123,6 +5123,8 @@ def _status_for_http_error(code: int, provider_payload: dict[str, object]) -> st
         return "unauthorized"
     if code == 403 or error_code == "authorization_denied":
         return "denied"
+    if code == 412:
+        return "stale"
     if code in {400, 422}:
         return "invalid_request"
     if error_code in {"mutation_reconciliation_required", "reconciliation_required"}:

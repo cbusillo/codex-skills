@@ -218,6 +218,8 @@ def test_state_write_refusals_and_uncertainty_keep_trace_without_retry(tmp_path:
     applied = invoke(reviewed_args(path, planned.output), post_error=error)
     assert applied.code != 0
     assert (applied.output["status"] == "outcome_unknown") is (status == 500)
+    if status == 412:
+        assert applied.output["status"] == "stale"
     assert applied.output["summary"]["trace_id"] == trace
     assert applied.output["summary"]["http_status"] == status
     assert "PRIVATE_SENTINEL" not in json.dumps(applied.output)
@@ -305,6 +307,18 @@ def test_review_shows_both_volume_paths_before_a_correction(tmp_path: Path) -> N
     applied = invoke(reviewed_args(path, planned.output), read_body=response(corrected))
     assert applied.code == 0
     assert applied.post.call_args.kwargs["body"] == corrected
+
+
+def test_supported_long_application_path_is_preserved_without_identifier_truncation(tmp_path: Path) -> None:
+    current = profile()
+    data_path = "/app/" + "/".join(["segment"] * 50)
+    current["lanes"][0]["generic_web_testing_state"] = {"kind": "volume", "container_path": data_path}
+    path = tmp_path / "private-request.json"
+    planned = invoke(plan_args(path), read_body=response(current))
+    assert planned.code == 0
+    assert planned.output["result"]["container_path_before"] == data_path
+    applied = invoke(reviewed_args(path, planned.output), read_body=response(current))
+    assert applied.post.call_args.kwargs["body"]["lanes"][0]["generic_web_testing_state"] == {"kind": "none", "container_path": ""}
 
 
 if __name__ == "__main__":
