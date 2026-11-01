@@ -2810,15 +2810,19 @@ LSOF_UNSTATTABLE_MOUNT = re.compile(r"lsof: WARNING: can't stat\(\) \S+ file sys
 LSOF_WARNING_DETAIL = re.compile(r'\s+(?:Output information may be incomplete\.|assuming "dev=[0-9A-Fa-f]+" from mount table)')
 
 
-def mount_point_of(path: Path) -> Path:
-    device = path.stat().st_dev
-    while path.parent != path and path.parent.stat().st_dev == device:
-        path = path.parent
-    return path
+DF_MOUNT_LINE = re.compile(r".*?\s+\d+\s+\d+\s+\d+\s+\d+%\s+(/.*)")
+
+
+def mount_point_of(path: Path) -> str:
+    lines = subprocess.run(["df", "-P", str(path)], capture_output=True, text=True, timeout=5, check=True).stdout.splitlines()
+    mount = DF_MOUNT_LINE.fullmatch(lines[-1]) if len(lines) == 2 else None
+    if mount is None:
+        raise ValueError("Cannot identify the worktree's mount point")
+    return mount[1]
 
 
 def require_lsof_warnings_outside(root: Path, stderr: str) -> None:
-    root_mount = mount_point_of(root)
+    root_mount = None
     after_warning = False
     for line in stderr.splitlines():
         if after_warning and LSOF_WARNING_DETAIL.fullmatch(line):
@@ -2827,10 +2831,11 @@ def require_lsof_warnings_outside(root: Path, stderr: str) -> None:
         if mount is None or "\\" in mount[1] or "^" in mount[1]:
             raise ValueError("Incomplete open-file discovery")
         after_warning = True
+        root_mount = root_mount or mount_point_of(root)
         mount_path = os.path.normpath(mount[1]).casefold()
-        overlaps = [os.path.normpath(path).casefold() for path in (root, root_mount)]
-        if (mount_path == overlaps[1] or Path(overlaps[0]).is_relative_to(mount_path)
-                or Path(mount_path).is_relative_to(overlaps[0])):
+        worktree_path = os.path.normpath(root).casefold()
+        if (mount_path == os.path.normpath(root_mount).casefold() or Path(worktree_path).is_relative_to(mount_path)
+                or Path(mount_path).is_relative_to(worktree_path)):
             raise ValueError("Open-file discovery cannot read the worktree's file system")
 
 

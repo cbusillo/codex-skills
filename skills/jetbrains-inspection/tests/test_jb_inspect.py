@@ -213,6 +213,7 @@ class RunningIdeRetirementTests(unittest.TestCase):
                                       (self.open_files, None, "permission denied"),
                                       (self.open_files, None, self.unstattable_mount(self.root.parent)),
                                       (self.open_files, None, self.unstattable_mount(self.root / "mounted")),
+                                      (self.open_files, None, self.unstattable_mount(jb_inspect.mount_point_of(self.root))),
                                       (self.open_files, None, self.unstattable_mount("/Volumes/backup") + "lsof: WARNING: other\n"),
                                       (self.open_files, None, self.unstattable_mount("/Volumes/back\\\\up")),
                                       (self.open_files, None, "      Output information may be incomplete.\n"),
