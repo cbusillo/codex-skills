@@ -1249,7 +1249,7 @@ def test_portfolio_nonempty_unparsed_direction_and_local_only_flags_refuse() -> 
             raise AssertionError("Local next must not silently ignore global selection evidence")
 
 
-def test_local_next_inbound_scan_preserves_plan_budget_and_waits() -> None:
+def test_local_next_inbound_scan_keeps_waits_and_reports_unevaluated_issues() -> None:
     module = load_module()
     gate = issue(2554, labels=["plan", "plan:waiting"])
     bug = issue(2555, labels=["bug"])
@@ -1288,7 +1288,8 @@ def test_local_next_inbound_scan_preserves_plan_budget_and_waits() -> None:
     assert all(item["blocking"] == [downstream] for item in captured["blocking_work_elsewhere"])
     assert captured["blocking_work_elsewhere"][0]["labels"] == ["plan", "plan:waiting"]
     assert captured["blocking_work_elsewhere_context"]["complete"] is True
-    assert captured["inventory_count"] == 2  # non-plans cannot consume the plan inventory
+    assert captured["inventory_count"] == len([plan, gate, bug])
+    assert captured["truncated"]
 
 
 def test_inbound_scan_bounds_and_partial_reads_are_explicit() -> None:
@@ -2062,7 +2063,7 @@ TESTS = [
     test_live_breakage_beyond_scan_window_ranks_first_without_granting_availability,
     test_live_breakage_marker_preserves_holds_dependencies_waits_and_review,
     test_live_breakage_inventory_finds_incident_beyond_repository_issue_bound,
-    test_local_next_inbound_scan_preserves_plan_budget_and_waits,
+    test_local_next_inbound_scan_keeps_waits_and_reports_unevaluated_issues,
     test_inbound_scan_bounds_and_partial_reads_are_explicit,
     test_inbound_unclassified_failure_degrades_report_but_quota_stops,
     test_portfolio_nonempty_unparsed_direction_and_local_only_flags_refuse,
