@@ -6647,8 +6647,14 @@ def summarize_governance_projection_read(
     return payload
 
 
+def summarize_native_testing_rebuild_read(
+    *, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    return summarize_testing_rebuild_read(h=sys.modules[__name__], request=request, provider_payload=provider_payload)
+
+
 PRODUCT_READ_SUMMARIZERS = {
-    "testing-rebuild-operation-read": partial(summarize_testing_rebuild_read, h=sys.modules[__name__]),
+    "testing-rebuild-operation-read": summarize_native_testing_rebuild_read,
     "governance-projection-read": summarize_governance_projection_read,
     "generic-web-deploy-recovery-reference-read": summarize_recovery_reference_read,
     "merge-train-policy-read": summarize_merge_train_policy_read,
