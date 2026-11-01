@@ -162,11 +162,16 @@ class OwnerAdminTests(unittest.TestCase):
         with self.assertRaises(rules.RulesetError):
             self.apply(plan, readback=True)
         self.assertTrue(self.apply(plan)["verified"])
+        assigned = copy.deepcopy(self.client.runner["labels"])
         self.client.runner["labels"].reverse()
+        for label in self.client.runner["labels"]:
+            label["id"] = 999
+            label["name"] = label["name"].upper()
         self.assertTrue(self.apply(plan, readback=True)["verified"])
         self.assertFalse(self.apply(plan)["changed"])
         self.assertEqual(self.client.writes, [("PUT", f"/repos/owner/repo{path}", desired)])
         self.assertEqual(self.client.calls[-1][:2], ("GET", "/repos/owner/repo/actions/runners/41"))
+        self.client.runner["labels"] = assigned
         custom = [item["name"] for item in prior["labels"] if item["type"] == "custom"]
         self.assertTrue(self.apply(self.plan({"method": "PUT", "path": path, "body": {"labels": custom}}))["verified"])
         self.assertEqual(self.client.runner, prior)

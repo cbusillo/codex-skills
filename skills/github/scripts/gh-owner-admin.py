@@ -161,7 +161,7 @@ def validate_request(value: Any) -> dict[str, Any]:
             fail("invalid custom tag-rule conditions, rules or bypass actors")
     else:
         fail(
-            "unsupported owner-admin request; use repository settings, archive, fork approval, collaborator DELETE "
+            "unsupported owner-admin request; use repository settings, archive, fork approval, collaborator DELETE, "
             "runner labels PUT or custom tag rulesets"
         )
     return {"method": method, "path": path, **({"body": copy.deepcopy(body)} if body is not None else {})}
@@ -418,6 +418,13 @@ def matches_snapshot(expected: dict[str, Any], live: dict[str, Any], *, generate
             return False
         spec = rules.RulesetSpec("custom_tag", desired["name"], frozenset(), desired)
         return rules.ruleset_matches(actual, spec, exact=True)
+    if isinstance(desired, dict) and set(desired) == {"id", "name", "labels"} and isinstance(actual, dict):
+        return (
+            desired["id"] == actual["id"]
+            and desired["name"] == actual["name"]
+            and sorted((item["type"], item["name"].casefold()) for item in desired["labels"])
+            == sorted((item["type"], item["name"].casefold()) for item in actual["labels"])
+        )
     return desired == actual
 
 

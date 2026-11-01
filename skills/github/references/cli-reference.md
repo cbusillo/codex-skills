@@ -579,7 +579,7 @@ of unique custom label names. The saved plan includes the runner ID, name,
 prior custom labels and automatic labels. Review it before digest-bound
 `apply --confirm-owner-admin-write`, then run `readback`. Each snapshot verifies
 the repository owner and exact runner identity; readback compares label names
-and types independently of order and server-assigned label IDs, preserving
+and types case-insensitively, independently of order and server-assigned label IDs, preserving
 automatic labels. Save every prior plan before a batch begins; undo is a new
 reviewed plan using its saved custom labels. Stop on drift, denial or uncertain
 write and read back the original plan before any retry. This supports only
