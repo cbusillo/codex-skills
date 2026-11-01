@@ -56,7 +56,7 @@ class QuestionRecordTests(unittest.TestCase):
         self.addCleanup(self.config.stop)
         self.args = argparse.Namespace(queue=None, owner="example", decision_author=[AUTHOR], dry_run=False)
         self.source = {
-            "body": record.question_id.number_heading(record.render(question()), "Q5"),
+            "body": record.question_id.number_heading(record.render(question(), legacy=True), "Q5"),
             "url": question()["issue"] + "#issuecomment-17",
             "author": AUTHOR,
             "issue": question()["issue"],
@@ -97,7 +97,7 @@ class QuestionRecordTests(unittest.TestCase):
         value["options"] += [
             {"answer": f"Option {i}", "changes": "Other action", "cost": "Small upkeep", "next": "Act"} for i in range(6)
         ]
-        self.source["body"] = record.question_id.number_heading(record.render(value), "Q5")
+        self.source["body"] = record.question_id.number_heading(record.render(value, legacy=True), "Q5")
         view = record.read_record(self.source)
         self.assertEqual(view["record"], value)
         self.assertTrue(all(option["answer"] in view["text"] for option in value["options"]))

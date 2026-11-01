@@ -75,6 +75,10 @@ def render(record: dict[str, Any], *, legacy: bool = False) -> str:
         value = str(value) if legacy else " ".join(str(value).split())
         return value.replace("<!--", "&lt;!--")
 
+    def sentence(value: Any) -> str:
+        value = text(value)
+        return value if value.endswith((".", "!", "?", ";")) else value + "."
+
     recommended = next(
         option for option in record["options"] if option["answer"].strip().casefold() == record["recommendation"].strip().casefold()
     )
@@ -98,8 +102,8 @@ def render(record: dict[str, Any], *, legacy: bool = False) -> str:
             ]
             if legacy
             else [
-                f"  - **{label}:** {text(option['changes']).rstrip('.')}. "
-                f"Ongoing cost: {text(option['cost']).rstrip('.')}. After this answer: {text(option['next'])}",
+                f"  - **{label}:** {sentence(option['changes'])} "
+                f"Ongoing cost: {sentence(option['cost'])} After this answer: {text(option['next'])}",
             ]
         )
     lines.extend(
@@ -130,9 +134,7 @@ def read_record(source: dict[str, Any]) -> dict[str, Any]:
     if errors:
         raise ValueError("\n".join(errors))
     number = question_id.heading_id(body)
-    if not number or github_comment.canonical_comment_body(body) not in {
-        question_id.number_heading(render(record, legacy=legacy), number).strip() for legacy in (False, True)
-    }:
+    if not number or github_comment.canonical_comment_body(body) != question_id.number_heading(render(record, legacy=True), number).strip():
         raise ValueError("source text disagrees with its record or has no number; read the source before repairing it")
     if record["issue"].casefold() != source["issue"].casefold():
         raise ValueError("record issue disagrees with its source")

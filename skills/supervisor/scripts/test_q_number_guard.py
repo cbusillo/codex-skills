@@ -94,7 +94,7 @@ class GuardTests(unittest.TestCase):
             "manual": "Answer with one option",
         }
         url = value["issue"] + "#issuecomment-17"
-        source = {"body": record.question_id.number_heading(record.render(value), number), "url": url,
+        source = {"body": record.question_id.number_heading(record.render(value, legacy=True), number), "url": url,
                   "author": "fixture-automation", "issue": value["issue"]}
         return source
 
