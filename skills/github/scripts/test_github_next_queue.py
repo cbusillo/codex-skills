@@ -198,6 +198,13 @@ def test_linked_source_body_claim_preserves_custody() -> None:
     result = classify(row, observed)
     assert result["state"] == "underway"
     assert any(entry.get("record") == source for entry in result["ownership_evidence"])
+    raw.update(body="## Current Status\nNext actor: agent:old-worker", created_at="2026-10-01T00:00:00Z",
+               last_edited_at="2026-10-01T00:00:00Z", updated_at="2026-10-27T00:00:00Z",
+               _graph_comments=[{"id": 8, "user": {"login": "owner"}, "created_at": "2026-10-25T00:00:00Z",
+                                 "body": "## Current Status\nNext actor: agent:new-worker"}])
+    result = classify(row, observed)
+    assert result["state"] == "needs_status"
+    assert [entry["worker"] for entry in result["ownership_evidence"]] == ["new-worker"]
 
 
 def test_direction_list_is_authoritative_and_holds_override_automatic_review() -> None:
@@ -388,7 +395,7 @@ def test_next_actor_routes_work_without_prose_inference() -> None:
         assert result["next_actor"] == actor
         assert result["ownership_evidence"][0]["source"] == "recorded_recipient"
         recipient = claim.recipient_evidence(queue.current_status(row["discussion"], {"owner"}), [],
-            trusted={"owner"}, repo=row["repo"], number=row["number"], worker="new-worker", session="new-session")
+            repo=row["repo"], number=row["number"], worker="new-worker", session="new-session")
         assert [recipient] == result["ownership_evidence"]
     row = item()
     row["discussion"]["body"] += "\nNext actor: person:owner\n"
@@ -421,7 +428,7 @@ def test_latest_claim_for_named_session_decides_released_actor_status() -> None:
     assert classify(row)["state"] == "needs_status"
 
 def test_expired_local_lease_and_worker_alias_use_the_same_ended_claim() -> None:
-    row = item(actor="agent:worker")
+    row = item(actor="agent:WORKER")
     source = {"worker": "worker", "session": "native-session", "branch": "work/source", "claimed_at": "2026-10-01T00:00:00Z"}
     row["discussion"]["comments"] = [{"id": 1, "author": "bot", "created_at": source["claimed_at"], "body": claim.marker(source)}]
     with patch.object(claim, "expired_lease_sessions", return_value={source["session"]}):

@@ -2408,9 +2408,15 @@ def test_empty_track_scoping_uses_reviewed_records_instead_of_summary() -> None:
                 read_queue_ownership=lambda _: observed, wait_authors=lambda _: {"someone"},
                 next_status_body_time=Mock(side_effect=AssertionError("Track prose ordering is not needed"))):
                 module.cmd_next(next_args())
-        assert [(item["repo"], item["number"]) for item in result["available_candidates"]] == [(track_issue["repo"], track_issue["number"])]
-        assert not result["needs_status"] and not result["underway"]
-    scoped = result["available_candidates"][0]
+        if actor == "agent:old-session":
+            assert not result["available_candidates"]
+            assert [row["number"] for row in result["needs_status"]] == [track_issue["number"]]
+        else:
+            assert [(item["repo"], item["number"]) for item in result["available_candidates"]] == [(track_issue["repo"], track_issue["number"])]
+            assert not result["needs_status"]
+        assert not result["underway"]
+    scoped = result["needs_status"][0]
+    scoped["discussion"]["body"] = scoped["discussion"]["body"].replace("agent:old-session", "agent")
     for condition, expected in (("claim", "underway"), ("wait", "waiting"), ("incomplete", "review")):
         row = copy.deepcopy(scoped)
         row.pop("queue")

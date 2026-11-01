@@ -5909,6 +5909,11 @@ class ClaimTests(unittest.TestCase):
             with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                 self.run_claim()
             self.assertEqual(caught.exception.code, "claim_conflict")
+            recipient = next(row for row in caught.exception.payload["competing_evidence"]
+                             if row["source"] == "recorded_recipient")
+            command = recipient["next_action"].split("gh-comment ", 1)[1]
+            remedy = github_comment.build_parser().parse_args(command.split())
+            self.assertEqual((remedy.repo, remedy.number), (self.issue["repo"], self.issue["number"]))
             self.assert_no_writes()
 
     def test_later_activity_does_not_replace_trusted_comment_assignment(self) -> None:

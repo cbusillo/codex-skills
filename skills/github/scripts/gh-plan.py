@@ -2985,7 +2985,7 @@ def claim_once(args: argparse.Namespace) -> None:
             current_status, current_comments, claim, resume_from=args.resume_from,
             ended_claims={entry["claim_id"] for entry in ended_owners})
         if recipient := github_plan_claim.recipient_evidence(current_status, current_comments,
-                trusted=wait_authors(issue_repo), repo=issue_repo, number=number, worker=claim["worker"], session=claim["session"],
+                repo=issue_repo, number=number, worker=claim["worker"], session=claim["session"],
                 ended_claims={entry["claim_id"] for entry in ended_owners}):
             conflicts.append(recipient)
         phase["branch_error"] = (ClassifiedPlanError("claim_ended_branch_reused",
@@ -3052,7 +3052,7 @@ def claim_once(args: argparse.Namespace) -> None:
         peer_conflicts, peer_owned = github_plan_claim.discussion_evidence(
             peer_status, peer_comments, claim, ended_claims={entry["claim_id"] for entry in ended})
         if recipient := github_plan_claim.recipient_evidence(peer_status, peer_comments,
-                trusted=wait_authors(peer_repo), repo=peer_repo, number=peer_number, worker=claim["worker"], session=claim["session"],
+                repo=peer_repo, number=peer_number, worker=claim["worker"], session=claim["session"],
                 ended_claims={entry["claim_id"] for entry in ended}):
             peer_conflicts.append(recipient)
         competing = list(peer_conflicts)
@@ -3663,7 +3663,7 @@ def claim_once(args: argparse.Namespace) -> None:
             competing, _ = github_plan_claim.discussion_evidence(target_status, target_comments, claim,
                 ended_claims={entry["claim_id"] for entry in target_ended})
             if recipient := github_plan_claim.recipient_evidence(target_status, target_comments,
-                    trusted=wait_authors(target_repo), repo=target_repo, number=pull["number"],
+                    repo=target_repo, number=pull["number"],
                     worker=claim["worker"], session=claim["session"], ended_claims={entry["claim_id"] for entry in target_ended}):
                 competing.append(recipient)
             if competing:
@@ -3691,7 +3691,7 @@ def claim_once(args: argparse.Namespace) -> None:
                 source_status, source_comments, claim, resume_from=args.resume_from,
                 ended_claims={entry["claim_id"] for entry in source_ended})
             if recipient := github_plan_claim.recipient_evidence(source_status, source_comments,
-                    trusted=wait_authors(issue_repo), repo=issue_repo, number=source_number,
+                    repo=issue_repo, number=source_number,
                     worker=claim["worker"], session=claim["session"], ended_claims={entry["claim_id"] for entry in source_ended}):
                 competing.append(recipient)
             if competing:

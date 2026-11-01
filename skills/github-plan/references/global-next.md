@@ -163,8 +163,8 @@ from prose or merged PRs.
 - A specifically named `agent:<worker or session>` without a claim is
   `needs_status`: reconcile that recipient's custody before assigning a new
   worker. Launch the named worker with `show N --launch-check --worker TOKEN`,
-  or verify custody and use `update-section N "Current Status" --next-actor agent`
-  before assigning a replacement. It proves an assignment, not active execution. Generic Supervisor,
+  or verify custody and post a Current Status section containing `Next actor: agent`
+  with `gh-comment issue N --repo OWNER/REPO --body-file FILE` before assigning a replacement. It proves an assignment, not active execution. Generic Supervisor,
   integrator, direction and harness roles do not reserve a project. Use the
   existing claim on each slice actually executed. Claims, exact authored releases
   and existing local lease expiry use the same interpretation in selection,

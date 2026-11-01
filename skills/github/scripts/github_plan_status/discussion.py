@@ -54,7 +54,7 @@ def current_status(discussion: dict[str, Any], trusted: set[str], *, body_record
             return None
     status = section_map(unquoted_text(discussion.get("body") or "")).get("Current Status")
     has_body_status = status is not None
-    body_time = timestamp(body_recorded_at or discussion.get("updated_at"))
+    body_time = timestamp(body_recorded_at or discussion.get("body_recorded_at") or discussion.get("updated_at"))
     for comment in discussion.get("comments", []):
         if str(comment.get("author") or "").casefold() not in trusted:
             continue
@@ -166,7 +166,7 @@ def exact_released_sources(comments: list[dict[str, Any]]) -> list[tuple[int, di
 def released_actor(actor: str, *, effective_comments: list[dict[str, Any]], trusted: set[str]) -> bool:
     relevant = [index for index, comment in enumerate(effective_comments)
                 if str((comment.get("user") or {}).get("login") or "").casefold() in trusted
-                and any(actor.removeprefix("agent:") in {record["session"], record["worker"]}
+                and any(actor.removeprefix("agent:").casefold() in {record["session"].casefold(), record["worker"].casefold()}
                         for record in records(comment.get("body") or ""))]
     return bool(relevant and relevant[-1] in {index for index, _, _ in exact_released_sources(effective_comments)})
 
