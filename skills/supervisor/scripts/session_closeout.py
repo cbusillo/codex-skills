@@ -123,6 +123,9 @@ def no_claim_handoff(entry: dict, operation: Operation, owner: str | None) -> st
 
 def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, *, retired: bool) -> None:
     operation.gate = "handoff"
+    saved = operation.state["steps"].get("no_claim_handoff")
+    require(not saved or saved.get("complete") is True,
+            "handoff", "previous no-claim handoff POST requires reconciliation; preserve its journal")
     reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 60)
     actor = github_identity.automation_login()
     if not actor:
