@@ -194,35 +194,30 @@ authority or prove that a linked PR completed an issue.
 ## Daily delivery and maintenance
 
 Use the launchd [daily service](../../supervisor/references/helpers.md#daily-stranded-work-service)
-and configured Director Discord destination with `discord_digest.py` to deliver
-one short message per morning without a running Supervisor session. The message
-shows date and coverage, counts by kind, every Director-waiting item by name,
-and the oldest five links for each other kind. It links to the full Markdown
-list, posted once through the existing bot comment helper on the pinned digest
-tracking issue ([this catalog's archive](https://github.com/cbusillo/codex-skills/issues/2006)).
-The sender's `--tracking-issue OWNER/REPO#NUMBER` selects another archive.
-The existing installed command needs no reconfiguration after the catalog
-update; its default archive is the pinned issue above. No plist, schedule or
-webhook change is needed. Deliver an incomplete report
-too; preserve the nonzero scan status and coverage gaps instead of suppressing
-the digest. Keep routing, repository lists, helper invocation and scheduler
-configuration private. Use the catalog sender with the privately configured
-digest webhook; do not copy credentials or use a session-bound sleep loop.
-Record the actual scheduler registration and receiver receipt on the owning
-issue before describing daily delivery as active. Source and fixture success
-alone do not establish scheduled delivery.
+to sweep and post the full Markdown list to the pinned
+[digest archive](https://github.com/cbusillo/codex-skills/issues/2006) each morning,
+without a running Supervisor session. The archive comment is the delivery
+receipt and the Supervisor's routine check reads it. The private
+`tracking_issue` setting can select another archive. No Discord summary is sent;
+the question queue keeps its own Discord cards.
 
-Update by pulling the landed catalog through its supported path; a digest
-uses the audit and question helpers from the same catalog. On a delivery
-failure, retain the report and helper outcome for the Supervisor; reconcile an
-uncertain send before replay. An identical full-list comment is reused on a
-reconciled retry through the bot helper's body deduplication. An archive failure
-prevents the Discord send. If the required items cannot fit below 2,000 UTF-16
-units even with shortened names, retain the failure for reconciliation rather
-than omitting waits or sending several messages.
-To stop, boot out only the stranded-work launchd
-job and remove its LaunchAgents plist. Restore the previous reviewed configuration to roll back;
-The sweep changes no findings state; archived full lists remain as history.
+Archive an incomplete report too; preserve its nonzero scan status and coverage
+gaps. Keep inventory selection and scheduler configuration private. Record the
+actual scheduled run and archive comment on the owning issue before describing
+daily delivery as active. Source and fixture success alone do not establish it.
+
+Update the runtime catalog through its supported path and remove `delivery_argv`
+from the private configuration in the same maintenance step, before the next
+scheduled run. Old and new runners require their matching configuration;
+the existing schedule and plist stay the same. On an archive failure, retain
+the report and helper outcome for the Supervisor. Reconcile an uncertain post
+before replay. The existing bot comment helper reuses an identical full-list
+comment on a reconciled retry. An archive failure remains a delivery failure. GitHub must accept the full
+report as one comment; a rejection retains the report for reconciliation.
+
+To stop, boot out only the stranded-work launchd job and remove its LaunchAgents
+plist. Restore the previous reviewed configuration/catalog revision to roll
+back; archived full lists remain as history.
 
 Offline replay: `uv run skills/direction/scripts/test_direction_stranded.py`.
 The reduced fixture retains pre-recovery facts from the October 13–15 incidents
