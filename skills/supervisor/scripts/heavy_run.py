@@ -267,7 +267,7 @@ def docker_environment() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if not key.startswith("DOCKER_")}
 
 
-def scan_overlay_lower(root: Path, hashes: dict[str, str] | None = None) -> str:
+def overlay_lower_digest(root: Path, hashes: dict[str, str] | None = None) -> str:
     if not re.fullmatch(r"/[A-Za-z0-9_./-]+", str(root)) or root.resolve(strict=True) != root or not root.is_dir():
         raise ValueError("Overlay lower must be an unaliased local directory without mount option delimiters")
     digest = hashlib.sha256()
@@ -294,10 +294,6 @@ def scan_overlay_lower(root: Path, hashes: dict[str, str] | None = None) -> str:
             entry.append(file_digest)
         digest.update(json.dumps(entry).encode())
     return digest.hexdigest()
-
-
-def overlay_lower_digest(root: Path) -> str:
-    return scan_overlay_lower(root)
 
 
 def local_endpoint(home: Path, log: TextIO) -> str:
@@ -464,8 +460,8 @@ class Docker:
         return name
 
     def observe_overlay_lower(self, root: Path) -> dict[str, str]:
-        hashes = {}
-        self.lower_digests[root] = scan_overlay_lower(root, hashes)
+        hashes: dict[str, str] = {}
+        self.lower_digests[root] = overlay_lower_digest(root, hashes)
         return hashes
 
     def collect_logs(self, container: str, log: TextIO) -> None:
