@@ -22,6 +22,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Self
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 SCRIPT = Path(__file__).with_name("direction_audit.py")
 NOW = dt.datetime(2026, 9, 21, 12, tzinfo=dt.timezone.utc)
@@ -1167,6 +1168,19 @@ def stamp(moment: dt.datetime) -> str:
     return moment.isoformat().replace("+00:00", "Z")
 
 
+def capacity_fetch_with_unchanged_tree(fetch: Any) -> Any:
+    def read(args: list[str]) -> Any:
+        if "/commits/" in args[1]:
+            return {"sha": "unchanged", "commit": {"committer": {"date": "1970-01-01T00:00:00Z"}}, "parents": []}
+        result = fetch(args)
+        if args[1].startswith("user/repos"):
+            return [{"default_branch": "trunk", **repo} for repo in result]
+        if args[1].startswith("installation/repositories"):
+            return {**result, "repositories": [{"default_branch": "trunk", **repo} for repo in result["repositories"]]}
+        return result
+    return read
+
+
 def merged_pull(number: int, merged: dt.datetime | None, *, title: str = "Change", body: str = "") -> dict[str, Any]:
     return {"number": number, "title": title, "body": body, "merged_at": stamp(merged) if merged else None,
             "updated_at": stamp(merged or SINCE)}
@@ -1437,7 +1451,7 @@ def test_capacity_fetch_attribution_and_retired_milestone_window() -> None:
                 "pageInfo": {"hasNextPage": False, "endCursor": None},
             }}}}}
         return []
-    result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=fetch)
+    result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=capacity_fetch_with_unchanged_tree(fetch))
     assert not errors
     assert result["merged_by_rank"] == {"milestone": 2, "tooling": 0, "own": 2}
     assert native_calls == [1, 2, 4]  # Explicit proven links do not need another read.
@@ -1453,7 +1467,7 @@ def test_capacity_fetch_attribution_and_retired_milestone_window() -> None:
                 return [{**merged_pull(1, NOW), "labels": [{"name": "own-project"}]}, merged_pull(2, NOW),
                         {**merged_pull(3, NOW), "labels": [{"name": "own-project"}]}]
             return fetch(args)
-        labeled, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=label_only)
+        labeled, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=capacity_fetch_with_unchanged_tree(label_only))
         assert not errors
         # Native milestone attribution still wins for pull 1.
         assert labeled["merged_by_rank"] == {"milestone": 1, "tooling": 1, "own": 1}
@@ -1465,7 +1479,7 @@ def test_capacity_fetch_attribution_and_retired_milestone_window() -> None:
         if "/contents/" in args[1]:
             return {"content": base64.b64encode(DIRECTION.encode()).decode()}
         return fetch(args)
-    partial, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=missing_order)
+    partial, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=capacity_fetch_with_unchanged_tree(missing_order))
     assert "capacity_own_projects" in errors and partial["own_share_status"] == "unknown"
     assert partial["merged_by_rank"]["milestone"] == 2
 
@@ -1573,7 +1587,7 @@ def test_mixed_repository_counts_labeled_or_linked_own_work_as_own() -> None:
             }}}}}
         return []
 
-    result, truncated = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=fetch)
+    result, truncated = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=capacity_fetch_with_unchanged_tree(fetch))
     # Milestone links win over the label; a labeled pull request or one linked to
     # labeled work or an own-project repository counts as own; the rest is tooling.
     assert result["merged_by_rank"] == {"milestone": 1, "own": 4, "tooling": 3}
@@ -1619,7 +1633,7 @@ def test_capacity_reads_each_repository_and_stops_at_the_window() -> None:
             }}}}}
         return []
 
-    result, truncated = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=fetch)
+    result, truncated = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=capacity_fetch_with_unchanged_tree(fetch))
     assert result["merged_by_rank"]["tooling"] == 99
     assert truncated == []
     assert not any("page=2" in path for path in calls if "/pulls" in path)
@@ -1631,7 +1645,7 @@ def test_capacity_reads_each_repository_and_stops_at_the_window() -> None:
         if args[1] == "graphql":
             raise module.AuditError("HTTP 403")
         return fetch(args)
-    partial, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=missing_links)
+    partial, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=capacity_fetch_with_unchanged_tree(missing_links))
     assert partial["own_share_status"] == "unknown" and "capacity_pull_links:o/live#0" in errors
 
     def nothing_lists(args: list[str]) -> Any:
@@ -1640,7 +1654,7 @@ def test_capacity_reads_each_repository_and_stops_at_the_window() -> None:
         raise module.AuditError(f"{args[1]} failed: HTTP 403")
 
     try:
-        module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=nothing_lists)
+        module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=capacity_fetch_with_unchanged_tree(nothing_lists))
     except module.AuditError as exc:
         assert "installation/repositories" in str(exc) and "user/repos" in str(exc)
     else:
@@ -1700,7 +1714,7 @@ def opw_fixture_capacity(module: Any, *, extra_pulls: list[dict[str, Any]] | Non
     with patch.object(module, "gh_json", side_effect=AssertionError("Fixture must not access GitHub")):
         result, errors = module.fetch_capacity(
             "Mbanks89/direction", since or module._parse_time(week["since"]),
-            until or module._parse_time(week["until"]), fetch=fetch, include_archived=True,
+            until or module._parse_time(week["until"]), fetch=capacity_fetch_with_unchanged_tree(fetch), include_archived=True,
         )
     assert not errors, errors
     assert all(any(path.startswith(f"repos/{repo['full_name']}/pulls?") for path in calls)
@@ -1828,7 +1842,7 @@ def test_reporting_week_split_uses_native_labels_and_keeps_legacy_output() -> No
     graph = ({("o/milestone", 1)}, [])
     with patch.object(module, "tracked_capacity_issues", return_value=graph):
         result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END,
-                                               fetch=reporting_fetch(module, mapped_direction(), pulls, calls))
+                                               fetch=capacity_fetch_with_unchanged_tree(reporting_fetch(module, mapped_direction(), pulls, calls)))
     assert not errors
     report = result["reporting"]
     assert report["status"] == "complete" and not report["unresolved"]
@@ -1840,7 +1854,7 @@ def test_reporting_week_split_uses_native_labels_and_keeps_legacy_output() -> No
     legacy_calls: list[str] = []
     with patch.object(module, "tracked_capacity_issues", return_value=graph):
         legacy, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END,
-                                               fetch=reporting_fetch(module, OWN_DIRECTION, pulls, legacy_calls))
+                                               fetch=capacity_fetch_with_unchanged_tree(reporting_fetch(module, OWN_DIRECTION, pulls, legacy_calls)))
     assert not errors and "reporting" not in legacy
     assert legacy["merged_by_rank"] == result["merged_by_rank"]
     assert legacy["by_repository"] == result["by_repository"]
@@ -1882,7 +1896,7 @@ def test_reporting_missing_evidence_and_invalid_map_keep_window_open() -> None:
                     or (failure == "links" and args[1] == "graphql" and not any("REOPENED_EVENT" in arg for arg in args))):
                 raise module.AuditError("HTTP 403")
             return fetch(args)
-        result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=unavailable)
+        result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=capacity_fetch_with_unchanged_tree(unavailable))
         assert errors and result["reporting"]["status"] == ("invalid" if failure == "map" else "unknown")
         assert len(result["reporting"]["unresolved"]) == 1
         assert result["reporting"]["unresolved"][0]["reason"] == {
@@ -1891,7 +1905,7 @@ def test_reporting_missing_evidence_and_invalid_map_keep_window_open() -> None:
         audited = run(module, capacity=result, truncated=errors)
         assert "coverage_incomplete" in kinds(audited)
     empty, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END,
-                                         fetch=reporting_fetch(module, mapped_direction(), [], []))
+                                         fetch=capacity_fetch_with_unchanged_tree(reporting_fetch(module, mapped_direction(), [], [])))
     assert not errors and empty["reporting"]["status"] == "no_merges"
     assert all(value is None for value in empty["reporting"]["share_by_kind"].values())
 
@@ -1901,8 +1915,8 @@ def test_optional_reporting_reads_preserve_legacy_status_and_page_direction_chan
     pulls = [{**merged_pull(1, NOW, body="Refs #50"), "labels": []}]
     graph = ({("o/live", 50)}, [])
     with patch.object(module, "tracked_capacity_issues", return_value=graph):
-        baseline, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=reporting_fetch(
-            module, mapped_direction().partition("## Reporting map")[0], pulls, []))
+        baseline, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=capacity_fetch_with_unchanged_tree(reporting_fetch(
+            module, mapped_direction().partition("## Reporting map")[0], pulls, [])))
         assert not errors
         for failure in ("files", "labels", "links", "map", "files_cut", "bad_row", "late_direction"):
             calls: list[str] = []
@@ -1923,7 +1937,7 @@ def test_optional_reporting_reads_preserve_legacy_status_and_page_direction_chan
                     if failure == "late_direction":
                         return [{"filename": "DIRECTION.md"}]
                 return fetch(args)
-            result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=optional_failure)
+            result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=capacity_fetch_with_unchanged_tree(optional_failure))
             assert {key: value for key, value in result.items() if key != "reporting"} == baseline
             assert (bool(errors) if failure != "late_direction" else not errors), (failure, errors)
             assert len(result["reporting"]["unresolved"]) == 1
@@ -1942,7 +1956,7 @@ def test_cached_optional_label_failure_keeps_later_legacy_own_share_unknown() ->
             reads.append(args[1])
             raise module.AuditError("HTTP 403")
         return fetch(args)
-    result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=denied_label)
+    result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=capacity_fetch_with_unchanged_tree(denied_label))
     assert reads.count("repos/o/live/issues/50") == 1
     assert "capacity_issue_labels:o/live#50" in errors
     assert result["own_share_status"] == "unknown"
@@ -3399,7 +3413,7 @@ def capacity_with_one_failed_repository(module: Any) -> list[str]:
         if path.startswith("repos/o/fun/pulls"):
             raise module.AuditError("gh: HTTP 502 Bad Gateway")
         return []
-    return module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=fetch)[1]
+    return module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=capacity_fetch_with_unchanged_tree(fetch))[1]
 
 
 def test_weekly_audit_holds_a_failed_capacity_read_and_rereads_it_next_time() -> None:
@@ -3458,6 +3472,86 @@ def test_weekly_mode_requires_an_owner_and_no_other_mode() -> None:
                 assert exc.code == 2, argv
             else:
                 raise AssertionError(argv)
+
+
+def line_commit(sha: str, moment: dt.datetime, parents: list[str], files: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"sha": sha, "commit": {"committer": {"date": stamp(moment)}},
+            "parents": [{"sha": parent} for parent in parents], "files": files,
+            "stats": {key: sum(row[key] for row in files) for key in ("additions", "deletions")}}
+
+
+def test_default_branch_lines_follow_first_parents_and_half_open_window() -> None:
+    module = load()
+    def changed(filename: str, additions: int, deletions: int) -> dict[str, Any]:
+        return {"filename": filename, "additions": additions, "deletions": deletions}
+    history = {
+        "trunk": line_commit("end", WINDOW_END, ["merge"], [changed("app.py", 400, 0)]),
+        "merge": line_commit("merge", NOW, ["start", "feature"], [changed("tests/test_app.py", 0, 3), changed("app.py", 0, 1)]),
+        "start": line_commit("start", SINCE, ["before"], [changed("tests/test_app.py", 10, 0), changed("app.py", 3, 0)]),
+        "before": line_commit("before", SINCE - dt.timedelta(seconds=1), [], [changed("old.py", 100, 0)]),
+    }
+    calls = []
+    def fetch(args: list[str]) -> Any:
+        calls.append(args[1])
+        return history[args[1].rsplit("/", 1)[1]]
+    result = module.default_branch_net_lines("o/tools", "trunk", SINCE, WINDOW_END, fetch=fetch)
+    assert (result["tests"], result["other"], result["total"]) == (7, 2, 9)
+    assert (result["base"], result["head"]) == ("before", "merge")
+    assert not any("feature" in call for call in calls)
+    for limit in (1, 2):
+        try:
+            module.default_branch_net_lines("o/tools", "trunk", SINCE, WINDOW_END, fetch=fetch, max_commits=limit)
+        except module.AuditError:
+            continue
+        raise AssertionError("truncated history accepted")
+
+
+def test_line_counts_page_commit_files_and_transfer_renamed_tests() -> None:
+    import base64
+    module = load()
+    count = module.COMMIT_FILES_PER_RESPONSE + 1
+    files = [{"filename": f"src/{number}.py", "additions": 1, "deletions": 0} for number in range(count)]
+    files.append({"filename": "tests/test_moved.py", "previous_filename": "src/moved.py", "status": "renamed", "additions": 1, "deletions": 1})
+    commit = line_commit("merge", NOW, ["before", "feature"], files)
+    def fetch(args: list[str]) -> Any:
+        if "/contents/" in args[1]:
+            assert "ref=before" in args[1]
+            return {"encoding": "base64", "content": base64.b64encode(b"one\ntwo\nthree").decode()}
+        query = parse_qs(urlsplit(args[1]).query)
+        page, size = int(query["page"][0]), int(query["per_page"][0])
+        return {"files": files[(page - 1) * size:page * size]}
+    assert module.commit_line_changes("o/tools", {**commit, "files": files[:module.COMMIT_FILES_PER_RESPONSE]}, fetch=fetch) == {"tests": 3, "other": count - 3}
+    copied = line_commit("copy", NOW, ["before"], [
+        {"filename": "tests/test_copy.py", "previous_filename": "src/moved.py", "status": "copied", "additions": 3, "deletions": 0},
+    ])
+    for broken in ({**commit, "files": files[:2]}, {**commit, "stats": {}}, copied):
+        try:
+            module.commit_line_changes("o/tools", broken, fetch=lambda _: {"files": []})
+        except module.AuditError:
+            continue
+        raise AssertionError("partial file counts accepted")
+
+
+def test_capacity_attaches_lines_only_to_tooling_and_retains_unknown_reads() -> None:
+    module = load()
+    calls: list[str] = []
+    base = capacity_fetch_with_unchanged_tree(reporting_fetch(module, OWN_DIRECTION, [
+        {**merged_pull(1, NOW, body="**Removed:** duplicate report\r\nAdded: weekly totals\r\nRemoved: none\r\n```text\r\nRemoved: example\r\n```"), "labels": []},
+    ], calls))
+    def fetch(args: list[str]) -> Any:
+        if "/commits/" in args[1]:
+            calls.append(args[1])
+            raise module.AuditError("HTTP 502")
+        return base(args)
+    result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=fetch)
+    row = result["by_repository"]["o/live"]
+    assert row["net_lines"]["status"] == "unknown" and row["net_lines"]["total"] is None
+    assert not errors and not module.held_reads(errors)
+    assert row["tooling_pulls"][0]["removed"] == ["duplicate report"]
+    assert row["tooling_pulls"][0]["added"] == ["weekly totals"]
+    assert len([call for call in calls if "/commits/" in call]) == 1
+    result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=base)
+    assert not errors and result["by_repository"]["o/live"]["net_lines"]["total"] == 0
 
 
 def main() -> int:

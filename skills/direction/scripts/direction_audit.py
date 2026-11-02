@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import fnmatch
 import json
@@ -23,6 +24,7 @@ import sys
 import time
 from typing import Any, Callable
 from io import UnsupportedOperation
+from urllib.parse import quote
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 GITHUB_SCRIPTS = REPO_ROOT / "skills" / "github" / "scripts"
@@ -31,7 +33,7 @@ if str(GITHUB_SCRIPTS) not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_read, github_work_graph
+from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_plan_wait, github_read, github_work_graph
 from skills.github.scripts import github_repository_scope as repository_scope
 from skills.direction.scripts import direction_mark, direction_reporting
 
@@ -52,6 +54,7 @@ GATE_PHRASES: tuple[tuple[str, re.Pattern[str]], ...] = (
 WRAPPER = pathlib.Path(__file__).resolve().parents[2] / "github" / "scripts" / "gh-with-env-token"
 MAX_ADMISSION_ISSUES = 50
 MAX_INBOUND_ISSUES = 50
+COMMIT_FILES_PER_RESPONSE = 300
 WAIT_REFERENCE = re.compile(
     r"https://github\.com/([\w.-]+/[\w.-]+)/(issues|pull)/(\d+)"
     r"|(?<![\w/])([\w.-]+/[\w.-]+)?#(\d+)\b"
@@ -1608,6 +1611,15 @@ def capacity_rank(
     return "tooling"
 
 
+def change_statements(body: str, field: str) -> list[str]:
+    statements = []
+    for _, line in github_plan_wait.live_lines(body.replace("**", ""), prefix=""):
+        match = re.search(rf"^[ \t]*(?:[-*][ \t]+)?{re.escape(field)}:[ \t]*(\S.*?)\s*$", line, re.I)
+        if match and match[1].casefold().rstrip(".") not in {"none", "nothing", "n/a"}:
+            statements.append(match[1])
+    return statements
+
+
 def capacity_summary(
     *, own_projects: list[str], tracked_issues: set[tuple[str, int]], direction_source: str,
     pulls: dict[str, list[dict[str, Any]]], milestones: dict[str, list[dict[str, Any]]],
@@ -1635,6 +1647,7 @@ def capacity_summary(
         if not merged:
             continue
         counts = dict.fromkeys(RANKS, 0)
+        tooling_pulls = []
         for pull in merged:
             refs = pull_issue_refs(repo, pull)
             rank = capacity_rank(repo, pull, own_projects=own_projects, tracked_issues=tracked_issues,
@@ -1646,9 +1659,18 @@ def capacity_summary(
                                    or any(own_repository(ref, own_projects) for ref, _ in refs)))
             merged_by_rank[rank] += 1
             counts[rank] += 1
+            if rank == "tooling":
+                tooling_pulls.append({
+                    "number": pull["number"], "title": pull.get("title"),
+                    "url": f"https://github.com/{repo}/pull/{pull['number']}",
+                    **{field: change_statements(pull.get("body") or "", field)
+                       for field in ("removed", "added")},
+                })
             if REVERT_TITLE.search(str(pull.get("title") or "")) or REVERT_BODY.search(str(pull.get("body") or "")):
                 reverts.append({"repo": repo, "number": pull.get("number"), "title": pull.get("title"), "merged_at": pull.get("merged_at")})
         by_repository[repo] = {"merged": len(merged), "merged_by_rank": counts}
+        if tooling_pulls:
+            by_repository[repo]["tooling_pulls"] = tooling_pulls
     total = sum(merged_by_rank.values())
     own = merged_by_rank["own"]
     own_share = round(own / total, 3) if total else None
@@ -1702,6 +1724,85 @@ def capacity_summary(
 def own_project_label(repo: str) -> str:
     """The label that marks own-project work, from the planning helper that creates it."""
     return str(planning_config(repo)["labels"]["own_project"])
+
+
+def line_bucket(filename: str) -> str:
+    path = pathlib.PurePosixPath(filename)
+    return "tests" if (
+        any(part.casefold() in {"test", "tests", "__tests__", "test-fixtures", "fixtures"}
+            or part.endswith("Tests") for part in path.parts[:-1])
+        or path.name.startswith("test_") or path.stem.endswith(("_test", "Test", "Tests"))
+        or ".test." in path.name or ".spec." in path.name
+    ) else "other"
+
+
+def commit_line_changes(repo: str, commit: dict[str, Any], *, fetch: Callable[[list[str]], Any]) -> dict[str, int]:
+    files = commit.get("files")
+    if not isinstance(files, list):
+        raise AuditError("commit files unavailable")
+    cut = False
+    if len(files) >= COMMIT_FILES_PER_RESPONSE:
+        files, cut = fetch_paginated(f"repos/{repo}/commits/{commit['sha']}", fetch=fetch, key="files", max_pages=31)
+    stats = commit.get("stats") or {}
+    if (cut or any(type(row.get(key)) is not int or row[key] < 0 for row in files for key in ("additions", "deletions"))
+            or any(sum(row[key] for row in files) != stats.get(key) for key in ("additions", "deletions"))):
+        raise AuditError("commit file line counts incomplete")
+    changes = {"tests": 0, "other": 0}
+    for row in files:
+        if row.get("status") == "copied":
+            raise AuditError("copied file line-count semantics unverified")
+        bucket = line_bucket(row["filename"])
+        net = row["additions"] - row["deletions"]
+        previous = row.get("previous_filename")
+        if row.get("status") == "renamed" and isinstance(previous, str) and line_bucket(previous) != bucket:
+            parent = commit["parents"][0]["sha"]
+            blob = fetch(["api", f"repos/{repo}/contents/{quote(previous)}?ref={parent}", "--method", "GET"])
+            if not isinstance(blob, dict) or blob.get("encoding") != "base64" or not isinstance(blob.get("content"), str):
+                raise AuditError("renamed file contents unavailable")
+            content = base64.b64decode(blob["content"])
+            lines = 0 if b"\0" in content else content.count(b"\n") + int(bool(content) and not content.endswith(b"\n"))
+            changes[line_bucket(previous)] -= lines
+            changes[bucket] += lines + net
+        else:
+            changes[bucket] += net
+    return changes
+
+
+def default_branch_net_lines(
+    repo: str, branch: str, since: dt.datetime, until: dt.datetime, *, fetch: Callable[[list[str]], Any],
+    max_commits: int = 2000,
+) -> dict[str, Any]:
+    if not branch:
+        raise AuditError("default branch unavailable")
+    result: dict[str, Any] = {"status": "complete", "branch": branch, "base": None, "head": None,
+                              "tests": 0, "other": 0, "total": 0, "basis": "default_branch_first_parent"}
+    ref = quote(branch, safe="")
+    seen: set[str] = set()
+    for _ in range(max_commits):
+        commit = fetch(["api", f"repos/{repo}/commits/{ref}", "--method", "GET"])
+        if not isinstance(commit, dict) or not isinstance(commit.get("sha"), str):
+            raise AuditError("default branch commit unavailable")
+        sha = commit["sha"]
+        moment = _parse_time(((commit.get("commit") or {}).get("committer") or {}).get("date"))
+        parents = commit.get("parents")
+        if moment is None or not isinstance(parents, list) or sha in seen:
+            raise AuditError("default branch history incomplete")
+        seen.add(sha)
+        if moment < since:
+            result["base"] = sha
+            break
+        if moment < until:
+            result["head"] = result["head"] or sha
+            changes = commit_line_changes(repo, commit, fetch=fetch)
+            for bucket, net in changes.items():
+                result[bucket] += net
+        if not parents:
+            break
+        ref = parents[0]["sha"]
+    else:
+        raise AuditError("default branch history limit reached")
+    result["total"] = result["tests"] + result["other"]
+    return result
 
 
 def owner_repositories(owner: str, *, fetch: Callable[[list[str]], Any], include_archived: bool = False) -> tuple[dict[str, dict[str, Any]], bool]:
@@ -2023,6 +2124,15 @@ def fetch_capacity(
         reporting_rules=reporting_rules, reporting_error=reporting_error,
         reporting_incomplete=bool(reporting_errors),
     )
+    for name, row in summary["by_repository"].items():
+        if not row["merged_by_rank"]["tooling"]:
+            continue
+        try:
+            row["net_lines"] = default_branch_net_lines(
+                name, str(repos[name.casefold()].get("default_branch") or ""), since, until, fetch=fetch,
+            )
+        except (AuditError, KeyError, TypeError, ValueError) as exc:
+            row["net_lines"] = {"status": "unknown", "reason": str(exc), "tests": None, "other": None, "total": None}
     return summary, truncated + reporting_errors
 
 
