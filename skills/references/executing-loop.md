@@ -57,7 +57,7 @@ that needs its authority: merge-train entry, presenting a Director question, a
 release, or releasing a claim. The daily stranded-work sweep lists every open
 issue whose Next action names the Supervisor.
 Before recording a split or handoff, read github-plan's
-[Status Labels](../github-plan/SKILL.md#status-labels).
+[Derived Status](../github-plan/SKILL.md#derived-status).
 Never substitute a comment for an unmet finish line, or keep completed work
 open for an agent to return.
 

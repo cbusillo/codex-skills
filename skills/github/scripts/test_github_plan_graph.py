@@ -417,7 +417,7 @@ def test_real_inventory_rows_read_the_newer_wait_comment_before_selection():
     node.update(body=module.github_plan_wait.marker(clear), author={"__typename": "User", "login": "owner"})
     for key in ("blockedBy", "blocking", "subIssues"):
         node[key] = {"nodes": [], "totalCount": 0, "pageInfo": {"hasNextPage": False, "endCursor": None}}
-    node["labels"] = {"nodes": [{"name": module.DEFAULT_CONFIG["labels"][key]} for key in ("plan", "active")],
+    node["labels"] = {"nodes": [{"name": "plan"}, {"name": "plan:active"}],
         "totalCount": 2, "pageInfo": {"hasNextPage": False, "endCursor": None}}
     node.pop("comments", None)
     inventory.update(nodes=[node], totalCount=1, pageInfo={"hasNextPage": False, "endCursor": None})

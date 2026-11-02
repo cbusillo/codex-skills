@@ -109,7 +109,7 @@ def test_dated_wait_becomes_agent_work_when_its_event_arrives() -> None:
 def test_dated_wait_is_actionable_through_plan_selection_and_claim_preflight() -> None:
     module = cli.load_module()
     record = wait.reviewed(evidence="Dated checkpoint", waiting_for="Checkpoint date", ends_when="Date arrives", not_before="2000-01-01")
-    raw = cli.issue(1, labels=[module.DEFAULT_CONFIG["labels"][key] for key in ("plan", "waiting")])
+    raw = cli.issue(1, labels=["plan", "plan:waiting"])
     raw["repo"] = "owner/repo"
     selected = direction.evaluate_direction_node(raw, config=module.DEFAULT_CONFIG, focus=None,
         relationships=cli.relationships(), structured_wait=record)["item"]
@@ -201,7 +201,7 @@ def test_linked_source_body_claim_preserves_custody() -> None:
     raw.update(body="## Current Status\nNext actor: agent:old-worker", created_at="2026-10-01T00:00:00Z",
                last_edited_at="2026-10-01T00:00:00Z", updated_at="2026-10-27T00:00:00Z",
                _graph_comments=[{"id": 8, "user": {"login": "owner"}, "created_at": "2026-10-25T00:00:00Z",
-                                 "body": "## Current Status\nNext actor: agent:new-worker"}])
+                                 "body": "## Current Status\nNext actor: agent:new-worker\nTrial token: new-worker"}])
     result = classify(row, observed)
     assert result["state"] == "needs_status"
     assert [entry["worker"] for entry in result["ownership_evidence"]] == ["new-worker"]
@@ -248,7 +248,7 @@ def test_local_adapter_reads_current_ownership_and_splits_counts_without_writing
     assert ctx['claim_required'] and not ctx['all_active_sessions_searched']
     assert len(observed_paths) == 2  # one ownership inventory per repo
     counts = queue.coverage(rows, rows[:2], result)
-    assert counts['active_inventory_count'] == 4 and counts['active_unevaluated_count'] == 2
+    assert counts['inventoried_issue_count'] == 4 and counts['unevaluated_issue_count'] == 2
     ambiguous = item('Evaluate remaining export scope.', actor='')
     ambiguous['queue'] = classify(ambiguous)
     assert module.project_local_queue([ambiguous], [])['needs_status']
@@ -260,9 +260,9 @@ def test_bounded_global_coverage_counts_active_discoveries_not_yet_read() -> Non
     with cli.global_fixture([], [], {}, discovered=discoveries) as (module, result, _reads):
         module.cmd_next(cli.next_args(scan_limit=1))
     counts = result['selection_coverage']
-    assert counts['active_inventory_count'] == len(discoveries)
-    assert counts['active_evaluated_count'] == 1
-    assert counts['active_unevaluated_count'] == 1
+    assert counts['inventoried_issue_count'] == len(discoveries)
+    assert counts['evaluated_issue_count'] == 1
+    assert counts['unevaluated_issue_count'] == 1
     assert result['discovery_context']['unevaluated_count'] == 1
 
 
@@ -292,7 +292,6 @@ def test_default_global_cli_routes_recorded_actors_without_caller_review() -> No
     assert result['verification_only'] == result['scope_review'] == []
     assert [row['number'] for row in result['needs_status']] == [missing['number']]
     assert result['needs_status_count'] == len(result['needs_status'])
-    assert result['selection_coverage']['active_outside_evaluated_graph_count'] == 0
     assert result['queue_context']['claim_required']
 
 
@@ -376,7 +375,8 @@ def test_inherited_overall_milestone_orders_work_without_copying_membership() ->
 def test_next_actor_routes_work_without_prose_inference() -> None:
     import github_agent
 
-    for role in ("supervisor", "integrator", *github_agent.FAMILIES):
+    for role in ("supervisor", "integrator", *github_agent.FAMILIES,
+                 "launchplane-engineer", "launchplane", "launchplane-native-qualification", "operator", "investigator"):
         assert classify(item(actor=f"agent:{role}"))["state"] == "available"
     for action in ["Implement export.", "Verify the deployed build.", "Supervisor fixes GUI selection.", "#7 owns the source."]:
         assert classify(item(action, "Source delivery is complete"))["state"] == "available"
@@ -388,14 +388,15 @@ def test_next_actor_routes_work_without_prose_inference() -> None:
     row = item()
     row["discussion"]["body"] = row["discussion"]["body"].replace("Next actor: agent\n", "")
     assert classify(row)["state"] == "needs_status"
-    for actor in ("agent:ODOO20LEAD2-1027", "agent:native-session"):
+    for actor in ("agent:ODOO20LEAD2-1027", "agent:01970242-7941-7f0c-b461-16aa5723fb52"):
         row = item(actor=actor)
+        row["discussion"]["body"] += "\nTrial token: ODOO20LEAD2-1027.\n"
         result = classify(row)
         assert result["state"] == "needs_status"
         assert result["next_actor"] == actor
         assert result["ownership_evidence"][0]["source"] == "recorded_recipient"
         recipient = claim.recipient_evidence(queue.current_status(row["discussion"], {"owner"}), [],
-            repo=row["repo"], number=row["number"], worker="new-worker", session="new-session")
+            repo=row["repo"], number=row["number"], trusted={"owner"}, worker="new-worker", session="new-session")
         assert [recipient] == result["ownership_evidence"]
     row = item()
     row["discussion"]["body"] += "\nNext actor: person:owner\n"
@@ -568,7 +569,7 @@ def test_milestone_availability_flag_requires_complete_current_evidence() -> Non
     graph['dependency_context']['complete'] = True
     graph['candidates'] = []
     graph['excluded'] = [row]
-    raw = cli.global_issue('owner/repo', row['number'], labels=[cli.load_module().DEFAULT_CONFIG['labels']['blocked']],
+    raw = cli.global_issue('owner/repo', row['number'], labels=["plan:blocked"],
                            milestone=row['milestone'])
     _, excluded = direction.evaluate_next_plan(raw, config=cli.load_module().DEFAULT_CONFIG,
                                                focus=None, relationships=cli.relationships())
@@ -630,14 +631,12 @@ def test_milestone_flag_follows_open_dependencies_without_assuming_their_status(
     module = cli.load_module()
     flag = 'all_listed_milestones_have_no_available_item'
     for relation in ['blocked_by', 'sub_issues']:
-        for state in ['available', 'own_project', 'underway', 'needs_status', 'waiting', 'missing', 'cycle', 'transitive', 'closed_seed', 'done_seed', 'shared']:
+        for state in ['available', 'own_project', 'underway', 'needs_status', 'waiting', 'missing', 'cycle', 'transitive', 'closed_seed', 'shared']:
             raws = [cli.global_issue('owner/repo', number,
                 body='## Current Status\nNext actor: agent\nNext action: Complete the item.') for number in [1, 2, 3]]
             raws[0]['milestone'] = cli.milestone_data(1, 'First', created_at='2026-01-01T00:00:00Z')
             if state == 'closed_seed':
                 raws[0]['state'] = 'closed'
-            if state == 'done_seed':
-                raws[0]['labels'] = [{'name': 'plan:done'}]
             if state == 'shared':
                 raws[1]['milestone'] = cli.milestone_data(2, 'Second', created_at='2026-01-01T00:00:00Z')
             rows = []
@@ -671,7 +670,7 @@ def test_milestone_flag_follows_open_dependencies_without_assuming_their_status(
             if state == 'missing':
                 rows = rows[:1]
             graph = {'candidates': [], 'excluded': [], 'dependency_context': {'complete': True}}
-            if state in ['closed_seed', 'done_seed']:
+            if state == 'closed_seed':
                 rows[0]['via'] = [{'repo': 'owner/direction', 'number': 9}]
                 rows[1]['discussion']['parents'] = [rows[0]]
                 graph['excluded'] = [rows[0]]
@@ -679,7 +678,7 @@ def test_milestone_flag_follows_open_dependencies_without_assuming_their_status(
                 rows = rows[1:]
             result = direction.rank_portfolio_work(graph, rows, milestone_titles=['First', 'Second'],
                 repository_waypoints={'owner/repo': ['First', 'Second']}, coverage_complete=True)
-            if state in ['closed_seed', 'done_seed']:
+            if state == 'closed_seed':
                 assert result[flag] is True, (relation, state, result)
                 assert all(row.get('category') != 'milestone' for row in result['candidates'])
             elif state == 'shared':

@@ -19,7 +19,6 @@ import sys
 
 import direction_audit as audit
 import direction_stranded as sweep
-import digest_summary
 from skills.github.scripts import github_api
 from skills.supervisor import scripts as supervisor_scripts
 
@@ -39,7 +38,7 @@ class StrandedTests(unittest.TestCase):
         before = copy.deepcopy(self.records)
         report = self.report()
         self.assertEqual({r["number"] for r in report["findings"]},
-                         {r["item"]["number"] for r in self.records})
+                         {r["item"]["number"] for r in self.records} - {218})
         self.assertTrue(all(r["age_hours"] >= 2 and r["next_actor"] and r["url"] for r in report["findings"]))
         self.assertEqual(self.records, before)
         self.assertTrue(report["complete"])
@@ -480,9 +479,6 @@ class OverdueTriggerTests(unittest.TestCase):
                          [("example/catalog", 2), ("example/other", 5), ("example/catalog", 1)])
         self.assertEqual(rows[0]["evidence"], ["The Supervisor brings Q426 to Chris."])
         self.assertEqual(result["supervisor_next_action_by_repo"], {"example/catalog": 2, "example/other": 1})
-        text = sweep.markdown(result)
-        # The digest still parses the report with the new kind and count line.
-        self.assertEqual(sum(r["kind"] == "supervisor_next_action" for r in digest_summary.parse(text)[2]), 3)
         # A fresh hand-back stays quiet until the age threshold; an unknown edit time is still listed.
         records[0]["status_body_updated_at"] = (self.now - dt.timedelta(hours=1)).isoformat()
         records[1].pop("status_body_updated_at")
@@ -532,8 +528,6 @@ class OverdueTriggerTests(unittest.TestCase):
         others = {(r["kind"], r["number"]) for r in result["findings"] if r["kind"] != "unasked_director_wait"}
         self.assertIn(("aged_structured_wait", 8), others)
         self.assertFalse(any(number in {1, 2, 3, 4, 6, 7} for kind, number in others if kind == "aged_structured_wait"))
-        parsed = [r for r in digest_summary.parse(sweep.markdown(result))[2] if r["kind"] == "unasked_director_wait"]
-        self.assertEqual([r["person"] for r in parsed], [True] * 6)
 
     def test_supervisor_routing_uses_the_current_actor_instead_of_action_wording(self) -> None:
         for action in ("Route the reviewed change.", "Fix skills/supervisor/scripts/tool.py."):
@@ -770,9 +764,6 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(measure["share"], 0.25)
         self.assertEqual([row["url"].rsplit('/', 1)[1] for row in measure["rows"]], [str(i) for i in range(20, 0, -1)])
         rendered = sweep.markdown(result)
-        short = digest_summary.presentation(rendered, "https://github.com/test/repo/issues/99").content
-        emitted_measure = next(line for line in rendered.splitlines() if line.startswith("Tooling PRs: "))
-        self.assertIn(emitted_measure, short)
         self.assertIn(measure["rows"][0]["url"], rendered)
         self.assertIn("https://github.com/test/repo/pull/10#issuecomment-100", rendered)
         self.assertEqual(incomplete["tooling_measure"]["status"], "unavailable")
@@ -785,8 +776,6 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(unrelated["tooling_measure"]["share"], measure["share"])
         self.assertEqual(short_sample["tooling_measure"]["status"], "unavailable")
         self.assertNotIn("share", short_sample["tooling_measure"])
-        self.assertIn("unavailable", digest_summary.presentation(sweep.markdown(incomplete),
-            "https://github.com/test/repo/issues/99").content)
 
     def test_finished_worktree_pr_reads_share_the_sweep_budget(self):
         self.reader.pages[("repos/test/repo/pulls", 1, "all")] = [
@@ -1023,6 +1012,32 @@ class InventoryTests(unittest.TestCase):
                 patch.object(supervisor_scripts, "question_delivery", module, create=True):
             result = self.collect(question_queue="test/repo#123")
         self.assertTrue(result["complete"], result)
+
+    def test_queue_past_page_cap_keeps_newest_unsettled_question_within_request_budget(self) -> None:
+        from skills.supervisor.scripts import question_delivery
+
+        path = "repos/test/repo/issues/123/comments"
+        url = "https://github.com/test/other/issues/1#issuecomment-2101"
+        comments = [{"id": number, "html_url": f"https://github.com/test/repo/issues/123#issuecomment-{number}",
+                     "created_at": "2020-01-01T00:00:00Z", "user": {"login": "test"}, "body": "Queue history"}
+                    for number in range(1, 2102)]
+        self.reader.pages[("repos/test/other/issues/1/comments", 1, None)] = [
+            {**comments[-1], "html_url": url, "body": "Owner question: Q611. Continue?", "created_at": "2026-10-14T01:00:00Z"}]
+        comments[-1].update(body=question_delivery.marker_body("registered", url), created_at="2026-10-14T02:00:00Z")
+        for offset in range(0, len(comments), 100):
+            self.reader.pages[(path, offset // 100 + 1, None)] = comments[offset:offset + 100]
+        for max_pages, max_requests in ((20, 100), (1, 100), (20, 5)):
+            with self.subTest(max_pages=max_pages, max_requests=max_requests):
+                self.reader.paths.clear()
+                result = self.collect(question_queue="test/repo#123", max_pages=max_pages, max_requests=max_requests)
+                if max_requests == 5:
+                    self.assertFalse(result["complete"])
+                    self.assertTrue(any(gap["source"] == path and gap["reason"] == "request_budget_exhausted"
+                                        for gap in result["coverage_gaps"]))
+                    self.assertLessEqual(len(self.reader.paths), max_requests)
+                else:
+                    self.assertTrue(result["complete"], result)
+                    self.assertIn(url, {row["url"] for row in result["findings"] if row["kind"] == "registered_question"})
 
     def test_queue_settlement_is_applied_to_a_recovered_registered_question(self) -> None:
         from skills.supervisor.scripts import question_delivery

@@ -40,7 +40,10 @@ class InstalledContractTests(unittest.TestCase):
                 "uv", "run", "--no-project", "--python", sys.executable,
                 "--with", str(wheels[0]), "python", "-I", "-c", """
 from importlib.resources import files
-from github_plan_status import DEFAULT_STATUS_LABELS, derive, label_changes, waits
+from github_plan_status import (
+    DEFAULT_STATUS_LABELS, classify_outcome, derive, failure_disposition, is_planning_issue,
+    label_changes, normalize_author, projection_outcome, receipt_summary, same_wait_projection, wait_records, waits,
+)
 from github_plan_status.body import wrap_contributor_plan
 from github_plan_status.workflow_runs import current_workflow_runs, workflow_execution_identity
 from github_plan_status.client_test_notes import ENGINEERING_RELEASE_TESTS, body_client_test_notes, client_test_notes
@@ -61,14 +64,19 @@ assert not body_client_test_notes('## Client test notes\\n' + notes).review_requ
 held = waits.reviewed(evidence='Client requested acceptance',
                       waiting_for='Client acceptance', ends_when='Client accepts')
 issue = {'state': 'open', 'user': {'id': 71, 'login': 'owner'},
-         'labels': [DEFAULT_STATUS_LABELS['waiting']]}
+         'labels': []}
 issue['body'] = wrap_contributor_plan({'body': 'Original request'}, waits.marker(held))
 record = waits.current(issue, [], lambda source: waits.author_is_trusted(source, 'owner', author_ids=(71,)))
 derived = derive(issue, {'blocked_by': []}, record)
 assert derived['status'] == 'waiting' and derived['waits'] == held['waits']
 review = derive(issue, {'blocked_by': []}, waits.current({}, [], set()))
-changes = label_changes(issue['labels'], DEFAULT_STATUS_LABELS, review)
-assert not changes['add'] and not changes['remove'] and changes['result'] == issue['labels']
+assert review['status'] == 'review'
+assert is_planning_issue(issue, {'waiting': 'old:waiting'})
+assert same_wait_projection(issue, record, record)
+assert not projection_outcome(review, 'unchanged')['verified']
+recorded = ['plan', 'plan:done', 'bug']
+changes = label_changes(recorded, DEFAULT_STATUS_LABELS, derived)
+assert changes == {'add': [], 'remove': [], 'result': recorded}
 assert files('github_plan_status').joinpath('py.typed').is_file()
 """,
             ], cwd=temporary, capture_output=True, text=True, timeout=120)

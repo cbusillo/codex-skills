@@ -64,7 +64,7 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
             ended_claims={source["claim_id"] for source in ended})
         recipients = []
         if recipient := github_plan_claim.recipient_evidence(
-                status, comments, repo=item["repo"], number=item["number"], worker=worker, session=session,
+                status, comments, repo=item["repo"], number=item["number"], trusted=trusted, worker=worker, session=session,
                 ended_claims={source["claim_id"] for source in ended}):
             recipients.append(recipient)
         if item.get("record_type") == "pull_request":
@@ -93,7 +93,7 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
                 conflicts.extend(source_conflicts)
                 source_recipient = github_plan_claim.recipient_evidence(
                         source_status, source_comments, repo=source.get("repo") or item["repo"],
-                        number=source["number"], worker=worker, session=session,
+                        number=source["number"], trusted=trusted, worker=worker, session=session,
                         ended_claims={entry["claim_id"] for entry in ended_sources})
                 if source_recipient:
                     recipients.append(source_recipient)
@@ -232,15 +232,14 @@ def own_project(repo: str, patterns: list[str], owner: str) -> bool:
     return any(fnmatch.fnmatchcase(repo.split("/")[1].casefold(), pattern) for pattern in patterns)
 
 
-def coverage(inventory: list[dict[str, Any]], evaluated: list[dict[str, Any]], groups: dict[str, Any], *, active_label: str = "plan:active") -> dict[str, Any]:
+def coverage(inventory: list[dict[str, Any]], evaluated: list[dict[str, Any]], groups: dict[str, Any]) -> dict[str, Any]:
     def key(item: dict[str, Any]) -> tuple[str, int]:
         return item["repo"].casefold(), item["number"]
     unique = {key(item): item for item in inventory}
     checked = {key(item) for item in evaluated}
-    active = {ident for ident, item in unique.items() if active_label in [label if isinstance(label, str) else label.get("name") for label in item.get("labels", [])]}
     reasons = Counter(item.get("exclusion") or (item.get("queue") or {}).get("reason") or "review_required"
                       for item in groups.get("excluded", []))
     states = {name: len(groups.get(name, [])) for name in ("candidates", "available_candidates", "underway", "verification_only", "scope_review", "needs_status", "waiting", "excluded")}
-    return {"inventoried_issue_count": len(unique), "active_inventory_count": len(active),
-            "evaluated_issue_count": len(checked), "active_evaluated_count": len(active & checked),
-            "active_unevaluated_count": len(active - checked), "excluded_by_reason": dict(sorted(reasons.items())), "queue_counts": states}
+    return {"inventoried_issue_count": len(unique),
+            "evaluated_issue_count": len(checked),
+            "unevaluated_issue_count": len(unique.keys() - checked), "excluded_by_reason": dict(sorted(reasons.items())), "queue_counts": states}

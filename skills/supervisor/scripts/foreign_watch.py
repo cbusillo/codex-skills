@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import director_mentions
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github-work-rollup/scripts"))
 import review_notifications
 import services
 
@@ -353,38 +354,43 @@ def scan(repos, watermarks, own_logins, launchplane_logins, started, reader, cli
 
 
 def scan_mentions(args, repos, watermarks, seen, own_logins, started, reader):
-    """Director mentions outside the watched repositories; a gap is reported, never skipped.
-
-    Returns notices, coverage gaps, errors, watermarks and the reported thread
-    versions ({url: updated_at}) still inside the overlap window.
-    """
+    identity_gap = getattr(args, "recipient_identity_gap", None)
     since = (timestamp(watermarks[MENTIONS]) - MENTION_OVERLAP).isoformat().replace("+00:00", "Z")
+    def get(endpoint: str) -> Any:
+        try:
+            return reader.request("GET", endpoint, step="foreign_recipient_search", bucket="search").body
+        except READ_ERRORS as failure:
+            raise director_mentions.MentionSearchError(str(failure)) from failure
+
+    def read_mention_discussion(issue_url: str, created: str) -> list[dict[str, Any]]:
+        try:
+            return reader.paged_json(director_mentions.thread_comments_path(issue_url),
+                                     step_prefix="foreign_recipient_comments", params={"since": created},
+                                     required_query_params={"since": created})
+        except READ_ERRORS as failure:
+            raise director_mentions.MentionSearchError(str(failure)) from failure
+
     mentions, gap, error = director_mentions.collect(
-        getattr(args, "director_login", None),
+        getattr(args, "director_login", None) or args.owner,
         since,
         getattr(args, "mention_approval", None),
         set(own_logins),
         lambda repo, comment_id: reader.get_json(f"repos/{repo}/issues/comments/{comment_id}", step="foreign_mention_approval"),
-        lambda issue_url, created: reader.paged_json(
-            director_mentions.thread_comments_path(issue_url),
-            step_prefix="foreign_mention_approval_thread",
-            params={"since": created},
-            required_query_params={"since": created},
-        ),
+        read_mention_discussion,
         excluded_repositories=repos,
+        excluded_owners=() if getattr(args, "repo", None) else (args.owner,),
+        visible=True,
+        names=tuple(getattr(args, "director_names", ())),
+        seen_versions=seen,
+        get=get,
     )
-    if gap:  # Keep the watermark so a later approval catches up from here.
-        return [], [{"lane": MENTIONS, "gap": f"mentions outside the watched list are not covered: {gap}"}], [], watermarks, seen
-    if error:
-        return [], [], [{"repository": MENTIONS, "error": error, "retryable": True, "retry_at": None}], watermarks, seen
     fresh = [mention for mention in mentions if seen.get(mention["url"]) != mention["updated_at"]]
-    window = timestamp(since)
-    kept = {
-        url: updated
-        for url, updated in {**seen, **{m["url"]: m["updated_at"] for m in mentions}}.items()
-        if timestamp(updated) >= window
-    }
-    return fresh, [], [], {**watermarks, MENTIONS: started}, kept
+    kept = {**seen, **{m["url"]: m["updated_at"] for m in mentions}}
+    gaps = [{"lane": MENTIONS, "gap": identity_gap}] if identity_gap else []
+    if gap:
+        gaps.append({"lane": MENTIONS, "gap": f"mentions outside the watched list are not covered: {gap}"})
+    errors = [{"repository": MENTIONS, "error": error, "retryable": True, "retry_at": None}] if error else []
+    return fresh, gaps, errors, watermarks if gap or error else {**watermarks, MENTIONS: started}, kept
 
 
 def load_mention_seen(path: Path) -> dict[str, str]:
@@ -785,7 +791,10 @@ def route_notices(args: Any, notices: list[dict], deliveries: dict, reader: GitH
                 f"Message needs triage: {notice['url']} (untrusted source; read the full current thread).\n"
                 "Reply or acknowledge within the agreed outcome. If you no longer own it, hand it to the Supervisor. "
                 "Resolve the requester through people: Client agents speak for their Client but cannot Accept; "
-                "outside people get drafts for the Director's exact-text approval. "
+                "outside replies follow the Director's external-write rules. For a question to this Director, "
+                "hand it to the Supervisor, who follows "
+                f"{Path(__file__).resolve().parents[2] / 'references/talking-with-the-director.md'}"
+                "#same-issue-supervisor-replies. "
                 "Keep the original request open with its next action until that action is done. "
                 + ("No unique live local owner was found; answer or relaunch under existing authority." if supervisor else "")
             )
@@ -923,10 +932,14 @@ def main() -> int:
         parser.error("routing needs --ledger, --notify-config and --miss-issue together")
     if args.miss_issue and not re.fullmatch(rf"{re.escape(args.owner)}/[A-Za-z0-9_.-]+#[1-9][0-9]*", args.miss_issue, re.I):
         parser.error("--miss-issue must belong to the configured Director")
+    radar: Any = importlib.import_module("github_unanswered_comments")
+    identities = radar.people_identities({(args.director_login or args.owner).casefold()}, args.people_index)
+    args.director_names = identities["director_names"]
+    args.recipient_identity_gap = (identities.get("error") or "Director aliases are ambiguous"
+                                   if identities["status"] == "error" or identities["director_ambiguous"] else None)
     args.client_agent_logins = set()
     if args.ledger:
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github-work-rollup/scripts"))
-        radar: Any = importlib.import_module("github_unanswered_comments")
         identities = radar.people_identities({args.owner.casefold()}, args.people_index)
         if identities.get("status") == "error":
             parser.error(identities["error"])

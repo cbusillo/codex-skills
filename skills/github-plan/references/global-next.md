@@ -5,10 +5,10 @@ Read for `next` in a repository owner's direction repository, including explicit
 
 1. Read the Director's current direction and known repository-wide holds from the
    conversation and durable issue discussions. A hold overrides individual
-   active labels, missing blockers, and apparent worker availability. Continuing
+   derived status, missing blockers, and apparent worker availability. Continuing
    an encode or another background job does not resume engineering in that repo.
 2. Run the helper. It traverses the native milestone graph and inventories open
-   issues outside it, including issues without the planning label. Inspect
+   issues outside it. Inspect
    `graph_context` and `discovery_context` separately, including each source's
    exclusions, merged direction, failures, and bounds. An inaccessible source is
    unknown. A complete graph never means all repositories or sessions were read.
@@ -122,7 +122,7 @@ inventory when those sources are truncated or inaccessible.
 Global selection reads the bounded discussion before classifying the node and
 uses the claim helper's authorized structured wait resolver. A current `clear`
 record takes precedence over status prose; a pending structured person/event
-wait, status label or native dependency still holds work. Service callers of
+wait or native dependency still holds work. Service callers of
 `evaluate_direction_node` supply the resolved `structured_wait` from the same
 complete discussion and trusted authors; missing, malformed or incomplete
 records require the supported wait review before availability. Legacy prose is
@@ -165,12 +165,11 @@ from prose or merged PRs.
 
 - `agent` can enter `available_candidates` when the existing direction,
   ownership and structured-wait checks pass.
-- A specifically named `agent:<worker or session>` without a claim is
+- A recipient identified under the shared [recipient check](../../github/references/cli-reference.md#planning-next-work) without a claim is
   `needs_status`: reconcile that recipient's custody before assigning a new
   worker. Launch the named worker with `show N --launch-check --worker TOKEN`,
   or verify custody and post a Current Status section containing `Next actor: agent`
-  with `gh-comment issue N --repo OWNER/REPO --body-file FILE` before assigning a replacement. It proves an assignment, not active execution. Generic Supervisor,
-  integrator, direction and harness roles do not reserve a project. Use the
+  with `gh-comment issue N --repo OWNER/REPO --body-file FILE` before assigning a replacement. It proves an assignment, not active execution. Other agent roles remain staffable. Use the
   existing claim on each slice actually executed. Claims, exact authored releases
   and existing local lease expiry use the same interpretation in selection,
   launch and claim; unknown remote lease evidence stays unknown. An ended

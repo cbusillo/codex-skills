@@ -903,6 +903,11 @@ describe local reconciliation only. A confirmed GitHub merge remains successful
 when reconciliation is blocked or fails; report both outcomes and never retry a
 merge because of the local result.
 
+`dirty_paths` retains the paths from the exact status read that blocked reconciliation,
+including both sides of a rename. Transient writers can be diagnosed from the receipt
+even after their scratch disappears. The catalog ignores the model-review helper's
+root `.model-review-*` scratch directories; other untracked files still block updates.
+
 ### Planning: Orientation
 
 Use these through the `github-plan` skill when the user is asking for durable
@@ -963,13 +968,13 @@ selection is unchanged.
   selected body sections. An empty discussion returns `comments: []`; an
   unreadable comment page fails the command instead of returning a partial
   thread as success.
-  `derived` reports status, open `blocked_by`, structured waits and semantic
-  status labels from the current native graph and authoritative wait record.
+  `derived` reports status, open `blocked_by` and structured waits from the
+  current native graph and authoritative wait record.
   Selected Current Status fields display that projection; `--full` preserves
   the original body as evidence alongside it. Hand-written status and labels
   cannot override the projection. Missing or malformed wait evidence needs review.
-  `labels` is the projected view; `recorded_labels` preserves the observed labels
-  for diagnosis without making them status authority.
+  `labels` and `recorded_labels` preserve the observed routing, share and type
+  labels; labels do not determine status.
   `--launch-check` also reuses `next`'s current ownership and retained-delivery
   facts, separate from source ranking and source-delivery history.
   For execution workers, pass their `--admission <kind>` and any needed
@@ -1174,8 +1179,8 @@ the helper reads the private per-host `~/.config/codex-skills/worktrees.json`
 setting, with a portable root outside repositories and an existing-host-helper
 integration for stricter storage policies. No PATH installation is needed.
 Verify holds and recorded waits under Choose Work before invoking claim.
-Claim preflight reads waits and holds only from native `blocked-by` links,
-status labels and the machine-readable `github-plan:wait` record. Current
+Claim preflight reads waits and holds only from native `blocked-by` links and
+the machine-readable `github-plan:wait` record. Current
 Status and ordinary comment prose are recovery evidence, never wait or executing-worker
 authority. Structured claim/release records and independent branch, PR,
 worktree and live-session checks still refuse competing work. Historical
@@ -1185,8 +1190,7 @@ release path; arbitrary status prose does not become a legacy claim.
 A `claim_wait_unresolved` refusal identifies the actual blocked issue or retained
 PR in `waiting_record`: its repository, number, record kind, URL, plan status
 and Current Status (including its latest PR status comment). `structured_wait`
-and `review_required` describe that record; a stale/done plan status can also
-refuse admission when its wait is clear. The error names its supported
+and `review_required` describe that record. The error names its supported
 `gh-plan.py --repo OWNER/REPO wait N` review command. `previous_current_status`
 stays canonical and can differ from `waiting_record.current_status`. This
 diagnostic resolves no wait and supplies no retry authority.
@@ -1232,8 +1236,7 @@ These replace the whole wait record, so preserve every unresolved hold in the
 replacement. They post and read back an authored structured comment without
 replacing anyone's prose or changing labels. Its visible text says what is
 waited for and when each wait ends, or that nothing is waited on; a wait that
-names someone as a live `@login` is refused, so write `<code>@login</code>`. Keep labels current separately
-under [Status Labels](../../github-plan/SKILL.md#status-labels). Native open
+names someone as a live `@login` is refused, so write `<code>@login</code>`. Native open
 blockers remain independent and cannot be cleared by a wait record.
 
 `wait --not-before YYYY-MM-DD` binds the first wait to the start of that day
@@ -1264,10 +1267,10 @@ edits do not maintain waits: use `wait` when a hold begins or ends.
 
 `next` can report a verified recorded answer under `needs_status`, with exact
 decision comments and the original wait. Launch and claim return the same
-evidence while still refusing the hold. See [Status Labels](../../github-plan/SKILL.md#status-labels)
+evidence while still refusing the hold. See [Derived Status](../../github-plan/SKILL.md#derived-status)
 for reconciliation; an answer is never an automatic wait resolution.
 
-For a recorded wait or parked/blocked/stale/done label, pass
+For a recorded wait, pass
 `--wait-resolved "<existing resolution evidence>"` only after verifying its
 condition or a recorded Director release. The same argument can record a
 legacy review's verified absence on the claim itself. It grants no permission
@@ -1394,7 +1397,7 @@ session metadata or `claude agents --json` to identify this session by its
 directory, name, and process; if ambiguous, resolve that identity before claim.
 
 Success posts and reads back a claim, updates owned Current Status (or leaves
-the contributor's body intact and uses the claim comment), sets `plan:active`,
+the contributor's body intact and uses the claim comment),
 and reads the metadata back. Check `ok`, `outcome_certainty`, and
 `completed_steps`; create the worktree only after confirmed success. This
 narrows a race and supplies no exclusive lock. Recheck competing activity
@@ -1829,7 +1832,7 @@ independently link that parent. A body link alone, a different parent, or an
 unreadable native relationship cannot supply this proof. Both readbacks recheck
 the native relationship, parent's ownership and release, retained artifacts and
 live sessions. The claim records the handoff's actual parent URL, writes only
-the child's claim/status/labels, and preserves the parent's waits and labels.
+the child's claim/status, and preserves the parent's waits and labels.
 The child's own waits and blockers and the retained PRs' holds still apply.
 Both same-record and child successors also read the source issue's current
 native children and native child history from its timeline. A detached or
@@ -1924,7 +1927,7 @@ uv run <skill-dir>/scripts/gh-plan.py claim <canonical-issue-url> \
 ```
 
 For a planning issue in another repository, both repositories receive their
-own ownership inventory and planning label configuration. Supply
+own ownership inventory and planning configuration. Supply
 `--planning-checkout /path/to/planning-repo`
 when its verified checkout is not discoverable through repository configuration.
 The remote identity is checked; inventory covers that checkout's registered
@@ -2043,7 +2046,7 @@ malformed rather than ignoring its additional field.
   read-only. Apply repairs already-closed automation-owned planning issues
   through the existing close relationship/Project/label/comment path, updates
   Current Status's state while preserving existing evidence/custody text,
-  and verifies state, labels and status with fresh readback.
+  and verifies native state and status with fresh readback.
   Other retained source status fields are historical; the completed closure and
   reconciliation receipt are the current machine observation.
   Reference-only completed records retain their original Current Status and
@@ -2057,29 +2060,9 @@ malformed rather than ignoring its additional field.
   `wait` command to record existing evidence, never a hand-applied status label.
   Single-issue `wait` can review and record waits on closed issues without
   reopening or claiming them; a real wait is never automatically cleared.
-  Eligible already-closed managed sources with held/unread waits receive only
-  canonical lifecycle label repair and a review receipt. Their body, completion
-  note and Project state remain for the owning agent's completion review.
-  For open native planning parents/dependents in the same repository
-  owner's account, apply derives `blocked`, `waiting` or `active` labels from
-  all current native blockers and the authoritative structured wait. It preserves
-  their body, finish line, wait records and relationship edges. Readers project
-  the current blockers instead of treating old status prose as another source.
-  Concurrent structured waits and open native blockers retain both label views.
-  A clear reviewed wait record supersedes an old waiting label. Record real waits
-  through `wait`; missing or malformed records still require review.
-  Closed related plans get `done` labels and retain `waiting` for an actual
-  structured wait, without changing their state or body. Deliberate `stale`,
-  `done` and unstatused open planning scopes require finish-line review and are
-  preserved. Scope holds have a separate derived `hold` status and do not count
-  as unread waits. `next` excludes an unstatused planning scope with
-  `scope_review_required`; deliberate stale/done exclusions remain intact.
-  Reviewed `active`, `blocked` and `waiting` views are recomputed. The canonical
-  package prohibits label changes for open scope holds or open unread waits
-  itself. On a closed issue, unread waits permit `done` and removal of actionable
-  labels while preserving any recorded `waiting` label; wait coverage remains
-  partial. A closed lifecycle label does not certify acceptance.
-  Unverified target planning configuration refuses writes.
+  Related records retain their state, body, finish line and structured waits.
+  The receipt displays current native status and reports missing wait evidence
+  for review; it never writes labels or infers another issue's completion.
   Cross-repository source closures, another account's
   records and source reporter acceptance remain owning-agent review work. Each outcome
   identifies its source/related role and whether it was a closing reference;
@@ -2092,8 +2075,7 @@ malformed rather than ignoring its additional field.
   Unavailable reads and uncertain writes remain failures. Receipts list every
   discovered target, including `not_attempted` targets after a stopped write
   sequence. Unread configuration/graph/wait evidence, a failed write, a posting
-  denial or an unattempted target makes coverage partial; a verified deliberate
-  scope hold is preserved without a write. A posting denial preserves its exact classified
+  denial or an unattempted target makes coverage partial. A posting denial preserves its exact classified
   failure and leaves that repository to an existing authorized owning session;
   independent authorized repositories can still be reconciled. Never repeat a
   denied write through another identity or a new grant. Classified read denials
@@ -2104,54 +2086,33 @@ malformed rather than ignoring its additional field.
   consumers that must distinguish superseded workflow executions from independent
   check suites. Selection requires complete workflow/event/branch/repository/PR
   target identity; incomplete evidence stays current. Dispatches stay independent.
-  The package supplies the
-  same derivation, trusted wait resolver, label diff and pure outcome/failure
-  classification to native consumers. Provider requests, snapshot comparisons
-  and authority remain adapter work. The workstation comment radar is an
-  additional catalog landing-adapter check; generic close and native service
-  adapters retain their own closure evidence and complete structured wait reads.
-  Adapters supply their own existing trust and repository-scoped posting
-  authority; the package contains no identity or credential discovery. Consumers
-  pin an immutable catalog source revision and validate compatibility before
-  upgrading it; the package version alone does not select a live source revision.
+  The package supplies the same derivation, trusted wait resolver and pure
+  outcome/failure classification to native consumers. Provider requests,
+  snapshot comparisons and authority remain adapter work. Consumers pin an
+  immutable catalog revision and validate compatibility before upgrading.
+  The current Launchplane completion adapter's imports remain available. The
+  default label mapping is empty and its diff preserves recorded labels without
+  writes. Label-derived result fields, `reopened` and `project_labels` are retired.
   The train driver includes separate planning receipts for every confirmed
   landed batch member. A failed planning receipt does not undo a landing;
   rerun this command after resolving its reported blocker.
-- `reconcile-status <issue> [--include-dependents] [--planning-checkout PATH] [--apply]`: Preview or apply the same guarded status
-  label projection to one issue without posting a wait, changing an edge,
-  creating an issue or closing it. Use the recovery command in a partial receipt
-  after resolving its reported review or failure. Confirmed wait, create and
-  native relationship writes refresh the affected issue's labels immediately;
-  their fact-write evidence remains separate from the projection receipt.
-  Explicit targets are required work: a denied or failed projection returns
-  unsuccessful while preserving the committed fact and its recovery. Successful
-  closed lifecycle labels can return success with partial wait coverage; that
-  does not certify full completion metadata or acceptance.
-  `--include-dependents` also refreshes direct native parents and blocking
-  dependents, with automatic neighbors limited to the source account. An
-  explicit target remains subject to its existing posting authority; a local
-  checkout proves configuration, never permission. When running elsewhere,
-  `--planning-checkout` names an existing checkout of the target repository;
-  its repository identity is verified before projection. The override applies
-  to root and same-repository snapshots, while foreign neighbors retain their
-  own configuration discovery. Recovery retains a supplied checkout.
-  Personal or active-identity
-  opt-ins authorize only the explicit target. Automatic neighbors, including
-  all issues discovered by `reconcile-landing`, return review receipts for
-  existing authorized target sessions; preview remains available.
+- `reconcile-status <issue> [--include-dependents] [--planning-checkout PATH] [--apply]`:
+  Read status, open blockers and trusted structured waits without mutating labels,
+  prose or native state. `--apply` remains accepted for existing recovery commands.
+  `--include-dependents` also reads direct native parents and dependents; incomplete
+  native reads and unresolved wait evidence remain visible in the receipt.
+  `--planning-checkout` verifies an existing checkout's target repository identity.
+  Reads do not authorize a later closure or clear any wait.
 - `create <title>`: Create a new plan issue. Exact-title dedupe uses REST issue
   search, labels are ensured through REST, and the shared issue helper creates
   the issue with reconciliation evidence for unknown write outcomes. Supports
-  `--title` (flag), `--body`, `--plan-status`, and `--finish-line` (issue body
+  `--title` (flag), `--body`, and `--finish-line` (issue body
   only). Configured Projects still enroll new issues. Manual fields are not
   synchronized by default; `--focus` and `--manager` are explicit edits, and
   configured Manager defaults are ignored.
-  Actionable create-time labels are immediately projected: for example,
-  `--plan-status blocked --wait-clear` becomes active until a native blocker is
-  linked. Deliberate stale/done/unstatused scope holds retain their review state.
-  Without reviewed wait evidence, creation can succeed while its open-issue
-  projection remains unsuccessful. Preserve the created issue; review it with
-  `wait`, then use its `reconcile-status` recovery instead of repeating creation.
+  Record reviewed waits with `--wait-clear` or `--waiting-for` and their evidence.
+  Creation, wait and relationship writes return their own confirmed outcomes;
+  status is read with `show` or `next` rather than refreshed after a write.
 - `update-section <issue> <section>`: Patch a single markdown section on an
   issue. A target returned as a pull request is refused before body preparation
   or any write, with `validation_error` and `write_outcome=not_started`.
@@ -2248,7 +2209,7 @@ malformed rather than ignoring its additional field.
   the Project item can still be found; manual fields remain untouched. If closure
   then fails, the result reports
   that split Project state explicitly. Confirmed or read-reconciled issue
-  closure is the commit point for the canonical closed status label projection and an
+  closure is the commit point for native closed status and an
   optional close comment. Exact same-body comments by the acting identity are
   reused on retry, and failures return deterministic `recovery` state so
   rerunning the same command reconciles missing metadata without duplicating
@@ -2273,7 +2234,7 @@ malformed rather than ignoring its additional field.
   the confirmed source close and returns recovery evidence for the remaining
   dependents; it never retries the issue-state write.
 - `ensure-labels`: Page through repository labels and create documented missing
-  planning labels through REST. Concurrent-create conflicts are reconciled by
+  routing, share and type labels through REST. Concurrent-create conflicts are reconciled by
   reading the requested label instead of blindly retrying the write.
 
 When GraphQL quota is exhausted but REST is available, keep independently
@@ -2283,12 +2244,18 @@ retrying until planning stalls.
 
 ### Planning: Next Work
 
-Named recipients without a claim enter `needs_status` for custody reconciliation,
+Native session IDs and recipients identified by existing trusted claim, session or
+trial-token records enter `needs_status` without a claim for custody reconciliation,
 not a fresh execution launch. Claim and launch preflight use that same recorded
 recipient check. Read-only diagnostics remain available; an assignment alone is
 not active execution. Exact releases and existing local leases are shared across
 readers, and quoted diagnosis is not ownership. Keep the existing claim on each
-slice executed; generic agent roles do not reserve a whole project.
+slice executed; other `agent:<role>` values remain staffable without a status rewrite.
+When assigning an unclaimed trial token that has no identity record on the issue,
+include its brief's plain `Trial token: TOKEN` line in the same Current Status
+through `gh-comment issue N --repo OWNER/REPO --body-file FILE`,
+or name the worker's native session ID instead. Private briefs and ledgers are
+not read by this check. It reuses issue evidence and creates no registry.
 
 `next` returns one JSON envelope with compact discussion summaries by default.
 Rows retain identity, counts, actor/action, blockers, sources and coverage;
@@ -2368,17 +2335,15 @@ of evidence; all unread references and incomplete coverage remain explicit.
 - `next [--milestone <number-or-title>] [--limit <n>] [--scan-limit <n>]`:
   Inventory every open issue and rank actionable work without mutating labels, relationships, milestones,
   Projects, or workflows. Native `blocked-by` relationships are authoritative.
-  Repository-local REST and batch reads include issues without the planning label.
+  Repository-local REST and batch reads include every open issue.
   `needs_status` routes untriaged requests and wait reviews to ordinary agent
-  triage; it does not admit implementation or bypass claim preflight. Status-label
-  scope holds, priority, assignment and real waits retain their existing rules.
-- The command excludes done, stale, actual structured waits, current native
+  triage; it does not admit implementation or bypass claim preflight. Priority,
+  assignment and real waits retain their existing rules.
+- The command excludes completed issues, actual structured waits, current native
   blockers, dependency-unknown, and reviewed parent plans with open sub-issues. Missing
   or malformed wait evidence is `wait_review_required`; complete local discussions
   needing wait review enter `needs_status`, while unread discussions stay excluded.
-  An unstatused planning
-  scope is `scope_review_required`. Each
-  exclusion includes a normalized reason and dependency evidence when present.
+  Each exclusion includes a normalized reason and dependency evidence when present.
 - Global traversal still evaluates native blockers and children of waiting or
   inconsistently blocked nodes under the same scan allowance. A whole-plan wait
   follows its ordinary descendants; independent blocker links or a child named
@@ -2711,30 +2676,12 @@ before sending an explicit REST state/state-reason PATCH. The final envelope
 reports `post_close_comment` in `completed_steps` when the comment succeeded but
 the close failed, and comment failure stops before close. Successful state
 changes append `close_issue` or `reopen_issue` to `completed_steps`.
-After a confirmed CLI close, including a non-planning issue, the same in-process
-planning adapter refreshes its lifecycle view and direct native parents and
-blocking dependents. Provider reads and label writes retain the original close
-transport and automation actor. Partial receipts preserve the confirmed close
-and offer `reconcile-status --include-dependents --apply` recovery, without
-repeating the close comment. Exact personal-identity approval authorizes only
-that close; the adapter previews only its explicit target and returns automatic
-planning work for existing authorized target sessions. A required planning source
-that cannot receive its lifecycle labels returns unsuccessful with the confirmed
-close and recovery retained. An ordinary close outside a matching checkout can
-succeed with partial planning-configuration coverage when no canonical planning
-label identifies the source; custom label configuration remains unverified,
-and the receipt retains that review rather than claiming complete projection.
-Provider failures remain unsuccessful. A confirmed CLI reopen runs the same
-refresh: a reopened issue's `done` label is no longer a scope hold, so its
-status comes from its wait record and blockers.
-The shared `set_issue_state` primitive keeps its existing contract;
-`gh-plan close` owns its own post-close orchestration.
 `--duplicate-of` accepts the same issue-reference forms, resolves the target's
 REST database id, and sends `state_reason=duplicate` plus `duplicate_issue_id`
 in the close PATCH. It is mutually exclusive with `--reason`. For completed durable
 plan issues, use
-`scripts/gh-plan.py close --comment-file` so plan labels and Project Status stay
-in sync.
+`scripts/gh-plan.py close --comment-file` for its relationship and decision
+preflight and configured Project Status.
 
 For timeline comments, use `scripts/gh-pr.py comment --body-file` in PR-centric
 workflows that already resolve PR numbers, URLs, or branches. Use

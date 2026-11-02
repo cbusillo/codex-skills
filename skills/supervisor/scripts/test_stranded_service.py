@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest import mock
 
 import services
+import stranded_archive
 import stranded_service as daily
 
 
@@ -33,7 +34,7 @@ class DailyTests(unittest.TestCase):
             "import sys\nfrom pathlib import Path\n"
             "p = Path('received')\n"
             "with p.open('ab') as out: out.write(sys.stdin.buffer.read())\n"
-            "print('https://discord.com/channels/1/2/3')\n"
+            "print('https://github.com/example/catalog/issues/4#issuecomment-999')\n"
             "raise SystemExit(int(Path('send-code').read_text()))\n"
         )
         # This fixture implements only uv's command boundary, without contacting
@@ -46,17 +47,21 @@ class DailyTests(unittest.TestCase):
             "if sys.argv[i].endswith('direction_audit.py'):\n"
             "    print(Path('payload').read_text(), end='')\n"
             "    raise SystemExit(int(Path('scan-code').read_text()))\n"
+            "if sys.argv[i].endswith('stranded_archive.py'):\n"
+            "    Path('archive-argv').write_text('\\n'.join(sys.argv[i + 1:]))\n"
+            "    report = Path(sys.argv[sys.argv.index('--file') + 1]).read_bytes()\n"
+            "    raise SystemExit(subprocess.run([sys.executable, 'sender.py'], input=report).returncode)\n"
             "raise SystemExit(subprocess.run([sys.executable, *sys.argv[i:]]).returncode)\n"
         )
         self.uv.chmod(0o700)
         self.data = {"uv": str(self.uv), "catalog": str(self.root),
                      "state_dir": str(self.state), "scan_args": [],
-                     "delivery_argv": [sys.executable, str(self.sender)], "hour": 7, "minute": 30}
+                     "tracking_issue": "example/catalog#4", "hour": 7, "minute": 30}
         # Fixtures live under the temporary catalog working directory. Copy only
         # tracked runner sources so behavior never depends on installed state.
         runner_dir = self.root / "skills/supervisor/scripts"
         runner_dir.mkdir(parents=True)
-        for module in (daily, services):
+        for module in (daily, services, stranded_archive):
             source_path = module.__file__
             assert source_path is not None
             source = Path(source_path)
@@ -84,7 +89,9 @@ class DailyTests(unittest.TestCase):
         self.assertEqual((self.root / "received").read_text(), self.payload)
         receipt = json.loads(next(self.state.glob("*.delivered.json")).read_text())
         self.assertEqual(receipt["scan_exit_code"], int((self.root / "scan-code").read_text()))
-        self.assertIn("https://discord.com/", next(self.state.rglob("delivery.stdout")).read_text())
+        self.assertEqual(receipt["delivery_url"], next(self.state.rglob("delivery.stdout")).read_text().strip())
+        self.assertEqual((self.root / "archive-argv").read_text().splitlines(),
+                         ["--file", receipt["report"], "--tracking-issue", self.data["tracking_issue"]])
         self.assertEqual(self.entry().returncode, 0)
         self.assertEqual((self.root / "received").read_text(), self.payload)
 
@@ -156,8 +163,10 @@ class DailyTests(unittest.TestCase):
     def test_confirmed_send_reconciliation_resumes_schedule_without_replay(self):
         (self.root / "send-code").write_text("1")
         self.assertEqual(self.entry().returncode, 1)
+        self.data["tracking_issue"] = "Example/Catalog#4"
+        self.save()
         cleared = subprocess.run([sys.executable, str(daily.__file__), "clear", "--config", str(self.config),
-                                  "--delivered-url", "https://discord.com/channels/1/2/3"],
+                                  "--delivered-url", "https://github.com/example/catalog/issues/4#issuecomment-999"],
                                  capture_output=True, timeout=5, check=False)
         self.assertEqual(cleared.returncode, 0)
         self.assertEqual(self.entry().returncode, 0)
@@ -172,13 +181,6 @@ class DailyTests(unittest.TestCase):
         with services.service_lock(self.state / "daily", "stranded"):
             self.assertEqual(self.entry().returncode, 1)
         self.assertFalse((self.root / "received").exists())
-
-    def test_file_sender_receives_exact_retained_report_path(self):
-        self.sender.write_text("import sys\nfrom pathlib import Path\nPath('received').write_bytes(Path(sys.argv[1]).read_bytes())\n")
-        self.data["delivery_argv"].append("{report}")
-        self.save()
-        self.assertEqual(self.entry().returncode, 0)
-        self.assertEqual((self.root / "received").read_text(), self.payload)
 
     def test_previous_day_receipt_does_not_suppress_today(self):
         self.state.mkdir()
@@ -233,7 +235,7 @@ class DailyTests(unittest.TestCase):
         self.assertEqual(self.weekly_receipts(), [self.payload])
 
     def test_invalid_config_refuses_before_rendering(self):
-        for key, value in (("hour", 24), ("minute", True), ("delivery_argv", []),
+        for key, value in (("hour", 24), ("minute", True),
                            ("uv", "relative"), ("scan_args", ["--stranded-format=json"]),
                            ("weekly", {"owner": "OWNER", "weekday": 0}), ("weekly", {"owner": "", "weekday": 1}),
                            ("weekly", {"owner": "OWNER", "weekday": 1, "extra": 1}), ("unknown", 1)):

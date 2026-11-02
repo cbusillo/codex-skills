@@ -84,7 +84,7 @@ commands:
     source: skill
     resource_path: scripts/routine_check.py
     example_argv: ["uv", "run", "scripts/routine_check.py", "--owner", "OWNER", "--queue", "OWNER/direction#NUMBER", "--ledger", "<ledger.json>", "--foreign-log", "<watch.jsonl>"]
-    purpose: Read the board, workers, questions, unanswered comments and existing watch log in one process.
+    purpose: Read global next, workers, questions, unanswered comments and the existing watch log.
   - name: supervisor-heavy-run
     source: skill
     resource_path: scripts/heavy_run.py

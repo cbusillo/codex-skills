@@ -12,6 +12,7 @@ import copy
 import random
 import re
 import sys
+import urllib.parse
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -156,19 +157,6 @@ def local_next_fixture(
         yield captured
 
 
-def test_unstatused_scope_is_review_work_without_becoming_a_person_wait() -> None:
-    module = load_module()
-    record = module.github_plan_wait.reviewed(evidence="No person or event hold; scope still needs review")
-    raw = issue(8, labels=[module.DEFAULT_CONFIG["labels"]["plan"]])
-    result = module.github_direction_next.evaluate_direction_node(
-        raw, config=module.DEFAULT_CONFIG, focus=None, relationships=relationships(), structured_wait=record)
-    observed = result["item"]
-    assert observed["plan_status"] == "hold"
-    assert observed["exclusion"] == "scope_review_required"
-    assert not observed.get("wait_review_required")
-    assert not result.get("waiting")
-
-
 def test_next_beta_rc_stable_chain_respects_native_blockers() -> None:
     module = load_module()
     config = module.DEFAULT_CONFIG
@@ -204,10 +192,6 @@ def test_next_excludes_non_actionable_states_with_reasons() -> None:
     config = module.DEFAULT_CONFIG
     cases = [
         (issue(1, state="closed"), None, relationships(), "completed"),
-        (issue(2, labels=["plan", "plan:done"]), None, relationships(), "completed"),
-        (issue(3, labels=["plan", "plan:stale"]), None, relationships(), "stale_needs_review"),
-        (issue(4, labels=["plan", "plan:waiting"]), None, relationships(), "waiting"),
-        (issue(6, labels=["plan", "plan:blocked"]), None, relationships(), "label_blocked_without_native_edge"),
         (issue(7), None, relationships(sub_issues=[related(70)]), "delegated_to_open_sub_issues"),
     ]
     for plan, focus, plan_relationships, expected in cases:
@@ -245,7 +229,8 @@ def test_stale_project_focus_does_not_hide_ready_work() -> None:
         assert "exclusion" not in node["item"], node
         assert not node["waiting"], node
         for waiting in (
-            ready | {"labels": [{"name": "plan:waiting"}]},
+            ready | {"structured_wait": module.github_plan_wait.reviewed(evidence="Device test requested",
+                waiting_for="Device tester", ends_when="Tester reports a result")},
             ready | {"body": "## Current Status\n\nState: Waiting.\nWaiting for: testing.\n"},
         ):
             node = module.github_direction_next.evaluate_direction_node(
@@ -501,7 +486,7 @@ def test_cmd_next_degrades_when_direction_is_unavailable_or_unparsed() -> None:
 
 def test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions() -> None:
     module = load_module()
-    plans = [issue(1), issue(2, labels=["plan", "plan:stale"])]
+    plans = [issue(1), issue(2, state="closed")]
     relationship_calls: list[int] = []
 
     def fake_relationships(_repo: str, number: int, _issue: dict[str, Any] | None = None) -> Any:
@@ -520,7 +505,7 @@ def test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions() -
     assert relationship_calls == [1]
     assert [item["exclusion"] for item in captured["excluded"]] == [
         "unknown_dependencies",
-        "stale_needs_review",
+        "completed",
     ]
     assert captured["dependency_context"]["complete"] is False
     assert captured["dependency_context"]["degraded_count"] == 1
@@ -756,6 +741,8 @@ def global_fixture(
             for name, values in edges.get((target_repo, number), relationships()).items()
         }, []
 
+    fixture_comments = comments or {}
+
     def wait_api(method: str, path: str, **_kwargs: Any) -> Any:
         if module.NEXT_READS is not None and module.NEXT_READS.observation(path) is not None:
             return module.real_api_json(method, path, **_kwargs)
@@ -772,6 +759,11 @@ def global_fixture(
             return "automation-gh", {"default_branch": "main", "archived": False}
         number = int(parts[4])
         key = (target, number)
+        if len(parts) == 6 and parts[5] == "comments":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
+            page = int(query.get("page", ["1"])[0])
+            size = int(query.get("per_page", ["100"])[0])
+            return "automation-gh", fixture_comments.get(key, [])[(page - 1) * size:page * size]
         if len(parts) == 7 and parts[5:] == ["dependencies", "blocked_by"]:
             return "automation-gh", edges.get(key, relationships())["blocked_by"]
         if parts[3] == "pulls":
@@ -1731,6 +1723,7 @@ def test_global_agent_only_waits_are_unowned_and_real_holds_stay_parked() -> Non
 def test_global_wait_reference_budget_and_auth_stop_are_explicit() -> None:
     module = load_module()
     item = global_issue("someone/business", 10, wait_reviewed=False, body="## Current Status\nWaiting for: Review " + " ".join(f"#{number}" for number in range(20, 32)))
+    item["comments"] = 0
     reads = []
     def read(method: str, path: str, **_kwargs: Any) -> Any:
         assert method == "GET"
@@ -1851,7 +1844,7 @@ def test_global_wait_comments_named_actors_and_wrapped_urls_use_own_evidence() -
 
 def test_local_and_global_next_exclude_stale_landing_but_keep_split_work() -> None:
     status = "## Current Status\nState: Source complete.\nNext action: Supervisor lands PR https://github.com/someone/product/pull/71 and reconciles closure.\nWaiting for: None.\n"
-    stale = global_issue("someone/product", 10, body=status)
+    stale = global_issue("someone/product", 10, body=status, wait_reviewed=False)
     split = global_issue("someone/product", 11, body=status.replace("Supervisor lands PR", "Test split remainder after PR"))
     person = global_issue("someone/product", 12, body=split["body"].replace("Waiting for: None.", "Waiting for: Chris to test on the phone."),
                           waiting_for="Chris to test on the phone.")
@@ -1869,7 +1862,8 @@ def test_local_and_global_next_exclude_stale_landing_but_keep_split_work() -> No
             assert any(row["number"] == 12 and "Chris" in row["waiting_for"] for row in result["waiting"])
             assert not any(row["number"] == 12 for row in result["stale_waits"])
             excluded = next(row for row in result["excluded"] if row["number"] == 10)
-            assert excluded["exclusion"] == "landed_status_needs_reconciliation"
+            assert excluded["exclusion"] == "wait_review_required"
+            assert excluded["post_merge_evidence"]["selection_exclusion"]
             assert not excluded["post_merge_evidence"]["completion_proven"]
             result.clear()
             global_collect = module.collect_paged_rest_items
@@ -1877,6 +1871,8 @@ def test_local_and_global_next_exclude_stale_landing_but_keep_split_work() -> No
                 module.cmd_next(next_args(repo="someone/product"))
             assert [row["number"] for row in result["candidates"]] == [11]
             assert result["candidate_count"] == 1
+            local_stale = next(row for row in result["excluded"] if row["number"] == stale["number"])
+            assert local_stale["post_merge_evidence"]["selection_exclusion"]
             assert result["candidates"][0]["post_merge_evidence"]["selection_exclusion"] is False
             assert {row["number"] for row in result["stale_wait_report"]["items"]} == {10, 11}
 
@@ -1902,6 +1898,7 @@ def test_bare_reference_missing_here_keeps_post_merge_evidence_complete() -> Non
     # A bare #104 written for another repository is absent here: read, not unread.
     module = load_module()
     row = global_issue("someone/product", 10, body="## Current Status\nNext action: Website agents finish #104 company identity.\n")
+    row["structured_wait"] = module.github_plan_wait.reviewed(evidence="Full fixture discussion reviewed; no wait remains")
     def fetch(cause: str) -> Any:
         def read(_method: str, path: str, **_kwargs: Any) -> Any:
             if path == "/repos/someone/product":
@@ -1923,6 +1920,7 @@ def test_bare_reference_missing_here_keeps_post_merge_evidence_complete() -> Non
     # A parked wait on the same bare reference is read, and its wait stays pending.
     parked = global_issue("someone/product", 11, wait_reviewed=False, labels=["plan", "plan:waiting"],
                           body="## Current Status\nState: Waiting.\nWaiting for: #104 to close.\n")
+    parked["comments"] = 0
     def waiting(cause: str) -> Any:
         read = fetch(cause)
         def wrapped(method: str, path: str, **kwargs: Any) -> Any:
@@ -1958,9 +1956,14 @@ def test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output()
     row = global_issue("someone/product", 10, labels=["plan", "custom-active"],
                        updated_at="2026-10-06T12:00:00Z",
                        body="## Current Status\nNext action: Supervisor lands PR https://github.com/someone/product/pull/71 and closes this issue.\n")
+    row["structured_wait"] = module.github_plan_wait.reviewed(evidence="Full fixture discussion reviewed; no wait remains")
     def fetch(_method: str, path: str, **_kwargs: Any) -> Any:
-        return "automation-gh", ({"default_branch": "main", "archived": False} if path == "/repos/someone/product" else
-                                 {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #10"})
+        if path == "/repos/someone/product":
+            return "automation-gh", {"default_branch": "main", "archived": False}
+        if path.startswith("/repos/someone/product/issues/10/dependencies/blocked_by?"):
+            return "automation-gh", []
+        assert path == "/repos/someone/product/pulls/71", path
+        return "automation-gh", {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #10"}
     config = {**module.DEFAULT_CONFIG, "labels": {**module.DEFAULT_CONFIG["labels"], "active": "custom-active"}}
     with patch.multiple(module, api_json=fetch, load_config=lambda *_: config):
         report = module.next_wait_context([row], scan_limit=1, inventory_complete=True)
@@ -1971,18 +1974,6 @@ def test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output()
     assert report["complete"] and report["items"][0]["selection_exclusion"]
     assert not candidates and excluded[0]["post_merge_evidence"]["evidence_complete"]
     assert "post_merge_evidence_complete" not in excluded[0]
-    row["labels"] = [{"name": "plan"}]
-    with patch.multiple(module, api_json=Mock(side_effect=AssertionError("unlabeled record is unexamined")), load_config=lambda *_: config):
-        report = module.next_wait_context([row], scan_limit=1, inventory_complete=True)
-    candidates = [module.compact_list_issue(row["repo"], row)]
-    module.exclude_landed_candidates(candidates, [], report)
-    assert not report["checked_issues"]
-    assert "post_merge_evidence_complete" not in candidates[0]
-    active = {**row, "number": 11, "labels": ["plan", "custom-active"],
-              "body": "## Current Status\nNext action: Implement the remaining phone fix.\n"}
-    with patch.multiple(module, api_json=Mock(return_value=("automation-gh", {"archived": False})), load_config=lambda *_: config):
-        report = module.next_wait_context([row, active], scan_limit=1, inventory_complete=True)
-    assert report["complete"] and report["checked_issues"] == [{"repo": row["repo"], "number": 11}]
 
 
 def test_global_stale_wait_report_reuses_merged_pr_proof_and_refuses_capacity() -> None:
@@ -1997,7 +1988,7 @@ def test_global_stale_wait_report_reuses_merged_pr_proof_and_refuses_capacity() 
             if path == "/repos/someone/business/issues/11":
                 return "automation-gh", {"state": "closed", "pull_request": {}}
             if path == "/repos/someone/business/pulls/11":
-                return "automation-gh", {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}}
+                return "automation-gh", {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #10"}
             return base_api(method, path, **kwargs)
         with patch.multiple(module, api_json=merged):
             module.cmd_next(next_args())
@@ -2007,6 +1998,27 @@ def test_global_stale_wait_report_reuses_merged_pr_proof_and_refuses_capacity() 
     assert result["waiting"] == []
     assert result["stale_waits"][0]["number"] == 10
     assert result["stale_waits"][0]["last_verified"] == "2026-10-01"
+
+    waiting["body"] = ("## Current Status\nState: Source complete.\nWaiting for: None.\n"
+                       "Next action: Supervisor routes PR #11 through the merge train, verifies landing, closes this issue.\n")
+    with global_fixture(roots, [waiting], edges, discovered=[tool]) as (module, result, _reads):
+        base_api = module.api_json
+        comment_reads = []
+        original_collect = module.collect_paged_rest_items
+        def counted_collect(path: str, **kwargs: Any) -> Any:
+            if path.startswith("/repos/someone/business/issues/10/comments"):
+                comment_reads.append(path)
+            return original_collect(path, **kwargs)
+        def counted(method: str, path: str, **kwargs: Any) -> Any:
+            if path.startswith("/repos/someone/business/issues/10/comments"):
+                comment_reads.append(path)
+            return merged(method, path, **kwargs)
+        with patch.multiple(module, api_json=counted, collect_paged_rest_items=counted_collect):
+            module.cmd_next(next_args())
+        assert len(comment_reads) == 1
+    report = next(row for row in result["stale_wait_report"]["items"] if row["number"] == waiting["number"])
+    assert report["selection_exclusion"]
+    assert all(row["number"] != waiting["number"] for row in result["candidates"])
 
 
 def test_graph_wait_ancestry_keeps_intermediate_nodes_and_one_capacity_frontier() -> None:
@@ -2399,7 +2411,8 @@ def test_milestone_summary_names_each_wait_when_no_milestone_work_is_listed() ->
 def test_empty_track_scoping_uses_reviewed_records_instead_of_summary() -> None:
     observed = {"complete": True, "pulls": [], "inventory": {"local_branches": [], "remote_branches": [], "worktrees": []},
                 "coverage": {"source": "fixture"}}
-    for actor in ("", "person:director", "event:deployment", "agent:old-session"):
+    named_actor = "agent:01970242-7941-7f0c-b461-16aa5723fb52"
+    for actor in ("", "person:director", "event:deployment", named_actor):
         track_issue = active_track("someone/direction", 1, "First", f"State: Waiting.\nNext actor: {actor}\n")
         if not actor:
             track_issue["body"] = "## Objective\nProve the milestone.\n"
@@ -2408,7 +2421,7 @@ def test_empty_track_scoping_uses_reviewed_records_instead_of_summary() -> None:
                 read_queue_ownership=lambda _: observed, wait_authors=lambda _: {"someone"},
                 ):
                 module.cmd_next(next_args())
-        if actor == "agent:old-session":
+        if actor == named_actor:
             assert not result["available_candidates"]
             assert [row["number"] for row in result["needs_status"]] == [track_issue["number"]]
         else:
@@ -2416,10 +2429,10 @@ def test_empty_track_scoping_uses_reviewed_records_instead_of_summary() -> None:
             assert not result["needs_status"]
         assert not result["underway"]
     scoped = result["needs_status"][0]
-    scoped["discussion"]["body"] = scoped["discussion"]["body"].replace("agent:old-session", "agent")
+    scoped["discussion"]["body"] = scoped["discussion"]["body"].replace(named_actor, "agent")
     routed = copy.deepcopy(scoped)
     routed.pop("queue")
-    routed["discussion"].update(body="## Current Status\nNext actor: agent:old-worker",
+    routed["discussion"].update(body="## Current Status\nNext actor: agent:old-worker\nTrial token: old-worker",
                                   updated_at="2026-10-30T00:00:00Z")
     routed["discussion"].pop("body_recorded_at", None)
     routed["discussion"]["comments"].append({"id": 10002, "author": "someone",
@@ -2704,6 +2717,8 @@ def test_global_reserves_final_evidence_time_without_claiming_a_complete_scan() 
 def test_parallel_wait_reports_preserve_stale_frozen_and_unavailable_evidence() -> None:
     rows = [global_issue("someone/project", number, wait_reviewed=False, labels=["plan", "plan:waiting"],
         body="## Current Status\nState: Waiting.\nWaiting for: #99 to complete.\nBlocked by: None.") for number in range(1, 7)]
+    for row in rows:
+        row["comments"] = 0
     for disposition in (False, True, None):
         module = load_module()
         module.load_config = lambda *_: module.DEFAULT_CONFIG
@@ -3097,7 +3112,6 @@ def test_local_next_uses_current_wait_and_native_graph_over_old_labels() -> None
 
 TESTS.extend([
     test_local_next_uses_current_wait_and_native_graph_over_old_labels,
-    test_unstatused_scope_is_review_work_without_becoming_a_person_wait,
 ])
 
 

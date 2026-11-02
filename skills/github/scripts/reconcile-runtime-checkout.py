@@ -245,7 +245,7 @@ def reconcile_checkout(
     landing_sha = receipt["landing_sha"]
     try:
         with reconciliation_lock(common_dir):
-            blockers = runtime_blockers(runtime_root, default_branch)
+            blockers = runtime_blockers(runtime_root, default_branch, receipt)
             if blockers:
                 receipt["blockers"] = blockers
                 receipt["before_sha"] = safe_git_text(runtime_root, "rev-parse", "HEAD")
@@ -294,7 +294,7 @@ def reconcile_checkout(
                 receipt["after_sha"] = safe_git_text(runtime_root, "rev-parse", "HEAD")
                 return finish(receipt, "retryable", "fetch_failed")
 
-            blockers = runtime_blockers(runtime_root, default_branch)
+            blockers = runtime_blockers(runtime_root, default_branch, receipt)
             if blockers or git_text(runtime_root, "rev-parse", "HEAD") != before_sha:
                 receipt["blockers"] = blockers
                 receipt["after_sha"] = safe_git_text(runtime_root, "rev-parse", "HEAD")
@@ -380,7 +380,7 @@ def reconcile_checkout(
                     return finish(receipt, "failed", "postcondition_runtime_binding_changed")
                 return finish(receipt, "already_current", "runtime_current")
 
-            pre_merge_blockers = runtime_blockers(runtime_root, default_branch)
+            pre_merge_blockers = runtime_blockers(runtime_root, default_branch, receipt)
             pre_merge_sha = git_text(runtime_root, "rev-parse", "HEAD")
             if (pre_merge_blockers or pre_merge_sha != current_sha
                     or not runtime_binding_matches(runtime_path or runtime_root, common_dir)):
@@ -415,7 +415,7 @@ def reconcile_checkout(
             receipt["runtime_mutated"] = after_sha != before_sha
             if after_sha != fetched_sha:
                 return finish(receipt, "failed", "postcondition_head_mismatch")
-            post_blockers = runtime_blockers(runtime_root, default_branch)
+            post_blockers = runtime_blockers(runtime_root, default_branch, receipt)
             if post_blockers:
                 receipt["blockers"] = post_blockers
                 return finish(receipt, "failed", "postcondition_runtime_not_clean")
@@ -493,6 +493,7 @@ def base_receipt(landing_sha: str | None) -> dict[str, Any]:
         "runtime_mutated": False,
         "failed_operation": None,
         "blockers": [],
+        "dirty_paths": [],
         "detail": None,
     }
 
@@ -635,7 +636,7 @@ def helper_path_relative_to(source_root: Path) -> Path:
     return helper_path.relative_to(source_root.resolve())
 
 
-def runtime_blockers(runtime_root: Path, default_branch: str) -> list[str]:
+def runtime_blockers(runtime_root: Path, default_branch: str, receipt: dict[str, Any] | None = None) -> list[str]:
     blockers: list[str] = []
     branch = current_branch(runtime_root)
     if branch is None:
@@ -644,7 +645,16 @@ def runtime_blockers(runtime_root: Path, default_branch: str) -> list[str]:
         blockers.append("runtime_wrong_branch")
     if git_has_hidden_index_state(runtime_root):
         blockers.append("runtime_hidden_index_state")
-    if git_text(runtime_root, "status", "--porcelain=v1", "--untracked-files=all"):
+    changes = run_git(runtime_root, "status", "--porcelain=v1", "-z", "--untracked-files=all").stdout
+    entries = iter(changes.decode(errors="surrogateescape").split("\0")[:-1])
+    paths: list[str] = []
+    for entry in entries:
+        paths.append(entry[3:])
+        if "R" in entry[:2] or "C" in entry[:2]:
+            paths.append(next(entries))
+    if receipt is not None:
+        receipt["dirty_paths"] = paths
+    if paths:
         blockers.append("runtime_dirty")
     operations = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "rebase-merge",
                   "rebase-apply", "sequencer", "BISECT_LOG", "BISECT_START")

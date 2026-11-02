@@ -81,6 +81,24 @@ def format_ownership(text: str) -> tuple[str, ...]:
 
 
 class ClaimMarkerTests(unittest.TestCase):
+    def test_recipient_routing_uses_existing_identity_records(self) -> None:
+        recipient = "launchplane-engineer"
+        status = f"Next actor: agent:{recipient}\n"
+        identity = {**OTHER, "worker": recipient}
+        for record in (f"Session: {recipient}", f"Brief from the Supervisor. Trial token: {recipient}.",
+                       f"**trial token:** `{recipient}`,", CLAIM.marker(identity)):
+            with self.subTest(record=record):
+                comments = [{"user": {"login": "owner"}, "body": record}]
+                found = CLAIM.recipient_evidence(status, comments, repo="owner/repo", number=42, trusted={"owner"})
+                assert found is not None
+                self.assertEqual(found["worker"], recipient)
+                self.assertIsNone(CLAIM.recipient_evidence(status, comments, repo="owner/repo", number=42, trusted={"owner"}, worker=recipient))
+                self.assertIsNone(CLAIM.recipient_evidence(status, comments, repo="owner/repo", number=42, trusted=set()))
+        for text in ("", f"> Trial token: {recipient}", f"```\nTrial token: {recipient}\n```", "Trial token: somebody-else"):
+            with self.subTest(text=text):
+                self.assertIsNone(CLAIM.recipient_evidence(status, [{"user": {"login": "owner"}, "body": text}],
+                                                         repo="owner/repo", number=42, trusted={"owner"}))
+
     def test_actor_ignores_examples_and_replaces_only_the_live_field(self) -> None:
         from github_plan_status import next_actor
         text = "```\nNext actor: person:example\n```\nNext actor: agent:old\nNext action: Continue.\n"
@@ -989,12 +1007,6 @@ class ClaimTests(unittest.TestCase):
                 self.run_claim()
                 self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
-    def test_cross_repository_uses_canonical_planning_label_configuration(self):
-        self.cross_repository_fixture()
-        self.configs["other/plans"] = copy.deepcopy(PLAN.DEFAULT_CONFIG)
-        self.configs["other/plans"]["labels"]["active"] = "custom-active"
-        self.run_claim()
-        self.assertIn(self.configs["other/plans"]["labels"]["active"], PLAN.normalize_labels(self.issue["labels"]))
 
     def test_retained_sibling_metadata_denial_stops_without_writing(self):
         self.refresh_fixture()
@@ -1103,18 +1115,6 @@ class ClaimTests(unittest.TestCase):
                     self.assertEqual(caught.exception.payload["waiting_record"][key], value)
                 self.assert_no_writes()
 
-    def test_clear_wait_refusal_preserves_the_blocking_plan_status(self):
-        for status in ("stale", "done"):
-            with self.subTest(status=status):
-                self.setUp()
-                self.issue["labels"] = [PLAN.DEFAULT_CONFIG["labels"][status]]
-                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                    self.run_claim()
-                self.assertEqual(caught.exception.code, "claim_wait_unresolved")
-                self.assertEqual(caught.exception.payload["structured_wait"], self.wait)
-                self.assertFalse(caught.exception.payload["review_required"])
-                self.assertEqual(caught.exception.payload["waiting_record"]["plan_status"], status)
-                self.assert_no_writes()
 
     def test_planning_checkout_inventory_reads_and_verifies_exact_git_identity(self):
         planning_path = Path("/verified/plans")
@@ -1142,7 +1142,7 @@ class ClaimTests(unittest.TestCase):
                     patch.object(PLAN, "workspace_config_path", return_value=root / "missing-workspace-config"):
                 resolved = PLAN.load_config("owner/some-repo")
                 self.assertEqual(PLAN.repo_config_path("owner/some-repo"), config)
-            self.assertEqual(resolved["labels"]["active"], "custom-active")
+            self.assertNotIn("active", resolved["labels"])
 
     def test_closed_superseded_pr_without_artifacts_does_not_hold_refresh(self):
         self.refresh_fixture()
@@ -1869,7 +1869,7 @@ class ClaimTests(unittest.TestCase):
             with patch.object(PLAN, "git_root", return_value=None), patch.object(PLAN, "repo_from_git", side_effect=lambda p: "other/plans" if p == root else None), \
                     patch.object(PLAN, "workspace_config_path", return_value=root / "missing-workspace-config"):
                 resolved = PLAN.load_config("other/plans", checkout=root)
-            self.assertEqual(resolved["labels"]["active"], source["planning"]["labels"]["active"])
+            self.assertNotIn("active", resolved["labels"])
 
     def test_refresh_requires_own_new_task_branch(self):
         for branch in ("work/issue-42-original", "work/issue-42-audits", "work/issue-42-fixtures"):
@@ -1999,7 +1999,7 @@ class ClaimTests(unittest.TestCase):
                     self.targets["100"]["state"] = "closed"
                 historical = shape in {"weak_open", "weak_merged", "other_released_merged"}
                 if historical:
-                    self.targets["100"]["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
+                    self.targets["100"]["labels"] = [{"name": 'plan:waiting'}]
                     self.target_comments["/repos/owner/repo/issues/100/comments"] = [{"id": 900,
                         "user": {"login": TEST_BOT}, "body": wait_record.marker(wait_record.reviewed(
                             evidence="Independent archived acceptance", waiting_for="Client acceptance", ends_when="Client accepts archived work"))}]
@@ -2451,7 +2451,7 @@ class ClaimTests(unittest.TestCase):
         self.comments[0]["created_at"] = source["claimed_at"]
         self.comments[-1]["created_at"] = "2026-10-02T00:00:00Z"
         self.targets["41"] = {**copy.deepcopy(self.issue), **self.parent,
-                              "labels": [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}],
+                              "labels": [{"name": 'plan:waiting'}],
                               "body": (f"## Current Status\n\nState: Active; owned by {source['worker']}.\n"
                                        f"Session: {source['session']}\nBranch: {source['branch']}\n"
                                        + CLAIM.marker(source) + "\n" + wait_record.marker(parent_wait))}
@@ -3646,7 +3646,7 @@ class ClaimTests(unittest.TestCase):
                 if change == "child_wait": self.wait = wait_record.reviewed(evidence="Child needs acceptance", waiting_for="Client", ends_when="Client accepts")
                 if change == "parent_status": self.targets["41"]["body"] += "\n" + CLAIM.marker({**OTHER, "session": "third"})
                 if change == "retained_pr_wait":
-                    self.targets["99"]["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
+                    self.targets["99"]["labels"] = [{"name": 'plan:waiting'}]
                     self.record_wait(target="99")
                 with self.assertRaises(PLAN.PlanError) as caught:
                     self.run_claim()
@@ -3718,7 +3718,7 @@ class ClaimTests(unittest.TestCase):
                 wait = wait_record.reviewed(evidence="Director requested prerequisite readback", waiting_for="Approved prerequisite readback", ends_when="Director accepts proof")
                 if place == "issue":
                     self.wait = wait
-                    self.issue["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
+                    self.issue["labels"] = [{"name": 'plan:waiting'}]
                 else:
                     self.target_comments[f"/repos/owner/repo/issues/{place}/comments"].append({"id": 88, "user": {"login": TEST_BOT}, "body": wait_record.marker(wait)})
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
@@ -3732,8 +3732,7 @@ class ClaimTests(unittest.TestCase):
                 if place == "issue":
                     status, _ = PLAN.read_plan_sections(self.issue)
                     self.assertEqual(wait_record.records(status["Current Status"]), [wait])
-                    self.assertIn(PLAN.DEFAULT_CONFIG["labels"]["waiting"], PLAN.normalize_labels(self.issue["labels"]))
-                    self.assertEqual(PLAN.next_plan_status(self.issue, PLAN.DEFAULT_CONFIG), "waiting")
+                    self.assertIn('plan:waiting', PLAN.normalize_labels(self.issue["labels"]))
                 else:
                     self.assertIn(f"https://github.com/owner/repo/pull/{place}", self.comments[-1]["body"])
                     self.assertIn(wait_record.marker(wait), self.issue["body"])
@@ -3785,12 +3784,11 @@ class ClaimTests(unittest.TestCase):
     def test_ordinary_recovery_records_newly_verified_pr_wait_in_current_status(self):
         self.ordinary_handoff_fixture()
         self.run_claim()
-        self.targets["99"]["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
+        self.targets["99"]["labels"] = [{"name": 'plan:waiting'}]
         self.record_wait(target="99")
         self.args.wait_resolved = "Fresh authorization for this step; preserve the new PR hold."
         self.run_claim()
         self.assertEqual(self.events.count("post"), 1)
-        self.assertIn("> Labels: " + PLAN.DEFAULT_CONFIG["labels"]["waiting"], self.issue["body"])
         self.assertIn(self.args.wait_resolved, self.issue["body"])
 
     def test_retained_handoff_refusal_reports_each_retained_pr_owner(self):
@@ -3835,38 +3833,24 @@ class ClaimTests(unittest.TestCase):
                 self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
                 if phase == "after_post": self.assertNotIn("status", self.events)
 
-    def test_ordinary_handoff_refuses_new_wait_label_on_either_readback(self):
-        for phase in ("after_post", "after_status"):
-            with self.subTest(phase=phase):
-                self.setUp()
-                self.ordinary_handoff_fixture()
-                self.args.wait_resolved = "Existing prerequisite authorization."
-                setattr(self, phase, lambda: self.issue["labels"].append({"name": PLAN.DEFAULT_CONFIG["labels"]["blocked"]}))
-                with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
-                self.assertIn("holds changed", str(caught.exception))
-                self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 
-    def test_new_hold_after_status_is_preserved_before_label_mutation(self):
-        for retained, key, structured in product((False, True), ("waiting", "blocked", "stale", "done"), (False, True)):
-            with self.subTest(retained=retained, key=key, structured=structured):
+    def test_new_structured_hold_after_status_is_preserved(self) -> None:
+        for retained in (False, True):
+            with self.subTest(retained=retained):
                 self.setUp()
-                if retained: self.ordinary_handoff_fixture()
-                self.args.wait_resolved = "Previously reviewed absence of holds."
-                hold = wait_record.reviewed(evidence="New acceptance request after publication",
-                    waiting_for="Client acceptance", ends_when="Client accepts the current result")
-                def add_hold():
-                    if structured:
-                        self.comments.append({"id": 900, "user": {"login": TEST_BOT}, "body": wait_record.marker(hold)})
-                    self.issue["labels"].append({"name": PLAN.DEFAULT_CONFIG["labels"][key]})
-                self.after_status = add_hold
-                with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
+                if retained:
+                    self.ordinary_handoff_fixture()
+                hold = wait_record.reviewed(evidence="New Client test request", waiting_for="Client",
+                                            ends_when="Client reports acceptance")
+                self.after_status = lambda: self.comments.append({"id": 900, "user": {"login": TEST_BOT},
+                                                                  "body": wait_record.marker(hold)})
+                with self.assertRaises(PLAN.PlanError) as caught:
+                    self.run_claim()
                 self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
                 self.assertIn("status", self.events)
-                self.assertNotIn("labels", self.events)
-                self.assertIn(PLAN.DEFAULT_CONFIG["labels"][key], PLAN.normalize_labels(self.issue["labels"]))
-                if structured: self.assertIn(hold, wait_record.records(self.comments[-1]["body"]))
+                self.assertIn(hold, wait_record.records(self.comments[-1]["body"]))
                 self.after_status = lambda: None
-                self.args.wait_resolved = "Newly recorded hold reviewed for the permitted source work."
+                self.args.wait_resolved = "New Client hold reviewed for the permitted source work."
                 self.run_claim()
                 self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
 
@@ -4275,11 +4259,11 @@ class ClaimTests(unittest.TestCase):
         self.run_claim()
         self.assertLess(self.events.index("post"), self.events.index("status"))
         self.assertIn("read_comments", self.events[self.events.index("post") + 1:self.events.index("status")])
-        self.assertIn("read_issue", self.events[self.events.index("labels") + 1:])
-        self.assertIn("read_comments", self.events[self.events.index("labels") + 1:])
+        self.assertIn("read_issue", self.events[self.events.index("status") + 1:])
+        self.assertIn("read_comments", self.events[self.events.index("status") + 1:])
         self.assertIn("Keep me", self.issue["body"])
         self.assertEqual(CLAIM.records(self.issue["body"])[0]["session"], self.args.session)
-        self.assertEqual(PLAN.normalize_labels(self.issue["labels"]), [PLAN.DEFAULT_CONFIG["labels"]["active"]])
+        self.assertNotIn("labels", self.events)
         output = self.emitted.call_args.args[0]
         self.assertFalse(output["exclusive_lock"])
 
@@ -5925,13 +5909,21 @@ class ClaimTests(unittest.TestCase):
                 self.assertIn(status, self.emitted.call_args.args[0]["previous_current_status"])
 
     def test_named_recipient_without_a_claim_requires_custody_reconciliation(self) -> None:
-        self.issue["body"] += "Next actor: agent:existing-worker\n"
+        self.issue["body"] += "Next actor: agent:existing-worker\nTrial token: existing-worker\n"
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
         self.assertEqual(caught.exception.code, "claim_conflict")
         self.assertTrue(any(row["source"] == "recorded_recipient"
                             for row in caught.exception.payload["competing_evidence"]))
         self.assert_no_writes()
+
+    def test_role_actor_does_not_reserve_execution_without_a_claim(self) -> None:
+        for role in ("launchplane-engineer", "launchplane", "launchplane-native-qualification"):
+            with self.subTest(role=role):
+                self.setUp()
+                self.issue["body"] += f"Next actor: agent:{role}\n"
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_comment_status_uses_the_same_trusted_reader_for_issues_and_prs(self) -> None:
         for record_type in ("issue", "pull_request"):
@@ -5940,7 +5932,7 @@ class ClaimTests(unittest.TestCase):
             if record_type == "pull_request":
                 self.pr_fixture()
             self.comments = [{"id": 1, "user": {"login": TEST_BOT},
-                "body": "## Current Status\nNext actor: agent:existing-worker"}]
+                "body": "## Current Status\nNext actor: agent:existing-worker\nTrial token: existing-worker"}]
             with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                 self.run_claim()
             self.assertEqual(caught.exception.code, "claim_conflict")
@@ -5960,7 +5952,7 @@ class ClaimTests(unittest.TestCase):
             self.issue["updated_at"] = "2026-10-26T00:00:00Z"
             self.comments = [{"id": 1, "user": {"login": TEST_BOT},
                 "created_at": "2026-10-25T00:00:00Z",
-                "body": "## Current Status\nNext actor: agent:existing-worker"}]
+                "body": "## Current Status\nNext actor: agent:existing-worker\nTrial token: existing-worker"}]
             with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                 self.run_claim()
             self.assertEqual(caught.exception.code, "claim_conflict")
@@ -5993,8 +5985,6 @@ class ClaimTests(unittest.TestCase):
         self.assertIn("post_claim", receipt["completed_steps"])
         self.assertIn("starts after First", receipt["previous_current_status"])
         self.assertIn(self.args.wait_resolved, self.comments[-1]["body"])
-        self.assertIn("plan:active", PLAN.normalize_labels(self.issue["labels"]))
-        self.assertNotIn("plan:waiting", PLAN.normalize_labels(self.issue["labels"]))
 
     def test_no_wait_text_does_not_override_native_blocker(self):
         self.issue["body"] += "Blocked by: No native issue blocker.\nWaiting for: nothing.\n"
@@ -6004,9 +5994,9 @@ class ClaimTests(unittest.TestCase):
         self.assert_no_writes()
 
     def test_stale_wait_label_does_not_override_reviewed_clear_record(self):
-        self.issue["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
+        self.issue["labels"] = [{"name": 'plan:waiting'}]
         self.run_claim()
-        self.assertEqual(PLAN.normalize_labels(self.issue["labels"]), [PLAN.DEFAULT_CONFIG["labels"]["active"]])
+        self.assertNotIn("labels", self.events)
 
     def test_failed_final_readback_returns_prior_status_for_recovery(self):
         self.after_status = self.compete

@@ -96,7 +96,8 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(rows[0]["labels"], ["plan", "plan:active"])
 
     def test_unknown_archive_state_degrades_coverage_without_losing_wait_evidence(self) -> None:
-        row = issue(1, labels=["plan:waiting"])
+        row = issue(1, labels=[], comments=0,
+                    body="## Current Status\nState: Waiting.\nWaiting for: Supervisor routing.\n")
         for metadata in ({"archived": False}, {}, AUDIT.AuditError("HTTP 403")):
             read = Mock(side_effect=metadata) if isinstance(metadata, Exception) else Mock(return_value=metadata)
             report = AUDIT.stale_wait_report([row], "owner/history", fetch=read)

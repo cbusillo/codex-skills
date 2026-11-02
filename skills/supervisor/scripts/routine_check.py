@@ -8,6 +8,7 @@ import importlib
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -17,7 +18,6 @@ from typing import TYPE_CHECKING, Any
 
 import compact_check
 import foreign_watch
-import goal_board
 import oq
 from question_delivery import run_queue, source_item
 
@@ -106,7 +106,43 @@ def source_errors(name: str, report: dict) -> list[str]:
             errors.append(f"ERROR {name}: coverage incomplete")
     if report.get("ok") is False or report.get("complete") is False:
         errors.append(f"ERROR {name}: reader incomplete")
+    if name == "next":
+        for key in ("candidate_coverage", "graph_context", "discovery_context", "queue_context", "stale_wait_report",
+                    "live_breakage_context", "focus_context", "performance"):
+            errors.extend(coverage_errors(report.get(key, {}), f"next {key}"))
     return errors
+
+
+def coverage_detail(value: Any) -> Any:
+    if isinstance(value, list):
+        return [coverage_detail(item) for item in value]
+    if isinstance(value, dict):
+        return {key: coverage_detail(item) for key, item in value.items()
+                if key not in {"direction", "discussion", "body", "comments", "items", "checked_issues", "references"}}
+    return value
+
+
+def coverage_errors(value: Any, scope: str) -> list[str]:
+    if isinstance(value, dict):
+        if (value.get("complete") is False or value.get("errors") or value.get("error")
+                or value.get("truncated") is True or value.get("deadline_exhausted") is True):
+            return [f"ERROR {scope}: {json.dumps(coverage_detail(value), sort_keys=True)}"]
+        return [error for key, item in value.items() for error in coverage_errors(item, f"{scope}.{key}")]
+    if isinstance(value, list):
+        return [error for index, item in enumerate(value) for error in coverage_errors(item, f"{scope}[{index}]")]
+    return []
+
+
+def staffing(owner: str) -> dict:
+    helper = Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py"
+    result = subprocess.run(["uv", "run", str(helper), "--repo", f"{owner}/direction", "next",
+                             "--limit", str(sys.maxsize), "--time-budget", "120"], capture_output=True, text=True, timeout=180)
+    report = json.loads(result.stdout)
+    if not isinstance(report, dict):
+        raise ValueError(f"Global next returned no portfolio report for {owner}")
+    if result.returncode:
+        report["ok"] = False
+    return report
 
 
 def pointer(row: dict) -> str:
@@ -121,13 +157,26 @@ def digest(sources: dict[str, dict]) -> str:
     for row in sessions:
         if row.get("action") or row.get("error"):
             lines.append(f"WORKER {pointer(row)}: {row.get('error') or row['action']}")
-    board = sources.get("board", {})
-    for track in board.get("tracks", []):
-        for row in (track, *track.get("children", [])):
-            if row.get("unread") or row.get("read") is False:
-                lines.append(f"ERROR board {pointer(row)}: {row.get('unread') or 'unread record'}")
-            if row.get("state") != "closed" and row.get("status") == "plan:active" and (row.get("next_actor") or "").startswith("agent"):
-                lines.append(f"NEXT {pointer(row)}: {row.get('next_action', 'Review the next record')} (verify ownership)")
+    selection = sources.get("next", {})
+    needs_status = []
+    for field in ("candidates", "excluded", "needs_status"):
+        for row in selection.get(field, []):
+            queue = row.get("queue", {})
+            if str(row.get("state", "")).casefold() != "open" or row.get("record_type") == "pull_request":
+                continue
+            if field == "excluded" and row.get("exclusion") not in {"assigned_elsewhere", "agent_assignment_unresolved"}:
+                continue
+            if row.get("exclusion") == "agent_assignment_unresolved" and len(row.get("agent_labels", [])) > 1:
+                lines.append(f"REVIEW {pointer(row)}: conflicting agent assignments")
+            elif queue.get("state") == "available" and (queue.get("next_actor") or "").startswith("agent"):
+                lines.append(f"NEXT {pointer(row)}: {queue['next_action']} (verify ownership)")
+            elif queue.get("state") in {"review", "needs_status"}:
+                if (queue.get("next_actor") or "").startswith("agent"):
+                    lines.append(f"REVIEW {pointer(row)}: {queue.get('reason')}; {queue.get('next_action', '')}")
+                else:
+                    needs_status.append(row)
+    if needs_status:
+        lines.append(f"NEEDS_STATUS {len(needs_status)}: {pointer(needs_status[0])} (review global next intake)")
     questions = sources.get("questions", {})
     lines.append(f"QUEUE {questions.get('queue', 'UNKNOWN')}")
     queued = [question for question in questions.get("questions", []) if question.get("registration_url")]
@@ -151,7 +200,7 @@ def digest(sources: dict[str, dict]) -> str:
     for row in sources.get("watch", {}).get("notices", []):
         lines.append(f"WATCH {pointer(row)} (untrusted notification)")
     lines.append(
-        f"LOAD sessions={len(sessions)} tracks={len(board.get('tracks', []))} host={','.join(f'{value:.1f}' for value in os.getloadavg())}"
+        f"LOAD sessions={len(sessions)} candidates={selection.get('candidate_count', 0)} host={','.join(f'{value:.1f}' for value in os.getloadavg())}"
     )
     return "\n".join(dict.fromkeys(lines))
 
@@ -205,14 +254,6 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
             for row in source_comments
         ]
 
-    def board() -> dict:
-        authors = {author.casefold() for author in oq.default_decision_authors()}
-        result = goal_board.goal_board(github_reader(), args.owner, trusted={args.owner.casefold(), *authors})
-        if not authors:
-            result["coverage"]["complete"] = False
-            result["errors"] = [*result.get("errors", []), "Staffing automation authors are unconfigured; coverage is incomplete"]
-        return result
-
     def questions() -> dict:
         items = list(args.source)
         errors = []
@@ -258,7 +299,7 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
         return result
 
     return {
-        "board": board,
+        "next": lambda: staffing(args.owner),
         "sessions": lambda: compact_check.report(args.ledger, args.capacity_state),
         "questions": questions,
         "comments": comments,

@@ -509,19 +509,18 @@ comments on the repair issue; an absent comment never authorizes a blind retry.
 certainly unstarted miss write is retryable. Completed receipts are retained for
 the radar's 30-day window; unresolved send and audit fences remain preserved.
 
-Add `--director-login DIRECTOR-LOGIN --mention-approval <approval-comment-link>`
-to also report threads outside the listed repositories that mention the
-Director, including private repositories only the Director's login can read.
-That search runs read-only under the Director's active gh login and needs the
-Director's [standing mention-search approval](../../github/references/cli-reference.md#mention-search-approval), bound to the approving
-Director's own question ID and permission heading. Each search
-overlaps the previous one by 15 minutes to catch late search indexing; the
-state file's `mention_seen` keeps already-reported thread versions from
-repeating. Until approval is configured,
-each pass prints the gap under `coverage_gaps` and keeps watching; a gap never
-stops the watcher or counts as a notice. Mention notices (`kind:
-director_mention`) are untrusted links like every other notice. A failed
-search is a retryable error that keeps the mention watermark.
+The configured `--owner` also finds open threads outside the watched list
+that mention or name that Director, including people-index names. These reads
+use the existing reader identity and include old questions without needing
+an additional login, approval or catch-up window. The state file's
+`mention_seen` reports each thread version once, retaining versions across
+search-index gaps. Search limits and read failures remain visible gaps.
+Notices (`kind: director_mention`) are untrusted links and never instructions.
+
+An explicit `--director-login DIRECTOR-LOGIN --mention-approval <approval-comment-link>`
+retains the optional personal-login search for repositories only that login
+can read, under the [standing approval rule](../../github/references/cli-reference.md#mention-search-approval).
+That optional search adds to the backlog read and keeps its update window and login check.
 
 Without `--repo`, each pass watches every non-archived repository of
 `--owner` that the automation installation can read, so a new repository is
@@ -791,21 +790,20 @@ service admission.
 `scripts/stranded_service.py` uses the persistent service runner's locks,
 process cleanup and reconciliation markers for a separate daily launchd job.
 It calls the existing direction audit in stranded Markdown mode with `--apply-next`,
-then invokes the configured sender. The sweep handles recorded next actions
-before the digest. `scan_args` must name the Director's GitHub account with `--stranded-owner`.
-It contains no credentials. The Supervisor
-installs and starts it after merge; preparing or rendering a job never starts it.
-Use the installed runtime catalog, never a task worktree.
+then posts the full list through `stranded_archive.py` and the existing bot
+comment helper to the pinned [digest archive](https://github.com/cbusillo/codex-skills/issues/2006).
+The archive comment is the delivery receipt. The Supervisor's routine check
+reads it; this job sends no Discord message. The question queue's Discord cards
+keep their existing delivery path.
 
-Keep this configuration private. Select the same inventory and trusted authors
-as the Supervisor's existing question queue. Supply the existing Discord helper
-as an absolute argument array; it receives Markdown on stdin, and `{report}` in
-an argument expands to the retained report path for file-based senders. The
-helper's documented success contract must be exit zero only after confirmed
-delivery. Its stdout/stderr are retained as transport evidence; the runner does
-not infer success from their wording. A session-only MCP reply tool cannot serve as this command.
-If no standalone route exists, resolve that on the owning issue before activation;
-do not invent a destination or provision credentials.
+`scan_args` names the Director's account with `--stranded-owner` and selects
+the same inventory and trusted authors as the Supervisor's question queue.
+Keep the configuration private and credential-free. Use the installed runtime
+catalog, never a task worktree. Preparing or rendering a job never starts it.
+Update the runtime catalog and remove the old `delivery_argv` entry in the
+same maintenance step, before the next scheduled run. Old and new runners
+require their matching configuration. No plist or schedule change is needed. Optional `tracking_issue` selects another
+archive instead of the pinned default.
 
 ```json
 {
@@ -813,7 +811,6 @@ do not invent a destination or provision credentials.
   "catalog": "/runtime/catalog",
   "state_dir": "/private/stranded-state",
   "scan_args": ["--stranded-owner", "OWNER", "--question-queue", "OWNER/CATALOG#QUEUE", "--director-name", "DIRECTOR", "--max-requests", "2000", "--deadline-seconds", "600"],
-  "delivery_argv": ["/absolute/path/to/uv", "run", "--no-project", "--no-cache", "/runtime/catalog/skills/supervisor/scripts/discord_digest.py", "--file", "{report}"],
   "hour": 7,
   "minute": 30,
   "weekly": {"owner": "OWNER", "weekday": 1}
@@ -822,70 +819,28 @@ do not invent a destination or provision credentials.
 
 The optional `weekly` entry runs the
 [weekly direction audit](../../direction/SKILL.md#weekly-audit),
-`direction_audit.py --weekly --owner OWNER`, after the daily digest, whether or
-not that digest succeeded. It runs on the first scheduled run on or after the
-ISO `weekday` (1 is Monday) and, after a failure, on each later daily run until one
+`direction_audit.py --weekly --owner OWNER`, after the daily archive, whether or
+not it succeeded. It runs on the first scheduled run on or after the ISO
+`weekday` (1 is Monday) and, after a failure, on each later daily run until one
 audit records the weekly stamp that ISO week. The receipt is saved as
 `weekly/DATE.receipt.json` under `state_dir`. Each attempt that left the stamp
-unwritten stays as its own `DATE-*.attempt.json`, never overwritten, with stderr
-beside every attempt. Repository windows are committed together only after the
-complete receipt is flushed, so a stopped collection or output failure leaves
-the original windows for the next scheduled or manual audit.
-An exit-1 attempt with complete JSON and `weekly_skipped` can advance the read
-repositories' windows; the receiver must use its findings as well as the next
-receipt. The audit is
-bounded to 30 minutes and sends nothing. The plist does not change: add the entry
-to the private configuration, and the next run picks it up.
-
-`discord_digest.py` is the standalone digest sender. It reads Markdown from
-`--file` or stdin and reads `DIRECTOR_DIGEST_DISCORD_WEBHOOK_URL` from the
-process environment first, otherwise `local.env` under `CODE_HOME`, then
-`CODEX_HOME`, then `~/.code`. It parses only that assignment, without sourcing
-the file or expanding shell expressions. Keep the webhook in the private
-mode-600 environment file; never put it in the configuration or arguments.
-A missing key fails with `digest_webhook_missing`, without a value.
-
-For stranded-work reports, the sender posts the full list once on the pinned
-[digest archive](https://github.com/cbusillo/codex-skills/issues/2006), reusing an
-identical bot-authored comment on a reconciled retry. `--tracking-issue
-OWNER/REPO#NUMBER` selects another archive. It then sends one message below
-2,000 UTF-16 units: date and coverage, counts by kind, all Director waits by
-name, oldest five links for each other kind, and the full-list link. If that
-cannot fit, the same single message carries counts, the full-list link, and the
-complete original report as a `stranded-work.md` attachment. Every person wait
-is preserved in that attachment. Archive errors prevent Discord delivery.
-Input, summary, archive, and delivery failures have distinct value-free names
-in retained sender stderr. The full-list archive still depends on GitHub
-accepting the report as one comment; an archive rejection stops delivery with
-`digest_archive_failed`, preserving the report for reconciliation.
-
-The sender reads the guild and channel from the webhook metadata and posts with
-`wait=true` and mentions disabled. Each confirmed message prints its
-`https://discord.com/channels/GUILD/CHANNEL/MESSAGE` receipt. Other Markdown
-input keeps the existing multipart behavior. Only all confirmed parts produce
-exit zero. See the
-[Discord webhook contract](https://docs.discord.com/developers/resources/webhook).
-It never retries: on a partial failure the prior links remain in
-`delivery.stdout`. Reconcile **all parts** at the receiver before clearing the
-marker; a link for an early part alone does not prove the whole report arrived.
-Named errors contain no URL or response body. Do not run the sender directly
-as a connectivity test against the real destination. After merging and updating
-the catalog through its supported path, the existing job needs no reconfiguration.
-Its schedule, plist, private configuration and webhook remain the same.
+unwritten stays as its own `DATE-*.attempt.json`, with stderr beside it.
+Repository windows are committed together only after the complete receipt is
+flushed, so a stopped collection or output failure leaves the original windows
+for the next audit. An exit-1 attempt with complete JSON and `weekly_skipped`
+can advance the read repositories' windows; use its findings as well as the
+next receipt. The audit is bounded to 30 minutes and sends nothing.
 
 The calendar uses the Mac's system timezone: verify it is US Eastern for a
 7:30 AM ET schedule. launchd coalesces a missed calendar invocation after sleep;
-this user LaunchAgent requires the user to be logged in, but no terminal or
-agent session. `KeepAlive` and `RunAtLoad` are disabled. One successful delivery
-per local calendar day suppresses duplicate kickstarts; failures do not become
-successful deliveries. Exit 3 from the collector is delivered with coverage
-warnings and retained as `scan_exit_code: 3` in the daily receipt. The runner
-exits zero after the sender succeeds so launchd does not replay that delivery.
-Other collector failures retain output without sending it. Scan and delivery
-have 15-minute and two-minute bounds, respectively.
+this user LaunchAgent requires login, but no terminal or agent session.
+`KeepAlive` and `RunAtLoad` are disabled. One successful archive per local day
+suppresses duplicate kickstarts. Exit 3 from the collector is archived with
+coverage warnings and retained as `scan_exit_code: 3` in the daily receipt.
+Other collector failures retain output without posting. Scan and archive have
+15-minute and two-minute bounds, respectively.
 
-After filling the private configuration with verified existing routing, the
-Supervisor renders, installs and starts only this job:
+After filling the private configuration, render, install and start only this job:
 
 ```sh
 uv run /runtime/catalog/skills/supervisor/scripts/stranded_service.py render --config /private/stranded.json --output /private/stranded-jobs
@@ -893,7 +848,7 @@ install -m 600 /private/stranded-jobs/com.codex-skills.supervisor.stranded.plist
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.codex-skills.supervisor.stranded.plist
 ```
 
-Trigger the first digest immediately, then inspect the logs and receiver:
+Inspect the scheduled run's logs and archive. For an immediate run:
 
 ```sh
 launchctl kickstart "gui/$(id -u)/com.codex-skills.supervisor.stranded"
@@ -901,33 +856,32 @@ launchctl print "gui/$(id -u)/com.codex-skills.supervisor.stranded"
 ```
 
 `state_dir` retains each attempt's Markdown, collector stderr and delivery
-stdout/stderr in a separate dated directory, plus daily delivery status JSON and
-runner logs. Retries preserve earlier failed attempts. A zero sender exit records transport
-success; record the actual Discord message link and Chris's receiver evidence
-on the owning issue before calling daily delivery active. A failed, timed out
-or interrupted send leaves `daily.stranded.reconcile`. Later invocations refuse
-to send until the Supervisor checks the retained outcome at the destination.
-If delivered, record its verified message URL so the schedule resumes without
-replaying that day's digest:
+stdout/stderr in a separate dated directory, plus daily delivery status JSON
+and runner logs. Retries preserve earlier attempts. The archive helper prints
+the confirmed GitHub comment URL and exits zero only after the comment helper
+confirms delivery. It reuses an identical bot-authored comment on a reconciled
+retry. GitHub must accept the full report as one comment; rejection retains
+the report for reconciliation. Archive failure remains delivery failure; a failed, timed out or
+interrupted post leaves `daily.stranded.reconcile`. Later invocations refuse
+to post until the retained outcome is checked at the archive.
+
+If the comment exists, record its verified URL so the schedule resumes without
+replaying that day's report:
 
 ```sh
-uv run /runtime/catalog/skills/supervisor/scripts/stranded_service.py clear --config /private/stranded.json --delivered-url https://discord.com/channels/GUILD/CHANNEL/MESSAGE
+uv run /runtime/catalog/skills/supervisor/scripts/stranded_service.py clear --config /private/stranded.json --delivered-url https://github.com/OWNER/CATALOG/issues/NUMBER#issuecomment-ID
 ```
 
-If confirmed unsent and the marker references today's completed scan, retry that
-retained report without scanning again. This command is only for a
-confirmed unsent delivery; an empty stdout alone does not prove that when a
-network request could have succeeded. Input, webhook configuration, summary and
-archive-stage failures precede Discord delivery. An HTTP or response failure,
-`digest_delivery_failed`, a timeout, or an interrupted sender can follow an
-accepted POST and require checking the receiver first. The runner uses its existing lock, reservation and daily
-receipt, retains the original attempt, and records retry output separately:
+If confirmed unposted and the marker references today's completed scan, retry
+the retained report without scanning again. Empty stdout alone does not prove
+that a network request failed. The runner keeps its lock, reservation and daily
+receipt, preserves the original attempt, and records retry output separately:
 
 ```sh
 uv run /runtime/catalog/skills/supervisor/scripts/stranded_service.py retry-unsent --config /private/stranded.json
 ```
 
-If confirmed unsent and a fresh scan is needed, clear the marker and kickstart once:
+If confirmed unposted and a fresh scan is needed, clear the marker and kickstart once:
 
 ```sh
 uv run /runtime/catalog/skills/supervisor/scripts/stranded_service.py clear --config /private/stranded.json
@@ -940,24 +894,21 @@ launchctl bootout "gui/$(id -u)/com.codex-skills.supervisor.stranded"
 rm ~/Library/LaunchAgents/com.codex-skills.supervisor.stranded.plist
 ```
 
-Keep private configuration and evidence for recovery. Stop before updating or
-rotating its files and verify children exited. Pull the landed runtime catalog
-through the supported update path, render again, review and bootstrap the job.
-To roll back, restore the previous reviewed configuration/catalog revision and
-render/bootstrap it after reconciling any pending send. Other Supervisor jobs
-and GitHub records need no change. Offline tests:
-`uv run skills/supervisor/scripts/test_stranded_service.py`,
-`uv run skills/supervisor/scripts/test_services.py` and
-`uv run skills/supervisor/scripts/test_discord_digest.py` (fake HTTP only) and
-`uv run skills/supervisor/scripts/test_digest_summary.py` (synthetic reports).
+Keep private configuration and evidence for recovery. Verify children exited
+before updating its files. Pull the landed runtime catalog through its supported
+path. To roll back, restore the previous reviewed configuration/catalog revision
+after reconciling any pending post. Other Supervisor jobs need no change.
+Offline tests: `uv run skills/supervisor/scripts/test_stranded_service.py`,
+`uv run skills/supervisor/scripts/test_stranded_archive.py` and
+`uv run skills/supervisor/scripts/test_services.py`.
 
 During every Supervisor check, inspect this job too: `launchctl print` above,
 `runner.jsonl`, `runner.stderr.log`, `daily.stranded.reconcile`, and the latest
-daily receipt. After the scheduled time, a missing receipt means the digest has
-not been confirmed: read the attempt's scan/sender output, reconcile any marker,
-and retry only a confirmed unsent delivery. A scan failure can retry without a
-send marker; a sender failure stays stopped across future mornings until
-reconciled. Never treat a loaded job alone as proof that digests are arriving.
+daily receipt. After the scheduled time, a missing receipt means the archive
+has not been confirmed: inspect the attempt's scan/archive output, reconcile
+any marker, and retry only a confirmed unposted report. A scan failure can retry
+without a post marker; an archive failure stays stopped across future mornings
+until reconciled. A loaded job alone does not prove scheduled delivery.
 
 ## Persistent Supervisor services
 
@@ -1184,6 +1135,14 @@ in `supervisor_session` for closeout exclusion; update it at takeover.
 Catalog verification needs no `services.py bind` or managed Supervisor pane.
 The service entry's `failure_argv` uses the existing sender, accepting Markdown
 on stdin, to the channel Chris and the Supervisor already use.
+`discord_digest.py` reads `DIRECTOR_DIGEST_DISCORD_WEBHOOK_URL` from the
+process environment, otherwise `local.env` under `CODE_HOME`, then `CODEX_HOME`,
+then `~/.code`. Keep it in a private mode-600 file, never in arguments. A missing
+key fails with `digest_webhook_missing`. The sender accepts Markdown on stdin
+or `--file`, disables mentions, and prints each confirmed Discord message URL.
+It never retries; reconcile all parts after partial delivery before replaying.
+Do not use the real destination as a connectivity test. Offline checks:
+`uv run skills/supervisor/scripts/test_discord_digest.py`.
 No new account, recipient registry or delivery service is created.
 Include its existing `logs/catalog.jsonl` in the
 [routine digest](routine-check.md) with `--service-log` so failures remain

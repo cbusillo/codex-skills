@@ -73,7 +73,6 @@ EXIT_CLEAR = 0
 EXIT_ATTENTION = 2
 EXIT_DEGRADED = 3
 OPENING_POST = "issue_body"
-WAITING_LABEL = "plan:waiting"
 PLAN_RECORD_MARKER = "<!-- github-plan:"
 DIRECTOR_ROLE_WORDS = ("Director",)
 POSSIBLE_AUTOMATION_LOGIN = re.compile(r"(?:^|[-_])(?:bot|automation)$", re.IGNORECASE)
@@ -662,6 +661,7 @@ def repository_activity(
     self_logins: set[str],
     bot_logins: set[str],
     automation_logins: dict[str, str] | None = None,
+    wait_candidates: set[int] | None = None,
 ) -> tuple[dict[tuple[str, int], set[tuple[str, int]]], list[dict[str, str]]]:
     query = urlencode(
         {
@@ -681,6 +681,9 @@ def repository_activity(
         try:
             for item in repository_comment_pages(endpoint):
                 comment = normalizer(repo, item)
+                if (wait_candidates is not None and comment is not None and lane == "issue_comments"
+                        and github_plan_wait.PREFIX in comment.body):
+                    wait_candidates.add(comment.number)
                 if (
                     comment is None
                     or not comment_in_window(comment, since, until)
@@ -1196,16 +1199,7 @@ def comment_states_for_thread(
     return results
 
 
-def names_director(text: str, terms: list[str], logins: set[str] | frozenset[str] = frozenset()) -> bool:
-    def pattern(term: str) -> str:
-        name = re.escape(term.removeprefix("@"))
-        if normalize_login(term) in logins:
-            # A login inside OWNER/REPO or a URL names a repository, not the Director.
-            return rf"(?<![\w/-])@?{name}(?![\w/-])"
-        return rf"(?<![\w-])@?{name}(?![\w-])"
-
-    return any(re.search(pattern(term), text, flags=re.IGNORECASE) for term in terms if term.strip())
-
+names_director = github_plan_wait.names_recipient
 
 def current_director_wait(
     reason: str, terms: list[str], logins: set[str] | frozenset[str] = frozenset()
@@ -1337,24 +1331,32 @@ def structured_wait_issues(
     return found, errors
 
 
+def body_director_wait(issue: dict[str, Any], repo: str, terms: list[str], logins: set[str]) -> bool:
+    try:
+        record, recorded = github_plan_wait.resolve(issue, [], github_plan_wait.authors(repo))
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return True
+    if recorded and record["state"] == "review":
+        return True
+    return director_wait_reason(repo, issue, terms, logins, record if recorded else None) is not None
+
+
 def unasked_director_waits(
     repo: str,
     terms: list[str],
     director_logins: set[str],
     decision_authors: set[str],
     structured: dict[int, dict[str, Any]] | None = None,
+    recent: set[int] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
-    """Waits on the Director with no open question, resolved from each complete discussion.
-
-    Candidates are open plan:waiting issues plus ``structured``: open issues
-    found with a structured wait in their comments, whatever their labels.
-    """
-    query = urlencode({"state": "open", "labels": WAITING_LABEL, "per_page": 100})
+    query = urlencode({"state": "open", "per_page": 100})
     try:
         issues = api_list(f"repos/{repo}/issues?{query}")
     except rollup.RollupError as exc:
         return [], [{"repo": repo, "lane": "director_waits", "error": rollup.trim(str(exc))}]
-    candidates = {issue["number"]: issue for issue in issues if isinstance(issue.get("number"), int)}
+    candidates = {issue["number"]: issue for issue in issues if isinstance(issue.get("number"), int)
+                  and (issue["number"] in (recent or set()) or issue["number"] in (structured or {})
+                       or body_director_wait(issue, repo, terms, director_logins))}
     candidates.update({number: item for number, item in (structured or {}).items() if number not in candidates})
     rows: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
@@ -1467,12 +1469,26 @@ def outbound_mentions(
     def read_comment(repo: str, comment_id: int) -> Any:
         return run_json([GH, "api", f"repos/{repo}/issues/comments/{comment_id}"])
     def read_later(issue_url: str, since: str) -> list[dict[str, Any]]:
-        return api_list(f"{director_mentions.thread_comments_path(issue_url)}?{urlencode({'since': since})}")
+        try:
+            return api_list(f"{director_mentions.thread_comments_path(issue_url)}?{urlencode({'since': since})}")
+        except rollup.RollupError as failure:
+            raise director_mentions.MentionSearchError(str(failure)) from failure
+    def get(endpoint: str) -> Any:
+        try:
+            return run_json([GH, "api", endpoint])
+        except rollup.RollupError as failure:
+            raise director_mentions.MentionSearchError(str(failure)) from failure
     for login in sorted(outbound_self) or [None]:
+        identities = people_identities({login}, settings.get("people_index")) if login else {}
+        if identities.get("status") == "error" or identities.get("director_ambiguous"):
+            errors.append({"repo": login or "-", "lane": "director_mentions", "error": identities.get("error") or "Director aliases are ambiguous"})
         mentions, gap, error = director_mentions.collect(
             login, format_api_timestamp(settings["since"]), settings.get("mention_approval"), recorders,
             read_comment, read_later, until=format_api_timestamp(settings["until"]),
             excluded_repositories=excluded_repositories, excluded_owners=outbound_self,
+            visible=True,
+            names=tuple(identities.get("director_names", ())),
+            get=get,
         )
         if gap or error:
             errors.append({"repo": login or "-", "lane": "director_mentions", "error": f"Mentions outside these repositories are not covered: {gap or error}"})
@@ -1551,6 +1567,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
     unasked_waits: list[dict[str, Any]] = []
 
     worker_count = min(MAX_WORKERS, max(1, len(repositories)))
+    recent_waits: dict[str, set[int]] = {repo: set() for repo in repositories}
     if settings["scan_repository_scope"]:
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = {
@@ -1564,6 +1581,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
                         self_logins,
                         bot_logins,
                         people["automation"],
+                        recent_waits[repo],
                     ),
                 ): repo
                 for repo in repositories
@@ -1572,17 +1590,16 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
                 structured_wait_issues, repositories, settings.get("include_archived", False)
             ))
             coverage_errors.extend(structured_errors)
-            wait_futures = [
-                executor.submit(
-                    bounded_discovery,
-                    partial(unasked_director_waits, repo, wait_terms, self_logins, bot_logins, structured_waits.get(repo, {}))
-                )
-                for repo in repositories
-            ]
             for future in as_completed(futures):
                 repo_candidates, repo_errors = future.result()
                 merge_candidate_ids(candidate_ids, repo_candidates)
                 coverage_errors.extend(repo_errors)
+            wait_futures = [
+                executor.submit(bounded_discovery,
+                    partial(unasked_director_waits, repo, wait_terms, self_logins, bot_logins,
+                            structured_waits.get(repo, {}), recent_waits[repo]))
+                for repo in repositories
+            ]
             for future in as_completed(wait_futures):
                 wait_rows, wait_errors = future.result()
                 unasked_waits.extend(wait_rows)
@@ -1783,11 +1800,11 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
             "Repository scans cover issues and PRs opened in the window, issue/PR conversation comments and inline PR review comments; full-history --thread scans also cover the opening post and non-empty PR review bodies.",
             "An edit to an issue or PR description is caught only by a full-history --thread scan or when the thread is opened in the window.",
             "Configured own automation is excluded. People-index agents (contacts.github.bot_usernames) remain eligible even as GitHub Bot accounts and are labeled with who they act for. Other GitHub bots stay filtered; unlisted human-account logins ending in bot or automation are marked possible_automation.",
-            "Waits on the Director are open plan:waiting issues, and open issues whose comments GitHub search finds with a structured wait, whose current wait (the trusted structured record when one is readable, otherwise the Current Status prose marked for review) names the Director's login, a people-index name, or the Director role, with no Director or Owner question still open; an unreadable trusted record is listed as an unresolved wait for review, whether or not a question is open; negated mentions are left out, and waits worded as the Director's own hold (resume, park, hold, select, revisit) are listed as director_hold without raising attention; repository scans only.",
+            "Waits on the Director are open issues whose current wait (the trusted structured record when one is readable, otherwise the Current Status prose marked for review) names the Director's login, a people-index name, or the Director role, with no Director or Owner question still open; an unreadable trusted record is listed as an unresolved wait for review, whether or not a question is open; negated mentions are left out, and waits worded as the Director's own hold (resume, park, hold, select, revisit) are listed as director_hold without raising attention; repository scans only.",
             "A targeted public reply from the Director or configured automation handles a comment after its latest edit. Exact comment links, an inline-review thread with one eligible external comment, or a salutation using an unambiguous people-index name target a reply; automation may also use an unambiguous single-author mention.",
             "Director reactions and question/decision records are diagnostic awareness evidence, not public replies or requirements for clearing attention. Unanswered comments remain flagged even on closed threads; edits and new comments reopen attention.",
             "Opt-in --outbound searches involvement in repositories not owned by the configured human logins, verifies authorship or comment participation, and lists external messages in the window after their latest human activity, including review bodies and inline comments. Only edits with a verified human editor advance that cutoff; automation and maintainer edits do not. Explicit thread and portfolio scopes retain their normal rules when outbound discovery overlaps them. GitHub search indexing, visibility and its 1,000-result cap limit discovery; detected partial results degrade coverage.",
-            "With --outbound, threads outside the scanned repositories that mention the Director and were updated in the window are listed as untrusted links. That search runs read-only under the Director gh login and only with the standing approval linked by --mention-approval; without it, the gap is reported as degraded coverage.",
+            "With --outbound, visible open threads naming or mentioning the Director outside the scanned repositories are untrusted links, including old questions. An explicit --mention-approval retains the optional personal-login search under its approval, login and report-window bounds.",
             "External comments outside the configured lookback window are not included.",
         ],
     }

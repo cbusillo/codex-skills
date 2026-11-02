@@ -394,13 +394,6 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                 add("aged_structured_wait", record, source.get("html_url") or url, since, "; ".join(receivers),
                     "Recorded receiver still has an unresolved wait. Body-only marker age is unknown; issue activity cannot reset the wait clock.",
                     evidence=wait["waits"])
-        blockers = record.get("blockers")
-        if ("plan:blocked" in labels(item) and wait["state"] == "clear" and blockers
-                and all(b.get("state") == "closed" and b.get("state_reason") == "completed" for b in blockers)):
-            closed = max((b.get("closed_at") or "" for b in blockers), default="")
-            add("stale_blocked_view", record, url, closed, "Supervisor / landing reconciler",
-                "Blocked view remains after all recorded native blockers completed and structured wait is clear.",
-                evidence=[b.get("html_url") for b in blockers])
         selected = merged_link(record)
         if selected:
             completing, pull = selected
@@ -587,10 +580,10 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                 raise audit.AuditError(cause or type(exc).__name__) from exc
         return cache[cache_key]
 
-    def listing(path, *, stop=None):
+    def listing(path, *, stop=None, page_limit=max_pages):
         try:
-            rows, cut = audit.fetch_paginated(path, fetch=fetch, max_pages=max_pages, stop=stop)
-            if cut:
+            rows, page_cut = audit.fetch_paginated(path, fetch=fetch, max_pages=page_limit, stop=stop)
+            if page_cut:
                 gaps.append({"source": path, "reason": "page_limit"})
             if any(not isinstance(row, dict) for row in rows):
                 gaps.append({"source": path, "reason": "invalid_listing_item"})
@@ -774,7 +767,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
     if question_queue:
         question_queue = question_queue.casefold()
         queue_repo, queue_number = question_queue.split("#")
-        queue = listing(f"repos/{queue_repo}/issues/{queue_number}/comments")
+        queue = listing(f"repos/{queue_repo}/issues/{queue_number}/comments", page_limit=max_requests)
         related_comments.extend(queue)
         try:
             from skills.supervisor.scripts import question_delivery
@@ -959,8 +952,6 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                             gaps.append({"source": f"{repo}#{number}", "reason": "pull_head_unavailable"})
                             record["pull"] = None
                     else:
-                        if "plan:blocked" in labels(item):
-                            record["blockers"] = listing(f"repos/{repo}/issues/{number}/dependencies/blocked_by")
                         linked = set()
                         for event in record["timeline"]:
                             source = (event.get("source") or {}).get("issue") or {}
