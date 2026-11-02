@@ -229,6 +229,7 @@ This scan lists replies even on closed threads. GitHub search visibility,
 indexing and its 1,000-result cap limit discovery; detected partial results are
 degraded coverage. It uses the same attention and exit-code contract.
 Routine outbound scans also read triage comments in the Director's repositories.
+Discovery searches issues whose comments contain `triage` and `No reply needed`.
 A trusted Director or configured automation comment containing `triage` and a
 table whose final column asks whether to act now or reply, with a row
 whose disposition starts with **No** settles that row's first
