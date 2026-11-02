@@ -170,13 +170,10 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data
     return result
 
 
-transcript_values = history.values
-
-
 def receipt_values(rows: list[dict]) -> list[dict]:
     blocks = [row for row in rows if "claim" in row]
     blocks.extend(block for found in history.tool_outputs(rows).values() for block in found)
-    return [value for block in blocks for value in transcript_values(block)]
+    return list(history.claim_results(blocks))
 
 
 def unmatched_foreign_receipt(value: dict, native: str, journals: dict[str, dict[tuple[str, int], float]]) -> bool:

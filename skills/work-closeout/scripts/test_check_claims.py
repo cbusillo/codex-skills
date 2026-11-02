@@ -1856,6 +1856,40 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertFalse(report["claims_clear"])
         self.assertTrue(any(line.startswith(f"{REPO}#1:") for line in report["blocked"]))
 
+    def test_quoted_historical_receipts_do_not_force_computed_reads_through_reconstruction(self) -> None:
+        for session in (SESSION, "historical-session"):
+            with self.subTest(session=session):
+                self.setUp()
+                receipt = {"claim": {**SOURCE, "session": session}, "issue": {"repo": "historical/repo", "number": 8}}
+                quoted = {"body": json.dumps(receipt), "comments": [{"body": json.dumps(receipt)}]}
+                rows = [
+                    {"payload": {"type": "function_call", "name": "exec_command", "call_id": "history",
+                                 "arguments": json.dumps({"cmd": "gh issue view 8 --json body,comments"})}},
+                    native_terminal_result("history", json.dumps(quoted)),
+                    {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "read",
+                                 "input": 'text(await tools.exec_command({cmd:"cat "+load("references").join(" ")}));'}},
+                    native_terminal_result("read", javascript=True),
+                ]
+                root = self.journal_era_session(*rows)
+                discovery = helper.recorded_targets(root)
+                self.assertFalse(discovery["receipts"], discovery)
+                self.assertTrue(discovery["journal_era"], discovery)
+                self.assertEqual(helper.history.literal_targets(rows[:2], SESSION)["targets"], set())
+                with patch.object(helper.history, "literal_targets", side_effect=ValueError("reconstruction unavailable")):
+                    report = helper.check([root])
+                self.assertTrue(report["claims_clear"], report)
+                self.assertTrue(report["coverage"]["complete"], report)
+                self.assertFalse(report["unresolved_invocations"], report)
+                self.assertEqual(report["coverage"]["repositories"], [REPO])
+                rows[0]["payload"]["arguments"] = json.dumps({"cmd": "uv run gh-plan.py claim 8"})
+                uncertain = helper.history.literal_targets(rows[:2], SESSION)
+                self.assertFalse(uncertain["targets"], uncertain)
+                self.assertTrue(uncertain["unresolved_invocations"], uncertain)
+                self.comments.remove(self.release)
+                report = helper.check([root])
+                self.assertFalse(report["claims_clear"], report)
+                self.assertTrue(report["blocked"], report)
+
     def test_journal_covers_only_sessions_with_an_authoritative_start_and_matching_rows(self) -> None:
         unjournaled_receipt = {"claim": SOURCE, "issue": {"repo": REPO, "number": 2}}
         foreign_receipt = {"claim": {**SOURCE, "session": "foreign"}, "issue": {"repo": REPO, "number": 1}}

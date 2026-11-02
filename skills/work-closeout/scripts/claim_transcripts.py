@@ -455,6 +455,30 @@ def claim_target(value: dict, session: str) -> tuple[str, int] | None:
     return None
 
 
+def claim_results(value: object) -> Iterator[dict]:
+    if isinstance(value, dict):
+        if "claim" in value or value.get("operation") == "github.plan.claim":
+            yield value
+            return
+        for key in ("output", "stdout"):
+            if key in value:
+                yield from claim_results(value[key])
+        if value.get("type") in {"text", "input_text"}:
+            yield from claim_results(value.get("text"))
+    elif isinstance(value, list):
+        for nested in value:
+            yield from claim_results(nested)
+    elif isinstance(value, str):
+        for line in value.splitlines():
+            if not line.lstrip().startswith(("{", "[")):
+                continue
+            try:
+                nested = json.loads(line)
+            except ValueError:
+                continue
+            yield from claim_results(nested)
+
+
 def command_text(command: object) -> str:
     if isinstance(command, str):
         return command
@@ -2811,7 +2835,7 @@ def resolve_invocations(
     receipt_pure: bool = True,
     ended: list[bool] | None = None,
 ) -> tuple[set[tuple[str, int]], bool]:
-    results = list({json.dumps(item, sort_keys=True): item for block in blocks for item in values(block)}.values())
+    results = list({json.dumps(item, sort_keys=True): item for item in claim_results(blocks)}.values())
     completed = [
         (item["claim"]["session"], target)
         for item in results
