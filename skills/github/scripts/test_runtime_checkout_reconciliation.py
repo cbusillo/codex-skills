@@ -306,9 +306,19 @@ def test_reconcile_preserves_a_clean_runtime_with_a_paused_git_operation(tmp_pat
     assert operation.read_text() == fixture.head_sha
 
 
-def test_reconcile_blocks_dirty_runtime_without_fetching_or_mutating(tmp_path: Path) -> None:
+@pytest.mark.parametrize("dirty_path,renamed_from", [
+    ("dirty.txt", None), ("nested/space and\nnewline.txt", None), ("renamed ignore.txt", ".gitignore"),
+])
+def test_reconcile_blocks_dirty_runtime_without_fetching_or_mutating(
+    tmp_path: Path, dirty_path: str, renamed_from: str | None,
+) -> None:
     fixture = build_runtime_fixture(tmp_path)
-    (fixture.runtime / "dirty.txt").write_text("dirty\n")
+    path = fixture.runtime / dirty_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if renamed_from:
+        git(fixture.runtime, "mv", renamed_from, dirty_path)
+    else:
+        path.write_text("dirty\n")
 
     proc, receipt = fixture.run()
 
@@ -316,19 +326,23 @@ def test_reconcile_blocks_dirty_runtime_without_fetching_or_mutating(tmp_path: P
     assert receipt["status"] == "blocked"
     assert receipt["reason_code"] == "runtime_dirty"
     assert receipt["blockers"] == ["runtime_dirty"]
+    assert receipt["dirty_paths"] == [dirty_path, *([renamed_from] if renamed_from else [])]
     assert receipt["fetched_sha"] is None
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.initial_sha
 
 
 @pytest.mark.parametrize("untracked", [None, "new_source.py", "nested/tool.log"])
-def test_reconcile_root_logs_with_catalog_ignores_preserves_other_untracked_files(
+def test_reconcile_catalog_scratch_preserves_other_untracked_files(
     tmp_path: Path, untracked: str | None,
 ) -> None:
     source = Path(__file__).resolve().parents[3] / ".gitignore"
     fixture = build_runtime_fixture(tmp_path, extra_files={".gitignore": source})
-    logs = [fixture.runtime / name for name in ("error.log", "tool.log")]
-    for log in logs:
-        log.write_text("Tool output")
+    scratch = [fixture.runtime / name for name in (
+        "error.log", "tool.log", ".model-review-example/input-1-evidence.md", ".model-review-example/agy-output.log",
+    )]
+    for path in scratch:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("Tool output")
     local = fixture.runtime / untracked if untracked else None
     if local:
         local.parent.mkdir(parents=True, exist_ok=True)
@@ -346,8 +360,8 @@ def test_reconcile_root_logs_with_catalog_ignores_preserves_other_untracked_file
         assert proc.returncode == 0
         assert receipt["status"] == "synchronized"
         assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
-    for log in logs:
-        assert log.read_text() == "Tool output"
+    for path in scratch:
+        assert path.read_text() == "Tool output"
 
 
 def test_reconcile_blocks_assume_unchanged_runtime_file(tmp_path: Path) -> None:
