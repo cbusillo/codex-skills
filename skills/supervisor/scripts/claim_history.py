@@ -11,6 +11,40 @@ from pathlib import Path
 import re
 import sqlite3
 import sys
+from typing import Any
+
+
+def protobuf_fields(data: bytes) -> dict[int, Any]:
+    offset = 0
+    fields = {}
+
+    def varint() -> int:
+        nonlocal offset
+        value = 0
+        for shift in range(0, 70, 7):
+            if offset >= len(data):
+                raise ValueError("incomplete protobuf varint")
+            byte = data[offset]
+            offset += 1
+            value |= (byte & 127) << shift
+            if byte < 128:
+                return value
+        raise ValueError("invalid protobuf varint")
+
+    while offset < len(data):
+        tag = varint()
+        number, wire = tag >> 3, tag & 7
+        if not number:
+            raise ValueError("invalid protobuf field")
+        if wire == 0:
+            fields[number] = varint()
+            continue
+        size = varint() if wire == 2 else {1: 8, 5: 4}.get(wire)
+        if size is None or offset + size > len(data):
+            raise ValueError("invalid protobuf length or wire type")
+        fields[number] = data[offset:offset + size]
+        offset += size
+    return fields
 
 
 
@@ -40,7 +74,7 @@ def child_records(records, harness, session, context=None):
     Only verified native edges supply ancestry, including a fork checking its
     own local work. Raw child rows remain available for the coverage hash.
     """
-    identities = ({r.get("sessionId") for r in records if r.get("sessionId")} if harness == "claude" else
+    identities = ({r.get("sessionId") for r in records if r.get("sessionId")} if harness != "codex" else
                   {r.get("payload", {}).get("id") for r in records if r.get("type") == "session_meta"})
     if harness != "codex" or context is None:
         if identities != {session}:

@@ -9,8 +9,12 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
+from contextlib import closing
+from datetime import datetime, timezone
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import claim_history
 import session_outcomes
@@ -108,6 +112,8 @@ def outside_fences(lines: list[str]) -> bool:
 
 
 def read_jsonl(path: Path) -> list[dict]:
+    if path.suffix == ".db":
+        return read_agy_records(path)
     records = []
     with path.open(encoding="utf-8") as stream:
         for number, line in enumerate(stream, 1):
@@ -126,6 +132,56 @@ def read_jsonl(path: Path) -> list[dict]:
             except TypeError as error:
                 raise TypeError(f"{path.name}:{number}: {error}") from error
             records.append(record)
+    return records
+
+
+def read_agy_records(path: Path) -> list[dict]:
+    fields = claim_history.protobuf_fields
+    records = []
+    try:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as database:
+            database.execute("BEGIN")
+            identities = database.execute("SELECT DISTINCT cascade_id FROM trajectory_meta").fetchall()
+            if identities != [(path.stem,)]:
+                raise ValueError("native AGY transcript identity is unavailable or differs")
+            rows = database.execute("SELECT idx, step_type, status, has_subtrajectory, step_payload FROM steps ORDER BY idx").fetchall()
+        for index, (ordinal, kind, status, children, blob) in enumerate(rows):
+            step = fields(blob)
+            if ordinal != index or step.get(1) != kind or step.get(4) != status or children:
+                raise ValueError("native AGY step or child history is unavailable")
+            metadata = fields(step.get(5, b""))
+            clock = fields(metadata.get(8) or metadata.get(1, b""))
+            timestamp = datetime.fromtimestamp(clock[1] + clock.get(2, 0) / 1e9, timezone.utc).isoformat()
+            row: dict[str, Any] = {"sessionId": path.stem, "timestamp": timestamp}
+            if status != 3 and kind in {14, 15}:
+                records.append({**row, "type": "user", "message": {"content": ""}})
+                continue
+            if kind == 14:
+                row.update(type="user", message={"content": fields(step[19]).get(2, b"").decode()})
+            elif kind == 15:
+                response = fields(step[20])
+                row.update(type="assistant", message={"content": [{"type": "text", "text": response.get(8, response.get(1, b"")).decode()}],
+                           "stop_reason": "end_turn" if status == 3 and 7 not in response else None})
+            else:
+                call = fields(metadata.get(4, b""))
+                if not call:
+                    row.update(type="user", message={"content": ""})
+                else:
+                    name = call[2].decode()
+                    arguments = json.loads(call[3])
+                    identifier = call[1].decode()
+                    command = name == "run_command"
+                    content = {"type": "tool_use", "id": identifier, "name": "Bash" if command else name,
+                               "input": {"command": arguments["CommandLine"]} if command else arguments}
+                    records.append({**row, "type": "assistant", "message": {"content": [content]}})
+                    output = fields(fields(step.get(140, b"")).get(2, b"")).get(1, b"").decode()
+                    row.update(type="user", message={"content": [{"type": "tool_result", "tool_use_id": identifier,
+                               "content": output, "is_error": status != 3}]})
+                    if name in {"invoke_subagent", "schedule", "manage_subagents"} or command and status == 3 and (not output or "Command ID:" in output):
+                        raise ValueError("native AGY background work coverage is unavailable")
+            records.append(row)
+    except (sqlite3.Error, KeyError, TypeError, AttributeError, UnicodeError) as error:
+        raise ValueError(f"native AGY transcript unavailable: {error}") from error
     return records
 
 
@@ -160,8 +216,8 @@ def load_ledger(path: Path, *, harness: str | None = None,
     The default remains strict for readers that decide completion or closure.
     Harness-specific readers can collect a diagnostic for every excluded entry.
     """
-    if harness is not None and harness not in {"claude", "codex"}:
-        raise ValueError("selected harness must be claude or codex")
+    if harness is not None and harness not in {"claude", "codex", "agy"}:
+        raise ValueError("selected harness must be claude, codex or agy")
     entries = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(entries, list):
         raise TypeError("ledger must be an array of session objects")
@@ -178,8 +234,8 @@ def load_ledger(path: Path, *, harness: str | None = None,
                                 "harness": entry.get("harness"), "skipped": True,
                                 "reason": f"watching only {harness} entries", "clean": None})
             continue
-        if entry.get("harness") not in {"claude", "codex"}:
-            raise ValueError("ledger harness must be claude or codex")
+        if entry.get("harness") not in {"claude", "codex", "agy"}:
+            raise ValueError("ledger harness must be claude, codex or agy")
         for key in ("session_id", "transcript"):
             if not isinstance(entry.get(key), str) or not entry[key].strip():
                 raise ValueError(f"ledger requires {key}")
@@ -439,13 +495,13 @@ def summarize(records: list[dict], harness: str) -> dict:
     scheduled_jobs: dict = {}
     scheduled_tools: dict = {}
     active_realtime: set[str] = set()
-    if harness == "claude":
+    if harness in {"claude", "agy"}:
         records = strip_claude_exit_tail(records)
     previous: dict = {}
     for record in records:
         payload = record.get("payload") or {}
         kind = payload.get("type")
-        if harness == "claude":
+        if harness in {"claude", "agy"}:
             track_claude_background_tasks(record, running_tasks, scheduled_jobs, scheduled_tools)
             message = record.get("message") or {}
             # Compaction writes its summary as a user record right after the boundary;
@@ -582,10 +638,15 @@ class TranscriptChanged(ValueError):
 def session_status(entry: dict) -> dict:
     path = Path(entry["transcript"])
     before = path.stat()
+    wal = path.with_name(path.name + "-wal")
+    before_wal = wal.stat() if path.suffix == ".db" and wal.exists() else None
 
     def checked_stat():
         after = path.stat()
-        if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
+        after_wal = wal.stat() if path.suffix == ".db" and wal.exists() else None
+        if ((before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size)
+                or (None if before_wal is None else (before_wal.st_mtime_ns, before_wal.st_size))
+                != (None if after_wal is None else (after_wal.st_mtime_ns, after_wal.st_size))):
             raise TranscriptChanged("transcript changed during read; check again")
         return after
 

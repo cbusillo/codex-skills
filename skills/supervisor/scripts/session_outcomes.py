@@ -11,6 +11,14 @@ from typing import Any
 
 def record(entry: dict, records: list[dict], final_text: str) -> dict:
     models, efforts = set(), set()
+    if entry["harness"] == "agy" and entry.get("agy_log"):
+        log = Path(entry["agy_log"]).read_text()
+        identities = re.findall(r"\bCreated conversation ([0-9a-f-]{36})\b", log)
+        if identities != [entry["session_id"]]:
+            raise ValueError("AGY model log does not identify this conversation")
+        models.update(re.findall(r'Propagating selected model override to backend: label="([^"]+)"', log))
+        efforts.update(match[1].casefold() for model in models
+                       if (match := re.search(r"\((Low|Medium|High|XHigh|Max)\)$", model)))
     for row in records:
         if entry["harness"] == "codex":
             if row.get("type") != "turn_context":

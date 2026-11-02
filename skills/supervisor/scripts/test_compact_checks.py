@@ -380,7 +380,7 @@ class OperationTests(unittest.TestCase):
         operation.state["steps"]["claude_launch"] = {"complete": False}
         check_operation.save_state(self.root / "claude_launch.json", {"stdout": json.dumps({"failed_launch": {"phase": "register_ledger", "launch": launch}})})
         config: dict[str, Any] = {"repo": "owner/catalog", "issue": 1, "landing_sha": "a" * 40, "ledger": str(ledger)}
-        with (patch.object(iterm_tab, "register_claude_launch", return_value=entry) as register,
+        with (patch.object(iterm_tab, "register_file_launch", return_value=entry) as register,
               patch.object(subprocess, "run") as run,
               patch.object(catalog_landing, "observe", side_effect=check_operation.GateFailed("response", "fixture"))):
             with self.assertRaises(check_operation.GateFailed) as failure:
@@ -483,14 +483,14 @@ class OperationTests(unittest.TestCase):
         result = dict(launch)
         with patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", "claude")]):
             asyncio.run(iterm_tab.register_fresh_launch(argparse.Namespace(ledger=ledger), result, {"claude_native": native}))
-            second = iterm_tab.register_claude_launch(launch, native, ledger)
+            second = iterm_tab.register_file_launch(launch, native, ledger)
         self.assertEqual(result["native_session_id"], second["session_id"])
         self.assertTrue(result["ledger_recorded"])
         rows = json.loads(ledger.read_text())
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["tmux_session_id"], launch["session_id"])
         with self.assertRaises(ValueError):
-            iterm_tab.register_claude_launch({**launch, "session_id": "another-terminal"}, native, ledger)
+            iterm_tab.register_file_launch({**launch, "session_id": "another-terminal"}, native, ledger)
 
 
 if __name__ == "__main__":

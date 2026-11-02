@@ -204,6 +204,8 @@ def validate_closure(entry: dict[str, Any], supervisor_session: str, *, native: 
 def transcript_roots(harness, configured, explicit):
     if explicit:
         return [str(p.expanduser().resolve()) for p in explicit]
+    if harness == "agy":
+        return [str(Path.home() / ".gemini/antigravity-cli/conversations")]
     config = account_choice.load_config(configured)
     roots = []
     for account in config["accounts"]:

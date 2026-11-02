@@ -199,7 +199,7 @@ def verify_smoke(config: dict, operation: Operation, harness: str, provider: str
                     "launch is uncertain; inspect its retained receipt without relaunching")
             launch = retained["launch"]
             if harness == "claude":
-                native = iterm_tab.register_claude_launch(launch, launch["claude_native"], ledger)
+                native = iterm_tab.register_file_launch(launch, launch["claude_native"], ledger)
             else:
                 entry = terminal_entry(ledger, "tmux_session_id", launch["session_id"])
                 native = read_launch_receipt(Path(launch["native_receipt"]))

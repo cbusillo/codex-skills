@@ -50,6 +50,9 @@ def closed_stdin_runtime(records: list[dict]) -> bool:
 
 
 def read_records(path: Path) -> list[dict]:
+    if path.suffix == ".db":
+        from session_record import read_jsonl
+        return read_jsonl(path)
     records = []
     with path.open(encoding="utf-8") as stream:
         for line in stream:
