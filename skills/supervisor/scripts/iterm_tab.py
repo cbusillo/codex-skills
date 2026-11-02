@@ -10,7 +10,7 @@
 
 import argparse
 import asyncio
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
 import errno
 import json
@@ -77,11 +77,28 @@ class SendFailure(ValueError):
         super().__init__(text_outcome + "; submission " + submission + "; input may still contain text")
 
 
+def _is_horizontal_border(line: str) -> bool:
+    return re.fullmatch(r"\s*─{3,}\s*", line) is not None
+
+
+def _is_slash_menu_row(lines: Sequence[str], index: int) -> bool:
+    for border_index in range(index - 1, -1, -1):
+        if _is_horizontal_border(lines[border_index]):
+            return (
+                border_index >= 2
+                and _is_horizontal_border(lines[border_index - 2])
+                and re.match(r"^\s*[❯›>]\s?(.*)$", lines[border_index - 1]) is not None
+            )
+    return False
+
+
 def input_line(lines, styles):
     """Report the last visible agent prompt's styling, never its author or authority."""
     for index in range(len(lines) - 1, -1, -1):
         match = re.match(r"^\s*[❯›>]\s?(.*)$", lines[index])
         if not match:
+            continue
+        if _is_slash_menu_row(lines, index):
             continue
         text = match.group(1)
         flags = [styles[index][x] for x in range(match.start(1), len(lines[index]))

@@ -298,6 +298,24 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                     asyncio.run(iterm_tab.register_fresh_launch(argparse.Namespace(ledger=streaming_ledger), dict(launch), None))
                 self.assertEqual(session_record.load_ledger(streaming_ledger)[0]["session_id"], session)
 
+    def test_input_line_excludes_agy_slash_menu_suggestion_row(self) -> None:
+        screen = [
+            "────────────────────────────────────────",
+            "> /exit",
+            "────────────────────────────────────────",
+            "> /exit  Exit the CLI",
+            "",
+            "  ↑/↓ Navigate · enter Select · tab Complete",
+            "esc to cancel    Gemini 3.8 Flash · medium",
+        ]
+        lines, styles = iterm_tab.ansi_screen("\n".join(screen))
+        result = iterm_tab.input_line(lines, styles)
+        self.assertEqual(result["line_index"], 1)
+        self.assertEqual(result["text"], "/exit")
+        direct = iterm_tab.input_line(screen, [[None] * len(line) for line in screen])
+        self.assertEqual(direct["line_index"], 1)
+        self.assertEqual(direct["text"], "/exit")
+
 
 if __name__ == "__main__":
     unittest.main()
