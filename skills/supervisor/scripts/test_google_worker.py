@@ -130,6 +130,11 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                 asyncio.run(iterm_tab.register_fresh_launch(argparse.Namespace(ledger=ledger), recovered, None))
             entry = session_record.load_ledger(ledger)[0]
             self.assertEqual(entry["session_id"], session)
+            closed_log = root / "closed.json"
+            closed_log.write_text(json.dumps([entry]))
+            closed_log.chmod(0o600)
+            with patch.object(session_closeout.closure, "closed_log", return_value=closed_log):
+                self.assertEqual(session_closeout.closure.source_records({session})[session]["session_id"], session)
             self.assertEqual(entry["tmux_session_id"], launch["session_id"])
             self.assertEqual(len(json.loads(ledger.read_text())), 1)
             status = session_closeout.ready(entry, "supervisor")
