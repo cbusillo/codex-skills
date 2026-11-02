@@ -283,6 +283,7 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                     "cancel",
                     "foreign_origin",
                     "unknown_notification",
+                    "opaque_notification",
                 ):
                     steps = [fields(bytes.fromhex(row["step_payload_hex"])) for row in background["steps"]]
                     if change == "pending":
@@ -297,10 +298,12 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                         call_fields[3] = json.dumps(arguments).encode()
                         metadata_fields[4] = protobuf(call_fields)
                         steps[1][5] = protobuf(metadata_fields)
-                    elif change in {"foreign_origin", "unknown_notification"}:
+                    elif change in {"foreign_origin", "unknown_notification", "opaque_notification"}:
                         note = fields(steps[2][114])
-                        if change == "unknown_notification":
+                        if change in {"unknown_notification", "opaque_notification"}:
                             note[3] = b"unverified"
+                            if change == "opaque_notification":
+                                note[4] = 1
                         else:
                             envelope = fields(note[4])
                             envelope[2] = b"another-session"
