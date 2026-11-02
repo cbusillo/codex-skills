@@ -5,13 +5,14 @@
 """Read native child histories without inventing a second session registry."""
 from __future__ import annotations
 
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 import json
 from pathlib import Path
 import re
 import sqlite3
 import sys
 from typing import Any
+from datetime import datetime, timezone
 
 
 def protobuf_fields(data: bytes) -> dict[int, Any]:
@@ -192,4 +193,108 @@ def root_records(path, harness, session, records):
             return child_records(records, harness, session, root_context(path, session))
     return child_records(records, harness, session)
 
+
+
+
+AGY_HOME = Path("~/.gemini/antigravity-cli")
+AGY_SETTINGS = AGY_HOME / "settings.json"
+
+def agy_conversations(text: str) -> list[str]:
+    return re.findall(r"\bCreated conversation ([0-9a-fA-F-]{36})\b", text)
+
+
+def agy_log(conversation_id: Any = None, log_file: Path | None = None) -> str:
+    valid_id = isinstance(conversation_id, str) and bool(re.fullmatch(r"[0-9a-fA-F-]{36}", conversation_id))
+    if log_file is not None:
+        try:
+            text = log_file.read_text(errors="replace")
+        except OSError:
+            text = ""
+        if text.strip():
+            conversations = agy_conversations(text)
+            if conversation_id is not None:
+                return text if valid_id and conversations in ([], [conversation_id]) else ""
+            return text if len(conversations) <= 1 else ""
+    if not valid_id:
+        return ""
+    base = AGY_SETTINGS.expanduser().parent
+    candidates = [base / "cli.log", *sorted((base / "log").glob("cli-*.log"), reverse=True)]
+    for path in candidates:
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        conversations = agy_conversations(text)
+        if conversations == [conversation_id]:
+            return text
+        if conversation_id in conversations:
+            return ""
+    return ""
+
+def agy_model(requested: str | None, conversation_id: Any = None, log_file: Path | None = None) -> dict[str, Any]:
+    default = {"model": requested, "model_source": "requested, not reported by the CLI" if requested else "unknown"}
+    log = agy_log(conversation_id, log_file)
+    reroutes = list(dict.fromkeys(re.findall(r'model alias "([^"]+)" resolved to "([^"]+)"', log)))
+    labels = list(dict.fromkeys(re.findall(r'Propagating selected model override to backend: label="([^"]+)"', log)))
+    if len(reroutes) > 1 or len(labels) > 1:
+        return default
+    if reroutes and (not labels or labels[0] == reroutes[0][1]):
+        return {"model": reroutes[0][1], "model_source": "reported by the CLI (rerouted)"}
+    if reroutes and labels:
+        return default
+    if labels:
+        return {"model": labels[0], "model_source": "reported by the CLI"}
+    return default
+
+
+def read_agy_records(path: Path) -> list[dict]:
+    fields = protobuf_fields
+    records = []
+    try:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as database:
+            database.execute("BEGIN")
+            identities = database.execute("SELECT DISTINCT cascade_id FROM trajectory_meta").fetchall()
+            if identities != [(path.stem,)]:
+                raise ValueError("native AGY transcript identity is unavailable or differs")
+            rows = database.execute("SELECT idx, step_type, status, has_subtrajectory, step_payload FROM steps ORDER BY idx").fetchall()
+        for index, (ordinal, kind, status, children, blob) in enumerate(rows):
+            step = fields(blob)
+            if ordinal != index or step.get(1) != kind or step.get(4) != status or children:
+                raise ValueError("native AGY step or child history is unavailable")
+            metadata = fields(step.get(5, b""))
+            clock = fields(metadata.get(8) or metadata.get(1, b""))
+            timestamp = datetime.fromtimestamp(clock[1] + clock.get(2, 0) / 1e9, timezone.utc).isoformat()
+            row: dict[str, Any] = {"sessionId": path.stem, "timestamp": timestamp}
+            if status != 3 and kind in {14, 15}:
+                records.append({**row, "type": "user", "message": {"content": ""}})
+                continue
+            if kind == 14:
+                row.update(type="user", message={"content": fields(step[19]).get(2, b"").decode()})
+            elif kind == 15:
+                response = fields(step[20])
+                row.update(type="assistant", message={"content": [{"type": "text", "text": response.get(8, response.get(1, b"")).decode()}],
+                           "stop_reason": "end_turn" if status == 3 and 7 not in response else None})
+            else:
+                call = fields(metadata.get(4, b""))
+                if not call:
+                    row.update(type="user", message={"content": ""})
+                else:
+                    name = call[2].decode()
+                    if name not in {"read_file", "write_file", "edit_file", "list_dir", "grep_search", "find_by_name", "run_command"}:
+                        raise ValueError(f"native AGY background work coverage is unavailable for {name}")
+                    arguments = json.loads(call[3])
+                    identifier = call[1].decode()
+                    command = name == "run_command"
+                    content = {"type": "tool_use", "id": identifier, "name": "Bash" if command else name,
+                               "input": {"command": arguments["CommandLine"]} if command else arguments}
+                    records.append({**row, "type": "assistant", "message": {"content": [content]}})
+                    output = fields(fields(step.get(140, b"")).get(2, b"")).get(1, b"").decode()
+                    row.update(type="user", message={"content": [{"type": "tool_result", "tool_use_id": identifier,
+                               "content": output, "is_error": status != 3}]})
+                    if command and status == 3 and (not output or "Command ID:" in output):
+                        raise ValueError("native AGY background work coverage is unavailable")
+            records.append(row)
+    except (sqlite3.Error, KeyError, TypeError, AttributeError, UnicodeError) as error:
+        raise ValueError(f"native AGY transcript unavailable: {error}") from error
+    return records
 

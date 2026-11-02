@@ -36,12 +36,12 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from skills.supervisor.scripts import account_choice
+from skills.supervisor.scripts.claim_history import AGY_SETTINGS, agy_model
 import review_policy
 from review_worktree import is_review_scratch
 
 PROVIDERS = {"openai": "codex", "anthropic": "claude", "google": "agy"}
 FAULT_MARKER_NAME = "model-review-fault.md"
-AGY_SETTINGS = Path("~/.gemini/antigravity-cli/settings.json")
 AGY_READ_ONLY_COMMANDS = ("grep", "ls", "wc")
 # Commands an earlier reviewer policy granted and the current one refuses. `repair` removes only
 # their plain `command(NAME)` grants; a grant for any other program is the user's own and is left alone.
@@ -417,52 +417,6 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
 
 
 REVIEWERS = {"openai": review_openai, "anthropic": review_anthropic, "google": review_google}
-
-
-def agy_log(conversation_id: Any = None, log_file: Path | None = None) -> str:
-    valid_id = isinstance(conversation_id, str) and bool(re.fullmatch(r"[0-9a-fA-F-]{36}", conversation_id))
-    if log_file is not None:
-        try:
-            text = log_file.read_text(errors="replace")
-        except OSError:
-            text = ""
-        if text.strip():
-            conversations = re.findall(r"\bCreated conversation ([0-9a-fA-F-]{36})\b", text)
-            if conversation_id is not None:
-                return text if valid_id and conversations in ([], [conversation_id]) else ""
-            return text if len(conversations) <= 1 else ""
-    if not valid_id:
-        return ""
-    base = AGY_SETTINGS.expanduser().parent
-    candidates = [base / "cli.log", *sorted((base / "log").glob("cli-*.log"), reverse=True)]
-    for path in candidates:
-        try:
-            text = path.read_text(errors="replace")
-        except OSError:
-            continue
-        conversations = re.findall(r"\bCreated conversation ([0-9a-fA-F-]{36})\b", text)
-        if conversations == [conversation_id]:
-            return text
-        if conversation_id in conversations:
-            return ""
-    return ""
-
-
-def agy_model(requested: str | None, conversation_id: Any = None, log_file: Path | None = None) -> dict[str, Any]:
-    """Read the model agy resolved for this run from its CLI log when unambiguous."""
-    default = {"model": requested, "model_source": "requested, not reported by the CLI" if requested else "unknown"}
-    log = agy_log(conversation_id, log_file)
-    reroutes = list(dict.fromkeys(re.findall(r'model alias "([^"]+)" resolved to "([^"]+)"', log)))
-    labels = list(dict.fromkeys(re.findall(r'Propagating selected model override to backend: label="([^"]+)"', log)))
-    if len(reroutes) > 1 or len(labels) > 1:
-        return default
-    if reroutes and (not labels or labels[0] == reroutes[0][1]):
-        return {"model": reroutes[0][1], "model_source": "reported by the CLI (rerouted)"}
-    if reroutes and labels:
-        return default
-    if labels:
-        return {"model": labels[0], "model_source": "reported by the CLI"}
-    return default
 
 
 def protobuf_fields(data: bytes) -> dict[int, Any]:

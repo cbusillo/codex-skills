@@ -33,6 +33,7 @@ import account_choice
 import claude_trust
 import agent_tools
 import gui_launch
+import claim_history
 
 CLAUDE_SUGGESTION_SETTING = "promptSuggestionEnabled"
 CLAUDE_AUTO_MEMORY_SETTING = "autoMemoryEnabled"
@@ -1500,7 +1501,7 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
                     raise ValueError("fresh AGY --ledger registration needs a fresh interactive launch without conversation or log overrides")
                 args.ledger.parent.mkdir(parents=True, exist_ok=True)
                 log = args.ledger.parent / f".native-launch-{uuid.uuid4()}.log"
-                choice["file_native"] = {"harness": "agy", "home": str(Path.home() / ".gemini/antigravity-cli"), "log": str(log)}
+                choice["file_native"] = {"harness": "agy", "home": str(claim_history.AGY_HOME.expanduser()), "log": str(log)}
                 native_commands.append(f"{text} --log-file {shlex.quote(str(log))}")
             command_texts = native_commands
         if getattr(args, "ledger", None) and provider == "openai":
@@ -1810,7 +1811,7 @@ def register_file_launch(launch: dict, native: dict, ledger: Path) -> dict:
     deadline = time.monotonic() + LAUNCH_TIMEOUT
     while harness == "agy":
         try:
-            identities = re.findall(r"\bCreated conversation ([0-9a-f-]{36})\b", Path(native["log"]).read_text())
+            identities = claim_history.agy_conversations(Path(native["log"]).read_text())
         except FileNotFoundError:
             identities = []
         if len(identities) == 1:
@@ -1825,7 +1826,7 @@ def register_file_launch(launch: dict, native: dict, ledger: Path) -> dict:
         entry = session_record.terminal_entry(ledger, terminal, launch["session_id"])
         if (len(existing) != 1 or entry["session_id"] != native["session_id"] or entry["harness"] != harness
                 or entry["tty"] != launch["tty"].removeprefix("/dev/")):
-            raise ValueError("native Claude identity belongs to another terminal")
+            raise ValueError(f"native {harness} identity belongs to another terminal")
         return entry
     while True:
         paths = (list((Path(native["home"]) / "conversations").glob(native["session_id"] + ".db")) if harness == "agy" else
@@ -1834,7 +1835,7 @@ def register_file_launch(launch: dict, native: dict, ledger: Path) -> dict:
             break
         time.sleep(0.2)
     if len(paths) != 1:
-        raise ValueError("exact fresh Claude transcript is unavailable; preserve its terminal")
+        raise ValueError(f"exact fresh {harness} transcript is unavailable; preserve its terminal")
     processes = [row for row in session_liveness.inventory() if row[1] == launch["tty"].removeprefix("/dev/")
                  and session_liveness.harness_family((session_liveness.harness_arguments(row[2]) or [""])[0]) == harness]
     if launch.get("pid"):
@@ -1845,7 +1846,7 @@ def register_file_launch(launch: dict, native: dict, ledger: Path) -> dict:
             exact = [row for row in processes if tmux_terminal.belongs_to(row[0], launch["pid"], parents)]
         processes = exact
     if len(processes) != 1:
-        raise ValueError("fresh Claude process identity is ambiguous")
+        raise ValueError(f"fresh {harness} process identity is ambiguous")
     entry = {**launch, "session_id": native["session_id"], terminal: launch["session_id"],
              "transcript": str(paths[0]), "pid": processes[0][0], "harness": harness, "supervisor_owned": True}
     entry.pop("claude_native", None)

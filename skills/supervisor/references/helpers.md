@@ -1430,7 +1430,7 @@ For fresh Claude workers, use `--account-provider anthropic --ledger
 waits for that exact transcript under the selected account, matches the Claude
 process on the terminal, and appends the owned row; the receipt reports
 `native_session_id`, `transcript` and `ledger_recorded`. A failure keeps the
-launch object, including `claude_native`, for the same `register --receipt-file`
+launch object, including `file_native`, for the same `register --receipt-file`
 recovery.
 For fresh Google workers, use `--account-provider google --ledger` with the
 same direct interactive `agy` launch. The shared file-session registrar binds
