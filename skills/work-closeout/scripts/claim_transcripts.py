@@ -481,19 +481,52 @@ def claim_results(value: object) -> Iterator[dict]:
 
 def claim_receipt_outputs(records: list[dict], *, followups: bool = True) -> dict[str, list[object]]:
     outputs = tool_outputs(records, followups=followups)
-    for identifier, text, javascript, name, _ in tool_details(records):
+    recorded = tool_outputs(records, followups=False)
+    inputs = {identifier: (text, javascript, name, index) for identifier, text, javascript, name, index in tool_details(records)}
+    for identifier, (text, javascript, name, _) in inputs.items():
         if name == "write_stdin":
             continue
         try:
             sources = shell_texts(text, javascript, exec_command=name == "exec_command")
             if sources.opaque or not sources.commands or any(source.interactive for source in sources.commands):
                 continue
-            discoveries = [shell_claims(source.text) for source in sources.commands]
+            data = all(shell_output_is_data(source.text) for source in sources.commands)
         except ValueError:
             continue
-        if all(not (found.arguments or found.opaque or found.decode_failed) for found in discoveries):
-            outputs.pop(identifier, None)
+        if not data:
+            continue
+        outputs.pop(identifier, None)
+        for poll in ordered_poll_results(identifier, inputs, recorded):
+            source, code, tool, _ = inputs[poll.call_id]
+            try:
+                polled = shell_texts(source, code, exec_command=tool == "exec_command")
+            except ValueError:
+                break
+            if polled.opaque or not polled.commands or any(not command.interactive or command.text for command in polled.commands):
+                break
+            outputs.pop(poll.call_id, None)
     return outputs
+
+
+def shell_output_is_data(text: str) -> bool:
+    root = parse_shell(text.encode())
+    if root.has_error or shell_generated(root) or not variables_keep_assigned_values(root):
+        return False
+    nodes = list(shell_code_nodes(root))
+    if any(node.type == "variable_assignment" and environment_executes(node) for node in nodes):
+        return False
+    commands = [command_argv(node) for node in nodes if node.type == "command"]
+    for argv in commands:
+        position = command_position(argv)
+        if position is None or position.index >= len(argv):
+            return False
+        name, arguments = Path(argv[position.index]).name, argv[position.index + 1:]
+        if name in NON_EXECUTING_COMMANDS and not data_command_executes(argv):
+            continue
+        if name in {"gh", "gh-with-env-token"} and gh_is_data(arguments) or name == "git" and git_is_data(arguments):
+            continue
+        return False
+    return bool(commands)
 
 
 def command_text(command: object) -> str:

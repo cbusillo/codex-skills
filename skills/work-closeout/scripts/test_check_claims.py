@@ -1858,15 +1858,16 @@ class ClaimCloseoutTests(unittest.TestCase):
 
     def test_quoted_historical_receipts_do_not_force_computed_reads_through_reconstruction(self) -> None:
         for session, rendering in ((session, rendering) for session in (SESSION, "historical-session")
-                                   for rendering in ("document", "body", "file")):
+                                   for rendering in ("document", "body", "file", "poll")):
             with self.subTest(session=session, rendering=rendering):
                 self.setUp()
                 receipt = {"claim": {**SOURCE, "session": session}, "issue": {"repo": "historical/repo", "number": 8}}
                 quoted = {"body": json.dumps(receipt), "comments": [{"body": json.dumps(receipt)}]}
                 command = {"document": "gh issue view 8 --json body,comments",
-                           "body": "gh issue view 8 --json body --jq .body", "file": "cat historical-receipt.json"}[rendering]
+                           "body": "gh issue view 8 --json body --jq .body",
+                           "file": "cat historical-receipt.json", "poll": "cat historical-receipt.json"}[rendering]
                 output = json.dumps(quoted) if rendering == "document" else json.dumps(receipt)
-                rows = [
+                rows: list[dict[str, Any]] = [
                     {"payload": {"type": "function_call", "name": "exec_command", "call_id": "history",
                                  "arguments": json.dumps({"cmd": command})}},
                     native_terminal_result("history", output),
@@ -1877,6 +1878,14 @@ class ClaimCloseoutTests(unittest.TestCase):
                                  "input": 'text(await tools.exec_command({cmd:"cat "+load("references").join(" ")}));'}},
                     native_terminal_result("read", javascript=True),
                 ]
+                if rendering == "poll":
+                    rows[1:2] = [
+                        {"payload": {"type": "function_call_output", "call_id": "history",
+                                     "output": json.dumps({"session_id": 41, "output": ""})}},
+                        {"payload": {"type": "function_call", "name": "write_stdin", "call_id": "poll",
+                                     "arguments": json.dumps({"session_id": 41, "chars": ""})}},
+                        native_terminal_result("poll", output),
+                    ]
                 root = self.journal_era_session(*rows)
                 discovery = helper.recorded_targets(root)
                 self.assertFalse(discovery["receipts"], discovery)
@@ -1902,6 +1911,34 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertFalse(uncertain["claims_clear"], uncertain)
                 self.assertFalse(uncertain["blocked"], uncertain)
                 self.assertTrue(uncertain["unresolved_invocations"], uncertain)
+        for source in ('text(await tools.exec_command({cmd:"uv run legacy-worker.py"}));',
+                       'text(await tools.write_stdin({session_id:41,chars:""}));'
+                       'text(await tools.exec_command({cmd:"uv run legacy-worker.py"}));'):
+            with self.subTest(genuine_receipt=source):
+                self.setUp()
+                receipt = {"claim": SOURCE, "issue": {"repo": REPO, "number": 2}}
+                rows = [
+                    {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "script", "input": source}},
+                    native_terminal_result("script", json.dumps(receipt), javascript=True),
+                ]
+                if "write_stdin" in source:
+                    rows[:0] = [
+                        {"payload": {"type": "function_call", "name": "exec_command", "call_id": "history",
+                                     "arguments": json.dumps({"cmd": "cat historical-receipt.json"})}},
+                        {"payload": {"type": "function_call_output", "call_id": "history",
+                                     "output": json.dumps({"session_id": 41, "output": ""})}},
+                    ]
+                    rows[-1]["payload"]["output"] = [
+                        {"type": "input_text", "text": json.dumps({"exit_code": 0, "output": output})}
+                        for output in ("", json.dumps(receipt))
+                    ]
+                root = self.journal_era_session(*rows)
+                self.reader.paged_json.side_effect = lambda path, **kwargs: (
+                    [self.source] if path.endswith("/issues/2/comments") else self.paged(path, **kwargs)
+                )
+                report = helper.check([root])
+                self.assertFalse(report["claims_clear"], report)
+                self.assertTrue(any(line.startswith(f"{REPO}#2:") for line in report["blocked"]), report)
 
     def test_journal_covers_only_sessions_with_an_authoritative_start_and_matching_rows(self) -> None:
         unjournaled_receipt = {"claim": SOURCE, "issue": {"repo": REPO, "number": 2}}

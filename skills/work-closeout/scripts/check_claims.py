@@ -171,7 +171,7 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data
 
 
 def receipt_values(rows: list[dict]) -> list[dict]:
-    blocks = [row for row in rows if "claim" in row]
+    blocks: list[object] = [row for row in rows if "claim" in row]
     blocks.extend(block for found in history.claim_receipt_outputs(rows).values() for block in found)
     return list(history.claim_results(blocks))
 
