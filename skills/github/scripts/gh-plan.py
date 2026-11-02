@@ -128,7 +128,7 @@ PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
     "next": ("composite", "mixed", False),
     "close": ("composite", "mixed", True),
     "reconcile-landing": ("composite", "mixed", True),
-    "reconcile-status": ("composite", "rest_core", True),
+    "reconcile-status": ("composite", "rest_core", False),
     "project-add": ("gh_cli_graphql", "graphql", True),
     "project-set": ("gh_cli_graphql", "graphql", True),
     "project-list": ("gh_cli_graphql", "graphql", False),
@@ -6236,8 +6236,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         scan_limit=args.scan_limit * 2 if args.scan_limit is not None else None,
         inventory_complete=candidate_coverage_complete,
         reference_repositories={item["repo"] for item in discovery.get("repositories", [])},
-        structured_waits={key: structured_waits.get(key, node["item"]["structured_wait"])
-                          for key, node in nodes.items() if "structured_wait" in node["item"]},
+        structured_waits={key: structured_waits[key] if key in structured_waits else node["item"]["structured_wait"]
+                          for key, node in nodes.items() if key in structured_waits or "structured_wait" in node["item"]},
     )
     stale = {(row["repo"].casefold(), row["number"]): row for row in wait_context["items"]}
     checked_waits = {(row["repo"].casefold(), row["number"]) for row in wait_context["checked_issues"]}

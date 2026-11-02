@@ -1347,8 +1347,7 @@ def rank_direction_work(
         "milestone_closure_reviews": closure_reviews,
         "excluded": excluded,
         "waiting": waiting,
-        "findings": [item[field] for item in [*candidates, *excluded]
-                     for field in ("wait_finding", "label_finding") if item.get(field)],
+        "findings": [item["wait_finding"] for item in [*candidates, *excluded] if item.get("wait_finding")],
         "completed_milestones": [title for title in milestone_titles if title in completed],
         "tracking_roots": [{"repo": root["repo"], "number": root["number"]} for root in tracks],
         "tracking_milestones": [{"repo": root["repo"], "number": root["number"], "milestone": root["milestone"]} for root in tracks],

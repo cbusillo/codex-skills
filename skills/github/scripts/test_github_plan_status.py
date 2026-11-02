@@ -17,11 +17,13 @@ import github_plan_wait
 
 class DerivedStatusTests(unittest.TestCase):
     def test_planning_completion_uses_existing_body_metadata(self) -> None:
-        from github_plan_status.body import PLAN_RESERVED_MARKERS
+        from github_plan_status.body import PLAN_OWNERSHIP_MARKERS, PLAN_MANAGED_PROVENANCE_MARKER
 
-        for body in ("Plain request.", "## Scope\nFix the screen.\n## Validation\nSave the form."):
+        for body in ("Plain request.", "## Scope\nFix the screen.\n## Validation\nSave the form.",
+                     "## Current Status\r\nAgent lands the PR.", "```\n## Finish Line\nSaving works.\n```",
+                     f"The marker `{PLAN_MANAGED_PROVENANCE_MARKER}` is an example."):
             self.assertFalse(github_plan_status.is_planning_issue({"body": body}))
-        for body in (*PLAN_RESERVED_MARKERS, "## Current Status\nAgent lands the PR.", "## Finish Line\nSaving works."):
+        for body in (*PLAN_OWNERSHIP_MARKERS, PLAN_MANAGED_PROVENANCE_MARKER + "\r\n"):
             with self.subTest(body=body):
                 self.assertTrue(github_plan_status.is_planning_issue({"body": body}))
                 self.assertFalse(github_plan_status.is_planning_issue({"body": body, "pull_request": {}}))

@@ -1844,7 +1844,7 @@ def test_global_wait_comments_named_actors_and_wrapped_urls_use_own_evidence() -
 
 def test_local_and_global_next_exclude_stale_landing_but_keep_split_work() -> None:
     status = "## Current Status\nState: Source complete.\nNext action: Supervisor lands PR https://github.com/someone/product/pull/71 and reconciles closure.\nWaiting for: None.\n"
-    stale = global_issue("someone/product", 10, body=status)
+    stale = global_issue("someone/product", 10, body=status, wait_reviewed=False)
     split = global_issue("someone/product", 11, body=status.replace("Supervisor lands PR", "Test split remainder after PR"))
     person = global_issue("someone/product", 12, body=split["body"].replace("Waiting for: None.", "Waiting for: Chris to test on the phone."),
                           waiting_for="Chris to test on the phone.")
@@ -1862,7 +1862,8 @@ def test_local_and_global_next_exclude_stale_landing_but_keep_split_work() -> No
             assert any(row["number"] == 12 and "Chris" in row["waiting_for"] for row in result["waiting"])
             assert not any(row["number"] == 12 for row in result["stale_waits"])
             excluded = next(row for row in result["excluded"] if row["number"] == 10)
-            assert excluded["exclusion"] == "landed_status_needs_reconciliation"
+            assert excluded["exclusion"] == "wait_review_required"
+            assert excluded["post_merge_evidence"]["selection_exclusion"]
             assert not excluded["post_merge_evidence"]["completion_proven"]
             result.clear()
             global_collect = module.collect_paged_rest_items
@@ -1870,6 +1871,8 @@ def test_local_and_global_next_exclude_stale_landing_but_keep_split_work() -> No
                 module.cmd_next(next_args(repo="someone/product"))
             assert [row["number"] for row in result["candidates"]] == [11]
             assert result["candidate_count"] == 1
+            local_stale = next(row for row in result["excluded"] if row["number"] == stale["number"])
+            assert local_stale["post_merge_evidence"]["selection_exclusion"]
             assert result["candidates"][0]["post_merge_evidence"]["selection_exclusion"] is False
             assert {row["number"] for row in result["stale_wait_report"]["items"]} == {10, 11}
 
@@ -2000,8 +2003,19 @@ def test_global_stale_wait_report_reuses_merged_pr_proof_and_refuses_capacity() 
                        "Next action: Supervisor routes PR #11 through the merge train, verifies landing, closes this issue.\n")
     with global_fixture(roots, [waiting], edges, discovered=[tool]) as (module, result, _reads):
         base_api = module.api_json
-        with patch.multiple(module, api_json=merged):
+        comment_reads = []
+        original_collect = module.collect_paged_rest_items
+        def counted_collect(path: str, **kwargs: Any) -> Any:
+            if path.startswith("/repos/someone/business/issues/10/comments"):
+                comment_reads.append(path)
+            return original_collect(path, **kwargs)
+        def counted(method: str, path: str, **kwargs: Any) -> Any:
+            if path.startswith("/repos/someone/business/issues/10/comments"):
+                comment_reads.append(path)
+            return merged(method, path, **kwargs)
+        with patch.multiple(module, api_json=counted, collect_paged_rest_items=counted_collect):
             module.cmd_next(next_args())
+        assert len(comment_reads) == 1
     report = next(row for row in result["stale_wait_report"]["items"] if row["number"] == waiting["number"])
     assert report["selection_exclusion"]
     assert all(row["number"] != waiting["number"] for row in result["candidates"])

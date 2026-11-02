@@ -11,7 +11,7 @@ from types import MappingProxyType
 from typing import Any
 
 from . import waits as wait_records
-from .body import PLAN_RESERVED_MARKERS
+from .body import PLAN_OWNERSHIP_MARKERS, PLAN_MANAGED_PROVENANCE_MARKER
 from .waits import validate as validate_wait
 
 DEFAULT_STATUS_LABELS: Mapping[str, str] = MappingProxyType({})
@@ -71,8 +71,8 @@ def label_changes(recorded: list[str], names: Mapping[str, str], derived: dict[s
 
 def is_planning_issue(issue: dict[str, Any], names: Mapping[str, str] | None = None) -> bool:
     body = issue.get("body") or ""
-    return "pull_request" not in issue and (any(marker in body for marker in PLAN_RESERVED_MARKERS)
-        or re.search(r"(?im)^##[ \t]+(?:Current Status|Finish Line)[ \t]*$", body) is not None)
+    return "pull_request" not in issue and (any(marker in body for marker in PLAN_OWNERSHIP_MARKERS)
+        or re.search(rf"(?m)^{re.escape(PLAN_MANAGED_PROVENANCE_MARKER)}[ \t]*\r?$", body) is not None)
 
 
 def same_wait_projection(issue: dict[str, Any], first: dict[str, Any], second: dict[str, Any]) -> bool:
