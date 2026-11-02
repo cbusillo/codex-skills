@@ -189,6 +189,19 @@ class WaitTests(unittest.TestCase):
         reader.paged_json.return_value = [wait_comment("other", waiting_for="Director approves", ends_when="Approved")]
         self.assertEqual(director_waits.collect_query(reader, "receiver", ["Pat", "Director", "owner"], NOW,
                                                      recipient='"Pat" in:body,comments')["waits"], [])
+        reader.paged_json.return_value = [wait_comment("other", waiting_for="Pat confirms the readback", ends_when="Pat answers")]
+
+        def request(_method: str, path: str, **_kwargs: object) -> object:
+            query = parse_qs(urlsplit(path).query)["q"][0]
+            if "user:receiver" in query and "-user:receiver" not in query:
+                raise ValueError("owned repository search unavailable")
+            return search(foreign)
+
+        reader.request.side_effect = request
+        for include_owned in (True, False):
+            report = director_waits.collect(reader, "receiver", ["Pat"], NOW, include_owned=include_owned)
+            self.assertEqual(report["complete"], not include_owned)
+            self.assertEqual([(row["repo"], row["number"]) for row in report["waits"]], [("other/product", 9)])
 
     def test_no_index_reports_alias_gap_and_explicit_name_is_supported(self):
         people = {"status": "ok", "director_names": [], "director_ambiguous": False}

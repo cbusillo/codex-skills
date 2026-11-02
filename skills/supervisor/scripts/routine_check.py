@@ -238,7 +238,7 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
     )
 
     def waits() -> dict:
-        return director_waits.collect_for_owner(github_reader(deadline_seconds=600), args.owner, datetime.now(UTC))
+        return director_waits.collect_for_owner(github_reader(deadline_seconds=600), args.owner, datetime.now(UTC), include_owned=False)
 
     def fetch(item: str) -> list[dict]:
         match = oq.ITEM.fullmatch(item)

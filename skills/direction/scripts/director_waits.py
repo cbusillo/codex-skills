@@ -235,7 +235,7 @@ def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting f
     return result
 
 
-def collect(reader, owner, terms, now, issue_limit=1000, *, include_archived=False) -> dict[str, Any]:
+def collect(reader, owner, terms, now, issue_limit=1000, *, include_archived=False, include_owned: bool = True) -> dict[str, Any]:
     # Scoped searches cover both supported status fields and structured wait
     # records written only in comments, without relying on provider-specific
     # boolean query parsing or visiting each repository. Each candidate's
@@ -243,7 +243,7 @@ def collect(reader, owner, terms, now, issue_limit=1000, *, include_archived=Fal
     discussions: dict[tuple[str, int], Any] = {}
     reports = [collect_query(reader, owner, terms, now, issue_limit, phrase, include_archived=include_archived,
                              where=where, discussions=discussions)
-               for phrase, where in (("Waiting for", "body"), ("Parked until", "body"), ("waiting_for", "comments"))]
+               for phrase, where in (("Waiting for", "body"), ("Parked until", "body"), ("waiting_for", "comments"))] if include_owned else []
     reports.extend(collect_query(reader, owner, terms, now, issue_limit, include_archived=include_archived,
                                  discussions=discussions, recipient=query, recipient_term=term)
                    for term, query in github_plan_wait.recipient_queries(owner, terms))
@@ -257,11 +257,12 @@ def collect(reader, owner, terms, now, issue_limit=1000, *, include_archived=Fal
 
 
 def collect_for_owner(reader: GitHubReader, owner: str, now: datetime, issue_limit: int = 1000, *,
-                      director_names: list[str] | None = None, include_archived: bool = False) -> dict[str, Any]:
+                      director_names: list[str] | None = None, include_archived: bool = False,
+                      include_owned: bool = True) -> dict[str, Any]:
     extra_names = director_names or []
     people = attention.people_identities({owner.casefold()}, None)
     terms = [owner, "Director", "owner", *people["director_names"], *extra_names]
-    result = collect(reader, owner, terms, now, issue_limit, include_archived=include_archived)
+    result = collect(reader, owner, terms, now, issue_limit, include_archived=include_archived, include_owned=include_owned)
     if (people["status"] == "error" or people["director_ambiguous"]
             or (not people["director_names"] and not extra_names)):
         result["complete"] = False
