@@ -183,6 +183,10 @@ Rules for this brief (every Supervisor brief carries them):
 - Keep the item's Current Status current. When the item is done or handed
   off, close out with [work-closeout](../../work-closeout/SKILL.md) and end
   with a standalone, unqualified final line: Safe to exit: yes
+- Before asking the Supervisor to staff delegated children, update each child's
+  Current Status through `gh-plan.py update-section` with `Next actor: agent:supervisor`
+  and its concrete staffing action. A STAFF NOW comment on the parent alone
+  does not update the children. Keep the lead as next actor only for work it retains.
 <!-- brief-rules:end -->
 
 ## Milestone lead briefs
