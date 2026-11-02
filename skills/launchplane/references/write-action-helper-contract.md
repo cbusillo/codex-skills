@@ -579,7 +579,15 @@ installed local helper bindings.
   and returns the product's Client GitHub login and review label, `production_use`,
   `release_on_acceptance`, lifecycle state, display name, driver, repository and
   lanes (context and instance only), plus the optional typed business-hours policy
-  with its wire presence preserved. The summary contains service status and trace
+  with its wire presence preserved. A present `preview` object returns only the
+  producer's `enabled`, `context` and `slug_template`; an omitted object stays
+  omitted, and disabled metadata and empty strings remain as supplied. Contexts
+  use the bounded product-read path-segment alphabet; templates allow up to 256
+  letters, digits, underscores, dots, hyphens and braces, including `pr-{number}`.
+  Malformed or secret-looking retained fields fail the whole read. Preview
+  environment, settings and other fields are omitted. Routing is observed
+  metadata, never a locally matched selector or authority for a lane action.
+  The summary contains service status and trace
   provenance only. For release authority, follow the
   [release rule](../../references/role-words.md#release-rule) and read service-owned
   evidence with `product-promotion-status-read`. `release_on_acceptance` is `held`, `promote`,
