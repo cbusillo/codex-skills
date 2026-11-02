@@ -26,8 +26,8 @@ decisions, statuses, board contents or narrative; open linked records for action
    [comment-radar configuration](../../github-work-rollup/SKILL.md#external-comment-radar).
    Radar defaults to the Director's repositories; `--repo` narrows that scope and
    repeated `--thread` adds full-history reads. Questions and waits addressed to
-   the configured owner always use the widened mention and Director-wait readers
-   across readable repositories. Outside results stay marked untrusted.
+   the configured owner in other owners' repositories always use the widened
+   mention and Director-wait readers. Outside results stay marked untrusted.
    Keep Client-agent identities in the existing people index.
    The digest reads global `next`, sessions, questions,
    radar and live watch output without waiting for the watch process to exit.
