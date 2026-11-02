@@ -3303,6 +3303,7 @@ class TerminalTests(unittest.TestCase):
             child = root / "agy"
             child.write_text(f'#!{sys.executable}\nimport argparse\n'
                              'parser = argparse.ArgumentParser()\n'
+                             'parser.add_argument("--dangerously-skip-permissions", action="store_true", required=True)\n'
                              'parser.add_argument("--prompt-interactive", required=True)\n'
                              'print(parser.parse_args().prompt_interactive, end="")\n')
             child.chmod(0o700)
