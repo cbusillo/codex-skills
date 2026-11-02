@@ -592,8 +592,8 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
 
     def listing(path, *, stop=None, page_limit=max_pages):
         try:
-            rows, cut = audit.fetch_paginated(path, fetch=fetch, max_pages=page_limit, stop=stop)
-            if cut:
+            rows, page_cut = audit.fetch_paginated(path, fetch=fetch, max_pages=page_limit, stop=stop)
+            if page_cut:
                 gaps.append({"source": path, "reason": "page_limit"})
             if any(not isinstance(row, dict) for row in rows):
                 gaps.append({"source": path, "reason": "invalid_listing_item"})
