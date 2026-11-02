@@ -235,7 +235,7 @@ def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting f
     return result
 
 
-def collect(reader, owner, terms, now, issue_limit=1000, *, include_archived=False) -> dict[str, Any]:
+def collect(reader, owner, terms, now, issue_limit=1000, *, include_archived=False, include_owned: bool = True) -> dict[str, Any]:
     # Scoped searches cover both supported status fields and structured wait
     # records written only in comments, without relying on provider-specific
     # boolean query parsing or visiting each repository. Each candidate's
@@ -243,7 +243,7 @@ def collect(reader, owner, terms, now, issue_limit=1000, *, include_archived=Fal
     discussions: dict[tuple[str, int], Any] = {}
     reports = [collect_query(reader, owner, terms, now, issue_limit, phrase, include_archived=include_archived,
                              where=where, discussions=discussions)
-               for phrase, where in (("Waiting for", "body"), ("Parked until", "body"), ("waiting_for", "comments"))]
+               for phrase, where in (("Waiting for", "body"), ("Parked until", "body"), ("waiting_for", "comments"))] if include_owned else []
     reports.extend(collect_query(reader, owner, terms, now, issue_limit, include_archived=include_archived,
                                  discussions=discussions, recipient=query, recipient_term=term)
                    for term, query in github_plan_wait.recipient_queries(owner, terms))
@@ -254,6 +254,22 @@ def collect(reader, owner, terms, now, issue_limit=1000, *, include_archived=Fal
             "searches": [{key: report[key] for key in ("query", "total_count", "complete")} for report in reports],
             "repositories_with_matches": sorted({repo for report in reports for repo in report["repositories_with_matches"]}),
             "scope": reports[0]["scope"]}
+
+
+def collect_for_owner(reader: GitHubReader, owner: str, now: datetime, issue_limit: int = 1000, *,
+                      director_names: list[str] | None = None, include_archived: bool = False,
+                      include_owned: bool = True) -> dict[str, Any]:
+    extra_names = director_names or []
+    people = attention.people_identities({owner.casefold()}, None)
+    terms = [owner, "Director", "owner", *people["director_names"], *extra_names]
+    result = collect(reader, owner, terms, now, issue_limit, include_archived=include_archived, include_owned=include_owned)
+    if (people["status"] == "error" or people["director_ambiguous"]
+            or (not people["director_names"] and not extra_names)):
+        result["complete"] = False
+        result["errors"].append({"scope": "Director aliases", "error": "people identity unavailable or ambiguous; supply known --director-name aliases when no index exists"})
+    result["people_status"] = people["status"]
+    result["director_names"] = [*people["director_names"], *extra_names]
+    return result
 
 
 def main():
@@ -267,19 +283,12 @@ def main():
     if (not re.fullmatch(r"[\w.-]+", args.owner) or args.issue_limit <= 0
             or not math.isfinite(args.deadline_seconds) or args.deadline_seconds <= 0):
         parser.error("owner and positive finite bounds are required")
-    people = attention.people_identities({args.owner.casefold()}, None)
-    terms = [args.owner, "Director", "owner", *people["director_names"], *args.director_name]
     reader = GitHubReader(operation="github.direction.director_waits", strict_actor=True,
                           gh_prefix_args=automation_only_gh_prefix_args(),
                           include_archived=args.include_archived,
                           deadline_at=time.time() + args.deadline_seconds)
-    result = collect(reader, args.owner, terms, datetime.now(timezone.utc), args.issue_limit, include_archived=args.include_archived)
-    if (people["status"] == "error" or people["director_ambiguous"]
-            or (not people["director_names"] and not args.director_name)):
-        result["complete"] = False
-        result["errors"].append({"scope": "Director aliases", "error": "people identity unavailable or ambiguous; supply known --director-name aliases when no index exists"})
-    result["people_status"] = people["status"]
-    result["director_names"] = [*people["director_names"], *args.director_name]
+    result = collect_for_owner(reader, args.owner, datetime.now(timezone.utc), args.issue_limit,
+                               director_names=args.director_name, include_archived=args.include_archived)
     print(json.dumps(result))
     return int(not result["complete"])
 
