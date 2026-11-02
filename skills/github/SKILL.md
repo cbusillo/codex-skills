@@ -907,12 +907,11 @@ each target repository:
   repository**: refused; the Director installs the App there.
 - **Any other account's repository without an installation**: your own GitHub
   user, only on an explicit opt-in. An installation on some of that account's
-  repositories does not change this for its others. Writing to another
-  person's repository is a stop: ask your Director first, then set
-  `GH_WITH_ENV_TOKEN_OWN_USER=1` on each command that writes there. For a
+  repositories does not change this for its others. Follow your Director's
+  external-write rules, including the
   [same-issue Supervisor reply](../references/talking-with-the-director.md#same-issue-supervisor-replies),
-  apply that flow's direction and identity decisions; the opt-in does not
-  require another approval of each permitted reply. Without
+  when applicable. Set `GH_WITH_ENV_TOKEN_OWN_USER=1` on each authorized
+  command that writes there. Without
   it the helpers refuse and name the opt-in; a value in `local.env` does not
   count. Configure the person's personal login as described under
   [Primary App and contributor identity](references/cli-reference.md#primary-app-and-contributor-identity).
