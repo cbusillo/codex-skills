@@ -355,6 +355,8 @@ def _record_closure(path, entry, supervisor_session, *, persist=True, native=Non
     closed = {**entry, "ended_at": datetime.now(timezone.utc).isoformat(),
               "verdict_at": status["timestamp"], "process_exit_verified": True,
               "session_outcome": status["session_outcome"]}
+    if saved and saved.get("resumed_generation"):
+        closed["session_outcome"]["landed_without_rescue"] = False
     if entry.get("harness") == "codex" and entry.get("codex_home"):
         try:
             closed["closure_evidence"] = closure.evidence(closed)

@@ -67,13 +67,15 @@ class ReleaseTests(unittest.TestCase):
                                        {**closed, "session_id": "unattributed", "handoff_url": None},
                                        {**closed, "session_id": "foreign", "handoff_url": closed["handoff_url"].replace("test/a", "foreign/a")},
                                        {**closed, "session_id": "next-window", "ended_at": (ended + timedelta(days=1)).isoformat()}]))
-            summary = helper.session_record.session_outcomes.weekly(log, owner="test", since=ended, until=ended + timedelta(days=1))
+            summary = helper.session_record.session_outcomes.weekly(log, owner="test", since=ended, until=ended + timedelta(days=1),
+                                                                   comment_url=helper.release.COMMENT_URL)
             measured, legacy = summary["rows"]
             self.assertEqual((measured["repository"], measured["model"], measured["effort"]), ("test/a", model, effort))
             self.assertEqual((measured["sessions"], measured["landed_without_rescue"], measured["review_findings_acted_on"]), (1, 1, 2))
             self.assertEqual((legacy["model"], legacy["outcome_unknown"], legacy["review_findings_unknown"]), ("unknown", 1, 1))
             self.assertEqual(summary["unattributed_sessions"], 1)
-            empty = helper.session_record.session_outcomes.weekly(log.with_name("missing.json"), owner="test", since=ended, until=ended + timedelta(days=1))
+            empty = helper.session_record.session_outcomes.weekly(log.with_name("missing.json"), owner="test", since=ended,
+                                                                 until=ended + timedelta(days=1), comment_url=helper.release.COMMENT_URL)
             self.assertEqual((empty["status"], empty["rows"]), ("complete", []))
 
     def test_inventory_backfill_refuses_unresolved_resume_after_the_original_exit(self) -> None:
@@ -557,6 +559,11 @@ class ReleaseTests(unittest.TestCase):
 
     def test_first_recovery_finish_uses_native_dead_pane_cutoff_then_retains_it(self):
         import tmux_terminal
+        records = helper.session_record.read_jsonl(self.transcript)
+        records[-2]["payload"]["message"] = (
+            'Session outcome: {"landed_without_rescue": true, "review_findings_acted_on": 0}\nSafe to exit: yes'
+        )
+        self.transcript.write_text("\n".join(json.dumps(row) for row in records) + "\n")
         ended = helper.release.stamp(self.entry["ended_at"])
         entry = {**self.entry, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32,
                  "window_id": "$1", "tab_id": "@1", "tty_exited_at": "2099-01-01T00:00:00Z",
@@ -579,12 +586,14 @@ class ReleaseTests(unittest.TestCase):
                     patch.object(helper.closure, "process_started_at", return_value=ended + timedelta(seconds=22)), \
                     patch.object(helper.closure, "guarded_launch_endpoint", return_value="/new-client"):
                 closed = helper.record_closure(log, entry, "supervisor")
+                self.assertEqual(closed["session_outcome"]["landed_without_rescue"], not recovered)
                 self.assertEqual(closed["tty_exited_at"], ended.isoformat())
                 self.assertGreater(helper.release.stamp(closed["ended_at"]), ended + timedelta(seconds=22))
                 with patch.object(tmux_terminal.Terminal, "list", side_effect=AssertionError("dead pane already removed")):
                     retried = helper.record_closure(log, entry, "supervisor")
                 self.assertEqual(retried["ended_at"], closed["ended_at"])
                 self.assertEqual(retried["tty_exited_at"], closed["tty_exited_at"])
+                self.assertEqual(retried["session_outcome"], closed["session_outcome"])
 
     def test_missing_dead_pane_uses_strict_exit_check_without_accepting_caller_cutoff(self):
         import tmux_terminal

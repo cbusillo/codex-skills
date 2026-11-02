@@ -27,7 +27,7 @@ def record(entry: dict, records: list[dict], final_text: str) -> dict:
     outcome: dict[str, Any] = {"model": ", ".join(sorted(models)) or "unknown",
                                "effort": ", ".join(sorted(efforts)) or "unknown",
                                "landed_without_rescue": None, "review_findings_acted_on": None}
-    reports = re.findall(r"^\s*(?:[-*]\s+)?(?:\*\*)?Session outcome:(?:\*\*)?\s*(\{[^\n]*\})\s*$",
+    reports = re.findall(r"^\s*(?:[-*]\s+)?(?:\*\*)?Session outcome:(?:\*\*)?\s*(\{[^\n]*})\s*$",
                          final_text, re.MULTILINE)
     if len(reports) != 1:
         return outcome
@@ -43,7 +43,7 @@ def record(entry: dict, records: list[dict], final_text: str) -> dict:
     return outcome
 
 
-def weekly(path: Path, *, owner: str, since: dt.datetime, until: dt.datetime) -> dict:
+def weekly(path: Path, *, owner: str, since: dt.datetime, until: dt.datetime, comment_url: re.Pattern[str]) -> dict:
     result: dict[str, Any] = {"status": "complete", "rows": [], "unattributed_sessions": 0,
                               "basis": "closed_sessions_on_this_host"}
     try:
@@ -60,8 +60,7 @@ def weekly(path: Path, *, owner: str, since: dt.datetime, until: dt.datetime) ->
             ended = dt.datetime.fromisoformat(entry["ended_at"].replace("Z", "+00:00"))
             if not since <= ended < until:
                 continue
-            match = re.fullmatch(r"https://github.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/\d+#issuecomment-\d+",
-                                 entry.get("handoff_url") or "")
+            match = comment_url.fullmatch(entry.get("handoff_url") or "")
             if not match:
                 result["unattributed_sessions"] += 1
                 continue

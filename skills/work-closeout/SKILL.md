@@ -670,6 +670,8 @@ relaunch is false. Count review findings that caused an implementation or
 instruction change, across review rounds; count a repeated finding once.
 The closeout bundle reads model and effort from the native transcript. Missing
 evidence stays unknown. No Director question is needed for these observations.
+Verified relaunch evidence in the existing closure record overrides a worker's
+claim that the change landed without a relaunch.
 
 - Done: what changed or was handled.
 - Remaining: concrete blockers or follow-up work, including how the next action
