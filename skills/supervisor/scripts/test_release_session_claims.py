@@ -23,7 +23,7 @@ from unittest.mock import Mock, patch
 from typing import Any
 
 import release_session_claims as helper
-from skills.github.scripts import github_plan_claim
+from skills.github.scripts import github_plan_claim, github_plan_release
 closure = importlib.import_module("github_plan_closure")
 identity = importlib.import_module("github_identity")
 
@@ -68,14 +68,14 @@ class ReleaseTests(unittest.TestCase):
                                        {**closed, "session_id": "foreign", "handoff_url": closed["handoff_url"].replace("test/a", "foreign/a")},
                                        {**closed, "session_id": "next-window", "ended_at": (ended + timedelta(days=1)).isoformat()}]))
             summary = helper.session_record.session_outcomes.weekly(log, owner="test", since=ended, until=ended + timedelta(days=1),
-                                                                   comment_url=helper.release.COMMENT_URL)
+                                                                   comment_url=github_plan_release.COMMENT_URL)
             measured, legacy = summary["rows"]
             self.assertEqual((measured["repository"], measured["model"], measured["effort"]), ("test/a", model, effort))
             self.assertEqual((measured["sessions"], measured["landed_without_rescue"], measured["review_findings_acted_on"]), (1, 1, 2))
             self.assertEqual((legacy["model"], legacy["outcome_unknown"], legacy["review_findings_unknown"]), ("unknown", 1, 1))
             self.assertEqual(summary["unattributed_sessions"], 1)
             empty = helper.session_record.session_outcomes.weekly(log.with_name("missing.json"), owner="test", since=ended,
-                                                                 until=ended + timedelta(days=1), comment_url=helper.release.COMMENT_URL)
+                                                                 until=ended + timedelta(days=1), comment_url=github_plan_release.COMMENT_URL)
             self.assertEqual((empty["status"], empty["rows"]), ("complete", []))
 
     def test_inventory_backfill_refuses_unresolved_resume_after_the_original_exit(self) -> None:
