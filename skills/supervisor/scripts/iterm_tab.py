@@ -1222,7 +1222,7 @@ def prepare_resume(args):
 
     session = args.resume_session_id
     if (args.account_provider != "openai" or not getattr(args, "ledger", None)
-            or getattr(args, "command_file", None) or getattr(args, "brief_file", None)
+            or getattr(args, "command_file", None) or getattr(args, "brief_file", None) or getattr(args, "brief_issue", None)
             or getattr(args, "computer_use", None)
             or getattr(args, "require_browser", False) or getattr(args, "without_browser", False)):
         raise ValueError("resume needs --account-provider openai and --ledger, without launch/brief files or browser/Computer Use flags")
@@ -1293,6 +1293,28 @@ def preparation_read() -> Iterator[None]:
 def read_launch_text(path: Path) -> str:
     with preparation_read():
         return path.read_text(encoding="utf-8")
+
+
+def read_issue_brief(issue: str, header: str) -> str:
+    match = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/[1-9]\d*", issue)
+    if not match or not re.search(rf"(?m)^Anchor and claim: {re.escape(issue)}\s*$", header):
+        raise ValueError("--brief-issue needs a full issue URL matching the header's Anchor and claim")
+    helper = Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py"
+    with preparation_read():
+        result = subprocess.run(["uv", "run", str(helper), "--repo", match[1], "show", issue, "--full"],
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+    try:
+        payload = json.loads(result.stdout)
+        body = payload["issue"]["body"] if not result.returncode and payload.get("ok") else ""
+    except (ValueError, KeyError, TypeError) as error:
+        raise ValueError(f"Brief source unavailable for {issue}") from error
+    status = re.search(r"(?m)^## Current Status[ \t]*\r?\n((?:(?!## |Brief:)[^\r\n]*\r?\n)*)Brief:[ \t]*\r?\n"
+                       r"(?P<fence>`{3,}|~{3,})(?:text)?[ \t]*\r?\n(?P<brief>[\s\S]*?)^(?P=fence)[ \t]*\r?$", body)
+    if not status or not re.search(r"(?m)^Next actor: agent:supervisor[ \t]*\r?$", status[1]):
+        raise ValueError(f"{issue} needs Next actor: agent:supervisor and a fenced Brief: in Current Status")
+    if not status["brief"].strip():
+        raise ValueError(f"{issue} has an empty worker brief")
+    return header.rstrip("\n") + "\n\n" + status["brief"]
 
 
 def check_launch_issue(brief: str) -> None:
@@ -1435,6 +1457,11 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
     if len(brief_files) != len(files):
         raise ValueError("provide one --brief-file per --command-file, in launch order")
     briefs = [read_launch_text(path) for path in brief_files]
+    brief_issues = getattr(args, "brief_issue", None) or []
+    if brief_issues:
+        if len(brief_issues) != len(files):
+            raise ValueError("provide one --brief-issue per --command-file, in launch order")
+        briefs = [read_issue_brief(issue, header) for issue, header in zip(brief_issues, briefs)]
     for brief in briefs:
         if not brief.strip():
             raise ValueError("brief must be nonempty")
@@ -2137,6 +2164,8 @@ def main():
                      help="one agent invocation and settings, without its prompt; repeat for a batch")
     new.add_argument("--brief-file", type=Path, action="append",
                      help="nonempty prompt to append as one argument; one per command file, in launch order")
+    new.add_argument("--brief-issue", action="append",
+                     help="child issue URL; append its Current Status Brief verbatim to --brief-file's standard header")
     new.add_argument("--resume-session-id", help="resume one exact Supervisor-owned Codex source from --ledger")
     new.add_argument("--ledger", type=Path, help="private source ledger for resume or atomic fresh managed Codex registration")
     new.add_argument(

@@ -45,6 +45,23 @@ def patch_attr(target: object, name: str, **kwargs: Any) -> Any:
 
 
 class LaunchIssueTests(unittest.TestCase):
+    def test_child_issue_brief_reaches_worker_verbatim_under_supervisor_header(self) -> None:
+        issue = "https://github.com/fixture/repo/issues/7"
+        task = "Keep  two spaces.\n\n## Goal\nUse `quotes`, 'apostrophes' and $literal.\n> Preserve this.\n```sh\necho café\n```\n\n"
+        header = f"Brief from the Supervisor. Trial token: CHILD.\nAnchor and claim: {issue}\nAdmission: milestone\nRules: {iterm_tab.BRIEF_RULES_URL}\n"
+        body = f"## Why\nContext only.\n\n## Current Status\nNext actor: agent:supervisor\nNext action: Launch this brief.\n\nBrief:\n````text\n{task}````\n\n## Other\nNot part of the brief.\n"
+        payload = {"ok": True, "issue": {"body": body, "launch_check": {"allowed": True}}}
+        with tempfile.TemporaryDirectory() as folder:
+            command, brief = Path(folder) / "command", Path(folder) / "header"
+            command.write_text("agy")
+            brief.write_text(header)
+            args = argparse.Namespace(command_file=[command], brief_file=[brief], brief_issue=[issue])
+            with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))):
+                commands, _ = iterm_tab.prepare_launches(args)
+            words = shlex.split(commands[0])
+            prompt = next(word.removeprefix("--prompt-interactive=") for word in words if word.startswith("--prompt-interactive="))
+            self.assertEqual(prompt, header.rstrip("\n") + "\n\n" + task)
+
     def test_stopped_launch_is_refused_on_both_backends_before_any_account_or_terminal_effect(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

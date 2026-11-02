@@ -1407,6 +1407,15 @@ environment prefixes. `agy` uses its native `--prompt-interactive` option;
 Codex and Claude take one positional prompt after `--`. Keep prompt options
 out of the command file. Shell wrappers, extra commands, trailing shell punctuation
 and shell comments refuse because they may discard the prompt.
+For a lead's parallel-session request, add `--brief-issue <child-issue-url>`
+and put only the standard Supervisor header in `--brief-file`: trial token,
+`Anchor and claim:` with that same URL, admission and rules link. The child's
+issue-body Current Status must name `Next actor: agent:supervisor` and contain
+`Brief:` followed by a fenced `text` block, using a longer fence if needed.
+The launcher appends that block's contents verbatim under the header, then
+runs the usual launch checks. Repeat both brief options in command-file order
+for a batch. The Supervisor remains the only launcher; staffing lists do not
+belong on the Track board.
 For fresh managed Codex `--remote` workers on either terminal backend, add
 `--ledger /private/launch-ledger.json`. The existing ingress publishes the
 first native thread ID and transcript into that launch's private receipt,

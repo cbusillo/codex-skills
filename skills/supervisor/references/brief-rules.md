@@ -183,10 +183,14 @@ Rules for this brief (every Supervisor brief carries them):
 - Keep the item's Current Status current. When the item is done or handed
   off, close out with [work-closeout](../../work-closeout/SKILL.md) and end
   with a standalone, unqualified final line: Safe to exit: yes
-- Before asking the Supervisor to staff delegated children, update each child's
-  Current Status through `gh-plan.py update-section` with `Next actor: agent:supervisor`
-  and its concrete staffing action. A STAFF NOW comment on the parent alone
-  does not update the children. Keep the lead as next actor only for work it retains.
+- Request a parallel session only through the child's Current Status, updated
+  with `gh-plan.py update-section`: `Next actor: agent:supervisor`, its concrete
+  launch action, and `Brief:` followed by the bounded brief in a fenced `text`
+  block. Use a longer fence if the brief contains fences. The Supervisor alone
+  launches it with `iterm_tab.py new --brief-issue <child-url>` and a
+  `--brief-file` containing only the standard header (token, anchor, admission,
+  rules link); the child's brief passes through verbatim. Never post staffing
+  lists or STAFF NOW on the Track board. Keep the lead as next actor for work it retains.
 <!-- brief-rules:end -->
 
 ## Milestone lead briefs
@@ -206,9 +210,9 @@ Every item you take is linked into that Track's graph.
 
 How a lead works:
 1. Own the Track's progress, not one item. Read the Track issue in full, its native children and their Current Status, and the overall and repository DIRECTION.md. Do not claim the Track issue itself.
-2. Take the Track's next actionable item in order: not waiting on a person or event, not natively blocked, not owned by another running session. Currently owned by other sessions, leave alone: __OWNED__. Recheck ownership before each claim. Hold exactly one claim at a time.
-3. Use subagents (the Agent tool) for parallel work under your claim: reading and diagnosis, running tests, your own review of record, drafting comments. Only one subagent or you edits files at a time, in your one task worktree.
-4. After each item: post results on the child issue, keep its Current Status current, release the claim, then take the next item. Track comments are for decisions, not per-slice progress.
+2. Take the Track's next actionable items in order: not waiting on a person or event, not natively blocked, not owned by another running session. Currently owned by other sessions, leave alone: __OWNED__. Recheck ownership before each claim. Hold up to three concurrent claims across repositories on your Track.
+3. Do your slices with subagents (the Agent tool): implementation, reading and diagnosis, tests, your own review of record, drafting comments. Each claim has its own task worktree, with only one editor (you or a subagent) per worktree at a time. For a separate parallel session, follow the shared rules' child Current Status request; the Supervisor remains the only launcher.
+4. After each item: post results on the child issue, keep its Current Status current, and release its claim before replacing it with another item. Track comments are for decisions, not per-slice progress or staffing lists.
 5. People waits: when an item needs a person (the Director, a Client, an outside party), record the wait on the item, follow the shared brief rules for any Director question, and move to the next item. Never wait idle on a person.
 6. Stop working only when no item on the Track is actionable by an agent or you need the Director; then keep each child's Current Status and structured waits current, close out with work-closeout, and end with a standalone final line: Safe to exit: yes
 
