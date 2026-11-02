@@ -656,6 +656,16 @@ Unavailable or capped history and file reads leave the counts null with
 numbers add no gate. The time window assumes first-parent committer dates run
 backward through history, as they do for GitHub and train merge commits.
 
+Beside the net-line report, report `capacity.session_outcomes`: closed Supervisor
+sessions on this host within the same `[since, until)` window, grouped by
+repository, native model and effort, with counts of changes landed without
+rescue or relaunch and review findings acted on. The existing closed-session
+log is the source; older records without measurements stay unknown, and an
+unreadable log is unavailable. A session using several models or efforts has
+their names joined in its group, rather than attributing its win to only one.
+Sessions without a repository are counted separately as unattributed; an absent
+log on a host with no closed sessions is empty.
+
 The weekly share is a report, not an alarm or a quota. The report labels its
 basis as merged pull requests (`capacity.own_share_basis`) and includes the
 Director's own-projects Order item and Capacity section verbatim in

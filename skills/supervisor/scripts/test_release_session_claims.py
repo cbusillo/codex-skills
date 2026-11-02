@@ -23,7 +23,7 @@ from unittest.mock import Mock, patch
 from typing import Any
 
 import release_session_claims as helper
-from skills.github.scripts import github_plan_claim
+from skills.github.scripts import github_plan_claim, github_plan_release
 closure = importlib.import_module("github_plan_closure")
 identity = importlib.import_module("github_identity")
 
@@ -42,6 +42,42 @@ def comment(number, body, author=ACTOR):
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_closeout_preserves_native_model_and_weekly_outcomes(self) -> None:
+        for harness in ("codex", "claude"):
+            model, effort = f"fixture-{harness}", "medium"
+            final = 'Session outcome: {"landed_without_rescue": true, "review_findings_acted_on": 2}\nSafe to exit: yes'
+            if harness == "claude":
+                final = "- **" + final.replace("Session outcome:", "Session outcome:**")
+            records = (helper.session_record.read_jsonl(self.transcript) if harness == "codex" else [
+                {"type": "assistant", "sessionId": SOURCE["session"], "timestamp": "2026-01-01T00:01:00Z",
+                 "effort": effort, "message": {"model": model, "content": final, "stop_reason": "end_turn"}},
+            ])
+            if harness == "codex":
+                records.insert(1, {"type": "turn_context", "payload": {"model": model, "effort": effort}})
+                records[-2]["payload"]["message"] = final
+            self.transcript.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+            log = self.root / f"{harness}-outcomes.json"
+            closed = helper.record_closure(log, {**self.entry, "harness": harness}, "supervisor")
+            self.assertEqual(closed["session_outcome"]["model"], model)
+            self.assertEqual(closed["session_outcome"]["effort"], effort)
+            self.assertTrue(closed["session_outcome"]["landed_without_rescue"])
+            self.assertEqual(closed["session_outcome"]["review_findings_acted_on"], 2)
+            ended = datetime.fromisoformat(closed["ended_at"])
+            log.write_text(json.dumps([closed, {**closed, "session_id": "legacy", "session_outcome": {}},
+                                       {**closed, "session_id": "unattributed", "handoff_url": None},
+                                       {**closed, "session_id": "foreign", "handoff_url": closed["handoff_url"].replace("test/a", "foreign/a")},
+                                       {**closed, "session_id": "next-window", "ended_at": (ended + timedelta(days=1)).isoformat()}]))
+            summary = helper.session_record.session_outcomes.weekly(log, owner="test", since=ended, until=ended + timedelta(days=1),
+                                                                   comment_url=github_plan_release.COMMENT_URL)
+            measured, legacy = summary["rows"]
+            self.assertEqual((measured["repository"], measured["model"], measured["effort"]), ("test/a", model, effort))
+            self.assertEqual((measured["sessions"], measured["landed_without_rescue"], measured["review_findings_acted_on"]), (1, 1, 2))
+            self.assertEqual((legacy["model"], legacy["outcome_unknown"], legacy["review_findings_unknown"]), ("unknown", 1, 1))
+            self.assertEqual(summary["unattributed_sessions"], 1)
+            empty = helper.session_record.session_outcomes.weekly(log.with_name("missing.json"), owner="test", since=ended,
+                                                                 until=ended + timedelta(days=1), comment_url=github_plan_release.COMMENT_URL)
+            self.assertEqual((empty["status"], empty["rows"]), ("complete", []))
+
     def test_inventory_backfill_refuses_unresolved_resume_after_the_original_exit(self) -> None:
         source = {"session_id": "01a0fcce-ef3c-74e3-af74-6721809e4990", "harness": "codex", "_inventory": True, "_backfill": True}
         cutoff = helper.release.stamp("2026-01-01T00:02:00Z")
@@ -523,6 +559,11 @@ class ReleaseTests(unittest.TestCase):
 
     def test_first_recovery_finish_uses_native_dead_pane_cutoff_then_retains_it(self):
         import tmux_terminal
+        records = helper.session_record.read_jsonl(self.transcript)
+        records[-2]["payload"]["message"] = (
+            'Session outcome: {"landed_without_rescue": true, "review_findings_acted_on": 0}\nSafe to exit: yes'
+        )
+        self.transcript.write_text("\n".join(json.dumps(row) for row in records) + "\n")
         ended = helper.release.stamp(self.entry["ended_at"])
         entry = {**self.entry, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32,
                  "window_id": "$1", "tab_id": "@1", "tty_exited_at": "2099-01-01T00:00:00Z",
@@ -545,12 +586,14 @@ class ReleaseTests(unittest.TestCase):
                     patch.object(helper.closure, "process_started_at", return_value=ended + timedelta(seconds=22)), \
                     patch.object(helper.closure, "guarded_launch_endpoint", return_value="/new-client"):
                 closed = helper.record_closure(log, entry, "supervisor")
+                self.assertEqual(closed["session_outcome"]["landed_without_rescue"], not recovered)
                 self.assertEqual(closed["tty_exited_at"], ended.isoformat())
                 self.assertGreater(helper.release.stamp(closed["ended_at"]), ended + timedelta(seconds=22))
                 with patch.object(tmux_terminal.Terminal, "list", side_effect=AssertionError("dead pane already removed")):
                     retried = helper.record_closure(log, entry, "supervisor")
                 self.assertEqual(retried["ended_at"], closed["ended_at"])
                 self.assertEqual(retried["tty_exited_at"], closed["tty_exited_at"])
+                self.assertEqual(retried["session_outcome"], closed["session_outcome"])
 
     def test_missing_dead_pane_uses_strict_exit_check_without_accepting_caller_cutoff(self):
         import tmux_terminal
