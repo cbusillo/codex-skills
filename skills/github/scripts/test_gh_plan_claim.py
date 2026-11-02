@@ -89,7 +89,9 @@ class ClaimMarkerTests(unittest.TestCase):
                        f"**trial token:** `{recipient}`,", CLAIM.marker(identity)):
             with self.subTest(record=record):
                 comments = [{"user": {"login": "owner"}, "body": record}]
-                self.assertEqual(CLAIM.recipient_evidence(status, comments, repo="owner/repo", number=42, trusted={"owner"})["worker"], recipient)
+                found = CLAIM.recipient_evidence(status, comments, repo="owner/repo", number=42, trusted={"owner"})
+                assert found is not None
+                self.assertEqual(found["worker"], recipient)
                 self.assertIsNone(CLAIM.recipient_evidence(status, comments, repo="owner/repo", number=42, trusted={"owner"}, worker=recipient))
                 self.assertIsNone(CLAIM.recipient_evidence(status, comments, repo="owner/repo", number=42, trusted=set()))
         for text in ("", f"> Trial token: {recipient}", f"```\nTrial token: {recipient}\n```", "Trial token: somebody-else"):
