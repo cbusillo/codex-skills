@@ -63,30 +63,57 @@ def patch_attr(target: object, name: str, **kwargs: Any) -> Any:
 
 
 class WatchTests(unittest.TestCase):
-    def test_client_comment_returns_to_supervisor_before_another_poll(self) -> None:
+    def test_client_comment_returns_after_settling_without_waiting_for_poll_interval(self) -> None:
         for author in ("client", "client-agent[bot]"):
             for persistent in (False, True):
                 with self.subTest(author=author, persistent=persistent), tempfile.TemporaryDirectory() as directory:
                     reader = Mock()
                     reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
                     feedback = comment(author, "Inventory and Helpdesk are missing. Holding Accept.", "2026-10-30T19:38:54Z")
-                    reader.paged_json.side_effect = feeds([feedback])
+                    reader.paged_json.side_effect = feeds([feedback], [])
                     reader.request.side_effect = getattr(foreign_watch, "GitHubReadShapeError")("external search unavailable")
                     args = argparse.Namespace(owner="director", state=Path(directory) / "state.json", since=None,
                         own_login=["director", "agent[bot]"], launchplane_login=[], interval=300,
                         once=False, persistent=persistent)
                     output = io.StringIO()
+                    now = [0.0]
                     with (patch_attr(foreign_watch, "GitHubReader", return_value=reader),
                           patch.object(foreign_watch, "utc_now", return_value="2026-10-30T19:40:00Z"),
-                          patch.object(foreign_watch.time, "sleep", side_effect=AssertionError("notice must return before sleep")),
+                          patch.object(foreign_watch.time, "monotonic", side_effect=lambda now=now: now[0]),
+                          patch.object(foreign_watch.time, "sleep", side_effect=lambda seconds, now=now: now.__setitem__(0, now[0] + seconds)),
                           redirect_stdout(output)):
-                        result = foreign_watch.watch(args, [REPO], "2026-10-30T19:35:00Z", foreign_watch.time.monotonic() + 60)
+                        result = foreign_watch.watch(args, [REPO], "2026-10-30T19:35:00Z", 60)
                     self.assertEqual(result, 0)
-                    [notice] = json.loads(output.getvalue())["notices"]
+                    self.assertEqual(now[0], foreign_watch.NOTICE_SETTLE_SECONDS)
+                    [notice] = json.loads(output.getvalue().splitlines()[0])["notices"]
                     self.assertEqual(notice["url"], feedback["html_url"])
                     self.assertEqual(notice["author"], author)
                     state = json.loads(args.state.read_text())
                     self.assertEqual(state["watermarks"][REPO], "2026-10-30T19:40:00Z")
+
+    def test_own_questions_stay_logged_without_waking_and_bursts_settle_once(self) -> None:
+        for kind, author, wakes in (("director_question", "AGENT[bot]", False),
+                                    ("director_question", "another[bot]", True),
+                                    ("foreign", "agent[bot]", True)):
+            with self.subTest(kind=kind, author=author), tempfile.TemporaryDirectory() as directory:
+                now = [0.0]
+                first = {"url": "first", "kind": kind, "author": author}
+                second = {**first, "url": "second"}
+                args = argparse.Namespace(owner="director", state=Path(directory) / "state.json", since=None,
+                                          own_login=["agent[bot]"], launchplane_login=[], interval=2,
+                                          once=False, persistent=True)
+                batches = iter(([first], [second]))
+                output = io.StringIO()
+                with (patch_attr(foreign_watch, "GitHubReader", return_value=Mock()),
+                      patch.object(foreign_watch, "scan", side_effect=lambda _repos, watermarks, *_, batches=batches: (next(batches, []), [], watermarks)),
+                      patch.object(foreign_watch, "scan_mentions", side_effect=lambda _args, _repos, watermarks, seen, *_: ([], [], [], watermarks, seen)),
+                      patch.object(foreign_watch.time, "monotonic", side_effect=lambda now=now: now[0]),
+                      patch.object(foreign_watch.time, "sleep", side_effect=lambda seconds, now=now: now.__setitem__(0, now[0] + seconds)),
+                      redirect_stdout(output)):
+                    self.assertEqual(foreign_watch.watch(args, [REPO], SINCE, 20), 0)
+                logged = [notice for line in output.getvalue().splitlines() for notice in json.loads(line)["notices"]]
+                self.assertEqual(logged, [first, second])
+                self.assertEqual(now[0], foreign_watch.NOTICE_SETTLE_SECONDS if wakes else 20)
 
     def test_persistent_read_retry_preserves_watermark_and_provider_cooldown(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -106,8 +133,8 @@ class WatchTests(unittest.TestCase):
                 now[0] += seconds
 
             with (patch.object(foreign_watch, "GitHubReader", return_value=reader),
-                  patch.object(foreign_watch.time, "monotonic", side_effect=lambda: now[0]),
-                  patch.object(foreign_watch.time, "time", side_effect=lambda: now[0]),
+                  patch.object(foreign_watch.time, "monotonic", side_effect=lambda now=now: now[0]),
+                  patch.object(foreign_watch.time, "time", side_effect=lambda now=now: now[0]),
                   patch.object(foreign_watch.time, "sleep", side_effect=sleep) as sleeps,
                   patch.object(foreign_watch, "utc_now", return_value=STARTED),
                   redirect_stdout(io.StringIO())):

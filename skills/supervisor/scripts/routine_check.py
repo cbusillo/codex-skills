@@ -151,7 +151,7 @@ def pointer(row: dict) -> str:
     return str(row.get("comment_url") or row.get("url") or row.get("session_id") or json.dumps(row, sort_keys=True))
 
 
-def digest(sources: dict[str, dict]) -> str:
+def digest(sources: dict[str, dict], *, full: bool = False) -> str:
     lines = ["Routine check (source candidates; routing receipts are delivery evidence only)"]
     for name, report in sources.items():
         lines.extend(source_errors(name, report))
@@ -183,7 +183,11 @@ def digest(sources: dict[str, dict]) -> str:
     lines.append(f"QUEUE {questions.get('queue', 'UNKNOWN')}")
     queued = [question for question in questions.get("questions", []) if question.get("registration_url")]
     unregistered = [question for question in questions.get("questions", []) if not question.get("registration_url")]
+    omitted = 0
     for question in queued:
+        if not full and question.get("delivery") == "acknowledged":
+            omitted += 1
+            continue
         lines.append(f"QUESTION {pointer(question)}: {question.get('delivery', question.get('status', 'unresolved'))}")
     if unregistered:
         lines.append(f"UNREGISTERED {len(unregistered)}: {pointer(unregistered[0])}")
@@ -206,6 +210,8 @@ def digest(sources: dict[str, dict]) -> str:
     lines.append(
         f"LOAD sessions={len(sessions)} candidates={selection.get('candidate_count', 0)} host={','.join(f'{value:.1f}' for value in os.getloadavg())}"
     )
+    if not full:
+        lines.append(f"OMITTED {omitted} routine rows; --full shows all")
     return "\n".join(dict.fromkeys(lines))
 
 
@@ -337,6 +343,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Print the existing Supervisor digest; optional routing delivers message pointers, never launches or closes."
     )
+    parser.add_argument("--full", action="store_true", help="include acknowledged questions and all routine rows")
     parser.add_argument("--owner", required=True)
     parser.add_argument("--queue", required=True)
     parser.add_argument("--ledger", type=Path, required=True)
@@ -365,7 +372,7 @@ def main() -> int:
     service_readers = {f"service {path}": lambda path=path: watch_report(path, service=True) for path in args.service_log}
     sources = collect({"watch": read_watch, **service_readers})
     sources.update(collect(build_readers(args, sources["watch"])))
-    print(digest(sources))
+    print(digest(sources, full=args.full))
     return int(
         any(source_errors(name, report) for name, report in sources.items())
         or any(
