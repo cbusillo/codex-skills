@@ -650,6 +650,8 @@ rescue or relaunch and review findings acted on. The existing closed-session
 log is the source; older records without measurements stay unknown, and an
 unreadable log is unavailable. A session using several models or efforts has
 their names joined in its group, rather than attributing its win to only one.
+Sessions without a repository are counted separately as unattributed; an absent
+log on a host with no closed sessions is empty.
 
 The weekly share is a report, not an alarm or a quota. The report labels its
 basis as merged pull requests (`capacity.own_share_basis`) and includes the

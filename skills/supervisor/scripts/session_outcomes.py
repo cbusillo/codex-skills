@@ -27,7 +27,8 @@ def record(entry: dict, records: list[dict], final_text: str) -> dict:
     outcome: dict[str, Any] = {"model": ", ".join(sorted(models)) or "unknown",
                                "effort": ", ".join(sorted(efforts)) or "unknown",
                                "landed_without_rescue": None, "review_findings_acted_on": None}
-    reports = re.findall(r"^Session outcome: (\{[^\n]*\})\s*$", final_text, re.MULTILINE)
+    reports = re.findall(r"^\s*(?:[-*]\s+)?(?:\*\*)?Session outcome:(?:\*\*)?\s*(\{[^\n]*\})\s*$",
+                         final_text, re.MULTILINE)
     if len(reports) != 1:
         return outcome
     try:
@@ -43,9 +44,13 @@ def record(entry: dict, records: list[dict], final_text: str) -> dict:
 
 
 def weekly(path: Path, *, owner: str, since: dt.datetime, until: dt.datetime) -> dict:
-    result: dict[str, Any] = {"status": "complete", "rows": [], "basis": "closed_sessions_on_this_host"}
+    result: dict[str, Any] = {"status": "complete", "rows": [], "unattributed_sessions": 0,
+                              "basis": "closed_sessions_on_this_host"}
     try:
-        entries = json.loads(path.read_text())
+        try:
+            entries = json.loads(path.read_text())
+        except FileNotFoundError:
+            entries = []
         if not isinstance(entries, list) or not all(isinstance(row, dict) for row in entries):
             raise ValueError("closed-session log must contain objects")
         groups: dict[tuple[str, str, str], dict] = {}
@@ -57,8 +62,11 @@ def weekly(path: Path, *, owner: str, since: dt.datetime, until: dt.datetime) ->
                 continue
             match = re.fullmatch(r"https://github.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/\d+#issuecomment-\d+",
                                  entry.get("handoff_url") or "")
-            repo = match[1].casefold() if match else "unknown"
-            if match and repo.split("/")[0] != owner.casefold():
+            if not match:
+                result["unattributed_sessions"] += 1
+                continue
+            repo = match[1].casefold()
+            if repo.split("/")[0] != owner.casefold():
                 continue
             outcome = entry.get("session_outcome") or {}
             model, effort = outcome.get("model") or "unknown", outcome.get("effort") or "unknown"

@@ -46,10 +46,11 @@ class ReleaseTests(unittest.TestCase):
         for harness in ("codex", "claude"):
             model, effort = f"fixture-{harness}", "medium"
             final = 'Session outcome: {"landed_without_rescue": true, "review_findings_acted_on": 2}\nSafe to exit: yes'
+            if harness == "claude":
+                final = "- **" + final.replace("Session outcome:", "Session outcome:**")
             records = (helper.session_record.read_jsonl(self.transcript) if harness == "codex" else [
-                {"type": "system", "sessionId": SOURCE["session"], "effort": effort},
                 {"type": "assistant", "sessionId": SOURCE["session"], "timestamp": "2026-01-01T00:01:00Z",
-                 "message": {"model": model, "content": final, "stop_reason": "end_turn"}},
+                 "effort": effort, "message": {"model": model, "content": final, "stop_reason": "end_turn"}},
             ])
             if harness == "codex":
                 records.insert(1, {"type": "turn_context", "payload": {"model": model, "effort": effort}})
@@ -63,12 +64,17 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(closed["session_outcome"]["review_findings_acted_on"], 2)
             ended = datetime.fromisoformat(closed["ended_at"])
             log.write_text(json.dumps([closed, {**closed, "session_id": "legacy", "session_outcome": {}},
+                                       {**closed, "session_id": "unattributed", "handoff_url": None},
+                                       {**closed, "session_id": "foreign", "handoff_url": closed["handoff_url"].replace("test/a", "foreign/a")},
                                        {**closed, "session_id": "next-window", "ended_at": (ended + timedelta(days=1)).isoformat()}]))
             summary = helper.session_record.session_outcomes.weekly(log, owner="test", since=ended, until=ended + timedelta(days=1))
             measured, legacy = summary["rows"]
             self.assertEqual((measured["repository"], measured["model"], measured["effort"]), ("test/a", model, effort))
             self.assertEqual((measured["sessions"], measured["landed_without_rescue"], measured["review_findings_acted_on"]), (1, 1, 2))
             self.assertEqual((legacy["model"], legacy["outcome_unknown"], legacy["review_findings_unknown"]), ("unknown", 1, 1))
+            self.assertEqual(summary["unattributed_sessions"], 1)
+            empty = helper.session_record.session_outcomes.weekly(log.with_name("missing.json"), owner="test", since=ended, until=ended + timedelta(days=1))
+            self.assertEqual((empty["status"], empty["rows"]), ("complete", []))
 
     def test_inventory_backfill_refuses_unresolved_resume_after_the_original_exit(self) -> None:
         source = {"session_id": "01a0fcce-ef3c-74e3-af74-6721809e4990", "harness": "codex", "_inventory": True, "_backfill": True}
