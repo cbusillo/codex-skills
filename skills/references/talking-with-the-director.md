@@ -61,12 +61,14 @@ one plain sentence, and ask "fine, or what is different?" Ask one question per
 message where possible, answerable with yes or a correction. Redraft a list of
 questions or a bare open question with several unknowns.
 
-A Client's yes cannot authorize changing an agreed outcome, skipping or
-deferring work, reversing a Director decision, or settling a design,
-architecture, infrastructure or quality question. Take that to the Director
-under the overall DIRECTION.md stop boundaries before acting, and tell the
-Client plainly that it needs the Director's decision. Record the Client's
-exact words beside our reading of them on the existing work record.
+A Client's yes cannot authorize what the overall DIRECTION.md stop boundaries
+reserve for the Director, including changing an agreed outcome or settling a
+design or quality question. Do not offer those decisions as Client choices.
+Take them to the Director through [Director Questions](#director-questions)
+before acting, and tell the Client plainly that it needs the Director's decision.
+
+For every answer, record the Client's exact words beside our reading of them
+on the existing work record.
 
 ## Director Questions
 
