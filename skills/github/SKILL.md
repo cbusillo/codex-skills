@@ -896,6 +896,12 @@ a `.sh` suffix; run them directly. Run PEP 723 `.py` helpers with `uv run`; see
 Markdown bodies through a file or stdin; an unquoted heredoc runs command
 substitution inside backticks.
 
+Writing to another person's repository requires your Director's approval;
+outside replies need their exact-text approval. Only an explicitly adopted
+[same-issue Supervisor reply flow](../references/talking-with-the-director.md#same-issue-supervisor-replies)
+can replace per-reply approval for the comments it covers. Follow this before
+selecting a posting identity.
+
 GitHub writes belong to the configured automation account. The helpers select
 its credentials and fail closed, without changing actor, when bot auth is
 unavailable, rejected, or rate-limited. The helpers choose the identity for
@@ -907,10 +913,8 @@ each target repository:
   repository**: refused; the Director installs the App there.
 - **Any other account's repository without an installation**: your own GitHub
   user, only on an explicit opt-in. An installation on some of that account's
-  repositories does not change this for its others. Follow your Director's
-  external-write rules, including the
-  [same-issue Supervisor reply](../references/talking-with-the-director.md#same-issue-supervisor-replies),
-  when applicable. Set `GH_WITH_ENV_TOKEN_OWN_USER=1` on each authorized
+  repositories does not change this for its others. Set
+  `GH_WITH_ENV_TOKEN_OWN_USER=1` on each authorized
   command that writes there. Without
   it the helpers refuse and name the opt-in; a value in `local.env` does not
   count. Configure the person's personal login as described under

@@ -51,8 +51,9 @@ decisions, statuses, board contents or narrative; open linked records for action
    reconciliation; launch its recorded Trial token, or confirm the handoff before
    updating Next actor. There is no separate staffing-comment queue.
    Route Client and Client-agent comments to the owning worker for an answer.
-   Open full source comments before acting; register/present questions through
-   the existing queue rules. Optional routing writes the existing watch receipts
+   Open full source comments before acting; register/present decisions needed
+   from this Director through the existing queue rules. Optional routing writes
+   the existing watch receipts
    and miss reports; the digest never closes sessions.
    For a question addressed to this Director, follow
    [same-issue Supervisor replies](../../references/talking-with-the-director.md#same-issue-supervisor-replies)
