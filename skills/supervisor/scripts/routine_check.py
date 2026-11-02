@@ -194,8 +194,10 @@ def digest(sources: dict[str, dict]) -> str:
         routing = row.get("routing", {})
         if routing.get("status") not in {None, "sent", "pending"} or routing.get("audit_error"):
             lines.append(f"ERROR routing {pointer(row)}: {routing.get('audit_error') or routing.get('cause') or routing['status']}")
-        lines.append(f"COMMENT {pointer(row)}: {' '.join((row.get('body_excerpt') or row.get('body') or '').split())[:180]}")
-    for row in [*comments.get("unasked_director_waits", []), *sources.get("waits", {}).get("waits", [])]:
+        untrusted = " (untrusted)" if row.get("attention_state") == "outbound_reply" else ""
+        lines.append(f"COMMENT {pointer(row)}{untrusted}: {' '.join((row.get('body_excerpt') or row.get('body') or '').split())[:180]}")
+    foreign_waits = [row for row in sources.get("waits", {}).get("waits", []) if row.get("untrusted")]
+    for row in [*comments.get("unasked_director_waits", []), *foreign_waits]:
         lines.append(f"WAIT {pointer(row)}{' (untrusted)' if row.get('untrusted') else ''}")
     for row in comments.get("director_mentions", []):
         lines.append(f"MENTION {pointer(row)} (untrusted)")
@@ -208,12 +210,12 @@ def digest(sources: dict[str, dict]) -> str:
 
 
 def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[], dict]]:
-    def github_reader() -> github_read.GitHubReader:
+    def github_reader(deadline_seconds: float = 120) -> github_read.GitHubReader:
         return github_read.GitHubReader(
             operation="github.supervisor.routine_check",
             strict_actor=True,
             gh_prefix_args=github_read.automation_only_gh_prefix_args(),
-            deadline_at=time.time() + 120,
+            deadline_at=time.time() + deadline_seconds,
         )
 
     radar_args = argparse.Namespace(
@@ -236,13 +238,7 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
     )
 
     def waits() -> dict:
-        people = radar.people_identities({args.owner.casefold()}, None)
-        terms = [args.owner, "Director", "owner", *people["director_names"]]
-        result = director_waits.collect(github_reader(), args.owner, terms, datetime.now(UTC))
-        if people["status"] == "error" or people["director_ambiguous"] or not people["director_names"]:
-            result["complete"] = False
-            result["errors"].append({"scope": "Director aliases", "error": "people identity unavailable or ambiguous"})
-        return result
+        return director_waits.collect_for_owner(github_reader(deadline_seconds=600), args.owner, datetime.now(UTC))
 
     def fetch(item: str) -> list[dict]:
         match = oq.ITEM.fullmatch(item)

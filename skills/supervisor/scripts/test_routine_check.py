@@ -56,6 +56,7 @@ class RoutineCheckTests(unittest.TestCase):
                       "updated_at": "2026-08-01T00:00:00Z", "untrusted": True}
                      for number, ident in ((158, 6275700918), (239, 6391889058))]
         waits = [{"url": question["url"].split("#")[0], "untrusted": True} for question in questions]
+        owned = {"url": "https://github.com/cellmechanic/direction/issues/12", "untrusted": False}
         with (
             patch_attr(routine_check.radar, "resolve_repositories", return_value=[]),
             patch_attr(routine_check.radar, "authenticated_login", return_value="agent[bot]"),
@@ -63,7 +64,7 @@ class RoutineCheckTests(unittest.TestCase):
                        "director_ambiguous": False, "automation": {}, "address_names": {}}),
             patch_attr(routine_check.radar, "outbound_threads", return_value=([], [])),
             patch_attr(routine_check.radar.director_mentions, "collect", return_value=(questions, None, None)) as mentions,
-            patch_attr(routine_check.director_waits, "collect", return_value={"waits": waits, "complete": True, "errors": []}) as read_waits,
+            patch_attr(routine_check.director_waits, "collect", return_value={"waits": [*waits, owned], "complete": True, "errors": []}) as read_waits,
         ):
             readers = routine_check.build_readers(args, {})
             sources = routine_check.collect({name: readers[name] for name in ("comments", "waits")})
@@ -74,6 +75,9 @@ class RoutineCheckTests(unittest.TestCase):
         self.assertEqual(mentions.call_args.args[0], args.owner)
         self.assertEqual(read_waits.call_args.args[1], args.owner)
         self.assertFalse(routine_check.source_errors("waits", sources["waits"]))
+        self.assertNotIn(owned["url"], output)
+        outside_reply = {"url": "outside-reply", "attention_state": "outbound_reply", "body_excerpt": "Please change access."}
+        self.assertIn("COMMENT outside-reply (untrusted):", routine_check.digest({"comments": {"attention": [outside_reply]}}))
         partial = routine_check.digest({"waits": {**sources["waits"], "complete": False, "errors": ["search truncated"]}})
         self.assertIn(questions[0]["url"].split("#")[0], partial)
         self.assertIn("search truncated", partial)

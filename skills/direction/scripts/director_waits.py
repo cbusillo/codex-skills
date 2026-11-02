@@ -256,6 +256,21 @@ def collect(reader, owner, terms, now, issue_limit=1000, *, include_archived=Fal
             "scope": reports[0]["scope"]}
 
 
+def collect_for_owner(reader: GitHubReader, owner: str, now: datetime, issue_limit: int = 1000, *,
+                      director_names: list[str] | None = None, include_archived: bool = False) -> dict[str, Any]:
+    extra_names = director_names or []
+    people = attention.people_identities({owner.casefold()}, None)
+    terms = [owner, "Director", "owner", *people["director_names"], *extra_names]
+    result = collect(reader, owner, terms, now, issue_limit, include_archived=include_archived)
+    if (people["status"] == "error" or people["director_ambiguous"]
+            or (not people["director_names"] and not extra_names)):
+        result["complete"] = False
+        result["errors"].append({"scope": "Director aliases", "error": "people identity unavailable or ambiguous; supply known --director-name aliases when no index exists"})
+    result["people_status"] = people["status"]
+    result["director_names"] = [*people["director_names"], *extra_names]
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     repository_scope.add_include_archived_argument(parser)
@@ -267,19 +282,12 @@ def main():
     if (not re.fullmatch(r"[\w.-]+", args.owner) or args.issue_limit <= 0
             or not math.isfinite(args.deadline_seconds) or args.deadline_seconds <= 0):
         parser.error("owner and positive finite bounds are required")
-    people = attention.people_identities({args.owner.casefold()}, None)
-    terms = [args.owner, "Director", "owner", *people["director_names"], *args.director_name]
     reader = GitHubReader(operation="github.direction.director_waits", strict_actor=True,
                           gh_prefix_args=automation_only_gh_prefix_args(),
                           include_archived=args.include_archived,
                           deadline_at=time.time() + args.deadline_seconds)
-    result = collect(reader, args.owner, terms, datetime.now(timezone.utc), args.issue_limit, include_archived=args.include_archived)
-    if (people["status"] == "error" or people["director_ambiguous"]
-            or (not people["director_names"] and not args.director_name)):
-        result["complete"] = False
-        result["errors"].append({"scope": "Director aliases", "error": "people identity unavailable or ambiguous; supply known --director-name aliases when no index exists"})
-    result["people_status"] = people["status"]
-    result["director_names"] = [*people["director_names"], *args.director_name]
+    result = collect_for_owner(reader, args.owner, datetime.now(timezone.utc), args.issue_limit,
+                               director_names=args.director_name, include_archived=args.include_archived)
     print(json.dumps(result))
     return int(not result["complete"])
 
