@@ -55,11 +55,17 @@ class GoogleWorkerTests(unittest.TestCase):
             with (
                 patch.object(account_choice, "select", return_value=choice) as select,
                 patch.object(account_choice, "prepare_launch") as receipts,
+                patch.object(iterm_tab.claude_trust, "plan", return_value=[]),
             ):
                 commands, choices = iterm_tab.prepare_launch_batch(args)
             select.assert_called_once()
             receipts.assert_called_once_with(choice)
             self.assertIn(choices[0]["file_native"]["log"], commands[0])
+            command.write_text(f"cd {root} && exec agy --continue")
+            with patch.object(account_choice, "select", side_effect=AssertionError("invalid fresh mode reached account selection")):
+                with self.assertRaises(ValueError):
+                    iterm_tab.prepare_launch_batch(args)
+            command.write_text(f"cd {root} && exec agy --effort medium")
             with (
                 patch.object(account_choice, "select", side_effect=ValueError("Context Panel has no google choice")),
                 patch.object(account_choice, "prepare_launch") as receipts,
@@ -158,6 +164,53 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                     database.execute("UPDATE steps SET status=3,has_subtrajectory=0,step_payload=?", (response,))
                     database.execute("UPDATE trajectory_meta SET cascade_id=?", (session,))
             with sqlite3.connect(transcript) as writer:
+                fixture = json.loads((Path(__file__).parent / "fixtures/agy-command-completed.json").read_text())
+                fields = iterm_tab.claim_history.protobuf_fields
+                captured = fields(bytes.fromhex(fixture["step_payload_hex"]))
+                for change in ("captured", "silent", "pending_exit", "pending_status", "unknown_kind", "failed_exit"):
+                    step = dict(captured)
+                    result = fields(fields(step[140])[2])
+                    terminal = fields(fields(fields(result[3])[10])[3])
+                    if change == "silent":
+                        terminal.pop(4, None)
+                        result.pop(1, None)
+                    elif change == "pending_exit":
+                        terminal.pop(3)
+                    elif change == "pending_status":
+                        step[4] = 9
+                    elif change == "unknown_kind":
+                        step[1] = 999
+                    elif change == "failed_exit":
+                        terminal[3] = 1
+                    result[3] = protobuf({10: protobuf({3: protobuf(terminal)})})
+                    step[140] = protobuf({2: protobuf(result)})
+                    writer.execute("INSERT INTO steps VALUES (1,?,?,0,?)", (step[1], step[4], protobuf(step)))
+                    writer.execute("INSERT INTO steps VALUES (2,15,3,0,?)", (response,))
+                    writer.commit()
+                    with self.subTest(change=change):
+                        summary = session_record.session_status(entry)
+                        self.assertEqual(summary["safe_verdict"], change in {"captured", "silent", "failed_exit"})
+                        if change == "pending_status":
+                            pending_ledger = root / "pending-ledger.json"
+                            with (
+                                patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", "agy")]),
+                                patch.object(session_liveness, "process_started_at", return_value=timestamp),
+                            ):
+                                asyncio.run(
+                                    iterm_tab.register_fresh_launch(argparse.Namespace(ledger=pending_ledger), dict(launch), None)
+                                )
+                            self.assertTrue(summary["background_tasks"])
+                            self.assertEqual(len(session_record.load_ledger(pending_ledger)), 1)
+                        if change == "failed_exit":
+                            results = [
+                                block
+                                for row in session_record.read_jsonl(transcript)
+                                for block in row.get("message", {}).get("content", [])
+                                if isinstance(block, dict) and block.get("type") == "tool_result"
+                            ]
+                            self.assertTrue(results[-1]["is_error"])
+                    writer.execute("DELETE FROM steps WHERE idx>0")
+                    writer.commit()
                 for tool in ("read_file", "unrecognized_background_tool"):
                     call = protobuf({1: b"native-call", 2: tool.encode(), 3: b"{}"})
                     tool_metadata = protobuf({1: protobuf({1: int(timestamp.timestamp())}), 4: call})

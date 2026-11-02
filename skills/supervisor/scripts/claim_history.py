@@ -248,53 +248,65 @@ def agy_model(requested: str | None, conversation_id: Any = None, log_file: Path
 
 
 def read_agy_records(path: Path) -> list[dict]:
-    fields = protobuf_fields
-    records = []
+    records: list[dict] = []
     try:
         with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as database:
             database.execute("BEGIN")
             identities = database.execute("SELECT DISTINCT cascade_id FROM trajectory_meta").fetchall()
             if identities != [(path.stem,)]:
                 raise ValueError("native AGY transcript identity is unavailable or differs")
+            records.append({"sessionId": path.stem, "type": "system"})
             rows = database.execute("SELECT idx, step_type, status, has_subtrajectory, step_payload FROM steps ORDER BY idx").fetchall()
         for index, (ordinal, kind, status, children, blob) in enumerate(rows):
-            step = fields(blob)
-            if ordinal != index or step.get(1) != kind or step.get(4) != status or children:
-                raise ValueError("native AGY step or child history is unavailable")
-            metadata = fields(step.get(5, b""))
-            clock = fields(metadata.get(8) or metadata.get(1, b""))
-            timestamp = datetime.fromtimestamp(clock[1] + clock.get(2, 0) / 1e9, timezone.utc).isoformat()
-            row: dict[str, Any] = {"sessionId": path.stem, "timestamp": timestamp}
-            if status != 3 and kind in {14, 15}:
-                records.append({**row, "type": "user", "message": {"content": ""}})
-                continue
-            if kind == 14:
-                row.update(type="user", message={"content": fields(step[19]).get(2, b"").decode()})
-            elif kind == 15:
-                response = fields(step[20])
-                row.update(type="assistant", message={"content": [{"type": "text", "text": response.get(8, response.get(1, b"")).decode()}],
-                           "stop_reason": "end_turn" if status == 3 and 7 not in response else None})
-            else:
-                call = fields(metadata.get(4, b""))
-                if not call:
-                    row.update(type="user", message={"content": ""})
-                else:
-                    name = call[2].decode()
-                    if name not in {"read_file", "write_file", "edit_file", "list_dir", "grep_search", "find_by_name", "run_command"}:
-                        raise ValueError(f"native AGY background work coverage is unavailable for {name}")
-                    arguments = json.loads(call[3])
-                    identifier = call[1].decode()
-                    command = name == "run_command"
-                    content = {"type": "tool_use", "id": identifier, "name": "Bash" if command else name,
-                               "input": {"command": arguments["CommandLine"]} if command else arguments}
-                    records.append({**row, "type": "assistant", "message": {"content": [content]}})
-                    output = fields(fields(step.get(140, b"")).get(2, b"")).get(1, b"").decode()
-                    row.update(type="user", message={"content": [{"type": "tool_result", "tool_use_id": identifier,
-                               "content": output, "is_error": status != 3}]})
-                    if command and status == 3 and (not output or "Command ID:" in output):
-                        raise ValueError("native AGY background work coverage is unavailable")
-            records.append(row)
+            step = protobuf_fields(blob)
+            if ordinal != index or step.get(1) != kind or step.get(4, 0) != status:
+                raise ValueError("native AGY step identity is unavailable")
+            records.extend(agy_step_records(path.stem, ordinal, kind, status, children, step))
     except (sqlite3.Error, KeyError, TypeError, AttributeError, UnicodeError) as error:
         raise ValueError(f"native AGY transcript unavailable: {error}") from error
     return records
+
+
+def agy_step_records(session: str, ordinal: int, kind: int, status: int, children: bool, step: dict) -> list[dict]:
+    fields = protobuf_fields
+    metadata = fields(step.get(5, b""))
+    clock = fields(metadata.get(8) or metadata.get(1, b""))
+    timestamp = datetime.fromtimestamp(clock[1] + clock.get(2, 0) / 1e9, timezone.utc).isoformat()
+    row: dict[str, Any] = {"sessionId": session, "timestamp": timestamp, "type": "user", "message": {"content": ""}}
+    pending = ("native child history is unavailable" if children else
+               "native step kind is unknown" if kind not in {14, 15, 132} else
+               "native step is pending" if status not in {3, 6, 7} else None)
+    records = []
+    if kind == 14 and status == 3:
+        row["message"] = {"content": fields(step[19]).get(2, b"").decode()}
+    elif kind == 15 and status == 3:
+        response = fields(step[20])
+        row.update(type="assistant", message={"content": [{"type": "text", "text": response.get(8, response.get(1, b"")).decode()}],
+                   "stop_reason": "end_turn" if 7 not in response else None})
+    elif kind not in {14, 15}:
+        call = fields(metadata.get(4, b""))
+        if not call:
+            pending = pending or "native tool call is unavailable"
+        else:
+            name, identifier, arguments = call[2].decode(), call[1].decode(), json.loads(call[3])
+            command = name == "run_command"
+            content = {"type": "tool_use", "id": identifier, "name": "Bash" if command else name,
+                       "input": {"command": arguments["CommandLine"]} if command else arguments}
+            records.append({"sessionId": session, "timestamp": timestamp, "type": "assistant", "message": {"content": [content]}})
+            if name not in {"read_file", "write_file", "edit_file", "list_dir", "grep_search", "find_by_name", "run_command"}:
+                pending = pending or f"native tool coverage is unavailable for {name}"
+            if status in {3, 6, 7} and kind == 132:
+                result = fields(fields(step.get(140, b"")).get(2, b""))
+                output = result.get(1, b"").decode()
+                failed = status != 3
+                if command:
+                    terminal = fields(fields(fields(result.get(3, b"")).get(10, b"")).get(3, b""))
+                    if type(terminal.get(3)) is not int or terminal.get(1, b"").decode() != arguments["CommandLine"]:
+                        pending = pending or "native command completion is unavailable"
+                    else:
+                        failed = failed or terminal[3] != 0
+                row["message"] = {"content": [{"type": "tool_result", "tool_use_id": identifier, "content": output, "is_error": failed}]}
+    if pending:
+        row["native_pending"] = {"task_id": f"native-step-{ordinal}", "started": timestamp, "reason": pending}
+    return [*records, row]
 

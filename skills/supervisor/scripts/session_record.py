@@ -421,6 +421,7 @@ def track_claude_background_tasks(record: dict, running: dict, scheduled: dict, 
 
 
 def summarize(records: list[dict], harness: str) -> dict:
+    native_pending = [row["native_pending"] for row in records if row.get("native_pending")]
     result = {
         "last_text": "",
         "timestamp": None,
@@ -562,6 +563,7 @@ def summarize(records: list[dict], harness: str) -> dict:
         and result["at_turn_end"]
         and result["turn_end"] != "turn_aborted"
         and result["capacity_stop"] is None
+        and not native_pending
     )
     result["verdict_recognition"] = (
         "recognized" if result["safe_verdict"] else
@@ -570,7 +572,7 @@ def summarize(records: list[dict], harness: str) -> dict:
     # A turn end with a live task is a wait on that task; with none, nothing will resume the turn.
     result["background_tasks"] = [
         {"task_id": task_id, "started": started} for task_id, started in running_tasks.items()
-    ] + [{"task_id": identity, **job} for identity, job in scheduled_jobs.items()]
+    ] + [{"task_id": identity, **job} for identity, job in scheduled_jobs.items()] + native_pending
     result["state"] = (
         "provider_capacity" if result["capacity_stop"] else
         "turn_ended" if result["at_turn_end"] else "active"

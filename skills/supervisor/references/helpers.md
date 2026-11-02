@@ -1440,8 +1440,12 @@ recovery command. Normal `session_closeout.py` verifies the native final respons
 claims, handoff and process exit, then retains model, effort and outcome in the
 existing closed-session log. Google still uses only the existing AGY login and
 Context Panel capacity reader. Unknown native child or background-work coverage
-stays UNKNOWN and preserves the worker. A folder-trust prompt needs the Director;
-preserve that terminal rather than launching another worker.
+stays UNKNOWN and preserves the worker. Use `cd /absolute/repository && exec agy`
+so folder trust has an exact target. Under the same approved Developer and
+registered-worktree boundary as Claude, the shared atomic writer adds only that
+workspace to AGY's `trustedWorkspaces`, preserving permissions, model and all
+other settings. Other folders need existing native trust or the Director's
+interactive review. Preserve a blocked terminal rather than launching another worker.
 Other fresh modes keep their launch procedure. Append their existing native
 ledger entries through `iterm_tab.py register --entry-file <entry.json>
 --ledger <ledger>` so every append shares the lock. Do existing-row maintenance

@@ -1203,13 +1203,12 @@ def check_codex_project(command_text, choice):
         )
 
 
-def claude_trust_writes(command_text, choice, config_path):
-    """Plan folder trust in every configured Claude home, so no launch stops at the dialog."""
-    if choice["provider"] != "anthropic":
+def folder_trust_writes(command_text: str, choice: dict, config_path: Path | None) -> list[tuple[Path, list[Path]]]:
+    if choice["provider"] not in {"anthropic", "google"}:
         return []
     directory = launch_parts(command_text)[1]
     if directory is None:
-        raise ValueError("Claude launches require cd /absolute/repository && exec claude")
+        raise ValueError(f"{choice['provider']} launches require cd /absolute/repository && exec {launch_agent(command_text)}")
     def homes():
         return [account for account in account_choice.load_config(config_path)["accounts"]
                 if account["provider"] == "anthropic"]
@@ -1426,6 +1425,11 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         if provider == "anthropic":
             command_texts, claude_sessions = zip(*map(fresh_claude_session, command_texts))
             command_texts = list(command_texts)
+        elif provider == "google":
+            for text in command_texts:
+                if any(word.split("=", 1)[0] in {"--conversation", "--continue", "-c", "--log-file", "--print", "-p"}
+                       for word in launch_words(text)):
+                    raise ValueError("fresh AGY --ledger registration needs a fresh interactive launch without conversation or log overrides")
         elif provider == "openai" and any(not codex_daemon_without_ingress(text) for text in command_texts):
             raise ValueError("fresh --ledger registration needs managed Codex --remote launches")
     for text in command_texts:
@@ -1475,7 +1479,7 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
             with preparation_read():
                 with_account(text, choice, brief)
                 check_codex_project(text, choice)
-                trust_writes += claude_trust_writes(text, choice, args.account_config)
+                trust_writes += folder_trust_writes(text, choice, args.account_config)
         for text, choice in zip(command_texts, choices):
             check_claude_tools(text, choice, getattr(args, "without_browser", False), probes,
                                getattr(args, "require_browser", False))
@@ -1492,13 +1496,10 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
                 command_texts[0] += " --no-daemon -c " + shlex.quote(override)
         for choice, session in zip(choices, claude_sessions):
             home = choice["env"].get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))
-            choice["claude_native"] = {"session_id": session, "home": str(Path(home).expanduser())}
+            choice["file_native"] = {"harness": "claude", "session_id": session, "home": str(Path(home).expanduser())}
         if getattr(args, "ledger", None) and provider == "google":
             native_commands = []
             for text, choice in zip(command_texts, choices):
-                words = launch_words(text)
-                if any(word.split("=", 1)[0] in {"--conversation", "--continue", "-c", "--log-file", "--print", "-p"} for word in words):
-                    raise ValueError("fresh AGY --ledger registration needs a fresh interactive launch without conversation or log overrides")
                 args.ledger.parent.mkdir(parents=True, exist_ok=True)
                 log = args.ledger.parent / f".native-launch-{uuid.uuid4()}.log"
                 choice["file_native"] = {"harness": "agy", "home": str(claim_history.AGY_HOME.expanduser()), "log": str(log)}
@@ -2021,7 +2022,7 @@ async def operate(app, args):
                       "tab_id": tab.tab_id, "session_id": session.session_id}
             if choice:
                 result["account"] = account_choice.public(choice)
-            if choice and (choice.get("provider") == "openai" or choice.get("claude_native") or choice.get("file_native")):
+            if choice and (choice.get("provider") == "openai" or choice.get("file_native")):
                 try:
                     result["tty"] = await session.async_get_variable("tty")
                 except (AttributeError, OSError, ValueError):
