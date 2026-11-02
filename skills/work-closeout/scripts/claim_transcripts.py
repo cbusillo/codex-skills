@@ -455,6 +455,84 @@ def claim_target(value: dict, session: str) -> tuple[str, int] | None:
     return None
 
 
+def claim_results(value: object) -> Iterator[dict]:
+    if isinstance(value, dict):
+        if "claim" in value or value.get("operation") == "github.plan.claim":
+            yield value
+            return
+        for key in ("output", "stdout"):
+            if key in value:
+                yield from claim_results(value[key])
+        if value.get("type") in {"text", "input_text"}:
+            yield from claim_results(value.get("text"))
+    elif isinstance(value, list):
+        for nested in value:
+            yield from claim_results(nested)
+    elif isinstance(value, str):
+        for line in value.splitlines():
+            if not line.lstrip().startswith(("{", "[")):
+                continue
+            try:
+                nested = json.loads(line)
+            except ValueError:
+                continue
+            yield from claim_results(nested)
+
+
+def claim_receipt_outputs(records: list[dict], *, followups: bool = True) -> dict[str, list[object]]:
+    outputs = tool_outputs(records, followups=followups)
+    recorded = tool_outputs(records, followups=False)
+    inputs = {identifier: (text, javascript, name, index) for identifier, text, javascript, name, index in tool_details(records)}
+    for identifier, (text, javascript, name, _) in inputs.items():
+        if name == "write_stdin":
+            continue
+        try:
+            sources = shell_texts(text, javascript, exec_command=name == "exec_command")
+            if sources.opaque or not sources.commands or any(source.interactive for source in sources.commands):
+                continue
+            data = all(shell_output_is_data(source.text) for source in sources.commands)
+        except ValueError:
+            continue
+        if not data:
+            continue
+        outputs.pop(identifier, None)
+        for poll in ordered_poll_results(identifier, inputs, recorded):
+            source, code, tool, _ = inputs[poll.call_id]
+            try:
+                polled = shell_texts(source, code, exec_command=tool == "exec_command")
+            except ValueError:
+                break
+            if polled.opaque or not polled.commands or any(not command.interactive or command.text for command in polled.commands):
+                break
+            outputs.pop(poll.call_id, None)
+    return outputs
+
+
+def shell_output_is_data(text: str) -> bool:
+    root = parse_shell(text.encode())
+    if root.has_error or shell_generated(root) or not variables_keep_assigned_values(root):
+        return False
+    nodes = list(shell_code_nodes(root))
+    if any(node.type == "variable_assignment" and environment_executes(node) for node in nodes):
+        return False
+    commands = [command_argv(node) for node in nodes if node.type == "command"]
+    for argv in commands:
+        position = command_position(argv)
+        if position is None or position.index >= len(argv):
+            return False
+        name, arguments = Path(argv[position.index]).name, argv[position.index + 1:]
+        if name in OUTPUT_DATA_COMMANDS and not data_command_executes(argv):
+            continue
+        if name in {"gh", "gh-with-env-token"} and gh_is_data(arguments):
+            words = operands(arguments, GH_VALUE_OPTIONS)
+            if any(option in {"--web", "-w", "--editor"} for option in option_words(arguments, GH_VALUE_OPTIONS)):
+                return False
+            if words[:1] == ["api"] or len(words) >= 2 and words[0] in {"issue", "pr"} and words[1] in {"view", "list"}:
+                continue
+        return False
+    return bool(commands)
+
+
 def command_text(command: object) -> str:
     if isinstance(command, str):
         return command
@@ -1499,6 +1577,9 @@ DATA_COMMANDS = frozenset(
         "gh-comment",
     }
 )
+OUTPUT_DATA_COMMANDS = DATA_COMMANDS - {
+    "git", "gh", "gh-issue", "gh-comment", "pytest", "cd", "pushd", "popd", "set", "kill", "less"
+}
 SAFE_GIT_CONFIG = frozenset(
     {
         "user.name",
@@ -2811,7 +2892,7 @@ def resolve_invocations(
     receipt_pure: bool = True,
     ended: list[bool] | None = None,
 ) -> tuple[set[tuple[str, int]], bool]:
-    results = list({json.dumps(item, sort_keys=True): item for block in blocks for item in values(block)}.values())
+    results = list({json.dumps(item, sort_keys=True): item for item in claim_results(blocks)}.values())
     completed = [
         (item["claim"]["session"], target)
         for item in results
@@ -2913,6 +2994,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
     targets = set()
     errors = []
     outputs = tool_outputs(records)
+    receipts = claim_receipt_outputs(records)
     own_outputs = tool_outputs(records, followups=False)
     inputs = {identifier: (text, javascript, name, index) for identifier, text, javascript, name, index in tool_details(records)}
     responses = response_positions(records)
@@ -3009,7 +3091,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
                 for item in [invocation_target(arguments, session)]
             )
         )
-        blocks = outputs.get(identifier, [])
+        blocks = receipts.get(identifier, [])
         found, unknown = resolve_invocations(invocations, blocks, session, receipt_pure=receipt_pure, ended=ended_invocations)
         if (
             unknown
