@@ -198,7 +198,7 @@ uv run <skill-dir>/../github/scripts/gh-plan.py search "user:OWNER label:directi
 
 Also read the full Director-wait list, including issues without a `direction`
 label and waits that already have a posted question. The same read finds
-open waits naming the configured owner's login or people-index name in any
+open waits naming the configured Director's login or people-index name in any
 readable repository. Names in the current wait count without an @mention;
 role-only waits elsewhere do not. Login and full-name searches cover prose;
 short aliases are searched in existing structured question and wait records to

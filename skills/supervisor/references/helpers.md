@@ -510,7 +510,7 @@ certainly unstarted miss write is retryable. Completed receipts are retained for
 the radar's 30-day window; unresolved send and audit fences remain preserved.
 
 The configured `--owner` also finds open threads outside the watched list
-that mention or name that owner, including people-index names. These reads
+that mention or name that Director, including people-index names. These reads
 use the existing reader identity and include old questions without needing
 an additional login, approval or catch-up window. The state file's
 `mention_seen` reports each thread version once, retaining versions across
