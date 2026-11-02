@@ -4126,13 +4126,31 @@ def _product_profile_response() -> dict[str, object]:
     }
 
 
-def test_product_profile_read_returns_owner_and_production_use_only() -> None:
+@pytest.mark.parametrize(
+    "preview",
+    [
+        None,
+        {"enabled": False, "context": "", "slug_template": "pr-{number}"},
+        {"enabled": False, "context": "saved-preview", "slug_template": ""},
+        {"enabled": True, "context": "current-preview", "slug_template": "change_{number}-v2"},
+        {"enabled": True, "context": "recorded-route", "slug_template": "recorded-{future}"},
+    ],
+)
+def test_product_profile_read_returns_bounded_metadata(preview: dict[str, object] | None) -> None:
     argv = ["product-profile-read", "--product", "example-product"]
-    status, payload, calls = _run_product_read(argv, _product_profile_response())
+    response = _product_profile_response()
+    if preview is not None:
+        cast(dict[str, Any], response["profile"])["preview"] = {
+            **preview,
+            "env": {"PASSWORD": "PRIVATE_PREVIEW_ENV"},
+            "settings": {"token": "PRIVATE_PREVIEW_SETTING"},
+            "app_name_prefix": "PRIVATE_PREVIEW_PREFIX",
+        }
+    status, payload, calls = _run_product_read(argv, response)
     assert status == 0
     assert contract.LOCAL_EXTENSION_ROUTES["product-profile-read"]["method"] == "GET"
     assert calls[0]["path"] == "/v1/product-profiles/example-product"
-    assert payload["result"] == {
+    expected = {
         "product": "example-product",
         "display_name": "Example Site",
         "driver_id": "odoo",
@@ -4149,8 +4167,11 @@ def test_product_profile_read_returns_owner_and_production_use_only() -> None:
         "lanes_truncated": False,
         "updated_at": "2026-09-26T20:28:34Z",
     }
+    if preview is not None:
+        expected["preview"] = preview
+    assert payload["result"] == expected
     rendered = json.dumps(payload)
-    for dropped in ("example.invalid", "private-image", "PRIVATE_KEY_NAME", "private-workflow", "123"):
+    for dropped in ("example.invalid", "private-image", "PRIVATE_KEY_NAME", "private-workflow", "123", "PRIVATE_PREVIEW"):
         assert dropped not in rendered, dropped
 
     for mutate in (
@@ -4172,8 +4193,45 @@ def test_product_profile_read_returns_owner_and_production_use_only() -> None:
 
 
 @pytest.mark.parametrize(
-    "mode", write_action.PRODUCT_RELEASE_ON_ACCEPTANCE_MODES
+    "preview",
+    [
+        None,
+        False,
+        [],
+        {},
+        {"enabled": "false", "context": "preview", "slug_template": "pr-{number}"},
+        {"enabled": 1, "context": "preview", "slug_template": "pr-{number}"},
+        {"enabled": True, "context": None, "slug_template": "pr-{number}"},
+        {"enabled": True, "context": "https://private.invalid", "slug_template": "pr-{number}"},
+        {"enabled": True, "context": "ghp_private_sentinel", "slug_template": "pr-{number}"},
+        *(
+            {"enabled": True, "context": "preview", "slug_template": value}
+            for value in (
+                None,
+                False,
+                [],
+                "x" * 10000,
+                " pr-{number}",
+                "pr-{number}\n",
+                "pr/{number}",
+                "https://private.invalid/{number}",
+                "Bearer private_sentinel",
+                "ghp_private_sentinel-{number}",
+            )
+        ),
+    ],
 )
+def test_product_profile_read_refuses_malformed_or_secret_preview(preview: object) -> None:
+    response = _product_profile_response()
+    cast(dict[str, Any], response["profile"])["preview"] = preview
+    status, payload, _calls = _run_product_read(["product-profile-read", "--product", "example-product"], response)
+    assert status == 1
+    assert payload["status"] == "invalid"
+    assert not payload["result"]
+    assert "private_sentinel" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("mode", write_action.PRODUCT_RELEASE_ON_ACCEPTANCE_MODES)
 @pytest.mark.parametrize("production_use", write_action.PRODUCT_PRODUCTION_USES)
 def test_product_profile_read_reports_service_metadata_only(mode: str, production_use: str) -> None:
     response = _product_profile_response()
