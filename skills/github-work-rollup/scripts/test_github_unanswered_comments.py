@@ -2215,3 +2215,47 @@ def test_stuck_discussion_read_ends_the_radar_at_the_deadline(tmp_path: Path, st
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
+
+
+def test_november_triage_skips_history_until_outside_thread_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    triaged_at = "2026-11-02T21:10:00Z"
+    outside = search_item("openai/codex", 44682, updated="2026-10-29T12:00:00Z")
+    outside.update(opening(number=44682, author="cbusillo", pull_request=False))
+    outside.update(repository_url="https://api.github.com/repos/openai/codex", updated_at="2026-10-29T12:00:00Z",
+                   html_url="https://github.com/openai/codex/issues/44682")
+    triage = api_comment(6588488968, "fixture-automation", triaged_at,
+                        "OUTSIDE-1102 triage, November 2, 2026.\n"
+                        "| Listed thread/comment | What it asks | Already handled? | Chris act now? |\n"
+                        "| [openai/codex#44682](https://github.com/openai/codex/issues/44682#issuecomment-6529027912) "
+                        "| Nothing. | No answer is owed. | **No.** No reply needed. |")
+    routes: dict[str, Any] = {
+        "search/issues": lambda endpoint: {"items": [search_item("cbusillo/direction", 159)] if "triage" in endpoint else [outside],
+                                           "total_count": 1, "incomplete_results": False},
+        "repos/cbusillo/direction/issues/159/comments": [triage],
+        "repos/openai/codex/issues/44682": outside,
+        "repos/openai/codex/issues/44682/comments": [
+            api_comment(1, "cbusillo", "2026-10-28T00:00:00Z"),
+            api_comment(6529027912, "rootasjey", "2026-10-29T12:00:00Z"),
+        ],
+    }
+    fake = FakeGitHub(routes)
+    patch_radar(monkeypatch, "run_json", fake)
+    settings = outbound_settings(until="2026-11-02T22:00:00Z", mention_approval=None)
+    hint = github_unanswered_comments.normalize_issue_comment("openai/codex", {
+        **routes["repos/openai/codex/issues/44682/comments"][1],
+        "issue_url": "https://api.github.com/repos/openai/codex/issues/44682",
+    })
+    payload = github_unanswered_comments.collect_payload(settings, comment_hints=(hint,))
+    assert payload["status"] == "clear"
+    assert not payload["attention"] and not payload["director_mentions"]
+    assert not any("/comments" in call for call in fake.calls if call.startswith("repos/openai/codex/"))
+
+    newer = "2026-11-02T21:30:00Z"
+    outside["updated_at"] = newer
+    routes["repos/openai/codex/issues/44682/comments"].append(
+        api_comment(3, "rootasjey", newer, "@cbusillo, another reproduction"),
+    )
+    fake.calls.clear()
+    payload = github_unanswered_comments.collect_payload(settings)
+    assert any(row["comment_id"] == 3 for row in payload["attention"])
+    assert any(call.startswith("repos/openai/codex/issues/44682/comments") for call in fake.calls)

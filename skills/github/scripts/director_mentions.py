@@ -207,7 +207,7 @@ def search(
     director_login: str, since: str, *, until: str | None = None, excluded_repositories=(), excluded_owners=(),
     get: Callable[[str], Any] | None = None, visible: bool = False, names: tuple[str, ...] = (),
     read_comments: Callable[[str, str], list[Any]] | None = None,
-    seen_versions: dict[str, str] | None = None,
+    seen_versions: dict[str, str] | None = None, settled_before: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], str | None, str | None]:
     get = get or director_get
     if not visible:
@@ -249,6 +249,10 @@ def search(
                         raise MentionSearchError("mention search returned a thread without repository, number or link")
                     if repo.casefold() in excluded_repos or repo.split("/")[0].casefold() in owners or (
                             not visible and until and timestamp(updated) > timestamp(until)):
+                        continue
+                    canonical_url = f"https://github.com/{repo.casefold()}/issues/{number}"
+                    cutoff = (settled_before or {}).get(canonical_url)
+                    if cutoff and timestamp(updated) <= timestamp(cutoff):
                         continue
                     if visible and (seen_versions or {}).get(url) == updated:
                         continue

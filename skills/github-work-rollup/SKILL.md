@@ -228,6 +228,15 @@ portfolio or explicit `--thread` scopes keep their normal attention rules.
 This scan lists replies even on closed threads. GitHub search visibility,
 indexing and its 1,000-result cap limit discovery; detected partial results are
 degraded coverage. It uses the same attention and exit-code contract.
+Routine outbound scans also read triage comments in the Director's repositories.
+A trusted Director or configured automation comment containing `triage` and a
+table row whose final disposition starts with **No** settles that row's first
+thread link. The existing comment is the record; no local store is maintained.
+Threads last updated at or before that comment's creation time are omitted
+before history reads, including mention discovery. Newer updates are read again.
+Explicit `--thread` and portfolio scopes retain their normal attention rules.
+Triage discovery failures degrade coverage rather than clearing attention.
+
 Outbound human identities come from `--self-login`, configured comment subjects,
 or the authenticated human account; repository owners are not inferred for it.
 Use `--outbound` alone for outside repositories. Explicit portfolio scopes
