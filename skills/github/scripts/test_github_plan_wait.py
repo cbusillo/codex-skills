@@ -34,6 +34,12 @@ class WaitRecordTests(unittest.TestCase):
         ], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_recipient_names_match_people_but_not_repository_paths(self) -> None:
+        self.assertTrue(wait_record.names_recipient("Pat confirms", ["Pat"], {"receiver"}))
+        self.assertTrue(wait_record.names_recipient("@receiver confirms", ["receiver"], {"receiver"}))
+        for text in ("receiver/repo", "https://github.com/receiver/repo", "other-receiver"):
+            self.assertFalse(wait_record.names_recipient(text, ["receiver"], {"receiver"}))
+
     def setUp(self):
         self.clear = wait_record.reviewed(evidence="Full issue and discussion reviewed; no hold remains")
         self.hold = wait_record.reviewed(evidence="Director requested testing", waiting_for="Director's test",

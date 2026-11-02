@@ -255,6 +255,63 @@ class ApprovalTests(unittest.TestCase):
 
 
 class SearchTests(unittest.TestCase):
+    def test_personal_search_does_not_hide_visible_coverage_gap(self) -> None:
+        with mock.patch.object(director_mentions, "approval_gap", return_value=None), \
+             mock.patch.object(director_mentions, "search", side_effect=[([], "visible coverage incomplete", None), ([], None, None)]):
+            rows, gap, error = director_mentions.collect("receiver", "2026-10-17T00:00:00Z", "approved", set(),
+                                                        lambda *_: None, lambda *_: [], visible=True)
+        self.assertEqual(rows, [])
+        self.assertTrue(gap)
+        self.assertIsNone(error)
+
+    def test_native_review_mention_does_not_need_issue_text_or_discussion(self) -> None:
+        get = FakeGet([item("outside/repo", 1)], login="automation[bot]")
+        rows, gap, error = director_mentions.collect("receiver", "2026-10-17T00:00:00Z", None, set(),
+                                                    lambda *_: None, lambda *_: self.fail("native mention text read"),
+                                                    visible=True, get=get)
+        self.assertEqual([row["number"] for row in rows], [1])
+        self.assertEqual((gap, error), (None, None))
+
+    def test_unreadable_text_hit_does_not_hide_a_later_question(self) -> None:
+        def get(endpoint: str) -> dict:
+            query = parse_qs(urlparse(endpoint).query)["q"][0]
+            found_items = [] if "mentions:" in query else [item("outside/repo", 1), item("outside/repo", 2)]
+            return {"items": found_items, "total_count": len(found_items), "incomplete_results": False}
+        def discussion(url: str, _since: str) -> list[dict]:
+            if url.endswith("/1"):
+                raise director_mentions.MentionSearchError("thread no longer readable")
+            return [{"body": "@receiver, please decide"}]
+        rows, gap, error = director_mentions.collect("receiver", "2026-10-17T00:00:00Z", None, set(),
+                                                    lambda *_: None, discussion, visible=True, get=get)
+        self.assertEqual([row["number"] for row in rows], [2])
+        self.assertTrue(gap)
+        self.assertIsNone(error)
+
+    def test_visible_rows_survive_an_alias_search_overflow_and_ignore_repository_links(self) -> None:
+        def get(endpoint: str) -> dict:
+            query = parse_qs(urlparse(endpoint).query)["q"][0]
+            if "mentions:" in query:
+                return {"items": [{**item("outside/repo", 1), "body": "@receiver, a question"}],
+                        "total_count": 1, "incomplete_results": False}
+            if "Pat" in query:
+                return {"items": [], "total_count": 1001, "incomplete_results": False}
+            return {"items": [{**item("outside/repo", 2), "body": "https://github.com/receiver/repo"}],
+                    "total_count": 1, "incomplete_results": False}
+        rows, gap, error = director_mentions.collect("receiver", "2026-10-17T00:00:00Z", None, set(),
+                                                    lambda *_: None, lambda *_: [], visible=True, names=("Pat",), get=get)
+        self.assertEqual([row["number"] for row in rows], [1])
+        self.assertTrue(gap)
+        self.assertIsNone(error)
+
+    def test_visible_search_finds_old_open_mentions_and_named_people_without_personal_login(self) -> None:
+        get = FakeGet([item("client/private", 4)], login="automation[bot]")
+        mentions, gap, error = director_mentions.collect("receiver", "2026-10-17T00:00:00Z", None, set(),
+                                                         lambda *_: self.fail("approval read"), lambda *_: [{"body": "@receiver, please decide"}],
+                                                         visible=True, names=("Pat",), get=get)
+        self.assertEqual((gap, error), (None, None))
+        self.assertEqual([(row["number"], row["untrusted"]) for row in mentions], [(4, True)])
+        self.assertNotIn("user", get.calls)
+
     def test_reports_outside_mentions_as_untrusted_links_only(self):
         get = FakeGet([item("client/private", 4), item("cbusillo/watched", 5), item("cbusillo/other", 6)])
         mentions, gap, error = director_mentions.search(
