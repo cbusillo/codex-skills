@@ -20,6 +20,7 @@ CLAUDE.local.md
 .aider.input.history
 .aider.llm.history
 .aider.tags.cache.*/
+/.model-review-*/
 
 .system/
 **/.system/

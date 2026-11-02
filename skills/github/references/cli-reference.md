@@ -903,6 +903,11 @@ describe local reconciliation only. A confirmed GitHub merge remains successful
 when reconciliation is blocked or fails; report both outcomes and never retry a
 merge because of the local result.
 
+`dirty_paths` retains the paths from the exact status read that blocked reconciliation,
+including both sides of a rename. Transient writers can be diagnosed from the receipt
+even after their scratch disappears. The catalog ignores the model-review helper's
+root `.model-review-*` scratch directories; other untracked files still block updates.
+
 ### Planning: Orientation
 
 Use these through the `github-plan` skill when the user is asking for durable
