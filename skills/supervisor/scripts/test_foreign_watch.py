@@ -9,6 +9,7 @@ import json
 import argparse
 from contextlib import redirect_stdout
 from datetime import datetime
+from types import SimpleNamespace
 import io
 from pathlib import Path
 import tempfile
@@ -16,7 +17,7 @@ import tomllib
 import unittest
 from typing import Any
 from urllib.parse import parse_qs, urlparse
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, create_autospec
 
 import foreign_watch
 from github_api import ApiResult, FailureDetail
@@ -67,10 +68,10 @@ class WatchTests(unittest.TestCase):
             for persistent in (False, True):
                 with self.subTest(author=author, persistent=persistent), tempfile.TemporaryDirectory() as directory:
                     reader = Mock()
-                    reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+                    reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
                     feedback = comment(author, "Inventory and Helpdesk are missing. Holding Accept.", "2026-10-30T19:38:54Z")
                     reader.paged_json.side_effect = feeds([feedback])
-                    reader.get_json.side_effect = getattr(foreign_watch, "GitHubReadShapeError")("external search unavailable")
+                    reader.request.side_effect = getattr(foreign_watch, "GitHubReadShapeError")("external search unavailable")
                     args = argparse.Namespace(owner="director", state=Path(directory) / "state.json", since=None,
                         own_login=["director", "agent[bot]"], launchplane_login=[], interval=300,
                         once=False, persistent=persistent)
@@ -91,7 +92,7 @@ class WatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             now = [0.0]
             reader = Mock()
-            reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+            reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
             reader.paged_json.side_effect = feeds([comment()], getattr(foreign_watch, "GitHubReadError")(
                 "provider unavailable", result=ApiResult(ok=False, status=503, body=None,
                     failure=FailureDetail(cause="network_provider_failure", message="unavailable",
@@ -125,7 +126,7 @@ class WatchTests(unittest.TestCase):
 
     def test_filter_and_review_records(self):
         reader = Mock()
-        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+        reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
         reader.paged_json.side_effect = feeds([comment("Director"), comment("agent[bot]"),
             comment(), comment("delivery[bot]"),
             comment("agent[bot]", "<!-- launchplane:product-review:decision-1 -->")])
@@ -139,7 +140,7 @@ class WatchTests(unittest.TestCase):
 
     def test_issue_or_pull_request_opened_by_an_outside_person_is_a_notice(self):
         reader = Mock()
-        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+        reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
         reader.paged_json.side_effect = feeds([], opened_items=[
             opened(), opened("director"), opened("client-agent[bot]", "Bot"), opened("dependabot[bot]", "Bot"), opened(created="2026-10-09T11:00:00Z")])
         notices, errors, _ = self.scan(reader, {"client-agent[bot]"})
@@ -150,7 +151,7 @@ class WatchTests(unittest.TestCase):
 
     def test_sweep_recovers_inline_and_bare_review_on_an_old_pull(self):
         reader = Mock()
-        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+        reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
         inline = {**comment(), "html_url": f"https://github.com/{REPO}/pull/50#discussion_r42"}
         review = {**comment(), "html_url": f"https://github.com/{REPO}/pull/50#pullrequestreview-43", "created_at": SINCE}
         old_pull = {**opened(created="2026-10-08T00:00:00Z"), "number": 50, "pull_request": {}}
@@ -162,7 +163,7 @@ class WatchTests(unittest.TestCase):
 
     def test_opening_versions_are_batched_before_recovery(self):
         reader = Mock()
-        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+        reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
         first = {**opened(), "node_id": "first"}
         second = {**opened(), "node_id": "second", "html_url": f"https://github.com/{REPO}/issues/51"}
         reader.paged_json.side_effect = feeds([], opened_items=[first, second])
@@ -174,7 +175,7 @@ class WatchTests(unittest.TestCase):
 
     def test_version_failures_keep_retryability_and_deleted_nodes_are_skipped(self):
         reader = Mock()
-        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+        reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
         source = {**opened(), "node_id": "source"}
         reader.paged_json.side_effect = feeds([], opened_items=[source])
         retry_at = 100.0
@@ -193,7 +194,7 @@ class WatchTests(unittest.TestCase):
 
     def test_worker_questions_surface_on_the_next_scan_without_ordinary_own_posts(self) -> None:
         reader = Mock()
-        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+        reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
         bodies = ["Owner question: Q906. Approve the recovery?",
                   "  **Director question:** Q918. Accept again?"]
         reader.paged_json.side_effect = feeds([
@@ -215,7 +216,7 @@ class WatchTests(unittest.TestCase):
 
     def test_notice_carries_a_bounded_excerpt_of_the_comment(self):
         reader = Mock()
-        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+        reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
         correction = "If I made a mistake on the csv sheet,\n\ncan I send the corrected one?"
         reader.paged_json.side_effect = feeds([comment(body=correction), comment(body="word " * 200)])
         short, long = self.scan(reader)[0]
@@ -225,7 +226,7 @@ class WatchTests(unittest.TestCase):
 
     def test_failure_preserves_only_failed_repository_watermark(self):
         reader = Mock()
-        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+        reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
         reader.paged_json.side_effect = feeds(foreign_watch.GitHubReadShapeError("partial"), [])
         notices, errors, watermarks = foreign_watch.scan(
             [REPO, "director/healthy"], {REPO: SINCE, "director/healthy": SINCE},
@@ -236,7 +237,7 @@ class WatchTests(unittest.TestCase):
 
     def test_invalid_comment_retains_watermark_and_discards_partial_notices(self):
         reader = Mock()
-        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+        reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
         for bad in ({}, {**comment(), "updated_at": "invalid"}, {**comment(), "user": []}):
             with self.subTest(bad=bad):
                 reader.paged_json.side_effect = feeds([comment(), bad])
@@ -247,7 +248,7 @@ class WatchTests(unittest.TestCase):
 
     def test_old_comments_excluded_and_edits_reported(self):
         reader = Mock()
-        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+        reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
         reader.paged_json.side_effect = feeds([comment(updated="2026-10-09T11:59:59Z"), comment(updated=STARTED)])
         self.assertEqual(len(self.scan(reader)[0]), 1)
 
@@ -267,7 +268,7 @@ class WatchTests(unittest.TestCase):
 
     def test_deleted_author_is_untrusted_and_marker_quote_does_not_reclassify(self):
         reader = Mock()
-        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+        reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
         reader.paged_json.side_effect = feeds([{**comment(), "user": None},
             comment(body='Quoted: <!-- launchplane:product-review:id -->')])
         notices, errors, watermarks = self.scan(reader)
@@ -278,7 +279,7 @@ class WatchTests(unittest.TestCase):
 
     def test_quota_retry_time_and_failed_read_retention(self):
         reader = Mock()
-        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+        reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
         failure = foreign_watch.GitHubReadShapeError("quota")
         failure.diagnostics = {"requests": [{"retryAt": 12345}]}
         reader.paged_json.side_effect = failure
@@ -301,7 +302,7 @@ class WatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "watch.json"
             reader = Mock()
-            reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+            reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
             reader.paged_json.side_effect = feeds([comment()])
             output = io.StringIO()
             with patch.object(foreign_watch.sys, "argv", ["foreign_watch.py", "--owner", "director",
@@ -322,7 +323,7 @@ class WatchTests(unittest.TestCase):
             state = Path(directory) / "w.json"
             foreign_watch.save_state(state, {REPO: STARTED, "director/old": STARTED})
             reader = Mock()
-            reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+            reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
             reader.paged_json.side_effect = feeds([], [comment()], repositories=[
                 {"full_name": REPO, "archived": False}, {"full_name": "director/new", "archived": False},
                 {"full_name": "director/old", "archived": True}, {"full_name": "client/app", "archived": False}])
@@ -351,7 +352,7 @@ class WatchTests(unittest.TestCase):
             values = foreign_watch.load_state(path, [REPO], SINCE, rewind=True)
             self.assertEqual(values, {REPO: SINCE, "director/other": SINCE})
             reader = Mock()
-            reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+            reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
             reader.paged_json.return_value = []
             _, _, values = foreign_watch.scan([REPO], values, ["director"], [], STARTED, reader)
             foreign_watch.save_state(path, values)
@@ -359,7 +360,7 @@ class WatchTests(unittest.TestCase):
 
     def test_foreign_marker_remains_foreign(self):
         reader = Mock()
-        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+        reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
         reader.paged_json.side_effect = feeds([comment(body="<!-- launchplane:product-review:fake -->")])
         notices = self.scan(reader)[0]
         self.assertEqual(notices[0]["kind"], "foreign")
@@ -379,7 +380,7 @@ def client_review(decision, record, reason="Labels print sideways"):
 class ChangeRequestTests(unittest.TestCase):
     def watch_once(self, state, *comments):
         reader = Mock()
-        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+        reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
         reader.paged_json.side_effect = feeds(list(comments))
         args = argparse.Namespace(owner="director", state=state, since=SINCE, own_login=["director"],
                                   launchplane_login=["delivery[bot]"], interval=5, once=True)
@@ -429,9 +430,9 @@ class MentionTests(unittest.TestCase):
     @staticmethod
     def scan(get=None, watermark=SINCE, seen=None):
         reader = Mock()
-        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+        reader.request.return_value = SimpleNamespace(body={"items": [], "total_count": 0, "incomplete_results": False})
         get = get or director_get([mention("client/private", 4), mention(REPO, 1)])
-        reader.get_json.side_effect = lambda endpoint, **_: get(endpoint)
+        reader.request.side_effect = lambda _method, endpoint, **_: SimpleNamespace(body=get(endpoint))
         reader.paged_json.return_value = [{"body": "@director, please decide"}]
         args = argparse.Namespace(owner="director", director_login=None, mention_approval=None, director_names=["Pat"])
         result = foreign_watch.scan_mentions(args, [REPO], {foreign_watch.MENTIONS: watermark}, seen or {},
@@ -461,8 +462,8 @@ class MentionTests(unittest.TestCase):
 
     def test_cli_without_director_login_uses_configured_owner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            reader = Mock()
-            reader.get_json.return_value = {"items": [mention("client/private", 9)], "total_count": 1, "incomplete_results": False}
+            reader = create_autospec(getattr(foreign_watch, "GitHubReader"), instance=True)
+            reader.request.return_value = SimpleNamespace(body={"items": [mention("client/private", 9)], "total_count": 1, "incomplete_results": False})
             reader.paged_json.return_value = []
             output = io.StringIO()
             with patch.object(foreign_watch.sys, "argv", ["foreign_watch.py", "--owner", "director",

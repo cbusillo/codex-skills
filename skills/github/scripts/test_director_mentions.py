@@ -255,6 +255,15 @@ class ApprovalTests(unittest.TestCase):
 
 
 class SearchTests(unittest.TestCase):
+    def test_personal_search_does_not_hide_visible_coverage_gap(self) -> None:
+        with mock.patch.object(director_mentions, "approval_gap", return_value=None), \
+             mock.patch.object(director_mentions, "search", side_effect=[([], "visible coverage incomplete", None), ([], None, None)]):
+            rows, gap, error = director_mentions.collect("receiver", "2026-10-17T00:00:00Z", "approved", set(),
+                                                        lambda *_: None, lambda *_: [], visible=True)
+        self.assertEqual(rows, [])
+        self.assertTrue(gap)
+        self.assertIsNone(error)
+
     def test_native_review_mention_does_not_need_issue_text_or_discussion(self) -> None:
         get = FakeGet([item("outside/repo", 1)], login="automation[bot]")
         rows, gap, error = director_mentions.collect("receiver", "2026-10-17T00:00:00Z", None, set(),

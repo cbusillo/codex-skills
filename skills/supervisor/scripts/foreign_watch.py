@@ -354,16 +354,11 @@ def scan(repos, watermarks, own_logins, launchplane_logins, started, reader, cli
 
 
 def scan_mentions(args, repos, watermarks, seen, own_logins, started, reader):
-    """Director mentions outside the watched repositories; a gap is reported, never skipped.
-
-    Returns notices, coverage gaps, errors, watermarks and the reported thread
-    versions ({url: updated_at}) already reported.
-    """
     identity_gap = getattr(args, "recipient_identity_gap", None)
     since = (timestamp(watermarks[MENTIONS]) - MENTION_OVERLAP).isoformat().replace("+00:00", "Z")
     def get(endpoint: str) -> Any:
         try:
-            return reader.get_json(endpoint, step="foreign_recipient_search", bucket="search")
+            return reader.request("GET", endpoint, step="foreign_recipient_search", bucket="search").body
         except READ_ERRORS as failure:
             raise director_mentions.MentionSearchError(str(failure)) from failure
 
@@ -386,6 +381,7 @@ def scan_mentions(args, repos, watermarks, seen, own_logins, started, reader):
         excluded_owners=() if getattr(args, "repo", None) else (args.owner,),
         visible=True,
         names=tuple(getattr(args, "director_names", ())),
+        seen_versions=seen,
         get=get,
     )
     fresh = [mention for mention in mentions if seen.get(mention["url"]) != mention["updated_at"]]

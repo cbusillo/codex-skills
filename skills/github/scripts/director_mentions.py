@@ -207,6 +207,7 @@ def search(
     director_login: str, since: str, *, until: str | None = None, excluded_repositories=(), excluded_owners=(),
     get: Callable[[str], Any] | None = None, visible: bool = False, names: tuple[str, ...] = (),
     read_comments: Callable[[str, str], list[Any]] | None = None,
+    seen_versions: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], str | None, str | None]:
     get = get or director_get
     if not visible:
@@ -248,6 +249,8 @@ def search(
                         raise MentionSearchError("mention search returned a thread without repository, number or link")
                     if repo.casefold() in excluded_repos or repo.split("/")[0].casefold() in owners or (
                             not visible and until and timestamp(updated) > timestamp(until)):
+                        continue
+                    if visible and (seen_versions or {}).get(url) == updated:
                         continue
                     if visible and not native_mention:
                         if item["html_url"] in checked:
@@ -294,14 +297,15 @@ def collect(
 ) -> tuple[list[dict[str, Any]], str | None, str | None]:
     if not director_login:
         return [], "no Director login configured for mention searches", None
-    visible_rows, visible_error = [], None
+    visible_rows, visible_error, visible_gap = [], None, None
     if scope.get("visible"):
-        visible_rows, gap, visible_error = search(director_login, since, read_comments=read_later, **scope)
+        visible_rows, visible_gap, visible_error = search(director_login, since, read_comments=read_later, **scope)
         if not approval_url:
-            return visible_rows, gap, visible_error
-        scope = {key: value for key, value in scope.items() if key not in {"visible", "names", "get"}}
+            return visible_rows, visible_gap, visible_error
+        scope = {key: value for key, value in scope.items() if key not in {"visible", "names", "get", "seen_versions"}}
     gap = approval_gap(approval_url, director_login, recorders, read_comment, read_later)
     if gap:
-        return visible_rows, gap, visible_error
+        return visible_rows, "; ".join(filter(None, (visible_gap, gap))) or None, visible_error
     rows, gap, error = search(director_login, since, **scope)
-    return list({row["url"]: row for row in [*visible_rows, *rows]}.values()), gap, error or visible_error
+    return (list({row["url"]: row for row in [*visible_rows, *rows]}.values()),
+            "; ".join(filter(None, (visible_gap, gap))) or None, error or visible_error)
