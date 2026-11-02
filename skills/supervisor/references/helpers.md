@@ -1433,8 +1433,11 @@ process on the terminal, and appends the owned row; the receipt reports
 launch object, including `file_native`, for the same `register --receipt-file`
 recovery.
 For fresh Google workers, use `--account-provider google --ledger` with the
-same direct interactive `agy` launch. The shared file-session registrar binds
-the conversation from a dedicated native log to its SQLite transcript and exact
+same direct interactive `agy` launch.
+The launcher adds session-only `--dangerously-skip-permissions`, so file edits
+and commands need no per-action approvals; it does not change saved permissions.
+The shared file-session registrar binds the conversation from a dedicated native
+log to its SQLite transcript and exact
 terminal process. Its retained `file_native` receipt uses the same registration
 recovery command. Registration reads native identity while the worker writes;
 completion checks belong to closeout. Keep the dedicated log until process exit

@@ -465,6 +465,8 @@ def append_brief(command_text, brief):
     elif agent == "codex":
         from codex_session_proxy import MEMORY_SETTING
         command_text += " -c " + shlex.quote(f"{MEMORY_SETTING}=false")
+    elif agent == "agy" and "--dangerously-skip-permissions" not in words[1:]:
+        command_text += " --dangerously-skip-permissions"
     prompt_option = " --prompt-interactive=" if agent == "agy" else " -- "
     return command_text + prompt_option + shlex.quote(brief)
 

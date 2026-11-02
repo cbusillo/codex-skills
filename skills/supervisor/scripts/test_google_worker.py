@@ -5,6 +5,7 @@
 import argparse
 import asyncio
 import json
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -63,6 +64,7 @@ class GoogleWorkerTests(unittest.TestCase):
             selected = choices[0]
             assert selected is not None
             self.assertIn(selected["file_native"]["log"], commands[0])
+            self.assertIn("--dangerously-skip-permissions", shlex.split(commands[0]))
             command.write_text(f"cd {root} && exec agy --continue")
             with patch.object(account_choice, "select", side_effect=AssertionError("invalid fresh mode reached account selection")):
                 with self.assertRaises(ValueError):
