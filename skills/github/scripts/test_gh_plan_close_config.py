@@ -399,20 +399,28 @@ class CloseConfigTests(unittest.TestCase):
         self.assertNotIn("milestone_admission", result["issue"]["launch_check"])
 
     def test_named_recipient_is_routing_work_before_an_execution_launch(self) -> None:
-        for actor in ("agent:ODOO20LEAD2-1027", "agent:native-session"):
+        for actor in ("agent:ODOO20LEAD2-1027", "agent:01970242-7941-7f0c-b461-16aa5723fb52"):
+            token = [{"id": 2, "user": {"login": "fixture"}, "body": "Brief from the Supervisor. Trial token: ODOO20LEAD2-1027."}]
             for read_only in (False, True):
-                result, _, _ = self.show_fixture(launch=True, actor=actor, read_only=read_only)
+                result, _, _ = self.show_fixture(launch=True, actor=actor, read_only=read_only, comments_extra=token)
                 check = result["issue"]["launch_check"]
                 self.assertEqual(check["allowed"], read_only)
                 self.assertTrue(any(row["source"] == "recorded_recipient" for row in check["ownership"]["recipients"]))
-            result, _, _ = self.show_fixture(launch=True, actor=actor, worker=actor.removeprefix("agent:"))
+            result, _, _ = self.show_fixture(launch=True, actor=actor, worker=actor.removeprefix("agent:"), comments_extra=token)
             self.assertTrue(result["issue"]["launch_check"]["allowed"])
+
+    def test_role_actor_can_be_staffed_without_rewriting_status(self) -> None:
+        for role in ("launchplane-engineer", "launchplane", "launchplane-native-qualification", "operator", "investigator"):
+            with self.subTest(role=role):
+                result, _, _ = self.show_fixture(launch=True, actor=f"agent:{role}", worker="CS3293-1102")
+                self.assertTrue(result["issue"]["launch_check"]["allowed"])
+                self.assertEqual(result["issue"]["launch_check"]["ownership"]["recipients"], [])
 
     def test_launch_uses_body_edit_time_for_the_current_assignment(self) -> None:
         result, _, _ = self.show_fixture(launch=True, actor="agent:old-worker", worker="new-worker",
             body_time="2026-10-01T00:00:00Z", comments_extra=[{
                 "id": 2, "user": {"login": "fixture"}, "created_at": "2026-10-25T00:00:00Z",
-                "body": "## Current Status\nNext actor: agent:new-worker"}])
+                "body": "Trial token: old-worker\n## Current Status\nNext actor: agent:new-worker\nTrial token: new-worker"}])
         self.assertTrue(result["issue"]["launch_check"]["allowed"])
 
     def test_launch_returns_actionable_admission_argument_errors(self) -> None:

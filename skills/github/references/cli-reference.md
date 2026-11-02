@@ -2239,12 +2239,18 @@ retrying until planning stalls.
 
 ### Planning: Next Work
 
-Named recipients without a claim enter `needs_status` for custody reconciliation,
+Native session IDs and recipients identified by existing trusted claim, session or
+trial-token records enter `needs_status` without a claim for custody reconciliation,
 not a fresh execution launch. Claim and launch preflight use that same recorded
 recipient check. Read-only diagnostics remain available; an assignment alone is
 not active execution. Exact releases and existing local leases are shared across
 readers, and quoted diagnosis is not ownership. Keep the existing claim on each
-slice executed; generic agent roles do not reserve a whole project.
+slice executed; other `agent:<role>` values remain staffable without a status rewrite.
+When assigning an unclaimed trial token that has no identity record on the issue,
+include its brief's plain `Trial token: TOKEN` line in the same Current Status
+through `gh-comment issue N --repo OWNER/REPO --body-file FILE`,
+or name the worker's native session ID instead. Private briefs and ledgers are
+not read by this check. It reuses issue evidence and creates no registry.
 
 `next` returns one JSON envelope with compact discussion summaries by default.
 Rows retain identity, counts, actor/action, blockers, sources and coverage;

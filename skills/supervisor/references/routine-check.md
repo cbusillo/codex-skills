@@ -50,10 +50,9 @@ decisions, statuses, board contents or narrative; open linked records for action
    omitted repositories, unread issues and other coverage gaps explicit.
    NEXT rows have no observed claim or wait; REVIEW rows need status or custody
    reconciliation. Generic agent roles are available work, subject to the ownership
-   check. A specifically named worker or session without a claim needs custody
-   reconciliation; launch its recorded Trial token, or confirm the handoff before
-   updating Next actor. Leads update each delegated child's staffing action under
-   the [brief rules](brief-rules.md#rules-every-brief-carries).
+   check. Follow the shared [recipient check](../../github/references/cli-reference.md#planning-next-work)
+   when assigning an unclaimed worker or reconciling its custody. Leads update
+   each delegated child's staffing action under the [brief rules](brief-rules.md#rules-every-brief-carries).
    There is no separate staffing-comment queue.
    Route Client and Client-agent comments to the owning worker for an answer.
    Open full source comments before acting; register/present decisions needed

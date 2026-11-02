@@ -2411,7 +2411,8 @@ def test_milestone_summary_names_each_wait_when_no_milestone_work_is_listed() ->
 def test_empty_track_scoping_uses_reviewed_records_instead_of_summary() -> None:
     observed = {"complete": True, "pulls": [], "inventory": {"local_branches": [], "remote_branches": [], "worktrees": []},
                 "coverage": {"source": "fixture"}}
-    for actor in ("", "person:director", "event:deployment", "agent:old-session"):
+    named_actor = "agent:01970242-7941-7f0c-b461-16aa5723fb52"
+    for actor in ("", "person:director", "event:deployment", named_actor):
         track_issue = active_track("someone/direction", 1, "First", f"State: Waiting.\nNext actor: {actor}\n")
         if not actor:
             track_issue["body"] = "## Objective\nProve the milestone.\n"
@@ -2420,7 +2421,7 @@ def test_empty_track_scoping_uses_reviewed_records_instead_of_summary() -> None:
                 read_queue_ownership=lambda _: observed, wait_authors=lambda _: {"someone"},
                 ):
                 module.cmd_next(next_args())
-        if actor == "agent:old-session":
+        if actor == named_actor:
             assert not result["available_candidates"]
             assert [row["number"] for row in result["needs_status"]] == [track_issue["number"]]
         else:
@@ -2428,10 +2429,10 @@ def test_empty_track_scoping_uses_reviewed_records_instead_of_summary() -> None:
             assert not result["needs_status"]
         assert not result["underway"]
     scoped = result["needs_status"][0]
-    scoped["discussion"]["body"] = scoped["discussion"]["body"].replace("agent:old-session", "agent")
+    scoped["discussion"]["body"] = scoped["discussion"]["body"].replace(named_actor, "agent")
     routed = copy.deepcopy(scoped)
     routed.pop("queue")
-    routed["discussion"].update(body="## Current Status\nNext actor: agent:old-worker",
+    routed["discussion"].update(body="## Current Status\nNext actor: agent:old-worker\nTrial token: old-worker",
                                   updated_at="2026-10-30T00:00:00Z")
     routed["discussion"].pop("body_recorded_at", None)
     routed["discussion"]["comments"].append({"id": 10002, "author": "someone",
