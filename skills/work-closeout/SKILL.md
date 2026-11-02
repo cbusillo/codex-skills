@@ -239,7 +239,7 @@ preserved, or intentionally left in place.
    a `babysit-pr --once` snapshot can be closeout evidence.
 5. Use `github-plan` for durable plan state, blockers, stale/duplicate plan
    cleanup, and Project planning state. Before recording a follow-up or handoff,
-   read its [Status Labels](../github-plan/SKILL.md#status-labels).
+   read its [Derived Status](../github-plan/SKILL.md#derived-status).
    If source-of-truth docs, runbooks, deployment notes, or another durable record
    contain the decisive completion or blocker evidence, compare that state with
    the owning issue/plan before saying safe to exit. If they disagree, reconcile

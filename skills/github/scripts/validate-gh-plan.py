@@ -1702,7 +1702,7 @@ def test_create_uses_rest_dedupe_and_shared_issue_create() -> None:
                 title_flag=None,
                 body="## Finish Line\n\nShip it.\n",
                 body_file=None,
-                label=["plan:active"],
+                label=[],
                 milestone="M1",
                 project=None,
                 force=False,
@@ -1716,7 +1716,7 @@ def test_create_uses_rest_dedupe_and_shared_issue_create() -> None:
     assert create_call["title"] == "Durable plan", create_call
     assert create_call["body"].startswith(plan.PLAN_MANAGED_PROVENANCE_MARKER), create_call
     assert create_call["body"].count(plan.PLAN_MANAGED_PROVENANCE_MARKER) == 1, create_call
-    assert create_call["labels"] == ["plan", "plan:active"], create_call
+    assert create_call["labels"] == [], create_call
     assert create_call["milestone"] == "M1", create_call
     assert create_call["gh_cmd"] == "fake-gh", create_call
     assert create_call["expected_actor"] == "shiny-code-bot", create_call
@@ -1918,7 +1918,6 @@ def test_create_issue_failure_preserves_compound_recovery_evidence() -> None:
             assert exc.failure is failure
             assert exc.failure.completed_steps == [
                 "dedupe_plan_issues_page_1",
-                "list_labels_page_1",
                 "resolve_actor",
             ], exc.failure.completed_steps
             assert exc.payload["reconciliation"]["strategy"] == "search_recent_issues_by_request_fingerprint", exc.payload
@@ -2340,7 +2339,7 @@ def test_close_allows_closed_relationships_and_ignores_issues_it_blocks() -> Non
     assert payload["relationship_preflight"]["open_blocked_by"] == [], payload
     assert payload["relationship_preflight"]["open_sub_issues"] == [], payload
     assert payload["relationship_preflight"]["blocking_policy"].startswith("issues_blocked_by_this_plan"), payload
-    assert calls == ["close", "edit"], calls
+    assert calls == ["close"], calls
 
 
 def test_close_relationship_preflight_fails_closed_on_unavailable_and_ambiguous_reads() -> None:
@@ -2864,58 +2863,8 @@ def test_close_reconciles_unknown_success_before_metadata() -> None:
     assert payload["closed"]["reason"] == "completed", payload
     assert payload["closed"]["reconciled"] is True, payload
     assert payload["closed"]["reconciliation"]["result"] == "matched", payload
-    assert payload["completed_steps"] == ["resolve_actor", "reconcile_close_issue", "update_labels"], payload
-    assert edits and edits[0]["add_labels"] == ["plan:done"], edits
+    assert payload["completed_steps"] == ["resolve_actor", "reconcile_close_issue"], payload
     assert issue_reads == 2, issue_reads
-
-
-def test_close_post_close_label_failure_is_recoverable() -> None:
-    plan = load_plan_module()
-    allow_close_relationships(plan)
-    issue = close_plan_issue()
-    calls: list[str] = []
-    plan.load_config = lambda _repo, **_: {
-        "labels": {"active": "plan:active", "done": "plan:done"},
-        "projects": {},
-    }
-    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
-    plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
-
-    def fake_close(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        calls.append("close")
-        return {"actor": "automation-gh", "expected_actor": "shiny-code-bot"}
-
-    label_failure = plan.github_api_core.FailureDetail(
-        cause="validation_error",
-        message="Label update rejected",
-        retryable=False,
-        fallback_eligible=False,
-        disposition="stop",
-        write_outcome="rejected",
-        completed_steps=["resolve_actor"],
-        failed_step="add_labels",
-    )
-
-    def fake_edit(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        calls.append("edit")
-        raise plan.github_issue_core.IssueError(
-            label_failure.message,
-            failure=label_failure,
-            api_result={"status": 422, "failure": label_failure.as_dict()},
-            payload={"reconciliation": {"strategy": "read_issue_and_compare_requested_fields"}},
-        )
-
-    with patched_issue_core(plan, edit_issue=fake_edit, set_issue_state=fake_close):
-        try:
-            plan.cmd_close(close_args(body="Completion evidence.\n"))
-        except plan.PlanError as exc:
-            assert exc.failure is label_failure
-            assert exc.failure.completed_steps == ["close_issue", "resolve_actor"], exc.failure.completed_steps
-            assert exc.payload["recovery"]["issue_closed"] is True, exc.payload
-            assert exc.payload["recovery"]["completion_metadata"] == "labels_incomplete", exc.payload
-        else:
-            raise AssertionError("post-close label failure should be reported")
-    assert calls == ["close", "edit"], calls
 
 
 def test_close_already_complete_reuses_completion_comment() -> None:
@@ -2966,53 +2915,9 @@ def test_close_already_complete_reuses_completion_comment() -> None:
     assert payload["comment"]["deduplicated"] is True, payload
     assert payload["completed_steps"] == [
         "close_issue_already_complete",
-        "labels_already_complete",
         "resolve_actor",
         "reuse_existing_comment",
     ], payload
-
-
-def test_close_already_complete_removes_stale_plan_state_labels() -> None:
-    plan = load_plan_module()
-    allow_close_relationships(plan)
-    issue = close_plan_issue(
-        state="closed",
-        state_reason="completed",
-        labels=["plan", "plan:blocked", "plan:waiting", "plan:stale", "plan:done"],
-    )
-    edits: list[dict[str, Any]] = []
-    plan.load_config = lambda _repo, **_: {
-        "labels": {
-            "active": "plan:active",
-            "blocked": "plan:blocked",
-            "waiting": "plan:waiting",
-            "stale": "plan:stale",
-            "done": "plan:done",
-        },
-        "projects": {},
-    }
-    plan.get_issue = lambda _ref, _repo: ("automation-gh", issue)
-    plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
-
-    def fake_edit(number: int, **kwargs: Any) -> dict[str, Any]:
-        edits.append({"number": number, **kwargs})
-        return {"actor": "shiny-code-bot", "expected_actor": "shiny-code-bot"}
-
-    output = StringIO()
-    with patched_issue_core(
-        plan,
-        edit_issue=fake_edit,
-        set_issue_state=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("issue is already complete")
-        ),
-    ):
-        with redirect_stdout(output):
-            plan.cmd_close(close_args())
-
-    payload = json.loads(output.getvalue())
-    assert payload["completed_steps"] == ["close_issue_already_complete", "update_labels"], payload
-    assert edits[0]["add_labels"] is None, edits
-    assert set(edits[0]["remove_labels"]) == {"plan:blocked", "plan:waiting", "plan:stale"}, edits
 
 
 def test_close_reports_stale_project_as_non_blocking_warning() -> None:
@@ -3142,28 +3047,20 @@ def test_close_delegates_comment_to_shared_rest_helper() -> None:
     assert comment_call["number"] == 10, comment_call
     assert comment_call["body"] == "Completed with evidence.\n", comment_call
     assert comment_call["gh_cmd"] == "fake-gh", comment_call
-    assert comment_call["completed_steps"] == ["close_issue", "update_labels"], comment_call
+    assert comment_call["completed_steps"] == ["close_issue"], comment_call
     assert comment_call["dedupe_body"] is True, comment_call
     assert payload["comment"]["comment_action"] == "created", payload
     assert payload["comment"]["url"].endswith("#issuecomment-1"), payload
     assert payload["completed_steps"] == [
         "close_issue",
-        "update_labels",
         "resolve_actor",
         "post_close_comment",
     ], payload
-    edit_call = next(call for call in calls if call["action"] == "edit")
-    assert edit_call["add_labels"] == ["plan:done"], edit_call
-    assert edit_call["remove_labels"] == ["plan:active"], edit_call
-    assert edit_call["gh_cmd"] == "fake-gh", edit_call
     close_call = next(call for call in calls if call["action"] == "close")
     assert close_call["state"] == "closed", close_call
     assert close_call["state_reason"] == "completed", close_call
     assert close_call["gh_cmd"] == "fake-gh", close_call
     assert any(call["action"] == "close" for call in calls), calls
-    assert next(i for i, call in enumerate(calls) if call["action"] == "close") < next(
-        i for i, call in enumerate(calls) if call["action"] == "edit"
-    ), calls
 
 
 def test_comment_route_matches_explicit_auth_policy() -> None:
@@ -3270,7 +3167,7 @@ def test_close_preserves_comment_reconciliation_after_partial_failure() -> None:
     finally:
         plan.github_comment_core.comment = original_comment
 
-    assert [call["action"] for call in calls] == ["close", "edit"], calls
+    assert [call["action"] for call in calls] == ["close"], calls
 
 
 def test_close_state_failure_preserves_compound_steps() -> None:
@@ -3348,50 +3245,6 @@ def test_close_state_failure_preserves_compound_steps() -> None:
         else:
             raise AssertionError("expected shared issue close failure")
     assert edit_calls == [], edit_calls
-
-
-def test_close_already_reconciled_skips_redundant_label_write() -> None:
-    plan = load_plan_module()
-    allow_close_relationships(plan)
-    issue = {
-        "repo": "owner/repo",
-        "number": 10,
-        "id": 1010,
-        "title": "Durable plan",
-        "body": "## Finish Line\n\nShip it.\n",
-        "html_url": "https://github.com/owner/repo/issues/10",
-        "labels": [{"name": "plan"}, {"name": "plan:done"}],
-        "state": "closed",
-        "state_reason": "not_planned",
-    }
-
-    plan.load_config = lambda repo, **_: {
-        "labels": {"active": "plan:active", "done": "plan:done"},
-        "projects": {},
-    }
-    plan.get_issue = lambda ref, repo: ("automation-gh", issue)
-    plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
-
-    output = StringIO()
-    with patched_issue_core(
-        plan,
-        edit_issue=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("reconciled labels must not be rewritten")),
-        set_issue_state=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("matching closed state must not be rewritten")),
-    ):
-        with redirect_stdout(output):
-            plan.cmd_close(types.SimpleNamespace(
-                repo="owner/repo",
-                issue="10",
-                reason="not planned",
-                body=None,
-                body_file=None,
-                owner=None,
-                project=None,
-                reconcile_dependents=False))
-
-    payload = json.loads(output.getvalue())
-    assert payload["closed"]["reason"] == "not_planned", payload
-    assert payload["completed_steps"] == ["close_issue_already_complete", "labels_already_complete"], payload
 
 
 def test_close_rejects_invalid_reason_before_remote_reads_or_writes() -> None:
@@ -3637,62 +3490,6 @@ def test_find_project_item_falls_back_when_query_misses_exact_issue() -> None:
     assert "--query" not in item_lists[1], item_lists
 
 
-def test_create_supports_waiting_plan_status() -> None:
-    plan = load_plan_module()
-    captured: dict[str, Any] = {}
-    issue = {
-        "repo": "owner/repo",
-        "number": 11,
-        "id": 1011,
-        "title": "Waiting plan",
-        "body": "## Current Status\n\nWaiting for: evidence.\n",
-        "html_url": "https://github.com/owner/repo/issues/11",
-        "url": "https://github.com/owner/repo/issues/11",
-        "labels": [{"name": "plan"}, {"name": "plan:waiting"}],
-        "state": "open",
-        "actor": "automation-gh",
-        "expected_actor": "shiny-code-bot",
-    }
-
-    plan.load_config = lambda repo: {
-        "labels": {"plan": "plan", "waiting": "plan:waiting"},
-        "projects": {"enabled": False},
-        "project_fields": {"focus": "Focus", "manager": "Manager", "finish_line": "Finish Line"},
-        "workflow": {"default_manager": None, "repo_managers": {}},
-    }
-    plan.find_existing_plan_issues = lambda repo, title, completed_steps: ("automation-gh", [])
-    plan.ensure_labels = lambda repo, wanted, config, **kwargs: (captured.setdefault("labels", wanted), ("automation-gh", []))[1]
-    plan.comment_route = lambda: ("automation-gh", "fake-gh", "shiny-code-bot")
-
-    def fake_create_issue(_title: str, _body: str, **kwargs: Any) -> dict[str, Any]:
-        captured["created_labels"] = kwargs["labels"]
-        return issue
-
-    output = StringIO()
-    with patched_issue_core(plan, create_issue=fake_create_issue):
-        with redirect_stdout(output):
-            plan.cmd_create(types.SimpleNamespace(
-                repo="owner/repo",
-                title="Waiting plan",
-                title_flag=None,
-                body="## Current Status\n\nWaiting for: evidence.\n",
-                body_file=None,
-                label=None,
-                milestone=None,
-                project=None,
-                force=False,
-                plan_status="waiting",
-                focus=None,
-                manager=None,
-                finish_line=None,
-            ))
-
-    payload = json.loads(output.getvalue())
-    assert payload["ok"] is True, payload
-    assert captured["labels"] == ["plan", "plan:waiting"], captured
-    assert captured["created_labels"] == ["plan", "plan:waiting"], captured
-
-
 def test_label_defs_cover_planning_labels_without_generic_fallback() -> None:
     plan = load_plan_module()
     config = plan.DEFAULT_CONFIG
@@ -3760,7 +3557,7 @@ def test_create_refuses_to_mint_undocumented_extra_labels() -> None:
         raise AssertionError("missing undocumented extra label should fail")
 
     created_names = [call["payload"]["name"] for call in api_calls if call["method"] == "POST"]
-    assert created_names == ["plan", "plan:active"], created_names
+    assert created_names == [], created_names
 
 
 def test_create_allows_existing_extra_labels_without_creating_them() -> None:
@@ -3829,9 +3626,9 @@ def test_create_allows_existing_extra_labels_without_creating_them() -> None:
 
     payload = json.loads(output.getvalue())
     assert payload["ok"] is True, payload
-    assert captured["labels"] == ["plan", "plan:active", "customer"], captured
+    assert captured["labels"] == ["customer"], captured
     created_names = [call["payload"]["name"] for call in api_calls if call["method"] == "POST"]
-    assert created_names == ["plan", "plan:active"], created_names
+    assert created_names == [], created_names
 
 
 def test_run_raw_does_not_change_actor_on_graphql_rate_limit() -> None:
@@ -7208,21 +7005,17 @@ def main() -> None:
         test_close_known_failure_reports_project_split_and_stops_metadata,
         test_close_unknown_outcome_reports_unavailable_reconciliation,
         test_close_reconciles_unknown_success_before_metadata,
-        test_close_post_close_label_failure_is_recoverable,
         test_close_already_complete_reuses_completion_comment,
-        test_close_already_complete_removes_stale_plan_state_labels,
         test_close_reports_stale_project_as_non_blocking_warning,
         test_close_delegates_comment_to_shared_rest_helper,
         test_comment_route_matches_explicit_auth_policy,
         test_close_preserves_comment_reconciliation_after_partial_failure,
         test_close_state_failure_preserves_compound_steps,
-        test_close_already_reconciled_skips_redundant_label_write,
         test_close_rejects_invalid_reason_before_remote_reads_or_writes,
         test_close_reports_project_auth_denied_as_non_blocking_warning,
         test_close_syncs_project_before_closing_issue,
         test_find_project_item_uses_issue_query_and_higher_limit,
         test_find_project_item_falls_back_when_query_misses_exact_issue,
-        test_create_supports_waiting_plan_status,
         test_label_defs_cover_planning_labels_without_generic_fallback,
         test_create_refuses_to_mint_undocumented_extra_labels,
         test_create_allows_existing_extra_labels_without_creating_them,

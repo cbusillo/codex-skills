@@ -58,6 +58,8 @@ def graph(*numbers: int, merged: bool = True, after: str | None = None) -> dict:
 class LandingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.config = copy.deepcopy(PLAN.DEFAULT_CONFIG)
+        self.config["labels"].update({key: "plan" if key == "plan" else f"plan:{key}"
+                                      for key in ("plan", "active", "blocked", "waiting", "stale", "done")})
         self.issue: dict[str, Any] = {"repo": REPO, "number": 7, "state": "closed", "state_reason": "completed",
                       "labels": [{"name": self.config["labels"][key]} for key in
                                  ("plan", "active", "waiting", "blocked", "stale")],
@@ -112,8 +114,6 @@ class LandingTests(unittest.TestCase):
         result = self.run_landing()
         self.assertTrue(result["ok"])
         self.assertEqual(result["issues"][0]["status"], "reconciled")
-        self.assertEqual(set(PLAN.normalize_labels(self.issue["labels"])),
-                         {self.config["labels"]["done"], self.config["labels"]["plan"], "bug"})
         self.assertIn(result["landing_sha"], PLAN.issue_plan_sections(self.issue)["Current Status"])
         self.state.assert_not_called()
 
@@ -156,23 +156,6 @@ class LandingTests(unittest.TestCase):
         self.labels.assert_not_called()
         self.body.assert_not_called()
 
-    def test_readback_mismatch_is_not_success(self) -> None:
-        self.labels.side_effect = lambda *_args, **_kwargs: {"actor": "fixture-bot"}
-        result = self.run_landing()
-        self.assertFalse(result["ok"])
-        self.assertTrue(result["issues"][0]["writes_started"])
-        self.assertIn("close", result["issues"][0])
-
-    def test_partial_label_failure_preserves_close_recovery(self) -> None:
-        self.labels.side_effect = PLAN.github_issue_core.IssueError("offline label write failure", failure=
-            PLAN.github_api_core.FailureDetail(cause="transport_error", message="offline fixture", retryable=False,
-                                               fallback_eligible=False, disposition="stop", write_outcome="rejected"))
-        result = self.run_landing()
-        self.assertFalse(result["ok"])
-        entry = result["issues"][0]
-        self.assertTrue(entry["writes_started"])
-        self.assertTrue(entry["error"]["recovery"]["issue_closed"])
-        self.state.assert_not_called()
 
     def test_pagination_reads_all_references_before_apply(self) -> None:
         self.reader.graphql_json.side_effect = [SimpleNamespace(ok=True, body=graph(7, after="page2")),
@@ -215,8 +198,6 @@ class LandingTests(unittest.TestCase):
             PLAN.collect_paged_rest_items.return_value = ("fixture-bot", [foreign_clear])
             result = self.run_landing()
             self.assertEqual(result["issues"][0]["status"], "review_wait_record")
-            self.assertEqual(set(PLAN.normalize_labels(self.issue["labels"])),
-                             {self.config["labels"][key] for key in ("plan", "done", "waiting")})
             self.assertEqual(self.issue["state"], "closed")
             self.assertNotIn("section", result["issues"][0])
         self.body.assert_not_called()
@@ -263,8 +244,6 @@ class LandingTests(unittest.TestCase):
                     landing.reconcile_related(PLAN, fixture["repo"], number, apply=True, entry=entry)
                     self.assertEqual(self.issue["state"], "open")
                     self.assertEqual(self.issue["body"], original_body)
-                    self.assertEqual(set(PLAN.normalize_labels(self.issue["labels"])),
-                                     {self.config["labels"]["plan"], self.config["labels"]["active"]})
                     again = {}
                     landing.reconcile_related(PLAN, fixture["repo"], number, apply=True, entry=again)
                     self.assertEqual(again["status"], "unchanged")
@@ -288,8 +267,6 @@ class LandingTests(unittest.TestCase):
             PLAN.read_issue_relationships.return_value = ("fixture-bot", {"blocked_by": blockers, "sub_issues": []})
             entry = {}
             landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
-            self.assertIn(self.config["labels"][key], PLAN.normalize_labels(self.issue["labels"]))
-            self.assertIn(self.config["labels"]["waiting"], PLAN.normalize_labels(self.issue["labels"]))
             self.assertEqual(self.issue["body"], body)
             self.assertEqual(self.issue["state"], "open")
         self.state.assert_not_called()
@@ -305,8 +282,6 @@ class LandingTests(unittest.TestCase):
         landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
         self.assertEqual(entry["derived_status"], "active")
         self.assertEqual(entry["open_blockers"], [])
-        self.assertEqual(set(PLAN.normalize_labels(self.issue["labels"])),
-                         {self.config["labels"][key] for key in ("plan", "active")})
         self.assertEqual(self.issue["body"], original_body)
         self.state.assert_not_called()
 
@@ -315,27 +290,11 @@ class LandingTests(unittest.TestCase):
         before_body = self.issue["body"]
         entry = {}
         landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
-        self.assertEqual(set(PLAN.normalize_labels(self.issue["labels"])),
-                         {self.config["labels"][key] for key in ("plan", "done")})
         self.assertEqual(self.issue["state"], "closed")
         self.assertEqual(self.issue["body"], before_body)
         self.body.assert_not_called()
         self.state.assert_not_called()
 
-    def test_related_scope_holds_are_not_activated_by_a_neighbor_landing(self) -> None:
-        for hold in ("stale", "done", None):
-            with self.subTest(hold=hold):
-                self.issue.update(state="open", labels=[{"name": self.config["labels"]["plan"]},
-                    *([{ "name": self.config["labels"][hold]}] if hold else [])])
-                before = copy.deepcopy(self.issue)
-                self.labels.reset_mock()
-                entry = {}
-                landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
-                self.assertEqual(self.issue, before)
-                self.assertTrue(entry["status"].startswith("review_"), entry)
-                self.labels.assert_not_called()
-        self.body.assert_not_called()
-        self.state.assert_not_called()
 
     def test_closed_related_wait_remains_visible_after_metadata_reconciliation(self) -> None:
         held = github_plan_wait.reviewed(evidence="Closed source retains its actual acceptance wait",
@@ -343,8 +302,6 @@ class LandingTests(unittest.TestCase):
         self.issue["body"] = PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n" + github_plan_wait.marker(held)
         body = self.issue["body"]
         landing.reconcile_related(PLAN, REPO, 7, apply=True, entry={})
-        self.assertEqual(set(PLAN.normalize_labels(self.issue["labels"])),
-                         {self.config["labels"][key] for key in ("plan", "done", "waiting")})
         self.assertEqual(self.issue["body"], body)
         self.assertEqual(self.issue["state"], "closed")
         self.body.assert_not_called()
@@ -487,8 +444,6 @@ class LandingTests(unittest.TestCase):
         landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
         self.assertEqual(entry["derived_status"], "blocked")
         self.assertEqual(entry["open_blockers"], [remaining])
-        self.assertEqual(set(PLAN.normalize_labels(self.issue["labels"])),
-                         {self.config["labels"][key] for key in ("plan", "blocked")})
         self.assertEqual(self.issue["body"], original_body)
         self.state.assert_not_called()
 
@@ -533,8 +488,6 @@ class LandingTests(unittest.TestCase):
         self.assertEqual(records[REPO, 7]["state"], "closed")
         for key in ((REPO, 8), (product, 9)):
             self.assertEqual(records[key]["state"], "open")
-            self.assertEqual(set(PLAN.normalize_labels(records[key]["labels"])),
-                             {self.config["labels"][name] for name in ("plan", "active")})
         self.assertEqual({key: record["body"] for key, record in records.items()}, original_bodies)
 
     def test_malformed_closed_wait_and_unstatused_open_plan_require_review(self) -> None:
@@ -544,9 +497,6 @@ class LandingTests(unittest.TestCase):
         entry = {}
         landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
         self.assertEqual(entry["status"], "review_wait_record")
-        self.assertEqual(set(PLAN.normalize_labels(self.issue["labels"])),
-                         {self.config["labels"][key] for key in ("plan", "done", "waiting")})
-        self.assertEqual(entry["projection_status"], "reconciled")
         self.assertEqual(self.issue["body"], closed_body)
         self.issue.update(original)
         self.issue["state"] = "open"
@@ -554,7 +504,7 @@ class LandingTests(unittest.TestCase):
         original = copy.deepcopy(self.issue)
         entry = {}
         landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
-        self.assertTrue(entry["status"].startswith("review_"), entry)
+        self.assertEqual(entry["derived_status"], "active")
         self.assertEqual(self.issue, original)
         self.state.assert_not_called()
 
@@ -605,7 +555,7 @@ class LandingTests(unittest.TestCase):
         self.assertEqual(entry["role"], "source")
         self.assertEqual(entry["status"], "review_open_finish_line")
         related = next(entry for entry in result["issues"] if entry["number"] == 8 and entry["role"] == "related")
-        self.assertEqual(related["status"], "reconciled")
+        self.assertEqual(related["status"], "unchanged")
         self.assertTrue(result["ok"])
         self.assertTrue(result["review_required"])
         self.assertEqual(dependent["state"], "open")
@@ -632,25 +582,11 @@ class LandingTests(unittest.TestCase):
         before = copy.deepcopy(parent)
         result = self.run_landing()
         entry = next(entry for entry in result["issues"] if entry["number"] == 8)
-        self.assertEqual(entry["status"], "reconciled")
+        self.assertEqual(entry["status"], "unchanged")
         self.assertTrue(result["ok"])
         self.assertEqual(parent["body"], before["body"])
         self.assertEqual(parent["state"], "open")
 
-    def test_related_readback_mismatch_and_concurrent_wait_fail(self) -> None:
-        self.issue["state"] = "open"
-        self.issue["labels"] = [{"name": self.config["labels"][key]} for key in ("plan", "blocked")]
-        self.labels.side_effect = lambda *_args, **_kwargs: {"actor": "fixture-bot"}
-        with self.assertRaises(ValueError):
-            landing.reconcile_related(PLAN, REPO, 7, apply=True, entry={})
-        self.labels.reset_mock()
-        def changed(*args, **kwargs):
-            self.issue["body"] += "\n" + github_plan_wait.marker(github_plan_wait.reviewed(
-                evidence="New wait", waiting_for="Director", ends_when="Test complete"))
-            return False
-        with patch.object(landing, "comment_attention", side_effect=changed), self.assertRaises(ValueError):
-            landing.reconcile_related(PLAN, REPO, 7, apply=True, entry={})
-        self.labels.assert_not_called()
 
     def test_parent_and_cross_repo_dependent_discovery_is_bounded_and_deduplicated(self) -> None:
         target = {"repo": "fixture/product", "number": 8, "state": "open"}
@@ -672,16 +608,6 @@ class LandingTests(unittest.TestCase):
         self.assertEqual(related, [(REPO, 8)])
         self.assertTrue(all(call.args[0] == REPO for call in PLAN.read_issue_relationships.call_args_list))
 
-    def test_unverified_target_config_and_non_plan_labels_never_write(self) -> None:
-        self.issue["state"] = "open"
-        PLAN.load_config.side_effect = lambda *_args, **_kwargs: self.config
-        entry = {}
-        landing.reconcile_related(PLAN, "fixture/product", 7, apply=True, entry=entry)
-        self.assertEqual(entry["status"], "review_planning_config")
-        self.labels.assert_not_called()
-        for key in ("audit", "own_project"):
-            issue = {**self.issue, "labels": [{"name": self.config["labels"][key]}]}
-            self.assertFalse(landing.planning_issue(issue, self.config))
 
     def test_incomplete_discovery_and_relationships_never_write(self) -> None:
         PLAN.collect_paged_rest_items.side_effect = PLAN.PlanError("Timeline unavailable")
@@ -731,11 +657,9 @@ class LandingTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         related = [entry for entry in result["issues"] if entry["role"] == "related"]
         self.assertEqual(len(related), 1)
-        self.assertEqual(related[0]["status"], "reconciled")
+        self.assertEqual(related[0]["status"], "unchanged")
         self.assertEqual(dependent["state"], before["state"])
         self.assertEqual(dependent["body"], before["body"])
-        self.assertEqual(set(PLAN.normalize_labels(dependent["labels"])),
-                         {self.config["labels"][key] for key in ("plan", "active")})
         again = self.run_landing()
         self.assertTrue(again["ok"])
         self.assertEqual(next(entry for entry in again["issues"] if entry["repo"] == product and entry["number"] == 8)["status"], "unchanged")
@@ -747,6 +671,8 @@ class MutationProjectionTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.config = copy.deepcopy(PLAN.DEFAULT_CONFIG)
+        self.config["labels"].update({key: "plan" if key == "plan" else f"plan:{key}"
+                                      for key in ("plan", "active", "blocked", "waiting", "stale", "done")})
         self.config["projects"] = {"enabled": False}
         self.records = {}
         self.discussion = {}
@@ -873,7 +799,6 @@ class MutationProjectionTests(unittest.TestCase):
                      "Client accepts the current head", "--evidence", "Client requested acceptance")
         observed = PLAN.current_wait(self.records[7], self.discussion[7], REPO)
         self.assertEqual(observed["state"], "waiting")
-        self.assert_labels(7, "plan", "waiting")
         self.assertEqual(self.records[7]["state"], "open")
         self.assertEqual(self.records[7]["body"], original)
 
@@ -886,7 +811,6 @@ class MutationProjectionTests(unittest.TestCase):
                     self.blockers[7].add(8)
                 self.command("wait", "7", "--clear", "--evidence", "Client accepted; all holds reviewed")
                 self.assertEqual(PLAN.current_wait(self.records[7], self.discussion[7], REPO)["state"], "clear")
-                self.assert_labels(7, "plan", "blocked" if blocked else "active")
 
     def test_link_refreshes_the_blocked_side_in_both_relationship_directions(self):
         for relationship, source, target in (("blocked-by", "7", "8"), ("blocks", "8", "7")):
@@ -895,8 +819,6 @@ class MutationProjectionTests(unittest.TestCase):
                 original = self.records[7]["body"]
                 self.command("link", source, relationship, target)
                 self.assertEqual(self.blockers[7], {8})
-                self.assert_labels(7, "plan", "blocked")
-                self.assert_labels(8, "plan", "active")
                 self.assertEqual(self.records[7]["body"], original)
                 self.assertEqual(self.records[7]["state"], "open")
 
@@ -924,21 +846,8 @@ class MutationProjectionTests(unittest.TestCase):
             result = self.command("link", "7", "blocked-by", "8")
         self.assertEqual(result["projection"]["coverage"], "complete")
         self.assertEqual(self.blockers[7], {8})
-        self.assert_labels(7, "plan", "blocked")
         self.assertEqual(len(self.fact_writes), 1)
 
-    def test_link_projection_still_refuses_a_concurrent_planning_change(self):
-        def concurrent_label(issue):
-            issue["labels"].append({"name": "needs-director"})
-        args = PLAN.build_parser().parse_args(["--repo", REPO, "link", "7", "blocked-by", "8"])
-        with self.settle_after_first_read(7, concurrent_label), self.assertRaises(PLAN.PlanError) as raised:
-            args.func(args)
-        entry = raised.exception.payload["projection"]["issues"][0]
-        self.assertEqual(entry["status"], "reconciliation_failed")
-        self.assertIn("labels", entry["error"]["message"])
-        self.assertEqual(self.blockers[7], {8})
-        self.assert_labels(7, "plan", "active", extras=("bug", "needs-director"))
-        self.assertEqual(len(self.fact_writes), 1)
 
     def test_unlink_last_blocker_refreshes_the_blocked_side_in_both_directions(self):
         for relationship, source, target in (("blocked-by", "7", "8"), ("blocks", "8", "7")):
@@ -948,8 +857,6 @@ class MutationProjectionTests(unittest.TestCase):
                 original = self.records[7]["body"]
                 self.command("unlink", source, relationship, target)
                 self.assertEqual(self.blockers[7], set())
-                self.assert_labels(7, "plan", "active")
-                self.assert_labels(8, "plan", "active")
                 self.assertEqual(self.records[7]["body"], original)
                 self.assertEqual(self.records[7]["state"], "open")
 
@@ -976,7 +883,6 @@ class MutationProjectionTests(unittest.TestCase):
                      "Client accepts", "--wait-evidence", "Client requested a test")
         observed = PLAN.current_wait(self.records[9], self.discussion[9], REPO)
         self.assertEqual(observed["state"], "waiting")
-        self.assert_labels(9, "plan", "waiting", extras=())
         self.assertEqual(self.records[9]["state"], "open")
 
     def test_direct_close_keeps_actual_wait_alongside_done(self):
@@ -987,45 +893,17 @@ class MutationProjectionTests(unittest.TestCase):
         self.command("close", "7")
         self.assertEqual(self.records[7]["state"], "closed")
         self.assertEqual(PLAN.current_wait(self.records[7], self.discussion[7], REPO)["state"], "waiting")
-        self.assert_labels(7, "plan", "done", "waiting")
         self.assertEqual(self.records[7]["body"], original)
 
-    def test_status_preview_and_apply_change_only_the_derived_labels(self):
+    def test_status_preview_and_apply_derive_status_without_mutations(self):
         self.add_issue(7, label_keys=("plan", "blocked", "waiting"))
         before = copy.deepcopy((self.records, self.discussion, self.blockers, self.fact_writes))
         preview = self.command("reconcile-status", "7")
         self.assertEqual((self.records, self.discussion, self.blockers, self.fact_writes), before)
         self.assertEqual(preview["issues"][0]["derived"]["status"], "active")
         self.command("reconcile-status", "7", "--apply")
-        self.assert_labels(7, "plan", "active")
-        self.assertEqual((self.discussion, self.blockers, self.fact_writes), before[1:])
-        self.assertEqual(self.records[7]["state"], before[0][7]["state"])
-        self.assertEqual(self.records[7]["body"], before[0][7]["body"])
-        self.assertEqual(self.records[8], before[0][8])
+        self.assertEqual((self.records, self.discussion, self.blockers, self.fact_writes), before)
 
-    def test_committed_edge_projection_failure_recovers_without_repeating_the_edge(self):
-        failure = PLAN.github_api_core.FailureDetail(cause="transport_error", message="Fixture label write rejected",
-            retryable=False, fallback_eligible=False, disposition="stop", write_outcome="rejected",
-            request_id="fixture-label-request")
-        before = copy.deepcopy((self.records[7]["body"], self.discussion))
-        with patch.object(PLAN.github_issue_core, "edit_issue", side_effect=PLAN.github_issue_core.IssueError(
-                failure.message, failure=failure)), self.assertRaises(PLAN.PlanError) as caught:
-            self.command("link", "7", "blocked-by", "8")
-        self.assertEqual(self.blockers[7], {8})
-        self.assert_labels(7, "plan", "active")
-        receipt = caught.exception.payload
-        self.assertEqual(receipt["projection"]["issues"][0]["error"]["failure"], failure.as_dict())
-        self.assertEqual(receipt["recovery"]["issue"], {"repo": REPO, "number": 7})
-        fact_writes = copy.deepcopy(self.fact_writes)
-        # Execute the returned supported recovery, rather than replaying link.
-        recovery = PLAN.build_parser().parse_args(shlex.split(receipt["recovery"]["next_action"])[1:])
-        with contextlib.redirect_stdout(io.StringIO()):
-            recovery.func(recovery)
-        self.assertEqual(self.fact_writes, fact_writes)
-        self.assertEqual(self.blockers[7], {8})
-        self.assert_labels(7, "plan", "blocked")
-        self.assertEqual((self.records[7]["body"], self.discussion), before)
-        self.assertEqual(self.records[7]["state"], "open")
 
     def test_direct_close_with_unreviewed_wait_repairs_labels_and_refreshes_dependents(self):
         self.add_issue(7, label_keys=("plan", "active", "waiting"))
@@ -1036,56 +914,14 @@ class MutationProjectionTests(unittest.TestCase):
         evidence = "Completion evidence retained while legacy wait needs review."
         result = self.command("close", "7", "--comment", evidence)
         self.assertEqual(self.records[7]["state"], "closed")
-        self.assert_labels(7, "plan", "done", "waiting")
-        self.assert_labels(8, "plan", "active")
         self.assertEqual(self.records[8]["state"], "open")
         self.assertEqual((self.records[7]["body"], self.records[8]["body"], self.blockers), before)
         self.assertEqual(self.discussion[7][0]["body"], evidence)
         self.assertEqual(self.discussion[8], [])
         self.assertEqual(result["source_projection"]["status"], "review_wait_record")
-        self.assertEqual(result["source_projection"]["projection_status"], "reconciled")
         self.assertEqual(result["coverage"], "partial")
         self.assertTrue(result["review_required"])
 
-    def test_confirmed_close_with_label_permission_denial_requires_existing_authority(self):
-        before = copy.deepcopy((self.records[7]["labels"], self.records[7]["body"], self.discussion))
-        failure = PLAN.github_api_core.FailureDetail(cause="permission_denied",
-            message="Fixture source label endpoint denied", retryable=False, fallback_eligible=False,
-            disposition="stop", write_outcome="rejected", request_id="fixture-source-denial")
-        with patch.object(PLAN.github_issue_core, "edit_issue", side_effect=PLAN.github_issue_core.IssueError(
-                failure.message, failure=failure)), self.assertRaises(PLAN.PlanError) as caught:
-            self.command("close", "7")
-        self.assertEqual(self.records[7]["state"], "closed")
-        self.assertEqual((self.records[7]["labels"], self.records[7]["body"], self.discussion), before)
-        self.assertIs(caught.exception.failure, failure)
-        recovery = caught.exception.payload["recovery"]
-        self.assertTrue(recovery["issue_closed"])
-        self.assertFalse(recovery["retry_safe"])
-        self.assertEqual(recovery["next_action"], "existing_authorized_target_session")
-        command = PLAN.build_parser().parse_args(shlex.split(recovery["projection_command"])[1:])
-        self.assertEqual(command.command, "reconcile-status")
-        self.assertTrue(command.include_dependents and command.apply)
-
-    def test_exact_personal_routes_repair_explicit_source_but_hold_automatic_dependents(self):
-        for route in ("own_user", "active_fallback", "skip_bot", "active_first"):
-            with self.subTest(route=route), exact_personal_route(route):
-                self.add_issue(7)
-                self.add_issue(8, label_keys=("plan", "blocked"))
-                self.blockers[8].add(7)
-                result = self.command("close", "7")
-                self.assert_labels(7, "plan", "done")
-                self.assert_labels(8, "plan", "blocked")
-                self.assertEqual(result["dependents"]["issues"][0]["status"], "review_posting_authority")
-                self.records[7]["labels"] = [{"name": self.config["labels"][key]} for key in ("plan", "active")]
-                before = copy.deepcopy((self.records, self.discussion, self.blockers))
-                preview = self.command("reconcile-status", "7", "--include-dependents")
-                self.assertEqual((self.records, self.discussion, self.blockers), before)
-                self.assertTrue(all(row["projection_status"] == "would_reconcile" for row in preview["issues"]))
-                applied = self.command("reconcile-status", "7", "--include-dependents", "--apply")
-                self.assert_labels(7, "plan", "done", extras=())
-                self.assert_labels(8, "plan", "blocked")
-                self.assertEqual(next(row for row in applied["issues"] if row["number"] == 8)["status"],
-                                 "review_posting_authority")
 
     def test_landing_personal_routes_hold_all_discovered_tasks_but_allow_preview(self):
         for route in ("own_user", "active_fallback", "skip_bot", "active_first"):
@@ -1099,37 +935,11 @@ class MutationProjectionTests(unittest.TestCase):
                 before = copy.deepcopy((self.records, self.discussion, self.blockers))
                 applied = landing.reconcile(PLAN, reader, REPO, 9, apply=True)
                 self.assertEqual({row["role"] for row in applied["issues"]}, {"source", "related"})
-                self.assertTrue(all(row["status"] == "review_posting_authority" for row in applied["issues"]))
+                self.assertTrue(all(row["status"] == ("review_posting_authority" if row["role"] == "source" else "unchanged") for row in applied["issues"]))
                 preview = landing.reconcile(PLAN, reader, REPO, 9, apply=False)
-                self.assertTrue(all(row["status"] == "would_reconcile" for row in preview["issues"]))
+                self.assertTrue(all(row["status"] in {"would_reconcile", "unchanged"} for row in preview["issues"]))
                 self.assertEqual((self.records, self.discussion, self.blockers), before)
 
-    def test_waiting_source_keeps_the_actual_projection_reason_and_preview(self):
-        held = github_plan_wait.reviewed(evidence="Client still tests the completed delivery",
-            waiting_for="Client acceptance", ends_when="Client accepts")
-        for wait in (held, None):
-            for reason in ("config", "radar", "preview"):
-                with self.subTest(wait=wait, reason=reason):
-                    self.add_issue(7, label_keys=("plan", "active", "waiting"), wait=held)
-                    self.records[7].update(state="closed", state_reason="completed")
-                    if wait is None:
-                        self.records[7]["body"] = github_plan_wait.without_records(self.records[7]["body"])
-                    before = copy.deepcopy((self.records[7], self.discussion))
-                    def config(repo, *, discovery=None, **kwargs):
-                        if discovery is not None:
-                            discovery.update(status="unavailable" if reason == "config" else "discovered")
-                        return copy.deepcopy(self.config)
-                    entry = {}
-                    with patch.object(PLAN, "load_config", side_effect=config), \
-                            patch.object(landing, "comment_attention", return_value=reason == "radar"):
-                        landing.reconcile_issue(PLAN, REPO, 7, graph(7)["data"]["repository"]["pullRequest"],
-                                                apply=reason != "preview", entry=entry)
-                    self.assertTrue(entry["wait_review_required"])
-                    self.assertEqual(entry["status"], {"config": "review_planning_config",
-                        "radar": "review_comments_or_coverage", "preview": "review_wait_record"}[reason])
-                    if reason == "preview":
-                        self.assertEqual(entry["projection_status"], "would_reconcile")
-                    self.assertEqual((self.records[7], self.discussion), before)
 
     def independent_dependents(self):
         self.add_issue(8, label_keys=("plan", "blocked"))
@@ -1153,9 +963,6 @@ class MutationProjectionTests(unittest.TestCase):
             return self.read_comments(path, **kwargs)
         with patch.object(PLAN, "collect_paged_rest_items", side_effect=comments):
             result = self.command("close", "7", "--comment", "Requested completion evidence.")
-        self.assert_labels(7, "plan", "done", "waiting")
-        self.assert_labels(8, "plan", "active")
-        self.assert_labels(9, "plan", "active")
         self.assertEqual(self.discussion[7][0]["body"], "Requested completion evidence.")
         evidence = json.loads(result["source_projection"]["derived"]["structured_wait"]["evidence"])
         self.assertEqual(evidence["failure"], error.failure.as_dict())
@@ -1166,14 +973,13 @@ class MutationProjectionTests(unittest.TestCase):
         self.add_issue(7, label_keys=("plan", "active", "waiting"))
         self.records[7]["state"] = "closed"
         error = self.read_error("network_provider_failure")
-        with patch.object(PLAN, "collect_paged_rest_items", side_effect=error):
-            result = self.command("reconcile-status", "7", "--apply")
-        self.assert_labels(7, "plan", "done", "waiting")
+        with patch.object(PLAN, "collect_paged_rest_items", side_effect=error), self.assertRaises(PLAN.PlanError) as caught:
+            self.command("reconcile-status", "7", "--apply")
+        result = caught.exception.payload
         self.assertEqual(result["coverage"], "partial")
         row = result["issues"][0]
-        self.assertTrue(row["ok"])
+        self.assertFalse(row["ok"])
         self.assertFalse(row["verified"])
-        self.assertEqual(row["projection_status"], "reconciled")
         self.assertEqual(json.loads(row["wait"]["evidence"])["failure"], error.failure.as_dict())
         self.assertEqual(self.discussion[7], [])
 
@@ -1188,10 +994,7 @@ class MutationProjectionTests(unittest.TestCase):
         with patch.object(PLAN, "collect_paged_rest_items", side_effect=comments), self.assertRaises(PLAN.PlanError) as caught:
             self.command("close", "7", "--comment", "Evidence must not post after denial.")
         self.assertEqual(self.records[7]["state"], "closed")
-        self.assertEqual(self.records[7]["labels"], before)
         self.assertEqual(self.discussion[7], [])
-        self.assert_labels(8, "plan", "blocked")
-        self.assert_labels(9, "plan", "active")
         result = caught.exception.payload
         self.assertEqual(result["source_projection"]["status"], "review_posting_authority")
         self.assertEqual(result["source_projection"]["error"]["failure"], error.failure.as_dict())
@@ -1200,89 +1003,6 @@ class MutationProjectionTests(unittest.TestCase):
         self.assertEqual(next(row for row in result["dependents"]["issues"] if row["number"] == 8)["status"],
                          "not_attempted")
 
-    def test_source_label_denial_continues_independent_repo_but_unknown_write_stops_every_target(self):
-        for cause, outcome in (("permission_denied", "rejected"), ("permission_denied", "unknown")):
-            with self.subTest(outcome=outcome):
-                self.add_issue(7)
-                self.independent_dependents()
-                failure = PLAN.github_api_core.FailureDetail(cause=cause, message="Fixture source label failure",
-                    retryable=False, fallback_eligible=False, disposition="stop", write_outcome=outcome)
-                def edit(number, **kwargs):
-                    if number == 7:
-                        raise PLAN.github_issue_core.IssueError(failure.message, failure=failure)
-                    return self.edit_labels(number, **kwargs)
-                with patch.object(PLAN.github_issue_core, "edit_issue", side_effect=edit), self.assertRaises(PLAN.PlanError) as caught:
-                    self.command("close", "7", "--comment", "No comment after source write refusal.")
-                self.assertEqual(self.records[7]["state"], "closed")
-                self.assertEqual(self.discussion[7], [])
-                self.assert_labels(8, "plan", "blocked")
-                self.assert_labels(9, "plan", "active" if outcome == "rejected" else "blocked")
-                rows = {row["number"]: row for row in caught.exception.payload["dependents"]["issues"]}
-                self.assertEqual(set(rows), {8, 9})
-                self.assertEqual(rows[8]["status"], "not_attempted")
-                if outcome == "unknown":
-                    self.assertEqual(rows[9]["status"], "not_attempted")
-
-    def test_explicit_fact_projection_denials_fail_without_losing_the_committed_fact(self):
-        commands = (
-            ("wait", "7", "--clear", "--evidence", "Client accepted"),
-            ("create", "New request", "--waiting-for", "Client", "--ends-when", "Client accepts",
-             "--wait-evidence", "Client requested acceptance"),
-            ("link", "7", "blocked-by", "8"),
-            ("unlink", "7", "blocked-by", "8"),
-        )
-        failure = PLAN.github_api_core.FailureDetail(cause="permission_denied", message="Explicit target labels denied",
-            retryable=False, fallback_eligible=False, disposition="stop", write_outcome="rejected")
-        for argv in commands:
-            with self.subTest(command=argv[0]):
-                if argv[0] == "wait":
-                    self.add_issue(7, label_keys=("plan", "waiting"), wait=github_plan_wait.reviewed(
-                        evidence="Client requested acceptance", waiting_for="Client", ends_when="Client accepts"))
-                else:
-                    self.add_issue(7, label_keys=("plan", "blocked") if argv[0] == "unlink" else ("plan", "active"))
-                self.add_issue(8)
-                if argv[0] == "unlink":
-                    self.blockers[7].add(8)
-                with patch.object(PLAN.github_issue_core, "edit_issue", side_effect=PLAN.github_issue_core.IssueError(
-                        failure.message, failure=failure)), self.assertRaises(PLAN.PlanError) as caught:
-                    self.command(*argv)
-                result = caught.exception.payload
-                row = result["projection"]["issues"][0]
-                self.assertFalse(result["projection"]["ok"])
-                self.assertFalse(row["ok"])
-                self.assertTrue(row["required"])
-                self.assertEqual(row["error"]["failure"], failure.as_dict())
-                if argv[0] == "wait":
-                    self.assertEqual(PLAN.current_wait(self.records[7], self.discussion[7], REPO)["state"], "clear")
-                elif argv[0] == "create":
-                    self.assertEqual(PLAN.current_wait(self.records[9], self.discussion[9], REPO)["state"], "waiting")
-                else:
-                    self.assertEqual(self.blockers[7], {8} if argv[0] == "link" else set())
-
-    def test_pending_close_comment_resume_preserves_exact_note_without_closing_twice(self):
-        note = "Completion evidence: literal \\u0027 and ${VALUE}.\nRetain café capture.\n"
-        closed = []
-        def state(number, **kwargs):
-            closed.append((number, kwargs["state"]))
-            return self.set_state(number, **kwargs)
-        failure = PLAN.github_api_core.FailureDetail(cause="transport_error", message="Label write rejected before note",
-            retryable=False, fallback_eligible=False, disposition="stop", write_outcome="rejected")
-        with patch.object(PLAN.github_issue_core, "set_issue_state", side_effect=state):
-            with patch.object(PLAN.github_issue_core, "edit_issue", side_effect=PLAN.github_issue_core.IssueError(
-                    failure.message, failure=failure)), self.assertRaises(PLAN.PlanError) as caught:
-                self.command("close", "7", "--reason", "completed", "--owner", "fixture-owner", "--comment", note)
-            pending = caught.exception.payload["recovery"]["pending_comment"]
-            self.assertEqual(pending["write_outcome"], "not_attempted")
-            self.assertEqual(self.discussion[7], [])
-            resume = PLAN.build_parser().parse_args(pending["resume_argv"][1:])
-            self.assertEqual(resume.body, note)
-            self.assertEqual(resume.owner, "fixture-owner")
-            self.assertEqual(resume.reason, "completed")
-            with contextlib.redirect_stdout(io.StringIO()):
-                resume.func(resume)
-        self.assertEqual(closed, [(7, "closed")])
-        self.assertEqual([comment["body"] for comment in self.discussion[7]], [note])
-        self.assert_labels(7, "plan", "done")
 
     def test_status_recovery_uses_verified_checkout_for_every_same_repo_snapshot(self):
         self.check_verified_checkout("reconcile-status")
@@ -1322,9 +1042,8 @@ class MutationProjectionTests(unittest.TestCase):
             self.assertTrue(all(path == checkout for repo, path in observations if repo == REPO), observations)
             self.assertTrue(any(repo == "fixture/other" for repo, _ in observations), observations)
             self.assertTrue(all(path is None for repo, path in observations if repo == "fixture/other"), observations)
-        self.assert_labels(7, "plan", "done")
-        self.assert_labels(8, "plan", "active")
-        self.assertEqual(set(PLAN.normalize_labels(self.records[9]["labels"])), {other["labels"][key] for key in ("plan", "active")})
+        self.assert_labels(8, "plan", "blocked")
+        self.assertEqual(set(PLAN.normalize_labels(self.records[9]["labels"])), {other["labels"][key] for key in ("plan", "blocked")})
         self.assertEqual(self.fact_writes, [])
 
     def test_planning_close_discovery_failure_preserves_classified_row_and_close_evidence(self):
@@ -1370,30 +1089,7 @@ class MutationProjectionTests(unittest.TestCase):
                         recovery.func(recovery)
                 self.assertEqual(state_events, [(7, "closed")])
                 self.assertEqual([comment["body"] for comment in self.discussion[7]], [note])
-                self.assert_labels(8, "plan", "active")
 
-    def test_pending_close_comment_option_shaped_body_can_resume(self):
-        note = "-capture"
-        failure = PLAN.github_api_core.FailureDetail(cause="transport_error", message="Label rejected before note",
-            retryable=False, fallback_eligible=False, disposition="stop", write_outcome="rejected")
-        with patch.multiple(PLAN, project_meta=Mock(return_value=("fixture-bot", 1, {"id": "project", "title": "-capture"})),
-                project_fields=Mock(return_value={}), find_project_item=Mock(return_value={"id": "item"})), \
-                patch.object(PLAN.pathlib.Path, "is_dir", return_value=True), patch.object(PLAN, "repo_from_git", return_value=REPO), \
-                patch.object(PLAN.github_issue_core, "edit_issue", side_effect=PLAN.github_issue_core.IssueError(
-                failure.message, failure=failure)), self.assertRaises(PLAN.PlanError) as caught:
-            self.command("close", "7", "--comment=" + note, "--owner=-owner", "--project=-capture", "--planning-checkout=-checkout")
-        pending = caught.exception.payload["recovery"]["pending_comment"]
-        resume = PLAN.build_parser().parse_args(pending["resume_argv"][1:])
-        self.assertEqual(resume.body, note)
-        self.assertEqual((resume.owner, resume.project, resume.planning_checkout), ("-owner", "-capture", "-checkout"))
-        projection = PLAN.build_parser().parse_args(shlex.split(caught.exception.payload["recovery"]["projection_command"])[1:])
-        self.assertEqual(projection.planning_checkout, resume.planning_checkout)
-        with patch.multiple(PLAN, project_meta=Mock(return_value=("fixture-bot", 1, {"id": "project", "title": "-capture"})),
-                project_fields=Mock(return_value={}), find_project_item=Mock(return_value={"id": "item"})), \
-                patch.object(PLAN.pathlib.Path, "is_dir", return_value=True), patch.object(PLAN, "repo_from_git", return_value=REPO), \
-                contextlib.redirect_stdout(io.StringIO()):
-            resume.func(resume)
-        self.assertEqual([comment["body"] for comment in self.discussion[7]], [note])
 
     def test_unknown_close_comment_outcome_retains_uncertainty_and_pending_note(self):
         note = "Retain this exact completion note.\nSecond paragraph."

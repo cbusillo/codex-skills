@@ -1101,55 +1101,6 @@ def test_fetch_paginated_follows_full_pages_and_flags_the_cap() -> None:
     assert (len(items), cut) == (100 * module.MAX_PAGES, True), "a listing that never shortens must report the cap"
 
 
-def test_waiting_unmilestoned_cross_repository_blocker_is_a_named_finding() -> None:
-    module = load()
-    gate = issue(2554, "Gate", labels=("plan", "plan:waiting"))
-    gate["html_url"] = "https://github.com/owner/repo/issues/2554"
-    calls: list[str] = []
-    targets = [
-        {"number": 141, "state": "open", "html_url": "https://github.com/owner/other/issues/141"},
-        {"number": 142, "state": "closed", "html_url": "https://github.com/owner/other/issues/142"},
-        {"number": 10, "state": "open", "url": "https://api.github.com/repos/OWNER/REPO/issues/10"},
-    ]
-
-    def fetch(args: list[str]) -> Any:
-        calls.append(args[1])
-        return targets
-
-    assert not module.enrich_waiting_inbound_blockers([gate], "owner/old-name", fetch=fetch)
-    result = run(module, issues=[gate])
-    pair = next(item for item in result["findings"] if item["kind"] == "waiting_blocks_other_repository")
-    assert pair["number"] == 2554
-    assert pair["blocking"] == [{"repo": "owner/other", "number": 141, "url": "https://github.com/owner/other/issues/141"}]
-    assert len(calls) == 1
-    assert "milestone" not in gate
-    for changed in ({"state": "closed"}, {"labels": [{"name": "plan:active"}]}):
-        assert "waiting_blocks_other_repository" not in kinds(run(module, issues=[{**gate, **changed}]))
-
-
-def test_waiting_inbound_fetch_coverage_includes_caps_errors_and_ambiguous_targets() -> None:
-    module = load()
-    gates = [issue(number, "Gate", labels=("plan:waiting",)) for number in (1, 2)]
-    assert module.enrich_waiting_inbound_blockers(gates, "o/r", fetch=lambda _: [], max_issues=1)
-    assert module.enrich_waiting_inbound_blockers(gates, "o/r", fetch=lambda _: [{"state": "open", "number": 3}])
-    assert module.enrich_waiting_inbound_blockers(gates, "o/r", fetch=lambda _: [{"state": "open", "html_url": "https://github.com/o/other/issues/3"}] * 100)
-
-    def denied(_args: list[str]) -> Any:
-        raise module.AuditError("permission denied")
-
-    def fetch(args: list[str]) -> Any:
-        if "/dependencies/blocking" in args[1]:
-            return denied(args)
-        if "state=open" in args[1]:
-            return gates
-        return []
-
-    found, incomplete = module.fetch_audit_issues("o/r", [], {}, NOW, fetch=fetch)
-    assert "waiting_inbound_blockers" in incomplete
-    assert "coverage_incomplete" in kinds(run(module, issues=found, truncated=incomplete))
-    zero = {**gates[0], "issue_dependencies_summary": {"blocking": 0}}
-    assert not module.enrich_waiting_inbound_blockers([zero], "o/r", fetch=denied)
-
 SINCE = NOW - dt.timedelta(days=7)
 # Ordinary fixture merges occur at NOW, strictly before the report's end.
 WINDOW_END = NOW + dt.timedelta(seconds=1)
@@ -2411,8 +2362,8 @@ def test_stale_wait_report_only_cli_never_reads_or_advances_audit_marker() -> No
 
 def test_stale_wait_report_reads_closed_native_history_despite_zero_open_count() -> None:
     module = load()
-    row = {**issue(41, "Prerequisite finished", labels=("plan:blocked",),
-                   body="## Current Status\nWaiting for: None.\n"),
+    row = {**issue(41, "Prerequisite finished",
+                   body="## Current Status\nState: Waiting.\nWaiting for: None.\n"),
            "issue_dependencies_summary": {"blocked_by": 0, "total_blocked_by": 1}}
     calls: list[str] = []
     def fetch(args: list[str]) -> Any:
@@ -2512,10 +2463,10 @@ def test_stale_wait_report_landing_requires_default_branch_but_merge_means_merge
     assert landed["complete"] and [item["number"] for item in landed["items"]] == [1, 2], landed
 
 
-def test_stale_wait_report_reports_explicit_absence_of_all_waits() -> None:
+def test_stale_wait_report_reports_legacy_wait_state_with_explicit_absence_of_all_waits() -> None:
     module = load()
-    row = {**issue(41, "Parked on nobody", labels=("plan:waiting",),
-                   body="## Current Status\nWaiting for: None.\nBlocked by: None.\n"),
+    row = {**issue(41, "Parked on nobody",
+                   body="## Current Status\nState: Waiting.\nWaiting for: None.\nBlocked by: None.\n"),
            "issue_dependencies_summary": {"total_blocked_by": 0}}
     report = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(lambda _: []))
     assert report["complete"] and report["items"][0]["number"] == 41, report
@@ -2710,9 +2661,11 @@ def test_active_landing_ignores_history_and_uses_the_named_prs_own_association()
             if "/pulls/" in args[1] else {"state": "closed", "pull_request": {}})
     assert not module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(prerequisite))["items"][0]["selection_exclusion"]
     row = {**row, "labels": [{"name": "custom-active"}], "body": "## Current Status\nNext action: Supervisor lands PR #71 and closes this issue.\n"}
-    report = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(fetch), active_label="custom-active")
+    report = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(fetch))
     assert report["checked_issues"] == [1] and report["items"][0]["selection_exclusion"]
-    assert not module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(fetch))["checked_issues"]
+    row["labels"] = []
+    unlabeled = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(fetch))
+    assert unlabeled["checked_issues"] == [1] and unlabeled["items"][0]["selection_exclusion"]
 
 
 def test_healthy_remainders_and_person_holds_do_not_create_false_coverage_gaps() -> None:
@@ -2729,6 +2682,8 @@ def test_healthy_remainders_and_person_holds_do_not_create_false_coverage_gaps()
             def fetch(args: list[str]) -> Any:
                 if args[1] == "repos/owner/catalog":
                     return {"default_branch": "main"}
+                if "/dependencies/blocked_by" in args[1]:
+                    return []
                 return ({"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #1"}
                         if "/pulls/" in args[1] else {"state": "closed", "pull_request": {}})
             report = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(fetch))
@@ -2742,7 +2697,10 @@ def test_healthy_remainders_and_person_holds_do_not_create_false_coverage_gaps()
             row["updated_at"] = "2026-10-04T12:00:00Z"
             report = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(fetch))
             assert report["complete"]
-            assert report["items"][0]["selection_exclusion"] is needs_proof
+            if waiting == "None.":
+                assert report["items"][0]["selection_exclusion"] is needs_proof
+            else:
+                assert report["items"] == []
 
 
 def test_invalid_milestone_wait_is_reported_but_named_event_is_valid() -> None:
@@ -2915,11 +2873,11 @@ def test_local_wait_findings_preserve_invalid_legacy_prose() -> None:
     blocked = {**base, "body": "## Current Status\nState: Waiting.\nWaiting for: TBD.",
                "labels": [{"name": "plan:blocked"}]}
     assert not module.enrich_milestone_waits([blocked], "owner/product", ["Dogfood week"], fetch=comments_only)
-    assert "milestone_wait_invalid" not in kinds(run(module, issues=[blocked]))
+    assert "milestone_wait_invalid" in kinds(run(module, issues=[blocked]))
     module.planning_config = lambda _: {"labels": {"waiting": "paused"}}
     custom = {**base, "body": "## Current Status\nWaiting for: nothing.", "labels": [{"name": "paused"}]}
     assert not module.enrich_milestone_waits([custom], "owner/product", ["Dogfood week"], fetch=comments_only)
-    assert "milestone_wait_invalid" in kinds(run(module, issues=[custom]))
+    assert "milestone_wait_invalid" not in kinds(run(module, issues=[custom]))
 
 
 def test_stale_reference_waits_preserve_start_metadata_and_real_holds() -> None:
@@ -2949,14 +2907,17 @@ def test_active_pending_and_bold_person_holds_preserve_remaining_work() -> None:
                    "__Blocked by:__ Client acceptance.\n"):
         row = {**issue(1, "Unfinished acceptance", labels=("plan:active",),
                        body="## Current Status\n" + before + "Next action: Supervisor lands PR #71 and closes this issue.\n"),
-               "updated_at": "2026-10-04T12:00:00Z"}
+               "updated_at": "2026-10-04T12:00:00Z",
+               "issue_dependencies_summary": {"total_blocked_by": 0}}
         def fetch(args: list[str]) -> Any:
             if args[1] == "repos/owner/catalog":
                 return {"default_branch": "main"}
             return ({"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #1"}
                     if "/pulls/" in args[1] else {"state": "closed", "pull_request": {}})
-        found = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(fetch))["items"][0]
-        assert found["recorded_hold_pending"] and not found["selection_exclusion"] and not found["completion_proven"]
+        report = module.stale_wait_report([row], "owner/catalog", fetch=current_repository_fetch(fetch))
+        assert report["complete"]
+        for found in report["items"]:
+            assert found["recorded_hold_pending"] and not found["selection_exclusion"] and not found["completion_proven"]
 
 
 def test_edited_supervisor_closeout_waits_find_their_own_landed_source() -> None:
@@ -3001,17 +2962,14 @@ def test_edited_supervisor_closeout_waits_find_their_own_landed_source() -> None
                     "base": {"ref": "main"}, "body": f"Refs #{1211 if n == 1294 else 3073 if n == 3087 else 999}"}
         raise AssertionError(path)
     before = json.dumps(rows, sort_keys=True)
-    for label in ("plan:active", "plan:waiting"):
-        selected = [{**row, "labels": [{"name": label}]} for row in rows]
+    for labels in ([], [{"name": "plan:active"}], [{"name": "plan:waiting"}]):
+        selected = [{**row, "labels": labels} for row in rows]
         report = module.stale_wait_report(selected, "owner/catalog", fetch=current_repository_fetch(fetch))
         assert report["complete"] and not report["unavailable"]
         found = {row["number"]: row for row in report["items"]}
-        # The historical #3073 blocker prose is not a proven no-hold clause;
-        # active evidence carries that uncertainty, parked work stays held.
-        assert set(found) == ({1211, 3073} if label == "plan:active" else {1211})
+        assert set(found) == {1211}
         assert all(row["review_required"] and not row["completion_proven"] for row in found.values())
-        if label == "plan:active":
-            assert found[3073]["evidence"][0]["url"].endswith("/pull/3087")
+        assert found[1211]["evidence"][0]["url"].endswith("/pull/1294")
     assert json.dumps(rows, sort_keys=True) == before
     assert not any("issues/1211/comments" in path for path in calls)
 
@@ -3040,8 +2998,7 @@ def test_unresolved_delegated_acceptance_keeps_the_hold() -> None:
     report = module.stale_wait_report([row], "owner/catalog", fetch=fetch(
         module.ReferenceNotFound("gh: Not Found (HTTP 404)")))
     assert report["complete"] and [ref["reference"] for ref in report["unresolved_references"]] == ["#104"]
-    [found] = report["items"]
-    assert found["recorded_hold_pending"] and not found["selection_exclusion"]
+    assert report["items"] == []
     # A delegate that exists here still releases the delivery step.
     report = module.stale_wait_report([row], "owner/catalog", fetch=fetch({"state": "open"}))
     assert report["items"][0]["selection_exclusion"] and not report["items"][0]["recorded_hold_pending"]
@@ -3129,15 +3086,15 @@ def test_closeout_wait_preserves_real_holds_partial_stacks_and_unknown_history()
     blocked = {**remainder, "issue_dependencies_summary": {"total_blocked_by": 1}}
     def native_blocker(args: list[str]) -> Any:
         return [{"state": "open"}] if "/dependencies/" in args[1] else with_issue(args)
-    result = module.stale_wait_report([blocked], "owner/catalog", fetch=current_repository_fetch(native_blocker))["items"][0]
-    assert result["recorded_hold_pending"] and not result["selection_exclusion"]
+    blocked_report = module.stale_wait_report([blocked], "owner/catalog", fetch=current_repository_fetch(native_blocker))
+    assert blocked_report["complete"] and blocked_report["items"] == []
     parked = {**blocked, "labels": [{"name": "plan:waiting"}]}
     assert not module.stale_wait_report([parked], "owner/catalog", fetch=current_repository_fetch(native_blocker))["items"]
     person_next = {**row, "body": row["body"].replace(
         "closes this issue", "closes this issue once Justin accepts the staging build",
     )}
-    result = module.stale_wait_report([person_next], "owner/catalog", fetch=current_repository_fetch(fetch))["items"][0]
-    assert result["recorded_hold_pending"] and not result["selection_exclusion"]
+    person_report = module.stale_wait_report([person_next], "owner/catalog", fetch=current_repository_fetch(fetch))
+    assert person_report["complete"] and person_report["items"] == []
     assert not module.stale_wait_report([{**person_next, "labels": parked["labels"]}],
                                         "owner/catalog", fetch=current_repository_fetch(fetch))["items"]
     def unread_parked(args: list[str]) -> Any:
@@ -3328,7 +3285,6 @@ def test_weekly_output_failure_preserves_every_repository_window() -> None:
         assert marker.read_bytes() == before
 
 
-
 def test_weekly_marker_failure_keeps_emitted_findings_and_original_windows() -> None:
     module = load()
     account = WeeklyAccount(module)
@@ -3458,6 +3414,61 @@ def test_weekly_mode_requires_an_owner_and_no_other_mode() -> None:
                 assert exc.code == 2, argv
             else:
                 raise AssertionError(argv)
+
+
+def test_waiting_unmilestoned_cross_repository_blocker_is_a_named_finding() -> None:
+    module = load()
+    from skills.github.scripts import github_plan_wait
+
+    gate = issue(2554, "Gate")
+    gate["structured_wait"] = github_plan_wait.reviewed(
+        evidence="Director requested a candidate test", waiting_for="Director's candidate test",
+        ends_when="Director records the test result")
+    gate["html_url"] = "https://github.com/owner/repo/issues/2554"
+    calls: list[str] = []
+    targets = [
+        {"number": 141, "state": "open", "html_url": "https://github.com/owner/other/issues/141"},
+        {"number": 142, "state": "closed", "html_url": "https://github.com/owner/other/issues/142"},
+        {"number": 10, "state": "open", "url": "https://api.github.com/repos/OWNER/REPO/issues/10"},
+    ]
+
+    def fetch(args: list[str]) -> Any:
+        calls.append(args[1])
+        return targets
+
+    assert not module.enrich_waiting_inbound_blockers([gate], "owner/old-name", fetch=fetch)
+    result = run(module, issues=[gate])
+    pair = next(item for item in result["findings"] if item["kind"] == "waiting_blocks_other_repository")
+    assert pair["number"] == 2554
+    assert pair["blocking"] == [{"repo": "owner/other", "number": 141, "url": "https://github.com/owner/other/issues/141"}]
+    assert len(calls) == 1
+    assert "milestone" not in gate
+    for changed in ({"state": "closed"}, {"structured_wait": github_plan_wait.reviewed(evidence="Test result recorded")}):
+        assert "waiting_blocks_other_repository" not in kinds(run(module, issues=[{**gate, **changed}]))
+
+
+def test_waiting_inbound_fetch_coverage_includes_caps_errors_and_ambiguous_targets() -> None:
+    module = load()
+    gates = [issue(number, "Gate", body="## Current Status\nWaiting for: Client acceptance.\n") for number in (1, 2)]
+    assert module.enrich_waiting_inbound_blockers(gates, "o/r", fetch=lambda _: [], max_issues=1)
+    assert module.enrich_waiting_inbound_blockers(gates, "o/r", fetch=lambda _: [{"state": "open", "number": 3}])
+    assert module.enrich_waiting_inbound_blockers(gates, "o/r", fetch=lambda _: [{"state": "open", "html_url": "https://github.com/o/other/issues/3"}] * 100)
+
+    def denied(_args: list[str]) -> Any:
+        raise module.AuditError("permission denied")
+
+    def fetch(args: list[str]) -> Any:
+        if "/dependencies/blocking" in args[1]:
+            return denied(args)
+        if "state=open" in args[1]:
+            return gates
+        return []
+
+    found, incomplete = module.fetch_audit_issues("o/r", [], {}, NOW, fetch=fetch)
+    assert "waiting_inbound_blockers" in incomplete
+    assert "coverage_incomplete" in kinds(run(module, issues=found, truncated=incomplete))
+    zero = {**gates[0], "issue_dependencies_summary": {"blocking": 0}}
+    assert not module.enrich_waiting_inbound_blockers([zero], "o/r", fetch=denied)
 
 
 def main() -> int:

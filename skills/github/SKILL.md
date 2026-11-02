@@ -1006,7 +1006,8 @@ Use PRs for all non-trivial changes.
   for closing language and event waits, and
   [talking with the Director](../references/talking-with-the-director.md) for durable
   PR, issue, review, and closeout text.
-- **Labels**: Planning labels are only for durable planning issues. PR labels
+- **Labels**: Planning status is derived on read. Routing, share and type labels
+  carry decisions. PR labels
   follow the [label taxonomy](references/repo-workflow.md#label-taxonomy):
   `preview-ready`, the optional `awaiting-qa` handoff, `own-project` for
   own-project work in a mixed repository, and the merge-train enqueue label

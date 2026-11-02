@@ -1354,9 +1354,9 @@ def classify_pr(state: str, entry: dict[str, Any], labels: list[str]) -> str:
     label_keys = {label.casefold() for label in labels}
     if state in {"merged", "closed"}:
         return "recently_completed"
-    if "blocked" in label_keys or "plan:blocked" in label_keys:
+    if "blocked" in label_keys:
         return "blocked"
-    if "waiting" in label_keys or "plan:waiting" in label_keys:
+    if "waiting" in label_keys:
         return "waiting"
     if entry.get("isDraft"):
         return "in_progress"
@@ -1371,11 +1371,11 @@ def classify_issue(state: str, labels: list[str]) -> str:
     label_keys = {label.casefold() for label in labels}
     if state == "closed":
         return "recently_completed"
-    if "blocked" in label_keys or "plan:blocked" in label_keys:
+    if "blocked" in label_keys:
         return "blocked"
-    if "waiting" in label_keys or "plan:waiting" in label_keys:
+    if "waiting" in label_keys:
         return "waiting"
-    if "stale" in label_keys or "plan:stale" in label_keys:
+    if "stale" in label_keys:
         return "stale_or_needs_reconciliation"
     if "needs-attention" in label_keys or "needs attention" in label_keys:
         return "needs_attention"
@@ -1393,10 +1393,7 @@ def handoff_for_pr(state: str, entry: dict[str, Any], labels: list[str]) -> str 
 def handoff_for_issue(state: str, labels: list[str]) -> str | None:
     if state == "closed":
         return None
-    label_keys = {label.casefold() for label in labels}
-    if any(label.startswith("plan:") or label == "plan" for label in label_keys):
-        return "github-plan for planning reconciliation"
-    return None
+    return "github-plan for planning reconciliation"
 
 
 def priority_score(labels: list[str], settings: dict[str, Any]) -> int:

@@ -172,7 +172,7 @@ def snapshot(plan: Any, repo: str, number: int, *, checkout: str | None = None) 
 
 
 def planning_issue(issue: dict[str, Any], config: dict[str, Any]) -> bool:
-    return github_plan_status.is_planning_issue(issue, config["labels"])
+    return "pull_request" not in issue
 
 
 def comment_attention(repo: str, number: int) -> bool:
@@ -185,35 +185,8 @@ def comment_attention(repo: str, number: int) -> bool:
     return False
 
 
-# https://github.com/cbusillo/codex-skills/issues/2333
-RELATIONSHIP_DERIVED_ISSUE_FIELDS = frozenset(
-    {"updated_at", "issue_dependencies_summary", "sub_issues_summary", "parent_issue_url"})
-
-
-def changed_issue_fields(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
-    return sorted(key for key in before.keys() | after.keys()
-                  if key not in RELATIONSHIP_DERIVED_ISSUE_FIELDS and before.get(key) != after.get(key))
-
-
 def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: dict[str, Any]) -> None:
-    discovery: dict[str, Any] = {}
-    checkout = entry.get("planning_checkout")
-    if checkout:
-        plan.load_config(repo, checkout=checkout, discovery=discovery)
-    else:
-        plan.load_config(repo, discovery=discovery)
-    entry["planning_config"] = discovery
-    if discovery.get("status") not in {"discovered", "verified_defaults"}:
-        if entry.get("config_optional_unless_planning"):
-            _, source = plan.get_issue(str(number), repo)
-            # Unknown custom configuration stays partial. Only an ordinary
-            # generic close may make this configuration review informational.
-            # A failed read leaves the explicit source required.
-            entry["required"] = github_plan_status.is_planning_issue(
-                source, github_plan_status.DEFAULT_STATUS_LABELS)
-        entry.update(status="review_planning_config", next_action="Run from a matching target checkout or pass --planning-checkout to reconcile-status so target configuration can be verified")
-        return
-    issue, config, wait = snapshot(plan, repo, number, checkout=checkout)
+    issue, config, wait = snapshot(plan, repo, number, checkout=entry.get("planning_checkout"))
     if not planning_issue(issue, config):
         entry["status"] = "not_planning_issue"
         return
@@ -221,58 +194,16 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
         entry["status"] = "review_related_finish_line"
         return
     _, relationships = plan.read_issue_relationships(repo, number, include_blocking=False)
-    derived = github_plan_status.derive(issue, relationships, wait, label_names=config["labels"])
+    derived = github_plan_status.derive(issue, relationships, wait)
     blockers = derived["blocked_by"]
     key = derived["status"]
     entry.update(derived_status=key, wait=wait, open_blockers=blockers,
                  blocked_by=blockers, derived=derived,
                  finish_line="preserved; related landing does not prove completion")
-    if not derived["labels_writable"]:
-        entry.update(**github_plan_status.projection_outcome(derived, "preserved"),
-                     next_action="Review the missing wait evidence" if derived["wait_review_required"] else "Preserve the deliberate scope hold")
-        return
-    names = set(plan.normalize_labels(issue.get("labels")))
-    changes = github_plan_status.label_changes(sorted(names), config["labels"], derived)
-    wanted = {config["labels"][key] for key in derived["labels"]}
-    entry["derived_labels"] = sorted(wanted)
-    remove = changes["remove"]
-    if not changes["add"] and not remove:
-        entry.update(github_plan_status.projection_outcome(derived, "unchanged"))
-        return
-    if not apply:
-        entry.update(github_plan_status.projection_outcome(derived, "would_reconcile"))
-        return
-    if getattr(plan, "planning_comment_attention", comment_attention)(repo, number):
-        entry["status"] = "review_comments_or_coverage"
-        return
-    # Re-run the observation immediately before a label write; never edit wait records or prose.
-    fresh, fresh_config, fresh_wait = snapshot(plan, repo, number, checkout=checkout)
-    _, fresh_relationships = plan.read_issue_relationships(repo, number, include_blocking=False)
-    changed = changed_issue_fields(issue, fresh)
-    if not github_plan_status.same_wait_projection(issue, fresh_wait, wait):
-        changed.append("wait")
-    if fresh_relationships != relationships:
-        changed.append("relationships")
-    if fresh_config != config:
-        changed.append("planning_config")
-    if changed:
-        raise ValueError("Related planning state changed before reconciliation: " + ", ".join(changed))
-    _, gh_cmd, expected = plan.comment_route()
-    entry["writes_started"] = True
-    try:
-        entry["labels"] = plan.github_issue_core.edit_issue(
-            number, repo=repo, add_labels=changes["add"] or None, remove_labels=remove or None,
-            gh_cmd=gh_cmd, expected_actor=expected, operation=plan.CURRENT_OPERATION)
-    except plan.github_issue_core.IssueError as exc:
-        raise plan.plan_error_from_issue(exc) from exc
-    verified, _, verified_wait = snapshot(plan, repo, number, checkout=checkout)
-    _, verified_relationships = plan.read_issue_relationships(repo, number, include_blocking=False)
-    expected_names = set(changes["result"])
-    if (set(plan.normalize_labels(verified.get("labels"))) != expected_names
-            or verified.get("state") != issue["state"] or verified.get("body") != issue.get("body")
-            or not github_plan_status.same_wait_projection(issue, verified_wait, wait) or verified_relationships != relationships):
-        raise ValueError("Related planning readback did not match")
-    entry.update(github_plan_status.projection_outcome(derived, "reconciled"))
+    entry.update(status="review_wait_record" if derived["wait_review_required"] else "unchanged",
+                 verified=not derived["wait_review_required"])
+    if derived["wait_review_required"]:
+        entry["next_action"] = "Review the missing structured wait evidence"
 
 
 def reconciliation_error(entry: dict[str, Any], error: Exception) -> tuple[bool, bool]:
@@ -309,7 +240,7 @@ def run_reconciliation_tasks(plan: Any, tasks: list[dict[str, Any]], *, apply: b
             entry.update(status="not_attempted", reason=denied[repo.casefold()], informational=True,
                          next_action="Existing target authority must reconcile; this session will not repeat the denied write")
             continue
-        if apply and entry.get("automatic") and not plan.automatic_planning_writes_allowed():
+        if apply and entry.get("automatic") and entry["role"] == "source" and not plan.automatic_planning_writes_allowed():
             entry.update(status="review_posting_authority",
                          reason="Exact personal command approval does not authorize automatic planning writes")
             continue
@@ -464,10 +395,7 @@ def reconcile_issue(plan: Any, repo: str, issue_number: int, pull: dict[str, Any
     else:
         entry["current_status_preserved"] = True
     verified, _, verified_wait = snapshot(plan, repo, issue_number)
-    observed = set(plan.normalize_labels(verified.get("labels")))
-    stale = {config["labels"][key] for key in ("active", "blocked", "waiting", "stale")}
-    if (not plan.issue_matches_close_reason(verified, "completed") or observed & stale
-            or config["labels"]["done"] not in observed
+    if (not plan.issue_matches_close_reason(verified, "completed")
             or (closing and plan.issue_plan_sections(verified).get("Current Status", "").strip() != status.strip())
             or (not closing and verified.get("body") != issue.get("body"))
             or verified_wait != wait):

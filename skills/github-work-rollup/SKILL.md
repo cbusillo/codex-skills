@@ -260,7 +260,7 @@ known agents are `automation` with who they act for. Unlisted human-account
 logins ending in `bot` or `automation` are `possible_automation`; unrecognized
 GitHub bot accounts stay filtered. These labels grant no authority.
 Repository scans also list `unasked_director_waits`:
-open `plan:waiting` issues, and issues whose comments hold a structured wait,
+open issues, including those whose comments hold a structured wait,
 whose current wait names the Director, with no open `Director question:` or
 `Owner question:` comment. The shared wait resolver reads the full discussion.
 A trusted structured record wins over prose. Prose without one is listed with

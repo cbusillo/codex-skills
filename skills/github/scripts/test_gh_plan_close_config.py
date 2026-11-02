@@ -213,7 +213,6 @@ class NotPlannedScopeTests(unittest.TestCase):
             self.assertEqual(result["comment_url"], self.comments[0]["html_url"])
 
 
-
 class CloseConfigTests(unittest.TestCase):
     def setUp(self) -> None:
         # These routing fixtures have no dependents; native propagation is
@@ -233,7 +232,7 @@ class CloseConfigTests(unittest.TestCase):
         target = "fixture/target"
         configs = {repo: copy.deepcopy(PLAN.DEFAULT_CONFIG) for repo in ("fixture/local", target)}
         configs[target]["labels"] = {key: f"target:{key}" for key in configs[target]["labels"]}
-        names = configs[target]["labels"]
+        names = {key: f"custom-{key}" for key in ("plan", "active", "blocked", "waiting", "stale", "done")}
         issue: dict[str, Any] = {"repo": target, "number": 7, "state": "open", "title": "Target request",
                  "html_url": f"https://github.com/{target}/issues/7", "user": {"login": "fixture"},
                  "body": f"Original human request.\n## Current Status\nState: Blocked.\nNext action: {action}",
@@ -277,14 +276,10 @@ class CloseConfigTests(unittest.TestCase):
                                                         *[word for link in admission_links or [] for word in ("--admission-link", link)]]))
         return json.loads(output.getvalue()), issue, configs[target]
 
-    def test_qualified_show_projects_with_the_target_custom_label_configuration(self) -> None:
-        result, issue, target_config = self.show_fixture()
-        self.assertTrue(result["ok"])
+    def test_show_keeps_recorded_labels_and_derives_status(self) -> None:
+        result, issue, _ = self.show_fixture()
+        self.assertEqual(result["issue"]["labels"], PLAN.normalize_labels(issue["labels"]))
         self.assertEqual(result["issue"]["derived"]["status"], "active")
-        self.assertEqual(set(result["issue"]["labels"]),
-                         {target_config["labels"][key] for key in ("plan", "active")})
-        self.assertEqual(result["issue"]["body"], issue["body"])
-        self.assertEqual(result["issue"]["recorded_labels"], PLAN.normalize_labels(issue["labels"]))
 
     def test_show_preserves_the_original_read_when_graph_enrichment_is_unavailable(self) -> None:
         denied = PLAN.PlanError("Fixture dependency read denied", failure=PLAN.github_api_core.FailureDetail(
@@ -474,7 +469,7 @@ class CloseConfigTests(unittest.TestCase):
                     overrides=("--reason", "not_planned", "--comment", reason),
                     trigger_comments=Mock(side_effect=publish))
             self.assertEqual(events, ["publish", "readback", "close"])
-            self.assertEqual(code == 0, not fail_labels)
+            self.assertEqual(code, 0)
             state.assert_called_once()
             self.assertEqual(result["closed"]["owner_decision"]["scope_cut_reason"], reason)
 
@@ -541,9 +536,6 @@ class CloseConfigTests(unittest.TestCase):
                     self.assertEqual(meta.call_args.args, ("explicit-owner", "Explicit") if overrides
                                      else ("target-owner", "target-project"))
                     self.assertEqual(state.call_args.kwargs["repo"], "fixture/target")
-                    self.assertEqual(labels.call_args.kwargs["repo"], "fixture/target")
-                    self.assertEqual(labels.call_args.kwargs["add_labels"], ["target:done"])
-                    self.assertEqual(set(labels.call_args.kwargs["remove_labels"]), set(original_labels) - {"bug"})
                     self.assertEqual(field.call_args.kwargs["value"], "Done")
 
     def run_close(self, *, target_metadata: dict | None = None, discovered: bool = False,
@@ -633,7 +625,6 @@ class CloseConfigTests(unittest.TestCase):
                   "projects": {"default_project": "Target", "owner": "target-owner"}}
         _, missing, _, missing_labels, missing_project = self.run_close(target_metadata=config)
         self.assertEqual(missing["planning_config"]["status"], "unavailable")
-        self.assertEqual(missing_labels.call_args.kwargs["add_labels"], [PLAN.DEFAULT_CONFIG["labels"]["done"]])
         missing_project.assert_not_called()
         for explicit, discovered in ((True, False), (False, True)):
             with self.subTest(explicit=explicit):
@@ -643,7 +634,6 @@ class CloseConfigTests(unittest.TestCase):
                 self.assertTrue(result["ok"])
                 self.assertEqual(result["planning_config"]["status"], "discovered")
                 self.assertTrue(result["planning_config"]["path"].endswith("/.github/github.json"))
-                self.assertEqual(labels.call_args.kwargs["add_labels"], [config["labels"]["done"]])
                 self.assertEqual(project.call_args.args, ("target-owner", "Target"))
                 state.assert_called_once()
 
@@ -654,7 +644,6 @@ class CloseConfigTests(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertEqual(result["planning_config"]["status"],
                                  "verified_defaults" if explicit or discovered else "unavailable")
-                self.assertEqual(labels.call_args.kwargs["add_labels"], [PLAN.DEFAULT_CONFIG["labels"]["done"]])
 
     def test_unavailable_metadata_preserves_workspace_defaults_and_explicit_overrides(self) -> None:
         workspace = {"labels": {"done": "workspace:finished"},
@@ -665,7 +654,6 @@ class CloseConfigTests(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertEqual(result["planning_config"]["status"], "unavailable")
                 self.assertIsNotNone(result["planning_config"]["workspace_config"])
-                self.assertEqual(labels.call_args.kwargs["add_labels"], [workspace["labels"]["done"]])
                 self.assertEqual(project.call_args.args, ("explicit-owner", "Explicit") if overrides
                                  else ("workspace-owner", "Workspace"))
 
@@ -705,18 +693,6 @@ class CloseConfigTests(unittest.TestCase):
         self.assertEqual(refused.exception.failure.cause, "missing_references")
         self.assertNotIn("Director", refused.exception.failure.message)
 
-    def test_discovery_evidence_survives_partial_close_and_project_failure(self) -> None:
-        code, result, state, labels, _ = self.run_close(fail_labels=True)
-        self.assertNotEqual(code, 0)
-        state.assert_called_once()
-        self.assertEqual(result["planning_config"]["status"], "unavailable")
-        self.assertTrue(result["recovery"]["issue_closed"])
-        self.assertEqual(result["recovery"]["completion_metadata"], "labels_incomplete")
-        code, result, state, labels, _ = self.run_close(fail_project=True, overrides=("--project", "Explicit"))
-        self.assertEqual(code, 0)
-        state.assert_called_once()
-        self.assertTrue(result["project"]["warning"])
-        self.assertEqual(result["planning_config"]["status"], "unavailable")
 
     def test_checkout_option_keeps_relationship_preflight(self) -> None:
         code, result, state, labels, project = self.run_close(explicit=True, blocked=True)

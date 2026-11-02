@@ -288,7 +288,7 @@ class GoalBoardTests(unittest.TestCase):
         observed = board["tracks"][0]["children"][0]
         self.assertTrue(board["coverage"]["complete"], board)
         self.assertFalse(observed["unread"])
-        self.assertEqual(observed["status"], github_plan_status.DEFAULT_STATUS_LABELS["done"])
+        self.assertEqual(observed["status"], "done")
 
     def test_closed_child_preserves_readable_person_wait_and_native_blocker(self):
         wait = github_plan_wait.reviewed(evidence="Closure did not end the recorded hold",
@@ -303,7 +303,7 @@ class GoalBoardTests(unittest.TestCase):
         self.assertEqual(observed["waits"], wait["waits"])
         self.assertEqual(observed["structured_wait"], wait)
         self.assertEqual(observed["blocked_by"][0]["number"], blocker["number"])
-        self.assertEqual(observed["status"], github_plan_status.DEFAULT_STATUS_LABELS["done"])
+        self.assertEqual(observed["status"], "done")
 
     def test_native_blockers_and_structured_wait_override_stale_label_and_prose(self):
         clear = github_plan_wait.reviewed(evidence="No person wait remains")
@@ -325,7 +325,7 @@ class GoalBoardTests(unittest.TestCase):
                             details(t1=track(1, children=rows)))
         observed = board["tracks"][0]["children"]
         self.assertEqual([row["status"] for row in observed],
-                         [github_plan_status.DEFAULT_STATUS_LABELS[key] for key in ("active", "blocked", "waiting")])
+                         ["active", "blocked", "waiting"])
         self.assertEqual(observed[0]["blocked_by"], [])
         self.assertEqual([(row["repo"], row["number"]) for row in observed[1]["blocked_by"]], [("owner/other", 2)])
         self.assertEqual(observed[2]["waits"], held["waits"])
@@ -343,9 +343,8 @@ class GoalBoardTests(unittest.TestCase):
         original = row["body"]
         board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[row])))
         observed = board["tracks"][0]["children"][0]
-        self.assertEqual(observed["status"], github_plan_status.DEFAULT_STATUS_LABELS["blocked"])
+        self.assertEqual(observed["status"], "blocked")
         self.assertEqual(observed["waits"], held["waits"])
-        self.assertEqual(set(observed["labels"]), {"blocked", "waiting"})
         self.assertEqual(row["body"], original)
         text = goal_board.markdown({**board, "checked_at": "now"})
         self.assertIn(observed["blocked_by"][0]["html_url"], text)
@@ -372,42 +371,14 @@ class GoalBoardTests(unittest.TestCase):
                             details(t1=track(1, children=[truncated_comments])))
         self.assertEqual(board["tracks"][0]["children"][0]["status"], goal_board.UNKNOWN)
 
-    def test_truncated_labels_cannot_hide_a_scope_review_hold(self):
-        names = github_plan_status.DEFAULT_STATUS_LABELS
-        row = child(10, label=names["active"])
-        visible = [{"name": names["plan"]}, {"name": names["active"]},
-                   *({"name": f"area:{index}"} for index in range(goal_board.LABEL_LIMIT - 2))]
-        # A stale scope hold may be just beyond the bounded label connection,
-        # even when an old active label is visible in that connection.
-        row["labels"] = {"totalCount": len(visible) + 1, "nodes": visible}
-        board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
-                            details(t1=track(1, children=[row])))
-        self.assertFalse(board["coverage"]["complete"])
-        self.assertEqual(board["tracks"][0]["children"][0]["status"], goal_board.UNKNOWN)
-        complete_labels = [*visible, {"name": names["stale"]}]
-        complete = {**row, "labels": {"totalCount": len(complete_labels), "nodes": complete_labels}}
-        observed = goal_board.derived_status(complete, TRUSTED, [])
-        self.assertTrue(observed["scope_hold"])
-        self.assertEqual(observed["status"], names["stale"])
 
     def test_reopened_child_reads_active_despite_its_leftover_done_label(self):
-        names = github_plan_status.DEFAULT_STATUS_LABELS
-        for reason, status in (("REOPENED", names["active"]), (None, names["done"])):
+        names = {key: key for key in ("active", "done")}
+        for reason, status in (("REOPENED", names["active"]), (None, names["active"])):
             with self.subTest(reason=reason):
                 row = {**child(10, label=names["done"]), "stateReason": reason}
                 self.assertEqual(goal_board.derived_status(row, TRUSTED, [])["status"], status)
 
-    def test_known_scope_hold_is_readable_and_does_not_become_a_wait_review(self):
-        names = github_plan_status.DEFAULT_STATUS_LABELS
-        row = child(10, label=names["stale"])
-        board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
-                            details(t1=track(1, children=[row])))
-        observed = board["tracks"][0]["children"][0]
-        self.assertTrue(board["coverage"]["complete"])
-        self.assertEqual(observed["status"], names["stale"])
-        self.assertEqual(observed["scope_status"], "stale")
-        self.assertFalse(observed["wait_review_required"])
-        self.assertFalse(observed["unread"])
 
     def test_contributor_original_marker_cannot_release_the_managed_wait(self):
         held = github_plan_wait.reviewed(evidence="Managed plan keeps the current device wait",
@@ -421,7 +392,7 @@ class GoalBoardTests(unittest.TestCase):
                             details(t1=track(1, children=[row])))
         observed = board["tracks"][0]["children"][0]
         self.assertEqual(observed["waits"], held["waits"])
-        self.assertEqual(observed["status"], github_plan_status.DEFAULT_STATUS_LABELS["waiting"])
+        self.assertEqual(observed["status"], "waiting")
 
     def test_cli_wait_authority_includes_historical_bot_but_not_decision_override(self):
         held = github_plan_wait.reviewed(evidence="Historical automation records the current owner hold",
@@ -443,7 +414,7 @@ class GoalBoardTests(unittest.TestCase):
               redirect_stdout(output)):
             self.assertEqual(goal_board.main(), 0)
         observed = json.loads(output.getvalue())["tracks"][0]["children"][0]
-        self.assertEqual(observed["status"], github_plan_status.DEFAULT_STATUS_LABELS["waiting"])
+        self.assertEqual(observed["status"], "waiting")
         self.assertEqual(observed["waits"], held["waits"])
 
     def test_every_open_track_across_pages_is_read_with_children_decisions_and_prs(self):
@@ -565,7 +536,7 @@ class GoalBoardTests(unittest.TestCase):
                             details(t1=track(1, children=[many_labels, child(12, prs=[long_pr])])))
         self.assertFalse(board["coverage"]["complete"])
         rows = board["tracks"][0]["children"]
-        self.assertEqual(rows[0]["status"], goal_board.UNKNOWN)
+        self.assertEqual(rows[0]["status"], "active")
         self.assertEqual(rows[1]["open_prs"][0]["handoff"], goal_board.UNKNOWN)
         board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=long_track))
         self.assertFalse(board["coverage"]["complete"])
@@ -675,10 +646,10 @@ class GoalBoardTests(unittest.TestCase):
         board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[
             child(10, state="CLOSED"), child(11, state="CLOSED", label="plan:done"), child(12)])))
         text = goal_board.markdown({**board, "checked_at": "now"}, links_only=True)
-        self.assertIn("https://github.com/owner/app/issues/10: closed (label plan:active is stale)", text)
+        self.assertIn("https://github.com/owner/app/issues/10: closed", text)
         self.assertIn("https://github.com/owner/app/issues/11: closed", text)
         self.assertNotIn("issues/11: closed (", text)
-        self.assertIn("https://github.com/owner/app/issues/12: plan:active", text)
+        self.assertIn("https://github.com/owner/app/issues/12: active", text)
 
     def test_each_row_carries_its_live_next_action(self):
         newer = comment(status("Comment step."), at="2026-10-16T00:00:00Z", ident=8)

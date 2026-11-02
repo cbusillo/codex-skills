@@ -235,7 +235,7 @@ def audit(
         labels = {str(label.get("name", "")).lower() for label in issue.get("labels") or []}
         number = issue.get("number")
         state = issue.get("state", "open")
-        if state == "open" and "plan:waiting" in labels and issue.get("_blocking_work_elsewhere"):
+        if parked_issue(issue, str(issue.get("repo") or repo or "")) and issue.get("_blocking_work_elsewhere"):
             findings.append({
                 "kind": "waiting_blocks_other_repository", "number": number,
                 "title": issue.get("title"), "blocking": issue["_blocking_work_elsewhere"],
@@ -612,9 +612,8 @@ def enrich_waiting_inbound_blockers(
     incomplete = False
     examined = 0
     for issue in issues:
-        labels = {str(label.get("name", "")).lower() for label in issue.get("labels") or []}
         if ("pull_request" in issue or issue.get("state", "open") != "open"
-                or "plan:waiting" not in labels
+                or not parked_issue(issue, repo)
                 or (issue.get("issue_dependencies_summary") or {}).get("blocking") == 0):
             continue
         if examined >= max_issues:
@@ -647,10 +646,15 @@ def enrich_waiting_inbound_blockers(
     return incomplete
 
 
-def parked_issue(issue: dict[str, Any]) -> bool:
-    labels = {label.casefold() for label in github_direction_next.normalize_labels(issue.get("labels"))}
-    return ("pull_request" not in issue and issue.get("state", "open") == "open"
-            and bool(labels & {"plan:waiting", "plan:blocked"}))
+def parked_issue(issue: dict[str, Any], repo: str) -> bool:
+    if "pull_request" in issue or issue.get("state", "open") != "open":
+        return False
+    wait = issue.get("structured_wait")
+    if isinstance(wait, dict):
+        return wait["state"] != "clear"
+    status = github_direction_next.section_map(issue.get("body") or "").get("Current Status", "")
+    return github_direction_next.milestone_wait_evidence(
+        github_direction_next.compact_list_issue(repo, issue), status, [])["requested"]
 
 
 def closed_wait_prerequisite(target: dict[str, Any]) -> bool:
@@ -900,7 +904,6 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
 def stale_wait_report(
     issues: list[dict[str, Any]], repo: str, *, fetch: Callable[[list[str]], Any],
     inventory_complete: bool = True, max_issues: int = MAX_PAGES * 100,
-    active_label: str = "plan:active",
 ) -> dict[str, Any]:
     """Report verifiably obsolete waits, never release or select their work.
 
@@ -939,10 +942,8 @@ def stale_wait_report(
                 "checked": 0, "checked_issues": [], "items": [], "unavailable": [], "unresolved_references": [],
                 "inventory_complete": inventory_complete}
     for issue in issues:
-        labels = {label.casefold() for label in github_direction_next.normalize_labels(issue.get("labels"))}
-        active = (active_label.casefold() in labels and "pull_request" not in issue
-                  and issue.get("state", "open") == "open")
-        if not parked_issue(issue) and not active:
+        active = "pull_request" not in issue and issue.get("state", "open") == "open"
+        if not parked_issue(issue, repo) and not active:
             continue
         number = issue["number"]
         if checked >= max_issues:
@@ -953,19 +954,19 @@ def stale_wait_report(
         sections = github_direction_next.section_map(str(issue.get("body") or ""))
         status = next((text for title, text in sections.items() if title.casefold() == "current status"), "")
         normalized_status = re.sub(r"\*\*(Waiting for)(:?)\*\*(:?)", r"\1\2\3", status, flags=re.I)
-        if (active and not parked_issue(issue)) or agent_delivery_wait(normalized_status, repo, number):
+        if (active and not parked_issue(issue, repo)) or agent_delivery_wait(normalized_status, repo, number):
             try:
                 issue_unresolved: list[dict[str, Any]] = []
                 row = active_merged_status(issue, repo, status, read=read, unresolved=issue_unresolved)
                 unresolved.extend(issue_unresolved)
-                if row and parked_issue(issue) and row["recorded_hold_pending"]:
+                if row and parked_issue(issue, repo) and row["recorded_hold_pending"]:
                     row = None
                 if row:
                     rows.append(row)
             except AuditError:
                 errors.append({"number": number, "source": "active_linked_pr", "reason": "unavailable"})
                 continue
-            if (active and not parked_issue(issue)) or row:
+            if (active and not parked_issue(issue, repo)) or row:
                 continue
         evidence: list[dict[str, Any]] = []
         unread = False
@@ -1132,11 +1133,11 @@ def fetch_audit_issues(
     issues = list({issue.get("number"): issue for issue in issues}.values())
     if enrich_admission_actors(issues, milestone_lines, repo, fetch=fetch, since=audit_since or since):
         truncated.append("milestone_issue_events")
-    if enrich_waiting_inbound_blockers(issues, repo, fetch=fetch):
-        truncated.append("waiting_inbound_blockers")
     if enrich_milestone_waits(issues, repo, list(milestone_lines), fetch=fetch,
                               completed_titles=[item["title"] for item in milestones if item.get("state") == "closed"]):
         truncated.append("milestone_waits")
+    if enrich_waiting_inbound_blockers(issues, repo, fetch=fetch):
+        truncated.append("waiting_inbound_blockers")
     return issues, truncated
 
 

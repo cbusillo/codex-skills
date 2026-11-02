@@ -126,7 +126,7 @@ def digest(sources: dict[str, dict]) -> str:
         for row in (track, *track.get("children", [])):
             if row.get("unread") or row.get("read") is False:
                 lines.append(f"ERROR board {pointer(row)}: {row.get('unread') or 'unread record'}")
-            if row.get("state") != "closed" and row.get("status") == "plan:active" and (row.get("next_actor") or "").startswith("agent"):
+            if row.get("state") != "closed" and row.get("status") == "active" and (row.get("next_actor") or "").startswith("agent"):
                 lines.append(f"NEXT {pointer(row)}: {row.get('next_action', 'Review the next record')} (verify ownership)")
     questions = sources.get("questions", {})
     lines.append(f"QUEUE {questions.get('queue', 'UNKNOWN')}")

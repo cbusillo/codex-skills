@@ -156,19 +156,6 @@ def local_next_fixture(
         yield captured
 
 
-def test_unstatused_scope_is_review_work_without_becoming_a_person_wait() -> None:
-    module = load_module()
-    record = module.github_plan_wait.reviewed(evidence="No person or event hold; scope still needs review")
-    raw = issue(8, labels=[module.DEFAULT_CONFIG["labels"]["plan"]])
-    result = module.github_direction_next.evaluate_direction_node(
-        raw, config=module.DEFAULT_CONFIG, focus=None, relationships=relationships(), structured_wait=record)
-    observed = result["item"]
-    assert observed["plan_status"] == "hold"
-    assert observed["exclusion"] == "scope_review_required"
-    assert not observed.get("wait_review_required")
-    assert not result.get("waiting")
-
-
 def test_next_beta_rc_stable_chain_respects_native_blockers() -> None:
     module = load_module()
     config = module.DEFAULT_CONFIG
@@ -204,10 +191,6 @@ def test_next_excludes_non_actionable_states_with_reasons() -> None:
     config = module.DEFAULT_CONFIG
     cases = [
         (issue(1, state="closed"), None, relationships(), "completed"),
-        (issue(2, labels=["plan", "plan:done"]), None, relationships(), "completed"),
-        (issue(3, labels=["plan", "plan:stale"]), None, relationships(), "stale_needs_review"),
-        (issue(4, labels=["plan", "plan:waiting"]), None, relationships(), "waiting"),
-        (issue(6, labels=["plan", "plan:blocked"]), None, relationships(), "label_blocked_without_native_edge"),
         (issue(7), None, relationships(sub_issues=[related(70)]), "delegated_to_open_sub_issues"),
     ]
     for plan, focus, plan_relationships, expected in cases:
@@ -245,7 +228,8 @@ def test_stale_project_focus_does_not_hide_ready_work() -> None:
         assert "exclusion" not in node["item"], node
         assert not node["waiting"], node
         for waiting in (
-            ready | {"labels": [{"name": "plan:waiting"}]},
+            ready | {"structured_wait": module.github_plan_wait.reviewed(evidence="Device test requested",
+                waiting_for="Device tester", ends_when="Tester reports a result")},
             ready | {"body": "## Current Status\n\nState: Waiting.\nWaiting for: testing.\n"},
         ):
             node = module.github_direction_next.evaluate_direction_node(
@@ -501,7 +485,7 @@ def test_cmd_next_degrades_when_direction_is_unavailable_or_unparsed() -> None:
 
 def test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions() -> None:
     module = load_module()
-    plans = [issue(1), issue(2, labels=["plan", "plan:stale"])]
+    plans = [issue(1), issue(2, state="closed")]
     relationship_calls: list[int] = []
 
     def fake_relationships(_repo: str, number: int, _issue: dict[str, Any] | None = None) -> Any:
@@ -520,7 +504,7 @@ def test_cmd_next_surfaces_dependency_degradation_and_skips_cheap_exclusions() -
     assert relationship_calls == [1]
     assert [item["exclusion"] for item in captured["excluded"]] == [
         "unknown_dependencies",
-        "stale_needs_review",
+        "completed",
     ]
     assert captured["dependency_context"]["complete"] is False
     assert captured["dependency_context"]["degraded_count"] == 1
@@ -1971,18 +1955,6 @@ def test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output()
     assert report["complete"] and report["items"][0]["selection_exclusion"]
     assert not candidates and excluded[0]["post_merge_evidence"]["evidence_complete"]
     assert "post_merge_evidence_complete" not in excluded[0]
-    row["labels"] = [{"name": "plan"}]
-    with patch.multiple(module, api_json=Mock(side_effect=AssertionError("unlabeled record is unexamined")), load_config=lambda *_: config):
-        report = module.next_wait_context([row], scan_limit=1, inventory_complete=True)
-    candidates = [module.compact_list_issue(row["repo"], row)]
-    module.exclude_landed_candidates(candidates, [], report)
-    assert not report["checked_issues"]
-    assert "post_merge_evidence_complete" not in candidates[0]
-    active = {**row, "number": 11, "labels": ["plan", "custom-active"],
-              "body": "## Current Status\nNext action: Implement the remaining phone fix.\n"}
-    with patch.multiple(module, api_json=Mock(return_value=("automation-gh", {"archived": False})), load_config=lambda *_: config):
-        report = module.next_wait_context([row, active], scan_limit=1, inventory_complete=True)
-    assert report["complete"] and report["checked_issues"] == [{"repo": row["repo"], "number": 11}]
 
 
 def test_global_stale_wait_report_reuses_merged_pr_proof_and_refuses_capacity() -> None:
@@ -3097,7 +3069,6 @@ def test_local_next_uses_current_wait_and_native_graph_over_old_labels() -> None
 
 TESTS.extend([
     test_local_next_uses_current_wait_and_native_graph_over_old_labels,
-    test_unstatused_scope_is_review_work_without_becoming_a_person_wait,
 ])
 
 

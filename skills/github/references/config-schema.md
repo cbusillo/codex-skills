@@ -106,18 +106,10 @@ Repo-local values override workspace defaults.
     "updateWhen": ["validation gates change", "important workflows change"]
   },
   "planning": {
-    "labels": {
-      "plan": "plan",
-      "active": "plan:active",
-      "blocked": "plan:blocked",
-      "waiting": "plan:waiting",
-      "stale": "plan:stale",
-      "done": "plan:done"
-    },
     "label_defs": {
-      "plan": {
-        "color": "5319e7",
-        "description": "Durable planning issue"
+      "audit": {
+        "color": "d4c5f9",
+        "description": "Question or completed work for the weekly direction audit"
       }
     },
     "default_sections": [
@@ -149,14 +141,13 @@ Repo-local values override workspace defaults.
 
 ## Label Taxonomy
 
-Planning labels and the `audit` label are the only labels created by
-`gh-plan.py ensure-labels` by default. They describe durable issue-backed plans, not transient PR execution
-state. Before assigning a planning status label, read github-plan's
-[Status Labels](../../github-plan/SKILL.md#status-labels).
+`gh-plan.py ensure-labels` creates routing (`agent:*`), share (`own-project`)
+and type (`audit`) labels by default. Planning status is computed from native
+state, dependencies and reviewed waits; it is never a label. For derived planning status, read github-plan's
+[Derived Status](../../github-plan/SKILL.md#derived-status).
 
 | Label          | Purpose                                                                                                                                                        |
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `plan`         | Durable planning issue.                                                                                                                                        |
 | `audit`        | Question or completed work for the weekly direction audit.                                                                                                     |
 
 Workflow labels are repo-local opt-ins. Agents may recognize these names, but
@@ -169,19 +160,19 @@ helpers should not create them unless repo metadata documents them.
 | Merge-train enqueue label | Launchplane active merge-policy read | Service-configured readiness signal; still requires fresh checks and existing merge authorization. |
 
 Avoid generic labels such as `waiting`, `blocked`, `ready`, or `qa` unless the
-repo documents a narrow convention for them. Prefer the namespaced `plan:*`
-labels for durable planning state and repo-local `qaLabels` / `deployLabels` for
+repo documents a narrow convention for them. Use native state, dependencies and structured waits for durable planning status,
+and repo-local `qaLabels` / `deployLabels` for
 execution workflow state.
 
 Label audit checklist:
 
 - Run `gh label list -R OWNER/REPO --limit 500` and inspect labels that overlap
-  with `plan:waiting`, `plan:blocked`, QA, preview, or merge readiness.
+  with derived planning status, QA, preview, or merge readiness.
 - Run `gh issue list -R OWNER/REPO --state open --label LABEL` before retiring
   or renaming a suspicious label; treat zero-open-use labels as candidates for
   review, not automatic deletion.
 - Run `gh pr list -R OWNER/REPO --state open --json number,title,labels` to see
-  whether planning labels are being used on PRs or whether PR workflow labels
+  whether PR workflow labels
   are undocumented in `.github/github.json`.
 - If a repo uses `awaiting-qa`, list it in `qaLabels`. If it uses
   `preview-ready`, list it in `deployLabels` or repo workflow docs. If it uses
@@ -190,7 +181,7 @@ Label audit checklist:
   belong in repository workflow docs.
 - Run `uv run scripts/gh-plan.py --repo OWNER/REPO ensure-labels` from the
   `github` skill directory only for
-  durable planning labels. Do not use it to invent PR workflow labels.
+  routing, share and type labels. Do not use it to invent PR workflow labels.
 
 ## Workflow Metadata
 
