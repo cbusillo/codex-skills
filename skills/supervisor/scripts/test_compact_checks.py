@@ -133,7 +133,7 @@ class OperationTests(unittest.TestCase):
                     elif action == "send":
                         self.assertFalse(draft, "exit command appended to changed input")
                         if entry["harness"] == "agy":
-                            self.assertEqual(argv[argv.index("--text") + 1], "/exit")
+                            self.assertIsNotNone(iterm_tab.exit_observer(argv[argv.index("--text") + 1], entry["tty"]))
                         live = False
                         if outcome == "uncertain_exit":
                             payload, code = {"status": "send_failed"}, 1
