@@ -267,7 +267,7 @@ def docker_environment() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if not key.startswith("DOCKER_")}
 
 
-def overlay_lower_digest(root: Path) -> str:
+def scan_overlay_lower(root: Path, hashes: dict[str, str] | None = None) -> str:
     if not re.fullmatch(r"/[A-Za-z0-9_./-]+", str(root)) or root.resolve(strict=True) != root or not root.is_dir():
         raise ValueError("Overlay lower must be an unaliased local directory without mount option delimiters")
     digest = hashlib.sha256()
@@ -288,9 +288,16 @@ def overlay_lower_digest(root: Path) -> str:
         ]
         if path.is_file():
             with path.open("rb") as stream:
-                entry.append(hashlib.file_digest(stream, "sha256").hexdigest())
+                file_digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            if hashes is not None:
+                hashes[str(path.relative_to(root))] = file_digest
+            entry.append(file_digest)
         digest.update(json.dumps(entry).encode())
     return digest.hexdigest()
+
+
+def overlay_lower_digest(root: Path) -> str:
+    return scan_overlay_lower(root)
 
 
 def local_endpoint(home: Path, log: TextIO) -> str:
@@ -455,6 +462,11 @@ class Docker:
         if self.owned_volume(name).get("Options") != options:
             raise RuntimeError("Overlay volume options differ")
         return name
+
+    def observe_overlay_lower(self, root: Path) -> dict[str, str]:
+        hashes = {}
+        self.lower_digests[root] = scan_overlay_lower(root, hashes)
+        return hashes
 
     def collect_logs(self, container: str, log: TextIO) -> None:
         try:

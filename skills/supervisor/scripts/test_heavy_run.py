@@ -112,6 +112,48 @@ class OverlayTests(unittest.TestCase):
             self.docker.cleanup_overlay_volumes()
         self.assertEqual(len(self.docker.volumes), 2)
 
+    def test_admission_reads_bytes_once_and_entry_reuses_the_full_identity(self) -> None:
+        (self.lower / "empty").mkdir()
+        (self.lower / "empty").chmod(0o777)
+        expected = heavy_run.overlay_lower_digest(self.lower)
+        with patch.object(Path, "open", autospec=True, side_effect=Path.open) as opened:
+            hashes = self.docker.observe_overlay_lower(self.lower)
+            with patch.object(os, "uname", return_value=type("System", (), {"sysname": "Linux"})()):
+                self.docker.create_overlay(self.copy, "owned")
+        self.assertEqual(hashes, {"attachment": heavy_run.hashlib.sha256(b"original attachment").hexdigest()})
+        self.assertEqual(opened.call_count, 1)
+        self.assertEqual(self.docker.volumes["owned"]["Labels"][heavy_run.LOWER_DIGEST_LABEL], expected)
+        self.docker.cleanup_overlay_volumes()
+        self.assertFalse(self.docker.volumes)
+
+    def test_mutation_after_admission_retains_custody_even_after_reconstruction(self) -> None:
+        for mutation in ("bytes", "empty_directory", "mode", "inode"):
+            with self.subTest(mutation=mutation):
+                self.docker.observe_overlay_lower(self.lower)
+                attachment = self.lower / "attachment"
+                if mutation == "bytes":
+                    attachment.write_bytes(b"changed before entry")
+                elif mutation == "empty_directory":
+                    (self.lower / "new-directory").mkdir()
+                    (self.lower / "new-directory").chmod(0o777)
+                elif mutation == "mode":
+                    attachment.chmod(0o777)
+                else:
+                    replacement = self.root / "replacement"
+                    replacement.write_bytes(attachment.read_bytes())
+                    replacement.chmod(0o777)
+                    replacement.replace(attachment)
+                with patch.object(os, "uname", return_value=type("System", (), {"sysname": "Linux"})()):
+                    self.docker.create_overlay(self.copy, mutation)
+                recovered = VolumeDocker(self.docker.root)
+                recovered.volumes = self.docker.volumes
+                self.assertFalse(recovered.lower_digests)
+                for docker in (self.docker, recovered):
+                    with self.assertRaises(RuntimeError):
+                        docker.cleanup_overlay_volumes()
+                self.assertTrue(recovered.volumes)
+                self.docker.volumes = {}
+
     def test_aliases_special_files_and_mount_option_injection_are_refused(self) -> None:
         alias = self.root / "alias"
         alias.symlink_to(self.lower, target_is_directory=True)
