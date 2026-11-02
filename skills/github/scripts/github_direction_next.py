@@ -212,10 +212,10 @@ def next_plan_status(issue: dict[str, Any], config: dict[str, Any]) -> str | Non
         return "done"
     wait: dict[str, Any] | None = issue.get("structured_wait") or issue.get("claim_wait")
     if wait is not None:
-        wait = github_plan_wait.project_dates(wait)
-        if wait["state"] == "review":
+        projected = github_plan_wait.project_dates(wait)
+        if projected["state"] == "review":
             return "review"
-        if wait["waits"]:
+        if projected["waits"]:
             return "waiting"
     return None
 

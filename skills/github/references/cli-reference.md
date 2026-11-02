@@ -1827,7 +1827,7 @@ independently link that parent. A body link alone, a different parent, or an
 unreadable native relationship cannot supply this proof. Both readbacks recheck
 the native relationship, parent's ownership and release, retained artifacts and
 live sessions. The claim records the handoff's actual parent URL, writes only
-the child's claim/status/labels, and preserves the parent's waits and labels.
+the child's claim/status, and preserves the parent's waits and labels.
 The child's own waits and blockers and the retained PRs' holds still apply.
 Both same-record and child successors also read the source issue's current
 native children and native child history from its timeline. A detached or

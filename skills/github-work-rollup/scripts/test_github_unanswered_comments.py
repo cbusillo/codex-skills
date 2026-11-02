@@ -2070,7 +2070,7 @@ def test_unlabeled_wait_reads_a_new_comment_hold_before_search_indexes_it(monkey
         "repos/example/repo/issues/comments": [hold],
         "repos/example/repo/issues/141/comments": [hold],
     })
-    monkeypatch.setattr("github_unanswered_comments.run_json", fake)
+    monkeypatch.setitem(vars(github_unanswered_comments), "run_json", fake)
     payload = github_unanswered_comments.collect_payload(portfolio_settings(people_index=people_index(tmp_path)))
 
     assert payload["status"] == "attention"

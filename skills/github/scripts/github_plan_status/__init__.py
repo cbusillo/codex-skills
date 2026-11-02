@@ -70,9 +70,10 @@ def label_changes(recorded: list[str], names: Mapping[str, str], derived: dict[s
 
 
 def is_planning_issue(issue: dict[str, Any], names: Mapping[str, str] | None = None) -> bool:
-    body = issue.get("body") or ""
-    return "pull_request" not in issue and (any(marker in body for marker in PLAN_OWNERSHIP_MARKERS)
-        or re.search(rf"(?m)^{re.escape(PLAN_MANAGED_PROVENANCE_MARKER)}[ \t]*\r?$", body) is not None)
+    del names
+    issue_body = issue.get("body") or ""
+    return "pull_request" not in issue and (any(marker in issue_body for marker in PLAN_OWNERSHIP_MARKERS)
+        or re.search(rf"(?m)^{re.escape(PLAN_MANAGED_PROVENANCE_MARKER)}[ \t]*\r?$", issue_body) is not None)
 
 
 def same_wait_projection(issue: dict[str, Any], first: dict[str, Any], second: dict[str, Any]) -> bool:
