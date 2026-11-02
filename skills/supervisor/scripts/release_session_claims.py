@@ -166,7 +166,7 @@ def validate_closure_state(entry: dict[str, Any], supervisor_session: str, *, na
         raise ValueError("recorded verdict time differs from the verified transcript")
     paths = {Path(entry["transcript"]).resolve()}
     for root in entry.get("_transcript_roots", []):
-        paths.update(p.resolve() for p in Path(root).rglob(f"*{entry['session_id']}*.jsonl"))
+        paths.update(p.resolve() for p in Path(root).rglob(f"*{entry['session_id']}*{Path(entry['transcript']).suffix}"))
     for path in paths:
         other = session_record.session_status({**entry, "transcript": str(path)})
         records = session_record.read_jsonl(path)
@@ -204,6 +204,8 @@ def validate_closure(entry: dict[str, Any], supervisor_session: str, *, native: 
 def transcript_roots(harness, configured, explicit):
     if explicit:
         return [str(p.expanduser().resolve()) for p in explicit]
+    if harness == "agy":
+        return [str(session_record.claim_history.AGY_HOME.expanduser() / "conversations")]
     config = account_choice.load_config(configured)
     roots = []
     for account in config["accounts"]:

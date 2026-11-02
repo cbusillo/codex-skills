@@ -35,13 +35,13 @@ from typing import Any
 # Share the Supervisor reader rather than keeping a second account chooser.
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from skills.supervisor.scripts import account_choice
+from skills.supervisor.scripts import account_choice, claim_history
+from skills.supervisor.scripts.claim_history import agy_model, protobuf_fields
 import review_policy
 from review_worktree import is_review_scratch
 
 PROVIDERS = {"openai": "codex", "anthropic": "claude", "google": "agy"}
 FAULT_MARKER_NAME = "model-review-fault.md"
-AGY_SETTINGS = Path("~/.gemini/antigravity-cli/settings.json")
 AGY_READ_ONLY_COMMANDS = ("grep", "ls", "wc")
 # Commands an earlier reviewer policy granted and the current one refuses. `repair` removes only
 # their plain `command(NAME)` grants; a grant for any other program is the user's own and is left alone.
@@ -129,7 +129,7 @@ def agy_hint(repo: Path) -> str:
     snippet = json.dumps({"permissions": {"allow": agy_rules([repo])}}, indent=2)
     return (
         "agy runs headless here and stops at the first tool that needs permission, so it needs read-only "
-        f"allow rules. Merge this into {AGY_SETTINGS}, or run: {Path(__file__).name} configure --read-root "
+        f"allow rules. Merge this into {claim_history.AGY_SETTINGS}, or run: {Path(__file__).name} configure --read-root "
         f"{repo}\nThe rule applies to every agy session, not only reviews. Name a directory that holds your "
         f"repositories to cover them all, and never your home directory.\n{snippet}"
     )
@@ -137,7 +137,7 @@ def agy_hint(repo: Path) -> str:
 
 def agy_settings() -> dict[str, Any]:
     try:
-        loaded = json.loads(AGY_SETTINGS.expanduser().read_text())
+        loaded = json.loads(claim_history.AGY_SETTINGS.expanduser().read_text())
     except (OSError, json.JSONDecodeError):
         return {}
     return loaded if isinstance(loaded, dict) else {}
@@ -358,9 +358,9 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
     stale, other = agy_unsafe_rules(allow)
     if stale or other:
         hint = (
-            f"Run: {Path(__file__).name} repair. It backs up {AGY_SETTINGS} and removes only these stale command grants."
+            f"Run: {Path(__file__).name} repair. It backs up {claim_history.AGY_SETTINGS} and removes only these stale command grants."
             if not other
-            else f"Only you should change these rules in {AGY_SETTINGS}; remove them for the review, or use another provider."
+            else f"Only you should change these rules in {claim_history.AGY_SETTINGS}; remove them for the review, or use another provider."
         )
         return failed(
             "google",
@@ -419,84 +419,6 @@ def review_google(prompt: str, repo: Path, model: str | None, timeout: int, scra
 REVIEWERS = {"openai": review_openai, "anthropic": review_anthropic, "google": review_google}
 
 
-def agy_log(conversation_id: Any = None, log_file: Path | None = None) -> str:
-    valid_id = isinstance(conversation_id, str) and bool(re.fullmatch(r"[0-9a-fA-F-]{36}", conversation_id))
-    if log_file is not None:
-        try:
-            text = log_file.read_text(errors="replace")
-        except OSError:
-            text = ""
-        if text.strip():
-            conversations = re.findall(r"\bCreated conversation ([0-9a-fA-F-]{36})\b", text)
-            if conversation_id is not None:
-                return text if valid_id and conversations in ([], [conversation_id]) else ""
-            return text if len(conversations) <= 1 else ""
-    if not valid_id:
-        return ""
-    base = AGY_SETTINGS.expanduser().parent
-    candidates = [base / "cli.log", *sorted((base / "log").glob("cli-*.log"), reverse=True)]
-    for path in candidates:
-        try:
-            text = path.read_text(errors="replace")
-        except OSError:
-            continue
-        conversations = re.findall(r"\bCreated conversation ([0-9a-fA-F-]{36})\b", text)
-        if conversations == [conversation_id]:
-            return text
-        if conversation_id in conversations:
-            return ""
-    return ""
-
-
-def agy_model(requested: str | None, conversation_id: Any = None, log_file: Path | None = None) -> dict[str, Any]:
-    """Read the model agy resolved for this run from its CLI log when unambiguous."""
-    default = {"model": requested, "model_source": "requested, not reported by the CLI" if requested else "unknown"}
-    log = agy_log(conversation_id, log_file)
-    reroutes = list(dict.fromkeys(re.findall(r'model alias "([^"]+)" resolved to "([^"]+)"', log)))
-    labels = list(dict.fromkeys(re.findall(r'Propagating selected model override to backend: label="([^"]+)"', log)))
-    if len(reroutes) > 1 or len(labels) > 1:
-        return default
-    if reroutes and (not labels or labels[0] == reroutes[0][1]):
-        return {"model": reroutes[0][1], "model_source": "reported by the CLI (rerouted)"}
-    if reroutes and labels:
-        return default
-    if labels:
-        return {"model": labels[0], "model_source": "reported by the CLI"}
-    return default
-
-
-def protobuf_fields(data: bytes) -> dict[int, Any]:
-    """Read agy's protobuf wire envelope without decoding opaque tool output blobs."""
-    offset = 0
-
-    def varint() -> int:
-        nonlocal offset
-        value = 0
-        for shift in range(0, 70, 7):
-            byte = data[offset]
-            offset += 1
-            value |= (byte & 127) << shift
-            if byte < 128:
-                return value
-        raise ValueError("invalid protobuf varint")
-
-    fields = {}
-    while offset < len(data):
-        tag = varint()
-        number, wire = tag >> 3, tag & 7
-        if not number:
-            raise ValueError("invalid protobuf field")
-        if wire == 0:
-            fields[number] = varint()
-            continue
-        size = varint() if wire == 2 else {1: 8, 5: 4}.get(wire)
-        if size is None or offset + size > len(data):
-            raise ValueError("invalid protobuf length or wire type")
-        fields[number] = data[offset:offset + size]
-        offset += size
-    return fields
-
-
 def agy_denied_commands(conversation_id: Any) -> tuple[list[str], str | None]:
     """Read only the named run's failed/pending tool calls; never scan other conversations.
 
@@ -506,7 +428,7 @@ def agy_denied_commands(conversation_id: Any) -> tuple[list[str], str | None]:
     """
     if not isinstance(conversation_id, str) or not re.fullmatch(r"[0-9a-fA-F-]{36}", conversation_id):
         return [], "agy did not report a valid conversation_id; refused command unavailable"
-    path = AGY_SETTINGS.expanduser().parent / "conversations" / f"{conversation_id}.db"
+    path = claim_history.AGY_SETTINGS.expanduser().parent / "conversations" / f"{conversation_id}.db"
     try:
         with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as connection:
             rows = connection.execute(
@@ -830,7 +752,7 @@ def load_agy_settings_file() -> tuple[Path, dict[str, Any], list[Any]]:
 
     A symlinked settings file, as dotfiles setups make, is resolved so the write lands in the real file.
     """
-    settings = AGY_SETTINGS.expanduser().resolve()
+    settings = claim_history.AGY_SETTINGS.expanduser().resolve()
     try:
         current = json.loads(settings.read_text())
     except (OSError, json.JSONDecodeError):

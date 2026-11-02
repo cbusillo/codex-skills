@@ -490,17 +490,10 @@ def check(
 
 def require_own_transcript(entry: dict) -> None:
     identities = set()
-    with open(entry["transcript"], encoding="utf-8") as stream:
-        for line in stream:
-            try:
-                record = json.loads(line)
-            except ValueError:
-                continue
-            if not isinstance(record, dict):
-                continue
-            identities.add(record.get("sessionId"))
-            if record.get("type") == "session_meta" and isinstance(record.get("payload"), dict):
-                identities.add(record["payload"].get("id"))
+    for record in history.read_records(Path(entry["transcript"])):
+        identities.add(record.get("sessionId"))
+        if record.get("type") == "session_meta" and isinstance(record.get("payload"), dict):
+            identities.add(record["payload"].get("id"))
     if entry.get("native_child", entry["session_id"]) not in identities:
         raise ValueError(f"transcript {entry['transcript']} does not belong to session {entry['session_id']}")
 

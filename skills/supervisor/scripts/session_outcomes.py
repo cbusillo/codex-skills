@@ -8,9 +8,25 @@ import re
 from pathlib import Path
 from typing import Any
 
+if __package__:
+    from skills.supervisor.scripts import claim_history
+else:
+    import claim_history
+
 
 def record(entry: dict, records: list[dict], final_text: str) -> dict:
     models, efforts = set(), set()
+    if entry["harness"] == "agy" and entry.get("agy_log"):
+        try:
+            log = Path(entry["agy_log"]).read_text()
+        except (OSError, UnicodeError):
+            log = ""
+        if claim_history.agy_conversations(log) == [entry["session_id"]]:
+            resolved = claim_history.agy_model(None, entry["session_id"], Path(entry["agy_log"]))
+            if resolved["model_source"].startswith("reported by the CLI"):
+                models.add(resolved["model"])
+        efforts.update(match[1].casefold() for model in models
+                       if (match := re.search(r"\((Low|Medium|High|XHigh|Max)\)$", model)))
     for row in records:
         if entry["harness"] == "codex":
             if row.get("type") != "turn_context":
