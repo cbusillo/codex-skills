@@ -203,12 +203,14 @@ gaps. Keep inventory selection and scheduler configuration private. Record the
 actual scheduled run and archive comment on the owning issue before describing
 daily delivery as active. Source and fixture success alone do not establish it.
 
-Update the runtime catalog through its supported path. Remove `delivery_argv`
-from the private service configuration when adopting archive-only delivery;
+Update the runtime catalog through its supported path and remove `delivery_argv`
+from the private configuration in the same maintenance step, before the next
+scheduled run. Old and new runners require their matching configuration;
 the existing schedule and plist stay the same. On an archive failure, retain
 the report and helper outcome for the Supervisor. Reconcile an uncertain post
 before replay. The existing bot comment helper reuses an identical full-list
-comment on a reconciled retry. An archive failure remains a delivery failure.
+comment on a reconciled retry. An archive failure remains a delivery failure. GitHub must accept the full
+report as one comment; a rejection retains the report for reconciliation.
 
 To stop, boot out only the stranded-work launchd job and remove its LaunchAgents
 plist. Restore the previous reviewed configuration/catalog revision to roll

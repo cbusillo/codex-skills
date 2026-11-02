@@ -801,8 +801,9 @@ keep their existing delivery path.
 the same inventory and trusted authors as the Supervisor's question queue.
 Keep the configuration private and credential-free. Use the installed runtime
 catalog, never a task worktree. Preparing or rendering a job never starts it.
-Remove the old `delivery_argv` entry when adopting archive-only delivery; no
-plist or schedule change is needed. Optional `tracking_issue` selects another
+Update the runtime catalog and remove the old `delivery_argv` entry in the
+same maintenance step, before the next scheduled run. Old and new runners
+require their matching configuration. No plist or schedule change is needed. Optional `tracking_issue` selects another
 archive instead of the pinned default.
 
 ```json
@@ -848,7 +849,7 @@ install -m 600 /private/stranded-jobs/com.codex-skills.supervisor.stranded.plist
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.codex-skills.supervisor.stranded.plist
 ```
 
-Inspect the scheduled run's logs and archive. For an authorized immediate run:
+Inspect the scheduled run's logs and archive. For an immediate run:
 
 ```sh
 launchctl kickstart "gui/$(id -u)/com.codex-skills.supervisor.stranded"
@@ -860,7 +861,8 @@ stdout/stderr in a separate dated directory, plus daily delivery status JSON
 and runner logs. Retries preserve earlier attempts. The archive helper prints
 the confirmed GitHub comment URL and exits zero only after the comment helper
 confirms delivery. It reuses an identical bot-authored comment on a reconciled
-retry. Archive failure remains delivery failure; a failed, timed out or
+retry. GitHub must accept the full report as one comment; rejection retains
+the report for reconciliation. Archive failure remains delivery failure; a failed, timed out or
 interrupted post leaves `daily.stranded.reconcile`. Later invocations refuse
 to post until the retained outcome is checked at the archive.
 
@@ -1134,6 +1136,14 @@ in `supervisor_session` for closeout exclusion; update it at takeover.
 Catalog verification needs no `services.py bind` or managed Supervisor pane.
 The service entry's `failure_argv` uses the existing sender, accepting Markdown
 on stdin, to the channel Chris and the Supervisor already use.
+`discord_digest.py` reads `DIRECTOR_DIGEST_DISCORD_WEBHOOK_URL` from the
+process environment, otherwise `local.env` under `CODE_HOME`, then `CODEX_HOME`,
+then `~/.code`. Keep it in a private mode-600 file, never in arguments. A missing
+key fails with `digest_webhook_missing`. The sender accepts Markdown on stdin
+or `--file`, disables mentions, and prints each confirmed Discord message URL.
+It never retries; reconcile all parts after partial delivery before replaying.
+Do not use the real destination as a connectivity test. Offline checks:
+`uv run skills/supervisor/scripts/test_discord_digest.py`.
 No new account, recipient registry or delivery service is created.
 Include its existing `logs/catalog.jsonl` in the
 [routine digest](routine-check.md) with `--service-log` so failures remain

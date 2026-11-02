@@ -603,8 +603,8 @@ For the daily stranded-work digest, read [stranded work](references/stranded-wor
 and run the same audit with `--stranded-work-only`. It reports existing records
 past an age threshold with evidence, next actor and explicit coverage gaps,
 without stamping a turn or audit. Reuse the Supervisor's existing daily
-scheduler and Director Discord helper/destination; record scheduler and receiver
-evidence before calling delivery active. Labels remain helper-managed views,
+scheduler and full-list GitHub archive; record the scheduled run and archive
+comment receipt before calling delivery active. Labels remain helper-managed views,
 never hand-applied state. The daily service supplies `--apply-next`; the shared
 [stranded-work reference](references/stranded-work.md) owns its reversible actions
 and legacy-record review. Findings alone authorize no other write.

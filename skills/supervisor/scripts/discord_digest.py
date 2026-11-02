@@ -61,9 +61,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def request_json(opener: urllib.request.OpenerDirector, url: str, payload: dict | None = None) -> dict:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
-    content_type = "application/json"
     request = urllib.request.Request(url, data=data, headers={
-        "Content-Type": content_type, "User-Agent": "codex-skills-digest/1.0"})
+        "Content-Type": "application/json", "User-Agent": "codex-skills-digest/1.0"})
     try:
         with opener.open(request, timeout=20) as response:
             result = json.load(response)

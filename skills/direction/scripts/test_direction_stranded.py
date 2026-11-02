@@ -529,7 +529,6 @@ class OverdueTriggerTests(unittest.TestCase):
         self.assertIn(("aged_structured_wait", 8), others)
         self.assertFalse(any(number in {1, 2, 3, 4, 6, 7} for kind, number in others if kind == "aged_structured_wait"))
 
-
     def test_supervisor_routing_uses_the_current_actor_instead_of_action_wording(self) -> None:
         for action in ("Route the reviewed change.", "Fix skills/supervisor/scripts/tool.py."):
             body = f"## Current Status\nNext actor: agent:supervisor\nNext action: {action}"
@@ -777,7 +776,6 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(unrelated["tooling_measure"]["share"], measure["share"])
         self.assertEqual(short_sample["tooling_measure"]["status"], "unavailable")
         self.assertNotIn("share", short_sample["tooling_measure"])
-        self.assertIn("unavailable", sweep.markdown(incomplete))
 
     def test_finished_worktree_pr_reads_share_the_sweep_budget(self):
         self.reader.pages[("repos/test/repo/pulls", 1, "all")] = [

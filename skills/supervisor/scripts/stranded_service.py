@@ -40,7 +40,7 @@ def load_config(path):
     args = config["scan_args"]
     if not isinstance(args, list) or any(not isinstance(a, str) or not a or "\0" in a for a in args):
         raise ValueError("commands require argument arrays")
-    target = config.get("tracking_issue", stranded_archive.DEFAULT_TRACKING_ISSUE)
+    target = config.setdefault("tracking_issue", stranded_archive.DEFAULT_TRACKING_ISSUE)
     if not isinstance(target, str) or not re.fullmatch(r"[\w.-]+/[\w.-]+#[0-9]+", target):
         raise ValueError("an archive tracking issue is required")
     for key, limit in (("hour", 24), ("minute", 60)):
@@ -144,10 +144,10 @@ def run_once(config_path: Path, stopped: threading.Event, retry_unsent: bool = F
         marker.write_text(json.dumps(reservation) + "\n")
         delivery = [config["uv"], "run", "--no-project", "--no-cache",
                     str(catalog / "skills/supervisor/scripts/stranded_archive.py"), "--file", str(report),
-                    "--tracking-issue", config.get("tracking_issue", stranded_archive.DEFAULT_TRACKING_ISSUE)]
-        with report.open("rb") as source, (attempt / "delivery.stdout").open("wb") as out, \
+                    "--tracking-issue", config["tracking_issue"]]
+        with (attempt / "delivery.stdout").open("wb") as out, \
                 (attempt / "delivery.stderr").open("wb") as err:
-            code = command(delivery, catalog, source, out, err, stopped, 120)
+            code = command(delivery, catalog, subprocess.DEVNULL, out, err, stopped, 120)
         if code:
             raise ValueError("delivery failed; reconcile before replay")
         receipt.write_text(json.dumps({**reservation, "delivery_exit_code": code,
@@ -206,7 +206,7 @@ def guarded(action):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
     prepare = sub.add_parser("render", help="write a plist only; never install or start")
     prepare.add_argument("--output", type=Path, required=True)
@@ -230,8 +230,8 @@ def main(argv=None):
             with services.service_lock(state / "daily", "stranded"):
                 marker = services.reconciliation_marker(state / "daily", "stranded")
                 if args.delivered_url:
-                    target = config.get("tracking_issue", stranded_archive.DEFAULT_TRACKING_ISSUE).replace("#", "/issues/")
-                    if not re.fullmatch(rf"https://github\.com/{re.escape(target)}#issuecomment-[0-9]+", args.delivered_url):
+                    target = config.setdefault("tracking_issue", stranded_archive.DEFAULT_TRACKING_ISSUE).replace("#", "/issues/")
+                    if not re.fullmatch(rf"https://github\.com/{re.escape(target)}#issuecomment-[0-9]+", args.delivered_url, re.IGNORECASE):
                         raise ValueError("an exact archive comment URL is required")
                     reservation = json.loads(marker.read_text())
                     day = dt.date.fromisoformat(reservation["day"]).isoformat()

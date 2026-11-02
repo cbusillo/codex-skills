@@ -22,10 +22,9 @@ class ArchiveTests(unittest.TestCase):
     def test_archive_uses_existing_bot_transport_and_deduplication(self) -> None:
         comment = mock.Mock(return_value={"url": FULL})
         module = types.SimpleNamespace(comment=comment, CommentError=RuntimeError)
-        with mock.patch.dict(sys.modules, {"github_comment": module}):
-            self.assertEqual(digest.archive("full list", "example/catalog#4"), FULL)
-            self.assertEqual(digest.archive("full list", "example/catalog#4"), FULL)
-        comment.assert_called_with("issue", 4, "full list", repo="example/catalog", dedupe_body=True)
+        with mock.patch.dict(sys.modules, {"skills.github.scripts.github_comment": module}):
+            self.assertEqual(digest.archive("full list", "Example/Catalog#4"), FULL)
+        comment.assert_called_with("issue", 4, "full list", repo="Example/Catalog", dedupe_body=True)
 
     def test_archive_failure_returns_no_delivery_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -39,7 +38,7 @@ class ArchiveTests(unittest.TestCase):
                 output, error = io.StringIO(), io.StringIO()
                 comment.side_effect = outcome if isinstance(outcome, Exception) else None
                 comment.return_value = outcome
-                with self.subTest(outcome=outcome), mock.patch.dict(sys.modules, {"github_comment": module}), \
+                with self.subTest(outcome=outcome), mock.patch.dict(sys.modules, {"skills.github.scripts.github_comment": module}), \
                         contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
                     self.assertEqual(digest.main(["--file", str(report), "--tracking-issue", "example/catalog#4"]), 1)
                 self.assertFalse(output.getvalue())

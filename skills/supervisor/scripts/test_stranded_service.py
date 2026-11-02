@@ -48,7 +48,9 @@ class DailyTests(unittest.TestCase):
             "    print(Path('payload').read_text(), end='')\n"
             "    raise SystemExit(int(Path('scan-code').read_text()))\n"
             "if sys.argv[i].endswith('stranded_archive.py'):\n"
-            "    raise SystemExit(subprocess.run([sys.executable, 'sender.py']).returncode)\n"
+            "    Path('archive-argv').write_text('\\n'.join(sys.argv[i + 1:]))\n"
+            "    report = Path(sys.argv[sys.argv.index('--file') + 1]).read_bytes()\n"
+            "    raise SystemExit(subprocess.run([sys.executable, 'sender.py'], input=report).returncode)\n"
             "raise SystemExit(subprocess.run([sys.executable, *sys.argv[i:]]).returncode)\n"
         )
         self.uv.chmod(0o700)
@@ -88,6 +90,8 @@ class DailyTests(unittest.TestCase):
         receipt = json.loads(next(self.state.glob("*.delivered.json")).read_text())
         self.assertEqual(receipt["scan_exit_code"], int((self.root / "scan-code").read_text()))
         self.assertEqual(receipt["delivery_url"], next(self.state.rglob("delivery.stdout")).read_text().strip())
+        self.assertEqual((self.root / "archive-argv").read_text().splitlines(),
+                         ["--file", receipt["report"], "--tracking-issue", self.data["tracking_issue"]])
         self.assertEqual(self.entry().returncode, 0)
         self.assertEqual((self.root / "received").read_text(), self.payload)
 
@@ -159,6 +163,8 @@ class DailyTests(unittest.TestCase):
     def test_confirmed_send_reconciliation_resumes_schedule_without_replay(self):
         (self.root / "send-code").write_text("1")
         self.assertEqual(self.entry().returncode, 1)
+        self.data["tracking_issue"] = "Example/Catalog#4"
+        self.save()
         cleared = subprocess.run([sys.executable, str(daily.__file__), "clear", "--config", str(self.config),
                                   "--delivered-url", "https://github.com/example/catalog/issues/4#issuecomment-999"],
                                  capture_output=True, timeout=5, check=False)
@@ -229,7 +235,7 @@ class DailyTests(unittest.TestCase):
         self.assertEqual(self.weekly_receipts(), [self.payload])
 
     def test_invalid_config_refuses_before_rendering(self):
-        for key, value in (("hour", 24), ("minute", True), ("delivery_argv", [str(self.sender)]),
+        for key, value in (("hour", 24), ("minute", True),
                            ("uv", "relative"), ("scan_args", ["--stranded-format=json"]),
                            ("weekly", {"owner": "OWNER", "weekday": 0}), ("weekly", {"owner": "", "weekday": 1}),
                            ("weekly", {"owner": "OWNER", "weekday": 1, "extra": 1}), ("unknown", 1)):

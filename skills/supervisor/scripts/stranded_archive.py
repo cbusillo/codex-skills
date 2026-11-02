@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import re
 import sys
 from pathlib import Path
@@ -20,7 +21,8 @@ class DigestError(ValueError):
 
 def archive(report: str, tracking_issue: str) -> str:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
-    import github_comment
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    github_comment = importlib.import_module("skills.github.scripts.github_comment")
 
     target = re.fullmatch(r"([\w.-]+/[\w.-]+)#([0-9]+)", tracking_issue)
     if not target:
@@ -31,7 +33,7 @@ def archive(report: str, tracking_issue: str) -> str:
         raise DigestError("digest_archive_failed") from None
     url = result.get("url")
     if not isinstance(url, str) or not re.fullmatch(
-            rf"https://github\.com/{re.escape(target[1])}/issues/{target[2]}#issuecomment-[0-9]+", url):
+            rf"https://github\.com/{re.escape(target[1])}/issues/{target[2]}#issuecomment-[0-9]+", url, re.IGNORECASE):
         raise DigestError("digest_archive_response_invalid")
     return url
 
