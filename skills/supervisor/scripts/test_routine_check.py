@@ -51,7 +51,7 @@ class RoutineCheckTests(unittest.TestCase):
     def test_owner_only_digest_finds_foreign_questions_and_waits_without_watch_history(self) -> None:
         args = argparse.Namespace(owner="cellmechanic", queue="cellmechanic/direction#11", source=[], repo=[], thread=[],
                                   radar_config=Path("/absent/radar.yaml"))
-        questions = [{"url": f"https://github.com/cbusillo/odoo-tenant-cm/issues/{number}#issuecomment-{ident}",
+        questions: list[dict[str, Any]] = [{"url": f"https://github.com/cbusillo/odoo-tenant-cm/issues/{number}#issuecomment-{ident}",
                       "repository": "cbusillo/odoo-tenant-cm", "number": number,
                       "updated_at": "2026-08-01T00:00:00Z", "untrusted": True}
                      for number, ident in ((158, 6275700918), (239, 6391889058))]
