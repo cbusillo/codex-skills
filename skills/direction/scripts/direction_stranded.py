@@ -590,10 +590,10 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
                 raise audit.AuditError(cause or type(exc).__name__) from exc
         return cache[cache_key]
 
-    def listing(path, *, stop=None):
+    def listing(path, *, stop=None, page_limit=max_pages):
         try:
-            rows, cut = audit.fetch_paginated(path, fetch=fetch, max_pages=max_pages, stop=stop)
-            if cut:
+            rows, page_cut = audit.fetch_paginated(path, fetch=fetch, max_pages=page_limit, stop=stop)
+            if page_cut:
                 gaps.append({"source": path, "reason": "page_limit"})
             if any(not isinstance(row, dict) for row in rows):
                 gaps.append({"source": path, "reason": "invalid_listing_item"})
@@ -777,7 +777,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
     if question_queue:
         question_queue = question_queue.casefold()
         queue_repo, queue_number = question_queue.split("#")
-        queue = listing(f"repos/{queue_repo}/issues/{queue_number}/comments")
+        queue = listing(f"repos/{queue_repo}/issues/{queue_number}/comments", page_limit=max_requests)
         related_comments.extend(queue)
         try:
             from skills.supervisor.scripts import question_delivery

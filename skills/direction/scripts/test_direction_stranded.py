@@ -1024,6 +1024,32 @@ class InventoryTests(unittest.TestCase):
             result = self.collect(question_queue="test/repo#123")
         self.assertTrue(result["complete"], result)
 
+    def test_queue_past_page_cap_keeps_newest_unsettled_question_within_request_budget(self) -> None:
+        from skills.supervisor.scripts import question_delivery
+
+        path = "repos/test/repo/issues/123/comments"
+        url = "https://github.com/test/other/issues/1#issuecomment-2101"
+        comments = [{"id": number, "html_url": f"https://github.com/test/repo/issues/123#issuecomment-{number}",
+                     "created_at": "2020-01-01T00:00:00Z", "user": {"login": "test"}, "body": "Queue history"}
+                    for number in range(1, 2102)]
+        self.reader.pages[("repos/test/other/issues/1/comments", 1, None)] = [
+            {**comments[-1], "html_url": url, "body": "Owner question: Q611. Continue?", "created_at": "2026-10-14T01:00:00Z"}]
+        comments[-1].update(body=question_delivery.marker_body("registered", url), created_at="2026-10-14T02:00:00Z")
+        for offset in range(0, len(comments), 100):
+            self.reader.pages[(path, offset // 100 + 1, None)] = comments[offset:offset + 100]
+        for max_pages, max_requests in ((20, 100), (1, 100), (20, 5)):
+            with self.subTest(max_pages=max_pages, max_requests=max_requests):
+                self.reader.paths.clear()
+                result = self.collect(question_queue="test/repo#123", max_pages=max_pages, max_requests=max_requests)
+                if max_requests == 5:
+                    self.assertFalse(result["complete"])
+                    self.assertTrue(any(gap["source"] == path and gap["reason"] == "request_budget_exhausted"
+                                        for gap in result["coverage_gaps"]))
+                    self.assertLessEqual(len(self.reader.paths), max_requests)
+                else:
+                    self.assertTrue(result["complete"], result)
+                    self.assertIn(url, {row["url"] for row in result["findings"] if row["kind"] == "registered_question"})
+
     def test_queue_settlement_is_applied_to_a_recovered_registered_question(self) -> None:
         from skills.supervisor.scripts import question_delivery
 
