@@ -28,11 +28,11 @@ from tree_sitter import Language, Node, Parser
 if TYPE_CHECKING:
     from skills.github.scripts import github_comment as comment_cli
     from skills.github.scripts.github_api import ArgumentParsingError
-    from skills.supervisor.scripts.session_record import native_results, output_objects as values
+    from skills.supervisor.scripts.session_record import native_results, output_objects as values, read_jsonl
 else:
     import github_comment as comment_cli
     from github_api import ArgumentParsingError
-    from session_record import native_results, output_objects as values
+    from session_record import native_results, output_objects as values, read_jsonl
 
 CLOSED_STDIN_SINCE = (0, 87, 0)
 UNFINISHED_CLAIM = "unfinished_claim"
@@ -51,7 +51,6 @@ def closed_stdin_runtime(records: list[dict]) -> bool:
 
 def read_records(path: Path) -> list[dict]:
     if path.suffix == ".db":
-        from session_record import read_jsonl
         return read_jsonl(path)
     records = []
     with path.open(encoding="utf-8") as stream:

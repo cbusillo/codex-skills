@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -60,7 +60,9 @@ class GoogleWorkerTests(unittest.TestCase):
                 commands, choices = iterm_tab.prepare_launch_batch(args)
             select.assert_called_once()
             receipts.assert_called_once_with(choice)
-            self.assertIn(choices[0]["file_native"]["log"], commands[0])
+            selected = choices[0]
+            assert selected is not None
+            self.assertIn(selected["file_native"]["log"], commands[0])
             command.write_text(f"cd {root} && exec agy --continue")
             with patch.object(account_choice, "select", side_effect=AssertionError("invalid fresh mode reached account selection")):
                 with self.assertRaises(ValueError):
@@ -75,7 +77,9 @@ class GoogleWorkerTests(unittest.TestCase):
                 receipts.assert_not_called()
 
     def test_cli_preserves_a_submitted_launch_failure_receipt(self) -> None:
-        script = Path(iterm_tab.__file__).resolve()
+        source_file = iterm_tab.__file__
+        assert source_file is not None
+        script = Path(source_file).resolve()
         probe = """
 import asyncio, runpy, sys, types
 sys.path.insert(0, sys.argv[1])
