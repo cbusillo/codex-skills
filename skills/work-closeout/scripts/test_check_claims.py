@@ -1858,14 +1858,15 @@ class ClaimCloseoutTests(unittest.TestCase):
 
     def test_quoted_historical_receipts_do_not_force_computed_reads_through_reconstruction(self) -> None:
         for session, rendering in ((session, rendering) for session in (SESSION, "historical-session")
-                                   for rendering in ("document", "body", "file", "poll")):
+                                   for rendering in ("document", "body", "file", "poll", "pipeline")):
             with self.subTest(session=session, rendering=rendering):
                 self.setUp()
                 receipt = {"claim": {**SOURCE, "session": session}, "issue": {"repo": "historical/repo", "number": 8}}
                 quoted = {"body": json.dumps(receipt), "comments": [{"body": json.dumps(receipt)}]}
                 command = {"document": "gh issue view 8 --json body,comments",
                            "body": "gh issue view 8 --json body --jq .body",
-                           "file": "cat historical-receipt.json", "poll": "cat historical-receipt.json"}[rendering]
+                           "file": "cat historical-receipt.json", "poll": "cat historical-receipt.json",
+                           "pipeline": "gh issue view 8 --json comments | jq -r '.comments[].body'"}[rendering]
                 output = json.dumps(quoted) if rendering == "document" else json.dumps(receipt)
                 rows: list[dict[str, Any]] = [
                     {"payload": {"type": "function_call", "name": "exec_command", "call_id": "history",
@@ -1911,7 +1912,9 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertFalse(uncertain["claims_clear"], uncertain)
                 self.assertFalse(uncertain["blocked"], uncertain)
                 self.assertTrue(uncertain["unresolved_invocations"], uncertain)
-        for source in ('text(await tools.exec_command({cmd:"uv run legacy-worker.py"}));',
+        for source in (*(f'text(await tools.exec_command({{cmd:{json.dumps(command)}}}));' for command in (
+                           "uv run legacy-worker.py", "git commit -m message", "gh issue edit 8 --editor",
+                           "rg --pre ./legacy-worker.py receipt.json")),
                        'text(await tools.write_stdin({session_id:41,chars:""}));'
                        'text(await tools.exec_command({cmd:"uv run legacy-worker.py"}));'):
             with self.subTest(genuine_receipt=source):

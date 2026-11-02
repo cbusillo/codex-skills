@@ -521,10 +521,14 @@ def shell_output_is_data(text: str) -> bool:
         if position is None or position.index >= len(argv):
             return False
         name, arguments = Path(argv[position.index]).name, argv[position.index + 1:]
-        if name in NON_EXECUTING_COMMANDS and not data_command_executes(argv):
+        if name in OUTPUT_DATA_COMMANDS and not data_command_executes(argv):
             continue
-        if name in {"gh", "gh-with-env-token"} and gh_is_data(arguments) or name == "git" and git_is_data(arguments):
-            continue
+        if name in {"gh", "gh-with-env-token"} and gh_is_data(arguments):
+            words = operands(arguments, GH_VALUE_OPTIONS)
+            if any(option in {"--web", "-w", "--editor"} for option in option_words(arguments, GH_VALUE_OPTIONS)):
+                return False
+            if words[:1] == ["api"] or len(words) >= 2 and words[0] in {"issue", "pr"} and words[1] in {"view", "list"}:
+                continue
         return False
     return bool(commands)
 
@@ -1573,6 +1577,9 @@ DATA_COMMANDS = frozenset(
         "gh-comment",
     }
 )
+OUTPUT_DATA_COMMANDS = DATA_COMMANDS - {
+    "git", "gh", "gh-issue", "gh-comment", "pytest", "cd", "pushd", "popd", "set", "kill", "less"
+}
 SAFE_GIT_CONFIG = frozenset(
     {
         "user.name",
