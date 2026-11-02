@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager, contextmanager, AsyncExitStack
 import hashlib
+import importlib
 import json
 import os
 from pathlib import Path
@@ -29,8 +30,12 @@ class NativeRequestRejected(ValueError):
 @asynccontextmanager
 async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024, deadline_at=None):
     import aiohttp
-    endpoint = closure.daemon_endpoint(home).resolve(strict=True)
-    info = endpoint.stat()
+    try:
+        endpoint = closure.daemon_endpoint(home).resolve(strict=True)
+        info = endpoint.stat()
+    except FileNotFoundError as error:
+        remedy = importlib.import_module("codex_session_proxy").stopped_daemon_remedy(home)
+        raise ValueError(f"source daemon endpoint unavailable for CODEX_HOME={home}; {remedy}") from error
     if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
         raise ValueError("native socket ownership is unavailable")
     sequence = 0

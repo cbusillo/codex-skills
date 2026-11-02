@@ -2134,6 +2134,9 @@ files/generation/action and repeated physical exit checks. Preserve the barrier.
 Loaded/queued/unavailable/changed copies or an action at/after boot refuse; stop
 no client. Only a verified stopped daemon may use its configured exact-home
 `codex app-server daemon start`; never restart running/draining daemons.
+A reboot can remove the daemon socket's temporary target; the verifier then
+names the existing start route, and the durable queue must still be inspected
+and cleared through `queue-cancel`.
 The standalone proof has one ten-minute read deadline across scans/native passes;
 claim checks pass their remaining deadline through lineage/rechecks, and short
 RPC bounds and the three-second idle file budget remain unchanged. An original
