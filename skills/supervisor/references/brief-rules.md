@@ -209,7 +209,7 @@ How a lead works:
 2. Take the Track's next actionable item in order: not waiting on a person or event, not natively blocked, not owned by another running session. Currently owned by other sessions, leave alone: __OWNED__. Recheck ownership before each claim. Hold exactly one claim at a time.
 3. Use subagents (the Agent tool) for parallel work under your claim: reading and diagnosis, running tests, your own review of record, drafting comments. Only one subagent or you edits files at a time, in your one task worktree.
 4. After each item: post results on the child issue, keep its Current Status current, release the claim, then take the next item. Track comments are for decisions, not per-slice progress.
-5. People waits: when an item needs a person (the Director, a Client, an outside party), record the wait on the item, follow the shared brief rules for any Director question, and move to the next item. Never wait idle on a person.
+5. People waits: when an item needs a person (the Director, a Client, an outside party), record the wait on the item, follow the shared brief rules for any Director question, and move to the next item. Never wait idle on a person. For every Client question you or your workers write, follow [Asking a Client](../../references/talking-with-the-director.md#asking-a-client).
 6. Stop working only when no item on the Track is actionable by an agent or you need the Director; then keep each child's Current Status and structured waits current, close out with work-closeout, and end with a standalone final line: Safe to exit: yes
 
 For work subject to the shared rules' PR cap, instead of opening another PR:
