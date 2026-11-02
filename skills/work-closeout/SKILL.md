@@ -661,6 +661,16 @@ session after the safe-to-exit answer.
 Use a compact closeout report in chat. For a GitHub comment, follow Agent
 Comments above and link the owning records instead of copying this report:
 
+For a Supervisor-launched session, include the following line in the existing
+issue handoff and final answer, before `Safe to exit: yes`:
+`Session outcome: {"landed_without_rescue": true, "review_findings_acted_on": 0}`.
+Set the boolean to true only when this session's change landed without another
+session rescuing it or a harness relaunch; a retained PR, no change, rescue or
+relaunch is false. Count review findings that caused an implementation or
+instruction change, across review rounds; count a repeated finding once.
+The closeout bundle reads model and effort from the native transcript. Missing
+evidence stays unknown. No Director question is needed for these observations.
+
 - Done: what changed or was handled.
 - Remaining: concrete blockers or follow-up work, including how the next action
   fits the active plan.

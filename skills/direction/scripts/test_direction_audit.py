@@ -61,6 +61,7 @@ def load() -> Any:
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.session_outcomes = types.SimpleNamespace(weekly=lambda *_args, **_kwargs: {"status": "complete", "rows": []})
     module.planning_config = lambda _: {"labels": {"waiting": "plan:waiting", "blocked": "plan:blocked",
                                                    "stale": "plan:stale", "done": "plan:done",
                                                    "own_project": "own-project"}}

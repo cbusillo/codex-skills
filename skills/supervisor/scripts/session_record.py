@@ -13,6 +13,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import claim_history
+import session_outcomes
 
 MEMORY_CITATION_TAIL = re.compile(
     r"^<oai-mem-citation>(?:(?!</?oai-mem-citation>).)*"
@@ -598,6 +599,7 @@ def session_status(entry: dict) -> dict:
     checked_stat()
     records = claim_history.root_records(path, entry["harness"], entry["session_id"], records)
     result = summarize(records, entry["harness"])
+    result["session_outcome"] = session_outcomes.record(entry, records, result["last_text"])
     after = checked_stat()
     result.update(
         session_id=entry["session_id"],

@@ -353,7 +353,8 @@ def _record_closure(path, entry, supervisor_session, *, persist=True, native=Non
         entry = {**entry, "tty_exited_at": cutoff.isoformat()}
     status = session_record.session_status(entry)
     closed = {**entry, "ended_at": datetime.now(timezone.utc).isoformat(),
-              "verdict_at": status["timestamp"], "process_exit_verified": True}
+              "verdict_at": status["timestamp"], "process_exit_verified": True,
+              "session_outcome": status["session_outcome"]}
     if entry.get("harness") == "codex" and entry.get("codex_home"):
         try:
             closed["closure_evidence"] = closure.evidence(closed)

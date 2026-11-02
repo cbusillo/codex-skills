@@ -34,6 +34,8 @@ if str(REPO_ROOT) not in sys.path:
 from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_plan_wait, github_read, github_work_graph
 from skills.github.scripts import github_repository_scope as repository_scope
 from skills.direction.scripts import direction_mark, direction_reporting
+from skills.github.scripts import github_plan_closure
+from skills.supervisor.scripts import session_outcomes
 
 REQUIRED_HEADINGS = ("Purpose", "Stop Boundaries", "Journey", "Retired", "Milestones")
 ESCALATION_LABEL = "direction"
@@ -2053,6 +2055,9 @@ def fetch_capacity(
         direction_text=text or "",
         reporting_rules=reporting_rules, reporting_error=reporting_error,
         reporting_incomplete=bool(reporting_errors),
+    )
+    summary["session_outcomes"] = session_outcomes.weekly(
+        github_plan_closure.closed_log(), owner=owner, since=since, until=until,
     )
     return summary, truncated + reporting_errors
 
