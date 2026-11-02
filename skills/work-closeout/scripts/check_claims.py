@@ -172,7 +172,7 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data
 
 def receipt_values(rows: list[dict]) -> list[dict]:
     blocks = [row for row in rows if "claim" in row]
-    blocks.extend(block for found in history.tool_outputs(rows).values() for block in found)
+    blocks.extend(block for found in history.claim_receipt_outputs(rows).values() for block in found)
     return list(history.claim_results(blocks))
 
 
@@ -190,7 +190,7 @@ def recorded_receipts(entry: dict, rows: list[dict]) -> tuple[list[dict], bool]:
         return values, True
     directory = Path(entry["native_output_directory"])
     complete = not history.orphan_artifacts(rows, entry["session_id"], directory)
-    for identifier in history.tool_outputs(rows, followups=False):
+    for identifier in history.claim_receipt_outputs(rows, followups=False):
         try:
             saved = history.persisted_output(rows, directory, entry["session_id"], identifier)
             values.extend(receipt_values(saved))

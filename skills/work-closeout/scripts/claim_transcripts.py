@@ -479,6 +479,23 @@ def claim_results(value: object) -> Iterator[dict]:
             yield from claim_results(nested)
 
 
+def claim_receipt_outputs(records: list[dict], *, followups: bool = True) -> dict[str, list[object]]:
+    outputs = tool_outputs(records, followups=followups)
+    for identifier, text, javascript, name, _ in tool_details(records):
+        if name == "write_stdin":
+            continue
+        try:
+            sources = shell_texts(text, javascript, exec_command=name == "exec_command")
+            if sources.opaque or not sources.commands or any(source.interactive for source in sources.commands):
+                continue
+            discoveries = [shell_claims(source.text) for source in sources.commands]
+        except ValueError:
+            continue
+        if all(not (found.arguments or found.opaque or found.decode_failed) for found in discoveries):
+            outputs.pop(identifier, None)
+    return outputs
+
+
 def command_text(command: object) -> str:
     if isinstance(command, str):
         return command
@@ -2937,6 +2954,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
     targets = set()
     errors = []
     outputs = tool_outputs(records)
+    receipts = claim_receipt_outputs(records)
     own_outputs = tool_outputs(records, followups=False)
     inputs = {identifier: (text, javascript, name, index) for identifier, text, javascript, name, index in tool_details(records)}
     responses = response_positions(records)
@@ -3033,7 +3051,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
                 for item in [invocation_target(arguments, session)]
             )
         )
-        blocks = outputs.get(identifier, [])
+        blocks = receipts.get(identifier, [])
         found, unknown = resolve_invocations(invocations, blocks, session, receipt_pure=receipt_pure, ended=ended_invocations)
         if (
             unknown

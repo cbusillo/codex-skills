@@ -40,7 +40,9 @@ conditional even when one helper receipt or rejection is present. Their known
 receipt targets are still checked, including receipts in advertised saved output.
 Receipt JSON in tool inputs, conversation prose, or quoted issue and comment
 fields is data. Receipt discovery unwraps native output and text blocks, not
-arbitrary fields inside returned documents. Merged output from
+arbitrary fields inside returned documents. Output from decoded commands that
+cannot invoke a claim is data too, including raw issue bodies and saved receipts.
+Opaque commands and interactive input retain their receipt evidence. Merged output from
 other executable commands cannot resolve a bare claim's repository. Shell
 syntax that the maintained parser cannot decode also stays conditional; use
 the explicit literal target form above and restore its complete native output.
