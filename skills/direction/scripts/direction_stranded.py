@@ -455,16 +455,6 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                             "GitHub enqueue/blocked labels are existing helper views, not train custody authority; service-only holds are outside coverage."]}
 
 
-def has_removed_statement(body: str) -> bool:
-    for _, line in github_plan_wait.live_lines(body.replace("**", ""), prefix=""):
-        match = re.search(r"^[ \t]*(?:[-*][ \t]+)?Removed:[ \t]*(\S.*?)\s*$", line, re.I)
-        if match is None:
-            continue
-        if match[1].casefold().rstrip(".") not in {"none", "nothing", "n/a"}:
-            return True
-    return False
-
-
 def tooling_measure(
     records: list[dict], *, owner: str | None, since: dt.datetime, now: dt.datetime,
     fetch: Any, incomplete: bool, trusted: set[str],
@@ -531,7 +521,7 @@ def tooling_measure(
             statements = [(url, pull.get("body") or ""),
                           *((comment["html_url"], comment.get("body") or "") for comment in record["comments"]
                             if login(comment) in statement_authors)]
-            removed = [source for source, body in statements if has_removed_statement(body)]
+            removed = [source for source, body in statements if audit.change_statements(body, "removed")]
             result["rows"].append({"url": url, "merged_at": merged.isoformat(),
                                    "net_lines": pull["additions"] - pull["deletions"], "removed": removed})
             if len(result["rows"]) == 20:

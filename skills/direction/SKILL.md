@@ -644,9 +644,11 @@ merges once and reversions, using committer dates and the same half-open window.
 Test directories (including fixtures), test filenames and spec filenames count
 as tests; all other paths count as other. Binary changes contribute no text
 lines. Renames between the two groups transfer their existing text lines.
-`tooling_pulls` retains PR links and their `Removed:` and `Added:` statements.
+`tooling_pulls` retains PR links and their body's `Removed:` and `Added:` statements.
 Unavailable or capped history and file reads leave the counts null with
-`status: unknown` and keep the audit window open. These numbers add no gate.
+`status: unknown` and a reason; they do not hold the audit window open. These
+numbers add no gate. The time window assumes first-parent committer dates run
+backward through history, as they do for GitHub and train merge commits.
 
 The weekly share is a report, not an alarm or a quota. The report labels its
 basis as merged pull requests (`capacity.own_share_basis`) and includes the

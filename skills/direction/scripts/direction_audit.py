@@ -33,7 +33,7 @@ if str(GITHUB_SCRIPTS) not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_read, github_work_graph
+from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_plan_wait, github_read, github_work_graph
 from skills.github.scripts import github_repository_scope as repository_scope
 from skills.direction.scripts import direction_mark, direction_reporting
 
@@ -54,6 +54,7 @@ GATE_PHRASES: tuple[tuple[str, re.Pattern[str]], ...] = (
 WRAPPER = pathlib.Path(__file__).resolve().parents[2] / "github" / "scripts" / "gh-with-env-token"
 MAX_ADMISSION_ISSUES = 50
 MAX_INBOUND_ISSUES = 50
+COMMIT_FILES_PER_RESPONSE = 300
 WAIT_REFERENCE = re.compile(
     r"https://github\.com/([\w.-]+/[\w.-]+)/(issues|pull)/(\d+)"
     r"|(?<![\w/])([\w.-]+/[\w.-]+)?#(\d+)\b"
@@ -1610,6 +1611,15 @@ def capacity_rank(
     return "tooling"
 
 
+def change_statements(body: str, field: str) -> list[str]:
+    statements = []
+    for _, line in github_plan_wait.live_lines(body.replace("**", ""), prefix=""):
+        match = re.search(rf"^[ \t]*(?:[-*][ \t]+)?{re.escape(field)}:[ \t]*(\S.*?)\s*$", line, re.I)
+        if match and match[1].casefold().rstrip(".") not in {"none", "nothing", "n/a"}:
+            statements.append(match[1])
+    return statements
+
+
 def capacity_summary(
     *, own_projects: list[str], tracked_issues: set[tuple[str, int]], direction_source: str,
     pulls: dict[str, list[dict[str, Any]]], milestones: dict[str, list[dict[str, Any]]],
@@ -1653,7 +1663,7 @@ def capacity_summary(
                 tooling_pulls.append({
                     "number": pull["number"], "title": pull.get("title"),
                     "url": f"https://github.com/{repo}/pull/{pull['number']}",
-                    **{field: re.findall(rf"^\s*(?:[-*]\s+)?{field}:\s*(.*)$", pull.get("body") or "", re.I | re.M)
+                    **{field: change_statements(pull.get("body") or "", field)
                        for field in ("removed", "added")},
                 })
             if REVERT_TITLE.search(str(pull.get("title") or "")) or REVERT_BODY.search(str(pull.get("body") or "")):
@@ -1731,7 +1741,7 @@ def commit_line_changes(repo: str, commit: dict[str, Any], *, fetch: Callable[[l
     if not isinstance(files, list):
         raise AuditError("commit files unavailable")
     cut = False
-    if len(files) >= 30:
+    if len(files) >= COMMIT_FILES_PER_RESPONSE:
         files, cut = fetch_paginated(f"repos/{repo}/commits/{commit['sha']}", fetch=fetch, key="files", max_pages=31)
     stats = commit.get("stats") or {}
     if (cut or any(type(row.get(key)) is not int or row[key] < 0 for row in files for key in ("additions", "deletions"))
@@ -1742,7 +1752,7 @@ def commit_line_changes(repo: str, commit: dict[str, Any], *, fetch: Callable[[l
         bucket = line_bucket(row["filename"])
         net = row["additions"] - row["deletions"]
         previous = row.get("previous_filename")
-        if isinstance(previous, str) and line_bucket(previous) != bucket:
+        if row.get("status") == "renamed" and isinstance(previous, str) and line_bucket(previous) != bucket:
             parent = commit["parents"][0]["sha"]
             blob = fetch(["api", f"repos/{repo}/contents/{quote(previous)}?ref={parent}", "--method", "GET"])
             if not isinstance(blob, dict) or blob.get("encoding") != "base64" or not isinstance(blob.get("content"), str):
@@ -2121,7 +2131,6 @@ def fetch_capacity(
             )
         except (AuditError, KeyError, TypeError, ValueError) as exc:
             row["net_lines"] = {"status": "unknown", "reason": str(exc), "tests": None, "other": None, "total": None}
-            truncated.append(f"capacity_net_lines:{name}")
     return summary, truncated + reporting_errors
 
 

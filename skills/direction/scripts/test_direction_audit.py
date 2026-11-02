@@ -3508,15 +3508,18 @@ def test_default_branch_lines_follow_first_parents_and_half_open_window() -> Non
 def test_line_counts_page_commit_files_and_transfer_renamed_tests() -> None:
     import base64
     module = load()
-    files = [{"filename": f"src/{number}.py", "additions": 1, "deletions": 0} for number in range(101)]
-    files.append({"filename": "tests/test_moved.py", "previous_filename": "src/moved.py", "additions": 1, "deletions": 1})
+    count = module.COMMIT_FILES_PER_RESPONSE + 1
+    files = [{"filename": f"src/{number}.py", "additions": 1, "deletions": 0} for number in range(count)]
+    files.append({"filename": "tests/test_moved.py", "previous_filename": "src/moved.py", "status": "renamed", "additions": 1, "deletions": 1})
+    files.append({"filename": "tests/test_copy.py", "previous_filename": "src/moved.py", "status": "copied", "additions": 3, "deletions": 0})
     commit = line_commit("merge", NOW, ["before", "feature"], files)
     def fetch(args: list[str]) -> Any:
         if "/contents/" in args[1]:
             assert "ref=before" in args[1]
             return {"encoding": "base64", "content": base64.b64encode(b"one\ntwo\nthree").decode()}
-        return {"files": files[:100] if args[1].endswith("page=1") else files[100:]}
-    assert module.commit_line_changes("o/tools", {**commit, "files": files[:30]}, fetch=fetch) == {"tests": 3, "other": 98}
+        page = int(args[1].rsplit("page=", 1)[1])
+        return {"files": files[(page - 1) * 100:page * 100]}
+    assert module.commit_line_changes("o/tools", {**commit, "files": files[:module.COMMIT_FILES_PER_RESPONSE]}, fetch=fetch) == {"tests": 6, "other": count - 3}
     for broken in ({**commit, "files": files[:2]}, {**commit, "stats": {}}):
         try:
             module.commit_line_changes("o/tools", broken, fetch=lambda _: {"files": []})
@@ -3529,7 +3532,7 @@ def test_capacity_attaches_lines_only_to_tooling_and_retains_unknown_reads() -> 
     module = load()
     calls: list[str] = []
     base = capacity_fetch_with_unchanged_tree(reporting_fetch(module, OWN_DIRECTION, [
-        {**merged_pull(1, NOW, body="Removed: duplicate report\nAdded: weekly totals"), "labels": []},
+        {**merged_pull(1, NOW, body="**Removed:** duplicate report\r\nAdded: weekly totals\r\nRemoved: none\r\n```text\r\nRemoved: example\r\n```"), "labels": []},
     ], calls))
     def fetch(args: list[str]) -> Any:
         if "/commits/" in args[1]:
@@ -3539,7 +3542,7 @@ def test_capacity_attaches_lines_only_to_tooling_and_retains_unknown_reads() -> 
     result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=fetch)
     row = result["by_repository"]["o/live"]
     assert row["net_lines"]["status"] == "unknown" and row["net_lines"]["total"] is None
-    assert "capacity_net_lines:o/live" in module.held_reads(errors)
+    assert not errors and not module.held_reads(errors)
     assert row["tooling_pulls"][0]["removed"] == ["duplicate report"]
     assert row["tooling_pulls"][0]["added"] == ["weekly totals"]
     assert len([call for call in calls if "/commits/" in call]) == 1
