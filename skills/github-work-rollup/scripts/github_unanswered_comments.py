@@ -1425,12 +1425,15 @@ def settled_outside_threads(
     for login in sorted(self_logins):
         query = f'user:{login} in:comments triage "No reply needed"'
         try:
-            payload = run_json([GH, "api", "search/issues?" + urlencode({"q": query, "per_page": 100})])
-            if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+            pages = run_json([GH, "api", "search/issues?" + urlencode({"q": query, "per_page": 100}), "--paginate", "--slurp"])
+            if not isinstance(pages, list) or not pages or any(
+                not isinstance(page, dict) or not isinstance(page.get("items"), list) for page in pages
+            ):
                 raise rollup.RollupError("Invalid triage search response.")
-            if payload.get("incomplete_results") or payload.get("total_count", 0) > len(payload["items"]):
+            matches = [item for page in pages for item in page["items"]]
+            if any(page.get("incomplete_results") or page.get("total_count", 0) > len(matches) for page in pages):
                 raise rollup.RollupError("Triage search coverage is incomplete.")
-            for item in payload["items"]:
+            for item in matches:
                 repo = rollup.repo_from_search_url(item.get("repository_url"))
                 if not repo or normalize_login(repo.split("/", 1)[0]) != login:
                     continue
@@ -1442,9 +1445,18 @@ def settled_outside_threads(
                         continue
                     if comment_timestamp(created) > settings["until"]:
                         continue
+                    reply_disposition = False
                     for line in body.splitlines():
+                        if not line.strip().startswith("|"):
+                            reply_disposition = False
+                            continue
                         cells = line.strip().strip("|").split("|")
-                        if len(cells) < 2 or not re.match(r"\s*\*{0,2}No(?:[.,\s]|\*\*)", cells[-1], re.IGNORECASE):
+                        if "https://github.com/" not in cells[0] and re.search(
+                            r"act now|reply needed|needs? (?:a )?reply", cells[-1], re.IGNORECASE,
+                        ):
+                            reply_disposition = True
+                            continue
+                        if not reply_disposition or len(cells) < 2 or not re.match(r"\s*\*{0,2}No(?:[.,\s]|\*\*)", cells[-1], re.IGNORECASE):
                             continue
                         match = re.search(r"https://github\.com/([^/]+/[^/]+)/(?:issues|pull)/(\d+)", cells[0])
                         if not match or normalize_login(match[1].split("/", 1)[0]) in self_logins:
@@ -1663,8 +1675,9 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
         settled, triage_errors = bounded_discovery(partial(settled_outside_threads, outbound_self, self_logins | bot_logins, settings))
         settings = {**settings, "settled_outside_threads": settled}
         coverage_errors.extend(triage_errors)
+        inbound_repositories = {repo.casefold() for repo in repositories} if settings["scan_repository_scope"] else set()
         for repo, number in full_history_threads - set(settings["threads"]):
-            if f"https://github.com/{repo.casefold()}/issues/{number}" not in settled:
+            if repo.casefold() in inbound_repositories or f"https://github.com/{repo.casefold()}/issues/{number}" not in settled:
                 continue
             try:
                 metadata = run_json([GH, "api", f"repos/{repo}/issues/{number}"])
@@ -1675,7 +1688,6 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
                 coverage_errors.append({"repo": repo, "lane": "outside_triage", "error": rollup.trim(str(exc))})
         found, outbound_errors = outbound_threads(outbound_self, settings)
         coverage_errors.extend(outbound_errors)
-        inbound_repositories = {repo.casefold() for repo in repositories} if settings["scan_repository_scope"] else set()
         full_history_keys = {(repo.casefold(), number) for repo, number in full_history_threads}
         outbound_scope.update(
             (repo, number) for repo, number in found

@@ -230,7 +230,8 @@ indexing and its 1,000-result cap limit discovery; detected partial results are
 degraded coverage. It uses the same attention and exit-code contract.
 Routine outbound scans also read triage comments in the Director's repositories.
 A trusted Director or configured automation comment containing `triage` and a
-table row whose final disposition starts with **No** settles that row's first
+table whose final column asks whether to act now or reply, with a row
+whose disposition starts with **No** settles that row's first
 thread link. The existing comment is the record; no local store is maintained.
 Threads last updated at or before that comment's creation time are omitted
 before history reads, including mention discovery. Newer updates are read again.

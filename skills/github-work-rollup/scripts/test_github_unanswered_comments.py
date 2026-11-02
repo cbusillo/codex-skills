@@ -2213,10 +2213,6 @@ def test_stuck_discussion_read_ends_the_radar_at_the_deadline(tmp_path: Path, st
         error["lane"].startswith(lane) and "deadline" in error["error"] for error in payload["coverage"]["errors"]
     ), payload["coverage"]["errors"]
 
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))
-
-
 def test_november_triage_skips_history_until_outside_thread_changes(monkeypatch: pytest.MonkeyPatch) -> None:
     triaged_at = "2026-11-02T21:10:00Z"
     outside = search_item("openai/codex", 44682, updated="2026-10-29T12:00:00Z")
@@ -2227,7 +2223,9 @@ def test_november_triage_skips_history_until_outside_thread_changes(monkeypatch:
                         "OUTSIDE-1102 triage, November 2, 2026.\n"
                         "| Listed thread/comment | What it asks | Already handled? | Chris act now? |\n"
                         "| [openai/codex#44682](https://github.com/openai/codex/issues/44682#issuecomment-6529027912) "
-                        "| Nothing. | No answer is owed. | **No.** No reply needed. |")
+                        "| Nothing. | No answer is owed. | **No.** No reply needed. |\n\n"
+                        "| Thread | Answered? |\n"
+                        "| [pending](https://github.com/outside/project/issues/9) | No. |")
     routes: dict[str, Any] = {
         "search/issues": lambda endpoint: {"items": [search_item("cbusillo/direction", 159)] if "triage" in endpoint else [outside],
                                            "total_count": 1, "incomplete_results": False},
@@ -2241,6 +2239,9 @@ def test_november_triage_skips_history_until_outside_thread_changes(monkeypatch:
     fake = FakeGitHub(routes)
     patch_radar(monkeypatch, "run_json", fake)
     settings = outbound_settings(until="2026-11-02T22:00:00Z", mention_approval=None)
+    settled, errors = github_unanswered_comments.settled_outside_threads({"cbusillo"}, {"fixture-automation"}, settings)
+    assert not errors
+    assert "https://github.com/outside/project/issues/9" not in settled
     hint = github_unanswered_comments.normalize_issue_comment("openai/codex", {
         **routes["repos/openai/codex/issues/44682/comments"][1],
         "issue_url": "https://api.github.com/repos/openai/codex/issues/44682",
@@ -2259,3 +2260,7 @@ def test_november_triage_skips_history_until_outside_thread_changes(monkeypatch:
     payload = github_unanswered_comments.collect_payload(settings)
     assert any(row["comment_id"] == 3 for row in payload["attention"])
     assert any(call.startswith("repos/openai/codex/issues/44682/comments") for call in fake.calls)
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))
