@@ -725,14 +725,18 @@ def test_collect_comment_reactions_paginates(monkeypatch) -> None:
     assert any("after=cursor-1" in argument for argument in commands[1])
 
 
-def test_resolve_repositories_does_not_fallback_after_empty_owner_scope(monkeypatch) -> None:
+@pytest.mark.parametrize("outbound", [False, True])
+def test_resolve_repositories_does_not_fallback_after_empty_owner_scope(monkeypatch: pytest.MonkeyPatch, outbound: bool) -> None:
     monkeypatch.setattr(github_unanswered_comments, "run_json", lambda command: [])
     settings = github_unanswered_comments.resolve_settings(
-        args(repo_owner=["missing-owner"]),
+        args(repo_owner=["missing-owner"], outbound=outbound),
         {},
         now=datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc),
     )
 
+    if outbound:
+        assert github_unanswered_comments.resolve_repositories(settings) == []
+        return
     with pytest.raises(github_unanswered_comments.rollup.RollupError, match="resolved to no visible"):
         github_unanswered_comments.resolve_repositories(settings)
 
