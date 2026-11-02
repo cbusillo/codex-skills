@@ -1749,6 +1749,8 @@ def commit_line_changes(repo: str, commit: dict[str, Any], *, fetch: Callable[[l
         raise AuditError("commit file line counts incomplete")
     changes = {"tests": 0, "other": 0}
     for row in files:
+        if row.get("status") == "copied":
+            raise AuditError("copied file line-count semantics unverified")
         bucket = line_bucket(row["filename"])
         net = row["additions"] - row["deletions"]
         previous = row.get("previous_filename")

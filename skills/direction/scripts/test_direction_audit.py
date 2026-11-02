@@ -22,6 +22,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Self
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 SCRIPT = Path(__file__).with_name("direction_audit.py")
 NOW = dt.datetime(2026, 9, 21, 12, tzinfo=dt.timezone.utc)
@@ -3511,16 +3512,19 @@ def test_line_counts_page_commit_files_and_transfer_renamed_tests() -> None:
     count = module.COMMIT_FILES_PER_RESPONSE + 1
     files = [{"filename": f"src/{number}.py", "additions": 1, "deletions": 0} for number in range(count)]
     files.append({"filename": "tests/test_moved.py", "previous_filename": "src/moved.py", "status": "renamed", "additions": 1, "deletions": 1})
-    files.append({"filename": "tests/test_copy.py", "previous_filename": "src/moved.py", "status": "copied", "additions": 3, "deletions": 0})
     commit = line_commit("merge", NOW, ["before", "feature"], files)
     def fetch(args: list[str]) -> Any:
         if "/contents/" in args[1]:
             assert "ref=before" in args[1]
             return {"encoding": "base64", "content": base64.b64encode(b"one\ntwo\nthree").decode()}
-        page = int(args[1].rsplit("page=", 1)[1])
-        return {"files": files[(page - 1) * 100:page * 100]}
-    assert module.commit_line_changes("o/tools", {**commit, "files": files[:module.COMMIT_FILES_PER_RESPONSE]}, fetch=fetch) == {"tests": 6, "other": count - 3}
-    for broken in ({**commit, "files": files[:2]}, {**commit, "stats": {}}):
+        query = parse_qs(urlsplit(args[1]).query)
+        page, size = int(query["page"][0]), int(query["per_page"][0])
+        return {"files": files[(page - 1) * size:page * size]}
+    assert module.commit_line_changes("o/tools", {**commit, "files": files[:module.COMMIT_FILES_PER_RESPONSE]}, fetch=fetch) == {"tests": 3, "other": count - 3}
+    copied = line_commit("copy", NOW, ["before"], [
+        {"filename": "tests/test_copy.py", "previous_filename": "src/moved.py", "status": "copied", "additions": 3, "deletions": 0},
+    ])
+    for broken in ({**commit, "files": files[:2]}, {**commit, "stats": {}}, copied):
         try:
             module.commit_line_changes("o/tools", broken, fetch=lambda _: {"files": []})
         except module.AuditError:
