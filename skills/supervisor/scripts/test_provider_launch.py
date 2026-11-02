@@ -551,7 +551,7 @@ class ProviderLaunchTests(unittest.TestCase):
                                                    check=True, capture_output=True, text=True)
                         received = json.loads(completed.stdout)
                         if agent == "agy":
-                            self.assertEqual(received["argv"], ["--prompt-interactive=" + brief])
+                            self.assertEqual(received["argv"], ["--dangerously-skip-permissions", "--prompt-interactive=" + brief])
                         else:
                             self.assertEqual(received["argv"][-2:], ["--", brief])
                         for key, value in env.items():

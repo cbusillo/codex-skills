@@ -5,12 +5,47 @@
 """Read native child histories without inventing a second session registry."""
 from __future__ import annotations
 
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 import json
 from pathlib import Path
 import re
 import sqlite3
 import sys
+from typing import Any
+from datetime import datetime, timezone
+
+
+def protobuf_fields(data: bytes) -> dict[int, Any]:
+    offset = 0
+    fields = {}
+
+    def varint() -> int:
+        nonlocal offset
+        value = 0
+        for shift in range(0, 70, 7):
+            if offset >= len(data):
+                raise ValueError("incomplete protobuf varint")
+            byte = data[offset]
+            offset += 1
+            value |= (byte & 127) << shift
+            if byte < 128:
+                return value
+        raise ValueError("invalid protobuf varint")
+
+    while offset < len(data):
+        tag = varint()
+        number, wire = tag >> 3, tag & 7
+        if not number:
+            raise ValueError("invalid protobuf field")
+        if wire == 0:
+            fields[number] = varint()
+            continue
+        size = varint() if wire == 2 else {1: 8, 5: 4}.get(wire)
+        if size is None or offset + size > len(data):
+            raise ValueError("invalid protobuf length or wire type")
+        fields[number] = data[offset:offset + size]
+        offset += size
+    return fields
 
 
 
@@ -40,7 +75,7 @@ def child_records(records, harness, session, context=None):
     Only verified native edges supply ancestry, including a fork checking its
     own local work. Raw child rows remain available for the coverage hash.
     """
-    identities = ({r.get("sessionId") for r in records if r.get("sessionId")} if harness == "claude" else
+    identities = ({r.get("sessionId") for r in records if r.get("sessionId")} if harness != "codex" else
                   {r.get("payload", {}).get("id") for r in records if r.get("type") == "session_meta"})
     if harness != "codex" or context is None:
         if identities != {session}:
@@ -158,4 +193,166 @@ def root_records(path, harness, session, records):
             return child_records(records, harness, session, root_context(path, session))
     return child_records(records, harness, session)
 
+
+
+
+AGY_HOME = Path("~/.gemini/antigravity-cli")
+AGY_SETTINGS = AGY_HOME / "settings.json"
+
+def agy_conversations(text: str) -> list[str]:
+    return re.findall(r"\bCreated conversation ([0-9a-fA-F-]{36})\b", text)
+
+
+def agy_log(conversation_id: Any = None, log_file: Path | None = None) -> str:
+    valid_id = isinstance(conversation_id, str) and bool(re.fullmatch(r"[0-9a-fA-F-]{36}", conversation_id))
+    if log_file is not None:
+        try:
+            text = log_file.read_text(errors="replace")
+        except OSError:
+            text = ""
+        if text.strip():
+            conversations = agy_conversations(text)
+            if conversation_id is not None:
+                return text if valid_id and conversations in ([], [conversation_id]) else ""
+            return text if len(conversations) <= 1 else ""
+    if not valid_id:
+        return ""
+    base = AGY_SETTINGS.expanduser().parent
+    candidates = [base / "cli.log", *sorted((base / "log").glob("cli-*.log"), reverse=True)]
+    for path in candidates:
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        conversations = agy_conversations(text)
+        if conversations == [conversation_id]:
+            return text
+        if conversation_id in conversations:
+            return ""
+    return ""
+
+def agy_model(requested: str | None, conversation_id: Any = None, log_file: Path | None = None) -> dict[str, Any]:
+    default = {"model": requested, "model_source": "requested, not reported by the CLI" if requested else "unknown"}
+    log = agy_log(conversation_id, log_file)
+    reroutes = list(dict.fromkeys(re.findall(r'model alias "([^"]+)" resolved to "([^"]+)"', log)))
+    labels = list(dict.fromkeys(re.findall(r'Propagating selected model override to backend: label="([^"]+)"', log)))
+    if len(reroutes) > 1 or len(labels) > 1:
+        return default
+    if reroutes and (not labels or labels[0] == reroutes[0][1]):
+        return {"model": reroutes[0][1], "model_source": "reported by the CLI (rerouted)"}
+    if reroutes and labels:
+        return default
+    if labels:
+        return {"model": labels[0], "model_source": "reported by the CLI"}
+    return default
+
+
+def read_agy_records(path: Path) -> list[dict]:
+    records: list[dict] = []
+    try:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as database:
+            database.execute("BEGIN")
+            identities = database.execute("SELECT DISTINCT cascade_id FROM trajectory_meta").fetchall()
+            if identities != [(path.stem,)]:
+                raise ValueError("native AGY transcript identity is unavailable or differs")
+            records.append({"sessionId": path.stem, "type": "system"})
+            rows = database.execute("SELECT idx, step_type, status, has_subtrajectory, step_payload FROM steps ORDER BY idx").fetchall()
+        steps = [protobuf_fields(row[4]) for row in rows]
+        tasks: dict[str, dict] = {}
+        for index, step in enumerate(steps):
+            if 148 in step:
+                task = protobuf_fields(step[148])
+                call = protobuf_fields(protobuf_fields(step.get(5, b"")).get(4, b""))
+                identity = f"{path.stem}/task-{index}"
+                if task.get(1) == identity.encode() and call.get(2) == b"run_command":
+                    tasks[identity] = {"index": index, "call": call, "terminal": agy_command_terminal(step)}
+        notified = {protobuf_fields(protobuf_fields(step[114])[4])[3].decode()
+                    for row, step in zip(rows, steps) if row[1:4] == (101, 3, 0)
+                    and agy_task_notification(step, path.stem, row[0], tasks)}
+        for identity, task in tasks.items():
+            task["notified"] = identity in notified
+        for index, (ordinal, kind, status, children, _blob) in enumerate(rows):
+            step = steps[index]
+            if ordinal != index or step.get(1) != kind or step.get(4, 0) != status:
+                raise ValueError("native AGY step identity is unavailable")
+            records.extend(agy_step_records(path.stem, ordinal, kind, status, children, step, tasks))
+    except (sqlite3.Error, KeyError, TypeError, AttributeError, UnicodeError) as error:
+        raise ValueError(f"native AGY transcript unavailable: {error}") from error
+    return records
+
+
+def agy_command_terminal(step: dict) -> dict:
+    fields = protobuf_fields
+    result = fields(fields(step.get(140, b"")).get(2, b""))
+    return fields(fields(fields(result.get(3, b"")).get(10, b"")).get(3, b""))
+
+
+def agy_task_notification(step: dict, session: str, ordinal: int, tasks: dict[str, dict]) -> bool:
+    fields = protobuf_fields
+    note = fields(step.get(114, b""))
+    if note.get(3) != b"task_notification":
+        return False
+    envelope = fields(note.get(4, b""))
+    task = tasks.get(envelope.get(3, b"").decode())
+    if task is None:
+        return False
+    origin = fields(fields(envelope.get(12, b"")).get(1, b""))
+    call = fields(origin.get(3, b""))
+    terminal = fields(fields(fields(note.get(2, b"")).get(10, b"")).get(3, b""))
+    return bool(origin.get(2, 0) == task["index"] < ordinal
+                and envelope.get(2) == session.encode() == origin.get(1)
+                and (call.get(1), call.get(2)) == (task["call"].get(1), task["call"].get(2))
+                and json.loads(call.get(3, b"{}")) == json.loads(task["call"][3])
+                and terminal.get(1) == task["terminal"].get(1) and terminal.get(3) == task["terminal"].get(3)
+                and type(terminal.get(3)) is int)
+
+
+def agy_step_records(session: str, ordinal: int, kind: int, status: int, children: bool, step: dict, tasks: dict[str, dict]) -> list[dict]:
+    fields = protobuf_fields
+    metadata = fields(step.get(5, b""))
+    clock = fields(metadata.get(8) or metadata.get(1, b""))
+    timestamp = datetime.fromtimestamp(clock[1] + clock.get(2, 0) / 1e9, timezone.utc).isoformat()
+    row: dict[str, Any] = {"sessionId": session, "timestamp": timestamp, "type": "user", "message": {"content": ""}}
+    pending = ("native child history is unavailable" if children else
+               "native step kind is unknown" if kind not in {14, 15, 101, 132} else
+               "native step is pending" if status not in {3, 6, 7} else None)
+    records = []
+    if kind == 14 and status == 3:
+        row["message"] = {"content": fields(step[19]).get(2, b"").decode()}
+    elif kind == 15 and status == 3:
+        response = fields(step[20])
+        row.update(type="assistant", message={"content": [{"type": "text", "text": response.get(8, response.get(1, b"")).decode()}],
+                   "stop_reason": "end_turn" if 7 not in response else None})
+    elif kind == 101:
+        if status != 3 or not agy_task_notification(step, session, ordinal, tasks):
+            pending = pending or "native notification provenance is unavailable"
+    elif kind not in {14, 15}:
+        call = fields(metadata.get(4, b""))
+        if not call:
+            pending = pending or "native tool call is unavailable"
+        else:
+            name, identifier, arguments = call[2].decode(), call[1].decode(), json.loads(call[3])
+            command = name == "run_command"
+            content = {"type": "tool_use", "id": identifier, "name": "Bash" if command else name,
+                       "input": {"command": arguments["CommandLine"]} if command else arguments}
+            records.append({"sessionId": session, "timestamp": timestamp, "type": "assistant", "message": {"content": [content]}})
+            task_status = name == "manage_task" and arguments.get("Action") == "status" and arguments.get("TaskId") in tasks
+            if name not in {"read_file", "write_file", "edit_file", "list_dir", "grep_search", "find_by_name", "run_command"} and not task_status:
+                pending = pending or f"native tool coverage is unavailable for {name}"
+            if status in {3, 6, 7} and kind == 132:
+                result = fields(fields(step.get(140, b"")).get(2, b""))
+                output = result.get(1, b"").decode()
+                failed = status != 3
+                if command and status == 3:
+                    terminal = agy_command_terminal(step)
+                    if type(terminal.get(3)) is not int or terminal.get(1, b"").decode() != arguments["CommandLine"]:
+                        pending = pending or "native command completion is unavailable"
+                    else:
+                        failed = failed or terminal[3] != 0
+                if command and 148 in step and not tasks.get(f"{session}/task-{ordinal}", {}).get("notified"):
+                    pending = pending or "native background task completion is unavailable"
+                row["message"] = {"content": [{"type": "tool_result", "tool_use_id": identifier, "content": output, "is_error": failed}]}
+    if pending:
+        row["native_pending"] = {"task_id": f"native-step-{ordinal}", "started": timestamp, "reason": pending}
+    return [*records, row]
 

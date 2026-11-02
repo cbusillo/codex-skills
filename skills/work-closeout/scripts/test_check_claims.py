@@ -93,6 +93,20 @@ def native_runtime() -> dict:
 
 class ClaimCloseoutTests(unittest.TestCase):
 
+    def test_native_database_identity_uses_the_shared_transcript_reader(self) -> None:
+        fixture = Path(__file__).parents[2] / "supervisor/scripts/fixtures/agy-command-completed.json"
+        captured = json.loads(fixture.read_text())
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / f"{SESSION}.db"
+            with sqlite3.connect(path) as database:
+                database.execute("CREATE TABLE trajectory_meta (cascade_id TEXT)")
+                database.execute("INSERT INTO trajectory_meta VALUES (?)", (SESSION,))
+                database.execute("CREATE TABLE steps (idx INTEGER, step_type INTEGER, status INTEGER, has_subtrajectory INTEGER, step_payload BLOB)")
+                database.execute("INSERT INTO steps VALUES (0,?,?,0,?)", (captured["step_type"], captured["status"], bytes.fromhex(captured["step_payload_hex"])))
+            helper.require_own_transcript({"session_id": SESSION, "transcript": str(path)})
+            with self.assertRaises(ValueError):
+                helper.require_own_transcript({"session_id": "other-source", "transcript": str(path)})
+
     def test_accepted_release_exclusion_survives_closeout(self) -> None:
         release_tests: Any = importlib.import_module("test_gh_plan_release")
         release_logic: Any = importlib.import_module("github_plan_release")

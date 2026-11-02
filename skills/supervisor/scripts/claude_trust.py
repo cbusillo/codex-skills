@@ -2,21 +2,6 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Claude Code folder trust for Supervisor launches (codex-skills#2100).
-
-Claude Code records an accepted trust dialog as
-`projects["<root>"].hasTrustDialogAccepted` in the home's `.claude.json`; the
-root is the repository root, or the main checkout's root for a linked worktree
-(https://code.claude.com/docs/en/permissions#what-runs-before-you-trust-a-folder).
-Trust on a parent folder does not cover a git repository nested inside it.
-
-Director decision (October 17, 2026): everything under ~/Developer is trusted.
-The launcher writes that record, in every configured Claude home and in the
-default home (~/.claude.json, Q471 on codex-skills#2100), only for
-roots under ~/Developer and for linked worktrees of those repositories in the
-configured worktree root. Every other folder must already be trusted in the
-selected home. Only that one key changes; logins and other settings are kept.
-"""
 
 import ctypes
 import importlib.util
@@ -25,6 +10,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+import claim_history
 
 TRUST_KEY = "hasTrustDialogAccepted"
 # Both platforms number their atomic swap flag 2: macOS RENAME_SWAP, Linux RENAME_EXCHANGE.
@@ -49,7 +35,8 @@ def worktree_root():
 
 
 def config_file(choice):
-    """The selected home's `.claude.json`: ~/.claude.json without CLAUDE_CONFIG_DIR."""
+    if choice.get("provider") == "google":
+        return claim_history.AGY_SETTINGS.expanduser()
     directory = choice["env"].get("CLAUDE_CONFIG_DIR")
     return (Path(directory).expanduser() if directory else Path.home()) / ".claude.json"
 
@@ -89,25 +76,38 @@ def in_scope(directory, roots, main, developer, worktrees):
             and all(root == main or within(root, worktrees) for root in roots))
 
 
+def google_config(path: Path) -> bool:
+    return path.resolve() == claim_history.AGY_SETTINGS.expanduser().resolve()
+
+
 def read_projects(path):
-    """Return the raw bytes, the parsed config, and its projects object (attached if absent)."""
+    harness = "AGY" if google_config(path) else "Claude"
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
+        if google_config(path):
+            raise ValueError(f"AGY settings {path} do not exist; inspect the existing profile before retrying") from None
         raise ValueError(f"Claude home config {path} does not exist; sign in to that home "
                          "interactively once before launching on it") from None
     except OSError as error:
-        raise ValueError(f"cannot read Claude folder trust in {path} ({type(error).__name__}); "
+        raise ValueError(f"cannot read {harness} folder trust in {path} ({type(error).__name__}); "
                          "inspect that config before retrying") from None
     return parse_projects(raw, path)
 
 
 def parse_projects(raw, path):
+    harness = "AGY" if google_config(path) else "Claude"
     try:
         data = json.loads(raw)
     except ValueError as error:
-        raise ValueError(f"cannot read Claude folder trust in {path} ({type(error).__name__}); "
+        raise ValueError(f"cannot read {harness} folder trust in {path} ({type(error).__name__}); "
                          "inspect that config before retrying") from None
+    google = google_config(path)
+    if google:
+        projects = data.setdefault("trustedWorkspaces", []) if isinstance(data, dict) else None
+        if not isinstance(projects, list) or not all(isinstance(root, str) for root in projects):
+            raise ValueError(f"cannot read AGY folder trust in {path}: trustedWorkspaces is not a list of paths")
+        return raw, data, projects
     projects = data.setdefault("projects", {}) if isinstance(data, dict) else None
     if not isinstance(projects, dict):
         raise ValueError(f"cannot read Claude folder trust in {path}: projects is not an object")
@@ -115,39 +115,41 @@ def parse_projects(raw, path):
 
 
 def trusted(projects, root):
+    if isinstance(projects, list):
+        return str(root) in projects
     entry = projects.get(str(root))
     return isinstance(entry, dict) and entry.get(TRUST_KEY) is True
 
 
 def plan(directory, selected, homes, main_root, developer=None, worktrees=None):
-    """Return the (config, roots) writes a launch needs, or refuse before any write.
-
-    `homes` returns every configured Claude account; it is read only for folders in scope.
-    The default home is included too when its `.claude.json` exists; it is never created.
-    """
+    google = selected.get("provider") == "google"
+    harness = "AGY" if google else "Claude"
     directory = Path(directory)
     if not directory.is_absolute() or not directory.is_dir():
-        raise ValueError("Claude launches require cd /absolute/repository && exec claude; "
+        raise ValueError(f"{harness} launches require cd /absolute/repository before the direct invocation; "
                          "the folder must exist")
     directory = directory.resolve()
     developer = (developer or Path.home() / "Developer").resolve()
     worktrees = (worktrees or worktree_root()).resolve()
     roots, main = trust_roots(directory, main_root)
-    if not in_scope(directory, roots, main, developer, worktrees):
+    in_allowed_scope = in_scope(directory, roots, main, developer, worktrees)
+    if google:
+        roots = [directory]
+    if not in_allowed_scope:
         path = config_file(selected)
         _, _, projects = read_projects(path)
         missing = [str(root) for root in roots if not trusted(projects, root)]
         if missing:
             raise ValueError(
-                f"Claude folder is not trusted: {directory} (trust root: {', '.join(missing)}) in {path}. "
+                f"{harness} folder is not trusted: {directory} (trust root: {', '.join(missing)}) in {path}. "
                 f"Only folders under {developer} and their worktrees in {worktrees} are trusted "
-                f"automatically; open claude in {directory} interactively on that home and review "
+                f"automatically; open {harness} in {directory} interactively on that home and review "
                 "the trust dialog yourself, then retry")
         return []
     writes = []
-    paths = [config_file(choice) for choice in [selected, *homes()]]
+    paths = [config_file(selected)] if google else [config_file(choice) for choice in [selected, *homes()]]
     default = config_file({"env": {}})
-    if default.exists():
+    if not google and default.exists():
         paths.append(default)
     for path in dict.fromkeys(paths):
         _, _, projects = read_projects(path)
@@ -188,14 +190,18 @@ def write_trust(path, roots, attempts=3):
     save after the swap replaces this file whole, keeping that session's data;
     the readback then sees the key missing and applies it again.
     """
+    path = path.resolve(strict=True)
     expected, data, projects = read_projects(path)
     carried = 0
     while True:
-        for root in roots:
-            entry = projects.get(str(root))
-            projects[str(root)] = {**(entry if isinstance(entry, dict) else {}), TRUST_KEY: True}
+        if isinstance(projects, list):
+            projects.extend(str(root) for root in roots if str(root) not in projects)
+        else:
+            for root in roots:
+                entry = projects.get(str(root))
+                projects[str(root)] = {**(entry if isinstance(entry, dict) else {}), TRUST_KEY: True}
         mode = path.stat().st_mode & 0o777
-        handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=".claude.json.trust-")
+        handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.trust-")
         keep = False
         try:
             body = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
@@ -225,5 +231,6 @@ def write_trust(path, roots, attempts=3):
             return
         attempts -= 1
         if attempts <= 0:
-            raise ValueError(f"Claude folder trust did not persist in {path}; another writer kept "
+            harness = "AGY" if google_config(path) else "Claude"
+            raise ValueError(f"{harness} folder trust did not persist in {path}; another writer kept "
                              "replacing it, retry the launch")

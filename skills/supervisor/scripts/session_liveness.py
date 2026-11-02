@@ -105,7 +105,7 @@ def process_absent(pid):
 
 
 def source_harness(argv: list[str] | None, harness: str | None = None) -> bool:
-    return bool(argv and (harness_family(argv[0]) in ({harness} if harness else {"codex", "claude"})
+    return bool(argv and (harness_family(argv[0]) in ({harness} if harness else {"codex", "claude", "agy"})
                          or harness in {None, "codex"} and Path(argv[0]).name in {"codex-session.py", "codex_session_proxy.py"}))
 
 
@@ -129,6 +129,8 @@ def versioned_claude(executable):
 
 def harness_family(executable):
     name = Path(executable).name.casefold()
+    if name == "agy":
+        return "agy"
     if name in {"codex-session.py", "codex_session_proxy.py"}:
         return None  # Managed wrappers need their own launch binding.
     if name == "codex.js":
@@ -419,15 +421,17 @@ def uncertain_invocation(argv):
     # With lost boundaries or unknown arities, a standalone '--' may be an
     # option value or part of quoted text. It cannot truncate veto candidates.
     words = argv
-    markers = [i for i, arg in enumerate(words) if arg in {"--resume", "-r"} or family == "codex" and arg == "resume"
+    markers = [i for i, arg in enumerate(words) if arg in {"--resume", "-r"} or family == "agy" and arg == "--conversation" or family == "codex" and arg == "resume"
                or family == "claude" and re.fullmatch(r"-[pc]*r", arg)]
     candidates = [value for i in markers for value in words[i + 1:] if value and not value.startswith("-")]
     candidates.extend(arg.split("=", 1)[1] for arg in words if arg.startswith("--resume=") and arg.split("=", 1)[1])
+    if family == "agy":
+        candidates.extend(arg.split("=", 1)[1] for arg in words if arg.startswith("--conversation=") and arg.split("=", 1)[1])
     if family == "claude":
         candidates.extend(arg[2:] for arg in words if arg.startswith("-r") and len(arg) > 2)
         candidates.extend(match.group(1) for arg in words
                           if (match := re.fullmatch(r"-[pc]+r(.+)", arg)))
-    resume = bool(markers or candidates or family == "claude" and any(arg in {"-c", "--continue"} for arg in words[1:]))
+    resume = bool(markers or candidates or family in {"claude", "agy"} and any(arg in {"-c", "--continue"} for arg in words[1:]))
     return list(dict.fromkeys(candidates)), "resume" if resume else None, None
 
 
@@ -442,6 +446,8 @@ def invocation(argv, *, bounded=True):
         return [], None, None
     if family == "claude":
         return claude_invocation(argv)[:3]
+    if family == "agy":
+        return uncertain_invocation(argv)
 
     last = False
     uncertain = False

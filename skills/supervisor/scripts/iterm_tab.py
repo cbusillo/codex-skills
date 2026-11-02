@@ -10,7 +10,7 @@
 
 import argparse
 import asyncio
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
 import errno
 import json
@@ -33,6 +33,7 @@ import account_choice
 import claude_trust
 import agent_tools
 import gui_launch
+import claim_history
 
 CLAUDE_SUGGESTION_SETTING = "promptSuggestionEnabled"
 CLAUDE_AUTO_MEMORY_SETTING = "autoMemoryEnabled"
@@ -76,11 +77,28 @@ class SendFailure(ValueError):
         super().__init__(text_outcome + "; submission " + submission + "; input may still contain text")
 
 
+def _is_horizontal_border(line: str) -> bool:
+    return re.fullmatch(r"\s*─{3,}\s*", line) is not None
+
+
+def _is_slash_menu_row(lines: Sequence[str], index: int) -> bool:
+    for border_index in range(index - 1, -1, -1):
+        if _is_horizontal_border(lines[border_index]):
+            return (
+                border_index >= 2
+                and _is_horizontal_border(lines[border_index - 2])
+                and re.match(r"^\s*[❯›>]\s?(.*)$", lines[border_index - 1]) is not None
+            )
+    return False
+
+
 def input_line(lines, styles):
     """Report the last visible agent prompt's styling, never its author or authority."""
     for index in range(len(lines) - 1, -1, -1):
         match = re.match(r"^\s*[❯›>]\s?(.*)$", lines[index])
         if not match:
+            continue
+        if _is_slash_menu_row(lines, index):
             continue
         text = match.group(1)
         flags = [styles[index][x] for x in range(match.start(1), len(lines[index]))
@@ -464,6 +482,8 @@ def append_brief(command_text, brief):
     elif agent == "codex":
         from codex_session_proxy import MEMORY_SETTING
         command_text += " -c " + shlex.quote(f"{MEMORY_SETTING}=false")
+    elif agent == "agy" and "--dangerously-skip-permissions" not in words[1:]:
+        command_text += " --dangerously-skip-permissions"
     prompt_option = " --prompt-interactive=" if agent == "agy" else " -- "
     return command_text + prompt_option + shlex.quote(brief)
 
@@ -500,8 +520,8 @@ def message_sections(readback: dict[str, Any]) -> tuple[str, str]:
 def exit_observer(text: str, tty: str | None) -> Callable[[], bool] | None:
     import session_liveness
 
-    family = {"/quit": "codex", "/exit": "claude"}.get(text)
-    if not family or not tty:
+    families = {"/quit": {"codex"}, "/exit": {"claude", "agy"}}.get(text)
+    if not families or not tty:
         return None
     try:
         rows = session_liveness.inventory()
@@ -514,9 +534,8 @@ def exit_observer(text: str, tty: str | None) -> Callable[[], bool] | None:
         argv = session_liveness.harness_arguments(command)
         if argv:
             candidates.append((pid, session_liveness.harness_family(argv[0])))
-    if not any(candidate_family == family for _, candidate_family in candidates) or any(
-        candidate_family not in {None, family} for _, candidate_family in candidates
-    ):
+    native = {candidate_family for _, candidate_family in candidates if candidate_family is not None}
+    if len(native) != 1 or not native <= families:
         return None
     return lambda: all(session_liveness.process_absent(candidate_pid) for candidate_pid, _ in candidates)
 
@@ -946,6 +965,8 @@ def with_account(command_text, choice, brief=None, *, coordinate=False):
     )
     # export, not env: the account must also reach an agent after `cd dir &&`.
     prefixes = ["unset CLAUDE_CONFIG_DIR"] if default_claude else []
+    if google:
+        prefixes.append("unset CODEX_SESSION_ID CODEX_THREAD_ID CLAUDE_CODE_SESSION_ID CLAUDECODE")
     if settings:
         prefixes.append(f"export {settings}")
     session_settings = "DISCORD_BLUE_SESSION_KIND=spawned"
@@ -1201,13 +1222,12 @@ def check_codex_project(command_text, choice):
         )
 
 
-def claude_trust_writes(command_text, choice, config_path):
-    """Plan folder trust in every configured Claude home, so no launch stops at the dialog."""
-    if choice["provider"] != "anthropic":
+def folder_trust_writes(command_text: str, choice: dict, config_path: Path | None) -> list[tuple[Path, list[Path]]]:
+    if choice["provider"] not in {"anthropic", "google"}:
         return []
     directory = launch_parts(command_text)[1]
     if directory is None:
-        raise ValueError("Claude launches require cd /absolute/repository && exec claude")
+        raise ValueError(f"{choice['provider']} launches require cd /absolute/repository && exec {launch_agent(command_text)}")
     def homes():
         return [account for account in account_choice.load_config(config_path)["accounts"]
                 if account["provider"] == "anthropic"]
@@ -1407,8 +1427,8 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
     if getattr(args, "resume_session_id", None):
         return prepare_resume(args)
     provider = getattr(args, "account_provider", None)
-    if getattr(args, "ledger", None) and provider not in {"openai", "anthropic"}:
-        raise ValueError("fresh --ledger registration needs --account-provider openai or anthropic")
+    if getattr(args, "ledger", None) and provider not in account_choice.PROVIDERS:
+        raise ValueError("fresh --ledger registration needs --account-provider")
     if not getattr(args, "command_file", None):
         raise ValueError("new launches require --command-file or --resume-session-id")
     if getattr(args, "require_browser", False) and getattr(args, "without_browser", False):
@@ -1424,7 +1444,12 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
         if provider == "anthropic":
             command_texts, claude_sessions = zip(*map(fresh_claude_session, command_texts))
             command_texts = list(command_texts)
-        elif any(not codex_daemon_without_ingress(text) for text in command_texts):
+        elif provider == "google":
+            for text in command_texts:
+                if any(word.split("=", 1)[0] in {"--conversation", "--continue", "-c", "--log-file", "--print", "-p"}
+                       for word in launch_words(text)):
+                    raise ValueError("fresh AGY --ledger registration needs a fresh interactive launch without conversation or log overrides")
+        elif provider == "openai" and any(not codex_daemon_without_ingress(text) for text in command_texts):
             raise ValueError("fresh --ledger registration needs managed Codex --remote launches")
     for text in command_texts:
         validate_text(text)
@@ -1473,7 +1498,7 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
             with preparation_read():
                 with_account(text, choice, brief)
                 check_codex_project(text, choice)
-                trust_writes += claude_trust_writes(text, choice, args.account_config)
+                trust_writes += folder_trust_writes(text, choice, args.account_config)
         for text, choice in zip(command_texts, choices):
             check_claude_tools(text, choice, getattr(args, "without_browser", False), probes,
                                getattr(args, "require_browser", False))
@@ -1490,7 +1515,15 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
                 command_texts[0] += " --no-daemon -c " + shlex.quote(override)
         for choice, session in zip(choices, claude_sessions):
             home = choice["env"].get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))
-            choice["claude_native"] = {"session_id": session, "home": str(Path(home).expanduser())}
+            choice["file_native"] = {"harness": "claude", "session_id": session, "home": str(Path(home).expanduser())}
+        if getattr(args, "ledger", None) and provider == "google":
+            native_commands = []
+            for text, choice in zip(command_texts, choices):
+                args.ledger.parent.mkdir(parents=True, exist_ok=True)
+                log = args.ledger.parent / f".native-launch-{uuid.uuid4()}.log"
+                choice["file_native"] = {"harness": "agy", "home": str(claim_history.AGY_HOME.expanduser()), "log": str(log)}
+                native_commands.append(f"{text} --log-file {shlex.quote(str(log))}")
+            command_texts = native_commands
         if getattr(args, "ledger", None) and provider == "openai":
             if any(choice.get("tools", {}).get("route") == "local" for choice in choices):
                 raise ValueError("fresh --ledger registration needs the managed remote route")
@@ -1637,7 +1670,7 @@ def append_launch_ledger(path: Path, entry: dict) -> None:
     if github not in sys.path:
         sys.path.append(github)
     github_plan_closure = importlib.import_module("github_plan_closure")
-    if (entry.get("harness") not in {"codex", "claude"} or entry.get("supervisor_owned") is not True
+    if (entry.get("harness") not in {"codex", "claude", "agy"} or entry.get("supervisor_owned") is not True
             or not isinstance(entry.get("session_id"), str) or not entry["session_id"].strip()):
         raise ValueError("launch ledger append needs a native identity and explicit Supervisor ownership")
     with github_plan_closure.store_lock(path, create=True):
@@ -1752,10 +1785,11 @@ async def register_fresh_launch(args: argparse.Namespace, result: dict, choice: 
             raise ValueError("resume registration needs the verified source choice")
         await register_resumed_launch(path, result, choice)
         return
-    native = result.get("claude_native") or (choice or {}).get("claude_native")
+    native = (result.get("file_native") or (choice or {}).get("file_native")
+              or result.get("claude_native") or (choice or {}).get("claude_native"))
     if isinstance(native, dict):
-        result["claude_native"] = native
-        entry = await asyncio.to_thread(register_claude_launch, result, native, path)
+        result["file_native"] = native
+        entry = await asyncio.to_thread(register_file_launch, result, native, path)
         result.update(native_session_id=entry["session_id"], transcript=entry["transcript"], ledger_recorded=True)
         return
     from codex_session_proxy import read_launch_receipt
@@ -1790,27 +1824,40 @@ async def register_fresh_launch(args: argparse.Namespace, result: dict, choice: 
 
 
 
-def register_claude_launch(launch: dict, native: dict, ledger: Path) -> dict:
+def register_file_launch(launch: dict, native: dict, ledger: Path) -> dict:
     import session_liveness
     import session_record
+    harness = native.get("harness", "claude")
+    deadline = time.monotonic() + LAUNCH_TIMEOUT
+    while harness == "agy":
+        try:
+            identities = claim_history.agy_conversations(Path(native["log"]).read_text())
+        except FileNotFoundError:
+            identities = []
+        if len(identities) == 1:
+            native = {**native, "session_id": identities[0]}
+            break
+        if len(identities) > 1 or time.monotonic() >= deadline:
+            raise ValueError("exact fresh AGY conversation is unavailable; preserve its terminal and log")
+        time.sleep(0.2)
     terminal = "tmux_session_id" if launch.get("backend") == "tmux" else "iterm_session_id"
     existing = [row for row in (session_record.load_ledger(ledger) if ledger.exists() else []) if row["session_id"] == native["session_id"]]
     if existing:
         entry = session_record.terminal_entry(ledger, terminal, launch["session_id"])
-        if (len(existing) != 1 or entry["session_id"] != native["session_id"] or entry["harness"] != "claude"
+        if (len(existing) != 1 or entry["session_id"] != native["session_id"] or entry["harness"] != harness
                 or entry["tty"] != launch["tty"].removeprefix("/dev/")):
-            raise ValueError("native Claude identity belongs to another terminal")
+            raise ValueError(f"native {harness} identity belongs to another terminal")
         return entry
-    deadline = time.monotonic() + LAUNCH_TIMEOUT
     while True:
-        paths = list((Path(native["home"]) / "projects").glob("*/" + native["session_id"] + ".jsonl"))
+        paths = (list((Path(native["home"]) / "conversations").glob(native["session_id"] + ".db")) if harness == "agy" else
+                 list((Path(native["home"]) / "projects").glob("*/" + native["session_id"] + ".jsonl")))
         if paths or time.monotonic() >= deadline:
             break
         time.sleep(0.2)
     if len(paths) != 1:
-        raise ValueError("exact fresh Claude transcript is unavailable; preserve its terminal")
+        raise ValueError(f"exact fresh {harness} transcript is unavailable; preserve its terminal")
     processes = [row for row in session_liveness.inventory() if row[1] == launch["tty"].removeprefix("/dev/")
-                 and session_liveness.harness_family((session_liveness.harness_arguments(row[2]) or [""])[0]) == "claude"]
+                 and session_liveness.harness_family((session_liveness.harness_arguments(row[2]) or [""])[0]) == harness]
     if launch.get("pid"):
         exact = [row for row in processes if row[0] == launch["pid"]]
         if not exact:
@@ -1819,11 +1866,23 @@ def register_claude_launch(launch: dict, native: dict, ledger: Path) -> dict:
             exact = [row for row in processes if tmux_terminal.belongs_to(row[0], launch["pid"], parents)]
         processes = exact
     if len(processes) != 1:
-        raise ValueError("fresh Claude process identity is ambiguous")
+        raise ValueError(f"fresh {harness} process identity is ambiguous")
     entry = {**launch, "session_id": native["session_id"], terminal: launch["session_id"],
-             "transcript": str(paths[0]), "pid": processes[0][0], "harness": "claude", "supervisor_owned": True}
+             "transcript": str(paths[0]), "pid": processes[0][0], "harness": harness, "supervisor_owned": True}
     entry.pop("claude_native", None)
-    session_record.session_status(entry)
+    entry.pop("file_native", None)
+    if harness == "agy":
+        entry["agy_log"] = native["log"]
+        entry["launch_started_at"] = session_liveness.process_started_at(entry["pid"]).isoformat()
+    while True:
+        try:
+            records = session_record.read_jsonl(paths[0])
+            claim_history.root_records(paths[0], harness, native["session_id"], records)
+            break
+        except ValueError:
+            if harness != "agy" or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.2)
     append_launch_ledger(ledger, entry)
     return entry
 
@@ -1990,7 +2049,7 @@ async def operate(app, args):
                       "tab_id": tab.tab_id, "session_id": session.session_id}
             if choice:
                 result["account"] = account_choice.public(choice)
-            if choice and (choice.get("provider") == "openai" or choice.get("claude_native")):
+            if choice and (choice.get("provider") == "openai" or choice.get("file_native")):
                 try:
                     result["tty"] = await session.async_get_variable("tty")
                 except (AttributeError, OSError, ValueError):
@@ -2257,4 +2316,5 @@ def main():
 
 
 if __name__ == "__main__":
+    sys.modules["iterm_tab"] = sys.modules[__name__]
     main()

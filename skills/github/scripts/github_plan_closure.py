@@ -643,8 +643,8 @@ def selected_source_rows(rows, session):
     if len(selected) > 1:
         raise ValueError(f"duplicate selected closure session_id {session}")
     for row in selected:
-        if row.get("harness") not in {"claude", "codex"}:
-            raise ValueError(f"selected closure {session} harness must be claude or codex")
+        if row.get("harness") not in {"claude", "codex", "agy"}:
+            raise ValueError(f"selected closure {session} harness must be claude, codex or agy")
         if not isinstance(row.get("transcript"), str) or not row["transcript"].strip():
             raise ValueError(f"selected closure {session} requires its transcript")
     return selected
