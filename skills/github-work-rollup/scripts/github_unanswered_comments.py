@@ -1417,6 +1417,62 @@ def merge_candidate_ids(
         target.setdefault(thread_key, set()).update(comment_ids)
 
 
+def settled_outside_threads(
+    self_logins: set[str], recorders: set[str], settings: dict[str, Any],
+) -> tuple[dict[str, str], list[dict[str, str]]]:
+    settled: dict[str, str] = {}
+    errors: list[dict[str, str]] = []
+    for login in sorted(self_logins):
+        query = f'user:{login} in:comments triage "No reply needed"'
+        try:
+            pages = run_json([GH, "api", "search/issues?" + urlencode({"q": query, "per_page": 100}), "--paginate", "--slurp"])
+            if not isinstance(pages, list) or not pages or any(
+                not isinstance(page, dict) or not isinstance(page.get("items"), list) for page in pages
+            ):
+                raise rollup.RollupError("Invalid triage search response.")
+            matches = [item for page in pages for item in page["items"]]
+            if any(page.get("incomplete_results") or page.get("total_count", 0) > len(matches) for page in pages):
+                raise rollup.RollupError("Triage search coverage is incomplete.")
+            for item in matches:
+                repo = rollup.repo_from_search_url(item.get("repository_url"))
+                if not repo or normalize_login(repo.split("/", 1)[0]) != login:
+                    continue
+                for raw in api_list(f"repos/{repo}/issues/{item['number']}/comments?per_page=100"):
+                    author = normalize_login((raw.get("user") or {}).get("login"))
+                    body = str(raw.get("body") or "")
+                    created = str(raw.get("created_at") or "")
+                    if author not in recorders or "triage" not in body.casefold() or not created:
+                        continue
+                    if comment_timestamp(created) > settings["until"]:
+                        continue
+                    reply_disposition = False
+                    for line in body.splitlines():
+                        if not line.strip().startswith("|"):
+                            reply_disposition = False
+                            continue
+                        cells = line.strip().strip("|").split("|")
+                        if "https://github.com/" not in cells[0] and re.search(
+                            r"act now|reply needed|needs? (?:a )?reply", cells[-1], re.IGNORECASE,
+                        ):
+                            reply_disposition = True
+                            continue
+                        if not reply_disposition or len(cells) < 2 or not re.match(r"\s*\*{0,2}No(?:[.,\s]|\*\*)", cells[-1], re.IGNORECASE):
+                            continue
+                        match = re.search(r"https://github\.com/([^/]+/[^/]+)/(?:issues|pull)/(\d+)", cells[0])
+                        if not match or normalize_login(match[1].split("/", 1)[0]) in self_logins:
+                            continue
+                        url = f"https://github.com/{match[1].casefold()}/issues/{match[2]}"
+                        settled[url] = max(settled.get(url, ""), created)
+        except (rollup.RollupError, ValueError, KeyError, TypeError) as exc:
+            errors.append({"repo": login, "lane": "outside_triage", "error": rollup.trim(str(exc))})
+    return settled, errors
+
+
+def thread_is_settled(repo: str, number: int, updated: str, settings: dict[str, Any]) -> bool:
+    cutoff = settings.get("settled_outside_threads", {}).get(f"https://github.com/{repo.casefold()}/issues/{number}")
+    return bool(cutoff and updated and comment_timestamp(updated) <= comment_timestamp(cutoff))
+
+
 def outbound_threads(
     self_logins: set[str], settings: dict[str, Any],
 ) -> tuple[list[tuple[str, int]], list[dict[str, str]]]:
@@ -1448,7 +1504,9 @@ def outbound_threads(
                     number = item.get("number")
                     if not repo or not isinstance(number, int):
                         raise rollup.RollupError("Outbound search returned a thread without repository/number.")
-                    if normalize_login(repo.split("/", 1)[0]) not in self_logins:
+                    if normalize_login(repo.split("/", 1)[0]) not in self_logins and not thread_is_settled(
+                        repo, number, str(item.get("updated_at") or ""), settings,
+                    ):
                         threads.append((repo, number))
                 if payload.get("incomplete_results") or (fetched < payload["total_count"] and (len(entries) < 100 or page == 10)):
                     errors.append({"repo": login, "lane": "outbound_search", "error": "Outbound search coverage is incomplete (GitHub search limit or partial results)."})
@@ -1488,7 +1546,7 @@ def outbound_mentions(
             excluded_repositories=excluded_repositories, excluded_owners=outbound_self,
             visible=True,
             names=tuple(identities.get("director_names", ())),
-            get=get,
+            get=get, settled_before=settings.get("settled_outside_threads"),
         )
         if gap or error:
             errors.append({"repo": login or "-", "lane": "director_mentions", "error": f"Mentions outside these repositories are not covered: {gap or error}"})
@@ -1614,9 +1672,22 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
     outbound_scope: set[tuple[str, int]] = set()
     mention_rows: list[dict[str, Any]] = []
     if settings.get("outbound"):
+        settled, triage_errors = bounded_discovery(partial(settled_outside_threads, outbound_self, self_logins | bot_logins, settings))
+        settings = {**settings, "settled_outside_threads": settled}
+        coverage_errors.extend(triage_errors)
+        inbound_repositories = {repo.casefold() for repo in repositories} if settings["scan_repository_scope"] else set()
+        for repo, number in full_history_threads - set(settings["threads"]):
+            if repo.casefold() in inbound_repositories or f"https://github.com/{repo.casefold()}/issues/{number}" not in settled:
+                continue
+            try:
+                metadata = run_json([GH, "api", f"repos/{repo}/issues/{number}"])
+                if thread_is_settled(repo, number, str(metadata.get("updated_at") or ""), settings):
+                    full_history_threads.remove((repo, number))
+                    candidate_ids.pop((repo, number), None)
+            except (rollup.RollupError, ValueError, TypeError, AttributeError) as exc:
+                coverage_errors.append({"repo": repo, "lane": "outside_triage", "error": rollup.trim(str(exc))})
         found, outbound_errors = outbound_threads(outbound_self, settings)
         coverage_errors.extend(outbound_errors)
-        inbound_repositories = {repo.casefold() for repo in repositories} if settings["scan_repository_scope"] else set()
         full_history_keys = {(repo.casefold(), number) for repo, number in full_history_threads}
         outbound_scope.update(
             (repo, number) for repo, number in found
