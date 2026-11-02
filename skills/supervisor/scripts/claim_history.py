@@ -293,9 +293,11 @@ def agy_task_notification(step: dict, session: str, ordinal: int, tasks: dict) -
     envelope = fields(note.get(4, b""))
     origin = fields(fields(envelope.get(12, b"")).get(1, b""))
     task = tasks.get(envelope.get(3, b"").decode())
+    if task is None:
+        return False
     call = fields(origin.get(3, b""))
     terminal = fields(fields(fields(note.get(2, b"")).get(10, b"")).get(3, b""))
-    return bool(task and task["index"] < ordinal and note.get(3) == b"task_notification" and envelope.get(2) == session.encode()
+    return bool(task["index"] < ordinal and note.get(3) == b"task_notification" and envelope.get(2) == session.encode()
                 and origin.get(1) == session.encode() and origin.get(2, 0) == task["index"]
                 and (call.get(1), call.get(2)) == (task["call"].get(1), task["call"].get(2))
                 and json.loads(call.get(3, b"{}")) == json.loads(task["call"][3])
