@@ -12,6 +12,7 @@ import copy
 import random
 import re
 import sys
+import urllib.parse
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -756,6 +757,11 @@ def global_fixture(
             return "automation-gh", {"default_branch": "main", "archived": False}
         number = int(parts[4])
         key = (target, number)
+        if len(parts) == 6 and parts[5] == "comments":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
+            page = int(query.get("page", ["1"])[0])
+            size = int(query.get("per_page", ["100"])[0])
+            return "automation-gh", comments.get(key, [])[(page - 1) * size:page * size]
         if len(parts) == 7 and parts[5:] == ["dependencies", "blocked_by"]:
             return "automation-gh", edges.get(key, relationships())["blocked_by"]
         if parts[3] == "pulls":
@@ -1715,6 +1721,7 @@ def test_global_agent_only_waits_are_unowned_and_real_holds_stay_parked() -> Non
 def test_global_wait_reference_budget_and_auth_stop_are_explicit() -> None:
     module = load_module()
     item = global_issue("someone/business", 10, wait_reviewed=False, body="## Current Status\nWaiting for: Review " + " ".join(f"#{number}" for number in range(20, 32)))
+    item["comments"] = 0
     reads = []
     def read(method: str, path: str, **_kwargs: Any) -> Any:
         assert method == "GET"
@@ -1886,6 +1893,7 @@ def test_bare_reference_missing_here_keeps_post_merge_evidence_complete() -> Non
     # A bare #104 written for another repository is absent here: read, not unread.
     module = load_module()
     row = global_issue("someone/product", 10, body="## Current Status\nNext action: Website agents finish #104 company identity.\n")
+    row["structured_wait"] = module.github_plan_wait.reviewed(evidence="Full fixture discussion reviewed; no wait remains")
     def fetch(cause: str) -> Any:
         def read(_method: str, path: str, **_kwargs: Any) -> Any:
             if path == "/repos/someone/product":
@@ -1907,6 +1915,7 @@ def test_bare_reference_missing_here_keeps_post_merge_evidence_complete() -> Non
     # A parked wait on the same bare reference is read, and its wait stays pending.
     parked = global_issue("someone/product", 11, wait_reviewed=False, labels=["plan", "plan:waiting"],
                           body="## Current Status\nState: Waiting.\nWaiting for: #104 to close.\n")
+    parked["comments"] = 0
     def waiting(cause: str) -> Any:
         read = fetch(cause)
         def wrapped(method: str, path: str, **kwargs: Any) -> Any:
@@ -1942,9 +1951,14 @@ def test_active_timestamp_uncertainty_and_custom_labels_reach_selection_output()
     row = global_issue("someone/product", 10, labels=["plan", "custom-active"],
                        updated_at="2026-10-06T12:00:00Z",
                        body="## Current Status\nNext action: Supervisor lands PR https://github.com/someone/product/pull/71 and closes this issue.\n")
+    row["structured_wait"] = module.github_plan_wait.reviewed(evidence="Full fixture discussion reviewed; no wait remains")
     def fetch(_method: str, path: str, **_kwargs: Any) -> Any:
-        return "automation-gh", ({"default_branch": "main", "archived": False} if path == "/repos/someone/product" else
-                                 {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #10"})
+        if path == "/repos/someone/product":
+            return "automation-gh", {"default_branch": "main", "archived": False}
+        if path.startswith("/repos/someone/product/issues/10/dependencies/blocked_by?"):
+            return "automation-gh", []
+        assert path == "/repos/someone/product/pulls/71", path
+        return "automation-gh", {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #10"}
     config = {**module.DEFAULT_CONFIG, "labels": {**module.DEFAULT_CONFIG["labels"], "active": "custom-active"}}
     with patch.multiple(module, api_json=fetch, load_config=lambda *_: config):
         report = module.next_wait_context([row], scan_limit=1, inventory_complete=True)
@@ -2676,6 +2690,8 @@ def test_global_reserves_final_evidence_time_without_claiming_a_complete_scan() 
 def test_parallel_wait_reports_preserve_stale_frozen_and_unavailable_evidence() -> None:
     rows = [global_issue("someone/project", number, wait_reviewed=False, labels=["plan", "plan:waiting"],
         body="## Current Status\nState: Waiting.\nWaiting for: #99 to complete.\nBlocked by: None.") for number in range(1, 7)]
+    for row in rows:
+        row["comments"] = 0
     for disposition in (False, True, None):
         module = load_module()
         module.load_config = lambda *_: module.DEFAULT_CONFIG

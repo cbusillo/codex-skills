@@ -661,6 +661,7 @@ def repository_activity(
     self_logins: set[str],
     bot_logins: set[str],
     automation_logins: dict[str, str] | None = None,
+    wait_candidates: set[int] | None = None,
 ) -> tuple[dict[tuple[str, int], set[tuple[str, int]]], list[dict[str, str]]]:
     query = urlencode(
         {
@@ -680,6 +681,9 @@ def repository_activity(
         try:
             for item in repository_comment_pages(endpoint):
                 comment = normalizer(repo, item)
+                if (wait_candidates is not None and comment is not None and lane == "issue_comments"
+                        and github_plan_wait.PREFIX in comment.body):
+                    wait_candidates.add(comment.number)
                 if (
                     comment is None
                     or not comment_in_window(comment, since, until)
@@ -1336,19 +1340,32 @@ def structured_wait_issues(
     return found, errors
 
 
+def body_director_wait(issue: dict[str, Any], repo: str, terms: list[str], logins: set[str]) -> bool:
+    try:
+        record, recorded = github_plan_wait.resolve(issue, [], github_plan_wait.authors(repo))
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return True
+    if recorded and record["state"] == "review":
+        return True
+    return director_wait_reason(repo, issue, terms, logins, record if recorded else None) is not None
+
+
 def unasked_director_waits(
     repo: str,
     terms: list[str],
     director_logins: set[str],
     decision_authors: set[str],
     structured: dict[int, dict[str, Any]] | None = None,
+    recent: set[int] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     query = urlencode({"state": "open", "per_page": 100})
     try:
         issues = api_list(f"repos/{repo}/issues?{query}")
     except rollup.RollupError as exc:
         return [], [{"repo": repo, "lane": "director_waits", "error": rollup.trim(str(exc))}]
-    candidates = {issue["number"]: issue for issue in issues if isinstance(issue.get("number"), int)}
+    candidates = {issue["number"]: issue for issue in issues if isinstance(issue.get("number"), int)
+                  and (issue["number"] in (recent or set()) or issue["number"] in (structured or {})
+                       or body_director_wait(issue, repo, terms, director_logins))}
     candidates.update({number: item for number, item in (structured or {}).items() if number not in candidates})
     rows: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
@@ -1545,6 +1562,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
     unasked_waits: list[dict[str, Any]] = []
 
     worker_count = min(MAX_WORKERS, max(1, len(repositories)))
+    recent_waits: dict[str, set[int]] = {repo: set() for repo in repositories}
     if settings["scan_repository_scope"]:
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = {
@@ -1558,6 +1576,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
                         self_logins,
                         bot_logins,
                         people["automation"],
+                        recent_waits[repo],
                     ),
                 ): repo
                 for repo in repositories
@@ -1566,17 +1585,16 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
                 structured_wait_issues, repositories, settings.get("include_archived", False)
             ))
             coverage_errors.extend(structured_errors)
-            wait_futures = [
-                executor.submit(
-                    bounded_discovery,
-                    partial(unasked_director_waits, repo, wait_terms, self_logins, bot_logins, structured_waits.get(repo, {}))
-                )
-                for repo in repositories
-            ]
             for future in as_completed(futures):
                 repo_candidates, repo_errors = future.result()
                 merge_candidate_ids(candidate_ids, repo_candidates)
                 coverage_errors.extend(repo_errors)
+            wait_futures = [
+                executor.submit(bounded_discovery,
+                    partial(unasked_director_waits, repo, wait_terms, self_logins, bot_logins,
+                            structured_waits.get(repo, {}), recent_waits[repo]))
+                for repo in repositories
+            ]
             for future in as_completed(wait_futures):
                 wait_rows, wait_errors = future.result()
                 unasked_waits.extend(wait_rows)

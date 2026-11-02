@@ -122,7 +122,7 @@ inventory when those sources are truncated or inaccessible.
 Global selection reads the bounded discussion before classifying the node and
 uses the claim helper's authorized structured wait resolver. A current `clear`
 record takes precedence over status prose; a pending structured person/event
-wait, status label or native dependency still holds work. Service callers of
+wait or native dependency still holds work. Service callers of
 `evaluate_direction_node` supply the resolved `structured_wait` from the same
 complete discussion and trusted authors; missing, malformed or incomplete
 records require the supported wait review before availability. Legacy prose is

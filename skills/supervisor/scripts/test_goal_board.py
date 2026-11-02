@@ -649,7 +649,6 @@ class GoalBoardTests(unittest.TestCase):
         self.assertIn("https://github.com/owner/app/issues/10: closed", text)
         self.assertIn("https://github.com/owner/app/issues/11: closed", text)
         self.assertNotIn("issues/11: closed (", text)
-        self.assertIn("https://github.com/owner/app/issues/12: active", text)
 
     def test_each_row_carries_its_live_next_action(self):
         newer = comment(status("Comment step."), at="2026-10-16T00:00:00Z", ident=8)

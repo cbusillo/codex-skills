@@ -3817,12 +3817,24 @@ class ClaimTests(unittest.TestCase):
 
 
     def test_new_structured_hold_after_status_is_preserved(self) -> None:
-        hold = wait_record.reviewed(evidence="New Client test request", waiting_for="Client",
-                                    ends_when="Client reports acceptance")
-        self.after_status = lambda: self.issue.update(body=self.issue["body"] + "\n" + wait_record.marker(hold))
-        with self.assertRaises(PLAN.PlanError):
-            self.run_claim()
-        self.assertNotIn("labels", self.events)
+        for retained in (False, True):
+            with self.subTest(retained=retained):
+                self.setUp()
+                if retained:
+                    self.ordinary_handoff_fixture()
+                hold = wait_record.reviewed(evidence="New Client test request", waiting_for="Client",
+                                            ends_when="Client reports acceptance")
+                self.after_status = lambda: self.comments.append({"id": 900, "user": {"login": TEST_BOT},
+                                                                  "body": wait_record.marker(hold)})
+                with self.assertRaises(PLAN.PlanError) as caught:
+                    self.run_claim()
+                self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+                self.assertIn("status", self.events)
+                self.assertIn(hold, wait_record.records(self.comments[-1]["body"]))
+                self.after_status = lambda: None
+                self.args.wait_resolved = "New Client hold reviewed for the permitted source work."
+                self.run_claim()
+                self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
 
     def test_unrelated_description_after_status_survives_label_update(self):
         for retained in (False, True):

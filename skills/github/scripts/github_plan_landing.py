@@ -348,8 +348,6 @@ def reconcile_issue(plan: Any, repo: str, issue_number: int, pull: dict[str, Any
     try:
         github_plan_status.wait_records.require_clear(wait)
     except ValueError:
-        # Closure is already confirmed. Repair only its lifecycle label view;
-        # a held/unread wait does not authorize a completion note or body edit.
         reconcile_related(plan, repo, issue_number, apply=apply, entry=entry)
         entry.update(wait_review_required=True, wait=wait,
                      completion_review="Preserve the wait; owning agent reviews full completion metadata")

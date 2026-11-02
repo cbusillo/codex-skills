@@ -844,7 +844,6 @@ class MutationProjectionTests(unittest.TestCase):
                          parent_issue_url=f"https://api.github.com/repos/{REPO}/issues/3")
         with self.settle_after_first_read(7, settle):
             result = self.command("link", "7", "blocked-by", "8")
-        self.assertEqual(result["projection"]["coverage"], "complete")
         self.assertEqual(self.blockers[7], {8})
         self.assertEqual(len(self.fact_writes), 1)
 

@@ -439,8 +439,8 @@ Search with `index` or `search` before creating or proposing an issue, helper,
 or tooling; reuse an overlapping canonical issue. Search open and closed issues
 across the repository owner's repositories, not only this one:
 `gh-plan.py search "<terms> user:<owner>" --state all`. Say what you found or
-what you searched. Read its full discussion before changing scope. Use the configured
-planning label, normally `plan`, and existing label conventions; ask before
+what you searched. Read its full discussion before changing scope. Use existing
+routing, share and type label conventions; ask before
 creating labels other than the `friction` label that
 [task scope](../references/execution-scope.md) names.
 
@@ -636,7 +636,7 @@ referenced by the canonical PR body and comments, their native parents, and
 every issue it unblocks,
 including cross-repository dependents, within
 [existing posting authority](#missing-cross-repository-gates). Check remaining
-waits against the landed evidence; update Current Status, labels and native
+waits against the landed evidence; update Current Status and native
 relationships under [Derived Status](#derived-status), preserving unresolved waits,
 blockers and Director holds. Close only issues whose finish lines are satisfied;
 keep remaining work with its next actor under

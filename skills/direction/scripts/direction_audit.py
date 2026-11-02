@@ -31,7 +31,7 @@ if str(GITHUB_SCRIPTS) not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_read, github_work_graph
+from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_plan_wait, github_read, github_work_graph
 from skills.github.scripts import github_repository_scope as repository_scope
 from skills.direction.scripts import direction_mark, direction_reporting
 
@@ -646,11 +646,27 @@ def enrich_waiting_inbound_blockers(
     return incomplete
 
 
+def current_audit_wait(issue: dict[str, Any], repo: str, *, fetch: Callable[[list[str]], Any]) -> dict[str, Any]:
+    supplied = issue.get("structured_wait")
+    if supplied is not None:
+        github_plan_wait.validate(supplied)
+        return github_plan_wait.project_dates(supplied)
+
+    def comments(_limit: int | None) -> tuple[list[dict[str, Any]], bool]:
+        rows, cut = fetch_paginated(f"repos/{repo}/issues/{issue['number']}/comments", fetch=fetch, max_pages=2)
+        return rows, not cut
+
+    discussion, complete = github_work_graph.read_discussion(issue, comments, limit=200)
+    if not complete:
+        raise AuditError("Issue wait discussion is incomplete")
+    return github_plan_wait.project_dates(github_plan_wait.current(issue, discussion, github_plan_wait.authors(repo)))
+
+
 def parked_issue(issue: dict[str, Any], repo: str) -> bool:
     if "pull_request" in issue or issue.get("state", "open") != "open":
         return False
     wait = issue.get("structured_wait")
-    if isinstance(wait, dict):
+    if isinstance(wait, dict) and wait["state"] != "review":
         return wait["state"] != "clear"
     status = github_direction_next.section_map(issue.get("body") or "").get("Current Status", "")
     return github_direction_next.milestone_wait_evidence(
@@ -861,12 +877,15 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
     delivery = bool(clauses and raw_clauses[-1].strip() and re.fullmatch(first, clauses[0], re.I)
                     and set(references(next_action[1])).issubset(pulls)
                     and all(re.fullmatch(bookkeeping, clause, re.I) for clause in clauses[1:]))
-    hold_pending = delegate_unresolved
+    reviewed_wait = issue.get("structured_wait")
+    hold_pending = delegate_unresolved or (reviewed_wait is not None and reviewed_wait["state"] != "clear")
     if agent_wait and next_action:
         hold_pending |= bool(re.search(r"\b(?:after|until|once|when|accept\w*|approv\w*|decision)\b", next_action[1], re.I))
     for match in re.finditer(
         rf"(?ims)^\s*(?:[-*]\s+)?(Waiting for|Blocked by|Parked until):\s*(.*?)(?=^\s*(?:[-*]\s+)?{STATUS_FIELD}:|\Z)", status,
     ):
+        if reviewed_wait is not None and reviewed_wait["state"] == "clear":
+            continue
         reason = match[2].strip()
         hold_pending |= not (github_plan_claim.no_wait_reason(reason, field="Waiting for")
                              or github_direction_next.non_external_wait(reason)
@@ -876,7 +895,7 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
     ):
         text = re.sub(r"\bno (?:failed|pending)(?:[ /]+(?:failed|pending))* (?:checks|workflows)\b", "", match[1], flags=re.I)
         hold_pending |= bool(re.search(r"\b(?:pending|awaiting|remaining|remainder|split|not yet|still required)\b", text, re.I))
-    if agent_wait:
+    if agent_wait or (reviewed_wait is not None and reviewed_wait["state"] == "clear"):
         total = (issue.get("issue_dependencies_summary") or {}).get("total_blocked_by")
         if type(total) is not int or total != 0:
             blockers, cut = fetch_paginated(
@@ -951,6 +970,14 @@ def stale_wait_report(
             continue
         checked += 1
         checked_issues.append(number)
+        try:
+            wait = current_audit_wait(issue, repo, fetch=lambda args: read(args[1]))
+        except (AuditError, ValueError) as error:
+            errors.append({"number": number, "source": "structured_wait", "reason": str(error)})
+            continue
+        issue = {**issue, "structured_wait": wait}
+        if wait["state"] == "waiting":
+            continue
         sections = github_direction_next.section_map(str(issue.get("body") or ""))
         status = next((text for title, text in sections.items() if title.casefold() == "current status"), "")
         normalized_status = re.sub(r"\*\*(Waiting for)(:?)\*\*(:?)", r"\1\2\3", status, flags=re.I)
@@ -1164,24 +1191,15 @@ def enrich_milestone_waits(
         return configs[target_repo]
 
     for item in issues:
-        item["_plan_status"] = github_direction_next.next_plan_status(item, config(repo))
-        if ("pull_request" in item
-                or item.get("state", "open") != "open" or str(item.get("title", "")).startswith("Track:")
-                or (item.get("milestone") or {}).get("title") not in titles
-                or item["_plan_status"] in {"blocked", "stale", "done"}):
-            continue
-        compact = {**github_direction_next.compact_list_issue(repo, item), "plan_status": item["_plan_status"]}
-        status = github_direction_next.section_map(item.get("body") or "").get("Current Status", "")
-        if not github_direction_next.check_milestone_wait(compact, status, titles).get("wait_finding"):
+        if "pull_request" in item or item.get("state", "open") != "open":
             continue
         try:
-            comments, cut = fetch_paginated(f"repos/{repo}/issues/{item['number']}/comments", fetch=fetch, max_pages=2)
-            if cut:
-                raise AuditError("Milestone wait discussion is incomplete")
-            item["structured_wait"] = wait_helpers["current_wait"](item, comments, repo)
-        except (AuditError, ValueError, wait_helpers["PlanError"]):
+            item["structured_wait"] = current_audit_wait(item, repo, fetch=fetch)
+        except (AuditError, ValueError) as error:
+            item["structured_wait"] = {"version": 1, "state": "review", "evidence": str(error), "waits": []}
             item["_milestone_wait_unread"] = True
             incomplete = True
+        item["_plan_status"] = github_direction_next.next_plan_status(item, config(repo))
 
     def read_node(target_repo: str, number: int) -> dict[str, Any]:
         nonlocal incomplete

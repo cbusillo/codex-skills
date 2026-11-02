@@ -52,7 +52,7 @@ Keep the owning issue's Current Status, labels, and native relationships current
 under github-plan's [Derived Status](../../github-plan/SKILL.md#derived-status)
 when parking or handing off work. Projects remain automatic views; do not maintain manual
 Focus, Manager, Finish Line, or roadmap fields. For completed planning issues,
-use the `github-plan` close flow so done labels and Project Status are updated.
+use the `github-plan` close flow for its relationship preflight and Project Status.
 
 ### Local-only preservation checks
 

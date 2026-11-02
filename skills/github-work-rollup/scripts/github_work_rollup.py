@@ -1393,7 +1393,7 @@ def handoff_for_pr(state: str, entry: dict[str, Any], labels: list[str]) -> str 
 def handoff_for_issue(state: str, labels: list[str]) -> str | None:
     if state == "closed":
         return None
-    return "github-plan for planning reconciliation"
+    return None
 
 
 def priority_score(labels: list[str], settings: dict[str, Any]) -> int:

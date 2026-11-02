@@ -2884,9 +2884,8 @@ def link_native_dependency(
     source: dict[str, Any], target: dict[str, Any], *,
     failed_step: str = "link_blocked_by",
 ) -> tuple[str, dict[str, Any]]:
-    actor, _ = api_json("POST", f"/repos/{source['repo']}/issues/{source['number']}/dependencies/blocked_by",
-                        {"issue_id": target["id"]}, failed_step=failed_step)
-    return actor, refresh_planning_targets([(source["repo"], int(source["number"]))])
+    return api_json("POST", f"/repos/{source['repo']}/issues/{source['number']}/dependencies/blocked_by",
+                    {"issue_id": target["id"]}, failed_step=failed_step)
 
 
 def evaluate_claim_wait(waiting_issue: dict[str, Any], waiting_status: str, config: dict[str, Any], *,
@@ -4177,11 +4176,9 @@ def automatic_planning_writes_allowed() -> bool:
 
 def refresh_planning_targets(targets: list[tuple[str, int]], *, apply: bool = True,
                              include_dependents: bool = False, required: bool = True,
-                             config_optional_unless_planning: bool = False,
                              planning_checkout: str | None = None) -> dict[str, Any]:
     """A confirmed fact write and its label projection have separate receipts."""
-    tasks = [{"repo": repo, "number": number, "role": "related", "required": required,
-              **({"config_optional_unless_planning": True} if config_optional_unless_planning else {})}
+    tasks = [{"repo": repo, "number": number, "role": "related", "required": required}
              for repo, number in dict.fromkeys(targets)]
     if include_dependents:
         for repo, number in targets:
@@ -4373,14 +4370,8 @@ def wait_once(args: argparse.Namespace) -> None:
         raise PlanError(str(exc), failure=failure, payload={"structured_wait": wait, "comment": result,
                         "completed_steps": ["post_wait"],
                         "recovery": "Read the published comment and latest wait before any retry"}) from exc
-    projection = refresh_planning_targets([(issue["repo"], issue["number"])]) if kind == "issue" else None
-    published = {"actor": actor, "structured_wait": wait, "comment": result,
-                 "issue": compact_issue(observed), "projection": projection, "completed_steps": ["post_wait", "wait_record_readback"]}
-    if projection is not None and projection["coverage"] != "complete":
-        published["recovery"] = status_recovery(issue["repo"], issue["number"])
-    if projection is not None and not projection["ok"]:
-        raise PlanError("Wait record is published; planning status evidence is incomplete", payload=published)
-    emit({"ok": True, **published})
+    emit({"ok": True, "actor": actor, "structured_wait": wait, "comment": result,
+          "issue": compact_issue(observed), "completed_steps": ["post_wait", "wait_record_readback"]})
 
 
 def cmd_create(args: argparse.Namespace) -> None:
@@ -4529,11 +4520,6 @@ def cmd_create(args: argparse.Namespace) -> None:
     for key in ("operation_marker", "reconciled", "reconciliation"):
         if key in issue:
             result[key] = issue[key]
-    result["projection"] = refresh_planning_targets([(repo, int(issue["number"]))])
-    if result["projection"]["coverage"] != "complete":
-        result["recovery"] = status_recovery(repo, int(issue["number"]))
-    if not result["projection"]["ok"]:
-        raise PlanError("Issue is created; planning status evidence is incomplete; do not repeat creation", payload=result)
     emit(result)
 
 
@@ -4625,12 +4611,10 @@ def cmd_link(args: argparse.Namespace) -> None:
     source_number = int(source["number"])
     target_number = int(target["number"])
     rel = args.relationship
-    projection = None
-
     if rel == "blocked-by":
-        actor, projection = link_native_dependency(source, target)
+        actor, _ = link_native_dependency(source, target)
     elif rel == "blocks":
-        actor, projection = link_native_dependency(target, source, failed_step="link_blocks")
+        actor, _ = link_native_dependency(target, source, failed_step="link_blocks")
     elif rel == "subissue":
         actor, _ = api_json(
             "POST",
@@ -4644,20 +4628,9 @@ def cmd_link(args: argparse.Namespace) -> None:
     else:
         raise PlanError(f"Unsupported relationship: {rel}")
 
-    affected = target if rel == "blocks" else source
-    if rel == "subissue":
-        projection = refresh_planning_targets([(affected["repo"], int(affected["number"]))])
-    recovery = (status_recovery(affected["repo"], int(affected["number"]))
-                if projection is not None and projection["coverage"] != "complete" else None)
-    if projection is not None and not projection["ok"]:
-        raise PlanError("Native relationship is linked; status evidence is incomplete; do not repeat the edge write",
-                        payload={"relationship": rel, "source": compact_issue(source), "target": compact_issue(target),
-                                 "projection": projection, "recovery": recovery, "completed_steps": ["link_relationship"]})
     emit({
         "ok": True,
         "actor": actor,
-        "projection": projection,
-        "recovery": recovery,
         "relationship": rel,
         "source": compact_issue(source),
         "target": compact_issue(target),
@@ -4697,16 +4670,7 @@ def cmd_unlink(args: argparse.Namespace) -> None:
         actor, _ = rest_edit_issue(source_repo, source_number, body=updated)
     else:
         raise PlanError(f"Unlink supports blocked-by, blocks, subissue, and related; got {rel}")
-    affected = target if rel == "blocks" else source
-    projection = (refresh_planning_targets([(affected["repo"], int(affected["number"]))])
-                  if rel in {"blocked-by", "blocks", "subissue"} else None)
-    recovery = (status_recovery(affected["repo"], int(affected["number"]))
-                if projection is not None and projection["coverage"] != "complete" else None)
-    if projection is not None and not projection["ok"]:
-        raise PlanError("Native relationship is unlinked; status evidence is incomplete; do not repeat the edge write",
-                        payload={"relationship_removed": rel, "source": compact_issue(source), "target": compact_issue(target),
-                                 "projection": projection, "recovery": recovery, "completed_steps": ["unlink_relationship"]})
-    emit({"ok": True, "actor": actor, "relationship_removed": rel, "projection": projection, "recovery": recovery})
+    emit({"ok": True, "actor": actor, "relationship_removed": rel})
 
 
 def cmd_deps(args: argparse.Namespace) -> None:

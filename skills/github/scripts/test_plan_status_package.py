@@ -40,7 +40,10 @@ class InstalledContractTests(unittest.TestCase):
                 "uv", "run", "--no-project", "--python", sys.executable,
                 "--with", str(wheels[0]), "python", "-I", "-c", """
 from importlib.resources import files
-from github_plan_status import DEFAULT_STATUS_LABELS, derive, is_planning_issue, label_changes, projection_outcome, same_wait_projection, waits
+from github_plan_status import (
+    DEFAULT_STATUS_LABELS, classify_outcome, derive, failure_disposition, is_planning_issue,
+    label_changes, normalize_author, projection_outcome, receipt_summary, same_wait_projection, wait_records, waits,
+)
 from github_plan_status.body import wrap_contributor_plan
 from github_plan_status.workflow_runs import current_workflow_runs, workflow_execution_identity
 from github_plan_status.client_test_notes import ENGINEERING_RELEASE_TESTS, body_client_test_notes, client_test_notes
