@@ -25,6 +25,7 @@ except ModuleNotFoundError:
 
 
 LEASE_TAKEOVER_PREFIX = "Lease takeover: claim "
+NATIVE_SESSION_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.IGNORECASE)
 EMPTY_HOLDERS = {"none", "unassigned", "unclaimed", "not assigned", "n/a", "-", "nobody", "no one", "no-one"}
 
 
@@ -257,7 +258,7 @@ def session_fields(text: str, *, include_quotes: bool = True, current_only: bool
 
 def session_identifiers(value: str) -> set[str]:
     tokens = [token.strip("()<>").removesuffix(".") for token in re.findall(r"[^\s,;|]+", value)]
-    native = {token for token in tokens if re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", token, re.IGNORECASE)}
+    native = {token for token in tokens if NATIVE_SESSION_ID.fullmatch(token)}
     return native or {value}
 
 
@@ -584,7 +585,7 @@ def discussion_evidence(
 
 
 def recipient_evidence(status: str, comments: list[dict[str, Any]], *,
-                       repo: str, number: int, worker: str = "", session: str = "",
+                       repo: str, number: int, trusted: set[str], worker: str = "", session: str = "",
                        ended_claims: set[int] | None = None) -> dict[str, Any] | None:
     try:
         actor = next_actor.read(status)
@@ -593,15 +594,16 @@ def recipient_evidence(status: str, comments: list[dict[str, Any]], *,
     recipient = actor.removeprefix("agent:") if actor and actor.startswith("agent:") else None
     if not recipient or recipient.casefold() in {worker.casefold(), session.casefold()}:
         return None
-    texts = [status, *(comment.get("body") or "" for comment in comments)]
+    texts = [status, *(comment.get("body") or "" for comment in comments
+                      if str((comment.get("user") or {}).get("login") or "").casefold() in trusted)]
     identities = {record[key].casefold() for text in texts for record in records(text) for key in ("worker", "session")}
     for text in texts:
         identities.update(identity.casefold() for field in session_fields(text, include_quotes=False)
                           for identity in session_identifiers(field))
-        identities.update(match[1].rstrip(".;").casefold()
-                          for match in re.finditer(r"\bTrial token:[ \t]*(\S+)", unquoted_text(text)))
-    if (recipient.casefold() not in identities
-            and not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", recipient, re.IGNORECASE)):
+        identities.update(match[1].rstrip(".,;").casefold()
+                          for match in re.finditer(r"\bTrial token:[ \t]*(\S+)",
+                                                   ownership_text(unquoted_text(text), strip_quotes=False), re.IGNORECASE))
+    if recipient.casefold() not in identities and not NATIVE_SESSION_ID.fullmatch(recipient):
         return None
     ended = [record for comment in comments if comment.get("id") in (ended_claims or set())
              for record in records(comment.get("body") or "")]

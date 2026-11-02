@@ -420,7 +420,7 @@ class CloseConfigTests(unittest.TestCase):
         result, _, _ = self.show_fixture(launch=True, actor="agent:old-worker", worker="new-worker",
             body_time="2026-10-01T00:00:00Z", comments_extra=[{
                 "id": 2, "user": {"login": "fixture"}, "created_at": "2026-10-25T00:00:00Z",
-                "body": "## Current Status\nNext actor: agent:new-worker"}])
+                "body": "Trial token: old-worker\n## Current Status\nNext actor: agent:new-worker\nTrial token: new-worker"}])
         self.assertTrue(result["issue"]["launch_check"]["allowed"])
 
     def test_launch_returns_actionable_admission_argument_errors(self) -> None:

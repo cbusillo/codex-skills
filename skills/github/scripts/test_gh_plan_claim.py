@@ -85,14 +85,17 @@ class ClaimMarkerTests(unittest.TestCase):
         recipient = "launchplane-engineer"
         status = f"Next actor: agent:{recipient}\n"
         identity = {**OTHER, "worker": recipient}
-        for record in (f"Session: {recipient}", f"Brief from the Supervisor. Trial token: {recipient}.", CLAIM.marker(identity)):
+        for record in (f"Session: {recipient}", f"Brief from the Supervisor. Trial token: {recipient}.",
+                       f"**trial token:** `{recipient}`,", CLAIM.marker(identity)):
             with self.subTest(record=record):
-                comments = [{"body": record}]
-                self.assertEqual(CLAIM.recipient_evidence(status, comments, repo="owner/repo", number=42)["worker"], recipient)
-                self.assertIsNone(CLAIM.recipient_evidence(status, comments, repo="owner/repo", number=42, worker=recipient))
+                comments = [{"user": {"login": "owner"}, "body": record}]
+                self.assertEqual(CLAIM.recipient_evidence(status, comments, repo="owner/repo", number=42, trusted={"owner"})["worker"], recipient)
+                self.assertIsNone(CLAIM.recipient_evidence(status, comments, repo="owner/repo", number=42, trusted={"owner"}, worker=recipient))
+                self.assertIsNone(CLAIM.recipient_evidence(status, comments, repo="owner/repo", number=42, trusted=set()))
         for text in ("", f"> Trial token: {recipient}", f"```\nTrial token: {recipient}\n```", "Trial token: somebody-else"):
             with self.subTest(text=text):
-                self.assertIsNone(CLAIM.recipient_evidence(status, [{"body": text}], repo="owner/repo", number=42))
+                self.assertIsNone(CLAIM.recipient_evidence(status, [{"user": {"login": "owner"}, "body": text}],
+                                                         repo="owner/repo", number=42, trusted={"owner"}))
 
     def test_actor_ignores_examples_and_replaces_only_the_live_field(self) -> None:
         from github_plan_status import next_actor

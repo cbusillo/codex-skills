@@ -47,9 +47,9 @@ decisions, statuses, board contents or narrative; open linked records for action
    No digest state file is needed.
    Staffing is the item's own Next actor and concrete Next action, ranked by
    `next`. Generic agent roles are available work, subject to the ownership
-   check. A specifically named worker or session without a claim needs custody
-   reconciliation; launch its recorded Trial token, or confirm the handoff before
-   updating Next actor. There is no separate staffing-comment queue.
+   check. Follow the shared [recipient check](../../github/references/cli-reference.md#planning-next-work)
+   when assigning an unclaimed worker or reconciling its custody. There is no
+   separate staffing-comment queue.
    Route Client and Client-agent comments to the owning worker for an answer.
    Open full source comments before acting; register/present decisions needed
    from this Director through the existing queue rules. Optional routing writes

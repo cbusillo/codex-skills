@@ -64,7 +64,7 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
             ended_claims={source["claim_id"] for source in ended})
         recipients = []
         if recipient := github_plan_claim.recipient_evidence(
-                status, comments, repo=item["repo"], number=item["number"], worker=worker, session=session,
+                status, comments, repo=item["repo"], number=item["number"], trusted=trusted, worker=worker, session=session,
                 ended_claims={source["claim_id"] for source in ended}):
             recipients.append(recipient)
         if item.get("record_type") == "pull_request":
@@ -93,7 +93,7 @@ def ownership_facts(item: dict[str, Any], ownership: dict[str, Any], *, trusted:
                 conflicts.extend(source_conflicts)
                 source_recipient = github_plan_claim.recipient_evidence(
                         source_status, source_comments, repo=source.get("repo") or item["repo"],
-                        number=source["number"], worker=worker, session=session,
+                        number=source["number"], trusted=trusted, worker=worker, session=session,
                         ended_claims={entry["claim_id"] for entry in ended_sources})
                 if source_recipient:
                     recipients.append(source_recipient)

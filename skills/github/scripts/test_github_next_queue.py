@@ -396,7 +396,7 @@ def test_next_actor_routes_work_without_prose_inference() -> None:
         assert result["next_actor"] == actor
         assert result["ownership_evidence"][0]["source"] == "recorded_recipient"
         recipient = claim.recipient_evidence(queue.current_status(row["discussion"], {"owner"}), [],
-            repo=row["repo"], number=row["number"], worker="new-worker", session="new-session")
+            repo=row["repo"], number=row["number"], trusted={"owner"}, worker="new-worker", session="new-session")
         assert [recipient] == result["ownership_evidence"]
     row = item()
     row["discussion"]["body"] += "\nNext actor: person:owner\n"
