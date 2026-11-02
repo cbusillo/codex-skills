@@ -273,6 +273,54 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                             session_closeout.ready(entry, "supervisor")
                     writer.execute("DELETE FROM steps WHERE idx>0")
                     writer.commit()
+                background = json.loads((Path(__file__).parent / "fixtures/agy-command-background.json").read_text())
+                for change in (
+                    "captured",
+                    "pending",
+                    "missing_notification",
+                    "old_final",
+                    "foreign_task",
+                    "cancel",
+                    "foreign_origin",
+                    "unknown_notification",
+                ):
+                    steps = [fields(bytes.fromhex(row["step_payload_hex"])) for row in background["steps"]]
+                    if change == "pending":
+                        steps[0].pop(140)
+                    elif change in {"missing_notification", "old_final"}:
+                        steps[2] = fields(response)
+                    elif change in {"foreign_task", "cancel"}:
+                        metadata_fields = fields(steps[1][5])
+                        call_fields = fields(metadata_fields[4])
+                        arguments = json.loads(call_fields[3])
+                        arguments["TaskId" if change == "foreign_task" else "Action"] = "unverified"
+                        call_fields[3] = json.dumps(arguments).encode()
+                        metadata_fields[4] = protobuf(call_fields)
+                        steps[1][5] = protobuf(metadata_fields)
+                    elif change in {"foreign_origin", "unknown_notification"}:
+                        note = fields(steps[2][114])
+                        if change == "unknown_notification":
+                            note[3] = b"unverified"
+                        else:
+                            envelope = fields(note[4])
+                            envelope[2] = b"another-session"
+                            note[4] = protobuf(envelope)
+                        steps[2][114] = protobuf(note)
+                    writer.execute("DELETE FROM steps")
+                    for index, step in enumerate(steps):
+                        writer.execute("INSERT INTO steps VALUES (?,?,?,0,?)", (index, step[1], step[4], protobuf(step)))
+                    last = (
+                        fields(bytes.fromhex(background["steps"][2]["step_payload_hex"]))
+                        if change == "old_final"
+                        else fields(response)
+                    )
+                    writer.execute("INSERT INTO steps VALUES (3,?,?,0,?)", (last[1], last[4], protobuf(last)))
+                    writer.commit()
+                    with self.subTest(background=change):
+                        self.assertEqual(session_record.session_status(entry)["safe_verdict"], change == "captured")
+                writer.execute("DELETE FROM steps")
+                writer.execute("INSERT INTO steps VALUES (0,15,3,0,?)", (response,))
+                writer.commit()
                 writer.execute("PRAGMA journal_mode=WAL")
                 read = session_record.read_jsonl
 
@@ -302,6 +350,25 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                 ):
                     asyncio.run(iterm_tab.register_fresh_launch(argparse.Namespace(ledger=streaming_ledger), dict(launch), None))
                 self.assertEqual(session_record.load_ledger(streaming_ledger)[0]["session_id"], session)
+                writer.execute("DELETE FROM trajectory_meta")
+                writer.commit()
+
+                def complete_startup(path: Path) -> list[dict]:
+                    try:
+                        return read(path)
+                    finally:
+                        with sqlite3.connect(transcript) as initializer:
+                            if not initializer.execute("SELECT cascade_id FROM trajectory_meta").fetchall():
+                                initializer.execute("INSERT INTO trajectory_meta VALUES (?)", (session,))
+
+                startup_ledger = root / "startup-ledger.json"
+                with (
+                    patch.object(session_record, "read_jsonl", side_effect=complete_startup),
+                    patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", "agy")]),
+                    patch.object(session_liveness, "process_started_at", return_value=timestamp),
+                ):
+                    asyncio.run(iterm_tab.register_fresh_launch(argparse.Namespace(ledger=startup_ledger), dict(launch), None))
+                self.assertEqual(session_record.load_ledger(startup_ledger)[0]["session_id"], session)
 
     def test_input_line_excludes_agy_slash_menu_suggestion_row(self) -> None:
         screen = [

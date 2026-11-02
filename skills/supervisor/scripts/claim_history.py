@@ -257,24 +257,60 @@ def read_agy_records(path: Path) -> list[dict]:
                 raise ValueError("native AGY transcript identity is unavailable or differs")
             records.append({"sessionId": path.stem, "type": "system"})
             rows = database.execute("SELECT idx, step_type, status, has_subtrajectory, step_payload FROM steps ORDER BY idx").fetchall()
-        for index, (ordinal, kind, status, children, blob) in enumerate(rows):
-            step = protobuf_fields(blob)
+        steps = [protobuf_fields(row[4]) for row in rows]
+        tasks = {}
+        for index, step in enumerate(steps):
+            if 148 in step:
+                task = protobuf_fields(step[148])
+                call = protobuf_fields(protobuf_fields(step.get(5, b"")).get(4, b""))
+                identity = f"{path.stem}/task-{index}"
+                if task.get(1) == identity.encode() and call.get(2) == b"run_command":
+                    tasks[identity] = {"index": index, "call": call, "terminal": agy_command_terminal(step)}
+        notified = {protobuf_fields(protobuf_fields(step[114])[4])[3].decode()
+                    for row, step in zip(rows, steps) if row[1:4] == (101, 3, 0)
+                    and agy_task_notification(step, path.stem, row[0], tasks)}
+        for identity, task in tasks.items():
+            task["notified"] = identity in notified
+        for index, (ordinal, kind, status, children, _blob) in enumerate(rows):
+            step = steps[index]
             if ordinal != index or step.get(1) != kind or step.get(4, 0) != status:
                 raise ValueError("native AGY step identity is unavailable")
-            records.extend(agy_step_records(path.stem, ordinal, kind, status, children, step))
+            records.extend(agy_step_records(path.stem, ordinal, kind, status, children, step, tasks))
     except (sqlite3.Error, KeyError, TypeError, AttributeError, UnicodeError) as error:
         raise ValueError(f"native AGY transcript unavailable: {error}") from error
     return records
 
 
-def agy_step_records(session: str, ordinal: int, kind: int, status: int, children: bool, step: dict) -> list[dict]:
+def agy_command_terminal(step: dict) -> dict:
+    fields = protobuf_fields
+    result = fields(fields(step.get(140, b"")).get(2, b""))
+    return fields(fields(fields(result.get(3, b"")).get(10, b"")).get(3, b""))
+
+
+def agy_task_notification(step: dict, session: str, ordinal: int, tasks: dict) -> bool:
+    fields = protobuf_fields
+    note = fields(step.get(114, b""))
+    envelope = fields(note.get(4, b""))
+    origin = fields(fields(envelope.get(12, b"")).get(1, b""))
+    task = tasks.get(envelope.get(3, b"").decode())
+    call = fields(origin.get(3, b""))
+    terminal = fields(fields(fields(note.get(2, b"")).get(10, b"")).get(3, b""))
+    return bool(task and task["index"] < ordinal and note.get(3) == b"task_notification" and envelope.get(2) == session.encode()
+                and origin.get(1) == session.encode() and origin.get(2, 0) == task["index"]
+                and (call.get(1), call.get(2)) == (task["call"].get(1), task["call"].get(2))
+                and json.loads(call.get(3, b"{}")) == json.loads(task["call"][3])
+                and terminal.get(1) == task["terminal"].get(1) and terminal.get(3) == task["terminal"].get(3)
+                and type(terminal.get(3)) is int)
+
+
+def agy_step_records(session: str, ordinal: int, kind: int, status: int, children: bool, step: dict, tasks: dict) -> list[dict]:
     fields = protobuf_fields
     metadata = fields(step.get(5, b""))
     clock = fields(metadata.get(8) or metadata.get(1, b""))
     timestamp = datetime.fromtimestamp(clock[1] + clock.get(2, 0) / 1e9, timezone.utc).isoformat()
     row: dict[str, Any] = {"sessionId": session, "timestamp": timestamp, "type": "user", "message": {"content": ""}}
     pending = ("native child history is unavailable" if children else
-               "native step kind is unknown" if kind not in {14, 15, 132} else
+               "native step kind is unknown" if kind not in {14, 15, 101, 132} else
                "native step is pending" if status not in {3, 6, 7} else None)
     records = []
     if kind == 14 and status == 3:
@@ -283,6 +319,9 @@ def agy_step_records(session: str, ordinal: int, kind: int, status: int, childre
         response = fields(step[20])
         row.update(type="assistant", message={"content": [{"type": "text", "text": response.get(8, response.get(1, b"")).decode()}],
                    "stop_reason": "end_turn" if 7 not in response else None})
+    elif kind == 101:
+        if status != 3 or not agy_task_notification(step, session, ordinal, tasks):
+            pending = pending or "native notification provenance is unavailable"
     elif kind not in {14, 15}:
         call = fields(metadata.get(4, b""))
         if not call:
@@ -293,18 +332,21 @@ def agy_step_records(session: str, ordinal: int, kind: int, status: int, childre
             content = {"type": "tool_use", "id": identifier, "name": "Bash" if command else name,
                        "input": {"command": arguments["CommandLine"]} if command else arguments}
             records.append({"sessionId": session, "timestamp": timestamp, "type": "assistant", "message": {"content": [content]}})
-            if name not in {"read_file", "write_file", "edit_file", "list_dir", "grep_search", "find_by_name", "run_command"}:
+            task_status = name == "manage_task" and arguments.get("Action") == "status" and arguments.get("TaskId") in tasks
+            if name not in {"read_file", "write_file", "edit_file", "list_dir", "grep_search", "find_by_name", "run_command"} and not task_status:
                 pending = pending or f"native tool coverage is unavailable for {name}"
             if status in {3, 6, 7} and kind == 132:
                 result = fields(fields(step.get(140, b"")).get(2, b""))
                 output = result.get(1, b"").decode()
                 failed = status != 3
                 if command and status == 3:
-                    terminal = fields(fields(fields(result.get(3, b"")).get(10, b"")).get(3, b""))
+                    terminal = agy_command_terminal(step)
                     if type(terminal.get(3)) is not int or terminal.get(1, b"").decode() != arguments["CommandLine"]:
                         pending = pending or "native command completion is unavailable"
                     else:
                         failed = failed or terminal[3] != 0
+                if command and 148 in step and not tasks.get(f"{session}/task-{ordinal}", {}).get("notified"):
+                    pending = pending or "native background task completion is unavailable"
                 row["message"] = {"content": [{"type": "tool_result", "tool_use_id": identifier, "content": output, "is_error": failed}]}
     if pending:
         row["native_pending"] = {"task_id": f"native-step-{ordinal}", "started": timestamp, "reason": pending}

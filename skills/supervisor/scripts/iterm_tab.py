@@ -1874,8 +1874,15 @@ def register_file_launch(launch: dict, native: dict, ledger: Path) -> dict:
     if harness == "agy":
         entry["agy_log"] = native["log"]
         entry["launch_started_at"] = session_liveness.process_started_at(entry["pid"]).isoformat()
-    records = session_record.read_jsonl(paths[0])
-    claim_history.root_records(paths[0], harness, native["session_id"], records)
+    while True:
+        try:
+            records = session_record.read_jsonl(paths[0])
+            claim_history.root_records(paths[0], harness, native["session_id"], records)
+            break
+        except ValueError:
+            if harness != "agy" or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.2)
     append_launch_ledger(ledger, entry)
     return entry
 
