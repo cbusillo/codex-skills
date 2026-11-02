@@ -644,7 +644,7 @@ policy:
       match:
         argv_prefix: ["gh", "issue", "close"]
       action: require_preferred
-      message: Raw `gh issue close` can mangle close comments. For ordinary non-plan issues, run `scripts/gh-issue close 123 --repo OWNER/REPO --reason completed < comment.md` or use a quoted heredoc so the close comment is read safely from stdin. If the target is a completed durable plan issue, switch to `github-plan` and use `uv run scripts/gh-plan.py close 123 --comment-file comment.md` so planning labels and Project Status stay in sync.
+      message: Raw `gh issue close` can mangle close comments. For ordinary non-plan issues, run `scripts/gh-issue close 123 --repo OWNER/REPO --reason completed < comment.md` or use a quoted heredoc so the close comment is read safely from stdin. If the target is a completed durable plan issue, switch to `github-plan` and use `uv run scripts/gh-plan.py close 123 --comment-file comment.md` so native completion metadata and Project Status stay in sync.
       preferred:
         - kind: script
           path: scripts/gh-issue
@@ -1013,7 +1013,8 @@ Use PRs for all non-trivial changes.
   for closing language and event waits, and
   [talking with the Director](../references/talking-with-the-director.md) for durable
   PR, issue, review, and closeout text.
-- **Labels**: Planning labels are only for durable planning issues. PR labels
+- **Labels**: Planning status is derived on read. Routing, share and type labels
+  carry decisions. PR labels
   follow the [label taxonomy](references/repo-workflow.md#label-taxonomy):
   `preview-ready`, the optional `awaiting-qa` handoff, `own-project` for
   own-project work in a mixed repository, and the merge-train enqueue label

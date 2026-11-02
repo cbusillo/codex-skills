@@ -16,6 +16,28 @@ import github_plan_wait
 
 
 class DerivedStatusTests(unittest.TestCase):
+    def test_planning_completion_uses_existing_body_metadata(self) -> None:
+        from github_plan_status.body import PLAN_OWNERSHIP_MARKERS, PLAN_MANAGED_PROVENANCE_MARKER
+
+        for body in ("Plain request.", "## Scope\nFix the screen.\n## Validation\nSave the form.",
+                     "## Current Status\r\nAgent lands the PR.", "```\n## Finish Line\nSaving works.\n```",
+                     f"The marker `{PLAN_MANAGED_PROVENANCE_MARKER}` is an example."):
+            self.assertFalse(github_plan_status.is_planning_issue({"body": body}))
+        for body in (*PLAN_OWNERSHIP_MARKERS, PLAN_MANAGED_PROVENANCE_MARKER + "\r\n"):
+            with self.subTest(body=body):
+                self.assertTrue(github_plan_status.is_planning_issue({"body": body}))
+                self.assertFalse(github_plan_status.is_planning_issue({"body": body, "pull_request": {}}))
+
+    def test_status_is_independent_of_retired_labels(self) -> None:
+        relationships = {"blocked_by": []}
+        clear = github_plan_wait.reviewed(evidence="Full discussion reviewed")
+        for state, expected in (("open", "active"), ("closed", "done")):
+            for label in ("plan", "plan:active", "plan:blocked", "plan:waiting", "plan:stale", "plan:done"):
+                with self.subTest(state=state, label=label):
+                    issue = {"state": state, "labels": [label]}
+                    result = github_plan_status.derive(issue, relationships, clear)
+                    self.assertEqual(result["status"], expected)
+
     def setUp(self) -> None:
         self.issue = {"repo": "fixture/product", "number": 7, "state": "open",
                       "labels": [{"name": "plan:blocked"}, {"name": "plan:waiting"}],
@@ -34,14 +56,12 @@ class DerivedStatusTests(unittest.TestCase):
         self.assertEqual(result["status"], "active")
         self.assertEqual(result["blocked_by"], [])
         self.assertEqual(result["waits"], [])
-        self.assertEqual(set(result["labels"]), {"active"})
         self.assertEqual(self.issue, before)
 
     def test_only_open_native_blockers_are_reported(self) -> None:
         result = self.derive([self.closed, self.open])
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["blocked_by"], [self.open])
-        self.assertEqual(set(result["labels"]), {"blocked"})
 
     def test_person_wait_survives_the_last_native_blocker(self) -> None:
         wait = github_plan_wait.reviewed(evidence="Director's current test request",
@@ -50,7 +70,6 @@ class DerivedStatusTests(unittest.TestCase):
         self.assertEqual(result["status"], "waiting")
         self.assertEqual(result["blocked_by"], [])
         self.assertEqual(result["waits"], wait["waits"])
-        self.assertEqual(set(result["labels"]), {"waiting"})
 
     def test_native_blocker_and_person_wait_are_both_preserved(self) -> None:
         wait = github_plan_wait.reviewed(evidence="Separate unresolved acceptance",
@@ -59,83 +78,17 @@ class DerivedStatusTests(unittest.TestCase):
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["blocked_by"], [self.open])
         self.assertEqual(result["waits"], wait["waits"])
-        self.assertEqual(set(result["labels"]), {"blocked", "waiting"})
 
     def test_unreviewed_wait_never_activates_work(self) -> None:
         unreviewed = github_plan_wait.current(self.issue, [], set())
         result = self.derive([self.closed], unreviewed)
         self.assertEqual(result["status"], "review")
-        self.assertNotIn("active", result["labels"])
 
     def test_closed_issue_cannot_be_activated_by_an_empty_graph(self) -> None:
         self.issue["state"] = "closed"
         result = self.derive([])
         self.assertEqual(result["status"], "done")
-        self.assertEqual(set(result["labels"]), {"done"})
 
-    def test_scope_review_holds_survive_clear_wait_and_empty_native_graph(self) -> None:
-        names = {key: f"custom:{key}" for key in ("plan", "active", "blocked", "waiting", "stale", "done")}
-        for hold in ("stale", "done", None):
-            with self.subTest(hold=hold):
-                issue = {**self.issue, "labels": [{"name": names["plan"]},
-                    *([{ "name": names[hold]}] if hold else [])]}
-                before = copy.deepcopy(issue)
-                result = github_plan_status.derive(issue, {"blocked_by": []}, self.clear, label_names=names)
-                self.assertEqual(result["status"], "hold")
-                self.assertEqual(result["scope_status"], hold or "unstatused")
-                self.assertTrue(result["scope_hold"])
-                self.assertFalse(result["wait_review_required"])
-                self.assertFalse(result["labels_writable"])
-                self.assertNotIn("active", result["labels"])
-                self.assertEqual(issue, before)
-
-    def test_reopen_supersedes_done_but_not_a_never_closed_done_or_stale_hold(self) -> None:
-        names = github_plan_status.DEFAULT_STATUS_LABELS
-        for hold, reason, status in (("done", "reopened", "active"), ("done", None, "hold"),
-                                     ("stale", "reopened", "hold")):
-            with self.subTest(hold=hold, reason=reason):
-                issue = {**self.issue, "state_reason": reason, "labels": [names["plan"], names[hold]]}
-                derived = github_plan_status.derive(issue, {"blocked_by": []}, self.clear)
-                self.assertEqual(derived["status"], status)
-                changes = github_plan_status.label_changes(issue["labels"], names, derived)
-                self.assertEqual(changes["remove"], [names["done"]] if status == "active" else [])
-                excluded = github_direction_next.next_static_exclusion(issue, config={"labels": names}, focus=None)
-                self.assertEqual(excluded is None, status == "active")
-
-    def test_package_prohibits_label_changes_for_unread_waits_and_scope_holds(self) -> None:
-        names = github_plan_status.DEFAULT_STATUS_LABELS
-        review = waits.current({}, [], set())
-        cases = [
-            ("open", [names["plan"], names["waiting"]], review),
-            ("open", [names["plan"], names["stale"], names["active"]], self.clear),
-            ("open", [names["plan"], names["done"], names["active"]], self.clear),
-            ("open", [names["plan"]], self.clear),
-        ]
-        for state, statuses, record in cases:
-            with self.subTest(state=state, labels=statuses):
-                recorded = ["z:preserved", *statuses, "a:preserved"]
-                issue = {**self.issue, "state": state, "labels": recorded}
-                derived = github_plan_status.derive(issue, {"blocked_by": [self.open]}, record)
-                changes = github_plan_status.label_changes(recorded, names, derived)
-                self.assertEqual(changes["add"], [])
-                self.assertEqual(changes["remove"], [])
-                self.assertEqual(changes["result"], recorded)
-                self.assertEqual(github_plan_status.project_labels(recorded, names, derived), recorded)
-                self.assertFalse(derived["labels_writable"])
-
-    def test_closed_unread_wait_repairs_lifecycle_without_erasing_waiting(self) -> None:
-        names = github_plan_status.DEFAULT_STATUS_LABELS
-        review = waits.current({}, [], set())
-        recorded = [names[key] for key in ("plan", "active", "blocked", "waiting", "stale")] + ["bug"]
-        derived = github_plan_status.derive({**self.issue, "state": "closed", "labels": recorded},
-            {"blocked_by": []}, review)
-        changes = github_plan_status.label_changes(recorded, names, derived)
-        self.assertTrue(derived["labels_writable"])
-        self.assertTrue(derived["wait_review_required"])
-        self.assertEqual(set(changes["result"]), {names[key] for key in ("plan", "done", "waiting")} | {"bug"})
-        outcome = github_plan_status.projection_outcome(derived, "reconciled")
-        self.assertFalse(outcome["verified"])
-        self.assertEqual(outcome["projection_status"], "reconciled")
 
     def test_explicit_projection_success_is_distinct_from_full_completion_and_optional_review(self) -> None:
         cases = [
@@ -166,7 +119,6 @@ class DerivedStatusTests(unittest.TestCase):
         result = self.derive([], held)
         self.assertEqual(result["status"], "done")
         self.assertEqual(result["waits"], held["waits"])
-        self.assertEqual(set(result["labels"]), {"done", "waiting"})
 
     def test_formatted_old_fields_cannot_contradict_the_derived_view(self) -> None:
         original = ("**State:** Blocked.\n- Blocked by: fixture/product#99\n"
@@ -218,22 +170,6 @@ class DerivedStatusTests(unittest.TestCase):
         issue = {**sources[0], "body": waits.marker(held)}
         self.assertEqual(waits.current(issue, [impostor], {bot_login}), held)
 
-    def test_label_changes_preserve_custom_nonstatus_labels_and_both_holds(self) -> None:
-        names = {key: f"view:{key}" for key in github_plan_status.DEFAULT_STATUS_LABELS}
-        unrelated = {"customer:requested", "priority:urgent"}
-        observed = [names["plan"], names["active"], *unrelated]
-        issue = {**self.issue, "labels": observed}
-        held = waits.reviewed(evidence="Client's acceptance remains separate from engineering",
-            waiting_for="Client acceptance", ends_when="Client records acceptance")
-        derived = github_plan_status.derive(issue, {"blocked_by": [self.open]}, held, label_names=names)
-        changes = github_plan_status.label_changes(observed, names, derived)
-        self.assertEqual(set(changes["add"]), {names[key] for key in ("blocked", "waiting")})
-        self.assertEqual(changes["remove"], [names["active"]])
-        self.assertEqual(set(changes["result"]), unrelated | {names[key] for key in ("plan", "blocked", "waiting")})
-        released = github_plan_status.derive({**issue, "labels": changes["result"]},
-            {"blocked_by": [self.closed]}, self.clear, label_names=names)
-        final = github_plan_status.label_changes(changes["result"], names, released)
-        self.assertEqual(set(final["result"]), unrelated | {names[key] for key in ("plan", "active")})
 
     def test_render_drops_wrapped_old_fields_and_keeps_the_next_action(self) -> None:
         action = "Implement the CSV export."

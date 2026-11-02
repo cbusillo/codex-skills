@@ -627,7 +627,7 @@ def read_direction_node(
     if issue.get("pull_request") is not None:
         return {"item": {**base, "exclusion": "pull_request"}}
     if issue.get("_graph_labels_complete") is False:
-        return {"item": {**base, "exclusion": "unknown_dependencies", "detail": "Work graph status labels are incomplete"}}
+        return {"item": {**base, "exclusion": "unknown_dependencies", "detail": "Work graph assignment and ranking labels are incomplete"}}
     comments, complete = read_discussion(issue, read_comments, limit=comment_limit)
     try:
         wait = resolve_wait(comments) if complete else None

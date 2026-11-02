@@ -164,7 +164,7 @@ def milestone_wait_evidence(item: dict[str, Any], status_text: str, milestone_ti
 
 
 def check_milestone_wait(item: dict[str, Any], status_text: str, milestone_titles: list[str]) -> dict[str, Any]:
-    if item.get("plan_status") in {"blocked", "stale", "done"} or item.get("exclusion") in {"completed", "stale_needs_review", "unknown_dependencies", "unknown_ancestry", "label_blocked_without_native_edge", "tracking", "tracking_without_open_work", "pull_request"}:
+    if item.get("plan_status") in {"blocked", "done"} or item.get("exclusion") in {"completed", "unknown_dependencies", "unknown_ancestry", "tracking", "tracking_without_open_work", "pull_request"}:
         return item
     status_text = re.sub(r"\*\*(Waiting for|Parked until)(:?)\*\*(:?)", r"\1\2\3", status_text, flags=re.I)
     if (item.get("exclusion") == "wait_review_required" and not re.search(
@@ -208,14 +208,15 @@ def next_milestone_context(issue: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def next_plan_status(issue: dict[str, Any], config: dict[str, Any]) -> str | None:
-    issue_label_names = {name.casefold() for name in normalize_labels(issue.get("labels"))}
-    plan_labels = config.get("labels") or {}
-    for status in ("done", "stale", "blocked", "waiting", "active"):
-        label = plan_labels.get(status)
-        if status == "done" and github_plan_status.reopened(issue):
-            continue
-        if isinstance(label, str) and label.casefold() in issue_label_names:
-            return status
+    if str(issue.get("state", "")).casefold() == "closed":
+        return "done"
+    wait: dict[str, Any] | None = issue.get("structured_wait") or issue.get("claim_wait")
+    if wait is not None:
+        projected = github_plan_wait.project_dates(wait)
+        if projected["state"] == "review":
+            return "review"
+        if projected["waits"]:
+            return "waiting"
     return None
 
 
@@ -252,10 +253,8 @@ def next_static_exclusion(
         "focus": focus,
         "milestone": next_milestone_context(issue),
     }
-    if state != "open" or status == "done":
+    if state != "open":
         return {**base, "exclusion": "completed", "evidence": []}
-    if status == "stale":
-        return {**base, "exclusion": "stale_needs_review", "evidence": []}
     return None
 
 
@@ -281,7 +280,7 @@ def evaluate_next_plan(
     static_exclusion = next_static_exclusion(issue, config=config, focus=focus)
     if static_exclusion is not None:
         if structured_wait is not None and relationships is not None and relationship_error is None:
-            derived = github_plan_status.derive(issue, relationships, structured_wait, label_names=config["labels"])
+            derived = github_plan_status.derive(issue, relationships, structured_wait)
             static_exclusion.update(plan_status=derived["status"], derived=derived,
                                     blocked_by=derived["blocked_by"])
         return "excluded", static_exclusion
@@ -295,11 +294,10 @@ def evaluate_next_plan(
 
     summary = next_relationship_summary(relationships)
     if structured_wait is not None:
-        derived = github_plan_status.derive(issue, relationships, structured_wait, label_names=config["labels"])
+        derived = github_plan_status.derive(issue, relationships, structured_wait)
         status = derived["status"]
         base.update(plan_status=status, derived=derived, blocked_by=derived["blocked_by"])
         base["recorded_labels"] = base["labels"]
-        base["labels"] = github_plan_status.project_labels(base["labels"], config["labels"], derived)
     open_blockers = summary["open_blockers"]
     if open_blockers:
         return "excluded", {
@@ -308,18 +306,8 @@ def evaluate_next_plan(
             "evidence": relationship_refs(open_blockers, str(issue.get("repo") or "")),
             "blocked_by": open_blockers,
         }
-    if status == "blocked" and structured_wait is None:
-        return "excluded", {
-            **base,
-            "exclusion": "label_blocked_without_native_edge",
-            "evidence": [],
-            "inconsistency": True,
-        }
     if status == "waiting":
         return "excluded", {**base, "exclusion": "waiting", "evidence": []}
-    if status == "hold":
-        return "excluded", {**base, "exclusion": "scope_review_required", "evidence": [],
-                            "scope_status": base["derived"]["scope_status"]}
     if status == "review":
         return "excluded", {**base, "exclusion": "wait_review_required", "evidence": [], "wait_review_required": True}
     open_sub_issues = summary["open_sub_issues"]
@@ -827,7 +815,7 @@ def rank_portfolio_work(
     for entry in [*entries, *parents]:
         if entry.get("url") in invalid_waits:
             entry = {**entry, "wait_finding": invalid_waits[entry["url"]]}
-        if entry.get("exclusion") in {"completed", "stale_needs_review", "outside_direction_tracks"} or (entry.get("queue") or {}).get("reason") == "recorded_next_actor":
+        if entry.get("exclusion") in {"completed", "outside_direction_tracks"} or (entry.get("queue") or {}).get("reason") == "recorded_next_actor":
             continue
         context = milestone_context(entry)
         body = (entry.get("discussion") or {}).get("body", "")
@@ -1074,7 +1062,7 @@ def evaluate_direction_node(
     )
     if truncated_relationships:
         item["truncated_relationships"] = truncated_relationships
-    if item.get("exclusion") in {"completed", "stale_needs_review", "scope_review_required", "unknown_dependencies"}:
+    if item.get("exclusion") in {"completed", "unknown_dependencies"}:
         return {"item": item}
     if issue.get("pull_request") is not None:
         return {"item": {**item, "exclusion": "pull_request"}}
@@ -1284,7 +1272,7 @@ def rank_direction_work(
         reason = item.get("exclusion")
         blockers = node.get("blockers") or []
         children = node.get("children") or []
-        if reason in {"completed", "stale_needs_review", "unknown_dependencies", "pull_request"}:
+        if reason in {"completed", "unknown_dependencies", "pull_request"}:
             excluded.append(item)
             degraded += reason == "unknown_dependencies"
             if reason == "unknown_dependencies":
@@ -1309,8 +1297,6 @@ def rank_direction_work(
             track_next_actions[milestone["title"]] = {
                 "track": item["url"],
             }
-        if reason == "label_blocked_without_native_edge":
-            item["label_finding"] = {"kind": "stale_blocked_label", **step}
         own_item = item
         if held_parents:
             item = include_parent_context(item, held_parents, complete=True, tracking_roots=tracks)
@@ -1361,8 +1347,7 @@ def rank_direction_work(
         "milestone_closure_reviews": closure_reviews,
         "excluded": excluded,
         "waiting": waiting,
-        "findings": [item[field] for item in [*candidates, *excluded]
-                     for field in ("wait_finding", "label_finding") if item.get(field)],
+        "findings": [item["wait_finding"] for item in [*candidates, *excluded] if item.get("wait_finding")],
         "completed_milestones": [title for title in milestone_titles if title in completed],
         "tracking_roots": [{"repo": root["repo"], "number": root["number"]} for root in tracks],
         "tracking_milestones": [{"repo": root["repo"], "number": root["number"], "milestone": root["milestone"]} for root in tracks],

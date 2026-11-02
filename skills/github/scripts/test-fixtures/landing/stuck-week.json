@@ -30,6 +30,6 @@
     "state": "open", "label_keys": ["plan", "blocked"],
     "status": "State: Active; rebuild proof remains unmet.\nNext action: Supported fresh-copy continuation after source landing.",
     "finish_line": "Actual governed restore and isolation, healthy exact runtime, modules/login/checklist and full credential proof.",
-    "expected": "reconciled"
+    "expected": "unchanged"
   }
 }

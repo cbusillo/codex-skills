@@ -142,7 +142,7 @@ Current Status section or an authorized bot-authored planning comment. Record:
   links and completion criteria
 - who will verify the returned gate and add or reconcile native blockers
 
-Use [Status Labels](../../github-plan/SKILL.md#status-labels) for the waiting
+Use [Derived Status](../../github-plan/SKILL.md#derived-status) for the waiting
 record and dependency linkage. Do not claim a gate or link exists before
 verifying it. Once known, link it under existing authority without requiring
 another return round-trip.

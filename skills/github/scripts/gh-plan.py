@@ -128,7 +128,7 @@ PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
     "next": ("composite", "mixed", False),
     "close": ("composite", "mixed", True),
     "reconcile-landing": ("composite", "mixed", True),
-    "reconcile-status": ("composite", "rest_core", True),
+    "reconcile-status": ("composite", "rest_core", False),
     "project-add": ("gh_cli_graphql", "graphql", True),
     "project-set": ("gh_cli_graphql", "graphql", True),
     "project-list": ("gh_cli_graphql", "graphql", False),
@@ -142,18 +142,11 @@ PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "labels": {
-        **github_plan_status.DEFAULT_STATUS_LABELS,
         "audit": "audit",
         "own_project": "own-project",
     },
     "label_defs": {
         **github_agent.LABEL_DEFS,
-        "plan": {"color": "5319e7", "description": "Durable planning issue"},
-        "plan:active": {"color": "0e8a16", "description": "See https://github.com/cbusillo/codex-skills/blob/main/skills/github-plan/SKILL.md#status-labels"},
-        "plan:blocked": {"color": "d93f0b", "description": "See https://github.com/cbusillo/codex-skills/blob/main/skills/github-plan/SKILL.md#status-labels"},
-        "plan:waiting": {"color": "fbca04", "description": "See https://github.com/cbusillo/codex-skills/blob/main/skills/github-plan/SKILL.md#status-labels"},
-        "plan:stale": {"color": "bfbfbf", "description": "See https://github.com/cbusillo/codex-skills/blob/main/skills/github-plan/SKILL.md#status-labels"},
-        "plan:done": {"color": "006b75", "description": "See https://github.com/cbusillo/codex-skills/blob/main/skills/github-plan/SKILL.md#status-labels"},
         "audit": {"color": "d4c5f9", "description": "Question or completed work for the weekly direction audit"},
         "own-project": {"color": "c2e0c6", "description": "Own-project work in a mixed repository; counted as own by the weekly direction audit"},
     },
@@ -1252,11 +1245,9 @@ def load_config(
         data = json.loads(repo_config.read_text())
         if isinstance(data.get("planning"), dict):
             config = deep_merge(config, data["planning"])
+    for key in ("plan", "active", "blocked", "waiting", "stale", "done"):
+        config["labels"].pop(key, None)
     return config
-
-
-def labels(config: dict[str, Any], *keys: str) -> list[str]:
-    return [config["labels"][key] for key in keys]
 
 
 def resolve_manager_value(value: Any) -> str | None:
@@ -2118,16 +2109,14 @@ def cmd_show(args: argparse.Namespace) -> None:
         else:
             relationships = {key: [compact_relationship_issue(row, key) for row in rows]
                              for key, rows in relationships.items()}
-        derived = github_plan_status.derive(issue, relationships, wait, label_names=config["labels"])
+        derived = github_plan_status.derive(issue, relationships, wait)
         derived["relationships_complete"] = True
     except (PlanError, ValueError, TypeError, KeyError) as exc:
         derived = {"status": "review", "blocked_by": [], "waits": wait["waits"],
-                   "structured_wait": wait, "labels": [], "relationships_complete": False,
+                   "structured_wait": wait, "relationships_complete": False,
                    "error": {"message": str(exc), **getattr(exc, "payload", {})}}
     result["derived"] = derived
     result["recorded_labels"] = result["labels"]
-    if derived["relationships_complete"]:
-        result["labels"] = github_plan_status.project_labels(result["labels"], config["labels"], derived)
     if not args.full and "Current Status" in result["sections"]:
         result["recorded_current_status"] = result["sections"]["Current Status"]
         result["sections"]["Current Status"] = github_plan_status.render_status(result["sections"]["Current Status"], derived)
@@ -2205,7 +2194,6 @@ def seed_decision_discussion(repo: str, number: int, discussion: dict[str, Any])
 def question_evidence_urls(wait: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(url for token in re.findall(r'https://[^\s<>"()]+', wait.get("evidence", ""))
         if github_plan_questions.COMMENT_URL.fullmatch(url := token.rstrip(".,;:]"))))
-
 
 
 def read_decision_discussion(repo: str, number: int) -> dict[str, Any]:
@@ -2896,16 +2884,15 @@ def link_native_dependency(
     source: dict[str, Any], target: dict[str, Any], *,
     failed_step: str = "link_blocked_by",
 ) -> tuple[str, dict[str, Any]]:
-    actor, _ = api_json("POST", f"/repos/{source['repo']}/issues/{source['number']}/dependencies/blocked_by",
-                        {"issue_id": target["id"]}, failed_step=failed_step)
-    return actor, refresh_planning_targets([(source["repo"], int(source["number"]))])
+    return api_json("POST", f"/repos/{source['repo']}/issues/{source['number']}/dependencies/blocked_by",
+                    {"issue_id": target["id"]}, failed_step=failed_step)
 
 
 def evaluate_claim_wait(waiting_issue: dict[str, Any], waiting_status: str, config: dict[str, Any], *,
                         wait_resolved: str | None = None, record_status: str | None = None) -> tuple[bool, ClassifiedPlanError | None]:
     wait = github_plan_wait.project_dates(waiting_issue["claim_wait"])
     status_state = next_plan_status(waiting_issue, config)
-    has_wait = bool(wait["state"] != "clear" or status_state in {"stale", "done"})
+    has_wait = wait["state"] != "clear"
     if has_wait and not wait_resolved:
         waiting_repo, waiting_number = waiting_issue["repo"], waiting_issue["number"]
         waiting_record = {
@@ -2933,7 +2920,6 @@ def check_claim_wait(waiting_issue: dict[str, Any], waiting_status: str, config:
         raise annotate_claim_wait_error(error)
 
     return has_wait
-
 
 
 def annotate_claim_wait_error(error: ClassifiedPlanError) -> ClassifiedPlanError:
@@ -3097,10 +3083,9 @@ def claim_once(args: argparse.Namespace) -> None:
     def check_issue_holds(checked_issue: dict[str, Any]) -> None:
         expected = previous_wait
         observed_holds = github_plan_wait.marker(checked_issue["claim_wait"])
-        wait_labels = set(normalize_labels(checked_issue.get("labels"))) & {config["labels"][key] for key in ("waiting", "blocked")}
         if observed_holds not in {expected, planned_wait}:
             raise PlanError("Structured wait changed during claim readback; verify the new record before recovery")
-        if retained_mode and (observed_holds != expected or wait_labels != previous_wait_labels):
+        if retained_mode and observed_holds != expected:
             raise PlanError("Issue holds changed during retained-handoff readback; verify the new evidence before recovery")
 
     def resume_source(
@@ -3775,9 +3760,7 @@ def claim_once(args: argparse.Namespace) -> None:
                 requirements = [aggregate_wait_requirement] if aggregate_wait_requirement is not None else []
                 raise attach_recovery_requirements(wait_error, requirements)
             if has_wait:
-                wait_labels = sorted(set(normalize_labels(target.get("labels"))) &
-                                     {config["labels"][key] for key in ("waiting", "blocked", "stale", "done")})
-                observed_waits[pull["number"]] = "Labels: " + ", ".join(wait_labels) + "\n" + github_plan_wait.marker(target_wait)
+                observed_waits[pull["number"]] = github_plan_wait.marker(target_wait)
         if retained_waits is not None and observed_waits != retained_waits:
             raise PlanError("Retained PR waits changed during claim readback; verify the new evidence before recovery")
         retained_waits = observed_waits
@@ -3938,7 +3921,6 @@ def claim_once(args: argparse.Namespace) -> None:
             target_repo = repo
         previous_status = status
         previous_wait = github_plan_wait.marker(issue["claim_wait"])
-        previous_wait_labels = set(normalize_labels(issue.get("labels"))) & {config["labels"][key] for key in ("waiting", "blocked")}
         check_agent(issue)
         source_info, prepared_handoff = prepare_phase((issue, status, comments, can_update))
         conflicts, owned = ownership_snapshot(status, comments)
@@ -4092,31 +4074,6 @@ def claim_once(args: argparse.Namespace) -> None:
             body = replace_issue_plan_section(status_issue, "Current Status", status_text)
             rest_edit_issue(issue_repo, number, body=body)
             completed.append("update_current_status")
-        label_map = config["labels"]
-        if record_kind == "issue":
-            # Status publication is a real mutation boundary. Re-read mutable
-            # assignment and holds before labels can remove them, without
-            # discovering or admitting another native source.
-            label_issue, label_status, _, _ = claim_snapshot(args.issue, repo)
-            check_agent(label_issue)
-            check_issue_holds(label_issue)
-            previous_labels = set(normalize_labels(issue.get("labels")))
-            fresh_labels = set(normalize_labels(label_issue.get("labels")))
-            if (fresh_labels - previous_labels) & {label_map[key] for key in ("waiting", "blocked", "stale", "done")}:
-                raise PlanError("Issue acquired a new hold before claim label update")
-            if can_update and not any(github_plan_claim.same_owner(record, claim)
-                                      for record in github_plan_claim.records(label_status)):
-                raise PlanError("Current Status claim changed before label update")
-            issue = label_issue
-            label_result = github_issue_core.edit_issue(
-                number, repo=issue_repo, add_labels=[label_map["active"]],
-                remove_labels=[label_map[key] for key in (("stale", "done") if retained_mode
-                                                         else ("waiting", "stale", "done", "blocked"))
-                               if label_map[key] in normalize_labels(issue.get("labels"))],
-                gh_cmd=gh_cmd, expected_actor=expected_actor, operation=CURRENT_OPERATION,
-            )
-            completed.append("update_labels")
-            actor = label_result.get("actor") or actor
         final, final_status, final_comments, _ = claim_snapshot(args.issue, repo)
         comments = final_comments
         check_agent(final)
@@ -4131,7 +4088,7 @@ def claim_once(args: argparse.Namespace) -> None:
         check_issue_holds(final)
         check_native_blockers()
         handoff_preflight(final_comments, final_status, prepared_handoff)
-        if not observed or (record_kind == "issue" and label_map["active"] not in normalize_labels(final.get("labels"))):
+        if not observed:
             raise PlanError("Claim metadata was not visible on final readback")
         if can_update and not any(github_plan_claim.same_owner(record, claim)
                                   for record in github_plan_claim.records(final_status)):
@@ -4219,11 +4176,9 @@ def automatic_planning_writes_allowed() -> bool:
 
 def refresh_planning_targets(targets: list[tuple[str, int]], *, apply: bool = True,
                              include_dependents: bool = False, required: bool = True,
-                             config_optional_unless_planning: bool = False,
                              planning_checkout: str | None = None) -> dict[str, Any]:
     """A confirmed fact write and its label projection have separate receipts."""
-    tasks = [{"repo": repo, "number": number, "role": "related", "required": required,
-              **({"config_optional_unless_planning": True} if config_optional_unless_planning else {})}
+    tasks = [{"repo": repo, "number": number, "role": "related", "required": required}
              for repo, number in dict.fromkeys(targets)]
     if include_dependents:
         for repo, number in targets:
@@ -4273,7 +4228,7 @@ def cmd_reconcile_status(args: argparse.Namespace) -> None:
         raise PlanError(str(error), payload={"recovery": recovery}) from error
     result["recovery"] = recovery
     if not result["ok"]:
-        raise PlanError("Planning label projection is incomplete", payload=result)
+        raise PlanError("Planning status evidence is incomplete", payload=result)
     emit(result)
 
 
@@ -4415,14 +4370,8 @@ def wait_once(args: argparse.Namespace) -> None:
         raise PlanError(str(exc), failure=failure, payload={"structured_wait": wait, "comment": result,
                         "completed_steps": ["post_wait"],
                         "recovery": "Read the published comment and latest wait before any retry"}) from exc
-    projection = refresh_planning_targets([(issue["repo"], issue["number"])]) if kind == "issue" else None
-    published = {"actor": actor, "structured_wait": wait, "comment": result,
-                 "issue": compact_issue(observed), "projection": projection, "completed_steps": ["post_wait", "wait_record_readback"]}
-    if projection is not None and projection["coverage"] != "complete":
-        published["recovery"] = status_recovery(issue["repo"], issue["number"])
-    if projection is not None and not projection["ok"]:
-        raise PlanError("Wait record is published; planning label projection is incomplete", payload=published)
-    emit({"ok": True, **published})
+    emit({"ok": True, "actor": actor, "structured_wait": wait, "comment": result,
+          "issue": compact_issue(observed), "completed_steps": ["post_wait", "wait_record_readback"]})
 
 
 def cmd_create(args: argparse.Namespace) -> None:
@@ -4468,9 +4417,6 @@ def cmd_create(args: argparse.Namespace) -> None:
         })
         return
 
-    base_labels = labels(config, "plan")
-    if args.plan_status != "none":
-        base_labels.extend(labels(config, args.plan_status))
     try:
         extra_labels = github_agent.creation_labels(args.label or [], getattr(args, "agent", None))
     except ValueError as exc:
@@ -4482,13 +4428,7 @@ def cmd_create(args: argparse.Namespace) -> None:
     if github_plan_next_actor.direction(routed_actor, wait or {"waits": []}):
         ensure_direction_label(repo)
         extra_labels.append("direction")
-    wanted_labels = list(dict.fromkeys(base_labels + extra_labels))
-    _, created_base_labels = ensure_labels(
-        repo,
-        base_labels,
-        config,
-        completed_steps=completed_steps,
-    )
+    wanted_labels = list(dict.fromkeys(extra_labels))
     created_extra_labels: list[str] = []
     if extra_labels:
         _, created_extra_labels = ensure_labels(
@@ -4498,7 +4438,7 @@ def cmd_create(args: argparse.Namespace) -> None:
             create_unknown=False,
             completed_steps=completed_steps,
         )
-    created_labels = created_base_labels + created_extra_labels
+    created_labels = created_extra_labels
 
     body = ensure_managed_provenance(body)
     if wait is not None:
@@ -4580,11 +4520,6 @@ def cmd_create(args: argparse.Namespace) -> None:
     for key in ("operation_marker", "reconciled", "reconciliation"):
         if key in issue:
             result[key] = issue[key]
-    result["projection"] = refresh_planning_targets([(repo, int(issue["number"]))])
-    if result["projection"]["coverage"] != "complete":
-        result["recovery"] = status_recovery(repo, int(issue["number"]))
-    if not result["projection"]["ok"]:
-        raise PlanError("Issue is created; planning label projection is incomplete; do not repeat creation", payload=result)
     emit(result)
 
 
@@ -4676,12 +4611,10 @@ def cmd_link(args: argparse.Namespace) -> None:
     source_number = int(source["number"])
     target_number = int(target["number"])
     rel = args.relationship
-    projection = None
-
     if rel == "blocked-by":
-        actor, projection = link_native_dependency(source, target)
+        actor, _ = link_native_dependency(source, target)
     elif rel == "blocks":
-        actor, projection = link_native_dependency(target, source, failed_step="link_blocks")
+        actor, _ = link_native_dependency(target, source, failed_step="link_blocks")
     elif rel == "subissue":
         actor, _ = api_json(
             "POST",
@@ -4695,20 +4628,9 @@ def cmd_link(args: argparse.Namespace) -> None:
     else:
         raise PlanError(f"Unsupported relationship: {rel}")
 
-    affected = target if rel == "blocks" else source
-    if rel == "subissue":
-        projection = refresh_planning_targets([(affected["repo"], int(affected["number"]))])
-    recovery = (status_recovery(affected["repo"], int(affected["number"]))
-                if projection is not None and projection["coverage"] != "complete" else None)
-    if projection is not None and not projection["ok"]:
-        raise PlanError("Native relationship is linked; label projection is incomplete; do not repeat the edge write",
-                        payload={"relationship": rel, "source": compact_issue(source), "target": compact_issue(target),
-                                 "projection": projection, "recovery": recovery, "completed_steps": ["link_relationship"]})
     emit({
         "ok": True,
         "actor": actor,
-        "projection": projection,
-        "recovery": recovery,
         "relationship": rel,
         "source": compact_issue(source),
         "target": compact_issue(target),
@@ -4748,16 +4670,7 @@ def cmd_unlink(args: argparse.Namespace) -> None:
         actor, _ = rest_edit_issue(source_repo, source_number, body=updated)
     else:
         raise PlanError(f"Unlink supports blocked-by, blocks, subissue, and related; got {rel}")
-    affected = target if rel == "blocks" else source
-    projection = (refresh_planning_targets([(affected["repo"], int(affected["number"]))])
-                  if rel in {"blocked-by", "blocks", "subissue"} else None)
-    recovery = (status_recovery(affected["repo"], int(affected["number"]))
-                if projection is not None and projection["coverage"] != "complete" else None)
-    if projection is not None and not projection["ok"]:
-        raise PlanError("Native relationship is unlinked; label projection is incomplete; do not repeat the edge write",
-                        payload={"relationship_removed": rel, "source": compact_issue(source), "target": compact_issue(target),
-                                 "projection": projection, "recovery": recovery, "completed_steps": ["unlink_relationship"]})
-    emit({"ok": True, "actor": actor, "relationship_removed": rel, "projection": projection, "recovery": recovery})
+    emit({"ok": True, "actor": actor, "relationship_removed": rel})
 
 
 def cmd_deps(args: argparse.Namespace) -> None:
@@ -5053,7 +4966,6 @@ def next_dependabot_work(
     }
 
 
-
 def next_output(payload: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     full = getattr(args, "full_output", False)
     return {**(payload if full else github_next_queue.compact_output(payload)),
@@ -5150,7 +5062,7 @@ def cmd_next(args: argparse.Namespace) -> None:
     candidates: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = routing_excluded
     dependency_degraded_count = 0
-    structured_waits: dict[tuple[str, int], dict[str, Any]] = {}
+    structured_waits: dict[tuple[str, int], dict[str, Any] | None] = {}
     for issue in issues:
         issue_url = issue.get("html_url") or issue.get("url")
         focus = focus_by_url.get(issue_url) if isinstance(issue_url, str) else None
@@ -5175,6 +5087,7 @@ def cmd_next(args: argparse.Namespace) -> None:
         comment_limit: int | None = getattr(args, "comment_limit", None)
         comments: list[dict[str, Any]] = []
         discussion_complete = False
+        recorded = False
         try:
             if "_graph_comments" in issue:
                 comments = issue["_graph_comments"]
@@ -5186,7 +5099,7 @@ def cmd_next(args: argparse.Namespace) -> None:
             if not discussion_complete:
                 wait_error = "Discussion exceeded the comment read bound"
             else:
-                wait = current_wait(issue, comments, repo)
+                wait, recorded = github_plan_wait.resolve(issue, comments, wait_authors(repo))
         except (ValueError, PlanError) as exc:
             wait_error = next_source_error(exc) if isinstance(exc, PlanError) else str(exc)
         if wait_error is not None:
@@ -5197,7 +5110,7 @@ def cmd_next(args: argparse.Namespace) -> None:
                 f"of {NEXT_RELATIONSHIP_LIMIT}"
             )
             relationships = None
-        structured_waits[(repo.casefold(), int(issue["number"]))] = wait
+        structured_waits[(repo.casefold(), int(issue["number"]))] = wait if wait_error is not None or recorded else None
         disposition, evaluated = evaluate_next_plan(
             issue,
             config=config,
@@ -5290,7 +5203,7 @@ def cmd_next(args: argparse.Namespace) -> None:
         "candidates": queue_result["candidates"][:args.limit],
         "available_candidates": queue_result["available_candidates"][:args.limit],
         "queue_context": queue_context,
-        "selection_coverage": github_next_queue.coverage(inventory_issues, [*issues, *routing_excluded], queue_result, active_label=config["labels"]["active"]),
+        "selection_coverage": github_next_queue.coverage(inventory_issues, [*issues, *routing_excluded], queue_result),
         "stale_wait_report": {key: value for key, value in wait_context.items() if key != "references"},
         "running_agent": agent,
         "notes": notes,
@@ -5580,9 +5493,7 @@ def exclude_landed_candidates(candidates: list[dict[str, Any]], excluded: list[d
     for entry in list(candidates):
         key = (entry["repo"].casefold(), entry["number"])
         entry.pop("post_merge_evidence_complete", None)
-        candidate_labels = set(normalize_labels(entry.get("labels")))
-        scope_labels = report.get("scope_labels", {}).get(entry["repo"].casefold(), ["plan:active", "plan:waiting", "plan:blocked"])
-        if key in unread or (key not in checked and candidate_labels.intersection(scope_labels)):
+        if key in unread or key not in checked:
             entry["post_merge_evidence_complete"] = False
         evidence = active.get(key)
         if evidence:
@@ -5596,7 +5507,7 @@ def exclude_landed_candidates(candidates: list[dict[str, Any]], excluded: list[d
 def next_wait_context(
     issues: list[dict[str, Any]], *, scan_limit: int | None, inventory_complete: bool,
     reference_repositories: set[str] | None = None,
-    structured_waits: dict[tuple[str, int], dict[str, Any]] | None = None,
+    structured_waits: dict[tuple[str, int], dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     """Reuse the direction audit's stale report within the already-read scope."""
     root = str(pathlib.Path(__file__).resolve().parents[3])
@@ -5632,11 +5543,11 @@ def next_wait_context(
         return cache[path]
 
     known_repos = {item["repo"] for item in issues} | (reference_repositories or set())
-    configs = {repo: load_config(repo) for repo in {item["repo"] for item in issues}}
-    unique = {(item["repo"].casefold(), item["number"]): item for item in issues
-              if set(normalize_labels(item.get("labels"))).intersection(
-                  configs[item["repo"]]["labels"][key] for key in ("active", "waiting", "blocked"))
-              or (structured_waits or {}).get((item["repo"].casefold(), item["number"]), {}).get("state") == "waiting"}
+    known_waits = structured_waits or {}
+    unique = {(item["repo"].casefold(), item["number"]): {
+        **item, **({"structured_wait": known_waits[(item["repo"].casefold(), item["number"])]}
+                  if (item["repo"].casefold(), item["number"]) in known_waits else {})}
+        for item in issues}
     groups: dict[str, list[dict[str, Any]]] = {}
     selected = list(unique.values())[:scan_limit]
     for item in selected:
@@ -5645,14 +5556,12 @@ def next_wait_context(
     complete = inventory_complete and (scan_limit is None or len(unique) <= scan_limit)
     references: dict[str, dict[str, Any]] = {}
     checked = 0
-    scope_labels = {}
     repositories = {}
     frozen_issues = []
     checked_issue_refs = []
     def read_report(group: tuple[str, list[dict[str, Any]]]) -> tuple[str, dict[str, Any]]:
         repo, items = group
-        return repo, direction_audit.stale_wait_report(items, repo, fetch=fetch, inventory_complete=complete,
-                                                      active_label=configs[repo]["labels"]["active"])
+        return repo, direction_audit.stale_wait_report(items, repo, fetch=fetch, inventory_complete=complete)
     if (NEXT_READS and NEXT_READS.workers > 1
             and all(len(items) <= direction_audit.MAX_PAGES * 100 for items in groups.values())):
         # One large repository must not serialize the whole wait-evidence pass.
@@ -5679,9 +5588,9 @@ def next_wait_context(
         for repo, items in groups.items() if group_reports[repo]["repository"]["archived"] is not True
         for item in items if str(item.get("state", "")).casefold() == "open"
         for row in github_direction_next.waiting_records(
-            {**compact_list_issue(repo, item), "plan_status": next_plan_status(item, configs[repo]),
-             **({"structured_wait": structured_waits[(repo.casefold(), item["number"])]}
-                if (repo.casefold(), item["number"]) in (structured_waits or {}) else {})},
+            {**compact_list_issue(repo, item), "plan_status": next_plan_status(item, {}),
+             **({"structured_wait": known_waits[(repo.casefold(), item["number"])]}
+                if (repo.casefold(), item["number"]) in known_waits else {})},
             section_map(item.get("body") or "").get("Current Status", ""), reference_repositories=known_repos)
         for reference in row["references"]))
     def read_reference(path: str) -> None:
@@ -5692,7 +5601,6 @@ def next_wait_context(
     if NEXT_READS:
         NEXT_READS.map(read_reference, reference_paths)
     for repo, items in groups.items():
-        config = configs[repo]
         report = group_reports[repo]
         reports.extend({**row, "repo": repo} for row in report["items"])
         for row in report["unavailable"]:
@@ -5703,7 +5611,6 @@ def next_wait_context(
         unresolved.extend({**row, "repo": repo} for row in report["unresolved_references"])
         checked += report["checked"]
         checked_issue_refs.extend({"repo": repo, "number": number} for number in report["checked_issues"])
-        scope_labels[repo.casefold()] = [config["labels"][key] for key in ("active", "waiting", "blocked")]
         complete &= report["complete"]
         repositories[repo] = report["repository"]
         frozen_issues.extend({**row, "repo": repo} for row in report["frozen_issues"])
@@ -5713,7 +5620,7 @@ def next_wait_context(
             if str(item.get("state", "")).casefold() != "open":
                 continue
             status = section_map(item.get("body") or "").get("Current Status", "")
-            own = {**compact_list_issue(repo, item), "plan_status": next_plan_status(item, config)}
+            own = {**compact_list_issue(repo, item), "plan_status": next_plan_status(item, {})}
             wait = (structured_waits or {}).get((repo.casefold(), item["number"]))
             if wait is not None:
                 own["structured_wait"] = wait
@@ -5751,8 +5658,7 @@ def next_wait_context(
             "unavailable": unavailable, "unresolved_references": unresolved, "references": references,
             "inventory_complete": inventory_complete, "scope": "evaluated_global_next_issues",
             "read_limit": budget, "read_count": len(cache),
-            "checked_issues": checked_issue_refs,
-            "scope_labels": scope_labels}
+            "checked_issues": checked_issue_refs}
 
 
 def cmd_direction_next(args: argparse.Namespace, repo: str) -> None:
@@ -5910,6 +5816,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     contexts: dict[str, tuple[dict[str, Any], dict[str, str]]] = {}
     focus_contexts: dict[str, dict[str, Any]] = {}
     nodes: dict[tuple[str, int], dict[str, Any]] = {}
+    structured_waits: dict[tuple[str, int], dict[str, Any] | None] = {}
     parents: dict[tuple[str, int], dict[str, Any] | None] = {}
     context_lock = threading.Lock()
     context_locks: dict[str, Any] = {}
@@ -5928,7 +5835,9 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
 
     def graph_wait(raw: dict[str, Any], comments: list[dict[str, Any]], issue_repo: str) -> dict[str, Any] | None:
         try:
-            return current_wait(raw, comments, issue_repo)
+            wait, recorded = github_plan_wait.resolve(raw, comments, wait_authors(issue_repo))
+            structured_waits[(issue_repo.casefold(), int(raw["number"]))] = wait if recorded else None
+            return wait
         except PlanError as exc:
             if exc.failure is not None:
                 raise
@@ -6327,7 +6236,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         scan_limit=args.scan_limit * 2 if args.scan_limit is not None else None,
         inventory_complete=candidate_coverage_complete,
         reference_repositories={item["repo"] for item in discovery.get("repositories", [])},
-        structured_waits={key: node["item"]["structured_wait"] for key, node in nodes.items() if "structured_wait" in node["item"]},
+        structured_waits={key: structured_waits[key] if key in structured_waits else node["item"]["structured_wait"]
+                          for key, node in nodes.items() if key in structured_waits or "structured_wait" in node["item"]},
     )
     stale = {(row["repo"].casefold(), row["number"]): row for row in wait_context["items"]}
     checked_waits = {(row["repo"].casefold(), row["number"]) for row in wait_context["checked_issues"]}
@@ -6373,10 +6283,6 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     ranked["own_project_context"] = own_project_context
     ranked["selection_coverage"] = github_next_queue.coverage(
         [*list(seeds.values()), *inventory], [seeds[key] for key in nodes if key in seeds], portfolio)
-    graph_active = {(entry["repo"].casefold(), entry["number"]) for entry in [*queue_items, *ranked["excluded"]]
-                    if entry.get("via") and config["labels"]["active"] in normalize_labels(entry.get("labels"))}
-    ranked["selection_coverage"].update(active_in_evaluated_graph_count=len(graph_active),
-        active_outside_evaluated_graph_count=ranked["selection_coverage"]["active_inventory_count"] - len(graph_active))
     for entry in [*ranked["candidates"], *ranked["excluded"], *ranked["underway"]]:
         entry.pop("wait_evidence_complete", None)
     ranked["stale_wait_report"] = {key: value for key, value in wait_context.items() if key != "references"}
@@ -6821,7 +6727,6 @@ def cmd_close(args: argparse.Namespace) -> None:
     if close_reason == "not_planned" and not issue_matches_close_reason(issue, close_reason):
         owner_decision = check_owner_decides_not_planned(issue_repo, number, issue, scope_cut_reason=close_comment)
     validate_plan_references(close_comment, issue_repo)
-    plan_labels = config.get("labels") or {}
     route_actor, gh_cmd, expected_actor = comment_route()
     close_attention = close_attention_preflight(issue_repo, number, issue, getattr(args, "unanswered_decision", None),
                                                 gh_cmd)
@@ -7074,7 +6979,6 @@ def cmd_close(args: argparse.Namespace) -> None:
         if stop:
             stopped_reason = reason
 
-    label_source = close_result if isinstance(close_result.get("labels"), list) else issue
     try:
         _, wait_comments = collect_paged_rest_items(
             f"/repos/{issue_repo}/issues/{number}/comments", query={}, bucket="rest_core", step_prefix="close_wait_comments")
@@ -7087,38 +6991,17 @@ def cmd_close(args: argparse.Namespace) -> None:
             close_wait = {"version": 1, "state": "review", "evidence": str(denied_error), "waits": []}
     try:
         closed_projection = github_plan_status.derive(
-            {**issue, "state": "closed", "labels": label_source.get("labels", [])},
-            {"blocked_by": relationship_preflight.get("blocked_by", [])}, close_wait, label_names=plan_labels)
-        label_diff = github_plan_status.label_changes(normalize_labels(label_source.get("labels")), plan_labels, closed_projection)
+            {**issue, "state": "closed"},
+            {"blocked_by": relationship_preflight.get("blocked_by", [])}, close_wait)
     except (PlanError, ValueError, KeyError, TypeError) as error:
         error = error if isinstance(error, PlanError) else PlanError(str(error))
         raise close_error_with_recovery(error, issue_repo=issue_repo, number=number, close_reason=close_reason,
             relationship_preflight=relationship_preflight, project_result=project_result, issue_closed=True,
             metadata_state="wait_read_incomplete", planning_config=planning_config) from error
-    add_labels, remove_labels = label_diff["add"] or None, label_diff["remove"] or None
-    if (add_labels or remove_labels) and not denied_repositories and stopped_reason is None:
-        try:
-            label_result = github_issue_core.edit_issue(
-                number,
-                repo=issue_repo,
-                add_labels=add_labels,
-                remove_labels=remove_labels,
-                gh_cmd=gh_cmd,
-                expected_actor=expected_actor,
-                operation=CURRENT_OPERATION,
-            )
-        except github_issue_core.IssueError as exc:
-            record_source_error(plan_error_from_issue(exc, completed_steps=completed_steps),
-                                "labels_incomplete", writes_started=True)
-        else:
-            actor = label_result.get("actor") or route_actor
-            completed_steps.append("update_labels")
-    elif not add_labels and not remove_labels:
-        completed_steps.append("labels_already_complete")
-    source_projection.update(derived=closed_projection, changes=label_diff)
+    source_projection["derived"] = closed_projection
     if source_error is None:
-        source_projection.update(github_plan_status.projection_outcome(
-            closed_projection, "reconciled" if add_labels or remove_labels else "unchanged"))
+        source_projection.update(status="review_wait_record" if closed_projection["wait_review_required"] else "unchanged",
+                                 verified=not closed_projection["wait_review_required"])
     if closed_projection["wait_review_required"] and source_error is None:
         source_projection["next_action"] = f"gh-plan.py --repo {issue_repo} wait {number}"
 
@@ -7850,7 +7733,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--milestone")
     p.add_argument("--project")
     p.add_argument("--force", action="store_true")
-    p.add_argument("--plan-status", choices=["active", "blocked", "waiting", "stale", "done", "none"], default="active")
     p.add_argument("--focus", choices=["Now", "Next", "Waiting", "Later"], help="Explicit Project field edit; not part of routine planning")
     p.add_argument("--manager", help="Explicit Project field edit; configured managers are not copied")
     p.add_argument("--finish-line", help="Set the issue body's Finish Line only")
@@ -7926,11 +7808,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--apply", action="store_true", help="Repair already-closed automation-owned plans; default is read-only")
     p.set_defaults(func=cmd_reconcile_landing)
 
-    p = sub.add_parser("reconcile-status", help="Project an issue's status labels without repeating a fact write")
+    p = sub.add_parser("reconcile-status", help="Read an issue's native status and wait evidence")
     p.add_argument("issue")
     p.add_argument("--planning-checkout", help="Verified target repository checkout used for root and same-repository configuration")
     p.add_argument("--include-dependents", action="store_true", help="Also refresh direct native parents and blocking dependents")
-    p.add_argument("--apply", action="store_true", help="Apply the guarded label projection; default is read-only")
+    p.add_argument("--apply", action="store_true", help="Accepted for existing recovery commands; status is read-only")
     p.set_defaults(func=cmd_reconcile_status)
 
     p = sub.add_parser("project-add", help="Add issue to a personal/org Project")
@@ -7955,7 +7837,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--closed", action="store_true")
     p.set_defaults(func=cmd_project_list)
 
-    p = sub.add_parser("ensure-labels", help="Create fixed planning labels when missing")
+    p = sub.add_parser("ensure-labels", help="Create routing, share and type labels when missing")
     p.set_defaults(func=cmd_ensure_labels)
 
     p = sub.add_parser("milestone-list", help="List repository milestones")
