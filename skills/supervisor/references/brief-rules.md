@@ -186,11 +186,11 @@ Rules for this brief (every Supervisor brief carries them):
 - Request a parallel session only through the child's Current Status, updated
   with `gh-plan.py update-section`: `Next actor: agent:supervisor`, its concrete
   launch action, and `Brief:` followed by the bounded brief in a fenced `text`
-  block. Use a longer fence if the brief contains fences. The Supervisor alone
-  launches it with `iterm_tab.py new --brief-issue <child-url>` and a
-  `--brief-file` containing only the standard header (token, anchor, admission,
-  rules link); the child's brief passes through verbatim. Never post staffing
-  lists or STAFF NOW on the Track board. Keep the lead as next actor for work it retains.
+  block. Use `###` or plain labels inside it, since `##` starts a plan section,
+  and a longer fence if it contains fences. The Supervisor alone launches it
+  [verbatim under the standard header](helpers.md#terminal-launches).
+  Never post staffing lists or STAFF NOW on the Track board.
+  Keep the lead as next actor for work it retains.
 <!-- brief-rules:end -->
 
 ## Milestone lead briefs

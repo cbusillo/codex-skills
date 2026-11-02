@@ -1300,21 +1300,20 @@ def read_issue_brief(issue: str, header: str) -> str:
     if not match or not re.search(rf"(?m)^Anchor and claim: {re.escape(issue)}\s*$", header):
         raise ValueError("--brief-issue needs a full issue URL matching the header's Anchor and claim")
     helper = Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py"
-    with preparation_read():
-        result = subprocess.run(["uv", "run", str(helper), "--repo", match[1], "show", issue, "--full"],
-                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
     try:
+        result = subprocess.run(["uv", "run", str(helper), "--repo", match[1], "show", issue, "--sections", "Current Status"],
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
         payload = json.loads(result.stdout)
-        body = payload["issue"]["body"] if not result.returncode and payload.get("ok") else ""
-    except (ValueError, KeyError, TypeError) as error:
+        status = payload["issue"]["recorded_current_status"] if not result.returncode and payload.get("ok") else ""
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as error:
         raise ValueError(f"Brief source unavailable for {issue}") from error
-    status = re.search(r"(?m)^## Current Status[ \t]*\r?\n((?:(?!## |Brief:)[^\r\n]*\r?\n)*)Brief:[ \t]*\r?\n"
-                       r"(?P<fence>`{3,}|~{3,})(?:text)?[ \t]*\r?\n(?P<brief>[\s\S]*?)^(?P=fence)[ \t]*\r?$", body)
-    if not status or not re.search(r"(?m)^Next actor: agent:supervisor[ \t]*\r?$", status[1]):
-        raise ValueError(f"{issue} needs Next actor: agent:supervisor and a fenced Brief: in Current Status")
-    if not status["brief"].strip():
+    status = status.replace("\r\n", "\n")
+    brief = re.search(r"(?m)^Brief:[ \t]*\n(?P<fence>`{3,}|~{3,})(?:text)?[ \t]*\n(?P<brief>[\s\S]*?)^(?P=fence)[ \t]*$", status)
+    if not brief or not re.search(r"(?m)^Next actor: agent:supervisor[ \t]*$", status[:brief.start()]):
+        raise ValueError(f"{issue} needs Next actor: agent:supervisor and a fenced Brief: in Current Status; use ###, not ##, inside briefs")
+    if not brief["brief"].strip():
         raise ValueError(f"{issue} has an empty worker brief")
-    return header.rstrip("\n") + "\n\n" + status["brief"]
+    return header.rstrip("\n") + "\n\n" + brief["brief"]
 
 
 def check_launch_issue(brief: str) -> None:
@@ -1382,7 +1381,7 @@ def prepare_launches(args: argparse.Namespace) -> tuple[list[str], list[dict | N
                     "tmux_socket": getattr(args, "tmux_socket", None),
                     "resume_session_id": getattr(args, "resume_session_id", None),
                     "readback_required": True}
-        for name in ("command_file", "brief_file", "ledger"):
+        for name in ("command_file", "brief_file", "brief_issue", "ledger"):
             paths = getattr(args, name, None)
             progress[name] = [str(path) for path in paths] if isinstance(paths, list) else str(paths) if paths else None
         error = LaunchFailure([], progress, ValueError(
@@ -1456,18 +1455,20 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
     brief_files = brief_files if isinstance(brief_files, list) else [brief_files]
     if len(brief_files) != len(files):
         raise ValueError("provide one --brief-file per --command-file, in launch order")
-    briefs = [read_launch_text(path) for path in brief_files]
+    headers = [read_launch_text(path) for path in brief_files]
     brief_issues = getattr(args, "brief_issue", None) or []
     if brief_issues:
         if len(brief_issues) != len(files):
             raise ValueError("provide one --brief-issue per --command-file, in launch order")
-        briefs = [read_issue_brief(issue, header) for issue, header in zip(brief_issues, briefs)]
+        briefs = [read_issue_brief(issue, header) for issue, header in zip(brief_issues, headers)]
+    else:
+        briefs = headers
     for brief in briefs:
         if not brief.strip():
             raise ValueError("brief must be nonempty")
         validate_text(brief, allow_tabs=True)
         validate_brief_rules(brief)
-    for brief in briefs:
+    for brief in headers:
         check_launch_issue(brief)
     validate_computer_use_launch(args, command_texts, briefs)
     apps = [gui_launch.declared_app(brief) for brief in briefs]
