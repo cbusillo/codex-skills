@@ -1729,15 +1729,21 @@ def test_outbound_withdrawn_mention_approval_reports_the_gap(monkeypatch, outbou
     assert director_search["calls"] == []
 
 
-def test_outbound_without_mention_approval_reports_the_gap(monkeypatch, outbound_fixture, director_search):
-    director_search["items"] = [search_item("client/private", 4)]
-    monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub(outbound_fixture))
+def test_outbound_without_mention_approval_reads_visible_old_open_questions(monkeypatch, outbound_fixture):
+    outbound_fixture["repos/client/private/issues/4/comments"] = []
+    fake = FakeGitHub(outbound_fixture)
+    def get(command):
+        if command[1] == "api" and command[2].startswith("search/issues?"):
+            query = parse_qs(urlsplit(command[2]).query)["q"][0]
+            if "is:open" in query:
+                return {"items": [{**search_item("client/private", 4, updated="2026-06-01T00:00:00Z"), "body": "@cbusillo, please decide"}],
+                        "total_count": 1, "incomplete_results": False}
+        return fake(command)
+    patch_radar(monkeypatch, "run_json", get)
     payload = github_unanswered_comments.collect_payload(outbound_settings(mention_approval=None))
-    assert payload["status"] == "degraded"
-    assert [error["lane"] for error in payload["coverage"]["errors"]] == ["director_mentions"]
-    assert payload["director_mentions"] == []
-    assert director_search["calls"] == []
-    assert "Coverage Gaps" in github_unanswered_comments.render_markdown(payload)
+    assert payload["status"] == "attention"
+    assert [(row["repository"], row["number"], row["untrusted"]) for row in payload["director_mentions"]] == [
+        ("client/private", 4, True)]
 
 
 def test_outbound_lists_authored_and_commented_threads_after_last_human_activity(monkeypatch, outbound_fixture):
@@ -1763,7 +1769,8 @@ def test_outbound_last_human_edit_clears_earlier_replies(monkeypatch, outbound_f
         return result
     monkeypatch.setattr(github_unanswered_comments, "run_json", with_opening_edit)
     payload = github_unanswered_comments.collect_payload(outbound_settings())
-    assert payload["status"] == "clear"
+    assert payload["status"] == "attention"
+    assert [row["number"] for row in payload["director_mentions"]] == [2]
     assert payload["attention"] == []
 
 
