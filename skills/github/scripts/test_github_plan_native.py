@@ -273,7 +273,7 @@ class NativeQueueTests(unittest.TestCase):
         termination.native_helpers()
         import claim_history
         for variant in ("clear", "loaded", "queued", "no_boot", "changed", "new_action", "fork", "foreign_fork",
-                        "cross_home", "outside", "wrong_path", "missing_home", "supplied", "wrong_process", "supplied_new_pid"):
+                        "cross_home", "outside", "wrong_path", "missing_home", "supplied", "wrong_process", "supplied_new_pid", "missing_daemon"):
             with self.subTest(variant=variant), ReceiptFixture(str(uuid.uuid4())) as f:
                 other, _ledger, _selected, _retained, deleted = self.cancel_setup(f)
                 f.home_queues = {str(f.home): [], str(other): []}
@@ -307,6 +307,10 @@ class NativeQueueTests(unittest.TestCase):
                     CLOSURE.replace_rows(saved)
                     with self.assertRaises(ValueError):
                         NATIVE._cancel_origin(owned, CLOSURE.lease_state(f.session))
+                if variant == "missing_daemon":
+                    endpoint = CLOSURE.daemon_endpoint(f.home)
+                    endpoint.unlink()
+                    endpoint.parent.rmdir()
                 if variant == "loaded":
                     f.home_states[str(other)] = "idle"
                 if variant == "queued":
@@ -362,8 +366,11 @@ class NativeQueueTests(unittest.TestCase):
                     if variant in {"clear", "fork", "cross_home", "missing_home", "supplied"}:
                         asyncio.run(NATIVE.prove_crash_end(owned, deadline=proof_deadline, process=supplied))
                     else:
-                        with self.assertRaises(ValueError):
+                        with self.assertRaises(ValueError) as refused:
                             asyncio.run(NATIVE.prove_crash_end(owned, deadline=proof_deadline, process=supplied))
+                        if variant == "missing_daemon":
+                            proxy = importlib.import_module("codex_session_proxy")
+                            self.assertIn(proxy.stopped_daemon_remedy(f.home), str(refused.exception))
                 self.assertTrue(all(deadline == proof_deadline for deadline in observed_deadlines))
                 self.assertEqual({path: path.read_bytes() for path in before}, before)
                 self.assertTrue(CLOSURE.action_pending(f.session))
@@ -930,7 +937,7 @@ class NativeQueueTests(unittest.TestCase):
         import uuid
         from types import SimpleNamespace
         import github_plan_termination as termination
-        for mode in ("minimal", "historical", "historical_markers", "known_launch_pid", "matching_generation", "stale_generation", "partial_tail", "interior", "complete_corrupt", "wrong_host", "new_generation", "inventory_marker", "backfill_marker", "gone_artifact", "postboot_action"):
+        for mode in ("minimal", "historical", "historical_markers", "known_launch_pid", "matching_generation", "stale_generation", "partial_tail", "interior", "complete_corrupt", "wrong_host", "new_generation", "inventory_marker", "backfill_marker", "gone_artifact", "postboot_action", "missing_peer"):
             with self.subTest(mode=mode), ReceiptFixture(str(uuid.uuid4())) as f:
                 other, _ledger, selected, _retained, deleted = self.cancel_setup(f)
                 # Preserve the original object; an output attestation is insufficient.
@@ -961,6 +968,10 @@ class NativeQueueTests(unittest.TestCase):
                         stream.write('{"type":' + ("\n" if mode != "partial_tail" else ""))
                         if mode == "interior": stream.write(json.dumps({"type": "session_meta", "payload": {"id": f.session}}) + "\n")
                     f.rpc_results["thread/turns/list"] = {"data": [], "nextCursor": None}
+                if mode == "missing_peer":
+                    endpoint = CLOSURE.daemon_endpoint(f.home)
+                    endpoint.unlink()
+                    endpoint.parent.rmdir()
                 old = (datetime.now(timezone.utc) - timedelta(days=2)).timestamp()
                 for path in (f.transcript, other / "sessions" / f.transcript.name): os.utime(path, (old, old))
                 path = f.root / "original-termination.json"
@@ -973,7 +984,11 @@ class NativeQueueTests(unittest.TestCase):
                         patch.object(termination, "run_terminal", return_value=SimpleNamespace(
                         returncode=0, stdout="a" * 32 + "\t1\t1\n", stderr="")):
                     if mode not in {"minimal", "historical", "historical_markers", "matching_generation", "partial_tail", "gone_artifact", "postboot_action"}:
-                        with self.assertRaises(ValueError): asyncio.run(NATIVE.cancel_queue(other, f.session, termination_record=path))
+                        with self.assertRaises(ValueError) as refused:
+                            asyncio.run(NATIVE.cancel_queue(other, f.session, termination_record=path))
+                        if mode == "missing_peer":
+                            proxy = importlib.import_module("codex_session_proxy")
+                            self.assertIn(proxy.stopped_daemon_remedy(f.home), str(refused.exception))
                         self.assertFalse(deleted)
                         continue
                     if mode == "gone_artifact":
