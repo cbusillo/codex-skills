@@ -201,7 +201,7 @@ def test_linked_source_body_claim_preserves_custody() -> None:
     raw.update(body="## Current Status\nNext actor: agent:old-worker", created_at="2026-10-01T00:00:00Z",
                last_edited_at="2026-10-01T00:00:00Z", updated_at="2026-10-27T00:00:00Z",
                _graph_comments=[{"id": 8, "user": {"login": "owner"}, "created_at": "2026-10-25T00:00:00Z",
-                                 "body": "## Current Status\nNext actor: agent:new-worker"}])
+                                 "body": "## Current Status\nNext actor: agent:new-worker\nTrial token: new-worker"}])
     result = classify(row, observed)
     assert result["state"] == "needs_status"
     assert [entry["worker"] for entry in result["ownership_evidence"]] == ["new-worker"]
@@ -375,7 +375,8 @@ def test_inherited_overall_milestone_orders_work_without_copying_membership() ->
 def test_next_actor_routes_work_without_prose_inference() -> None:
     import github_agent
 
-    for role in ("supervisor", "integrator", *github_agent.FAMILIES):
+    for role in ("supervisor", "integrator", *github_agent.FAMILIES,
+                 "launchplane-engineer", "launchplane", "launchplane-native-qualification", "operator", "investigator"):
         assert classify(item(actor=f"agent:{role}"))["state"] == "available"
     for action in ["Implement export.", "Verify the deployed build.", "Supervisor fixes GUI selection.", "#7 owns the source."]:
         assert classify(item(action, "Source delivery is complete"))["state"] == "available"
@@ -387,8 +388,9 @@ def test_next_actor_routes_work_without_prose_inference() -> None:
     row = item()
     row["discussion"]["body"] = row["discussion"]["body"].replace("Next actor: agent\n", "")
     assert classify(row)["state"] == "needs_status"
-    for actor in ("agent:ODOO20LEAD2-1027", "agent:native-session"):
+    for actor in ("agent:ODOO20LEAD2-1027", "agent:01970242-7941-7f0c-b461-16aa5723fb52"):
         row = item(actor=actor)
+        row["discussion"]["body"] += "\nTrial token: ODOO20LEAD2-1027.\n"
         result = classify(row)
         assert result["state"] == "needs_status"
         assert result["next_actor"] == actor

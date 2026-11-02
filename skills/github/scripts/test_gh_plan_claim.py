@@ -81,6 +81,19 @@ def format_ownership(text: str) -> tuple[str, ...]:
 
 
 class ClaimMarkerTests(unittest.TestCase):
+    def test_recipient_routing_uses_existing_identity_records(self) -> None:
+        recipient = "launchplane-engineer"
+        status = f"Next actor: agent:{recipient}\n"
+        identity = {**OTHER, "worker": recipient}
+        for record in (f"Session: {recipient}", f"Brief from the Supervisor. Trial token: {recipient}.", CLAIM.marker(identity)):
+            with self.subTest(record=record):
+                comments = [{"body": record}]
+                self.assertEqual(CLAIM.recipient_evidence(status, comments, repo="owner/repo", number=42)["worker"], recipient)
+                self.assertIsNone(CLAIM.recipient_evidence(status, comments, repo="owner/repo", number=42, worker=recipient))
+        for text in ("", f"> Trial token: {recipient}", f"```\nTrial token: {recipient}\n```", "Trial token: somebody-else"):
+            with self.subTest(text=text):
+                self.assertIsNone(CLAIM.recipient_evidence(status, [{"body": text}], repo="owner/repo", number=42))
+
     def test_actor_ignores_examples_and_replaces_only_the_live_field(self) -> None:
         from github_plan_status import next_actor
         text = "```\nNext actor: person:example\n```\nNext actor: agent:old\nNext action: Continue.\n"
@@ -5891,13 +5904,21 @@ class ClaimTests(unittest.TestCase):
                 self.assertIn(status, self.emitted.call_args.args[0]["previous_current_status"])
 
     def test_named_recipient_without_a_claim_requires_custody_reconciliation(self) -> None:
-        self.issue["body"] += "Next actor: agent:existing-worker\n"
+        self.issue["body"] += "Next actor: agent:existing-worker\nTrial token: existing-worker\n"
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
         self.assertEqual(caught.exception.code, "claim_conflict")
         self.assertTrue(any(row["source"] == "recorded_recipient"
                             for row in caught.exception.payload["competing_evidence"]))
         self.assert_no_writes()
+
+    def test_role_actor_does_not_reserve_execution_without_a_claim(self) -> None:
+        for role in ("launchplane-engineer", "launchplane", "launchplane-native-qualification"):
+            with self.subTest(role=role):
+                self.setUp()
+                self.issue["body"] += f"Next actor: agent:{role}\n"
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_comment_status_uses_the_same_trusted_reader_for_issues_and_prs(self) -> None:
         for record_type in ("issue", "pull_request"):
@@ -5906,7 +5927,7 @@ class ClaimTests(unittest.TestCase):
             if record_type == "pull_request":
                 self.pr_fixture()
             self.comments = [{"id": 1, "user": {"login": TEST_BOT},
-                "body": "## Current Status\nNext actor: agent:existing-worker"}]
+                "body": "## Current Status\nNext actor: agent:existing-worker\nTrial token: existing-worker"}]
             with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                 self.run_claim()
             self.assertEqual(caught.exception.code, "claim_conflict")
@@ -5926,7 +5947,7 @@ class ClaimTests(unittest.TestCase):
             self.issue["updated_at"] = "2026-10-26T00:00:00Z"
             self.comments = [{"id": 1, "user": {"login": TEST_BOT},
                 "created_at": "2026-10-25T00:00:00Z",
-                "body": "## Current Status\nNext actor: agent:existing-worker"}]
+                "body": "## Current Status\nNext actor: agent:existing-worker\nTrial token: existing-worker"}]
             with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                 self.run_claim()
             self.assertEqual(caught.exception.code, "claim_conflict")

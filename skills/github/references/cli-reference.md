@@ -2239,12 +2239,13 @@ retrying until planning stalls.
 
 ### Planning: Next Work
 
-Named recipients without a claim enter `needs_status` for custody reconciliation,
+Native session IDs and recipients identified by existing claim, session or trial-token
+records enter `needs_status` without a claim for custody reconciliation,
 not a fresh execution launch. Claim and launch preflight use that same recorded
 recipient check. Read-only diagnostics remain available; an assignment alone is
 not active execution. Exact releases and existing local leases are shared across
 readers, and quoted diagnosis is not ownership. Keep the existing claim on each
-slice executed; generic agent roles do not reserve a whole project.
+slice executed; other `agent:<role>` values remain staffable without a status rewrite.
 
 `next` returns one JSON envelope with compact discussion summaries by default.
 Rows retain identity, counts, actor/action, blockers, sources and coverage;
