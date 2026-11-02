@@ -107,10 +107,9 @@ def source_errors(name: str, report: dict) -> list[str]:
     if report.get("ok") is False or report.get("complete") is False:
         errors.append(f"ERROR {name}: reader incomplete")
     if name == "next":
-        for key in ("candidate_coverage", "graph_context", "discovery_context", "queue_context", "stale_wait_report", "live_breakage_context"):
+        for key in ("candidate_coverage", "graph_context", "discovery_context", "queue_context", "stale_wait_report",
+                    "live_breakage_context", "focus_context", "performance"):
             errors.extend(coverage_errors(report.get(key, {}), f"next {key}"))
-        if report.get("candidate_count", 0) > len(report.get("candidates", [])):
-            errors.append("ERROR next: candidate display truncated; rerun global next with a larger --limit")
     return errors
 
 
@@ -125,7 +124,8 @@ def coverage_detail(value: Any) -> Any:
 
 def coverage_errors(value: Any, scope: str) -> list[str]:
     if isinstance(value, dict):
-        if value.get("complete") is False or value.get("errors") or value.get("error"):
+        if (value.get("complete") is False or value.get("errors") or value.get("error")
+                or value.get("truncated") is True or value.get("deadline_exhausted") is True):
             return [f"ERROR {scope}: {json.dumps(coverage_detail(value), sort_keys=True)}"]
         return [error for key, item in value.items() for error in coverage_errors(item, f"{scope}.{key}")]
     if isinstance(value, list):
@@ -136,7 +136,7 @@ def coverage_errors(value: Any, scope: str) -> list[str]:
 def staffing(owner: str) -> dict:
     helper = Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py"
     result = subprocess.run(["uv", "run", str(helper), "--repo", f"{owner}/direction", "next",
-                             "--limit", str(sys.maxsize), "--time-budget", "120"], capture_output=True, text=True)
+                             "--limit", str(sys.maxsize), "--time-budget", "120"], capture_output=True, text=True, timeout=180)
     report = json.loads(result.stdout)
     if not isinstance(report, dict):
         raise ValueError(f"Global next returned no portfolio report for {owner}")
@@ -158,17 +158,25 @@ def digest(sources: dict[str, dict]) -> str:
         if row.get("action") or row.get("error"):
             lines.append(f"WORKER {pointer(row)}: {row.get('error') or row['action']}")
     selection = sources.get("next", {})
+    needs_status = []
     for field in ("candidates", "excluded", "needs_status"):
         for row in selection.get(field, []):
             queue = row.get("queue", {})
             if str(row.get("state", "")).casefold() != "open" or row.get("record_type") == "pull_request":
                 continue
-            if field == "excluded" and row.get("exclusion") != "assigned_elsewhere":
+            if field == "excluded" and row.get("exclusion") not in {"assigned_elsewhere", "agent_assignment_unresolved"}:
                 continue
-            if queue.get("state") == "available" and (queue.get("next_actor") or "").startswith("agent"):
+            if row.get("exclusion") == "agent_assignment_unresolved" and len(row.get("agent_labels", [])) > 1:
+                lines.append(f"REVIEW {pointer(row)}: conflicting agent assignments")
+            elif queue.get("state") == "available" and (queue.get("next_actor") or "").startswith("agent"):
                 lines.append(f"NEXT {pointer(row)}: {queue['next_action']} (verify ownership)")
             elif queue.get("state") in {"review", "needs_status"}:
-                lines.append(f"REVIEW {pointer(row)}: {queue.get('reason')}; {queue.get('next_action', '')}")
+                if (queue.get("next_actor") or "").startswith("agent"):
+                    lines.append(f"REVIEW {pointer(row)}: {queue.get('reason')}; {queue.get('next_action', '')}")
+                else:
+                    needs_status.append(row)
+    if needs_status:
+        lines.append(f"NEEDS_STATUS {len(needs_status)}: {pointer(needs_status[0])} (review global next intake)")
     questions = sources.get("questions", {})
     lines.append(f"QUEUE {questions.get('queue', 'UNKNOWN')}")
     queued = [question for question in questions.get("questions", []) if question.get("registration_url")]

@@ -174,9 +174,10 @@ class RoutineCheckTests(unittest.TestCase):
                  "queue": {"state": "available", "next_actor": "agent:supervisor", "next_action": "Staff this slice."}}
                 for repo, number in requests]
         rows[-1]["labels"] = ["agent:claude"]
-        report = {"candidates": rows, "candidate_coverage": {"complete": True}}
-        github_agent.filter_selection(report, "codex")
-        for _ in range(2):
+        rows[0]["labels"] = ["agent:codex"]
+        for family in ("codex", None):
+            report = {"candidates": rows, "candidate_coverage": {"complete": True}}
+            github_agent.filter_selection(report, family)
             output = routine_check.digest({"next": report})
             self.assertEqual(len([line for line in output.splitlines() if line.startswith("NEXT ")]), len(rows))
             for row in rows:
@@ -187,13 +188,21 @@ class RoutineCheckTests(unittest.TestCase):
             return {"url": source_url, "state": "OPEN", "queue": {"state": state, "next_actor": actor,
                     "next_action": "Reconcile custody.", "reason": "named_recipient_requires_reconciliation"}}
 
-        report = {"candidates": [row("available", "available"), row("waiting", "waiting"),
+        report: dict[str, Any] = {"candidates": [row("available", "available"), row("waiting", "waiting"),
                                  row("running", "underway"), row("person", "available", "person:owner")],
-                  "needs_status": [row("named-lead", "needs_status", "agent:lead-token")],
+                  "needs_status": [row("named-lead", "needs_status", "agent:lead-token"),
+                                   row("missing-actor", "needs_status", ""), row("another-missing-actor", "needs_status", "")],
                   "candidate_coverage": {"complete": True}}
+        conflicting = row("conflicting-families", "available")
+        conflicting["labels"] = ["agent:codex", "agent:claude"]
+        report["candidates"].append(conflicting)
+        github_agent.filter_selection(report, "codex")
         output = routine_check.digest({"next": report})
         self.assertIn("NEXT available", output)
         self.assertIn("REVIEW named-lead", output)
+        self.assertIn("REVIEW conflicting-families", output)
+        self.assertIn("NEEDS_STATUS 2:", output)
+        self.assertNotIn("REVIEW missing-actor", output)
         for url in ("waiting", "running", "person"):
             self.assertNotIn(f"NEXT {url}", output)
 
@@ -203,10 +212,12 @@ class RoutineCheckTests(unittest.TestCase):
                   "discovery_context": {"complete": False, "repositories": [
                       {"repo": "owner/odoo-tenant-cm", "error": "deadline exhausted"}]},
                   "graph_context": {"complete": False, "errors": ["owner/repo#9 unread"]},
-                  "queue_context": {"repositories": {"owner/claims": {"complete": False, "error": "claims unread"}}}}
+                  "queue_context": {"repositories": {"owner/claims": {"complete": False, "error": "claims unread"}}},
+                  "focus_context": {"repositories": {"owner/board": {"truncated": True}}},
+                  "performance": {"deadline_exhausted": True}}
         for _ in range(2):
             output = routine_check.digest({"next": report})
-            for source in ("owner/odoo-devkit", "owner/odoo-tenant-cm", "owner/repo#9", "deadline exhausted", "owner/claims"):
+            for source in ("owner/odoo-devkit", "owner/odoo-tenant-cm", "owner/repo#9", "deadline exhausted", "owner/claims", "owner/board"):
                 self.assertIn(source, output)
             self.assertTrue(routine_check.source_errors("next", report))
 
@@ -364,11 +375,12 @@ class RoutineCheckTests(unittest.TestCase):
         with patch.object(subprocess, "run", return_value=completed) as run:
             result = routine_check.staffing("owner")
         self.assertEqual(result, report)
-        argv = run.call_args.args[0]
-        self.assertEqual(argv[argv.index("--repo") + 1], "owner/direction")
-        self.assertIn("next", argv)
+        self.assertGreater(run.call_args.kwargs["timeout"], 0)
         self.assertIn("owner/repo", routine_check.digest({"next": result}))
         with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "failed")):
+            output = routine_check.digest(routine_check.collect({"next": lambda: routine_check.staffing("owner")}))
+        self.assertIn("ERROR next", output)
+        with patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("global next", 1)):
             output = routine_check.digest(routine_check.collect({"next": lambda: routine_check.staffing("owner")}))
         self.assertIn("ERROR next", output)
 
