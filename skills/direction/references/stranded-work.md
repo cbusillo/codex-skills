@@ -43,6 +43,7 @@ starve the event checks. All repositories' open work then precedes recent closed
 history, and zero-comment records skip
 comment reads. The question queue uses the global request budget instead of
 the per-listing page cap, so old receipts cannot hide newer registrations.
+If the queue exhausts that budget, the run reports incomplete coverage.
 Budget, quota-reserve and deadline stops count unread records
 together instead of flooding the digest. Repeated limited runs on one day keep
 the same order. The GitHub budget counts logical read calls; shared transport

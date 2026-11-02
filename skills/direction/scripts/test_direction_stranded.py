@@ -1043,7 +1043,8 @@ class InventoryTests(unittest.TestCase):
                 result = self.collect(question_queue="test/repo#123", max_pages=max_pages, max_requests=max_requests)
                 if max_requests == 5:
                     self.assertFalse(result["complete"])
-                    self.assertTrue(any(gap["reason"] == "request_budget_exhausted" for gap in result["coverage_gaps"]))
+                    self.assertTrue(any(gap["source"] == path and gap["reason"] == "request_budget_exhausted"
+                                        for gap in result["coverage_gaps"]))
                     self.assertLessEqual(len(self.reader.paths), max_requests)
                 else:
                     self.assertTrue(result["complete"], result)
