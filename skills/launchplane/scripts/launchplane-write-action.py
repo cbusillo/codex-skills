@@ -3030,6 +3030,7 @@ def _project_product_environment(value: object) -> dict[str, object]:
 
 
 PRODUCT_PROFILE_MAX_LANES = 20
+PREVIEW_SLUG_TEMPLATE_RE = re.compile(r"[A-Za-z0-9_.{}-]{0,256}")
 PRODUCT_PRODUCTION_USES = {"unknown", "prelaunch", "live"}
 PRODUCT_RELEASE_ON_ACCEPTANCE_MODES = {
     "held", "promote", "promote_with_rollback_drill", "director_standing"
@@ -3050,9 +3051,25 @@ def _client_or_legacy_owner(source: dict[str, object], client_key: str, owner_ke
     return source[client_key]
 
 
+def _project_profile_preview(value: object) -> dict[str, object]:
+    source = _require_dict(value)
+    enabled, context, template = source.get("enabled"), source.get("context"), source.get("slug_template")
+    if (
+        not isinstance(enabled, bool)
+        or not isinstance(context, str)
+        or (context != "" and not PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(context))
+        or not isinstance(template, str)
+        or not PREVIEW_SLUG_TEMPLATE_RE.fullmatch(template)
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    return {
+        "enabled": enabled,
+        "context": public_identifier(context) if context else "",
+        "slug_template": public_identifier(template, pattern=PREVIEW_SLUG_TEMPLATE_RE),
+    }
+
+
 def _project_product_profile(value: object) -> dict[str, object]:
-    """Who the product's Client is and how its production is classified; settings,
-    secrets, images, URLs, workflows and expected configuration are dropped."""
     source = _require_dict(value)
     client = _client_or_legacy_owner(source, "client", "owner")
     owner = {} if client is None else client
@@ -3095,6 +3112,8 @@ def _project_product_profile(value: object) -> dict[str, object]:
     }
     if "odoo_business_hours" in source:
         projected["odoo_business_hours"] = _project_business_hours_policy(source["odoo_business_hours"])
+    if "preview" in source:
+        projected["preview"] = _project_profile_preview(source["preview"])
     assert_public_safe_shape(projected)
     return projected
 
