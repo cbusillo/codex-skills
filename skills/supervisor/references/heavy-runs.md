@@ -298,3 +298,12 @@ local input/image bindings and the original request's retirement boundary. This
 is not a host path supplied to the generic queue; local execution refuses that
 field without an executor. The receiver's own runbook owns its reference schema,
 installation and adoption. Do not add a second cache, queue or provenance system.
+
+During queued preparation, a receiver can call
+`docker.observe_overlay_lower(retained_directory)` to obtain actual relative
+file hashes while the same scan records the full entry identity in that Docker
+instance. Compare the returned bytes with both original and current frozen
+inventories before execution. Entry reuses this observation; cleanup and
+reconstructed recovery still rescan independently. A later host change fails
+cleanup and retains custody, even if it happened before container creation.
+This is not an atomic snapshot or protection against concurrent host writes.
