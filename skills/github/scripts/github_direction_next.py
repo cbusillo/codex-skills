@@ -210,7 +210,7 @@ def next_milestone_context(issue: dict[str, Any]) -> dict[str, Any] | None:
 def next_plan_status(issue: dict[str, Any], config: dict[str, Any]) -> str | None:
     if str(issue.get("state", "")).casefold() == "closed":
         return "done"
-    wait = issue.get("structured_wait") or issue.get("claim_wait")
+    wait: dict[str, Any] | None = issue.get("structured_wait") or issue.get("claim_wait")
     if wait is not None:
         wait = github_plan_wait.project_dates(wait)
         if wait["state"] == "review":

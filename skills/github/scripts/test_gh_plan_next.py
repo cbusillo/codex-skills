@@ -741,6 +741,8 @@ def global_fixture(
             for name, values in edges.get((target_repo, number), relationships()).items()
         }, []
 
+    fixture_comments = comments or {}
+
     def wait_api(method: str, path: str, **_kwargs: Any) -> Any:
         if module.NEXT_READS is not None and module.NEXT_READS.observation(path) is not None:
             return module.real_api_json(method, path, **_kwargs)
@@ -761,7 +763,7 @@ def global_fixture(
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
             page = int(query.get("page", ["1"])[0])
             size = int(query.get("per_page", ["100"])[0])
-            return "automation-gh", comments.get(key, [])[(page - 1) * size:page * size]
+            return "automation-gh", fixture_comments.get(key, [])[(page - 1) * size:page * size]
         if len(parts) == 7 and parts[5:] == ["dependencies", "blocked_by"]:
             return "automation-gh", edges.get(key, relationships())["blocked_by"]
         if parts[3] == "pulls":

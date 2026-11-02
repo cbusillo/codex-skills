@@ -647,7 +647,7 @@ def enrich_waiting_inbound_blockers(
 
 
 def current_audit_wait(issue: dict[str, Any], repo: str, *, fetch: Callable[[list[str]], Any]) -> dict[str, Any]:
-    supplied = issue.get("structured_wait")
+    supplied: dict[str, Any] | None = issue.get("structured_wait")
     if supplied is not None:
         github_plan_wait.validate(supplied)
         return github_plan_wait.project_dates(supplied)
@@ -877,7 +877,7 @@ def active_merged_status(issue: dict[str, Any], repo: str, status: str, *,
     delivery = bool(clauses and raw_clauses[-1].strip() and re.fullmatch(first, clauses[0], re.I)
                     and set(references(next_action[1])).issubset(pulls)
                     and all(re.fullmatch(bookkeeping, clause, re.I) for clause in clauses[1:]))
-    reviewed_wait = issue.get("structured_wait")
+    reviewed_wait: dict[str, Any] | None = issue.get("structured_wait")
     hold_pending = delegate_unresolved or (reviewed_wait is not None and reviewed_wait["state"] != "clear")
     if agent_wait and next_action:
         hold_pending |= bool(re.search(r"\b(?:after|until|once|when|accept\w*|approv\w*|decision)\b", next_action[1], re.I))

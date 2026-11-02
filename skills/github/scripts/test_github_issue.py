@@ -1475,8 +1475,8 @@ def test_generic_cli_state_changes_preserve_labels_and_related_issues() -> None:
         return success(copy.deepcopy(records[42]))
 
     for command, expected in (("close", "closed"), ("reopen", "open")):
-        def run(calls: list[dict[str, Any]]) -> None:
-            code, payload = _run_cli([command, "owner/repo#42"], io.StringIO(""), timeout=10)
+        def run(_calls: list[dict[str, Any]]) -> None:
+            code, payload = _run_cli([command, "owner/repo#42"], io.StringIO(), timeout=10)
             assert code == 0 and payload["ok"], payload
             assert payload["state"] == expected, payload
             assert payload["outcome_certainty"] == "confirmed", payload

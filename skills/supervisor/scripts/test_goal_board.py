@@ -374,10 +374,10 @@ class GoalBoardTests(unittest.TestCase):
 
     def test_reopened_child_reads_active_despite_its_leftover_done_label(self):
         names = {key: key for key in ("active", "done")}
-        for reason, status in (("REOPENED", names["active"]), (None, names["active"])):
+        for reason, expected_state in (("REOPENED", names["active"]), (None, names["active"])):
             with self.subTest(reason=reason):
                 row = {**child(10, label=names["done"]), "stateReason": reason}
-                self.assertEqual(goal_board.derived_status(row, TRUSTED, [])["status"], status)
+                self.assertEqual(goal_board.derived_status(row, TRUSTED, [])["status"], expected_state)
 
 
     def test_contributor_original_marker_cannot_release_the_managed_wait(self):

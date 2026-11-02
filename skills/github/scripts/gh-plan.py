@@ -5542,9 +5542,10 @@ def next_wait_context(
         return cache[path]
 
     known_repos = {item["repo"] for item in issues} | (reference_repositories or set())
+    known_waits = structured_waits or {}
     unique = {(item["repo"].casefold(), item["number"]): {
-        **item, **({"structured_wait": structured_waits[(item["repo"].casefold(), item["number"])]}
-                  if (item["repo"].casefold(), item["number"]) in (structured_waits or {}) else {})}
+        **item, **({"structured_wait": known_waits[(item["repo"].casefold(), item["number"])]}
+                  if (item["repo"].casefold(), item["number"]) in known_waits else {})}
         for item in issues}
     groups: dict[str, list[dict[str, Any]]] = {}
     selected = list(unique.values())[:scan_limit]
@@ -5588,7 +5589,7 @@ def next_wait_context(
         for row in github_direction_next.waiting_records(
             {**compact_list_issue(repo, item), "plan_status": next_plan_status(item, {}),
              **({"structured_wait": structured_waits[(repo.casefold(), item["number"])]}
-                if (repo.casefold(), item["number"]) in (structured_waits or {}) else {})},
+                if (repo.casefold(), item["number"]) in known_waits else {})},
             section_map(item.get("body") or "").get("Current Status", ""), reference_repositories=known_repos)
         for reference in row["references"]))
     def read_reference(path: str) -> None:

@@ -18,6 +18,7 @@ DEFAULT_STATUS_LABELS: Mapping[str, str] = MappingProxyType({})
 
 def derive(issue: dict[str, Any], relationships: dict[str, Any], wait: dict[str, Any], *,
            label_names: Mapping[str, str] | None = None) -> dict[str, Any]:
+    del label_names
     validate_wait(wait)
     wait = wait_records.project_dates(wait)
     state = str(issue.get("state", "")).casefold()
@@ -63,6 +64,7 @@ def render_status(text: str, derived: dict[str, Any]) -> str:
 
 
 def label_changes(recorded: list[str], names: Mapping[str, str], derived: dict[str, Any]) -> dict[str, list[str]]:
+    del names, derived
     return {"add": [], "remove": [], "result": list(recorded)}
 
 

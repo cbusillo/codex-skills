@@ -3440,7 +3440,7 @@ def test_weekly_mode_requires_an_owner_and_no_other_mode() -> None:
                 raise AssertionError(argv)
 
 
-def test_waiting_unmilestoned_cross_repository_blocker_is_a_named_finding() -> None:
+def test_waiting_cross_repository_blocker_outside_milestones_is_a_named_finding() -> None:
     module = load()
     from skills.github.scripts import github_plan_wait
 
@@ -3474,7 +3474,7 @@ def test_waiting_unmilestoned_cross_repository_blocker_is_a_named_finding() -> N
                                     ends_when="Client accepts the candidate")
     clear = github_plan_wait.reviewed(evidence="Client accepted the candidate")
     for cleared in (False, True):
-        raw = {**issue(2554, "Unmilestoned delivery", comments=1, body=(
+        raw = {**issue(2554, "Delivery outside milestones", comments=1, body=(
             "## Current Status\nNext action: Supervisor lands PR #71 and closes this issue.\n"
             + ("Waiting for: Client acceptance.\n" if cleared else "Waiting for: None.\n"))),
             "state": "open", "user": {"login": "owner"}, "html_url": gate["html_url"],
