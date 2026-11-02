@@ -2324,17 +2324,15 @@ of evidence; all unread references and incomplete coverage remain explicit.
 - `next [--milestone <number-or-title>] [--limit <n>] [--scan-limit <n>]`:
   Inventory every open issue and rank actionable work without mutating labels, relationships, milestones,
   Projects, or workflows. Native `blocked-by` relationships are authoritative.
-  Repository-local REST and batch reads include issues without the planning label.
+  Repository-local REST and batch reads include every open issue.
   `needs_status` routes untriaged requests and wait reviews to ordinary agent
-  triage; it does not admit implementation or bypass claim preflight. Status-label
-  scope holds, priority, assignment and real waits retain their existing rules.
-- The command excludes done, stale, actual structured waits, current native
+  triage; it does not admit implementation or bypass claim preflight. Priority,
+  assignment and real waits retain their existing rules.
+- The command excludes completed issues, actual structured waits, current native
   blockers, dependency-unknown, and reviewed parent plans with open sub-issues. Missing
   or malformed wait evidence is `wait_review_required`; complete local discussions
   needing wait review enter `needs_status`, while unread discussions stay excluded.
-  An unstatused planning
-  scope is `scope_review_required`. Each
-  exclusion includes a normalized reason and dependency evidence when present.
+  Each exclusion includes a normalized reason and dependency evidence when present.
 - Global traversal still evaluates native blockers and children of waiting or
   inconsistently blocked nodes under the same scan allowance. A whole-plan wait
   follows its ordinary descendants; independent blocker links or a child named

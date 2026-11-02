@@ -164,7 +164,7 @@ def milestone_wait_evidence(item: dict[str, Any], status_text: str, milestone_ti
 
 
 def check_milestone_wait(item: dict[str, Any], status_text: str, milestone_titles: list[str]) -> dict[str, Any]:
-    if item.get("plan_status") in {"blocked", "stale", "done"} or item.get("exclusion") in {"completed", "stale_needs_review", "unknown_dependencies", "unknown_ancestry", "label_blocked_without_native_edge", "tracking", "tracking_without_open_work", "pull_request"}:
+    if item.get("plan_status") in {"blocked", "done"} or item.get("exclusion") in {"completed", "unknown_dependencies", "unknown_ancestry", "tracking", "tracking_without_open_work", "pull_request"}:
         return item
     status_text = re.sub(r"\*\*(Waiting for|Parked until)(:?)\*\*(:?)", r"\1\2\3", status_text, flags=re.I)
     if (item.get("exclusion") == "wait_review_required" and not re.search(
@@ -815,7 +815,7 @@ def rank_portfolio_work(
     for entry in [*entries, *parents]:
         if entry.get("url") in invalid_waits:
             entry = {**entry, "wait_finding": invalid_waits[entry["url"]]}
-        if entry.get("exclusion") in {"completed", "stale_needs_review", "outside_direction_tracks"} or (entry.get("queue") or {}).get("reason") == "recorded_next_actor":
+        if entry.get("exclusion") in {"completed", "outside_direction_tracks"} or (entry.get("queue") or {}).get("reason") == "recorded_next_actor":
             continue
         context = milestone_context(entry)
         body = (entry.get("discussion") or {}).get("body", "")
@@ -1062,7 +1062,7 @@ def evaluate_direction_node(
     )
     if truncated_relationships:
         item["truncated_relationships"] = truncated_relationships
-    if item.get("exclusion") in {"completed", "stale_needs_review", "scope_review_required", "unknown_dependencies"}:
+    if item.get("exclusion") in {"completed", "unknown_dependencies"}:
         return {"item": item}
     if issue.get("pull_request") is not None:
         return {"item": {**item, "exclusion": "pull_request"}}
@@ -1272,7 +1272,7 @@ def rank_direction_work(
         reason = item.get("exclusion")
         blockers = node.get("blockers") or []
         children = node.get("children") or []
-        if reason in {"completed", "stale_needs_review", "unknown_dependencies", "pull_request"}:
+        if reason in {"completed", "unknown_dependencies", "pull_request"}:
             excluded.append(item)
             degraded += reason == "unknown_dependencies"
             if reason == "unknown_dependencies":
@@ -1297,8 +1297,6 @@ def rank_direction_work(
             track_next_actions[milestone["title"]] = {
                 "track": item["url"],
             }
-        if reason == "label_blocked_without_native_edge":
-            item["label_finding"] = {"kind": "stale_blocked_label", **step}
         own_item = item
         if held_parents:
             item = include_parent_context(item, held_parents, complete=True, tracking_roots=tracks)

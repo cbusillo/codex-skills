@@ -1985,7 +1985,7 @@ def test_global_stale_wait_report_reuses_merged_pr_proof_and_refuses_capacity() 
             if path == "/repos/someone/business/issues/11":
                 return "automation-gh", {"state": "closed", "pull_request": {}}
             if path == "/repos/someone/business/pulls/11":
-                return "automation-gh", {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}}
+                return "automation-gh", {"merged_at": "2026-10-05T12:00:00Z", "base": {"ref": "main"}, "body": "Refs #10"}
             return base_api(method, path, **kwargs)
         with patch.multiple(module, api_json=merged):
             module.cmd_next(next_args())
@@ -1995,6 +1995,16 @@ def test_global_stale_wait_report_reuses_merged_pr_proof_and_refuses_capacity() 
     assert result["waiting"] == []
     assert result["stale_waits"][0]["number"] == 10
     assert result["stale_waits"][0]["last_verified"] == "2026-10-01"
+
+    waiting["body"] = ("## Current Status\nState: Source complete.\nWaiting for: None.\n"
+                       "Next action: Supervisor routes PR #11 through the merge train, verifies landing, closes this issue.\n")
+    with global_fixture(roots, [waiting], edges, discovered=[tool]) as (module, result, _reads):
+        base_api = module.api_json
+        with patch.multiple(module, api_json=merged):
+            module.cmd_next(next_args())
+    report = next(row for row in result["stale_wait_report"]["items"] if row["number"] == waiting["number"])
+    assert report["selection_exclusion"]
+    assert all(row["number"] != waiting["number"] for row in result["candidates"])
 
 
 def test_graph_wait_ancestry_keeps_intermediate_nodes_and_one_capacity_frontier() -> None:

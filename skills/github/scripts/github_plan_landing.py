@@ -172,7 +172,7 @@ def snapshot(plan: Any, repo: str, number: int, *, checkout: str | None = None) 
 
 
 def planning_issue(issue: dict[str, Any], config: dict[str, Any]) -> bool:
-    return "pull_request" not in issue
+    return github_plan_status.is_planning_issue(issue)
 
 
 def comment_attention(repo: str, number: int) -> bool:

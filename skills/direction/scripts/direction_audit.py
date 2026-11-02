@@ -614,7 +614,8 @@ def enrich_waiting_inbound_blockers(
     for issue in issues:
         if ("pull_request" in issue or issue.get("state", "open") != "open"
                 or not parked_issue(issue, repo)
-                or (issue.get("issue_dependencies_summary") or {}).get("blocking") == 0):
+                or (type((issue.get("issue_dependencies_summary") or {}).get("blocking")) is int
+                    and issue["issue_dependencies_summary"]["blocking"] == 0)):
             continue
         if examined >= max_issues:
             incomplete = True
@@ -646,9 +647,11 @@ def enrich_waiting_inbound_blockers(
     return incomplete
 
 
-def current_audit_wait(issue: dict[str, Any], repo: str, *, fetch: Callable[[list[str]], Any]) -> dict[str, Any]:
+def current_audit_wait(issue: dict[str, Any], repo: str, *, fetch: Callable[[list[str]], Any]) -> dict[str, Any] | None:
     supplied: dict[str, Any] | None = issue.get("structured_wait")
-    if supplied is not None:
+    if "structured_wait" in issue:
+        if supplied is None:
+            return None
         github_plan_wait.validate(supplied)
         return github_plan_wait.project_dates(supplied)
 
@@ -659,7 +662,8 @@ def current_audit_wait(issue: dict[str, Any], repo: str, *, fetch: Callable[[lis
     discussion, complete = github_work_graph.read_discussion(issue, comments, limit=200)
     if not complete:
         raise AuditError("Issue wait discussion is incomplete")
-    return github_plan_wait.project_dates(github_plan_wait.current(issue, discussion, github_plan_wait.authors(repo)))
+    record, recorded = github_plan_wait.resolve(issue, discussion, github_plan_wait.authors(repo))
+    return github_plan_wait.project_dates(record) if recorded else None
 
 
 def parked_issue(issue: dict[str, Any], repo: str) -> bool:
@@ -965,22 +969,25 @@ def stale_wait_report(
         if not parked_issue(issue, repo) and not active:
             continue
         number = issue["number"]
+        sections = github_direction_next.section_map(str(issue.get("body") or ""))
+        status = next((text for title, text in sections.items() if title.casefold() == "current status"), "")
+        normalized_status = re.sub(r"\*\*(Waiting for)(:?)\*\*(:?)", r"\1\2\3", status, flags=re.I)
         if checked >= max_issues:
             errors.append({"number": number, "source": "issue", "reason": "issue_limit"})
             continue
         checked += 1
         checked_issues.append(number)
+        if (active and not parked_issue(issue, repo) and not WAIT_REFERENCE.search(status)
+                and not agent_delivery_wait(normalized_status, repo, number)):
+            continue
         try:
             wait = current_audit_wait(issue, repo, fetch=lambda args: read(args[1]))
         except (AuditError, ValueError) as error:
             errors.append({"number": number, "source": "structured_wait", "reason": str(error)})
             continue
         issue = {**issue, "structured_wait": wait}
-        if wait["state"] == "waiting":
+        if wait is not None and wait["state"] == "waiting":
             continue
-        sections = github_direction_next.section_map(str(issue.get("body") or ""))
-        status = next((text for title, text in sections.items() if title.casefold() == "current status"), "")
-        normalized_status = re.sub(r"\*\*(Waiting for)(:?)\*\*(:?)", r"\1\2\3", status, flags=re.I)
         if (active and not parked_issue(issue, repo)) or agent_delivery_wait(normalized_status, repo, number):
             try:
                 issue_unresolved: list[dict[str, Any]] = []
@@ -1192,6 +1199,11 @@ def enrich_milestone_waits(
 
     for item in issues:
         if "pull_request" in item or item.get("state", "open") != "open":
+            continue
+        blocking = (item.get("issue_dependencies_summary") or {}).get("blocking")
+        if (not github_direction_next.is_direction_repository(repo)
+                and (item.get("milestone") or {}).get("title") not in titles
+                and type(blocking) is int and blocking == 0):
             continue
         try:
             item["structured_wait"] = current_audit_wait(item, repo, fetch=fetch)

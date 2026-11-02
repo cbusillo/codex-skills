@@ -5,10 +5,10 @@ Read for `next` in a repository owner's direction repository, including explicit
 
 1. Read the Director's current direction and known repository-wide holds from the
    conversation and durable issue discussions. A hold overrides individual
-   active labels, missing blockers, and apparent worker availability. Continuing
+   derived status, missing blockers, and apparent worker availability. Continuing
    an encode or another background job does not resume engineering in that repo.
 2. Run the helper. It traverses the native milestone graph and inventories open
-   issues outside it, including issues without the planning label. Inspect
+   issues outside it. Inspect
    `graph_context` and `discovery_context` separately, including each source's
    exclusions, merged direction, failures, and bounds. An inaccessible source is
    unknown. A complete graph never means all repositories or sessions were read.

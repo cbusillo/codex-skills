@@ -22,6 +22,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Self
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 SCRIPT = Path(__file__).with_name("direction_audit.py")
 NOW = dt.datetime(2026, 9, 21, 12, tzinfo=dt.timezone.utc)
@@ -2494,7 +2495,7 @@ def test_active_merged_status_preserves_split_remainders_and_unproven_delivery()
                 (5, "Partial stack", status.replace("PR #71", "PR #71 and PR #72"), old),
                 (6, "Unrelated merged PR only in historical context", "## Evidence\nPR #71 merged.\n## Current Status\nNext action: Implement the consumer.\n", old),
             )]
-    rows = [reviewed_clear_issue(row) for row in rows]
+    rows = [{**row, "issue_dependencies_summary": {"total_blocked_by": 0}} for row in rows]
     calls = []
     def fetch(args: list[str]) -> Any:
         assert args[-2:] == ["--method", "GET"]
@@ -3479,6 +3480,8 @@ def test_waiting_cross_repository_blocker_outside_milestones_is_a_named_finding(
             + ("Waiting for: Client acceptance.\n" if cleared else "Waiting for: None.\n"))),
             "state": "open", "user": {"login": "owner"}, "html_url": gate["html_url"],
             "issue_dependencies_summary": {"total_blocked_by": 0, "blocking": 1}}
+        quiet = [{**issue(number, "Plain request", comments=1), "state": "open",
+                  "issue_dependencies_summary": {"total_blocked_by": 0, "blocking": 0}} for number in range(100)]
         discussion = [{"user": {"login": "owner"}, "body": github_plan_wait.marker(record)}
                       for record in ([held, clear] if cleared else [held])]
         reads: list[str] = []
@@ -3497,11 +3500,14 @@ def test_waiting_cross_repository_blocker_outside_milestones_is_a_named_finding(
             if path == "repos/owner/repo/pulls/71":
                 return {"merged_at": stamp(NOW), "base": {"ref": "main"}, "body": "Refs #2554"}
             if path == "repos/owner/repo/issues" and "state=open" in args[1]:
-                return [dict(raw)]
+                query = parse_qs(urlsplit(args[1]).query)
+                page = int(query.get("page", ["1"])[0])
+                size = int(query.get("per_page", ["100"])[0])
+                return [dict(raw), *quiet][(page - 1) * size:page * size]
             return []
 
         before = json.dumps(raw, sort_keys=True)
-        standalone = module.stale_wait_report([raw], "owner/repo", fetch=current)
+        standalone = module.stale_wait_report([raw, *quiet], "owner/repo", fetch=current)
         assert standalone["complete"] and json.dumps(raw, sort_keys=True) == before
         assert bool(standalone["items"]) is cleared
         if cleared:
@@ -3514,6 +3520,7 @@ def test_waiting_cross_repository_blocker_outside_milestones_is_a_named_finding(
         reused = module.stale_wait_report(found, "owner/repo", fetch=current)
         assert reused["items"] == standalone["items"]
         assert reads.count("repos/owner/repo/issues/2554/comments") == 1
+        assert not any(f"repos/owner/repo/issues/{number}/comments" in reads for number in range(100))
 
 
 def test_waiting_inbound_fetch_coverage_includes_caps_errors_and_ambiguous_targets() -> None:

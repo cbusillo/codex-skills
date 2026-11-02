@@ -137,6 +137,17 @@ class LandingTests(unittest.TestCase):
         self.labels.assert_not_called()
         self.body.assert_not_called()
 
+    def test_plain_requests_have_no_planning_metadata_to_reconcile(self) -> None:
+        for author in ("fixture-bot", "outside-reporter"):
+            with self.subTest(author=author):
+                self.issue.update(user={"login": author}, body="The screen crashes when saving.", labels=[{"name": "bug"}])
+                result = self.run_landing()
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["issues"][0]["status"], "not_planning_issue")
+        self.labels.assert_not_called()
+        self.body.assert_not_called()
+        self.state.assert_not_called()
+
     def test_preview_and_comment_attention_do_not_mutate(self) -> None:
         self.assertTrue(self.run_landing(apply=False)["ok"])
         with patch.object(landing.subprocess, "run", side_effect=subprocess.CalledProcessError(3, "radar")):
@@ -1088,6 +1099,55 @@ class MutationProjectionTests(unittest.TestCase):
                         recovery.func(recovery)
                 self.assertEqual(state_events, [(7, "closed")])
                 self.assertEqual([comment["body"] for comment in self.discussion[7]], [note])
+
+
+    def test_pending_close_comment_resume_preserves_exact_note_without_closing_twice(self):
+        note = "Completion evidence: literal \\u0027 and ${VALUE}.\nRetain café capture.\n"
+        closed = []
+        def state(number, **kwargs):
+            closed.append((number, kwargs["state"]))
+            return self.set_state(number, **kwargs)
+        failure = PLAN.github_api_core.FailureDetail(cause="transport_error", message="Comment post rejected",
+            retryable=False, fallback_eligible=False, disposition="stop", write_outcome="rejected")
+        with patch.object(PLAN.github_issue_core, "set_issue_state", side_effect=state):
+            with patch.object(PLAN.github_comment_core, "comment", side_effect=PLAN.github_comment_core.CommentError(
+                    failure.message, failure=failure)), self.assertRaises(PLAN.PlanError) as caught:
+                self.command("close", "7", "--reason", "completed", "--owner", "fixture-owner", "--comment", note)
+            pending = caught.exception.payload["recovery"]["pending_comment"]
+            self.assertEqual(pending["write_outcome"], "rejected")
+            self.assertEqual(self.discussion[7], [])
+            resume = PLAN.build_parser().parse_args(pending["resume_argv"][1:])
+            self.assertEqual(resume.body, note)
+            self.assertEqual(resume.owner, "fixture-owner")
+            self.assertEqual(resume.reason, "completed")
+            with contextlib.redirect_stdout(io.StringIO()):
+                resume.func(resume)
+        self.assertEqual(closed, [(7, "closed")])
+        self.assertEqual([comment["body"] for comment in self.discussion[7]], [note])
+
+
+    def test_pending_close_comment_option_shaped_body_can_resume(self):
+        note = "-capture"
+        failure = PLAN.github_api_core.FailureDetail(cause="transport_error", message="Comment post rejected",
+            retryable=False, fallback_eligible=False, disposition="stop", write_outcome="rejected")
+        with patch.multiple(PLAN, project_meta=Mock(return_value=("fixture-bot", 1, {"id": "project", "title": "-capture"})),
+                project_fields=Mock(return_value={}), find_project_item=Mock(return_value={"id": "item"})), \
+                patch.object(PLAN.pathlib.Path, "is_dir", return_value=True), patch.object(PLAN, "repo_from_git", return_value=REPO), \
+                patch.object(PLAN.github_comment_core, "comment", side_effect=PLAN.github_comment_core.CommentError(
+                failure.message, failure=failure)), self.assertRaises(PLAN.PlanError) as caught:
+            self.command("close", "7", "--comment=" + note, "--owner=-owner", "--project=-capture", "--planning-checkout=-checkout")
+        pending = caught.exception.payload["recovery"]["pending_comment"]
+        resume = PLAN.build_parser().parse_args(pending["resume_argv"][1:])
+        self.assertEqual(resume.body, note)
+        self.assertEqual((resume.owner, resume.project, resume.planning_checkout), ("-owner", "-capture", "-checkout"))
+        projection = PLAN.build_parser().parse_args(shlex.split(caught.exception.payload["recovery"]["projection_command"])[1:])
+        self.assertEqual(projection.planning_checkout, resume.planning_checkout)
+        with patch.multiple(PLAN, project_meta=Mock(return_value=("fixture-bot", 1, {"id": "project", "title": "-capture"})),
+                project_fields=Mock(return_value={}), find_project_item=Mock(return_value={"id": "item"})), \
+                patch.object(PLAN.pathlib.Path, "is_dir", return_value=True), patch.object(PLAN, "repo_from_git", return_value=REPO), \
+                contextlib.redirect_stdout(io.StringIO()):
+            resume.func(resume)
+        self.assertEqual([comment["body"] for comment in self.discussion[7]], [note])
 
 
     def test_unknown_close_comment_outcome_retains_uncertainty_and_pending_note(self):

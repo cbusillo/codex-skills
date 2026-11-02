@@ -16,6 +16,16 @@ import github_plan_wait
 
 
 class DerivedStatusTests(unittest.TestCase):
+    def test_planning_completion_uses_existing_body_metadata(self) -> None:
+        from github_plan_status.body import PLAN_RESERVED_MARKERS
+
+        for body in ("Plain request.", "## Scope\nFix the screen.\n## Validation\nSave the form."):
+            self.assertFalse(github_plan_status.is_planning_issue({"body": body}))
+        for body in (*PLAN_RESERVED_MARKERS, "## Current Status\nAgent lands the PR.", "## Finish Line\nSaving works."):
+            with self.subTest(body=body):
+                self.assertTrue(github_plan_status.is_planning_issue({"body": body}))
+                self.assertFalse(github_plan_status.is_planning_issue({"body": body, "pull_request": {}}))
+
     def test_status_is_independent_of_retired_labels(self) -> None:
         relationships = {"blocked_by": []}
         clear = github_plan_wait.reviewed(evidence="Full discussion reviewed")

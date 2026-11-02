@@ -5062,7 +5062,7 @@ def cmd_next(args: argparse.Namespace) -> None:
     candidates: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = routing_excluded
     dependency_degraded_count = 0
-    structured_waits: dict[tuple[str, int], dict[str, Any]] = {}
+    structured_waits: dict[tuple[str, int], dict[str, Any] | None] = {}
     for issue in issues:
         issue_url = issue.get("html_url") or issue.get("url")
         focus = focus_by_url.get(issue_url) if isinstance(issue_url, str) else None
@@ -5087,6 +5087,7 @@ def cmd_next(args: argparse.Namespace) -> None:
         comment_limit: int | None = getattr(args, "comment_limit", None)
         comments: list[dict[str, Any]] = []
         discussion_complete = False
+        recorded = False
         try:
             if "_graph_comments" in issue:
                 comments = issue["_graph_comments"]
@@ -5098,7 +5099,7 @@ def cmd_next(args: argparse.Namespace) -> None:
             if not discussion_complete:
                 wait_error = "Discussion exceeded the comment read bound"
             else:
-                wait = current_wait(issue, comments, repo)
+                wait, recorded = github_plan_wait.resolve(issue, comments, wait_authors(repo))
         except (ValueError, PlanError) as exc:
             wait_error = next_source_error(exc) if isinstance(exc, PlanError) else str(exc)
         if wait_error is not None:
@@ -5109,7 +5110,7 @@ def cmd_next(args: argparse.Namespace) -> None:
                 f"of {NEXT_RELATIONSHIP_LIMIT}"
             )
             relationships = None
-        structured_waits[(repo.casefold(), int(issue["number"]))] = wait
+        structured_waits[(repo.casefold(), int(issue["number"]))] = wait if wait_error is not None or recorded else None
         disposition, evaluated = evaluate_next_plan(
             issue,
             config=config,
@@ -5506,7 +5507,7 @@ def exclude_landed_candidates(candidates: list[dict[str, Any]], excluded: list[d
 def next_wait_context(
     issues: list[dict[str, Any]], *, scan_limit: int | None, inventory_complete: bool,
     reference_repositories: set[str] | None = None,
-    structured_waits: dict[tuple[str, int], dict[str, Any]] | None = None,
+    structured_waits: dict[tuple[str, int], dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     """Reuse the direction audit's stale report within the already-read scope."""
     root = str(pathlib.Path(__file__).resolve().parents[3])
@@ -5588,7 +5589,7 @@ def next_wait_context(
         for item in items if str(item.get("state", "")).casefold() == "open"
         for row in github_direction_next.waiting_records(
             {**compact_list_issue(repo, item), "plan_status": next_plan_status(item, {}),
-             **({"structured_wait": structured_waits[(repo.casefold(), item["number"])]}
+             **({"structured_wait": known_waits[(repo.casefold(), item["number"])]}
                 if (repo.casefold(), item["number"]) in known_waits else {})},
             section_map(item.get("body") or "").get("Current Status", ""), reference_repositories=known_repos)
         for reference in row["references"]))
@@ -5815,6 +5816,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
     contexts: dict[str, tuple[dict[str, Any], dict[str, str]]] = {}
     focus_contexts: dict[str, dict[str, Any]] = {}
     nodes: dict[tuple[str, int], dict[str, Any]] = {}
+    structured_waits: dict[tuple[str, int], dict[str, Any] | None] = {}
     parents: dict[tuple[str, int], dict[str, Any] | None] = {}
     context_lock = threading.Lock()
     context_locks: dict[str, Any] = {}
@@ -5833,7 +5835,9 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
 
     def graph_wait(raw: dict[str, Any], comments: list[dict[str, Any]], issue_repo: str) -> dict[str, Any] | None:
         try:
-            return current_wait(raw, comments, issue_repo)
+            wait, recorded = github_plan_wait.resolve(raw, comments, wait_authors(issue_repo))
+            structured_waits[(issue_repo.casefold(), int(raw["number"]))] = wait if recorded else None
+            return wait
         except PlanError as exc:
             if exc.failure is not None:
                 raise
@@ -6232,7 +6236,8 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         scan_limit=args.scan_limit * 2 if args.scan_limit is not None else None,
         inventory_complete=candidate_coverage_complete,
         reference_repositories={item["repo"] for item in discovery.get("repositories", [])},
-        structured_waits={key: node["item"]["structured_wait"] for key, node in nodes.items() if "structured_wait" in node["item"]},
+        structured_waits={key: structured_waits.get(key, node["item"]["structured_wait"])
+                          for key, node in nodes.items() if "structured_wait" in node["item"]},
     )
     stale = {(row["repo"].casefold(), row["number"]): row for row in wait_context["items"]}
     checked_waits = {(row["repo"].casefold(), row["number"]) for row in wait_context["checked_issues"]}
