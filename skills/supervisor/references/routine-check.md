@@ -8,7 +8,7 @@ handoff and question queue. Keep no copied rules,
 decisions, statuses, board contents or narrative; open linked records for action.
 
 1. Read the recovery note and reconcile pending local actions at their source.
-2. Run the in-process digest from the catalog:
+2. Run the digest from the catalog:
 
    ```sh
    uv run skills/supervisor/scripts/routine_check.py --owner OWNER --queue OWNER/direction#NUMBER --ledger <ledger.json> --foreign-log <watch.jsonl>
@@ -26,7 +26,7 @@ decisions, statuses, board contents or narrative; open linked records for action
    [comment-radar configuration](../../github-work-rollup/SKILL.md#external-comment-radar).
    Radar defaults to the Director's repositories; `--repo` narrows that scope and
    repeated `--thread` adds full-history reads. Keep Client-agent identities in
-   the existing people index. The digest reads current board, sessions, questions,
+   the existing people index. The digest reads global `next`, sessions, questions,
    radar and live watch output without waiting for the watch process to exit.
    Unanswered comments, registered open queue questions, agent next actions and
    coverage errors repeat until settled at source. Unregistered question hints
@@ -45,11 +45,16 @@ decisions, statuses, board contents or narrative; open linked records for action
    lifecycle lines are recognized; an unrecovered stop remains a coverage error.
    That notification window does not prune unanswered comment/question sources.
    No digest state file is needed.
-   Staffing is the item's own Next actor and concrete Next action, ranked by
-   `next`. Generic agent roles are available work, subject to the ownership
+   Staffing uses the same global `next` as selection, including open issues
+   outside Track trees and both agent families. Its 120-second read budget keeps
+   omitted repositories, unread issues and other coverage gaps explicit.
+   NEXT rows have no observed claim or wait; REVIEW rows need status or custody
+   reconciliation. Generic agent roles are available work, subject to the ownership
    check. A specifically named worker or session without a claim needs custody
    reconciliation; launch its recorded Trial token, or confirm the handoff before
-   updating Next actor. There is no separate staffing-comment queue.
+   updating Next actor. Leads update each delegated child's staffing action under
+   the [brief rules](brief-rules.md#rules-every-brief-carries).
+   There is no separate staffing-comment queue.
    Route Client and Client-agent comments to the owning worker for an answer.
    Open full source comments before acting; register/present decisions needed
    from this Director through the existing queue rules. Optional routing writes
@@ -77,7 +82,7 @@ decisions, statuses, board contents or narrative; open linked records for action
    first failed gate; inspect private details on failure and reuse its evidence.
    Never replay uncertain mutations with another directory. Nonempty input,
    prompts and interrupted sources use [shutdown/recovery](helpers.md#finished-session-shutdown-stages).
-4. Staff through current global `gh-plan.py --repo OWNER/direction next`, active child records and complete
+4. Staff through the digest's current global `next`, active child records and complete
    claim coverage under the overall Order and existing capacity/PR limits.
    Reuse that output for [planning intake](../../github-plan/SKILL.md#triage-incoming-reports);
    the unanswered-comment radar alone does not track unfinished requests.
