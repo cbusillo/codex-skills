@@ -49,6 +49,27 @@ changes on yes.
   audit, escalation, deviation, and marker in files unless the Director used it
   first.
 
+## Asking a Client
+
+Ask about what the Client can see or has done: a preview, a screen, or what
+staff did last week. Read available business records, exports and logs first;
+ask only what the evidence cannot show, rather than asking for opinions on
+abstractions.
+
+State the simplest default we would choose, explain what it means for them in
+one plain sentence, and ask "fine, or what is different?" Ask one question per
+message where possible, answerable with yes or a correction. Redraft a list of
+questions or a bare open question with several unknowns.
+
+A Client's yes cannot authorize what the overall DIRECTION.md stop boundaries
+reserve for the Director, including changing an agreed outcome or settling a
+design or quality question. Do not offer those decisions as Client choices.
+Take them to the Director through [Director Questions](#director-questions)
+before acting, and tell the Client plainly that it needs the Director's decision.
+
+For every answer, record the Client's exact words beside our reading of them
+on the existing work record.
+
 ## Director Questions
 
 Create a structured question with
