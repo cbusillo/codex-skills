@@ -258,7 +258,7 @@ def read_agy_records(path: Path) -> list[dict]:
             records.append({"sessionId": path.stem, "type": "system"})
             rows = database.execute("SELECT idx, step_type, status, has_subtrajectory, step_payload FROM steps ORDER BY idx").fetchall()
         steps = [protobuf_fields(row[4]) for row in rows]
-        tasks = {}
+        tasks: dict[str, dict] = {}
         for index, step in enumerate(steps):
             if 148 in step:
                 task = protobuf_fields(step[148])
@@ -287,7 +287,7 @@ def agy_command_terminal(step: dict) -> dict:
     return fields(fields(fields(result.get(3, b"")).get(10, b"")).get(3, b""))
 
 
-def agy_task_notification(step: dict, session: str, ordinal: int, tasks: dict) -> bool:
+def agy_task_notification(step: dict, session: str, ordinal: int, tasks: dict[str, dict]) -> bool:
     fields = protobuf_fields
     note = fields(step.get(114, b""))
     envelope = fields(note.get(4, b""))
@@ -305,7 +305,7 @@ def agy_task_notification(step: dict, session: str, ordinal: int, tasks: dict) -
                 and type(terminal.get(3)) is int)
 
 
-def agy_step_records(session: str, ordinal: int, kind: int, status: int, children: bool, step: dict, tasks: dict) -> list[dict]:
+def agy_step_records(session: str, ordinal: int, kind: int, status: int, children: bool, step: dict, tasks: dict[str, dict]) -> list[dict]:
     fields = protobuf_fields
     metadata = fields(step.get(5, b""))
     clock = fields(metadata.get(8) or metadata.get(1, b""))

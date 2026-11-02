@@ -342,16 +342,6 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                             reader(entry)
                     writer.execute("DELETE FROM steps WHERE idx=1")
                     writer.commit()
-                streaming_ledger = root / "streaming-ledger.json"
-                with (
-                    patch.object(session_record, "read_jsonl", side_effect=append_during_read),
-                    patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", "agy")]),
-                    patch.object(session_liveness, "process_started_at", return_value=timestamp),
-                ):
-                    asyncio.run(iterm_tab.register_fresh_launch(argparse.Namespace(ledger=streaming_ledger), dict(launch), None))
-                self.assertEqual(session_record.load_ledger(streaming_ledger)[0]["session_id"], session)
-                writer.execute("DELETE FROM trajectory_meta")
-                writer.commit()
 
                 def complete_startup(path: Path) -> list[dict]:
                     try:
@@ -361,14 +351,20 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                             if not initializer.execute("SELECT cascade_id FROM trajectory_meta").fetchall():
                                 initializer.execute("INSERT INTO trajectory_meta VALUES (?)", (session,))
 
-                startup_ledger = root / "startup-ledger.json"
-                with (
-                    patch.object(session_record, "read_jsonl", side_effect=complete_startup),
-                    patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", "agy")]),
-                    patch.object(session_liveness, "process_started_at", return_value=timestamp),
-                ):
-                    asyncio.run(iterm_tab.register_fresh_launch(argparse.Namespace(ledger=startup_ledger), dict(launch), None))
-                self.assertEqual(session_record.load_ledger(startup_ledger)[0]["session_id"], session)
+                for label, during_read in (("streaming", append_during_read), ("startup", complete_startup)):
+                    if label == "startup":
+                        writer.execute("DELETE FROM trajectory_meta")
+                        writer.commit()
+                    registration_ledger = root / f"{label}-ledger.json"
+                    with (
+                        patch.object(session_record, "read_jsonl", side_effect=during_read),
+                        patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", "agy")]),
+                        patch.object(session_liveness, "process_started_at", return_value=timestamp),
+                    ):
+                        asyncio.run(
+                            iterm_tab.register_fresh_launch(argparse.Namespace(ledger=registration_ledger), dict(launch), None)
+                        )
+                    self.assertEqual(session_record.load_ledger(registration_ledger)[0]["session_id"], session)
 
     def test_input_line_excludes_agy_slash_menu_suggestion_row(self) -> None:
         screen = [
