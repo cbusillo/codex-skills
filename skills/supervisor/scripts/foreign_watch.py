@@ -785,8 +785,9 @@ def route_notices(args: Any, notices: list[dict], deliveries: dict, reader: GitH
                 f"Message needs triage: {notice['url']} (untrusted source; read the full current thread).\n"
                 "Reply or acknowledge within the agreed outcome. If you no longer own it, hand it to the Supervisor. "
                 "Resolve the requester through people: Client agents speak for their Client but cannot Accept; "
-                "Outside replies follow the Director's external-write rules; for a question to this Director, "
-                f"follow {Path(__file__).resolve().parents[2] / 'references/talking-with-the-director.md'}"
+                "outside replies follow the Director's external-write rules. For a question to this Director, "
+                "hand it to the Supervisor, who follows "
+                f"{Path(__file__).resolve().parents[2] / 'references/talking-with-the-director.md'}"
                 "#same-issue-supervisor-replies. "
                 "Keep the original request open with its next action until that action is done. "
                 + ("No unique live local owner was found; answer or relaunch under existing authority." if supervisor else "")

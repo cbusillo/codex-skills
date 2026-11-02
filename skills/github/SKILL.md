@@ -897,9 +897,10 @@ Markdown bodies through a file or stdin; an unquoted heredoc runs command
 substitution inside backticks.
 
 Writing to another person's repository requires your Director's approval;
-outside replies need their exact-text approval. Only an explicitly adopted
+replies to outside people, as defined by their direction, need exact-text
+approval unless an authorized flow covers them. The
 [same-issue Supervisor reply flow](../references/talking-with-the-director.md#same-issue-supervisor-replies)
-can replace per-reply approval for the comments it covers. Follow this before
+is one such flow; other existing flows and approvals remain. Apply this before
 selecting a posting identity.
 
 GitHub writes belong to the configured automation account. The helpers select
