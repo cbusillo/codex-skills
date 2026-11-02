@@ -1739,7 +1739,7 @@ def test_outbound_without_mention_approval_reads_visible_old_open_questions(monk
                 return {"items": [{**search_item("client/private", 4, updated="2026-06-01T00:00:00Z"), "body": "@cbusillo, please decide"}],
                         "total_count": 1, "incomplete_results": False}
         return fake(command)
-    monkeypatch.setattr(github_unanswered_comments, "run_json", get)
+    patch_radar(monkeypatch, "run_json", get)
     payload = github_unanswered_comments.collect_payload(outbound_settings(mention_approval=None))
     assert payload["status"] == "attention"
     assert [(row["repository"], row["number"], row["untrusted"]) for row in payload["director_mentions"]] == [

@@ -357,7 +357,7 @@ def scan_mentions(args, repos, watermarks, seen, own_logins, started, reader):
     """Director mentions outside the watched repositories; a gap is reported, never skipped.
 
     Returns notices, coverage gaps, errors, watermarks and the reported thread
-    versions ({url: updated_at}) still inside the overlap window.
+    versions ({url: updated_at}) already reported.
     """
     identity_gap = getattr(args, "recipient_identity_gap", None)
     since = (timestamp(watermarks[MENTIONS]) - MENTION_OVERLAP).isoformat().replace("+00:00", "Z")
@@ -367,7 +367,7 @@ def scan_mentions(args, repos, watermarks, seen, own_logins, started, reader):
         except READ_ERRORS as failure:
             raise director_mentions.MentionSearchError(str(failure)) from failure
 
-    def read_comments(issue_url: str, created: str) -> list[dict[str, Any]]:
+    def read_mention_discussion(issue_url: str, created: str) -> list[dict[str, Any]]:
         try:
             return reader.paged_json(director_mentions.thread_comments_path(issue_url),
                                      step_prefix="foreign_recipient_comments", params={"since": created},
@@ -381,8 +381,9 @@ def scan_mentions(args, repos, watermarks, seen, own_logins, started, reader):
         getattr(args, "mention_approval", None),
         set(own_logins),
         lambda repo, comment_id: reader.get_json(f"repos/{repo}/issues/comments/{comment_id}", step="foreign_mention_approval"),
-        read_comments,
+        read_mention_discussion,
         excluded_repositories=repos,
+        excluded_owners=() if getattr(args, "repo", None) else (args.owner,),
         visible=True,
         names=tuple(getattr(args, "director_names", ())),
         get=get,
@@ -935,15 +936,14 @@ def main() -> int:
         parser.error("routing needs --ledger, --notify-config and --miss-issue together")
     if args.miss_issue and not re.fullmatch(rf"{re.escape(args.owner)}/[A-Za-z0-9_.-]+#[1-9][0-9]*", args.miss_issue, re.I):
         parser.error("--miss-issue must belong to the configured Director")
-    from github_unanswered_comments import people_identities
-    identities = people_identities({(args.director_login or args.owner).casefold()}, args.people_index)
+    radar: Any = importlib.import_module("github_unanswered_comments")
+    identities = radar.people_identities({(args.director_login or args.owner).casefold()}, args.people_index)
     args.director_names = identities["director_names"]
     args.recipient_identity_gap = (identities.get("error") or "Director aliases are ambiguous"
                                    if identities["status"] == "error" or identities["director_ambiguous"] else None)
     args.client_agent_logins = set()
     if args.ledger:
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github-work-rollup/scripts"))
-        radar: Any = importlib.import_module("github_unanswered_comments")
         identities = radar.people_identities({args.owner.casefold()}, args.people_index)
         if identities.get("status") == "error":
             parser.error(identities["error"])

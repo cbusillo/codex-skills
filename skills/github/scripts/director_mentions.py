@@ -19,6 +19,7 @@ from urllib.parse import urlencode
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from skills.direction.scripts import question_id
+from skills.github.scripts import github_plan_wait
 from skills.github.scripts.github_plan_status.waits import names_recipient, recipient_queries
 
 
@@ -223,12 +224,13 @@ def search(
         filters.extend(["is:open", "archived:false"])
     else:
         filters.append(f"updated:{since}..{until}" if until else f"updated:>={since}")
-    selectors = [f"mentions:{director_login}"]
+    selectors = [(director_login, f"mentions:{director_login}")]
     if visible:
         selectors.extend(recipient_queries(director_login, names))
-    queries = [" ".join([selector, *filters]) for selector in selectors]
     mentions, gaps, checked = [], [], set()
-    for query in queries:
+    for term, selector in selectors:
+        query = " ".join([selector, *filters])
+        native_mention = selector.startswith("mentions:")
         try:
             fetched = 0
             for page in range(1, MAX_PAGES + 1):
@@ -247,19 +249,27 @@ def search(
                     if repo.casefold() in excluded_repos or repo.split("/")[0].casefold() in owners or (
                             not visible and until and timestamp(updated) > timestamp(until)):
                         continue
-                    if visible and item.get("html_url") not in checked:
-                        if read_comments is None:
-                            raise MentionSearchError("recipient text verification needs the complete discussion")
-                        issue_url = f"https://api.github.com/repos/{repo}/issues/{number}"
-                        comments = read_comments(issue_url, "1970-01-01T00:00:00Z")
-                        if not isinstance(comments, list) or any(not isinstance(comment, dict) for comment in comments):
-                            raise MentionSearchError("recipient discussion unreadable")
-                        checked.add(item["html_url"])
-                        text = "\n".join(str(source.get("body") or "") for source in [item, *comments])
-                        if not names_recipient(text, [director_login, *names], {director_login.casefold()}):
+                    if visible and not native_mention:
+                        if item["html_url"] in checked:
                             continue
-                    elif visible:
-                        continue
+                        try:
+                            if read_comments is None:
+                                raise MentionSearchError("recipient text verification needs the complete discussion")
+                            issue_url = f"https://api.github.com/repos/{repo}/issues/{number}"
+                            comments = read_comments(issue_url, "1970-01-01T00:00:00Z")
+                            if not isinstance(comments, list) or any(not isinstance(comment, dict) for comment in comments):
+                                raise MentionSearchError("recipient discussion unreadable")
+                            if '"github-plan:wait"' in selector:
+                                wait, _ = github_plan_wait.resolve(item, comments, github_plan_wait.authors(repo))
+                                texts = "\n".join(entry["waiting_for"] for entry in wait["waits"])
+                            else:
+                                texts = "\n".join(str(source.get("body") or "") for source in [item, *comments])
+                            if not names_recipient(texts, [term], {director_login.casefold()}):
+                                continue
+                        except (MentionSearchError, ValueError, TypeError, KeyError) as failure:
+                            gaps.append(str(failure))
+                            continue
+                    checked.add(item["html_url"])
                     user = item.get("user")
                     mentions.append({
                         "repository": repo, "number": number, "url": url, "updated_at": updated,
@@ -275,7 +285,7 @@ def search(
             if not visible:
                 return [], None, str(error)
             gaps.append(str(error))
-    return list({row["url"]: row for row in mentions}.values()), None, "; ".join(dict.fromkeys(gaps)) or None
+    return list({row["url"]: row for row in mentions}.values()), "; ".join(dict.fromkeys(gaps)) or None, None
 
 
 def collect(

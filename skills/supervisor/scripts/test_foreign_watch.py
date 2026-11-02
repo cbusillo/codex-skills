@@ -70,6 +70,7 @@ class WatchTests(unittest.TestCase):
                     reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
                     feedback = comment(author, "Inventory and Helpdesk are missing. Holding Accept.", "2026-10-30T19:38:54Z")
                     reader.paged_json.side_effect = feeds([feedback])
+                    reader.get_json.side_effect = getattr(foreign_watch, "GitHubReadShapeError")("external search unavailable")
                     args = argparse.Namespace(owner="director", state=Path(directory) / "state.json", since=None,
                         own_login=["director", "agent[bot]"], launchplane_login=[], interval=300,
                         once=False, persistent=persistent)
@@ -451,17 +452,17 @@ class MentionTests(unittest.TestCase):
         (changed, _, _, _, _), _, _ = self.scan(get=director_get([edited]), watermark=STARTED, seen=seen)
         self.assertEqual([n["number"] for n in changed], [8])
 
-    def test_search_failure_keeps_watermark(self) -> None:
-        get = Mock(side_effect=foreign_watch.director_mentions.MentionSearchError("rate limited"))
+    def test_search_gap_keeps_watermark(self) -> None:
+        get = Mock(side_effect=getattr(foreign_watch, "director_mentions").MentionSearchError("rate limited"))
         (notices, gaps, errors, watermarks, _), _, _ = self.scan(get=get)
-        self.assertEqual((notices, gaps), ([], []))
-        self.assertTrue(errors[0]["retryable"])
+        self.assertEqual((notices, errors), ([], []))
+        self.assertTrue(gaps)
         self.assertEqual(watermarks[foreign_watch.MENTIONS], SINCE)
 
     def test_cli_without_director_login_uses_configured_owner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             reader = Mock()
-            reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
+            reader.get_json.return_value = {"items": [mention("client/private", 9)], "total_count": 1, "incomplete_results": False}
             reader.paged_json.return_value = []
             output = io.StringIO()
             with patch.object(foreign_watch.sys, "argv", ["foreign_watch.py", "--owner", "director",
@@ -471,7 +472,7 @@ class MentionTests(unittest.TestCase):
                 self.assertEqual(foreign_watch.main(), 0)
             line = json.loads(output.getvalue())
             self.assertEqual((line["errors"], line["coverage_gaps"]), ([], []))
-            self.assertTrue(reader.get_json.called)
+            self.assertEqual([row["number"] for row in line["notices"]], [9])
 
 
 if __name__ == "__main__":

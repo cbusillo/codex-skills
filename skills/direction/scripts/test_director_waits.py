@@ -153,7 +153,7 @@ class WaitTests(unittest.TestCase):
         reader = Mock()
         def read(_method: str, path: str, **_kwargs: object) -> object:
             if "Waiting" in path:
-                raise director_waits.GitHubReadError(refused.failure.message, result=refused, diagnostics={})
+                raise getattr(director_waits, "GitHubReadError")(refused.failure.message, result=refused, diagnostics={})
             return search(issue(reason="Director to approve outside/tools#475"))
         reader.request.side_effect = read
         report = director_waits.collect(reader, "owner", ["Director"], NOW)

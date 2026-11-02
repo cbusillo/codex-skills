@@ -165,7 +165,8 @@ def read_discussion(reader, repo, number, discussions, errors):
 
 
 def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting for", *, include_archived=False,
-                  where="body", discussions=None, recipient: str | None = None) -> dict[str, Any]:
+                  where="body", discussions: dict[tuple[str, int], Any] | None = None,
+                  recipient: str | None = None, recipient_term: str | None = None) -> dict[str, Any]:
     search = (f'-user:{owner} is:issue is:open {recipient}' if recipient
               else f'user:{owner} is:issue is:open in:{where} "{phrase}"')
     query = repository_scope.search_query(search, include_archived=include_archived)
@@ -211,6 +212,10 @@ def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting f
                         continue
                     seen.add(key)
                     comments = read_discussion(reader, repo, entry["number"], discussions, result["errors"])
+                    if recipient_term and comments is not None:
+                        texts = "\n".join(str(source.get("body") or "") for source in [entry, *comments])
+                        if not github_plan_wait.names_recipient(texts, [recipient_term], {owner.casefold()}):
+                            continue
                     rows.extend(wait_rows(repo, [entry], terms, owner, now, {entry["number"]: comments},
                                           errors=result["errors"]))
                 except (GitHubReadShapeError, ValueError, TypeError, KeyError) as error:
@@ -240,8 +245,8 @@ def collect(reader, owner, terms, now, issue_limit=1000, *, include_archived=Fal
                              where=where, discussions=discussions)
                for phrase, where in (("Waiting for", "body"), ("Parked until", "body"), ("waiting_for", "comments"))]
     reports.extend(collect_query(reader, owner, terms, now, issue_limit, include_archived=include_archived,
-                                 discussions=discussions, recipient=query)
-                   for query in github_plan_wait.recipient_queries(owner, terms))
+                                 discussions=discussions, recipient=query, recipient_term=term)
+                   for term, query in github_plan_wait.recipient_queries(owner, terms))
     rows = {(row["repo"], row["number"]): row for report in reports for row in report["waits"]}
     return {"waits": sorted(rows.values(), key=lambda row: (row["repo"], row["number"])),
             "complete": all(report["complete"] for report in reports),
