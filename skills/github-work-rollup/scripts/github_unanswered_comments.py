@@ -1469,19 +1469,25 @@ def outbound_mentions(
     def read_comment(repo: str, comment_id: int) -> Any:
         return run_json([GH, "api", f"repos/{repo}/issues/comments/{comment_id}"])
     def read_later(issue_url: str, since: str) -> list[dict[str, Any]]:
-        return api_list(f"{director_mentions.thread_comments_path(issue_url)}?{urlencode({'since': since})}")
+        try:
+            return api_list(f"{director_mentions.thread_comments_path(issue_url)}?{urlencode({'since': since})}")
+        except rollup.RollupError as failure:
+            raise director_mentions.MentionSearchError(str(failure)) from failure
     def get(endpoint: str) -> Any:
         try:
             return run_json([GH, "api", endpoint])
         except rollup.RollupError as failure:
             raise director_mentions.MentionSearchError(str(failure)) from failure
     for login in sorted(outbound_self) or [None]:
+        identities = people_identities({login}, settings.get("people_index")) if login else {}
+        if identities.get("status") == "error" or identities.get("director_ambiguous"):
+            errors.append({"repo": login or "-", "lane": "director_mentions", "error": identities.get("error") or "Director aliases are ambiguous"})
         mentions, gap, error = director_mentions.collect(
             login, format_api_timestamp(settings["since"]), settings.get("mention_approval"), recorders,
             read_comment, read_later, until=format_api_timestamp(settings["until"]),
             excluded_repositories=excluded_repositories, excluded_owners=outbound_self,
             visible=True,
-            names=tuple(people_identities({login}, settings.get("people_index"))["director_names"]) if login else (),
+            names=tuple(identities.get("director_names", ())),
             get=get,
         )
         if gap or error:

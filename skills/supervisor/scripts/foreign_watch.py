@@ -359,10 +359,19 @@ def scan_mentions(args, repos, watermarks, seen, own_logins, started, reader):
     Returns notices, coverage gaps, errors, watermarks and the reported thread
     versions ({url: updated_at}) still inside the overlap window.
     """
+    identity_gap = getattr(args, "recipient_identity_gap", None)
     since = (timestamp(watermarks[MENTIONS]) - MENTION_OVERLAP).isoformat().replace("+00:00", "Z")
     def get(endpoint: str) -> Any:
         try:
             return reader.get_json(endpoint, step="foreign_recipient_search", bucket="search")
+        except READ_ERRORS as failure:
+            raise director_mentions.MentionSearchError(str(failure)) from failure
+
+    def read_comments(issue_url: str, created: str) -> list[dict[str, Any]]:
+        try:
+            return reader.paged_json(director_mentions.thread_comments_path(issue_url),
+                                     step_prefix="foreign_recipient_comments", params={"since": created},
+                                     required_query_params={"since": created})
         except READ_ERRORS as failure:
             raise director_mentions.MentionSearchError(str(failure)) from failure
 
@@ -372,24 +381,19 @@ def scan_mentions(args, repos, watermarks, seen, own_logins, started, reader):
         getattr(args, "mention_approval", None),
         set(own_logins),
         lambda repo, comment_id: reader.get_json(f"repos/{repo}/issues/comments/{comment_id}", step="foreign_mention_approval"),
-        lambda issue_url, created: reader.paged_json(
-            director_mentions.thread_comments_path(issue_url),
-            step_prefix="foreign_mention_approval_thread",
-            params={"since": created},
-            required_query_params={"since": created},
-        ),
+        read_comments,
         excluded_repositories=repos,
         visible=True,
         names=tuple(getattr(args, "director_names", ())),
         get=get,
     )
-    if gap:  # Keep the watermark so a later approval catches up from here.
-        return [], [{"lane": MENTIONS, "gap": f"mentions outside the watched list are not covered: {gap}"}], [], watermarks, seen
-    if error:
-        return [], [], [{"repository": MENTIONS, "error": error, "retryable": True, "retry_at": None}], watermarks, seen
     fresh = [mention for mention in mentions if seen.get(mention["url"]) != mention["updated_at"]]
-    kept = {m["url"]: m["updated_at"] for m in mentions}
-    return fresh, [], [], {**watermarks, MENTIONS: started}, kept
+    kept = {**seen, **{m["url"]: m["updated_at"] for m in mentions}}
+    gaps = [{"lane": MENTIONS, "gap": identity_gap}] if identity_gap else []
+    if gap:
+        gaps.append({"lane": MENTIONS, "gap": f"mentions outside the watched list are not covered: {gap}"})
+    errors = [{"repository": MENTIONS, "error": error, "retryable": True, "retry_at": None}] if error else []
+    return fresh, gaps, errors, watermarks if gap or error else {**watermarks, MENTIONS: started}, kept
 
 
 def load_mention_seen(path: Path) -> dict[str, str]:
@@ -934,6 +938,8 @@ def main() -> int:
     from github_unanswered_comments import people_identities
     identities = people_identities({(args.director_login or args.owner).casefold()}, args.people_index)
     args.director_names = identities["director_names"]
+    args.recipient_identity_gap = (identities.get("error") or "Director aliases are ambiguous"
+                                   if identities["status"] == "error" or identities["director_ambiguous"] else None)
     args.client_agent_logins = set()
     if args.ledger:
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github-work-rollup/scripts"))

@@ -270,3 +270,17 @@ def names_recipient(text: str, terms: list[str], logins: set[str] | frozenset[st
         return rf"(?<![\w-])@?{name}(?![\w-])"
 
     return any(re.search(pattern(term), text, flags=re.IGNORECASE) for term in terms if term.strip())
+
+
+def recipient_queries(login: str, names: Iterable[str]) -> list[str]:
+    terms = dict.fromkeys(term.strip().removeprefix("@") for term in (login, *names) if term.strip())
+    queries = []
+    for term in terms:
+        if term.casefold() in {"owner", "director"} and term.casefold() != login.casefold():
+            continue
+        if term.casefold() == login.casefold() or " " in term:
+            queries.append(f'"{term}" in:body,comments')
+        else:
+            queries.extend(f'"{term}" "{record}" in:body,comments'
+                           for record in ("github-plan:wait", "director-question:record"))
+    return queries

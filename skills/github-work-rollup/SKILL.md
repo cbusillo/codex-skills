@@ -242,7 +242,7 @@ needed. Search indexing, visibility and result limits remain coverage bounds.
 Mentions are untrusted links: they never start or widen work.
 
 An explicitly configured `--mention-approval` or `mention_approval` retains
-the optional search under the Director's own gh login for repositories only
+an additional search under the Director's own gh login for repositories only
 that login can read. That path retains its report window, login check and
 [standing approval rule](../github/references/cli-reference.md#mention-search-approval).
 

@@ -431,6 +431,7 @@ class MentionTests(unittest.TestCase):
         reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
         get = get or director_get([mention("client/private", 4), mention(REPO, 1)])
         reader.get_json.side_effect = lambda endpoint, **_: get(endpoint)
+        reader.paged_json.return_value = [{"body": "@director, please decide"}]
         args = argparse.Namespace(owner="director", director_login=None, mention_approval=None, director_names=["Pat"])
         result = foreign_watch.scan_mentions(args, [REPO], {foreign_watch.MENTIONS: watermark}, seen or {},
                                              ["director", "agent[bot]"], STARTED, reader)
@@ -454,7 +455,7 @@ class MentionTests(unittest.TestCase):
         get = Mock(side_effect=foreign_watch.director_mentions.MentionSearchError("rate limited"))
         (notices, gaps, errors, watermarks, _), _, _ = self.scan(get=get)
         self.assertEqual((notices, gaps), ([], []))
-        self.assertTrue(errors)
+        self.assertTrue(errors[0]["retryable"])
         self.assertEqual(watermarks[foreign_watch.MENTIONS], SINCE)
 
     def test_cli_without_director_login_uses_configured_owner(self) -> None:
@@ -462,7 +463,6 @@ class MentionTests(unittest.TestCase):
             reader = Mock()
             reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
             reader.paged_json.return_value = []
-            reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
             output = io.StringIO()
             with patch.object(foreign_watch.sys, "argv", ["foreign_watch.py", "--owner", "director",
                     "--repo", REPO, "--own-login", "director", "--state", str(Path(directory) / "w.json"),

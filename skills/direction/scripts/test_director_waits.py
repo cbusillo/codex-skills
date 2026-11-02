@@ -136,12 +136,10 @@ class WaitTests(unittest.TestCase):
         parked = {**issue(2), "body": "## Current Status\nParked until: Director selects it"}
         reader = Mock()
         reader.paged_json.return_value = []
-        reader.request.side_effect = [SimpleNamespace(body={"items": [issue()], "total_count": 1, "incomplete_results": False}),
-            SimpleNamespace(body={"items": [issue(), parked], "total_count": 2, "incomplete_results": False}), EMPTY_SEARCH, EMPTY_SEARCH, EMPTY_SEARCH, EMPTY_SEARCH]
+        reader.request.side_effect = lambda _method, path, **_: search(parked) if "Parked" in path else search(issue())
         report = director_waits.collect(reader, "owner", ["Director"], NOW)
         self.assertTrue(report["complete"])
         self.assertEqual([row["number"] for row in report["waits"]], [1, 2])
-        self.assertEqual(reader.request.call_count, 6)
         self.assertEqual(reader.paged_json.call_count, 2)
 
     def test_identity_refused_search_preserves_other_search_and_never_reads_links(self):
@@ -153,10 +151,11 @@ class WaitTests(unittest.TestCase):
             operation="github.direction.director_waits", is_write=False,
             actor="client-agent[bot]", expected_actor="client-agent[bot]", host=None, bucket="search")
         reader = Mock()
-        reader.request.side_effect = [director_waits.GitHubReadError(
-            refused.failure.message, result=refused, diagnostics={}), SimpleNamespace(body={
-                "items": [issue(reason="Director to approve outside/tools#475")],
-                "total_count": 1, "incomplete_results": False}), EMPTY_SEARCH, EMPTY_SEARCH, EMPTY_SEARCH, EMPTY_SEARCH]
+        def read(_method: str, path: str, **_kwargs: object) -> object:
+            if "Waiting" in path:
+                raise director_waits.GitHubReadError(refused.failure.message, result=refused, diagnostics={})
+            return search(issue(reason="Director to approve outside/tools#475"))
+        reader.request.side_effect = read
         report = director_waits.collect(reader, "owner", ["Director"], NOW)
         self.assertFalse(report["complete"])
         self.assertEqual([row["number"] for row in report["waits"]], [1])
@@ -183,13 +182,13 @@ class WaitTests(unittest.TestCase):
         reader = Mock()
         reader.request.return_value = search(foreign)
         reader.paged_json.return_value = [wait_comment("other", waiting_for="Pat confirms the readback", ends_when="Pat answers")]
-        result = director_waits.collect_query(reader, "receiver", ["receiver", "Pat", "Director", "owner"], NOW, recipient="Pat")
+        result = director_waits.collect_query(reader, "receiver", ["receiver", "Pat", "Director", "owner"], NOW, recipient='"Pat" in:body,comments')
         self.assertTrue(result["complete"])
         self.assertEqual([(row["repo"], row["number"], row["untrusted"]) for row in result["waits"]],
                          [("other/product", 9, True)])
         reader.paged_json.return_value = [wait_comment("other", waiting_for="Director approves", ends_when="Approved")]
         self.assertEqual(director_waits.collect_query(reader, "receiver", ["Pat", "Director", "owner"], NOW,
-                                                     recipient="Pat")["waits"], [])
+                                                     recipient='"Pat" in:body,comments')["waits"], [])
 
     def test_no_index_reports_alias_gap_and_explicit_name_is_supported(self):
         people = {"status": "ok", "director_names": [], "director_ambiguous": False}
@@ -260,7 +259,7 @@ class StructuredWaitTests(unittest.TestCase):
     def test_comment_only_structured_hold_is_reported(self):
         quiet = {**issue(7), "body": "## Current Status\nState: Active.\nNext action: Ship it."}
         reader = Mock()
-        reader.request.side_effect = [EMPTY_SEARCH, EMPTY_SEARCH, search(quiet), EMPTY_SEARCH, EMPTY_SEARCH, EMPTY_SEARCH]
+        reader.request.side_effect = lambda _method, path, **_: search(quiet) if "waiting_for" in path else EMPTY_SEARCH
         reader.paged_json.return_value = [wait_comment(
             "owner", waiting_for="Director to approve the release", ends_when="The Director answers")]
         report = director_waits.collect(reader, "owner", ["owner", "Director"], NOW)

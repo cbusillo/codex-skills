@@ -19,6 +19,7 @@ from urllib.parse import urlencode
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from skills.direction.scripts import question_id
+from skills.github.scripts.github_plan_status.waits import names_recipient, recipient_queries
 
 
 QUESTION_ID = re.compile(r"Q\d+\b", re.IGNORECASE)
@@ -204,8 +205,8 @@ def timestamp(value: str) -> datetime:
 def search(
     director_login: str, since: str, *, until: str | None = None, excluded_repositories=(), excluded_owners=(),
     get: Callable[[str], Any] | None = None, visible: bool = False, names: tuple[str, ...] = (),
+    read_comments: Callable[[str, str], list[Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], str | None, str | None]:
-    """Return (mentions, coverage gap, read error) for threads updated in [since, until]."""
     get = get or director_get
     if not visible:
         try:
@@ -224,11 +225,11 @@ def search(
         filters.append(f"updated:{since}..{until}" if until else f"updated:>={since}")
     selectors = [f"mentions:{director_login}"]
     if visible:
-        selectors.extend(f'"{name}" in:body,comments' for name in dict.fromkeys((director_login, *names)))
+        selectors.extend(recipient_queries(director_login, names))
     queries = [" ".join([selector, *filters]) for selector in selectors]
-    mentions, fetched = [], 0
-    try:
-        for query in queries:
+    mentions, gaps, checked = [], [], set()
+    for query in queries:
+        try:
             fetched = 0
             for page in range(1, MAX_PAGES + 1):
                 payload = get("search/issues?" + urlencode({"q": query, "per_page": PER_PAGE, "page": page}))
@@ -246,6 +247,19 @@ def search(
                     if repo.casefold() in excluded_repos or repo.split("/")[0].casefold() in owners or (
                             not visible and until and timestamp(updated) > timestamp(until)):
                         continue
+                    if visible and item.get("html_url") not in checked:
+                        if read_comments is None:
+                            raise MentionSearchError("recipient text verification needs the complete discussion")
+                        issue_url = f"https://api.github.com/repos/{repo}/issues/{number}"
+                        comments = read_comments(issue_url, "1970-01-01T00:00:00Z")
+                        if not isinstance(comments, list) or any(not isinstance(comment, dict) for comment in comments):
+                            raise MentionSearchError("recipient discussion unreadable")
+                        checked.add(item["html_url"])
+                        text = "\n".join(str(source.get("body") or "") for source in [item, *comments])
+                        if not names_recipient(text, [director_login, *names], {director_login.casefold()}):
+                            continue
+                    elif visible:
+                        continue
                     user = item.get("user")
                     mentions.append({
                         "repository": repo, "number": number, "url": url, "updated_at": updated,
@@ -257,23 +271,27 @@ def search(
                     raise MentionSearchError("mention search coverage is incomplete (GitHub search limit or partial results)")
                 if len(items) < PER_PAGE or fetched >= payload["total_count"]:
                     break
-    except (MentionSearchError, ValueError) as error:
-        return [], None, str(error)
-    return list({row["url"]: row for row in mentions}.values()), None, None
+        except (MentionSearchError, ValueError) as error:
+            if not visible:
+                return [], None, str(error)
+            gaps.append(str(error))
+    return list({row["url"]: row for row in mentions}.values()), None, "; ".join(dict.fromkeys(gaps)) or None
 
 
 def collect(
     director_login: str | None, since: str, approval_url: str | None, recorders: set[str],
     read_comment: Callable[[str, int], Any], read_later: Callable[[str, str], list[Any]], **scope: Any,
 ) -> tuple[list[dict[str, Any]], str | None, str | None]:
-    """Run the approved search, or explain the coverage gap without searching."""
     if not director_login:
         return [], "no Director login configured for mention searches", None
-    if scope.get("visible") and not approval_url:
-        return search(director_login, since, **scope)
+    visible_rows, visible_error = [], None
     if scope.get("visible"):
+        visible_rows, gap, visible_error = search(director_login, since, read_comments=read_later, **scope)
+        if not approval_url:
+            return visible_rows, gap, visible_error
         scope = {key: value for key, value in scope.items() if key not in {"visible", "names", "get"}}
     gap = approval_gap(approval_url, director_login, recorders, read_comment, read_later)
     if gap:
-        return [], gap, None
-    return search(director_login, since, **scope)
+        return visible_rows, gap, visible_error
+    rows, gap, error = search(director_login, since, **scope)
+    return list({row["url"]: row for row in [*visible_rows, *rows]}.values()), gap, error or visible_error

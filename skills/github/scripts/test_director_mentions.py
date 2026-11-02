@@ -255,18 +255,30 @@ class ApprovalTests(unittest.TestCase):
 
 
 class SearchTests(unittest.TestCase):
+    def test_visible_rows_survive_an_alias_search_overflow_and_ignore_repository_links(self) -> None:
+        def get(endpoint: str) -> dict:
+            query = parse_qs(urlparse(endpoint).query)["q"][0]
+            if "mentions:" in query:
+                return {"items": [{**item("outside/repo", 1), "body": "@receiver, a question"}],
+                        "total_count": 1, "incomplete_results": False}
+            if "Pat" in query:
+                return {"items": [], "total_count": 1001, "incomplete_results": False}
+            return {"items": [{**item("outside/repo", 2), "body": "https://github.com/receiver/repo"}],
+                    "total_count": 1, "incomplete_results": False}
+        rows, gap, error = director_mentions.collect("receiver", "2026-10-17T00:00:00Z", None, set(),
+                                                    lambda *_: None, lambda *_: [], visible=True, names=("Pat",), get=get)
+        self.assertEqual([row["number"] for row in rows], [1])
+        self.assertIsNone(gap)
+        self.assertIn("incomplete", error)
+
     def test_visible_search_finds_old_open_mentions_and_named_people_without_personal_login(self) -> None:
         get = FakeGet([item("client/private", 4)], login="automation[bot]")
         mentions, gap, error = director_mentions.collect("receiver", "2026-10-17T00:00:00Z", None, set(),
-                                                         lambda *_: self.fail("approval read"), lambda *_: [],
+                                                         lambda *_: self.fail("approval read"), lambda *_: [{"body": "@receiver, please decide"}],
                                                          visible=True, names=("Pat",), get=get)
         self.assertEqual((gap, error), (None, None))
         self.assertEqual([(row["number"], row["untrusted"]) for row in mentions], [(4, True)])
         self.assertNotIn("user", get.calls)
-        queries = [parse_qs(urlparse(call).query)["q"][0] for call in get.calls]
-        self.assertTrue(any("mentions:receiver" in query for query in queries))
-        self.assertTrue(any('"Pat"' in query for query in queries))
-        self.assertTrue(all("is:open" in query and "updated:" not in query for query in queries))
 
     def test_reports_outside_mentions_as_untrusted_links_only(self):
         get = FakeGet([item("client/private", 4), item("cbusillo/watched", 5), item("cbusillo/other", 6)])

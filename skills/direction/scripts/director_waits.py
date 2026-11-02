@@ -166,7 +166,7 @@ def read_discussion(reader, repo, number, discussions, errors):
 
 def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting for", *, include_archived=False,
                   where="body", discussions=None, recipient: str | None = None) -> dict[str, Any]:
-    search = (f'-user:{owner} is:issue is:open in:{where} "{recipient}" "{phrase}"' if recipient
+    search = (f'-user:{owner} is:issue is:open {recipient}' if recipient
               else f'user:{owner} is:issue is:open in:{where} "{phrase}"')
     query = repository_scope.search_query(search, include_archived=include_archived)
     discussions = {} if discussions is None else discussions
@@ -239,11 +239,9 @@ def collect(reader, owner, terms, now, issue_limit=1000, *, include_archived=Fal
     reports = [collect_query(reader, owner, terms, now, issue_limit, phrase, include_archived=include_archived,
                              where=where, discussions=discussions)
                for phrase, where in (("Waiting for", "body"), ("Parked until", "body"), ("waiting_for", "comments"))]
-    recipients = list(dict.fromkeys([owner, *(term for term in terms if term.casefold() not in {"director", "owner"})]))
     reports.extend(collect_query(reader, owner, terms, now, issue_limit, include_archived=include_archived,
-                                 discussions=discussions, recipient=recipient)
-                   for recipient in recipients
-                   for phrase, where in (("Waiting for", "body"), ("Parked until", "body"), ("waiting_for", "comments")))
+                                 discussions=discussions, recipient=query)
+                   for query in github_plan_wait.recipient_queries(owner, terms))
     rows = {(row["repo"], row["number"]): row for report in reports for row in report["waits"]}
     return {"waits": sorted(rows.values(), key=lambda row: (row["repo"], row["number"])),
             "complete": all(report["complete"] for report in reports),
