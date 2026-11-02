@@ -401,13 +401,13 @@ def resolve_repositories(settings: dict[str, Any]) -> list[str]:
             str(item["nameWithOwner"]) for item in payload
             if isinstance(item, dict) and item.get("nameWithOwner") and str(item["nameWithOwner"]) not in visible_repositories
         )
-        if not visible_repositories:
+        if not visible_repositories and not settings.get("outbound"):
             raise rollup.RollupError(f"Repository owner scope {owner!r} resolved to no visible repositories in the selected archive scope.")
         repositories.extend(
             visible_repositories
         )
     if not repositories:
-        if settings.get("outbound") and not settings["scan_repository_scope"]:
+        if settings.get("outbound"):
             return []
         if settings["explicit_scope"] or settings["repositories"] or settings["repo_owners"]:
             raise rollup.RollupError("The explicit repository scope resolved to no repositories; use --include-archived for archived repositories.")
