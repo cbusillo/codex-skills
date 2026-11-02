@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import director_mentions
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github-work-rollup/scripts"))
 import review_notifications
 import services
 
@@ -359,8 +360,14 @@ def scan_mentions(args, repos, watermarks, seen, own_logins, started, reader):
     versions ({url: updated_at}) still inside the overlap window.
     """
     since = (timestamp(watermarks[MENTIONS]) - MENTION_OVERLAP).isoformat().replace("+00:00", "Z")
+    def get(endpoint: str) -> Any:
+        try:
+            return reader.get_json(endpoint, step="foreign_recipient_search", bucket="search")
+        except READ_ERRORS as failure:
+            raise director_mentions.MentionSearchError(str(failure)) from failure
+
     mentions, gap, error = director_mentions.collect(
-        getattr(args, "director_login", None),
+        getattr(args, "director_login", None) or args.owner,
         since,
         getattr(args, "mention_approval", None),
         set(own_logins),
@@ -372,18 +379,16 @@ def scan_mentions(args, repos, watermarks, seen, own_logins, started, reader):
             required_query_params={"since": created},
         ),
         excluded_repositories=repos,
+        visible=True,
+        names=tuple(getattr(args, "director_names", ())),
+        get=get,
     )
     if gap:  # Keep the watermark so a later approval catches up from here.
         return [], [{"lane": MENTIONS, "gap": f"mentions outside the watched list are not covered: {gap}"}], [], watermarks, seen
     if error:
         return [], [], [{"repository": MENTIONS, "error": error, "retryable": True, "retry_at": None}], watermarks, seen
     fresh = [mention for mention in mentions if seen.get(mention["url"]) != mention["updated_at"]]
-    window = timestamp(since)
-    kept = {
-        url: updated
-        for url, updated in {**seen, **{m["url"]: m["updated_at"] for m in mentions}}.items()
-        if timestamp(updated) >= window
-    }
+    kept = {m["url"]: m["updated_at"] for m in mentions}
     return fresh, [], [], {**watermarks, MENTIONS: started}, kept
 
 
@@ -926,6 +931,9 @@ def main() -> int:
         parser.error("routing needs --ledger, --notify-config and --miss-issue together")
     if args.miss_issue and not re.fullmatch(rf"{re.escape(args.owner)}/[A-Za-z0-9_.-]+#[1-9][0-9]*", args.miss_issue, re.I):
         parser.error("--miss-issue must belong to the configured Director")
+    from github_unanswered_comments import people_identities
+    identities = people_identities({(args.director_login or args.owner).casefold()}, args.people_index)
+    args.director_names = identities["director_names"]
     args.client_agent_logins = set()
     if args.ledger:
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github-work-rollup/scripts"))

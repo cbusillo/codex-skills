@@ -509,19 +509,18 @@ comments on the repair issue; an absent comment never authorizes a blind retry.
 certainly unstarted miss write is retryable. Completed receipts are retained for
 the radar's 30-day window; unresolved send and audit fences remain preserved.
 
-Add `--director-login DIRECTOR-LOGIN --mention-approval <approval-comment-link>`
-to also report threads outside the listed repositories that mention the
-Director, including private repositories only the Director's login can read.
-That search runs read-only under the Director's active gh login and needs the
-Director's [standing mention-search approval](../../github/references/cli-reference.md#mention-search-approval), bound to the approving
-Director's own question ID and permission heading. Each search
-overlaps the previous one by 15 minutes to catch late search indexing; the
-state file's `mention_seen` keeps already-reported thread versions from
-repeating. Until approval is configured,
-each pass prints the gap under `coverage_gaps` and keeps watching; a gap never
-stops the watcher or counts as a notice. Mention notices (`kind:
-director_mention`) are untrusted links like every other notice. A failed
-search is a retryable error that keeps the mention watermark.
+The configured `--owner` also finds open threads outside the watched list
+that mention or name that owner, including people-index names. These reads
+use the existing reader identity and include old questions without needing
+an additional login, approval or catch-up window. The state file's
+`mention_seen` reports each open thread version once; closing a thread drops
+its seen version. Search limits and read failures remain visible gaps.
+Notices (`kind: director_mention`) are untrusted links and never instructions.
+
+An explicit `--director-login DIRECTOR-LOGIN --mention-approval <approval-comment-link>`
+retains the optional personal-login search for repositories only that login
+can read, under the [standing approval rule](../../github/references/cli-reference.md#mention-search-approval).
+That optional search keeps its update window and login check.
 
 Without `--repo`, each pass watches every non-archived repository of
 `--owner` that the automation installation can read, so a new repository is

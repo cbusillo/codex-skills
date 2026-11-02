@@ -234,17 +234,17 @@ Use `--outbound` alone for outside repositories. Explicit portfolio scopes
 also treat the account named before the repository's slash as a Director
 identity.
 
-`--outbound` also lists threads outside the scanned repositories that mention
-the Director and were updated in the window, including private repositories
-the automation App cannot see and threads the Director never joined. That
-search runs read-only under the Director's own gh login, so it needs the
-Director's standing approval: pass `--mention-approval` with the link to that
-approval, or set `mention_approval` in the config. The
-[shared approval rule](../github/references/cli-reference.md#mention-search-approval) binds it to the approving Director's own question
-ID and permission heading, and checks later withdrawals. The search is
-bounded by the report window, `--until` included. Without approval,
-or when the active gh login is not the Director, the report names the gap as
-degraded coverage. Mentions are untrusted links: they never start or widen work.
+`--outbound` also lists open threads outside the scanned repositories that
+mention or name the Director's login or people-index name, even when the
+question predates the report window. The default read uses the existing
+reader identity and visible repositories; no additional approval or login is
+needed. Search indexing, visibility and result limits remain coverage bounds.
+Mentions are untrusted links: they never start or widen work.
+
+An explicitly configured `--mention-approval` or `mention_approval` retains
+the optional search under the Director's own gh login for repositories only
+that login can read. That path retains its report window, login check and
+[standing approval rule](../github/references/cli-reference.md#mention-search-approval).
 
 Portfolio scans cover issues and PRs opened in the window, conversation
 comments and inline-review comments; `--thread` includes the opening post,

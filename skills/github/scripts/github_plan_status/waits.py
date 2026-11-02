@@ -260,3 +260,13 @@ def require_clear(record: dict[str, Any]) -> None:
     validate(record)
     if record["state"] != "clear":
         raise ValueError("Preserve an unresolved or unreviewed structured wait")
+
+
+def names_recipient(text: str, terms: list[str], logins: set[str] | frozenset[str] = frozenset()) -> bool:
+    def pattern(term: str) -> str:
+        name = re.escape(term.removeprefix("@"))
+        if term.strip().removeprefix("@").casefold() in logins:
+            return rf"(?<![\w/-])@?{name}(?![\w/-])"
+        return rf"(?<![\w-])@?{name}(?![\w-])"
+
+    return any(re.search(pattern(term), text, flags=re.IGNORECASE) for term in terms if term.strip())

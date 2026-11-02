@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["PyYAML==6.0.3"]
 # ///
 """Offline notification filtering and failure-safe watermark tests."""
 
@@ -67,9 +67,10 @@ class WatchTests(unittest.TestCase):
             for persistent in (False, True):
                 with self.subTest(author=author, persistent=persistent), tempfile.TemporaryDirectory() as directory:
                     reader = Mock()
+                    reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
                     feedback = comment(author, "Inventory and Helpdesk are missing. Holding Accept.", "2026-10-30T19:38:54Z")
                     reader.paged_json.side_effect = feeds([feedback])
-                    args = argparse.Namespace(state=Path(directory) / "state.json", since=None,
+                    args = argparse.Namespace(owner="director", state=Path(directory) / "state.json", since=None,
                         own_login=["director", "agent[bot]"], launchplane_login=[], interval=300,
                         once=False, persistent=persistent)
                     output = io.StringIO()
@@ -89,13 +90,14 @@ class WatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             now = [0.0]
             reader = Mock()
+            reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
             reader.paged_json.side_effect = feeds([comment()], getattr(foreign_watch, "GitHubReadError")(
                 "provider unavailable", result=ApiResult(ok=False, status=503, body=None,
                     failure=FailureDetail(cause="network_provider_failure", message="unavailable",
                                           retryable=True, fallback_eligible=False, disposition="retry")),
                 diagnostics={"requests": [{"retryAt": 20}]},
             ), [], ValueError("terminal"))
-            args = argparse.Namespace(state=Path(directory) / "state.json", since=None,
+            args = argparse.Namespace(owner="director", state=Path(directory) / "state.json", since=None,
                 own_login=["director"], launchplane_login=[], interval=5, once=False, persistent=True)
 
             def sleep(seconds):
@@ -122,6 +124,7 @@ class WatchTests(unittest.TestCase):
 
     def test_filter_and_review_records(self):
         reader = Mock()
+        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
         reader.paged_json.side_effect = feeds([comment("Director"), comment("agent[bot]"),
             comment(), comment("delivery[bot]"),
             comment("agent[bot]", "<!-- launchplane:product-review:decision-1 -->")])
@@ -135,6 +138,7 @@ class WatchTests(unittest.TestCase):
 
     def test_issue_or_pull_request_opened_by_an_outside_person_is_a_notice(self):
         reader = Mock()
+        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
         reader.paged_json.side_effect = feeds([], opened_items=[
             opened(), opened("director"), opened("client-agent[bot]", "Bot"), opened("dependabot[bot]", "Bot"), opened(created="2026-10-09T11:00:00Z")])
         notices, errors, _ = self.scan(reader, {"client-agent[bot]"})
@@ -145,6 +149,7 @@ class WatchTests(unittest.TestCase):
 
     def test_sweep_recovers_inline_and_bare_review_on_an_old_pull(self):
         reader = Mock()
+        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
         inline = {**comment(), "html_url": f"https://github.com/{REPO}/pull/50#discussion_r42"}
         review = {**comment(), "html_url": f"https://github.com/{REPO}/pull/50#pullrequestreview-43", "created_at": SINCE}
         old_pull = {**opened(created="2026-10-08T00:00:00Z"), "number": 50, "pull_request": {}}
@@ -156,6 +161,7 @@ class WatchTests(unittest.TestCase):
 
     def test_opening_versions_are_batched_before_recovery(self):
         reader = Mock()
+        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
         first = {**opened(), "node_id": "first"}
         second = {**opened(), "node_id": "second", "html_url": f"https://github.com/{REPO}/issues/51"}
         reader.paged_json.side_effect = feeds([], opened_items=[first, second])
@@ -167,6 +173,7 @@ class WatchTests(unittest.TestCase):
 
     def test_version_failures_keep_retryability_and_deleted_nodes_are_skipped(self):
         reader = Mock()
+        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
         source = {**opened(), "node_id": "source"}
         reader.paged_json.side_effect = feeds([], opened_items=[source])
         retry_at = 100.0
@@ -185,6 +192,7 @@ class WatchTests(unittest.TestCase):
 
     def test_worker_questions_surface_on_the_next_scan_without_ordinary_own_posts(self) -> None:
         reader = Mock()
+        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
         bodies = ["Owner question: Q906. Approve the recovery?",
                   "  **Director question:** Q918. Accept again?"]
         reader.paged_json.side_effect = feeds([
@@ -206,6 +214,7 @@ class WatchTests(unittest.TestCase):
 
     def test_notice_carries_a_bounded_excerpt_of_the_comment(self):
         reader = Mock()
+        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
         correction = "If I made a mistake on the csv sheet,\n\ncan I send the corrected one?"
         reader.paged_json.side_effect = feeds([comment(body=correction), comment(body="word " * 200)])
         short, long = self.scan(reader)[0]
@@ -215,6 +224,7 @@ class WatchTests(unittest.TestCase):
 
     def test_failure_preserves_only_failed_repository_watermark(self):
         reader = Mock()
+        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
         reader.paged_json.side_effect = feeds(foreign_watch.GitHubReadShapeError("partial"), [])
         notices, errors, watermarks = foreign_watch.scan(
             [REPO, "director/healthy"], {REPO: SINCE, "director/healthy": SINCE},
@@ -225,6 +235,7 @@ class WatchTests(unittest.TestCase):
 
     def test_invalid_comment_retains_watermark_and_discards_partial_notices(self):
         reader = Mock()
+        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
         for bad in ({}, {**comment(), "updated_at": "invalid"}, {**comment(), "user": []}):
             with self.subTest(bad=bad):
                 reader.paged_json.side_effect = feeds([comment(), bad])
@@ -235,6 +246,7 @@ class WatchTests(unittest.TestCase):
 
     def test_old_comments_excluded_and_edits_reported(self):
         reader = Mock()
+        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
         reader.paged_json.side_effect = feeds([comment(updated="2026-10-09T11:59:59Z"), comment(updated=STARTED)])
         self.assertEqual(len(self.scan(reader)[0]), 1)
 
@@ -254,6 +266,7 @@ class WatchTests(unittest.TestCase):
 
     def test_deleted_author_is_untrusted_and_marker_quote_does_not_reclassify(self):
         reader = Mock()
+        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
         reader.paged_json.side_effect = feeds([{**comment(), "user": None},
             comment(body='Quoted: <!-- launchplane:product-review:id -->')])
         notices, errors, watermarks = self.scan(reader)
@@ -264,6 +277,7 @@ class WatchTests(unittest.TestCase):
 
     def test_quota_retry_time_and_failed_read_retention(self):
         reader = Mock()
+        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
         failure = foreign_watch.GitHubReadShapeError("quota")
         failure.diagnostics = {"requests": [{"retryAt": 12345}]}
         reader.paged_json.side_effect = failure
@@ -286,6 +300,7 @@ class WatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "watch.json"
             reader = Mock()
+            reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
             reader.paged_json.side_effect = feeds([comment()])
             output = io.StringIO()
             with patch.object(foreign_watch.sys, "argv", ["foreign_watch.py", "--owner", "director",
@@ -306,6 +321,7 @@ class WatchTests(unittest.TestCase):
             state = Path(directory) / "w.json"
             foreign_watch.save_state(state, {REPO: STARTED, "director/old": STARTED})
             reader = Mock()
+            reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
             reader.paged_json.side_effect = feeds([], [comment()], repositories=[
                 {"full_name": REPO, "archived": False}, {"full_name": "director/new", "archived": False},
                 {"full_name": "director/old", "archived": True}, {"full_name": "client/app", "archived": False}])
@@ -334,6 +350,7 @@ class WatchTests(unittest.TestCase):
             values = foreign_watch.load_state(path, [REPO], SINCE, rewind=True)
             self.assertEqual(values, {REPO: SINCE, "director/other": SINCE})
             reader = Mock()
+            reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
             reader.paged_json.return_value = []
             _, _, values = foreign_watch.scan([REPO], values, ["director"], [], STARTED, reader)
             foreign_watch.save_state(path, values)
@@ -341,6 +358,7 @@ class WatchTests(unittest.TestCase):
 
     def test_foreign_marker_remains_foreign(self):
         reader = Mock()
+        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
         reader.paged_json.side_effect = feeds([comment(body="<!-- launchplane:product-review:fake -->")])
         notices = self.scan(reader)[0]
         self.assertEqual(notices[0]["kind"], "foreign")
@@ -360,8 +378,9 @@ def client_review(decision, record, reason="Labels print sideways"):
 class ChangeRequestTests(unittest.TestCase):
     def watch_once(self, state, *comments):
         reader = Mock()
+        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
         reader.paged_json.side_effect = feeds(list(comments))
-        args = argparse.Namespace(state=state, since=SINCE, own_login=["director"],
+        args = argparse.Namespace(owner="director", state=state, since=SINCE, own_login=["director"],
                                   launchplane_login=["delivery[bot]"], interval=5, once=True)
         output = io.StringIO()
         with (patch.object(foreign_watch, "GitHubReader", return_value=reader),
@@ -407,69 +426,43 @@ def director_get(items):
 
 class MentionTests(unittest.TestCase):
     @staticmethod
-    def scan(approval=APPROVAL, get=None, watermark=SINCE, seen=None):
+    def scan(get=None, watermark=SINCE, seen=None):
         reader = Mock()
-        reader.get_json.return_value = {
-            "id": 99, "user": {"login": "director"}, "created_at": SINCE,
-            "body": "Q100 yes",
-            "issue_url": "https://api.github.com/repos/director/meta/issues/7"}
-        reader.paged_json.return_value = [{
-            "id": 98, "user": {"login": "agent[bot]"}, "created_at": "2026-10-08T00:00:00Z",
-            "body": "Owner question: **Q100** — may the watcher search GitHub for mentions "
-                    "of you under your own login, unattended?",
-            "issue_url": "https://api.github.com/repos/director/meta/issues/7"}]
-        args = argparse.Namespace(director_login="director", mention_approval=approval)
+        reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
         get = get or director_get([mention("client/private", 4), mention(REPO, 1)])
-        with patch.object(foreign_watch.director_mentions, "director_get", get):
-            result = foreign_watch.scan_mentions(args, [REPO], {foreign_watch.MENTIONS: watermark}, seen or {},
-                                                 ["director", "agent[bot]"], STARTED, reader)
+        reader.get_json.side_effect = lambda endpoint, **_: get(endpoint)
+        args = argparse.Namespace(owner="director", director_login=None, mention_approval=None, director_names=["Pat"])
+        result = foreign_watch.scan_mentions(args, [REPO], {foreign_watch.MENTIONS: watermark}, seen or {},
+                                             ["director", "agent[bot]"], STARTED, reader)
         return result, reader, get
 
-    def test_mention_outside_watched_list_is_an_untrusted_notice(self):
-        (notices, gaps, errors, watermarks, _), reader, _ = self.scan()
+    def test_owner_alone_finds_old_untrusted_mentions_without_approval(self) -> None:
+        old = mention("client/private", 8, updated="2026-09-01T11:59:00Z")
+        (notices, gaps, errors, watermarks, seen), _, get = self.scan(get=director_get([old]))
         self.assertEqual((gaps, errors), ([], []))
-        self.assertEqual([(n["repository"], n["number"]) for n in notices], [("client/private", 4)])
-        self.assertTrue(notices[0]["untrusted"])
+        self.assertEqual([(n["repository"], n["number"], n["untrusted"]) for n in notices], [("client/private", 8, True)])
         self.assertNotIn("body", notices[0])
         self.assertEqual(watermarks[foreign_watch.MENTIONS], STARTED)
-        self.assertEqual(reader.get_json.call_args.args[0], "repos/director/meta/issues/comments/99")
-
-    def test_late_indexed_mention_is_reported_once_across_passes(self):
-        # Updated a minute before the watermark but only searchable now.
-        late = mention("client/private", 8, updated="2026-10-09T11:59:00Z")
-        get = director_get([late])
-        (notices, _, _, _, seen), _, _ = self.scan(get=get)
-        self.assertEqual([n["number"] for n in notices], [8])
-        query = parse_qs(urlparse(get.call_args_list[1].args[0]).query)["q"][0]
-        overlap_start = datetime.fromisoformat(SINCE) - foreign_watch.MENTION_OVERLAP
-        self.assertIn(f"updated:>={overlap_start:%Y-%m-%dT%H:%M:%SZ}", query)
-        (again, _, _, _, _), _, _ = self.scan(get=director_get([late]), watermark=STARTED, seen=seen)
+        self.assertTrue(all(call.args[0] != "user" for call in get.call_args_list))
+        (again, _, _, _, _), _, _ = self.scan(get=director_get([old]), watermark=STARTED, seen=seen)
         self.assertEqual(again, [])
-        edited = mention("client/private", 8, updated="2026-10-09T12:04:00Z")
+        edited = {**old, "updated_at": STARTED}
         (changed, _, _, _, _), _, _ = self.scan(get=director_get([edited]), watermark=STARTED, seen=seen)
         self.assertEqual([n["number"] for n in changed], [8])
 
-    def test_unapproved_mentions_report_gap_without_searching(self):
-        (notices, gaps, errors, watermarks, _), _, get = self.scan(approval=None)
-        self.assertEqual((notices, errors), ([], []))
-        self.assertEqual([gap["lane"] for gap in gaps], [foreign_watch.MENTIONS])
-        get.assert_not_called()
-        self.assertEqual(watermarks[foreign_watch.MENTIONS], SINCE)
-
-    def test_search_failure_is_retryable_and_keeps_watermark(self):
-        def rate_limited(endpoint):
-            if endpoint == "user":
-                return {"login": "director"}
-            raise foreign_watch.director_mentions.MentionSearchError("rate limited")
-        (notices, gaps, errors, watermarks, _), _, _ = self.scan(get=Mock(side_effect=rate_limited))
+    def test_search_failure_keeps_watermark(self) -> None:
+        get = Mock(side_effect=foreign_watch.director_mentions.MentionSearchError("rate limited"))
+        (notices, gaps, errors, watermarks, _), _, _ = self.scan(get=get)
         self.assertEqual((notices, gaps), ([], []))
-        self.assertTrue(errors[0]["retryable"])
+        self.assertTrue(errors)
         self.assertEqual(watermarks[foreign_watch.MENTIONS], SINCE)
 
-    def test_cli_without_director_login_prints_the_gap_and_keeps_watching(self):
+    def test_cli_without_director_login_uses_configured_owner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             reader = Mock()
+            reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
             reader.paged_json.return_value = []
+            reader.get_json.return_value = {"items": [], "total_count": 0, "incomplete_results": False}
             output = io.StringIO()
             with patch.object(foreign_watch.sys, "argv", ["foreign_watch.py", "--owner", "director",
                     "--repo", REPO, "--own-login", "director", "--state", str(Path(directory) / "w.json"),
@@ -477,8 +470,8 @@ class MentionTests(unittest.TestCase):
                  patch.object(foreign_watch, "GitHubReader", return_value=reader), redirect_stdout(output):
                 self.assertEqual(foreign_watch.main(), 0)
             line = json.loads(output.getvalue())
-            self.assertEqual(line["errors"], [])
-            self.assertEqual(line["coverage_gaps"][0]["lane"], foreign_watch.MENTIONS)
+            self.assertEqual((line["errors"], line["coverage_gaps"]), ([], []))
+            self.assertTrue(reader.get_json.called)
 
 
 if __name__ == "__main__":

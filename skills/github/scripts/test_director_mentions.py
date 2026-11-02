@@ -255,6 +255,19 @@ class ApprovalTests(unittest.TestCase):
 
 
 class SearchTests(unittest.TestCase):
+    def test_visible_search_finds_old_open_mentions_and_named_people_without_personal_login(self) -> None:
+        get = FakeGet([item("client/private", 4)], login="automation[bot]")
+        mentions, gap, error = director_mentions.collect("receiver", "2026-10-17T00:00:00Z", None, set(),
+                                                         lambda *_: self.fail("approval read"), lambda *_: [],
+                                                         visible=True, names=("Pat",), get=get)
+        self.assertEqual((gap, error), (None, None))
+        self.assertEqual([(row["number"], row["untrusted"]) for row in mentions], [(4, True)])
+        self.assertNotIn("user", get.calls)
+        queries = [parse_qs(urlparse(call).query)["q"][0] for call in get.calls]
+        self.assertTrue(any("mentions:receiver" in query for query in queries))
+        self.assertTrue(any('"Pat"' in query for query in queries))
+        self.assertTrue(all("is:open" in query and "updated:" not in query for query in queries))
+
     def test_reports_outside_mentions_as_untrusted_links_only(self):
         get = FakeGet([item("client/private", 4), item("cbusillo/watched", 5), item("cbusillo/other", 6)])
         mentions, gap, error = director_mentions.search(

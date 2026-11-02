@@ -71,6 +71,9 @@ def resolve_wait(repo: str, issue: dict[str, Any], comments: list[dict[str, Any]
 def wait_rows(repo, issues, terms, owner, now, discussions=None, trusted=None, errors=None) -> list[dict[str, Any]]:
     """``discussions`` maps issue numbers to completely read comments."""
     rows = []
+    foreign = repo.split("/")[0].casefold() != owner.casefold()
+    if foreign:
+        terms = [term for term in terms if term.casefold() not in {"director", "owner"} or term.casefold() == owner.casefold()]
     for issue in issues:
         if "pull_request" in issue or issue.get("state") != "open":
             continue
@@ -95,7 +98,7 @@ def wait_rows(repo, issues, terms, owner, now, discussions=None, trusted=None, e
             if review != "structured_wait_review" and errors is not None:
                 errors.append({"scope": "structured wait", "repo": repo, "number": issue["number"], "error": review})
             rows.append({
-                "repo": repo, "number": issue["number"], "title": issue.get("title"),
+                "repo": repo, "number": issue["number"], "title": issue.get("title"), "untrusted": foreign,
                 "url": issue.get("html_url"), "waiting_for": "unknown: the structured wait record needs review",
                 "wait_kind": "unresolved", "waiting_since": None, "wait_age_days": None, "wait_age_unknown": True,
                 "recorded_at": None, "last_verified": last_verified.isoformat() if last_verified else None,
@@ -106,6 +109,8 @@ def wait_rows(repo, issues, terms, owner, now, discussions=None, trusted=None, e
                 "wait_review_required": True, "wait_review_reason": review,
             })
             continue
+        if foreign:
+            item["untrusted"] = True
         records = github_direction_next.waiting_records(item, status)
         candidates = []
         for record in records:
@@ -124,7 +129,7 @@ def wait_rows(repo, issues, terms, owner, now, discussions=None, trusted=None, e
         elif sum(not record["no_current_wait"] for record in records) > 1:
             since = None  # A status-wide start cannot date one of several waits.
         rows.append({
-            "repo": repo, "number": issue["number"], "title": issue.get("title"),
+            "repo": repo, "number": issue["number"], "title": issue.get("title"), "untrusted": foreign,
             "url": issue.get("html_url"), "waiting_for": wait[0], "wait_kind": wait[1],
             "waiting_since": since.isoformat() if since else None,
             "wait_age_days": max(0, (now - since).total_seconds() / 86400) if since else None,
@@ -160,12 +165,14 @@ def read_discussion(reader, repo, number, discussions, errors):
 
 
 def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting for", *, include_archived=False,
-                  where="body", discussions=None) -> dict[str, Any]:
-    query = repository_scope.search_query(f'user:{owner} is:issue is:open in:{where} "{phrase}"', include_archived=include_archived)
+                  where="body", discussions=None, recipient: str | None = None) -> dict[str, Any]:
+    search = (f'-user:{owner} is:issue is:open in:{where} "{recipient}" "{phrase}"' if recipient
+              else f'user:{owner} is:issue is:open in:{where} "{phrase}"')
+    query = repository_scope.search_query(search, include_archived=include_archived)
     discussions = {} if discussions is None else discussions
     result = {"waits": [], "complete": False, "errors": [],
               "repositories_with_matches": [], "query": query, "total_count": None,
-              "scope": "Open issues in the Director's repositories visible to GitHub Search, by wait fields in the body "
+              "scope": "Visible open issues in owned repositories and recipient-named issues elsewhere, by wait fields in the body "
                        "or structured wait records in comments, resolved from each complete discussion; search indexing may lag live records"}
     rows, seen, totals = [], set(), []
     # GitHub Search exposes at most 1,000 results for a query. Read response
@@ -195,7 +202,7 @@ def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting f
                         raise GitHubReadShapeError("invalid search issue")
                     repo_url = entry.get("repository_url", "")
                     match = re.search(r"/repos/([\w.-]+/[\w.-]+)$", repo_url)
-                    if not match or match[1].split("/")[0].casefold() != owner.casefold():
+                    if not match:
                         raise GitHubReadShapeError("invalid search repository identity")
                     repo = match[1]
                     key = (repo, entry["number"])
@@ -232,6 +239,11 @@ def collect(reader, owner, terms, now, issue_limit=1000, *, include_archived=Fal
     reports = [collect_query(reader, owner, terms, now, issue_limit, phrase, include_archived=include_archived,
                              where=where, discussions=discussions)
                for phrase, where in (("Waiting for", "body"), ("Parked until", "body"), ("waiting_for", "comments"))]
+    recipients = list(dict.fromkeys([owner, *(term for term in terms if term.casefold() not in {"director", "owner"})]))
+    reports.extend(collect_query(reader, owner, terms, now, issue_limit, include_archived=include_archived,
+                                 discussions=discussions, recipient=recipient)
+                   for recipient in recipients
+                   for phrase, where in (("Waiting for", "body"), ("Parked until", "body"), ("waiting_for", "comments")))
     rows = {(row["repo"], row["number"]): row for report in reports for row in report["waits"]}
     return {"waits": sorted(rows.values(), key=lambda row: (row["repo"], row["number"])),
             "complete": all(report["complete"] for report in reports),

@@ -1199,16 +1199,7 @@ def comment_states_for_thread(
     return results
 
 
-def names_director(text: str, terms: list[str], logins: set[str] | frozenset[str] = frozenset()) -> bool:
-    def pattern(term: str) -> str:
-        name = re.escape(term.removeprefix("@"))
-        if normalize_login(term) in logins:
-            # A login inside OWNER/REPO or a URL names a repository, not the Director.
-            return rf"(?<![\w/-])@?{name}(?![\w/-])"
-        return rf"(?<![\w-])@?{name}(?![\w-])"
-
-    return any(re.search(pattern(term), text, flags=re.IGNORECASE) for term in terms if term.strip())
-
+names_director = github_plan_wait.names_recipient
 
 def current_director_wait(
     reason: str, terms: list[str], logins: set[str] | frozenset[str] = frozenset()
@@ -1479,11 +1470,19 @@ def outbound_mentions(
         return run_json([GH, "api", f"repos/{repo}/issues/comments/{comment_id}"])
     def read_later(issue_url: str, since: str) -> list[dict[str, Any]]:
         return api_list(f"{director_mentions.thread_comments_path(issue_url)}?{urlencode({'since': since})}")
+    def get(endpoint: str) -> Any:
+        try:
+            return run_json([GH, "api", endpoint])
+        except rollup.RollupError as failure:
+            raise director_mentions.MentionSearchError(str(failure)) from failure
     for login in sorted(outbound_self) or [None]:
         mentions, gap, error = director_mentions.collect(
             login, format_api_timestamp(settings["since"]), settings.get("mention_approval"), recorders,
             read_comment, read_later, until=format_api_timestamp(settings["until"]),
             excluded_repositories=excluded_repositories, excluded_owners=outbound_self,
+            visible=True,
+            names=tuple(people_identities({login}, settings.get("people_index"))["director_names"]) if login else (),
+            get=get,
         )
         if gap or error:
             errors.append({"repo": login or "-", "lane": "director_mentions", "error": f"Mentions outside these repositories are not covered: {gap or error}"})
@@ -1799,7 +1798,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
             "A targeted public reply from the Director or configured automation handles a comment after its latest edit. Exact comment links, an inline-review thread with one eligible external comment, or a salutation using an unambiguous people-index name target a reply; automation may also use an unambiguous single-author mention.",
             "Director reactions and question/decision records are diagnostic awareness evidence, not public replies or requirements for clearing attention. Unanswered comments remain flagged even on closed threads; edits and new comments reopen attention.",
             "Opt-in --outbound searches involvement in repositories not owned by the configured human logins, verifies authorship or comment participation, and lists external messages in the window after their latest human activity, including review bodies and inline comments. Only edits with a verified human editor advance that cutoff; automation and maintainer edits do not. Explicit thread and portfolio scopes retain their normal rules when outbound discovery overlaps them. GitHub search indexing, visibility and its 1,000-result cap limit discovery; detected partial results degrade coverage.",
-            "With --outbound, threads outside the scanned repositories that mention the Director and were updated in the window are listed as untrusted links. That search runs read-only under the Director gh login and only with the standing approval linked by --mention-approval; without it, the gap is reported as degraded coverage.",
+            "With --outbound, visible open threads naming or mentioning the Director outside the scanned repositories are untrusted links, including old questions. An explicit --mention-approval retains the optional personal-login search under its approval, login and report-window bounds.",
             "External comments outside the configured lookback window are not included.",
         ],
     }
