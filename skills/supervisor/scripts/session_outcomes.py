@@ -17,13 +17,14 @@ else:
 def record(entry: dict, records: list[dict], final_text: str) -> dict:
     models, efforts = set(), set()
     if entry["harness"] == "agy" and entry.get("agy_log"):
-        log = Path(entry["agy_log"]).read_text()
-        identities = claim_history.agy_conversations(log)
-        if identities != [entry["session_id"]]:
-            raise ValueError("AGY model log does not identify this conversation")
-        resolved = claim_history.agy_model(None, entry["session_id"], Path(entry["agy_log"]))
-        if resolved["model_source"].startswith("reported by the CLI"):
-            models.add(resolved["model"])
+        try:
+            log = Path(entry["agy_log"]).read_text()
+        except (OSError, UnicodeError):
+            log = ""
+        if claim_history.agy_conversations(log) == [entry["session_id"]]:
+            resolved = claim_history.agy_model(None, entry["session_id"], Path(entry["agy_log"]))
+            if resolved["model_source"].startswith("reported by the CLI"):
+                models.add(resolved["model"])
         efforts.update(match[1].casefold() for model in models
                        if (match := re.search(r"\((Low|Medium|High|XHigh|Max)\)$", model)))
     for row in records:

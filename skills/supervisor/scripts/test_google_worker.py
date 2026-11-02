@@ -136,10 +136,31 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                 {"model": model, "effort": "medium", "landed_without_rescue": True, "review_findings_acted_on": 0},
             )
             original_log = log.read_text()
+            unknown_model = session_record.session_outcomes.record({"harness": "agy"}, [], "")["model"]
             resolved = "Gemini resolved (High)"
             log.write_text(f'model alias "fixture-alias" resolved to "{resolved}"\nCreated conversation {session}\n')
             self.assertEqual(session_closeout.ready(entry, "supervisor")["session_outcome"]["model"], resolved)
             log.write_text(original_log)
+            log.unlink()
+            self.assertEqual(session_closeout.ready(entry, "supervisor")["session_outcome"]["model"], unknown_model)
+            with patch.object(session_liveness, "process_absent", return_value=False):
+                with self.assertRaises(session_closeout.GateFailed):
+                    asyncio.run(session_closeout.native_idle(entry))
+            with patch.object(session_liveness, "process_absent", return_value=True):
+                asyncio.run(session_closeout.native_idle(entry))
+            log.write_text(original_log + "Created conversation abcdef00-0000-4000-8000-000000000001\n")
+            self.assertEqual(session_closeout.ready(entry, "supervisor")["session_outcome"]["model"], unknown_model)
+            with patch.object(session_liveness, "process_absent", return_value=False):
+                with self.assertRaises(session_closeout.GateFailed):
+                    asyncio.run(session_closeout.native_idle(entry))
+            for resumed in ("abcdef00-0000-4000-8000-000000000001", "unavailable"):
+                log.write_text(original_log + f"Resuming conversation {resumed}\n")
+                with patch.object(session_liveness, "process_absent", return_value=False):
+                    with self.assertRaises(session_closeout.GateFailed):
+                        asyncio.run(session_closeout.native_idle(entry))
+            log.write_text(original_log)
+            with patch.object(session_liveness, "process_absent", return_value=False):
+                asyncio.run(session_closeout.native_idle(entry))
             self.assertEqual(session_liveness.invocation(["agy", "--conversation", session])[0], [session])
             with (
                 patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", "agy")]),
@@ -171,7 +192,16 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                 fixture = json.loads((Path(__file__).parent / "fixtures/agy-command-completed.json").read_text())
                 fields = iterm_tab.claim_history.protobuf_fields
                 captured = fields(bytes.fromhex(fixture["step_payload_hex"]))
-                for change in ("captured", "silent", "pending_exit", "pending_status", "unknown_kind", "failed_exit"):
+                for change in (
+                    "captured",
+                    "silent",
+                    "pending_exit",
+                    "pending_status",
+                    "unknown_kind",
+                    "failed_exit",
+                    "cancelled",
+                    "launch_error",
+                ):
                     step = dict(captured)
                     result = fields(fields(step[140])[2])
                     terminal = fields(fields(fields(result[3])[10])[3])
@@ -186,14 +216,21 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                         step[1] = 999
                     elif change == "failed_exit":
                         terminal[3] = 1
+                    elif change in {"cancelled", "launch_error"}:
+                        step[4] = 6 if change == "cancelled" else 7
                     result[3] = protobuf({10: protobuf({3: protobuf(terminal)})})
+                    if change in {"cancelled", "launch_error"}:
+                        result.pop(3)
+                        result.pop(1, None)
                     step[140] = protobuf({2: protobuf(result)})
                     writer.execute("INSERT INTO steps VALUES (1,?,?,0,?)", (step[1], step[4], protobuf(step)))
                     writer.execute("INSERT INTO steps VALUES (2,15,3,0,?)", (response,))
                     writer.commit()
                     with self.subTest(change=change):
                         summary = session_record.session_status(entry)
-                        self.assertEqual(summary["safe_verdict"], change in {"captured", "silent", "failed_exit"})
+                        self.assertEqual(
+                            summary["safe_verdict"], change in {"captured", "silent", "failed_exit", "cancelled", "launch_error"}
+                        )
                         if change == "pending_status":
                             pending_ledger = root / "pending-ledger.json"
                             with (
@@ -205,7 +242,7 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                                 )
                             self.assertTrue(summary["background_tasks"])
                             self.assertEqual(len(session_record.load_ledger(pending_ledger)), 1)
-                        if change == "failed_exit":
+                        if change in {"failed_exit", "cancelled", "launch_error"}:
                             results = [
                                 block
                                 for row in session_record.read_jsonl(transcript)
@@ -234,11 +271,11 @@ runpy.run_path(sys.argv[0], run_name="__main__")
 
                 def append_during_read(path: Path) -> list[dict]:
                     found = read(path)
-                    writer.execute(
-                        "INSERT INTO steps VALUES (1,14,3,0,?)",
-                        (protobuf({1: 14, 4: 3, 5: metadata, 19: protobuf({2: b"continue"})}),),
-                    )
-                    writer.commit()
+                    with sqlite3.connect(transcript) as concurrent_writer:
+                        concurrent_writer.execute(
+                            "INSERT INTO steps VALUES (1,14,3,0,?)",
+                            (protobuf({1: 14, 4: 3, 5: metadata, 19: protobuf({2: b"continue"})}),),
+                        )
                     return found
 
                 for reader in (session_record.session_status, session_record.posted_comments):
@@ -250,6 +287,14 @@ runpy.run_path(sys.argv[0], run_name="__main__")
                             reader(entry)
                     writer.execute("DELETE FROM steps WHERE idx=1")
                     writer.commit()
+                streaming_ledger = root / "streaming-ledger.json"
+                with (
+                    patch.object(session_record, "read_jsonl", side_effect=append_during_read),
+                    patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", "agy")]),
+                    patch.object(session_liveness, "process_started_at", return_value=timestamp),
+                ):
+                    asyncio.run(iterm_tab.register_fresh_launch(argparse.Namespace(ledger=streaming_ledger), dict(launch), None))
+                self.assertEqual(session_record.load_ledger(streaming_ledger)[0]["session_id"], session)
 
 
 if __name__ == "__main__":

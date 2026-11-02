@@ -299,7 +299,7 @@ def agy_step_records(session: str, ordinal: int, kind: int, status: int, childre
                 result = fields(fields(step.get(140, b"")).get(2, b""))
                 output = result.get(1, b"").decode()
                 failed = status != 3
-                if command:
+                if command and status == 3:
                     terminal = fields(fields(fields(result.get(3, b"")).get(10, b"")).get(3, b""))
                     if type(terminal.get(3)) is not int or terminal.get(1, b"").decode() != arguments["CommandLine"]:
                         pending = pending or "native command completion is unavailable"

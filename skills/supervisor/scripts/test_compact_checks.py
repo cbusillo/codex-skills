@@ -88,7 +88,7 @@ class OperationTests(unittest.TestCase):
             self.assertEqual(run.call_count, 1)
 
     def test_closeout_uses_native_shapes_and_retires_only_verified_closures(self) -> None:
-        for outcome in ("complete", "google_complete", "finish_refused", "uncertain_exit", "close_interrupted", "close_uncertain", "resumed", "draft_before_clear", "draft_after_idle", "turn_after_idle"):
+        for outcome in ("complete", "google_complete", "harness_changed", "finish_refused", "uncertain_exit", "close_interrupted", "close_uncertain", "resumed", "draft_before_clear", "draft_after_idle", "turn_after_idle"):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 entry: dict[str, Any] = {"session_id": "native", "harness": "claude", "supervisor_owned": True,
@@ -159,16 +159,16 @@ class OperationTests(unittest.TestCase):
                       patch.object(session_closeout.release, "handoff", return_value={"body": "Session: native"}),
                       patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]"),
                       patch.object(session_liveness, "process_absent", side_effect=lambda _: not live),
-                      patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", entry["harness"]) ]),
+                      patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", "agy" if outcome == "harness_changed" else entry["harness"]) ]),
                       patch.object(session_closeout.closure, "ownership", return_value=nullcontext()),
                       patch.object(session_closeout.closure, "store_lock", side_effect=lambda *_, **__: nullcontext()),
                       patch.object(session_closeout.closure, "source_records", return_value={"native": closed}),
                       patch.object(session_closeout.release, "transcript_roots", return_value=[str(root)]),
                       patch.object(session_closeout.release, "validate_closure")):
-                    if outcome in {"draft_before_clear", "draft_after_idle", "turn_after_idle"}:
+                    if outcome in {"draft_before_clear", "draft_after_idle", "turn_after_idle", "harness_changed"}:
                         with self.assertRaises(check_operation.GateFailed) as failure:
                             session_closeout.closeout(args, operation)
-                        self.assertEqual(failure.exception.gate, "verdict" if outcome == "turn_after_idle" else "input")
+                        self.assertEqual(failure.exception.gate, "process" if outcome == "harness_changed" else "verdict" if outcome == "turn_after_idle" else "input")
                         self.assertFalse({"send", "finish", "close"}.intersection(calls))
                         self.assertEqual(json.loads(ledger.read_text()), [entry])
                     elif outcome in {"uncertain_exit", "close_interrupted"}:

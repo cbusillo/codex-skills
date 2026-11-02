@@ -2771,7 +2771,11 @@ class ClaudeTrustTests(unittest.TestCase):
         data = json.loads(self.configs[2].read_text())
         del data["projects"]
         self.configs[2].write_text(json.dumps(data))
+        linked_config = self.root / "claude-dotfiles.json"
+        self.configs[0].rename(linked_config)
+        self.configs[0].symlink_to(linked_config)
         self.launch(repository / "addons")
+        self.assertTrue(self.configs[0].is_symlink())
         for config in self.configs:
             with self.subTest(config=config):
                 data = json.loads(config.read_text())
@@ -2801,6 +2805,9 @@ class ClaudeTrustTests(unittest.TestCase):
         original = {"model": "fixture-model", "permissions": {"allow": ["fixture-rule"]}, "trustedWorkspaces": []}
         config.write_text(json.dumps(original))
         config.chmod(0o600)
+        linked_config = self.root / "agy-dotfiles.json"
+        config.rename(linked_config)
+        config.symlink_to(linked_config)
         claude_before = [path.read_bytes() for path in self.configs]
         self.choice = {"provider": "google", "env": {}}
         command = self.root / "google-command"
@@ -2811,7 +2818,7 @@ class ClaudeTrustTests(unittest.TestCase):
         saves = []
 
         def concurrent_save(source: str | Path, target: str | Path) -> None:
-            if Path(target) == config and not saves:
+            if Path(target).resolve() == config.resolve() and not saves:
                 data = json.loads(config.read_text())
                 data["parallel_save"] = "preserved"
                 config.write_text(json.dumps(data))
@@ -2822,6 +2829,7 @@ class ClaudeTrustTests(unittest.TestCase):
             with patch.object(iterm_tab.claude_trust, "exchange", side_effect=concurrent_save):
                 iterm_tab.prepare_launches(args)
             after = json.loads(config.read_text())
+            self.assertTrue(config.is_symlink())
             self.assertIn(str(worktree), after.pop("trustedWorkspaces"))
             self.assertEqual(after, {**{key: value for key, value in original.items() if key != "trustedWorkspaces"}, "parallel_save": "preserved"})
             self.assertEqual(config.stat().st_mode & 0o777, 0o600)

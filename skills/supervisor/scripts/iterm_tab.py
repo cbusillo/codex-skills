@@ -1855,7 +1855,8 @@ def register_file_launch(launch: dict, native: dict, ledger: Path) -> dict:
     if harness == "agy":
         entry["agy_log"] = native["log"]
         entry["launch_started_at"] = session_liveness.process_started_at(entry["pid"]).isoformat()
-    session_record.session_status(entry)
+    records = session_record.read_jsonl(paths[0])
+    claim_history.root_records(paths[0], harness, native["session_id"], records)
     append_launch_ledger(ledger, entry)
     return entry
 

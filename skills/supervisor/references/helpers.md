@@ -1436,7 +1436,10 @@ For fresh Google workers, use `--account-provider google --ledger` with the
 same direct interactive `agy` launch. The shared file-session registrar binds
 the conversation from a dedicated native log to its SQLite transcript and exact
 terminal process. Its retained `file_native` receipt uses the same registration
-recovery command. Normal `session_closeout.py` verifies the native final response,
+recovery command. Registration reads native identity while the worker writes;
+completion checks belong to closeout. Keep the dedicated log until process exit
+so live conversation identity remains provable. Missing model attribution reads
+as unknown. Normal `session_closeout.py` verifies the native final response,
 claims, handoff and process exit, then retains model, effort and outcome in the
 existing closed-session log. Google still uses only the existing AGY login and
 Context Panel capacity reader. Unknown native child or background-work coverage

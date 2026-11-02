@@ -77,7 +77,7 @@ def in_scope(directory, roots, main, developer, worktrees):
 
 
 def google_config(path: Path) -> bool:
-    return path == claim_history.AGY_SETTINGS.expanduser()
+    return path.resolve() == claim_history.AGY_SETTINGS.expanduser().resolve()
 
 
 def read_projects(path):
@@ -190,6 +190,7 @@ def write_trust(path, roots, attempts=3):
     save after the swap replaces this file whole, keeping that session's data;
     the readback then sees the key missing and applies it again.
     """
+    path = path.resolve(strict=True)
     expected, data, projects = read_projects(path)
     carried = 0
     while True:
