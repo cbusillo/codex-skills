@@ -28,6 +28,8 @@ else:
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github-work-rollup/scripts"))
 radar = importlib.import_module("github_unanswered_comments")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "direction/scripts"))
+director_waits = importlib.import_module("director_waits")
 
 
 def collect(readers: dict[str, Callable[[], dict]]) -> dict[str, dict]:
@@ -193,8 +195,8 @@ def digest(sources: dict[str, dict]) -> str:
         if routing.get("status") not in {None, "sent", "pending"} or routing.get("audit_error"):
             lines.append(f"ERROR routing {pointer(row)}: {routing.get('audit_error') or routing.get('cause') or routing['status']}")
         lines.append(f"COMMENT {pointer(row)}: {' '.join((row.get('body_excerpt') or row.get('body') or '').split())[:180]}")
-    for row in comments.get("unasked_director_waits", []):
-        lines.append(f"WAIT {pointer(row)}")
+    for row in [*comments.get("unasked_director_waits", []), *sources.get("waits", {}).get("waits", [])]:
+        lines.append(f"WAIT {pointer(row)}{' (untrusted)' if row.get('untrusted') else ''}")
     for row in comments.get("director_mentions", []):
         lines.append(f"MENTION {pointer(row)} (untrusted)")
     for row in sources.get("watch", {}).get("notices", []):
@@ -219,8 +221,8 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
         repo=args.repo,
         repo_owner=[] if args.repo else [args.owner],
         thread=args.thread,
-        outbound=False,
-        self_login=[],
+        outbound=True,
+        self_login=[args.owner],
         director_login=args.owner,
         bot_login=[],
         people_index=None,
@@ -232,6 +234,15 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
         no_cutoff=True,
         include_handled=False,
     )
+
+    def waits() -> dict:
+        people = radar.people_identities({args.owner.casefold()}, None)
+        terms = [args.owner, "Director", "owner", *people["director_names"]]
+        result = director_waits.collect(github_reader(), args.owner, terms, datetime.now(UTC))
+        if people["status"] == "error" or people["director_ambiguous"] or not people["director_names"]:
+            result["complete"] = False
+            result["errors"].append({"scope": "Director aliases", "error": "people identity unavailable or ambiguous"})
+        return result
 
     def fetch(item: str) -> list[dict]:
         match = oq.ITEM.fullmatch(item)
@@ -302,6 +313,7 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
         "next": lambda: staffing(args.owner),
         "sessions": lambda: compact_check.report(args.ledger, args.capacity_state),
         "questions": questions,
+        "waits": waits,
         "comments": comments,
     }
 

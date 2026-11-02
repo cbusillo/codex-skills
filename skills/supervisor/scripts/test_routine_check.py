@@ -48,6 +48,36 @@ class RoutineCheckTests(unittest.TestCase):
         self.enterContext(patch_attr(routine_check.radar.github_identity, "automation_login", return_value="agent[bot]"))
         self.enterContext(patch_attr(routine_check.radar.github_identity, "configured_bot_logins", return_value=["agent[bot]"]))
 
+    def test_owner_only_digest_finds_foreign_questions_and_waits_without_watch_history(self) -> None:
+        args = argparse.Namespace(owner="cellmechanic", queue="cellmechanic/direction#11", source=[], repo=[], thread=[],
+                                  radar_config=Path("/absent/radar.yaml"))
+        questions = [{"url": f"https://github.com/cbusillo/odoo-tenant-cm/issues/{number}#issuecomment-{ident}",
+                      "repository": "cbusillo/odoo-tenant-cm", "number": number,
+                      "updated_at": "2026-08-01T00:00:00Z", "untrusted": True}
+                     for number, ident in ((158, 6275700918), (239, 6391889058))]
+        waits = [{"url": question["url"].split("#")[0], "untrusted": True} for question in questions]
+        with (
+            patch_attr(routine_check.radar, "resolve_repositories", return_value=[]),
+            patch_attr(routine_check.radar, "authenticated_login", return_value="agent[bot]"),
+            patch_attr(routine_check.radar, "people_identities", return_value={"status": "ok", "director_names": ["Justin"],
+                       "director_ambiguous": False, "automation": {}, "address_names": {}}),
+            patch_attr(routine_check.radar, "outbound_threads", return_value=([], [])),
+            patch_attr(routine_check.radar.director_mentions, "collect", return_value=(questions, None, None)) as mentions,
+            patch_attr(routine_check.director_waits, "collect", return_value={"waits": waits, "complete": True, "errors": []}) as read_waits,
+        ):
+            readers = routine_check.build_readers(args, {})
+            sources = routine_check.collect({name: readers[name] for name in ("comments", "waits")})
+        output = routine_check.digest(sources)
+        for question, wait in zip(questions, waits, strict=True):
+            self.assertIn(f"MENTION {question['url']} (untrusted)", output)
+            self.assertIn(f"WAIT {wait['url']} (untrusted)", output)
+        self.assertEqual(mentions.call_args.args[0], args.owner)
+        self.assertEqual(read_waits.call_args.args[1], args.owner)
+        self.assertFalse(routine_check.source_errors("waits", sources["waits"]))
+        partial = routine_check.digest({"waits": {**sources["waits"], "complete": False, "errors": ["search truncated"]}})
+        self.assertIn(questions[0]["url"].split("#")[0], partial)
+        self.assertIn("search truncated", partial)
+
     def test_digest_omits_answered_history_and_keeps_new_unanswered_comments(self) -> None:
         cases = (
             ("companion-module-apple-tv", 50, "closed", "issue_body", "mikecreates86", "Thanks for this module.",
