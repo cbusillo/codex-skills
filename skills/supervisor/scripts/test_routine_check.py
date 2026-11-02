@@ -32,6 +32,7 @@ from check_operation import GateFailed, Operation
 from test_goal_board import TRUSTED, child, comment
 
 from skills.github.scripts.github_api import ApiResult
+from skills.github.scripts import github_agent
 
 
 def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
@@ -122,7 +123,8 @@ class RoutineCheckTests(unittest.TestCase):
         client = attention[0]
         self.assertNotEqual(client["attention_state"], "handled")
         sources = {
-            "board": {"tracks": [{"url": "track", "children": [program]}], "coverage": {"complete": True}},
+            "next": {"candidates": [{**program, "queue": {"state": "available", "next_actor": program["next_actor"],
+                      "next_action": program["next_action"]}}], "candidate_coverage": {"complete": True}},
             "sessions": {
                 "sessions": [{"session_id": "worker", "action": "verify_finished_session"}],
                 "coverage": {"complete": True},
@@ -164,6 +166,60 @@ class RoutineCheckTests(unittest.TestCase):
             output = routine_check.digest(routine_check.collect(readers))
             self.assertIn(str(error), output)
             self.assertIn("watch offline", output)
+
+    def test_staffing_lists_all_five_requests_outside_tracks_and_both_agent_families(self) -> None:
+        requests = [("odoo-devkit", 336), ("odoo-tenant-opw", 419), ("shiny-infra-ops", 811),
+                    ("codex-skills", 3283), ("odoo-tenant-cm", 315)]
+        rows: list[dict[str, Any]] = [{"url": f"https://github.com/owner/{repo}/issues/{number}", "state": "OPEN",
+                 "queue": {"state": "available", "next_actor": "agent:supervisor", "next_action": "Staff this slice."}}
+                for repo, number in requests]
+        rows[-1]["labels"] = ["agent:claude"]
+        rows[0]["labels"] = ["agent:codex"]
+        for family in ("codex", None):
+            report = {"candidates": rows, "candidate_coverage": {"complete": True}}
+            github_agent.filter_selection(report, family)
+            output = routine_check.digest({"next": report})
+            self.assertEqual(len([line for line in output.splitlines() if line.startswith("NEXT ")]), len(rows))
+            for row in rows:
+                self.assertIn(row["url"], output)
+
+    def test_staffing_preserves_waits_claims_and_named_recipient_reconciliation(self) -> None:
+        def row(source_url: str, state: str, actor: str = "agent") -> dict:
+            return {"url": source_url, "state": "OPEN", "queue": {"state": state, "next_actor": actor,
+                    "next_action": "Reconcile custody.", "reason": "named_recipient_requires_reconciliation"}}
+
+        report: dict[str, Any] = {"candidates": [row("available", "available"), row("waiting", "waiting"),
+                                 row("running", "underway"), row("person", "available", "person:owner")],
+                  "needs_status": [row("named-lead", "needs_status", "agent:lead-token"),
+                                   row("missing-actor", "needs_status", ""), row("another-missing-actor", "needs_status", "")],
+                  "candidate_coverage": {"complete": True}}
+        conflicting = row("conflicting-families", "available")
+        conflicting["labels"] = ["agent:codex", "agent:claude"]
+        report["candidates"].append(conflicting)
+        github_agent.filter_selection(report, "codex")
+        output = routine_check.digest({"next": report})
+        self.assertIn("NEXT available", output)
+        self.assertIn("REVIEW named-lead", output)
+        self.assertIn("REVIEW conflicting-families", output)
+        self.assertIn("NEEDS_STATUS 2:", output)
+        self.assertNotIn("REVIEW missing-actor", output)
+        for url in ("waiting", "running", "person"):
+            self.assertNotIn(f"NEXT {url}", output)
+
+    def test_staffing_coverage_names_omitted_repositories_and_unread_issues(self) -> None:
+        report = {"candidate_coverage": {"complete": False, "unevaluated_repositories": [
+                      {"repo": "owner/odoo-devkit", "issue_count": 5}]},
+                  "discovery_context": {"complete": False, "repositories": [
+                      {"repo": "owner/odoo-tenant-cm", "error": "deadline exhausted"}]},
+                  "graph_context": {"complete": False, "errors": ["owner/repo#9 unread"]},
+                  "queue_context": {"repositories": {"owner/claims": {"complete": False, "error": "claims unread"}}},
+                  "focus_context": {"repositories": {"owner/board": {"truncated": True}}},
+                  "performance": {"deadline_exhausted": True}}
+        for _ in range(2):
+            output = routine_check.digest({"next": report})
+            for source in ("owner/odoo-devkit", "owner/odoo-tenant-cm", "owner/repo#9", "deadline exhausted", "owner/claims", "owner/board"):
+                self.assertIn(source, output)
+            self.assertTrue(routine_check.source_errors("next", report))
 
     def test_digest_lists_registered_queue_and_summarizes_unregistered_questions(self) -> None:
         registered = {"url": "registered-question", "registration_url": "registration", "delivery": "unacknowledged"}
@@ -294,7 +350,7 @@ class RoutineCheckTests(unittest.TestCase):
 
             with (
                 patch_attr(routine_check.github_read, "GitHubReader", return_value=SimpleNamespace(paged_json=paged)),
-                patch.object(goal_board, "goal_board", return_value={"tracks": [], "coverage": {"complete": True}}),
+                patch.object(routine_check, "staffing", return_value={"candidates": [], "candidate_coverage": {"complete": True}}),
                 patch_attr(
                     routine_check.radar,
                     "collect_payload",
@@ -312,40 +368,21 @@ class RoutineCheckTests(unittest.TestCase):
             self.assertIn(good_url, output)
             self.assertIn("source unread", output)
 
-    def test_selected_reader_404_preserves_next_action_and_unknown_authority_is_explicit(self) -> None:
-        reader_module = routine_check.github_read
-        request = comment("## Current Status\nNext actor: agent\nNext action: Take the next source slice.")
-        program = child(277, comments=[request])
-        args = argparse.Namespace(
-            owner="owner",
-            ledger=Path("unused"),
-            capacity_state=None,
-            repo=[],
-            thread=[],
-            source=[],
-            queue="owner/direction#98",
-            radar_config=Path("unused"),
-        )
-
-        def board(reader: Any, _owner: str, *, trusted: set[str]) -> dict:
-            self.assertIsNone(goal_board.claim_evidence(reader, "owner/repo", 4))
-            return {
-                "tracks": [{"url": "track", "children": [goal_board.child_row(program, trusted)]}],
-                "coverage": {"complete": True},
-            }
-
-        with (
-            patch_attr(reader_module.github_api_core, "request_identity", return_value=("automation-gh", "agent[bot]", [])),
-            patch_attr(reader_module.GitHubReader, "_transport_request", return_value=ApiResult(ok=False, status=404, body=None)),
-            patch.object(goal_board, "goal_board", side_effect=board),
-            patch.object(routine_check.oq, "default_decision_authors", return_value=["Shiny-Code-App[bot]"]),
-        ):
-            report = routine_check.build_readers(args, {})["board"]()
-            self.assertIn(program["url"], routine_check.digest({"board": report}))
-            with patch.object(routine_check.oq, "default_decision_authors", return_value=[]):
-                report = routine_check.build_readers(args, {})["board"]()
-            self.assertFalse(report["coverage"]["complete"])
-            self.assertIn("unconfigured", routine_check.digest({"board": report}))
+    def test_staffing_reuses_global_next_and_preserves_partial_failure_evidence(self) -> None:
+        report = {"ok": False, "candidate_coverage": {"complete": False},
+                  "discovery_context": {"complete": False, "unevaluated_repositories": [{"repo": "owner/repo", "issue_count": 5}]}}
+        completed = subprocess.CompletedProcess([], 1, json.dumps(report), "progress only")
+        with patch.object(subprocess, "run", return_value=completed) as run:
+            result = routine_check.staffing("owner")
+        self.assertEqual(result, report)
+        self.assertGreater(run.call_args.kwargs["timeout"], 0)
+        self.assertIn("owner/repo", routine_check.digest({"next": result}))
+        with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "failed")):
+            output = routine_check.digest(routine_check.collect({"next": lambda: routine_check.staffing("owner")}))
+        self.assertIn("ERROR next", output)
+        with patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("global next", 1)):
+            output = routine_check.digest(routine_check.collect({"next": lambda: routine_check.staffing("owner")}))
+        self.assertIn("ERROR next", output)
 
     def test_discovered_handoff_is_unique_exact_authored_and_journaled(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
