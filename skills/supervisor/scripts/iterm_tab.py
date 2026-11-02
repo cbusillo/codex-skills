@@ -1449,7 +1449,7 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
             raise ValueError("fresh --ledger registration needs managed Codex --remote launches")
     for text in command_texts:
         validate_text(text)
-    brief_files = getattr(args, "brief_file", None)
+    brief_files: Path | list[Path] = getattr(args, "brief_file", None) or []
     if not brief_files:
         raise ValueError("new launches require --brief-file; put the prompt in that file")
     brief_files = brief_files if isinstance(brief_files, list) else [brief_files]
