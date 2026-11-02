@@ -41,7 +41,9 @@ Repository order rotates by UTC date without storing a second inventory. Cheap
 trigger discovery precedes open discussions so that their read budget cannot
 starve the event checks. All repositories' open work then precedes recent closed
 history, and zero-comment records skip
-comment reads. Budget, quota-reserve and deadline stops count unread records
+comment reads. The question queue uses the global request budget instead of
+the per-listing page cap, so old receipts cannot hide newer registrations.
+Budget, quota-reserve and deadline stops count unread records
 together instead of flooding the digest. Repeated limited runs on one day keep
 the same order. The GitHub budget counts logical read calls; shared transport
 owns bounded HTTP retry attempts. Scoped Launchplane policy reads are counted
