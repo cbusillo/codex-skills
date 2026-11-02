@@ -3,11 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Render a daily launchd sweep or run it once through an existing sender.
 
-No Discord client or credentials live here. Delivery receives Markdown on stdin
-and may use {report} in an argument to read the retained file instead.
-"""
 
 from __future__ import annotations
 
@@ -25,6 +21,7 @@ import time
 from pathlib import Path
 
 import services
+import stranded_archive
 
 LABEL = "com.codex-skills.supervisor.stranded"
 WEEKLY_AUDIT_SECONDS = 1800
@@ -33,20 +30,19 @@ WEEKLY_STAMP_WRITTEN_CODES = (0, 3)
 
 def load_config(path):
     config = json.loads(path.read_text())
-    required = {"uv", "catalog", "state_dir", "scan_args", "delivery_argv", "hour", "minute"}
-    if not isinstance(config, dict) or not required <= set(config) <= required | {"weekly"}:
+    required = {"uv", "catalog", "state_dir", "scan_args", "hour", "minute"}
+    if not isinstance(config, dict) or not required <= set(config) <= required | {"weekly", "tracking_issue"}:
         raise ValueError("daily configuration fields are missing or unknown")
     if "weekly" in config:
         validate_weekly(config["weekly"])
     for key in ("uv", "catalog", "state_dir"):
         services.absolute_path(config[key])
-    for key in ("scan_args", "delivery_argv"):
-        args = config[key]
-        if not isinstance(args, list) or any(not isinstance(a, str) or not a or "\0" in a for a in args):
-            raise ValueError("commands require argument arrays")
-    if not config["delivery_argv"]:
-        raise ValueError("existing delivery command is required")
-    services.absolute_path(config["delivery_argv"][0])
+    args = config["scan_args"]
+    if not isinstance(args, list) or any(not isinstance(a, str) or not a or "\0" in a for a in args):
+        raise ValueError("commands require argument arrays")
+    target = config.setdefault("tracking_issue", stranded_archive.DEFAULT_TRACKING_ISSUE)
+    if not isinstance(target, str) or not re.fullmatch(r"[\w.-]+/[\w.-]+#[0-9]+", target):
+        raise ValueError("an archive tracking issue is required")
     for key, limit in (("hour", 24), ("minute", 60)):
         if type(config[key]) is not int or not 0 <= config[key] < limit:
             raise ValueError("invalid daily schedule")
@@ -146,13 +142,16 @@ def run_once(config_path: Path, stopped: threading.Event, retry_unsent: bool = F
             raise ValueError("scan did not produce a digest")
         reservation = {"day": day, "scan_exit_code": scan_code, "report": str(report)}
         marker.write_text(json.dumps(reservation) + "\n")
-        delivery = [a.replace("{report}", str(report)) for a in config["delivery_argv"]]
-        with report.open("rb") as source, (attempt / "delivery.stdout").open("wb") as out, \
+        delivery = [config["uv"], "run", "--no-project", "--no-cache",
+                    str(catalog / "skills/supervisor/scripts/stranded_archive.py"), "--file", str(report),
+                    "--tracking-issue", config["tracking_issue"]]
+        with (attempt / "delivery.stdout").open("wb") as out, \
                 (attempt / "delivery.stderr").open("wb") as err:
-            code = command(delivery, catalog, source, out, err, stopped, 120)
+            code = command(delivery, catalog, subprocess.DEVNULL, out, err, stopped, 120)
         if code:
             raise ValueError("delivery failed; reconcile before replay")
-        receipt.write_text(json.dumps({**reservation, "delivery_exit_code": code}) + "\n")
+        receipt.write_text(json.dumps({**reservation, "delivery_exit_code": code,
+                                       "delivery_url": (attempt / "delivery.stdout").read_text().strip()}) + "\n")
         marker.unlink()
         services.emit("delivered", scan_exit_code=scan_code, receipt=str(receipt))
         # launchd need not retry an incomplete scan after successful delivery.
@@ -207,7 +206,7 @@ def guarded(action):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
     prepare = sub.add_parser("render", help="write a plist only; never install or start")
     prepare.add_argument("--output", type=Path, required=True)
@@ -215,7 +214,7 @@ def main(argv=None):
         item = prepare if name == "render" else sub.add_parser(name)
         item.add_argument("--config", type=Path, required=True)
         if name == "clear":
-            item.add_argument("--delivered-url", help="record a verified Discord message instead of replaying")
+            item.add_argument("--delivered-url", help="record a verified archive comment instead of replaying")
     args = parser.parse_args(argv)
     os.umask(0o077)
     stopped = threading.Event()
@@ -231,8 +230,9 @@ def main(argv=None):
             with services.service_lock(state / "daily", "stranded"):
                 marker = services.reconciliation_marker(state / "daily", "stranded")
                 if args.delivered_url:
-                    if not re.fullmatch(r"https://discord\.com/channels/(?:@me|[0-9]+)/[0-9]+/[0-9]+", args.delivered_url):
-                        raise ValueError("an exact Discord message URL is required")
+                    target = config.setdefault("tracking_issue", stranded_archive.DEFAULT_TRACKING_ISSUE).replace("#", "/issues/")
+                    if not re.fullmatch(rf"https://github\.com/{re.escape(target)}#issuecomment-[0-9]+", args.delivered_url, re.IGNORECASE):
+                        raise ValueError("an exact archive comment URL is required")
                     reservation = json.loads(marker.read_text())
                     day = dt.date.fromisoformat(reservation["day"]).isoformat()
                     (state / f"{day}.delivered.json").write_text(json.dumps(
