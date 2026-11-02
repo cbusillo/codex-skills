@@ -978,7 +978,6 @@ def watch(args, repos, initial, deadline):
     seen: dict[str, str] = {}
     dispatched: set[str] = set()
     settle_at: float | None = None
-    own_logins = {login.casefold() for login in args.own_login}
     while time.monotonic() < deadline:
         with watch_lock(args.state, wait=True):
             watermarks = load_state(args.state, [*(repos or []), MENTIONS], initial, rewind=rewind)
@@ -1025,14 +1024,10 @@ def watch(args, repos, initial, deadline):
         persistent = getattr(args, "persistent", False)
         if errors and getattr(args, "events", False) and any(not error["retryable"] for error in errors):
             raise ValueError("Scheduled message source read is nonretryable; reconcile the service before restarting.")
-        wakes_supervisor = any(
-            notice.get("kind") != "director_question"
-            or str(notice.get("author", "")).casefold() not in own_logins
-            for notice in notices
-        )
-        if wakes_supervisor and settle_at is None:
+        wakes_supervisor = any(notice.get("kind") != "director_question" for notice in notices)
+        if wakes_supervisor and not errors and settle_at is None:
             settle_at = min(deadline, time.monotonic() + NOTICE_SETTLE_SECONDS)
-        settled = settle_at is not None and time.monotonic() >= settle_at and not errors
+        settled = settle_at is not None and time.monotonic() >= settle_at
         if args.once or settled or (not persistent and errors) or any(not error["retryable"] for error in errors):
             return int(bool(errors))
         delay = max(

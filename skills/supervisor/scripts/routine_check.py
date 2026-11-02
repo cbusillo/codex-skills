@@ -210,8 +210,8 @@ def digest(sources: dict[str, dict], *, full: bool = False) -> str:
     lines.append(
         f"LOAD sessions={len(sessions)} candidates={selection.get('candidate_count', 0)} host={','.join(f'{value:.1f}' for value in os.getloadavg())}"
     )
-    if not full:
-        lines.append(f"OMITTED {omitted} routine rows; --full shows all")
+    if omitted:
+        lines.append(f"OMITTED {omitted} acknowledged questions; --full shows all")
     return "\n".join(dict.fromkeys(lines))
 
 
@@ -343,7 +343,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Print the existing Supervisor digest; optional routing delivers message pointers, never launches or closes."
     )
-    parser.add_argument("--full", action="store_true", help="include acknowledged questions and all routine rows")
+    parser.add_argument("--full", action="store_true", help="include acknowledged questions")
     parser.add_argument("--owner", required=True)
     parser.add_argument("--queue", required=True)
     parser.add_argument("--ledger", type=Path, required=True)

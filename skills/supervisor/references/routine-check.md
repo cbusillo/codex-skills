@@ -8,8 +8,7 @@ handoff and question queue. Keep no copied rules,
 decisions, statuses, board contents or narrative; open linked records for action.
 
 1. Read the recovery note and reconcile pending local actions at their source.
-2. Run the digest in the foreground from the catalog, keeping its result in this
-   turn instead of creating a background completion turn:
+2. Run the digest in the foreground from the catalog:
 
    ```sh
    uv run skills/supervisor/scripts/routine_check.py --owner OWNER --queue OWNER/direction#NUMBER --ledger <ledger.json> --foreign-log <watch.jsonl>
@@ -52,8 +51,8 @@ decisions, statuses, board contents or narrative; open linked records for action
    `--full` prints the complete list at takeover, handoff or recovery. Outstanding
    comments, unacknowledged questions, reviews, missing status, errors and load
    remain visible. NEXT rows currently have no observed claim, so they repeat
-   even when unchanged; the ownership reader excludes claimed work before the
-   digest formats it. No second claim snapshot or digest state file is needed.
+   even when unchanged. Use the current ownership read, not a second claim
+   snapshot. No digest state file is needed.
    Staffing uses the same global `next` as selection, including open issues
    outside Track trees and both agent families. Its 120-second read budget keeps
    omitted repositories, unread issues and other coverage gaps explicit.
@@ -71,9 +70,10 @@ decisions, statuses, board contents or narrative; open linked records for action
    For a question addressed to this Director, follow
    [same-issue Supervisor replies](../../references/talking-with-the-director.md#same-issue-supervisor-replies)
    for the reply's scope, untrusted-input handling and direction/identity decisions.
-3. Chain normal finished-session closeouts into one background command, so the
-   batch produces one completion turn. Use `&&` to stop at the first failed gate
-   and inspect its receipt before continuing. For example:
+3. Chain normal finished-session closeouts into one command. Use `&&` to stop
+   at the first failed gate and inspect its receipt before continuing. On a
+   harness with background completions, run the chain as one background task.
+   For example:
 
    ```sh
    uv run skills/supervisor/scripts/session_closeout.py --ledger <ledger.json> --session-id <native-id> --supervisor-session <supervisor-id> --owner OWNER --evidence <private-session-evidence> &&
@@ -115,9 +115,3 @@ Compare workers with DIRECTION.md and escalate mismatches. Use the full board
 at takeover/handoff; after compaction or a truncated/interrupted check, rebuild
 full board/questions. Watermarks are not delivery records;
 unpresented queue questions stay outstanding.
-
-A quiet check is expected to use one turn, or two when a closeout batch finishes,
-instead of three (prompt, digest completion, closeout completion). With no
-unclaimed work or other attention, expect a few hundred conversation tokens
-instead of several thousand; this is an estimate, not measured provider usage.
-Unclaimed NEXT rows still add output until staffed.
