@@ -197,7 +197,7 @@ uv run <skill-dir>/../github/scripts/gh-plan.py search "user:OWNER label:directi
 ```
 
 Also read the full Director-wait list, including issues without a `direction`
-or `plan:waiting` label and waits that already have a posted question:
+label and waits that already have a posted question:
 
 ```bash
 uv run <skill-dir>/scripts/director_waits.py --owner OWNER
@@ -542,8 +542,8 @@ listed milestone since the prior audit, with who added each. It is not a
 finding and does not affect `ok`. Read each issue and keep it in the milestone
 or move it out.
 
-The audit also returns `stale_wait_report` for open `plan:active`,
-`plan:waiting` and `plan:blocked` issues in the audited repository, including unmilestoned work.
+The audit also returns `stale_wait_report` for open issues in the audited
+repository, including unmilestoned work.
 It reports closed native blockers, merged PRs or completed issues that the
 Current Status waits on, and explicit waits on agents or capacity instead of
 people or events, only when no recorded hold or open native blocker remains.

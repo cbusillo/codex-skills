@@ -63,7 +63,6 @@ def actions(
         and actor.startswith("agent")
         and record["wait"]["state"] == "clear"
         and isinstance(updated, str)
-        and "plan:blocked" not in labels
         and not blocked
     ):
         timestamp = dt.datetime.fromisoformat(updated.replace("Z", "+00:00"))

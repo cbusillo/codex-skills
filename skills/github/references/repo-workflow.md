@@ -391,7 +391,7 @@ If the real finish line is an event, such as a lane turning healthy, a Client
 accepting a release, or an outside event, keep the issue open with a recorded
 wait naming the event and its actor under github-plan's
 [wait procedure](cli-reference.md#planning-claim) and
-[Status Labels](../../github-plan/SKILL.md#status-labels).
+[Derived Status](../../github-plan/SKILL.md#derived-status).
 Name the event itself, never an agent's return to confirm it.
 Use `Refs` while that event remains outstanding. Preserve unresolved Director,
 Client, and other people's waits; a merge does not resolve them or authorize a
@@ -425,7 +425,7 @@ the completed issue. When its finish line remains unmet, record the actual
 event wait or remaining engineering work; never force closure or clear a real wait.
 Reconcile durable plan metadata under the same Close Or Hand Off procedure
 even when GitHub already auto-closed the issue; auto-close does not settle its
-Current Status, planning labels or Project Status.
+Current Status or Project Status.
 
 Apply the same rule to legacy qualification-only records: use `gh-plan.py close`
 when work is complete and existing deployment health evidence passes. A pending
@@ -500,8 +500,8 @@ required checks, or release policy.
 
 Keep planning state separate from PR execution state:
 
-- `plan:*` labels belong on durable planning issues; before setting them, read
-  github-plan's [Status Labels](../../github-plan/SKILL.md#status-labels).
+- Planning status comes from native state, blockers and structured waits; see
+  github-plan's [Derived Status](../../github-plan/SKILL.md#derived-status).
 - `preview-ready` means a preview environment is available for review. It is
   repo-local workflow evidence, not approval and not a QA result.
 - `awaiting-qa` is an optional repo-local manual QA handoff label. Use it only

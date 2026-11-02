@@ -7,7 +7,7 @@ commands:
   - name: github-plan-reconcile-status
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "reconcile-status", "<issue>", "--apply"]
-    purpose: Recomputes only status labels from native blockers and reviewed waits, including recovery after a confirmed fact write.
+    purpose: Reports status from native issue state, blockers and reviewed waits, including recovery after a confirmed fact write.
   - name: github-plan-wait
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "wait", "<issue>"]
@@ -19,7 +19,7 @@ commands:
   - name: github-plan-claim
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "--repo", "OWNER/REPO", "claim", "<issue>", "--worker", "<worker>", "--session", "<session-id>", "--branch", "work/issue-<number>", "--next-action", "<action>"]
-    purpose: Rechecks ownership, records and reads back the claim, and activates planning state before a task worktree is created.
+    purpose: Rechecks ownership, records and reads back the claim, before a task worktree is created.
   - name: github-plan-release
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "release", "<issue>", "--claim-comment", "<id>", "--session", "<native-id>", "--handoff-file", "<handoff.md>"]
@@ -39,7 +39,7 @@ commands:
   - name: github-plan-create
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "create", "<title>", "--body-file", "<file>", "--wait-clear", "--wait-evidence", "<reviewed-evidence>"]
-    purpose: Creates a durable plan issue with helper-owned labels and optional Project enrollment.
+    purpose: Creates a durable plan issue with optional routing, share and type labels and Project enrollment.
   - name: github-plan-update-section
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "update-section", "<issue>", "Current Status", "--body-file", "<file>"]
@@ -194,7 +194,7 @@ identities.
 
 `agent:claude` and `agent:codex` route an issue to that agent family. An
 unlabeled issue is available to either family; a specific model stays in issue
-text. `ensure-labels` creates both routing labels alongside the planning labels.
+text. `ensure-labels` creates both routing labels alongside share and type labels.
 Apply assignments only after the installed skills support this convention.
 
 `next --agent claude|codex` selects that family and unlabeled issues, and reports
@@ -231,9 +231,9 @@ check current code, link duplicates and record the concrete next action on the
 original issue. Keep that issue as the work record; preserve the author's request
 under [issue ownership](../github/references/issue-templates.md).
 
-Apply the configured planning label to every triaged request that remains open,
-with its next actor/action and any real person/event wait recorded through
-[Create Or Update A Plan](#create-or-update-a-plan) and [Status Labels](#status-labels).
+Record each triaged request that remains open,
+with its next actor/action and any real person/event wait through
+[Create Or Update A Plan](#create-or-update-a-plan) and [Derived Status](#derived-status).
 A reproduced defect within the agreed outcome enters staffing in the overall
 DIRECTION Order and available capacity; no second ticket or Director intake step
 is needed. Outside-user bugs use the own-projects share; other tooling still needs
@@ -319,7 +319,7 @@ active issue labels and continuing background jobs do not lift a hold.
    Current Status current through handoff or completion, then release with the
    claim's printed `release_command` (`gh-plan.py release`), never a
    hand-written release comment.
-   Claim waits come only from native blockers, labels and the structured wait
+   Claim waits come only from native blockers and the structured wait
    record. Before a legacy record's first claim, run `gh-plan.py wait <issue>`,
    read its full evidence once and record every real wait/executing-session hold or verified
    absence with `wait --waiting-for ... --ends-when ... --evidence ...` or
@@ -439,8 +439,8 @@ Search with `index` or `search` before creating or proposing an issue, helper,
 or tooling; reuse an overlapping canonical issue. Search open and closed issues
 across the repository owner's repositories, not only this one:
 `gh-plan.py search "<terms> user:<owner>" --state all`. Say what you found or
-what you searched. Read its full discussion before changing scope. Use the configured
-planning label, normally `plan`, and existing label conventions; ask before
+what you searched. Read its full discussion before changing scope. Use existing
+routing, share and type label conventions; ask before
 creating labels other than the `friction` label that
 [task scope](../references/execution-scope.md) names.
 
@@ -519,59 +519,38 @@ creating, changing, assessing, or closing a milestone, read the
 issues. With `DIRECTION.md`, only listed milestone titles are eligible; propose
 new waypoints through `direction`.
 
-## Status Labels
+## Derived Status
 
-Use status labels narrowly:
+`show`, `next` and the Supervisor board derive status from native issue state,
+open `blocked-by` edges and the authoritative structured wait record. Planning
+labels are retired. Routing (`agent:*`), share (`own-project`) and type labels
+remain decisions, rather than status copies.
 
-Status labels are views of native issue state, open `blocked-by` edges and the
-authoritative structured wait record. `show`, `next` and the Supervisor goal
-board derive those values; old prose or hand-applied blocked/waiting labels do
-not override reviewed graph evidence. Maintain waits with `wait` and
-dependencies with `link`/`unlink`, rather than copying blocker lists into
-Current Status. Missing or malformed wait evidence still requires review.
+- `active`: open, with no open native blocker and a reviewed clear wait.
+- `blocked`: an open native prerequisite. A separate person/event wait remains
+  visible alongside it.
+- `waiting`: a named person, decision or external event in the structured wait.
+- `review`: missing, malformed or incomplete wait evidence requires review.
+- `done`: the native issue is closed. Unresolved waits remain visible; closure
+  does not resolve them or prove another issue's finish line.
+
+Maintain waits with `wait` and dependencies with `link`/`unlink`. Missing or
+ambiguous evidence stays unknown; neither selection nor a label clears a wait.
 An exact question-comment URL in wait evidence can surface its recorded answer
 in `next`'s `needs_status` and launch/claim diagnostics. Read the full answer and
 reconcile it through `wait` or evidenced `--wait-resolved` before dependent work.
 Negative, changed and conditional answers remain decisions to reconcile; every
-independent hold and service readback stays in force. Selection never clears a
-wait. Missing, unread or ambiguous source evidence keeps the existing wait or
-review state.
-Landing reconciliation and issue closure refresh native parents and dependents
-without inferring their finish lines or changing human-authored bodies. Open
-`stale`, `done` and unstatused planning scopes retain their review holds, except
-`done` left on a reopened issue; a
-closed issue retains `waiting` when its structured person/event wait remains.
+independent hold and service readback stays in force.
 
-- `plan:active`: actionable now, including work whose next actor is any agent.
-  Keep actionable unstarted follow-ups, capacity/selection queues, and Supervisor
-  handoffs active. Put the agent's next step in `Next action:`; record verified
-  absence of person/event waits through `wait --clear --evidence ...`. Ordinary
-  delivery awaiting agent or automated QA, review,
-  merge-train routing, or deployment stays active too.
-- `plan:blocked`: a current dependency on an open issue linked by native
-  `blocked-by`.
-- `plan:waiting`: a durable plan parked on a named person, decision, or external
-  event. Record each actor/event and ending condition through
-  `wait --waiting-for ... --ends-when ... --evidence ...`, preserving unresolved
-  entries.
-- `plan:stale`: needs review before guiding work.
-- `plan:done`: completed or deliberately superseded.
+Ordinary delivery awaiting agent or automated QA, review, merge-train routing,
+or deployment stays active. Split independent actionable work from unresolved
+person/event waits into its own issue. A parent delegated to open sub-issues
+uses native sub-issue links without an invented `blocked-by` edge.
 
-Separate independent actionable work from an unresolved person or event wait
-into its own issue, so it can be selected and claimed without clearing that wait.
-For `plan:waiting`, the structured record names the actor/event and ending
-condition; the derived blocker list contains native open issue blockers only.
-
-During an authorized planning update, verify and link an open prerequisite with
-`gh-plan.py link <issue> blocked-by <prerequisite>`.
-A prose reference or milestone membership does not create that edge. If the
-prerequisite has closed, reconcile the remaining work under these status labels. If a
-maintainer must identify or create it, follow [Missing Cross-Repository
-Gates](#missing-cross-repository-gates). Record actual person/event waits with
-`wait`; the projection chooses the labels. To repair labels after a confirmed
-fact write, use `reconcile-status <issue> --apply` without repeating that write.
-A parent delegated only to open sub-issues stays `plan:active`; native sub-issue
-links express that delegation without a `blocked-by` edge.
+During an authorized planning update, link each verified open prerequisite
+with `gh-plan.py link <issue> blocked-by <prerequisite>`. Prose references and
+milestone membership do not create an edge. Use `reconcile-status <issue>` to
+read the derived evidence after a fact write; it does not maintain labels.
 
 When Projects are configured or requested, use them as automatic views of the
 issue graph. Do not maintain Focus, Manager, Finish Line, or roadmap dates in
@@ -619,12 +598,10 @@ Before calling the plan captured or complete, verify that stale, duplicate,
 related, and PR-linked issues were swept, the canonical graph has the needed
 parent/children and blockers, and its finish line and next action match reality.
 
-For completed durable plan issues, use `gh-plan.py close`. It owns `plan:done`
-labels, cleanup of stale `plan:active`, `plan:blocked`, `plan:waiting`, and
-`plan:stale` labels, and Project Status on close. The generic
-`github/scripts/gh-issue close` helper is for non-plan issues, or when the plan
-helper is unavailable. Closing a durable plan with the generic issue helper can
-leave planning labels or Project Status stale.
+For completed durable plan issues, use `gh-plan.py close`. It owns the
+relationship and decision preflight, native closure and configured Project
+Status. The generic `github/scripts/gh-issue close` helper is for non-plan
+issues, or when the plan helper is unavailable.
 It also skips the relationship and not-planned decision preflight. Before using
 that fallback, read and apply the
 [closure decision contract](../github/references/cli-reference.md#planning-management),
@@ -659,8 +636,8 @@ referenced by the canonical PR body and comments, their native parents, and
 every issue it unblocks,
 including cross-repository dependents, within
 [existing posting authority](#missing-cross-repository-gates). Check remaining
-waits against the landed evidence; update Current Status, labels and native
-relationships under [Status Labels](#status-labels), preserving unresolved waits,
+waits against the landed evidence; update Current Status and native
+relationships under [Derived Status](#derived-status), preserving unresolved waits,
 blockers and Director holds. Close only issues whose finish lines are satisfied;
 keep remaining work with its next actor under
 [issue closing and post-merge proof](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof).

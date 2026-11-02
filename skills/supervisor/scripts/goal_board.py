@@ -37,23 +37,12 @@ CHILD_LIMIT = github_work_graph.CHILD_LIMIT
 LABEL_LIMIT = github_work_graph.LABEL_LIMIT
 PR_LIMIT = github_work_graph.PR_LIMIT
 NEXT_ACTION_CHARS = 200
-OPEN_LABELS = tuple(github_plan_status.DEFAULT_STATUS_LABELS[key] for key in ("active", "blocked", "waiting", "stale"))
-
 def login(author: dict[str, Any] | None) -> str:
     return github_work_graph.graphql_author(author)["login"].casefold()
 
 
 def truncated(connection):
     return connection["totalCount"] > len(connection["nodes"])
-
-
-def status_label(labels, unread):
-    names = [node["name"] for node in labels["nodes"]]
-    found = next((name for name in names if name.startswith("plan:")), None)
-    if found is None and truncated(labels):
-        unread.append("status label")
-        return UNKNOWN
-    return found
 
 
 def derived_status(node: dict[str, Any], trusted: set[str], unread: list[str]) -> dict[str, Any]:
@@ -79,17 +68,10 @@ def derived_status(node: dict[str, Any], trusted: set[str], unread: list[str]) -
     except (ValueError, KeyError, TypeError, AttributeError) as error:
         unread.append(f"structured wait or native blockers ({type(error).__name__}: {error})")
         return unknown
-    if truncated(node["labels"]):
-        # Labels carry deliberate stale/done scope holds. An omitted label can
-        # prevent activation even when blockers and waits were read completely.
-        unread.append("status labels")
-        return {**derived, "status": UNKNOWN}
     if derived["wait_review_required"] and node["state"] != "CLOSED":
         unread.append("structured wait")
         return {**derived, "status": UNKNOWN}
-    if derived["scope_hold"]:
-        return {**derived, "status": github_plan_status.DEFAULT_STATUS_LABELS.get(derived["scope_status"], "scope review")}
-    return {**derived, "status": github_plan_status.DEFAULT_STATUS_LABELS[derived["status"]]}
+    return derived
 
 
 def latest_decision(comments, trusted, unread):
@@ -135,12 +117,8 @@ def next_action(node, trusted, unread):
     return action if len(action) <= NEXT_ACTION_CHARS else action[:NEXT_ACTION_CHARS - 1].rstrip() + "…"
 
 
-def child_state(child):
-    """A closed child is closed whatever its label says; an open label is noted as stale."""
-    if child["state"] != "closed":
-        return child["status"] or child["state"]
-    label = child["recorded_status"]
-    return f"closed (label {label} is stale)" if label in OPEN_LABELS else "closed"
+def child_state(child: dict[str, Any]) -> str:
+    return "closed" if child["state"] == "closed" else child["status"] or child["state"]
 
 
 def handoff(pr, trusted, unread):
@@ -214,7 +192,6 @@ def child_row(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | 
     row = {**issue_row(node, trusted, wait_trusted, unread),
         "repository": read_part("repository", unread, lambda: node["repository"]["nameWithOwner"]),
         "state": read_part("state", unread, lambda: node["state"].lower()),
-        "recorded_status": read_part("status label", unread, lambda: status_label(node["labels"], unread)),
         "parent_url": node.get("parent_url"),
         "sub_issues": read_part("sub-issue summary", unread, lambda: node["subIssuesSummary"], None),
         "open_prs": read_part("closing PRs", unread, lambda: open_prs(node, trusted, unread), []),
@@ -255,7 +232,7 @@ def activity_group(row: dict[str, Any]) -> str:
         return "running"
     if row["waits"] or row["blocked_by"] or row["open_questions"] or row["open_prs"]:
         return "waiting"
-    return "available" if row["status"] == github_plan_status.DEFAULT_STATUS_LABELS["active"] else "held"
+    return "available" if row["status"] == "active" else "held"
 
 
 def child_rows(node: dict[str, Any], trusted: set[str], wait_trusted: set[str] | None, unread: list[str]) -> list[dict[str, Any]]:
@@ -489,7 +466,7 @@ def markdown(board, *, links_only=False):
         decision = f"; decision {track['latest_decision']}" if track["latest_decision"] else ""
         questions = "".join(f"; question needs review {question['url']}" for question in track["open_questions"])
         review = track["closure_review"]
-        hold = f"; Track hold: {track['hold_status']}" if track["hold_status"] != github_plan_status.DEFAULT_STATUS_LABELS["active"] else ""
+        hold = f"; Track hold: {track['hold_status']}" if track["hold_status"] != "active" else ""
         lines.append(f"\n- {track['url']}{name}: {track['status'] or 'no status label'}"
                      f"{hold}{blocking_text(track, links_only)}{questions}{decision}{unread_text(track)}")
         if not links_only:

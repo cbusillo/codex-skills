@@ -1381,7 +1381,7 @@ def waiting_issue(waiting_for: str, number: int = 141) -> dict[str, object]:
         "title": "Ready for testing",
         "html_url": f"https://github.com/example/repo/issues/{number}",
         "updated_at": "2026-07-25T00:00:00Z",
-        "labels": [{"name": "plan"}, {"name": "plan:waiting"}],
+        "labels": [],
         "body": f"## Goal\n\nTest it.\n\n## Current Status\n\nState: Waiting.\nNext action: Pat approves.\n"
                 f"Waiting for: {waiting_for}\nLast verified: 2026-07-25.\n",
     }
@@ -1440,7 +1440,7 @@ def test_unasked_wait_on_director_is_reported(monkeypatch, tmp_path: Path) -> No
         "created_at": "2026-07-24T00:00:00Z", "html_url": "https://github.com/example/repo/issues/2887#issuecomment-99",
     }
     fake = FakeGitHub({
-        "repos/example/repo/issues": lambda endpoint: [asked, unasked] if "plan%3Awaiting" in endpoint else [],
+        "repos/example/repo/issues": lambda endpoint: [asked, unasked] if "state=open" in endpoint else [],
         "repos/example/repo/issues/2887/comments": [question],
     })
     monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
@@ -1456,7 +1456,7 @@ def test_unasked_wait_on_director_is_reported(monkeypatch, tmp_path: Path) -> No
 
 def test_director_hold_is_listed_without_raising_attention(monkeypatch, tmp_path: Path) -> None:
     held = waiting_issue("Pat to resume the parked workstream.", number=31)
-    fake = FakeGitHub({"repos/example/repo/issues": lambda endpoint: [held] if "plan%3Awaiting" in endpoint else []})
+    fake = FakeGitHub({"repos/example/repo/issues": lambda endpoint: [held] if "state=open" in endpoint else []})
     monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
 
     payload = github_unanswered_comments.collect_payload(portfolio_settings(people_index=people_index(tmp_path)))
@@ -1488,7 +1488,7 @@ def test_scanning_a_client_repository_uses_no_director_names(monkeypatch, tmp_pa
     # Every scanned repository owner counts as the Director, so the Client's
     # repository makes two people match; neither one's names may be used.
     unasked = waiting_issue("Casey's review of the release.", number=7)
-    fake = FakeGitHub({"repos/example/repo/issues": lambda endpoint: [unasked] if "plan%3Awaiting" in endpoint else []})
+    fake = FakeGitHub({"repos/example/repo/issues": lambda endpoint: [unasked] if "state=open" in endpoint else []})
     monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
     settings = github_unanswered_comments.resolve_settings(
         args(repo=["example/repo", "casey-client/project"], self_login=["cbusillo"], people_index=people_index(tmp_path)),
@@ -1921,7 +1921,7 @@ def wait_record_comment(number: int, comment_id: int, author: str, waiting_for: 
 
 
 def labeled_waiting(endpoint: str) -> list[dict[str, object]]:
-    return [waiting_issue("Pat's review of the release.")] if "plan%3Awaiting" in endpoint else []
+    return [waiting_issue("Pat's review of the release.")] if "state=open" in endpoint else []
 
 
 def structured_wait_rows(monkeypatch, tmp_path: Path, routes: dict[str, object]) -> dict[str, object]:
@@ -2011,7 +2011,8 @@ def test_unreadable_trusted_record_keeps_a_comment_hold_as_unresolved(monkeypatc
     comments = {"malformed_after_hold": [hold, malformed], "malformed_before_hold": [malformed, hold],
                 "malformed_contributor_envelope": [hold]}[case]
     payload = structured_wait_rows(monkeypatch, tmp_path, {
-        "repos/example/repo/issues": lambda endpoint: [issue] if "plan%3Awaiting" in endpoint else [],
+        "repos/example/repo/issues": lambda endpoint: [issue] if "state=open" in endpoint else [],
+        "repos/example/repo/issues/comments": comments,
         "repos/example/repo/issues/141/comments": comments,
     })
 
@@ -2059,17 +2060,24 @@ def test_issue_with_no_wait_record_or_prose_is_not_a_wait(monkeypatch, tmp_path:
     assert payload["unasked_director_waits"] == []
 
 
-def test_labeled_wait_reads_a_new_comment_hold_before_search_indexes_it(monkeypatch, tmp_path: Path) -> None:
-    # Search has not indexed the new comment yet, and the prose names someone else.
+def test_unlabeled_wait_reads_a_new_comment_hold_before_search_indexes_it(monkeypatch, tmp_path: Path) -> None:
     issue = waiting_issue("Client's testing of the build.")
-    payload = structured_wait_rows(monkeypatch, tmp_path, {
-        "repos/example/repo/issues": lambda endpoint: [issue] if "plan%3Awaiting" in endpoint else [],
-        "repos/example/repo/issues/141/comments": [wait_record_comment(141, 5, "example", "Pat's approval of the release.")],
+    quiet = [{**waiting_issue("Nothing.", number=number), "body": "Plain request."} for number in range(1, 101)]
+    hold = wait_record_comment(141, 5, "example", "Pat's approval of the release.")
+    hold["created_at"] = "2026-07-27T00:00:00Z"
+    fake = FakeGitHub({
+        "repos/example/repo/issues": lambda endpoint: [issue, *quiet] if "state=open" in endpoint else [],
+        "repos/example/repo/issues/comments": [hold],
+        "repos/example/repo/issues/141/comments": [hold],
     })
+    monkeypatch.setitem(vars(github_unanswered_comments), "run_json", fake)
+    payload = github_unanswered_comments.collect_payload(portfolio_settings(people_index=people_index(tmp_path)))
 
     assert payload["status"] == "attention"
     assert [(row["number"], row["wait_kind"], row["wait_source"])
             for row in payload["unasked_director_waits"]] == [(141, "decision", "structured_wait")]
+    for number in range(1, 101):
+        assert not any(f"/issues/{number}/comments?" in endpoint for endpoint in fake.calls)
 
 
 def outside_result(number: int) -> dict[str, object]:
