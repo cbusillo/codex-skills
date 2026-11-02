@@ -54,6 +54,9 @@ decisions, statuses, board contents or narrative; open linked records for action
    Open full source comments before acting; register/present questions through
    the existing queue rules. Optional routing writes the existing watch receipts
    and miss reports; the digest never closes sessions.
+   For a question addressed to this Director on another account's issue, follow
+   [same-issue Supervisor replies](../../references/talking-with-the-director.md#same-issue-supervisor-replies)
+   for the reply's scope, untrusted-input handling and direction/identity decisions.
 3. For one normal finished session, run:
 
    ```sh

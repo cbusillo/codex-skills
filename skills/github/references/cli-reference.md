@@ -2992,7 +2992,11 @@ account that registered the App (`owner` in `GET /app`) owns the repository; ask
 Director to install the App there. In any other account's repository, even one
 whose account has the App installed on other repositories, the write runs as
 the declared personal `gh` login only when the caller sets `GH_WITH_ENV_TOKEN_OWN_USER=1`
-for that command, after its Director approved writing there. Without it the
+for that command, after its Director approved writing there. The
+[same-issue Supervisor reply flow](../../references/talking-with-the-director.md#same-issue-supervisor-replies)
+separates a standing identity choice from approval of each reply; it never
+supplies repository access or overrides the replying Director's direction.
+Without it the
 write is refused with a message naming the opt-in, and a value in `local.env`
 does not count. With it, stderr carries
 `notice: acting as your own GitHub user on OWNER/REPO`; Python
