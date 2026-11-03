@@ -19,6 +19,8 @@ from zoneinfo import ZoneInfo
 
 # Reuse the catalog's transcript decoding and message extraction.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "rollout-friction" / "scripts"))
+# PyCharm cannot follow the sys.path entry above to this module.
+# noinspection PyUnresolvedReferences
 from analyze_rollouts import iter_records, read_transcript, transcript_suffix  # noqa: E402
 from extract_rollout_memory import events_from_record  # noqa: E402
 
