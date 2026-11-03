@@ -3024,8 +3024,8 @@ def public_read_command_is_scoped(args: list[str], repository: str) -> bool:
     searches cannot establish that scope; use a scoped REST search instead.
     """
     if args[:2] in [["issue", "list"], ["issue", "view"], ["pr", "list"],
-                    ["pr", "view"], ["pr", "checks"], ["run", "list"], ["run", "view"]]:
-        if args[:2] in [["issue", "view"], ["pr", "view"], ["pr", "checks"], ["run", "view"]]:
+                    ["pr", "view"], ["pr", "checks"], ["run", "list"], ["run", "view"], ["run", "download"]]:
+        if args[:2] in [["issue", "view"], ["pr", "view"], ["pr", "checks"], ["run", "view"], ["run", "download"]]:
             # gh accepts URL spellings the shell's repository selector does
             # not recognize. Keep this new personal-read route on explicit
             # --repo plus number/branch operands instead of resolving again.

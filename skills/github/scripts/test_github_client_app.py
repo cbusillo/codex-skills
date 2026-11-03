@@ -34,7 +34,7 @@ from test_gh_plan_sections import PLAN
 
 class PublicReadScopeTests(unittest.TestCase):
     def test_cli_view_uses_number_or_branch_instead_of_url_operands(self) -> None:
-        for command in (("issue", "view"), ("pr", "view"), ("pr", "checks"), ("run", "view")):
+        for command in (("issue", "view"), ("pr", "view"), ("pr", "checks"), ("run", "view"), ("run", "download")):
             for url in ("http://github.com/host/private/issues/1",
                         "https://www.github.com/host/private/issues/1",
                         "https://GitHub.com/host/private/issues/1",
