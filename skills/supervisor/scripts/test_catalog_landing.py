@@ -18,12 +18,13 @@ from typing import Any
 from unittest.mock import patch
 
 import catalog_landing as landing
+import check_operation
 import services
 import session_closeout
 from check_operation import GateFailed, Operation
 from session_record import TranscriptChanged
 
-from skills.github.scripts import github_api
+from skills.github.scripts import github_api, github_comment
 
 operation_run = Operation.run
 reconcile_runtime = landing.reconcile_runtime
@@ -51,8 +52,6 @@ class CatalogLandingTests(unittest.TestCase):
               patch.object(session_closeout, "GitHubReader", return_value=reader),
               patch.object(session_closeout.release, "handoff", return_value=comment)):
             self.assertEqual(landing.verify_smoke(self.config, operation, "claude", "anthropic", self.root), comment["html_url"])
-            self.assertEqual(reader.paged_json.call_args.kwargs["params"],
-                             {"since": landing.datetime.fromtimestamp(operation.state["steps"]["claude_request_time"]["value"], landing.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
             self.runner.assert_called_once()
             command = self.runner.call_args.args[1]
             self.assertEqual(command[command.index("--session-id") + 1], session)
@@ -282,7 +281,7 @@ class CatalogLandingTests(unittest.TestCase):
                 stopped.set()
             return SimpleNamespace(pid=123, returncode=code, poll=lambda: code)
 
-        with (patch.object(Operation, "run", operation_run), patch.object(subprocess, "run", side_effect=runtime),
+        with (patch.object(Operation, "run", operation_run), patch.object(check_operation, "run_command", side_effect=runtime),
               patch.object(landing, "pending_landings", return_value=[]) as discover,
               patch.object(landing, "verify") as verify, patch.object(landing, "post_result") as post,
               patch.object(services.threading, "Event", return_value=stopped),
@@ -304,7 +303,7 @@ class CatalogLandingTests(unittest.TestCase):
                                             (False, True, {**payload, "status": "failed"}),
                                             (False, True, {**payload, "runtime_mutated": None})):
                 with self.subTest(once=once, retry_read=retry_read, result=result), patch.object(
-                        subprocess, "run", return_value=subprocess.CompletedProcess([], 1, json.dumps(result), "")):
+                        check_operation, "run_command", return_value=subprocess.CompletedProcess([], 1, json.dumps(result), "")):
                     with self.assertRaises(GateFailed) as failure:
                         Operation(self.root / str(once) / str(retry_read) / result["status"], ["test"]).run(
                             "runtime", ["fixture"], once=once, retry_read=retry_read)
@@ -314,7 +313,7 @@ class CatalogLandingTests(unittest.TestCase):
         self.config["landing_sha"] = "a" * 40
         failed = {"ok": False, "status": "retryable", "reason_code": "fetch_failed", "runtime_mutated": False}
         with (patch.object(Operation, "run", operation_run), patch.object(landing, "landing_pull"),
-              patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 1, json.dumps(failed), ""))):
+              patch.object(check_operation, "run_command", return_value=subprocess.CompletedProcess([], 1, json.dumps(failed), ""))):
             with self.assertRaises(landing.RetryableGate):
                 reconcile_runtime(self.config, Operation(self.root, ["landing"]))
 
@@ -378,10 +377,22 @@ class CatalogLandingTests(unittest.TestCase):
             self.assertNotEqual(verify.call_args.args[1].evidence, old.evidence)
             self.assertEqual(closeout.call_count, 2)
 
+    def test_timeout_stops_writer_descendant_before_negative_readback(self) -> None:
+        late_write = self.root / "late-post"
+        writer = f"import time; from pathlib import Path; time.sleep(0.5); Path({str(late_write)!r}).touch()"
+        launcher = ("import subprocess, sys, time; "
+                    f"subprocess.Popen([sys.executable, '-c', {writer!r}]); "
+                    "print('started', flush=True); time.sleep(10)")
+        with self.assertRaises(subprocess.TimeoutExpired) as failure:
+            check_operation.run_command([sys.executable, "-c", launcher], timeout=0.2)
+        self.assertIn("started", failure.exception.stdout)
+        threading.Event().wait(0.6)
+        self.assertFalse(late_write.exists())
+
     def test_timeout_preserves_partial_output_and_mutation_fence(self) -> None:
         operation = Operation(self.root, ["timeout"])
         with (patch.object(Operation, "run", operation_run),
-              patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("helper", 1, output=b"partial output", stderr=b"failure detail"))):
+              patch.object(check_operation, "run_command", side_effect=subprocess.TimeoutExpired("helper", 1, output=b"partial output", stderr=b"failure detail"))):
             with self.assertRaises(GateFailed):
                 operation.run("write", ["helper"], once=True)
         saved = json.loads((self.root / "write.json").read_text())
@@ -406,28 +417,31 @@ class CatalogLandingTests(unittest.TestCase):
         result = {"ok": True, "landings": ["landing"], "runtime_sha": "runtime"}
         with (patch.object(Operation, "run", operation_run),
               patch.object(landing.GitHubReader, "paged_json", return_value=[]) as read,
-              patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("comment", 360))):
+              patch.object(check_operation, "run_command", side_effect=subprocess.TimeoutExpired("comment", 360))):
             with self.assertRaises(GateFailed):
                 landing.post_result(self.config, operation, result)
         report = (self.root / "result.md").read_text()
-        self.assertNotIn("github-skill-operation:", report)
+        self.assertFalse(github_comment.OPERATION_MARKER_LINE_RE.search(report))
         phase = "report_" + landing.fingerprint(result)
         self.assertEqual(operation.state["steps"][phase]["delivery"], "not_posted")
         self.assertEqual(read.call_count, 1)
-        self.assertEqual(read.call_args.kwargs["params"], {"since": operation.state["steps"][phase]["started_at"]})
-        posted = {"user": {"login": "agent[bot]"}, "body": github_api.body_with_operation_marker(report, "a" * 32), "html_url": "original-comment"}
+        self.assertLess(landing.claim_release.stamp(read.call_args.kwargs["params"]["since"]),
+                        landing.claim_release.stamp(operation.state["steps"][phase]["started_at"]))
+        posted = {"user": {"login": "agent[bot]"}, "body": github_api.body_with_operation_marker(report, "a" * 32),
+                  "html_url": "original-comment", "created_at": operation.state["steps"][phase]["started_at"]}
+        older = {**posted, "html_url": "older-comment", "created_at": "2000-01-01T00:00:00Z"}
         with (patch.object(Operation, "run", operation_run), patch.object(subprocess, "run") as write,
               patch.object(landing.github_identity, "automation_login", return_value="agent[bot]"),
-              patch.object(landing.GitHubReader, "paged_json", side_effect=[[], [posted, posted], [posted]])):
+              patch.object(landing.GitHubReader, "paged_json", side_effect=[[], [posted, posted], [older, posted]])):
             for _ in range(2):
                 with self.assertRaises(GateFailed):
                     landing.post_result(self.config, operation, result)
             self.assertEqual(landing.post_result(self.config, operation, result), posted["html_url"])
             write.assert_not_called()
 
-    def test_supersede_uses_confirmed_failure_without_replaying_or_rewriting_duplicate_report(self) -> None:
-        operation = Operation(self.root / "B", [self.config["repo"], "B"])
-        reported = {"ok": False, "gate": "runtime", "landings": ["B"], "runtime_sha": "old"}
+    def test_supersede_names_unknown_failed_attempt_without_replaying_or_rewriting_it(self) -> None:
+        operation = Operation(self.root / "attempt-original", [self.config["repo"], "B"])
+        reported = {"ok": False, "gate": "smoke_response", "landings": ["B"], "runtime_sha": "old"}
         pending = {**reported, "runtime_sha": "new"}
         pending_phase = "report_" + landing.fingerprint(pending)
         operation.state["steps"] = {
@@ -436,7 +450,7 @@ class CatalogLandingTests(unittest.TestCase):
         landing.save_state(operation.path, operation.state)
         landing.save_state(operation.evidence / "result.json", pending)
         (operation.evidence / "result.md").write_text("Retained unconfirmed report body\n")
-        landing.save_state(self.root / "cursor.json", {"repo": self.config["repo"], "last_sha": "A", "pending": ["B"], "attempt": "B"})
+        landing.save_state(self.root / "cursor.json", {"repo": self.config["repo"], "last_sha": "A", "pending": ["B"], "attempt": operation.evidence.name})
         retained = {path: path.read_bytes() for path in operation.evidence.iterdir()}
         self.runner.side_effect = lambda gate, *_, **__: (
             {"url": "new-report"} if gate.startswith("report_") else {"status": "already_current", "after_sha": "tip"})
@@ -558,7 +572,7 @@ class CatalogLandingTests(unittest.TestCase):
               patch.object(landing, "pending_landings", return_value=["first"]),
               patch.object(landing, "git", return_value="script.py"),
               patch.object(landing, "verify", side_effect=[{"ok": False}, {"ok": True}]) as verify,
-              patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("comment", 360)) as write,
+              patch.object(check_operation, "run_command", side_effect=subprocess.TimeoutExpired("comment", 360)) as write,
               patch.object(landing.GitHubReader, "paged_json", return_value=[])):
             with self.assertRaises(GateFailed):
                 landing.poll(self.config, self.root)

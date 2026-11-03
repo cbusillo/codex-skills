@@ -11,7 +11,7 @@ import os
 import subprocess
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from subprocess import SubprocessError
 
@@ -33,6 +33,7 @@ from check_operation import (
     release,
 )
 from codex_session_proxy import read_launch_receipt
+from skills.github.scripts.github_comment import RECONCILIATION_CLOCK_SKEW_SECONDS, canonical_comment_body
 from session_closeout import closeout_mutations_settled, explicit_session, require, validate_retired_closeout
 from session_record import (
     TranscriptChanged,
@@ -279,7 +280,7 @@ def verify_smoke(config: dict, operation: Operation, harness: str, provider: str
     observe(entry, landing, after_size=operation.state["steps"][harness + "_acknowledgement"]["size"], final=True)
     operation.gate = harness + "_handoff"
     reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
-    since = datetime.fromtimestamp(operation.state["steps"][harness + "_request_time"]["value"], timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    since = comment_read_since(datetime.fromtimestamp(operation.state["steps"][harness + "_request_time"]["value"], timezone.utc))
     comments = reader.paged_json(f"/repos/{repo}/issues/{config['issue']}/comments", step_prefix=harness + "_handoff",
                                  params={"since": since}, required_query_params={"since": since})
     matches = [
@@ -361,9 +362,11 @@ def landing_pull(reader: GitHubReader, repo: str, landing: str, *, expected_pr: 
     raise GateFailed("discovery", f"default-branch commit {landing} has no exact merged PR{configured} after discovery deadline")
 
 
-def post_result(config: dict, operation: Operation, result: dict) -> str:
-    from skills.github.scripts import github_comment
+def comment_read_since(started: datetime) -> str:
+    return (started - timedelta(seconds=RECONCILIATION_CLOCK_SKEW_SECONDS + 1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+
+def post_result(config: dict, operation: Operation, result: dict) -> str:
     body = operation.evidence / "result.md"
     outcome = "PASSED" if result["ok"] else "FAILED"
     body.write_text(
@@ -393,13 +396,14 @@ def post_result(config: dict, operation: Operation, result: dict) -> str:
         saved = operation.state["steps"][phase]
         require(saved.get("process_exited") is True, "report", "posting process exit is unconfirmed; delivery remains unknown")
         reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
-        since = saved["started_at"]
+        started = claim_release.stamp(saved["started_at"])
+        since = comment_read_since(started)
         comments = reader.paged_json(f"/repos/{config['repo']}/issues/{config['issue']}/comments", step_prefix="report_reconciliation",
                                      params={"since": since}, required_query_params={"since": since})
-        canonical = lambda text: github_comment.OPERATION_MARKER_LINE_RE.sub("", text).rstrip()
         matches = [row for row in comments
                    if (row.get("user") or {}).get("login") == github_identity.automation_login()
-                   and canonical(row["body"]) == canonical(body.read_text())]
+                   and canonical_comment_body(row["body"]) == canonical_comment_body(body.read_text())
+                   and claim_release.stamp(row["created_at"]) >= started - timedelta(seconds=RECONCILIATION_CLOCK_SKEW_SECONDS)]
         if not matches:
             saved["delivery"] = "not_posted"
             save_state(operation.path, operation.state)

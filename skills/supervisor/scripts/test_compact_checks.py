@@ -79,7 +79,7 @@ class OperationTests(unittest.TestCase):
 
     def test_uncertain_mutation_is_not_replayed_after_restart(self) -> None:
         operation = check_operation.Operation(self.root, ["session"])
-        with patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("native", 1)) as run:
+        with patch.object(check_operation, "run_command", side_effect=subprocess.TimeoutExpired("native", 1)) as run:
             with self.assertRaises(check_operation.GateFailed):
                 operation.run("quit", ["native"], once=True)
             operation = check_operation.Operation(self.root, ["session"])
@@ -154,7 +154,7 @@ class OperationTests(unittest.TestCase):
                 close_evidence = root / (entry["harness"] + "-closeout")
                 close_identity = [str(ledger.resolve()), entry["session_id"]]
                 operation = check_operation.Operation(close_evidence, close_identity)
-                with (patch.object(subprocess, "run", side_effect=command),
+                with (patch.object(check_operation, "run_command", side_effect=command),
                       patch.object(session_closeout, "native_idle", side_effect=idle),
                       patch.object(session_closeout.release, "handoff", return_value={"body": "Session: native"}),
                       patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]"),
@@ -282,7 +282,7 @@ class OperationTests(unittest.TestCase):
                     preserved = {path: path.read_bytes() for path in parent.evidence.rglob("*") if path.is_file()}
                     args = argparse.Namespace(ledger=ledger, session_id="native", supervisor_session="controller", owner="owner")
                     config = {"ledger": str(ledger), "runtime_worktree": str(root), "repo": "owner/catalog", "supervisor_session": "controller"}
-                    with (patch.object(subprocess, "run", side_effect=AssertionError("external commands forbidden")),
+                    with (patch.object(check_operation, "run_command", side_effect=AssertionError("external commands forbidden")),
                           patch.object(session_closeout.session_liveness, "inventory", return_value=[
                               (8, "ttys003", harness), (9, "ttys004", harness + (" resume " if harness == "codex" else " --resume ")
                                                        + ("native" if failure == "source_resume" else "other"))]),
@@ -327,7 +327,7 @@ class OperationTests(unittest.TestCase):
         operation = check_operation.Operation(self.root, ["target"])
         refused = subprocess.CompletedProcess([], 1, json.dumps({"ok": False, "mutation_started": False}), "")
         success = subprocess.CompletedProcess([], 0, json.dumps({"close_requested": True}), "")
-        with patch.object(subprocess, "run", side_effect=[refused, success]):
+        with patch.object(check_operation, "run_command", side_effect=[refused, success]):
             with self.assertRaises(check_operation.GateFailed):
                 operation.run("close", ["native"], once=True)
             operation = check_operation.Operation(self.root, ["target"])
@@ -367,7 +367,7 @@ class OperationTests(unittest.TestCase):
             launches += 1
             return subprocess.CompletedProcess(argv, 0, json.dumps({"session_id": "terminal", "native_session_id": "native"}), "")
 
-        with (patch.object(subprocess, "run", side_effect=command),
+        with (patch.object(check_operation, "run_command", side_effect=command),
               patch.object(catalog_landing, "observe", side_effect=check_operation.GateFailed("response", "fixture"))):
             for _ in range(2):
                 with self.assertRaises(check_operation.GateFailed) as failure:
@@ -423,7 +423,7 @@ class OperationTests(unittest.TestCase):
         with (patch.object(catalog_landing, "observe"),
               patch_attr(catalog_landing, "GitHubReader", return_value=SimpleNamespace(paged_json=lambda *_, **__: comments)),
               patch.object(catalog_landing.github_identity, "automation_login", return_value="agent[bot]"),
-              patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, '{"ok":true}', "")) as close):
+              patch.object(check_operation, "run_command", return_value=subprocess.CompletedProcess([], 0, '{"ok":true}', "")) as close):
             self.assertEqual(catalog_landing.verify_smoke(config, operation, "codex", "openai", self.root), "comment-2")
             self.assertEqual(close.call_count, 1)
             operation.state["steps"].pop("codex_closeout")

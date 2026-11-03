@@ -3,6 +3,8 @@
 # dependencies = []
 # ///
 import json
+import os
+import signal
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,6 +57,20 @@ class RetryableGate(GateFailed):
     pass
 
 
+def run_command(command: list[str], *, timeout: int) -> subprocess.CompletedProcess:
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                process.wait()
+            stdout, stderr = process.communicate()
+            raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr) from error
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
 class Operation:
     def __init__(self, evidence: Path, identity: list[str]) -> None:
         self.evidence = evidence.resolve()
@@ -77,13 +93,13 @@ class Operation:
             self.state["steps"][gate] = {"complete": False, "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
             save_state(self.path, self.state)
         try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+            result = run_command(command, timeout=timeout)
         except (OSError, subprocess.SubprocessError) as error:
             output = {}
             if isinstance(error, subprocess.TimeoutExpired):
                 output = {name: value.decode(errors="replace") if isinstance(value, bytes) else value or ""
                           for name, value in (("stdout", error.stdout), ("stderr", error.stderr))}
-            if once and isinstance(error, (OSError, subprocess.TimeoutExpired)):
+            if once and isinstance(error, subprocess.TimeoutExpired):
                 self.state["steps"][gate]["process_exited"] = True
                 save_state(self.path, self.state)
             save_state(self.evidence / (gate + ".json"), {"error": str(error), "mutation_uncertain": once, **output})
