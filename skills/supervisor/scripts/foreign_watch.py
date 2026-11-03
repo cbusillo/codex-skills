@@ -301,7 +301,7 @@ def versioned_messages(reader: GitHubReader, sources: list[dict]) -> list[dict]:
     for offset in range(0, len(identifiers), 100):
         batch = identifiers[offset:offset + 100]
         result = reader.graphql_json(
-            "query($ids: [ID!]!) { nodes(ids: $ids) { ... on Comment { lastEditedAt editor { login } } } }",
+            "query($ids: [ID!]!) { nodes(ids: $ids) { ... on Comment { lastEditedAt editor { login __typename } } } }",
             {"ids": batch}, step="foreign_message_versions",
         )
         if not result.ok:
@@ -405,7 +405,7 @@ def scan_mentions(args, repos, watermarks, seen, own_logins, started, reader):
     for notice in fresh:
         notice["author"] = None
         try:
-            notice["author"] = mention_activity_author(reader, notice, seen, watermarks[MENTIONS], own_logins)
+            notice["author"] = mention_activity_author(reader, notice, seen, since, own_logins)
         except (*READ_ERRORS, director_mentions.MentionSearchError) as failure:
             gaps.append({"lane": MENTIONS, "gap": str(failure)})
     return fresh, gaps, errors, watermarks if gap or error else {**watermarks, MENTIONS: started}, kept
@@ -417,17 +417,25 @@ def mention_activity_author(reader: GitHubReader, notice: dict, seen: dict[str, 
     thread = reader.get_json(path, step="foreign_mention_thread")
     if "pull_request" in thread or not thread.get("node_id"):
         return None
-    versions = versioned_messages(reader, [thread])
-    if not versions:
-        return None
-    body = versions[0]
-    opening = {**thread, "updated_at": thread["created_at"]}
-    query = {"since": seen.get(notice["url"], since)}
+    cutoff_text = seen.get(notice["url"], since)
+    query = {"since": (timestamp(cutoff_text) - timedelta(seconds=1)).isoformat()}
     comments = reader.paged_json(f"{path}/comments", step_prefix="foreign_mention_activity",
                                  params=query, required_query_params=query)
-    sources = [opening, *comments]
-    if timestamp(body["updated_at"]) > timestamp(thread["created_at"]):
-        sources.append({**body, "user": body.get("editor")})
+    originals = [thread, *comments]
+    if any(not source.get("node_id") for source in originals):
+        return None
+    versions = versioned_messages(reader, originals)
+    if len(versions) != len(originals):
+        return None
+    sources = []
+    for source in versions:
+        sources.append({**source, "updated_at": source["created_at"]})
+        if timestamp(source["updated_at"]) > timestamp(source["created_at"]):
+            editor = source.get("editor") or {}
+            login = editor.get("login") or ""
+            if login and editor.get("__typename") == "Bot":
+                login = f"{login.removesuffix('[bot]')}[bot]"
+            sources.append({**source, "user": {"login": login}})
     cutoff = timestamp(seen.get(notice["url"], since))
     recent = [source for source in sources if timestamp(source["updated_at"]) > cutoff
               or notice["url"] not in seen and timestamp(source["updated_at"]) == cutoff]

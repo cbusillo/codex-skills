@@ -129,9 +129,11 @@ class WatchTests(unittest.TestCase):
                 self.assertEqual(json.loads(output.getvalue().splitlines()[-1])["errors"], errors)
 
     def test_own_mentions_stay_logged_without_waking_on_thread_author_confusion(self) -> None:
-        own_reply = comment("AGENT[bot]", "@director please decide", STARTED)
-        foreign_reply = comment("client", "@director please decide", STARTED)
-        previous_reply = comment("client", "@director please decide", SINCE)
+        own_reply = {**comment("AGENT[bot]", "@director please decide", STARTED), "node_id": "own", "created_at": STARTED}
+        foreign_reply = {**comment("client", "@director please decide", STARTED), "node_id": "foreign", "created_at": STARTED}
+        previous_reply = {**foreign_reply, "node_id": "previous", "created_at": SINCE, "updated_at": SINCE}
+        lagged = "2026-10-09T11:59:00Z"
+        edited_reply = {**own_reply, "created_at": SINCE, "edited_at": STARTED, "editor": "client"}
         for opener, created, comments, editor, prior, pull, wakes in (
                 ("agent[bot]", SINCE, [own_reply], None, None, False, False),
                 ("client", "2026-10-01T00:00:00Z", [own_reply], None, SINCE, False, False),
@@ -142,7 +144,10 @@ class WatchTests(unittest.TestCase):
                 ("agent[bot]", SINCE, [own_reply], "client", SINCE, False, True),
                 ("agent[bot]", SINCE, [], "agent[bot]", SINCE, False, False),
                 ("agent[bot]", SINCE, [own_reply], None, None, True, True),
-                ("agent[bot]", SINCE, [], None, None, False, True)):
+                ("agent[bot]", SINCE, [], None, None, False, True),
+                ("client", lagged, [own_reply], None, None, False, True),
+                ("agent[bot]", lagged, [{**previous_reply, "created_at": lagged}, own_reply], None, None, False, True),
+                ("agent[bot]", SINCE, [edited_reply], None, SINCE, False, True)):
             with self.subTest(opener=opener, editor=editor, prior=prior, pull=pull, wakes=wakes), tempfile.TemporaryDirectory() as directory:
                 clock = WatchClock()
                 reader = Mock()
@@ -152,8 +157,16 @@ class WatchTests(unittest.TestCase):
                 reader.request.return_value = SimpleNamespace(body={"items": [thread], "total_count": 1})
                 reader.get_json.return_value = thread
                 reader.paged_json.return_value = comments
-                reader.graphql_json.return_value = ApiResult(ok=True, status=200, body={"data": {"nodes": [
-                    {"lastEditedAt": STARTED if editor else None, "editor": {"login": editor} if editor else None}]}})
+                def versions(_query: str, variables: dict, **_: Any) -> ApiResult:
+                    nodes = []
+                    for identifier in variables["ids"]:
+                        source = next(source for source in [thread, *comments] if source["node_id"] == identifier)
+                        actor = editor if identifier == "thread" else source.get("editor")
+                        nodes.append({"lastEditedAt": STARTED if actor else None, "editor": {
+                            "login": actor.removesuffix("[bot]"), "__typename": "Bot" if actor.endswith("[bot]") else "User"
+                        } if actor else None})
+                    return ApiResult(ok=True, status=200, body={"data": {"nodes": nodes}})
+                reader.graphql_json.side_effect = versions
                 args = argparse.Namespace(owner="director", repo=["director/other"], state=Path(directory) / "state.json",
                                           since=None, own_login=["agent[bot]"], launchplane_login=[],
                                           interval=foreign_watch.NOTICE_SETTLE_SECONDS, once=False, persistent=True)

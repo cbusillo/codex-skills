@@ -102,9 +102,11 @@ decisions, statuses, board contents or narrative; open linked records for action
    available capacity, handle stale waits and deferred-question conditions,
    and read the stranded-work digest's oldest Supervisor actions and unasked
    Director waits. Nudge stalls with exact evidence and process finished
-   notices immediately. Polling watchers keep verified own automation question and
-   mention notices in the log without exiting for them; other notices settle briefly into one
-   exit per burst. `--once` still performs one immediate poll.
+   notices immediately. Polling watchers keep own automation question notices and
+   verified own issue-mention activity in the log without exiting for them.
+   Mention proof covers the latest visible message versions; unknown activity,
+   including PR mentions, wakes normally. Other notices settle briefly into
+   one exit per burst. `--once` still performs one immediate poll.
    Re-arm bounded watchers; do not duplicate live services.
 
 Every check links the question queue and reports source errors and untrusted
