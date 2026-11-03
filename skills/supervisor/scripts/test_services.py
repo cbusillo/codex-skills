@@ -311,6 +311,35 @@ class ServicesTests(unittest.TestCase):
         self.assertEqual(bound["session_id"], env["CLAUDE_CODE_SESSION_ID"])
         self.assertNotIn("supervisor_owned", bound)
 
+    def test_startup_binding_validates_launched_native_identity_on_both_harnesses(self) -> None:
+        import codex_session_proxy
+        import session_liveness
+        import tmux_terminal
+        self.save()
+        source = self.claude_source()
+        for harness in ("claude", "codex"):
+            identity = source.env["CLAUDE_CODE_SESSION_ID"]
+            transcript = source.transcript
+            entry = {**source.pane, "session_id": identity, "harness": harness,
+                     "transcript": str(transcript), "tmux_session_id": source.pane["session_id"],
+                     "pid": 50, "supervisor_owned": True}
+            if harness == "codex":
+                transcript, env = self.codex_source(identity)
+                entry.update(transcript=str(transcript), codex_home=env["CODEX_HOME"], tty="ttys001")
+            with (self.subTest(harness=harness),
+                  patch.object(tmux_terminal.Terminal, "select", return_value=source.pane),
+                  patch.object(tmux_terminal, "process_parents", return_value={50: 20, 20: 1}),
+                  patch.object(session_liveness, "inventory", return_value=[(50, "ttys001", harness)]),
+                  patch.object(codex_session_proxy, "source_endpoint")):
+                bound = services.bind_launched_supervisor(self.config, entry)
+                self.assertEqual(bound["session_id"], identity)
+                self.assertEqual(bound["role"], "supervisor")
+                self.assertNotIn("supervisor_owned", bound)
+                before = self.config.read_bytes()
+                with self.assertRaises(ValueError):
+                    services.bind_launched_supervisor(self.config, {**entry, "pid": 51})
+                self.assertEqual(self.config.read_bytes(), before)
+
     def test_bind_claude_refuses_unmanaged_or_ambiguous_terminal(self) -> None:
         import session_liveness
         import tmux_terminal

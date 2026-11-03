@@ -74,6 +74,39 @@ def absolute_path(value):
     return Path(value)
 
 
+def bind_launched_supervisor(config_path: Path, entry: dict) -> dict:
+    return store_supervisor(config_path, verify_managed_supervisor(entry))
+
+
+def verify_managed_supervisor(entry: dict) -> dict:
+    from session_record import session_status
+    from session_liveness import inventory, harness_arguments, harness_family
+    from tmux_terminal import Terminal, belongs_to, process_parents
+
+    if (entry.get("supervisor_owned") is not True and entry.get("role") != "supervisor") or entry.get("backend") != "tmux":
+        raise ValueError("Supervisor startup requires a registered managed launch")
+    pane = Terminal(entry["tmux_socket"]).select(entry["tmux_session_id"])
+    if (pane["dead"] or any(entry[key] != pane[key] for key in ("window_id", "tab_id", "tmux_socket"))
+            or entry["tty"].removeprefix("/dev/") != pane["tty"].removeprefix("/dev/")):
+        raise ValueError("Supervisor launch terminal identity changed")
+    matches = [row for row in inventory() if row[0] == entry["pid"]
+               and row[1] == pane["tty"].removeprefix("/dev/")
+               and harness_family((harness_arguments(row[2]) or [""])[0]) == entry["harness"]]
+    if len(matches) != 1 or not belongs_to(entry["pid"], pane["pid"], process_parents()):
+        raise ValueError("Supervisor launch process identity changed")
+    fields = ("harness", "session_id", "transcript", "backend", "tmux_socket", "tmux_session_id",
+              "pid", "tty", "window_id", "tab_id")
+    recipient = {key: entry[key] for key in fields}
+    recipient["role"] = "supervisor"
+    if entry["harness"] == "codex":
+        from codex_session_proxy import source_endpoint
+        recipient["codex_home"] = entry["codex_home"]
+        source_endpoint(entry["session_id"], Path(entry["codex_home"]), transcript=Path(entry["transcript"]))
+    validate_supervisor(recipient)
+    session_status(recipient)
+    return recipient
+
+
 def render(config_path, catalog, output):
     config_path = config_path.resolve()
     config = load_config(config_path)
@@ -233,6 +266,10 @@ def bind_supervisor(config_path: Path, transcript: Path | None = None, tmux_sock
         recipient.update(claude_supervisor_route(tmux_socket))
     session_status(recipient)
     validate_supervisor(recipient)
+    return store_supervisor(config_path, recipient)
+
+
+def store_supervisor(config_path: Path, recipient: dict) -> dict:
     config_path = config_path.resolve()
     with supervisor_lock(config_path):
         config = load_config(config_path)
