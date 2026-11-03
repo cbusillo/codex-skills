@@ -43,6 +43,8 @@ else
 	done
 fi
 gh_command=${GH_WITH_ENV_TOKEN_GH:-gh}
+process_expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-}
+readonly process_expected_login
 print_auth_account=0
 check_auth=0
 write_actor_repository=
@@ -1166,6 +1168,11 @@ if [ -z "$expected_login" ] && [ -z "${GH_TOKEN:-}" ] && is_write_command "$@"; 
 	fi
 	run_with_input env -u GH_TOKEN -u GITHUB_TOKEN -u CODEX_GITHUB_TOKEN "$gh_command" "$@"
 	exit $?
+fi
+
+if [ -z "${GH_TOKEN:-}" ] && [ -n "$process_expected_login" ] && allows_active_auth_fallback; then
+	expected_login=$process_expected_login
+	verify_bot_login_for_write "$@" || exit $?
 fi
 
 if [ -z "${GH_TOKEN:-}" ]; then

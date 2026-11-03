@@ -366,6 +366,22 @@ class MessageRoutingTests(unittest.TestCase):
             self.assertEqual(receipts[watch.delivery_key(notice())]["audit_status"], "sent")
             self.assertEqual(post.call_count, 2)
 
+    def test_plain_install_miss_write_and_reconciliation_use_the_same_selected_actor(self) -> None:
+        self.enterContext(patch_attr(watch.github_access, "identity_context", return_value=({}, False)))
+        self.args.github_cli_login = "director"
+        receipt = {}
+        with patch.object(watch.subprocess, "run", return_value=Mock(returncode=1, stdout="")) as post:
+            watch.audit_miss(self.args, receipt, self.persist)
+        self.assertEqual(post.call_args.kwargs["env"]["GH_WITH_ENV_TOKEN_EXPECTED_LOGIN"], "director")
+        self.reader.paged_json.return_value = [{"user": {"login": "agent[bot]"}, "body": f"private receipt {receipt['audit_token']}.", "html_url": "wrong"}]
+        with patch_attr(watch, "GitHubReader", return_value=self.reader), patch.object(watch.subprocess, "run") as post:
+            watch.audit_miss(self.args, receipt, self.persist)
+            self.assertEqual(receipt["audit_status"], "attempted")
+            self.reader.paged_json.return_value = [{"user": {"login": "director"}, "body": f"private receipt {receipt['audit_token']}.", "html_url": "confirmed"}]
+            watch.audit_miss(self.args, receipt, self.persist)
+            self.assertEqual(receipt["audit_url"], "confirmed")
+            post.assert_not_called()
+
     def test_malformed_audit_failure_preserves_uncertainty(self) -> None:
         for outcome in ({"failure": None}, None, []):
             receipt = {}

@@ -1044,6 +1044,23 @@ for line in sys.stdin:
         self.assertEqual(Path(received["codex_home"]), Path(self.choice["env"]["CODEX_HOME"]).resolve())
         self.assertEqual(received["brief"], self.brief_text)
 
+    def test_blocked_start_retains_native_descriptor_for_registration_without_relaunch(self) -> None:
+        script = self.agent.read_text()
+        self.agent.write_text(script.replace('import json, os, sys', 'import json, os, sys\nfrom pathlib import Path\nidentity = sys.argv[sys.argv.index("--session-id") + 1]\ntranscript = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects/fixture" / (identity + ".jsonl")\ntranscript.parent.mkdir(parents=True, exist_ok=True)\ntranscript.write_text(json.dumps({"sessionId": identity, "type": "user", "message": {"content": "fixture"}}) + "\\n")'))
+        failure = iterm_tab.StartupFailure({"dead": False, "screen": ["Login required"]})
+        with patch.object(iterm_tab, "verify_startup", side_effect=failure):
+            with self.assertRaises(iterm_tab.LaunchFailure) as raised:
+                self.launch(ledger=self.ledger)
+        failed = raised.exception.detail["failed_launch"]
+        self.assertEqual(failed["launch"]["session_id"], failed["session_id"])
+        self.assertTrue(failed["launch"].get("claude_native") or failed["launch"].get("file_native"))
+        self.wait_screen(failed["session_id"], "READY:")
+        args = argparse.Namespace(ledger=self.ledger)
+        asyncio.run(iterm_tab.register_fresh_launch(args, failed["launch"], None))
+        entries = json.loads(self.ledger.read_text())
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["tmux_session_id"], failed["session_id"])
+
     def test_early_worker_exit_reports_dead_pane_and_last_output(self):
         failure_status = 17
         # Exercise process exit directly, without an interpreter's teardown
@@ -1054,6 +1071,7 @@ for line in sys.stdin:
         failed = raised.exception.detail["failed_launch"]
         self.assertEqual(raised.exception.detail["launched"], [])
         self.assertTrue(failed["receipt_written"])
+        self.assertEqual(failed["launch"]["session_id"], failed["session_id"])
         self.assertTrue(failed["startup"]["dead"])
         self.assertIn("fixture bootstrap failed", "\n".join(failed["startup"]["screen"]))
         native = self.terminal.read(failed["session_id"])

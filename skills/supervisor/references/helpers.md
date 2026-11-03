@@ -926,6 +926,89 @@ any marker, and retry only a confirmed unposted report. A scan failure can retry
 without a post marker; an archive failure stays stopped across future mornings
 until reconciled. A loaded job alone does not prove scheduled delivery.
 
+## Managed Supervisor start
+
+From a catalog install, the Director starts either harness with the same command:
+
+```sh
+uv run skills/supervisor/scripts/supervisor.py start --owner OWNER --harness claude --miss-issue OWNER/REPO#NUMBER
+```
+
+Choose `--harness codex` for Codex. `--miss-issue` is an existing issue owned by
+that Director where recovery records belong. The command uses each CLI's normal
+login; Context Panel, account maps, Discord and Launchplane are optional.
+It needs the existing `uv`, `tmux`, `gh auth login` and chosen agent CLI.
+Configured GitHub automation stays selected and is checked before launch.
+On a plain install with no automation configuration, startup selects the existing
+GitHub CLI login before requests and pins it for reader and miss-record writes.
+A configured identity failure never switches to that login. The same nonsecret
+configuration selectors are retained for the reader, Supervisor and routine command.
+Shell-only GitHub tokens cannot be copied into a service: use the normal
+`gh auth login` or the existing `local.env` credential route instead.
+No hand-written Supervisor configuration, ledger or recipient is needed.
+
+The command creates missing state under the shared Code home's
+`skill-data/supervisor/OWNER` (otherwise `~/.code`), launches through
+`iterm_tab.py`, verifies its native registration and live managed terminal,
+and saves the single current Supervisor binding in the services configuration.
+The temporary registration ledger is a launch receipt, never the watched
+worker ledger, and is removed after binding. Codex uses its existing native
+queue; Claude uses its exact managed pane and must be idle with an empty
+prompt and no ordinary background task to receive a notice.
+
+The same `services.py run --service foreign` runner lives in the user service
+manager: launchd on macOS, systemd on Linux. The command installs a matching
+job if missing and reuses an already-running matching job. A different job
+under that name refuses before a Supervisor is launched. It survives
+Supervisor conversation restarts and owns the existing watcher lock, failure
+marker and logs under `jobs/logs`. It adds no collector, dispatcher or tmux
+service host. A logout or reboot can leave the reader's interrupted-run marker;
+inspect its logs and use `services.py clear` after reconciliation before restarting.
+After login, repeat the command to start a new Supervisor only
+when its previous process generation has ended. Startup success proves the
+registered Supervisor and service manager's running reader, not delivery of a
+person's message. On macOS, keep state and logs where launchd can access them.
+If the service manager refuses a path or permission, stop that action and retain
+the launch receipts and binding. Do not switch paths or permissions as a workaround.
+After its cause is resolved, `--recover` resumes the same native Supervisor and job.
+Intentional job retirement uses the existing [service stop and removal procedure](#persistent-supervisor-services);
+changing state locations never silently replaces a differently configured job.
+
+Add `--events` only when the existing optional Launchplane attention source is
+configured. Without it the existing polling backstop runs and event-triggered
+delivery remains unqualified. No new receiver, credential or access is created.
+Add `--queue OWNER/REPO#NUMBER` to give the Supervisor the complete routine
+digest invocation, with the same ledger, state, binding and miss issue. It uses
+the harness's existing scheduled-check feature, rather than a background watch
+inside the Claude conversation.
+
+For an existing installation, pass `--ledger`, `--foreign-state`,
+`--services-config`, `--watch-args-file` and `--recovery` as needed. Existing
+foreign service arguments are the source of its filters and state; the command
+preserves them and other configured services. A flags file adopts an existing
+bounded watch only when no foreign service is configured. Conflicting paths
+refuse rather than silently selecting another ledger or state.
+The current Supervisor ends its own background watcher and verifies its exit
+before this command adopts it. Never start a second watcher against that state.
+
+An existing binding requires an explicit `--takeover` after its handoff.
+Repeating a completed start verifies and returns the current session and service.
+An incomplete start retains `start.json`, the launcher's original stdout,
+native receipts and service logs;
+`--recover` completes that same registered launch without creating another
+Supervisor. When registration failed, recovery calls the launcher's existing
+receipt-based `register` on the retained result, including after resolving a
+first-run prompt in that same pane. If the exact unregistered terminal is verified
+dead or absent, recovery marks it unstarted and returns without launching;
+correct its cause and repeat start. Changed or unknown terminal generations stay held.
+A certainly unstarted
+preflight can be retried after correcting its cause. An uncertain terminal
+launch stays held for exact receipt reconciliation; never delete state to make
+the command run again. Neither takeover nor recovery clears a service hold or
+replays an uncertain message. For a stopped reader, inspect its logs, use
+`services.py clear --config PATH --service foreign` after reconciliation, and
+repeat the start command to restart that same managed job.
+
 ## Persistent Supervisor services
 
 On the Director's Mac, launchd owns enqueue, drive, foreign and throughput,
