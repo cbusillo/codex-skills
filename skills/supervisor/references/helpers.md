@@ -351,6 +351,13 @@ uv run skills/supervisor/scripts/oq.py --owner OWNER --queue OWNER/CATALOG#QUEUE
 uv run skills/supervisor/scripts/oq.py --owner OWNER --queue OWNER/CATALOG#QUEUE --ack ORIGINAL_QUESTION_URL --delivery-url PRESENTATION_RECEIPT_URL
 ```
 
+Read one owning discussion with `oq.py OWNER/REPO#NUMBER --owner DIRECTOR_LOGIN
+--include-answers` when a consumer needs accepted answer text. Each question then
+includes its `number` and `answer_records` containing `answer` and the decision's
+`url`, selected by the same trusted matcher as the queue. Without this flag the
+existing JSON is unchanged. The login is the Director's, including for organization
+repositories; this mode reads only and does not register or acknowledge delivery.
+
 Name the queue once in the private `skill-data/supervisor.toml`, beside
 `[handoff]`. The planning helpers read it to refuse a wait on the Director
 whose question is not registered there
