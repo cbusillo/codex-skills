@@ -11,6 +11,7 @@ import os
 import subprocess
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from subprocess import SubprocessError
 
@@ -278,7 +279,9 @@ def verify_smoke(config: dict, operation: Operation, harness: str, provider: str
     observe(entry, landing, after_size=operation.state["steps"][harness + "_acknowledgement"]["size"], final=True)
     operation.gate = harness + "_handoff"
     reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
-    comments = reader.paged_json(f"/repos/{repo}/issues/{config['issue']}/comments", step_prefix=harness + "_handoff")
+    since = datetime.fromtimestamp(operation.state["steps"][harness + "_request_time"]["value"], timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    comments = reader.paged_json(f"/repos/{repo}/issues/{config['issue']}/comments", step_prefix=harness + "_handoff",
+                                 params={"since": since}, required_query_params={"since": since})
     matches = [
         row
         for row in comments
@@ -359,7 +362,7 @@ def landing_pull(reader: GitHubReader, repo: str, landing: str, *, expected_pr: 
 
 
 def post_result(config: dict, operation: Operation, result: dict) -> str:
-    from skills.github.scripts import github_api, github_comment
+    from skills.github.scripts import github_comment
 
     body = operation.evidence / "result.md"
     outcome = "PASSED" if result["ok"] else "FAILED"
@@ -371,6 +374,9 @@ def post_result(config: dict, operation: Operation, result: dict) -> str:
         "Coverage is containment; per-session loaded SHA was not measured.\n"
         + ("Bootstrap: earlier history is unverified.\n" if result.get("bootstrap") else "")
         + (f"Supersedes failed verification: {result['superseded_url']}\n" if result.get("superseded_url") else "")
+        + (f"Superseded attempt: `{Path(result['superseded']).name}`; "
+           f"failed gate: `{result['superseded_gate']}`; commit: `{result['superseded_commit']}`.\n"
+           if result.get("superseded") else "")
         + (f"Smoke skipped: {result['smoke_skipped']}.\n" if result.get("smoke_skipped") else "")
         + "\n".join(result.get("smoke_handoffs", []))
         + (
@@ -381,34 +387,41 @@ def post_result(config: dict, operation: Operation, result: dict) -> str:
         )
     )
     operation_id = fingerprint(result)
-    body.write_text(github_api.body_with_operation_marker(body.read_text(), operation_id))
     phase = "report_" + operation_id
     prior = operation.state["steps"].get(phase)
-    if prior and prior.get("complete") is not True:
+    def reconcile_report() -> str:
+        saved = operation.state["steps"][phase]
+        require(saved.get("process_exited") is True, "report", "posting process exit is unconfirmed; delivery remains unknown")
         reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
-        comments = reader.paged_json(f"/repos/{config['repo']}/issues/{config['issue']}/comments", step_prefix="report_reconciliation")
+        since = saved["started_at"]
+        comments = reader.paged_json(f"/repos/{config['repo']}/issues/{config['issue']}/comments", step_prefix="report_reconciliation",
+                                     params={"since": since}, required_query_params={"since": since})
         canonical = lambda text: github_comment.OPERATION_MARKER_LINE_RE.sub("", text).rstrip()
         matches = [row for row in comments
                    if (row.get("user") or {}).get("login") == github_identity.automation_login()
-                   and github_api.body_has_operation_marker(row.get("body"), operation_id)
                    and canonical(row["body"]) == canonical(body.read_text())]
-        require(len(matches) == 1, "report", "original report is missing or ambiguous; no write replayed")
+        if not matches:
+            saved["delivery"] = "not_posted"
+            save_state(operation.path, operation.state)
+        require(len(matches) == 1, "report", "original report is not posted or ambiguous; no write replayed")
         operation.state["steps"][phase] = {"complete": True, "result": {"url": matches[0]["html_url"]}}
         save_state(operation.path, operation.state)
-    posted = operation.run(
-        phase,
-        [
-            str(Path(config["source_worktree"]) / "skills/github/scripts/gh-comment"),
-            "issue",
-            str(config["issue"]),
-            "--repo",
-            config["repo"],
-            "--body-file",
-            str(body),
-        ],
-        once=True,
-        timeout=360,
-    )
+        return matches[0]["html_url"]
+
+    if prior and prior.get("complete") is not True:
+        require(bool(prior.get("started_at")), "report", "legacy report has unknown delivery; no write replayed")
+        return reconcile_report()
+    try:
+        posted = operation.run(
+            phase,
+            [str(Path(config["source_worktree"]) / "skills/github/scripts/gh-comment"),
+             "issue", str(config["issue"]), "--repo", config["repo"], "--body-file", str(body)],
+            once=True, timeout=360,
+        )
+    except GateFailed:
+        if operation.state["steps"].get(phase, {}).get("complete") is False:
+            return reconcile_report()
+        raise
     return posted["url"]
 
 
@@ -467,11 +480,6 @@ def require_closed_smokes(config: dict, operation: Operation, result: dict) -> s
     if incomplete:
         require(incomplete == {"report_" + fingerprint(result)},
                 "supersede", "resolve every uncertain mutation other than this failed result's report")
-        reports = [url for name, step in steps.items()
-                   if name.startswith("report_") and step.get("complete") is True
-                   and isinstance(url := step.get("result", {}).get("url"), str) and url]
-        require(len(reports) == 1, "supersede", "requires one confirmed earlier report for this failed attempt")
-        reported_url = reports[0]
     for harness in ("codex", "claude"):
         if not steps.get(harness + "_launch"):
             continue
@@ -510,6 +518,8 @@ def poll(config: dict, evidence: Path, *, supersede_failed: bool = False) -> dic
         landings = state.get("pending") or pending_landings(source, state["last_sha"], runtime["after_sha"])
         superseded = state.get("superseded")
         superseded_url = state.get("superseded_url")
+        superseded_gate = state.get("superseded_gate")
+        superseded_commit = state.get("superseded_commit")
         if supersede_failed:
             require(bool(state.get("pending") and state.get("attempt")), "supersede", "no failed attempt to supersede")
             old = Operation(evidence / state["attempt"], [config["repo"], *landings])
@@ -519,9 +529,12 @@ def poll(config: dict, evidence: Path, *, supersede_failed: bool = False) -> dic
             with closure.store_lock(old.evidence / "verification", create=True):
                 superseded_url = require_closed_smokes(current, old, old_result)
             superseded = str(old.evidence)
+            superseded_gate = old_result.get("gate", "verification")
+            superseded_commit = old_result["landings"][-1]
             landings += pending_landings(source, landings[-1], runtime["after_sha"])
             state.update(attempt=landings[-1] + "-" + uuid.uuid4().hex,
-                         superseded=superseded, superseded_url=superseded_url)
+                         superseded=superseded, superseded_url=superseded_url,
+                         superseded_gate=superseded_gate, superseded_commit=superseded_commit)
         if not landings:
             return {"ok": True, "landings": []}
         landing = landings[-1]
@@ -545,12 +558,13 @@ def poll(config: dict, evidence: Path, *, supersede_failed: bool = False) -> dic
                 except (OSError, ValueError, KeyError, TypeError, AttributeError, SubprocessError,
                         GitHubReadError, GitHubReadShapeError) as error:
                     result = receipt(landing, operation.evidence, error, gate=operation.gate)
-                result.update(landings=landings, bootstrap=state["last_sha"] is None, superseded=superseded, superseded_url=superseded_url)
+                result.update(landings=landings, bootstrap=state["last_sha"] is None, superseded=superseded, superseded_url=superseded_url,
+                         superseded_gate=superseded_gate, superseded_commit=superseded_commit)
                 save_state(result_path, result)
             url = post_result(current, operation, result)
             if result["ok"]:
                 state.update(last_sha=landing, pending=[])
-                for key in ("attempt", "superseded", "superseded_url"):
+                for key in ("attempt", "superseded", "superseded_url", "superseded_gate", "superseded_commit"):
                     state.pop(key, None)
                 save_state(state_path, state)
             return {**result, "verification_url": url}

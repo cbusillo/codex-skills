@@ -42,7 +42,7 @@ class CatalogLandingTests(unittest.TestCase):
                                         claude_handoff_request={"complete": True}, claude_acknowledgement={"size": 1},
                                         claude_request_time={"value": landing.claim_release.stamp(comment["created_at"]).timestamp() - 11})
         actor = comment["user"]["login"]
-        reader = SimpleNamespace(paged_json=lambda *_, **__: [comment])
+        reader = SimpleNamespace(paged_json=unittest.mock.Mock(return_value=[comment]))
         args = argparse.Namespace(session_id=session, handoff_url=comment["html_url"])
         self.runner.side_effect = None
         self.runner.return_value = {"ok": True}
@@ -51,6 +51,8 @@ class CatalogLandingTests(unittest.TestCase):
               patch.object(session_closeout, "GitHubReader", return_value=reader),
               patch.object(session_closeout.release, "handoff", return_value=comment)):
             self.assertEqual(landing.verify_smoke(self.config, operation, "claude", "anthropic", self.root), comment["html_url"])
+            self.assertEqual(reader.paged_json.call_args.kwargs["params"],
+                             {"since": landing.datetime.fromtimestamp(operation.state["steps"]["claude_request_time"]["value"], landing.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
             self.runner.assert_called_once()
             command = self.runner.call_args.args[1]
             self.assertEqual(command[command.index("--session-id") + 1], session)
@@ -376,14 +378,44 @@ class CatalogLandingTests(unittest.TestCase):
             self.assertNotEqual(verify.call_args.args[1].evidence, old.evidence)
             self.assertEqual(closeout.call_count, 2)
 
+    def test_timeout_preserves_partial_output_and_mutation_fence(self) -> None:
+        operation = Operation(self.root, ["timeout"])
+        with (patch.object(Operation, "run", operation_run),
+              patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("helper", 1, output=b"partial output", stderr=b"failure detail"))):
+            with self.assertRaises(GateFailed):
+                operation.run("write", ["helper"], once=True)
+        saved = json.loads((self.root / "write.json").read_text())
+        self.assertEqual(saved["stdout"], "partial output")
+        self.assertEqual(saved["stderr"], "failure detail")
+        self.assertFalse(operation.state["steps"]["write"]["complete"])
+
+    def test_unknown_failed_report_can_be_superseded_without_rewriting_it(self) -> None:
+        operation = Operation(self.root, ["failure"])
+        failed = {"ok": False, "landings": ["B"], "gate": "smoke_response"}
+        operation.state["steps"] = {"report_" + landing.fingerprint(failed): {"complete": False}}
+        landing.save_state(operation.path, operation.state)
+        before = operation.path.read_bytes()
+        self.assertIsNone(landing.require_closed_smokes(self.config, operation, failed))
+        self.assertEqual(operation.path.read_bytes(), before)
+        operation.state["steps"]["launch"] = {"complete": False}
+        with self.assertRaises(GateFailed):
+            landing.require_closed_smokes(self.config, operation, failed)
+
     def test_unknown_report_is_settled_by_exact_read_without_another_write(self) -> None:
         operation = Operation(self.root, ["report"])
         result = {"ok": True, "landings": ["landing"], "runtime_sha": "runtime"}
-        with patch.object(Operation, "run", operation_run), patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("comment", 360)):
+        with (patch.object(Operation, "run", operation_run),
+              patch.object(landing.GitHubReader, "paged_json", return_value=[]) as read,
+              patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("comment", 360))):
             with self.assertRaises(GateFailed):
                 landing.post_result(self.config, operation, result)
         report = (self.root / "result.md").read_text()
-        posted = {"user": {"login": "agent[bot]"}, "body": report, "html_url": "original-comment"}
+        self.assertNotIn("github-skill-operation:", report)
+        phase = "report_" + landing.fingerprint(result)
+        self.assertEqual(operation.state["steps"][phase]["delivery"], "not_posted")
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(read.call_args.kwargs["params"], {"since": operation.state["steps"][phase]["started_at"]})
+        posted = {"user": {"login": "agent[bot]"}, "body": github_api.body_with_operation_marker(report, "a" * 32), "html_url": "original-comment"}
         with (patch.object(Operation, "run", operation_run), patch.object(subprocess, "run") as write,
               patch.object(landing.github_identity, "automation_login", return_value="agent[bot]"),
               patch.object(landing.GitHubReader, "paged_json", side_effect=[[], [posted, posted], [posted]])):
@@ -397,10 +429,8 @@ class CatalogLandingTests(unittest.TestCase):
         operation = Operation(self.root / "B", [self.config["repo"], "B"])
         reported = {"ok": False, "gate": "runtime", "landings": ["B"], "runtime_sha": "old"}
         pending = {**reported, "runtime_sha": "new"}
-        confirmed_url = f"https://github.com/{self.config['repo']}/issues/{self.config['issue']}#issuecomment-2"
         pending_phase = "report_" + landing.fingerprint(pending)
         operation.state["steps"] = {
-            "report_" + landing.fingerprint(reported): {"complete": True, "result": {"url": confirmed_url}},
             pending_phase: {"complete": False},
         }
         landing.save_state(operation.path, operation.state)
@@ -415,30 +445,18 @@ class CatalogLandingTests(unittest.TestCase):
               patch.object(landing, "verify", return_value={"ok": True}), patch.object(subprocess, "run") as write):
             result = landing.poll(self.config, self.root, supersede_failed=True)
         self.assertTrue(result["ok"])
-        self.assertEqual(result["superseded_url"], confirmed_url)
+        self.assertIsNone(result["superseded_url"])
+        self.assertEqual(result["superseded_gate"], pending["gate"])
+        self.assertEqual(result["superseded_commit"], pending["landings"][-1])
         self.assertEqual(result["landings"], ["B", "C"])
         write.assert_not_called()
         self.assertNotIn(pending_phase, [call.args[0] for call in self.runner.call_args_list])
         self.assertEqual({path: path.read_bytes() for path in retained}, retained)
         new_reports = [path for path in self.root.glob("*/result.md") if path.parent.resolve() != operation.evidence]
         self.assertEqual(len(new_reports), 1)
-        self.assertIn(confirmed_url, new_reports[0].read_text())
-
-    def test_supersede_requires_one_publication_without_other_uncertainty(self) -> None:
-        failed = {"ok": False, "landings": ["B"]}
-        confirmed = {"complete": True, "result": {"url": "confirmed-report"}}
-        for extra, report in (
-            ({"launch": {"complete": False}}, confirmed),
-            ({"report_another": confirmed}, confirmed),
-            ({}, {"complete": True, "result": {}}),
-        ):
-            with self.subTest(extra=extra, report=report):
-                operation = Operation(self.root, [self.config["repo"], "B"])
-                pending = "report_" + landing.fingerprint(failed)
-                operation.state["steps"] = {pending: {"complete": False}, "report_earlier": report, **extra}
-                with self.assertRaises(GateFailed) as failure:
-                    landing.require_closed_smokes(self.config, operation, failed)
-                self.assertEqual(failure.exception.gate, "supersede")
+        self.assertIn(operation.evidence.name, new_reports[0].read_text())
+        self.assertIn(pending["gate"], new_reports[0].read_text())
+        self.assertIn(pending["landings"][-1], new_reports[0].read_text())
 
     def test_supersede_revalidates_closed_resume_without_rewriting_original_generation(self) -> None:
         original: dict[str, Any] = {"session_id": "native", "harness": "codex", "supervisor_owned": True,

@@ -4,6 +4,7 @@
 # ///
 import json
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -73,13 +74,23 @@ class Operation:
                 raise GateFailed(gate, "previous mutation requires reconciliation; inspect evidence before any retry")
             return saved["result"]
         if once:
-            self.state["steps"][gate] = {"complete": False}
+            self.state["steps"][gate] = {"complete": False, "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
             save_state(self.path, self.state)
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
         except (OSError, subprocess.SubprocessError) as error:
-            save_state(self.evidence / (gate + ".json"), {"error": str(error), "mutation_uncertain": once})
+            output = {}
+            if isinstance(error, subprocess.TimeoutExpired):
+                output = {name: value.decode(errors="replace") if isinstance(value, bytes) else value or ""
+                          for name, value in (("stdout", error.stdout), ("stderr", error.stderr))}
+            if once and isinstance(error, (OSError, subprocess.TimeoutExpired)):
+                self.state["steps"][gate]["process_exited"] = True
+                save_state(self.path, self.state)
+            save_state(self.evidence / (gate + ".json"), {"error": str(error), "mutation_uncertain": once, **output})
             raise GateFailed(gate, f"{type(error).__name__}; inspect {gate}.json") from error
+        if once:
+            self.state["steps"][gate]["process_exited"] = True
+            save_state(self.path, self.state)
         save_state(
             self.evidence / (gate + ".json"), {"exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
         )
