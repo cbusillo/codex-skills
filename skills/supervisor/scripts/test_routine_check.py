@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "work-closeout/scri
 
 import goal_board
 import routine_check
+import question_delivery
 import session_closeout
 claim_transcripts: Any = importlib.import_module("claim_transcripts")
 from check_operation import GateFailed, Operation
@@ -47,6 +48,44 @@ class RoutineCheckTests(unittest.TestCase):
         self.enterContext(patch.object(routine_check.oq, "default_decision_authors", return_value=["agent[bot]"]))
         self.enterContext(patch_attr(routine_check.radar.github_identity, "automation_login", return_value="agent[bot]"))
         self.enterContext(patch_attr(routine_check.radar.github_identity, "configured_bot_logins", return_value=["agent[bot]"]))
+
+    def test_graphql_bot_sources_keep_acknowledgement_until_edited(self) -> None:
+        stamp = "2026-11-01T00:00:00Z"
+        def message(ident: int, body: str) -> dict[str, Any]:
+            return {"__typename": "IssueComment", "id": f"node-{ident}", "databaseId": ident,
+                    "body": body, "createdAt": stamp, "updatedAt": stamp,
+                    "url": f"https://github.com/owner/repo/issues/8#issuecomment-{ident}",
+                    "author": {"__typename": "Bot", "login": "agent"}}
+        messages = [message(80, "Director question: Q80. Proceed?"), message(81, "Director question: Q81. Publish?"),
+                    message(82, "Director decision Q80: Yes. https://github.com/owner/repo/issues/8#issuecomment-80")]
+        target = messages[1]["url"]
+        queue = [message(90, question_delivery.marker_body("registered", target)),
+                 message(91, question_delivery.marker_body(
+                     "delivered", target, "https://github.com/owner/direction/issues/98#issuecomment-92", source_updated_at=stamp))]
+        for row in queue:
+            row["url"] = f"https://github.com/owner/direction/issues/98#issuecomment-{row['databaseId']}"
+        def response(_query: str, variables: dict[str, Any], **_kwargs: Any) -> ApiResult:
+            number = variables["number"]
+            comments = messages if number == 8 else queue
+            node = {**message(number, "Work"), "__typename": "Issue", "number": number,
+                    "title": "Work", "state": "OPEN", "closedAt": None,
+                    "comments": {"nodes": comments, "totalCount": len(comments),
+                                 "pageInfo": {"hasNextPage": False, "endCursor": None}}}
+            return ApiResult(ok=True, status=200, body={"data": {"repository": {"issueOrPullRequest": node}}})
+        reader = SimpleNamespace(deadline_at=None, graphql_json=Mock(side_effect=response))
+        args = argparse.Namespace(owner="owner", queue="owner/direction#98", source=["owner/repo#8"],
+                                  repo=[], thread=[], radar_config=Path("/absent/radar.yaml"))
+        with patch_attr(routine_check.github_read, "GitHubReader", return_value=reader):
+            report = routine_check.build_readers(args, {})["questions"]()
+            messages[1]["updatedAt"] = "2026-11-01T01:00:00Z"
+            revised = routine_check.build_readers(args, {})["questions"]()
+        self.assertTrue(report["complete"], report)
+        self.assertEqual([row["url"] for row in report["questions"]], [messages[1]["url"]])
+        self.assertTrue(report["questions"][0]["author_trusted"])
+        self.assertEqual(report["questions"][0]["delivery"], "acknowledged")
+        self.assertNotIn(f"QUESTION {target}", routine_check.digest({"questions": report}))
+        self.assertEqual(revised["questions"][0]["delivery"], "unacknowledged")
+        self.assertIn(f"QUESTION {target}", routine_check.digest({"questions": revised}))
 
     def test_owner_only_digest_finds_foreign_questions_and_waits_without_watch_history(self) -> None:
         args = argparse.Namespace(owner="cellmechanic", queue="cellmechanic/direction#11", source=[], repo=[], thread=[],
@@ -442,6 +481,7 @@ class RoutineCheckTests(unittest.TestCase):
                 "html_url": good_url,
                 "user": {"login": "owner"},
                 "created_at": "2026-10-30T20:00:00Z",
+                "updated_at": "2026-10-30T20:30:00Z",
             }
 
             def paged(endpoint: str, **_: object) -> list[dict]:
@@ -453,6 +493,8 @@ class RoutineCheckTests(unittest.TestCase):
 
             with (
                 patch_attr(routine_check.github_read, "GitHubReader", return_value=SimpleNamespace(paged_json=paged)),
+                patch_attr(routine_check.github_read, "read_discussion",
+                           side_effect=lambda _reader, repo, number: {"comments": paged(f"/repos/{repo}/issues/{number}/comments")}),
                 patch.object(routine_check, "staffing", return_value={"candidates": [], "candidate_coverage": {"complete": True}}),
                 patch_attr(
                     routine_check.radar,
@@ -466,7 +508,8 @@ class RoutineCheckTests(unittest.TestCase):
                         {"kind": "director_question", "url": good_url},
                     ]
                 }
-                output = routine_check.digest(routine_check.collect(routine_check.build_readers(args, watch)))
+                sources = routine_check.collect(routine_check.build_readers(args, watch))
+                output = routine_check.digest(sources)
             self.assertIn("client", output)
             self.assertIn(good_url, output)
             self.assertIn("source unread", output)
