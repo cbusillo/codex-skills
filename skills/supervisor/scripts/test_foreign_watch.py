@@ -134,6 +134,57 @@ class WatchTests(unittest.TestCase):
             logged = [notice for line in output.getvalue().splitlines() for notice in json.loads(line)["notices"]]
             self.assertEqual([notice["url"] for notice in logged], [linkback["html_url"]])
 
+    def test_own_body_edit_is_logged_without_ending_persistent_watch(self) -> None:
+        for login, actor_type in (("AGENT", "Bot"), ("DIRECTOR", "User")):
+            with self.subTest(login=login), tempfile.TemporaryDirectory() as directory:
+                reader = Mock()
+                issue = {**opened(created="2026-10-01T00:00:00Z"), "node_id": "issue"}
+                reader.paged_json.side_effect = feeds([], [], opened_items=[issue])
+                reader.graphql_json.return_value = ApiResult(ok=True, status=200, body={"data": {"nodes": [
+                    {"lastEditedAt": SINCE, "editor": {"login": login, "__typename": actor_type}}
+                ]}})
+                args = argparse.Namespace(owner="director", state=Path(directory) / "state.json", since=None,
+                                          own_login=["director", "agent[bot]"], launchplane_login=[], interval=10,
+                                          once=False, persistent=True)
+                clock = WatchClock()
+                output = io.StringIO()
+                deadline = foreign_watch.NOTICE_SETTLE_SECONDS + args.interval
+                with (patch_attr(foreign_watch, "GitHubReader", return_value=reader),
+                      patch.object(foreign_watch, "utc_now", return_value=STARTED),
+                      patch.object(foreign_watch, "scan_mentions", side_effect=lambda _args, _repos, watermarks, seen, *_: ([], [], [], watermarks, seen)),
+                      patch.object(foreign_watch.time, "monotonic", side_effect=clock.monotonic),
+                      patch.object(foreign_watch.time, "sleep", side_effect=clock.sleep),
+                      redirect_stdout(output)):
+                    self.assertEqual(foreign_watch.watch(args, [REPO], SINCE, deadline), 0)
+                self.assertEqual(clock.now, deadline)
+                logged = [notice for line in output.getvalue().splitlines() for notice in json.loads(line)["notices"]]
+                self.assertEqual([notice["url"] for notice in logged], [issue["html_url"]])
+                self.assertEqual(logged[0]["author"].casefold(), "agent[bot]" if actor_type == "Bot" else "director")
+
+    def test_restart_does_not_rewind_past_an_unchanged_notice(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            reader = Mock()
+            args = argparse.Namespace(owner="director", state=Path(directory) / "state.json", since=SINCE,
+                                      own_login=["director", "agent[bot]"], launchplane_login=[], interval=10,
+                                      once=False, persistent=True)
+            for updated, wakes in ((SINCE, True), (SINCE, False), ("2026-10-09T12:06:00Z", True)):
+                with self.subTest(updated=updated, wakes=wakes):
+                    reader.paged_json.side_effect = feeds(*[[comment(updated=updated)]] * 3)
+                    clock = WatchClock()
+                    output = io.StringIO()
+                    deadline = foreign_watch.NOTICE_SETTLE_SECONDS + args.interval
+                    with (patch_attr(foreign_watch, "GitHubReader", return_value=reader),
+                          patch.object(foreign_watch, "utc_now", return_value=STARTED),
+                          patch.object(foreign_watch, "scan_mentions", side_effect=lambda _args, _repos, watermarks, seen, *_: ([], [], [], watermarks, seen)),
+                          patch.object(foreign_watch.time, "monotonic", side_effect=clock.monotonic),
+                          patch.object(foreign_watch.time, "sleep", side_effect=clock.sleep),
+                          redirect_stdout(output)):
+                        self.assertEqual(foreign_watch.watch(args, [REPO], SINCE, deadline), 0)
+                    self.assertEqual(clock.now, foreign_watch.NOTICE_SETTLE_SECONDS if wakes else deadline)
+                    logged = [notice for line in output.getvalue().splitlines() for notice in json.loads(line)["notices"]]
+                    self.assertEqual(bool(logged), wakes)
+                    self.assertGreater(foreign_watch.timestamp(json.loads(args.state.read_text())["watermarks"][REPO]), foreign_watch.timestamp(SINCE))
+
     def test_own_questions_stay_logged_without_waking_and_bursts_settle_once(self) -> None:
         for kind, wakes, settle_error in (("director_question", False, False),
                                           ("foreign", True, False), ("foreign", True, True)):
