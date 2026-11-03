@@ -1283,8 +1283,8 @@ A completed bad acknowledgement needs a fresh attempt. First get each preserved
 session's normal handoff and run `session_closeout.py` with the exact native ID
 and the original `<attempt>/<harness>-closeout` evidence directory. The saved
 `<harness>_source` gives its native ID, original ledger and generation. Once all
-old sessions have retired, run the poll command with `--supersede-failed`. It
-validates those exact retired journals in process, refuses changed generations
+old sessions have closed normally, run the poll command with `--supersede-failed`. It
+validates those exact closure journals in process, refuses changed generations
 or uncovered uncertain mutations, includes later landings, and preserves the
 old attempt while starting fresh sessions. It can retry the same tip after an
 environment repair. It never skips missing merged-PR proof or rewritten history.
@@ -1327,7 +1327,10 @@ reposting or marking it delivered or passed. Every original smoke must have
 closed normally; any other incomplete operation still refuses. The next batch's
 report names the superseded attempt, its failed gate and commit, even when the
 old report has no confirmed URL. The old attempt and delivery evidence remain
-unchanged.
+unchanged. A normally finished original Codex session may retain its protected
+dead terminal: recovery reuses the full canonical closure verifier, checks the
+original generation and handoff, and leaves that terminal and ledger entry
+untouched. Resumed generations still require their exact retired recovery journal.
 
 After recovery succeeds, clear the runner's `catalog` marker and restart that
 job through the existing service route. Never remove a journal or replay an
