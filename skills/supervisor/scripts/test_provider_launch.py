@@ -58,7 +58,7 @@ class LaunchIssueTests(unittest.TestCase):
             brief.write_text(header)
             args = argparse.Namespace(command_file=[command], brief_file=[brief], brief_issue=[issue])
             for newline in ("\n", "\r\n"):
-                payload = {"ok": True, "issue": {"recorded_current_status": status.replace("\n", newline),
+                payload: dict[str, Any] = {"ok": True, "issue": {"recorded_current_status": status.replace("\n", newline),
                            "provenance": {"section_updates_allowed": True},
                            "body": "## Current Status\n" + status.replace(task, "Wrong original-request brief.\n"),
                            "launch_check": {"allowed": True}}}

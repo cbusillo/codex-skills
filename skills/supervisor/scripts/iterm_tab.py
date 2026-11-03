@@ -1311,13 +1311,18 @@ def read_issue_brief(issue: str, header: str) -> str:
     if managed is not True:
         raise ValueError(f"{issue} needs a managed Current Status written through gh-plan.py update-section")
     status = status.replace("\r\n", "\n")
-    brief = re.search(r"(?m)^Brief:[ \t]*\n(?P<fence>(?P<marker>`|~)(?P=marker){2,})(?:text)?[ \t]*\n"
-                      r"(?P<brief>[\s\S]*?)^(?P=fence)(?P=marker)*[ \t]*$", status)
-    if not brief or not re.search(r"(?m)^Next actor: agent:supervisor[ \t]*$", status[:brief.start()]):
+    opening = re.search(r"(?m)^Brief:[ \t]*\n(?P<fence>`{3,}|~{3,})(?:text)?[ \t]*\n", status)
+    if not opening or not re.search(r"(?m)^Next actor: agent:supervisor[ \t]*$", status[:opening.start()]):
         raise ValueError(f"{issue} needs Next actor: agent:supervisor and a fenced Brief: in Current Status; use ###, not ##, inside briefs")
-    if not brief["brief"].strip():
+    content = status[opening.end():]
+    fence = opening["fence"]
+    closing = re.search(rf"(?m)^{re.escape(fence[0])}{{{len(fence)},}}[ \t]*$", content)
+    if not closing:
+        raise ValueError(f"{issue} needs a closing brief fence; use ###, not ##, inside briefs")
+    brief = content[:closing.start()]
+    if not brief.strip():
         raise ValueError(f"{issue} has an empty worker brief")
-    return header.rstrip("\n") + "\n\n" + brief["brief"]
+    return header.rstrip("\n") + "\n\n" + brief
 
 
 def check_launch_issue(brief: str) -> None:
