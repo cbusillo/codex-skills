@@ -585,11 +585,15 @@ class TranscriptChanged(ValueError):
 
 
 def transcript_revision(path: Path) -> tuple[tuple[int, int], ...]:
-    paths = [path]
-    wal = path.with_name(path.name + "-wal")
-    if path.suffix == ".db" and wal.exists() and wal.stat().st_size:
-        paths.append(wal)
-    return tuple((info.st_mtime_ns, info.st_size) for info in map(Path.stat, paths))
+    info = path.stat()
+    revision = ((info.st_mtime_ns, info.st_size),)
+    if path.suffix != ".db":
+        return revision
+    try:
+        wal = path.with_name(path.name + "-wal").stat()
+    except FileNotFoundError:
+        return revision
+    return (*revision, (wal.st_mtime_ns, wal.st_size)) if wal.st_size else revision
 
 
 def session_status(entry: dict) -> dict:
