@@ -152,14 +152,10 @@ Rules for this brief (every Supervisor brief carries them):
   supported route can run, record UNKNOWN with the helper's exact reason
   ([gate selection](../../repo-readiness/SKILL.md#gate-selection)); never
   report it as passed.
-- On a Client's own product repository, reply to Client and Client-team
-  comments on its issues and PRs that need an answer (questions, requests,
-  status notes), including those posted by their agents. While owning a PR,
-  read its new comments at each work check and before handoff, using the
-  existing PR watcher or comment radar. Give short, accurate replies; never
-  promise what is the Director's to decide. Outbound messages anywhere else
-  stay a stop boundary under the overall
-  Director's overall `DIRECTION.md` stop boundaries.
+- Reply to the product's own Client, team and agents under the
+  [Client-reply rule](../../references/talking-with-the-director.md#client-replies),
+  using its guarded comment flow. While owning a PR, read new comments at
+  each work check and before handoff through the existing watcher or radar.
 - When you need the Director, create every new Director question on the item with
   [`oq.py create`](../../references/talking-with-the-director.md#director-questions),
   rather than authoring a prose question comment. Re-present existing questions

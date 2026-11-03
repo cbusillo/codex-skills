@@ -70,6 +70,26 @@ before acting, and tell the Client plainly that it needs the Director's decision
 For every answer, record the Client's exact words beside our reading of them
 on the existing work record.
 
+## Client Replies
+
+On a product's own issues and PR reviews, reply to its Client, Client team and
+their agents without exact-text approval when limited to facts, status, test
+evidence, reproduction steps, business clarifications and recorded decisions.
+Use the automation identity in plain team voice, never the Director's first
+person. Read the full thread first. A thread where anyone outside the Client
+relationship or the Director's own people and agents participates or is
+mentioned needs exact-text approval. Proposing design, scope or outcome
+choices, or promising a feature or date, still needs the Director.
+
+Post these replies with `gh-comment issue NUMBER --repo OWNER/REPO --body-file
+FILE --client-login LOGIN`, repeating `--client-login` for each Client, team or
+agent login verified through `people` or the product's recorded identity
+context. This mode checks the opening, all timeline comments, PR reviews and
+inline comments, and the outgoing text for outside participants and mentions;
+unreadable coverage refuses the reply. It requires the configured automation
+identity. A refusal is not permission to omit the flag; obtain approval of the
+exact text instead. Other authorized flows and message-specific holds remain.
+
 ## Director Questions
 
 Create a structured question with
