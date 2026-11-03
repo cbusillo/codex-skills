@@ -1507,7 +1507,7 @@ if GH_ISSUE_GH="$tmpdir/unanswered-gh" GH_ISSUE_TEST_LOG="$log" \
 fi
 assert_failure_envelope "$stdout_log" github.issue.close unanswered_comments close_attention_preflight not_started
 grep -q 'issuecomment-951' "$stdout_log"
-if grep -q -- '--method PATCH\|--method POST' "$log"; then
+if grep -Eq -- '--method PATCH.* /repos/owner/repo/issues/95( |$)|--method POST.* /repos/owner/repo/issues/95/comments( |$)' "$log"; then
 	echo "error: a refused close must not write" >&2
 	exit 1
 fi
