@@ -172,9 +172,17 @@ class NativeTests(unittest.TestCase):
             resolved, enabled = native.common.profile_for(repo, str(profile))
             self.assertEqual(resolved, profile)
             self.assertTrue(enabled)
-            profile.write_bytes(profile.read_bytes() + b"\n")
-            with self.assertRaises(native.Blocked):
-                native.common.profile_for(repo, str(profile))
+            original = profile.read_bytes()
+            for flag in ("assume-unchanged", "skip-worktree"):
+                with self.subTest(flag=flag):
+                    profile.write_bytes(original)
+                    subprocess.run(["git", "-C", str(shared), "update-index", "--" + flag, str(profile.relative_to(shared))], check=True)
+                    try:
+                        profile.write_bytes(original + b"\n")
+                        with self.assertRaises(native.Blocked):
+                            native.common.profile_for(repo, str(profile))
+                    finally:
+                        subprocess.run(["git", "-C", str(shared), "update-index", "--no-" + flag, str(profile.relative_to(shared))], check=True)
 
     def test_process_group_exit_waits_through_permission_transition(self):
         with patch.object(os, os.killpg.__name__, side_effect=[PermissionError(errno.EPERM, "exiting"), PermissionError(errno.EPERM, "exiting"), ProcessLookupError(errno.ESRCH, "gone")]), \
@@ -842,32 +850,6 @@ print('Done.')
         self.assertEqual(result["inspection_outcome"]["reason"], "native_host_load_paused")
         self.assertGreaterEqual(result["diagnostic"]["native"]["load_wait_ms"], 1500)
         self.assertEqual(result["cleanup"]["status"], "closed")
-
-    def test_external_profile_scopes_are_copied_and_frozen_during_inspection(self) -> None:
-        shared = self.root / "shared-profile"
-        profile = shared / ".idea/inspectionProfiles/Test.xml"
-        profile.parent.mkdir(parents=True)
-        profile.write_bytes((self.repo / ".idea/inspectionProfiles/Test.xml").read_bytes())
-        scope = shared / ".idea/scopes/Shared.xml"
-        scope.parent.mkdir()
-        scope.write_text('<component name="DependencyValidationManager"><scope name="Shared" pattern="file:source.py"/></component>')
-        commit_profile_fixture(shared, profile, scope)
-        self.args.profile = str(profile)
-        self.script.write_text(self.script.read_text() +
-                               "import xml.etree.ElementTree as ET\n"
-                               "pattern=ET.parse(project/'.idea/scopes/Shared.xml').getroot().find('scope').get('pattern')\n"
-                               "assert (project/pattern.removeprefix('file:')).is_file()\n")
-        result = self.assess()
-        self.assertEqual(result["agent_result"]["verdict"], "RED")
-        self.assertEqual(result["cleanup"]["status"], "closed")
-        changed = self.root / "scope-changed"
-        self.script.write_text(self.script.read_text() +
-                               f"scope=pathlib.Path({str(scope)!r})\nscope.write_bytes(scope.read_bytes()+b'\\n')\n"
-                               f"pathlib.Path({str(changed)!r}).touch()\n")
-        changed_result = self.assess()
-        self.assertTrue(changed.exists())
-        self.assertEqual(changed_result["agent_result"]["verdict"], "UNKNOWN")
-        self.assertEqual(changed_result["cleanup"]["status"], "closed")
 
     def test_external_profile_commit_cannot_change_during_inspection(self) -> None:
         shared = self.root / "shared-profile"

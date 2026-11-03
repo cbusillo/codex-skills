@@ -204,27 +204,10 @@ def resolve_profile_source(repo: Path, profile: Path) -> tuple[Path, str]:
     if command(["git", "-C", str(root), "cat-file", "-e", f"{revision}:{relative}"]).returncode:
         raise Blocked("native_populated_profile_required")
     if root != repo.resolve():
-        status = checked(["git", "-C", str(root), "-c", "core.fsmonitor=false", "status", "--porcelain", "--", relative])
-        if status.strip():
+        committed = checked(["git", "-C", str(root), "cat-file", "blob", f"{revision}:{relative}"])
+        if profile.read_bytes() != committed:
             raise Blocked("native_populated_profile_required")
     return root, revision
-
-
-def resolve_profile_inputs(repo: Path, profile: Path) -> dict[Path, tuple[Path, str]]:
-    origin = resolve_profile_source(repo, profile)
-    inputs = {profile: origin}
-    root, _ = origin
-    paths = checked(["git", "-C", str(root), "ls-files", "-z", "--", ".idea/scopes"]).decode().split("\0")
-    for relative in filter(None, paths):
-        scope = root / relative
-        if scope.parent != root / ".idea/scopes" or scope.suffix != ".xml":
-            continue
-        if scope.is_symlink():
-            raise Blocked("native_snapshot_path_unsupported")
-        if resolve_profile_source(repo, scope) != origin:
-            raise Blocked("native_populated_profile_required")
-        inputs[scope] = origin
-    return inputs
 
 
 def profile_for(repo, name):

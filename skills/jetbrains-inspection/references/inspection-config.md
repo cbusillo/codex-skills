@@ -22,10 +22,10 @@ The helper reads `.github/github.json` when present:
 each native worker serves; anything else is UNKNOWN.
 
 `profile` accepts a committed profile's name or path. Paths may name the shared
-profile in another Git checkout; an external profile and its tracked named
-scopes must match that checkout's commit. Use the consumer's existing pinned
+profile in another Git checkout; an external profile must match that checkout's
+committed bytes. Use the consumer's existing pinned
 devkit location rather than copying the profile into every repository. Receipts
-bind the profile and scope inputs to their source commits and hashes. See
+bind the profile to its source commit and hash. See
 [native profile prerequisites](native-backend.md#missing-shared-profile).
 
 Mixed-language repositories may replace the single

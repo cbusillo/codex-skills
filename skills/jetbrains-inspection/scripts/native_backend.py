@@ -1615,11 +1615,11 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
     elif reason == "native_populated_profile_required":
         action = ("Use a populated profile committed in Git; untracked local profiles, including ignored ones, do not qualify. "
                   "Set `qualityGate.inspection.profile` to its path, or declare a path to the committed profile in a shared Git checkout. "
-                  "An external profile and its tracked named scopes must be unchanged from that checkout's commit. "
+                  "An external profile must be unchanged from that checkout's commit. "
                   f"Otherwise obtain a populated {product.display_name} default project inspection profile. "
                   "Tracking a new shared profile needs explicit Director approval unless already recorded or covered by "
                   "an established approved convention; reuse that approval. "
-                  "Track `.idea/inspectionProfiles/Project_Default.xml` and its approved shared scopes, keep machine-local IDE state ignored, and set "
+                  "Track `.idea/inspectionProfiles/Project_Default.xml`, keep machine-local IDE state ignored, and set "
                   "`qualityGate.inspection.profile` in `.github/github.json` to the selected profile path. "
                   "Do not disable or tune inspections to pass. Run a fresh assessment after the prerequisite is resolved.")
     elif reason in {"native_worker_not_configured", "native_app_not_configured"}:
@@ -1858,13 +1858,9 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         if intellij:
             gradle_build_file(repo)
             expected |= set(proof.INTELLIJ_CANARY_FILES)
-        profile_assets = common.resolve_profile_inputs(repo, profile)
-        profile_hashes = {path: common.digest(path) for path in profile_assets}
-        receipt["profile_sources"] = [
-            {"commit": origin[1], "path": path.relative_to(origin[0]).as_posix(), "sha256": profile_hashes[path]}
-            for path, origin in profile_assets.items()
-        ]
-        receipt["profile_sha256"] = profile_hashes[profile]
+        profile_source = common.resolve_profile_source(repo, profile)
+        receipt["profile_source"] = {"commit": profile_source[1], "path": profile.relative_to(profile_source[0]).as_posix()}
+        receipt["profile_sha256"] = common.digest(profile)
         planned_private = state / ("private-" + receipt["run_id"])
         source_interpreter = repo / ".venv/bin/python"
         requested = None if webstorm or intellij else common.requested_python_version(settings)
@@ -1880,13 +1876,6 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             (private / name).mkdir(mode=0o700)
         project = private / "project"
         hashes = common.snapshot(repo, project)
-        for local_scope in (project / ".idea/scopes").glob("*.xml"):
-            local_scope.unlink()
-        profile_destinations = {path: private / "profile.xml" if path == profile else project / path.relative_to(origin[0])
-                                for path, origin in profile_assets.items()}
-        for path, destination in profile_destinations.items():
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(path, destination)
         if not selected <= hashes.keys():
             raise Blocked("native_scope_snapshot_incomplete")
         if any((project / path).stat().st_size > common.MAX_ANALYZED_FILE_KB * 1024 for path in selected):
@@ -1940,6 +1929,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             scanner_env = python_scanner_environment(interpreter, private, prepare, preparation_env)
             sdk = python_sdk(interpreter, version)
             prepare_model(project, sdk_name, framework, selected | controls)
+        shutil.copyfile(profile, private / "profile.xml")
         properties = {"config": config, "plugins": plugins, "system": private / "system", "log": private / "logs"}
         (private / "idea.properties").write_text("".join(f"idea.{name}.path={path}\n" for name, path in properties.items()) + "idea.initially.ask.config=never\n")
         # App defaults are public code; never read the activated worker's VM options.
@@ -2040,9 +2030,9 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_snapshot_inputs_changed")
         if common.scope_selection(args, host)[3] != selected:
             raise Blocked("native_source_selection_changed")
-        if (common.resolve_profile_inputs(repo, profile) != profile_assets
-                or any(path.is_symlink() or path.resolve() != path or common.digest(path) != profile_hashes[path]
-                       or common.digest(profile_destinations[path]) != profile_hashes[path] for path in profile_assets)):
+        if (common.resolve_profile_source(repo, profile) != profile_source or profile.is_symlink() or profile.resolve() != profile
+                or common.digest(profile) != receipt["profile_sha256"]
+                or common.digest(private / "profile.xml") != receipt["profile_sha256"]):
             raise Blocked("native_profile_inputs_changed")
         if [host.git_head_sha(root) for root in framework] != receipt["framework_revisions"]:
             raise Blocked("native_framework_inputs_changed")
