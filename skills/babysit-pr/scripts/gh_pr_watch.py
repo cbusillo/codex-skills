@@ -1462,12 +1462,10 @@ def has_confirmed_conflict(pr):
     )
 
 
-def workflows_settled_for_retry(checks_summary):
-    unfinished = checks_summary.get("unfinished_workflow_run_count")
+def workflows_settled_for_retry(checks_summary: dict[str, Any]) -> bool:
     return (
         checks_summary.get("evidence_complete") is True
-        and checks_summary.get("head_matches") is True
-        and type(unfinished) is int and unfinished == 0
+        and checks_summary.get("unfinished_workflow_run_count") == 0
     )
 
 

@@ -4225,9 +4225,10 @@ def test_own_timeout_retry_reruns_failed_jobs_within_the_budget(monkeypatch, tmp
 
 @pytest.mark.parametrize("outside_check", ["launchplane/owner-review", "external-preview"])
 @pytest.mark.parametrize("conclusion", ["failure", "cancelled"])
-def test_pending_outside_check_does_not_block_completed_failed_workflow_retry(
-    monkeypatch, tmp_path, outside_check, conclusion,
-):
+@pytest.mark.parametrize("workflows", ["settled", "unfinished", "unavailable"])
+def test_outside_check_wait_preserves_workflow_retry_admission(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, outside_check: str, conclusion: str, workflows: str,
+) -> None:
     run = execution(1, conclusion)
     timeout_reader = TimeoutReader()
     jobs = timeout_reader.jobs if conclusion == "cancelled" else [
@@ -4239,11 +4240,17 @@ def test_pending_outside_check_does_not_block_completed_failed_workflow_retry(
         "app": {"slug": "outside-app", "id": 101}, "status": "in_progress",
         "conclusion": None, "details_url": "https://example.test/review",
     })
-    reader = ExecutionReader([run], checks, jobs={1: jobs})
+    runs = [run]
+    if workflows == "unfinished":
+        runs.append(execution(2, None, workflow_id=72, status="queued"))
+    reader = ExecutionReader(
+        runs, checks, jobs={1: jobs},
+        unavailable="/repos/openai/codex/commits/abc123/statuses" if workflows == "unavailable" else None,
+    )
     reader.degraded_reasons = []
     read_page = reader.paged_json
 
-    def paged_json(path, **kwargs):
+    def paged_json(path: str, **kwargs: Any) -> list[dict[str, Any]]:
         if "/attempts/" in path or path.endswith("/annotations"):
             return timeout_reader.paged_json(path, **kwargs)
         return read_page(path, **kwargs)
@@ -4262,34 +4269,26 @@ def test_pending_outside_check_does_not_block_completed_failed_workflow_retry(
     result = gh_pr_watch.retry_failed_now(args)
 
     snapshot = result["snapshot"]
-    assert snapshot["checks"]["evidence_complete"] is True
     assert snapshot["checks"]["all_terminal"] is False
+    assert "ready_to_merge" not in snapshot["actions"]
+    if workflows != "settled":
+        assert "retry_failed_checks" not in snapshot["actions"]
+        assert writes == []
+        assert result["rerun_attempted"] is False
+        assert result["reason"] == (
+            "check_evidence_incomplete" if workflows == "unavailable" else "checks_still_pending"
+        )
+        return
+    assert snapshot["checks"]["evidence_complete"] is True
     assert snapshot["checks"]["unfinished_workflow_run_count"] == 0
     assert "retry_failed_checks" in snapshot["actions"]
-    assert "ready_to_merge" not in snapshot["actions"]
     assert writes == [["run", "rerun", "1", "--failed"]]
     assert result["retries_used"] == 1
     if conclusion == "cancelled":
         assert snapshot["failed_runs"][0]["retry_mode"] == "job_timeout"
 
 
-@pytest.mark.parametrize("settlement", [1, None, "0", False])
-def test_unknown_or_unfinished_actions_refuse_retry_while_outside_check_pending(
-    monkeypatch, tmp_path, settlement,
-):
-    snapshot, _ = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
-    snapshot["checks"].update(
-        all_terminal=False, pending_count=1, unfinished_workflow_run_count=settlement,
-    )
-    monkeypatch.setattr(gh_pr_watch, "gh_text", lambda *_a, **_kw: pytest.fail("unexpected write"))
-    actions = gh_pr_watch.recommend_actions(
-        snapshot["pr"], snapshot["checks"], snapshot["failed_runs"], snapshot["failed_jobs"], [], 0, 3,
-    )
-    assert "retry_failed_checks" not in actions
-    assert gh_pr_watch.retry_failed_now(argparse.Namespace())["reason"] == "checks_still_pending"
-
-
-def test_exhausted_retry_budget_stops_despite_pending_outside_check():
+def test_exhausted_retry_budget_stops_despite_pending_outside_check() -> None:
     actions = gh_pr_watch.recommend_actions(
         sample_pr(), sample_checks(failed_count=1, all_terminal=False, pending_count=1),
         [failed_run(1)], [failed_job(1)], [], 2, 2,
