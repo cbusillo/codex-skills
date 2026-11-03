@@ -12,17 +12,22 @@ import re
 import shlex
 import shutil
 import subprocess
-import time
 import uuid
 from pathlib import Path
 
 import services
 from check_changes import save_state
-from tmux_terminal import Terminal
+from session_liveness import generation_ended
 
 SCRIPTS = Path(__file__).resolve().parent
 CATALOG = SCRIPTS.parents[2]
-START_TIMEOUT = 120
+START_TIMEOUT = 900
+
+
+class LaunchCommandError(ValueError):
+    def __init__(self, message: str, payload: dict) -> None:
+        super().__init__(message)
+        self.not_started = payload.get("mutation_started") is False and not payload.get("launched")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -44,30 +49,45 @@ def parser() -> argparse.ArgumentParser:
     start_command.add_argument("--tmux-socket", default="supervisor")
     start_command.add_argument("--account")
     start_command.add_argument("--account-config", type=Path)
-    start_command.add_argument(
-        "--takeover", action="store_true", help="explicitly launch a successor after the current Supervisor's handoff"
-    )
-    start_command.add_argument(
-        "--recover", action="store_true", help="finish the retained startup using its original native registration; never relaunch"
-    )
+    start_command.add_argument("--takeover", action="store_true", help="launch a successor after the current Supervisor's handoff")
+    start_command.add_argument("--recover", action="store_true", help="finish the retained native launch; never relaunch")
     return command
 
 
-def run_json(argv: list[str], *, timeout: int = START_TIMEOUT) -> dict:
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+def run_json(argv: list[str], *, receipt: Path | None = None) -> dict:
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=START_TIMEOUT)
+    except subprocess.TimeoutExpired as error:
+        if receipt:
+            output = error.stdout or b""
+            receipt.write_bytes(output.encode() if isinstance(output, str) else output)
+        raise
+    if receipt:
+        receipt.write_text(result.stdout)
+        receipt.chmod(0o600)
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError:
+        payload = {}
     if result.returncode:
-        raise ValueError(f"command failed; retain startup evidence and reconcile before retry: {result.stdout} {result.stderr}")
-    payload = json.loads(result.stdout)
-    if not isinstance(payload, dict):
+        raise LaunchCommandError(
+            f"startup command failed; inspect its retained receipt: {result.stdout} {result.stderr}",
+            payload if isinstance(payload, dict) else {},
+        )
+    if not isinstance(payload, dict) or not payload:
         raise ValueError("startup command returned no single receipt; reconcile before retry")
     return payload
 
 
 def option_value(argv: list[str], option: str) -> str | None:
-    positions = [index for index, value in enumerate(argv) if value == option]
-    if len(positions) > 1 or (positions and positions[0] + 1 >= len(argv)):
+    values = [
+        value.split("=", 1)[1] if value.startswith(option + "=") else argv[index + 1] if index + 1 < len(argv) else None
+        for index, value in enumerate(argv)
+        if value == option or value.startswith(option + "=")
+    ]
+    if len(values) > 1 or None in values:
         raise ValueError(f"ambiguous watcher argument: {option}")
-    return argv[positions[0] + 1] if positions else None
+    return values[0] if values else None
 
 
 def configure(args: argparse.Namespace, root: Path, config_path: Path) -> tuple[Path, Path]:
@@ -77,6 +97,9 @@ def configure(args: argparse.Namespace, root: Path, config_path: Path) -> tuple[
 
 
 def configure_locked(args: argparse.Namespace, root: Path, config_path: Path) -> tuple[Path, Path]:
+    import github_identity
+    from session_record import load_ledger
+
     uv = shutil.which("uv")
     if not uv:
         raise ValueError("uv is required")
@@ -84,9 +107,13 @@ def configure_locked(args: argparse.Namespace, root: Path, config_path: Path) ->
     previous = config["services"].get("foreign")
     argv = list(previous["argv"]) if previous else [uv, "run", "--no-cache", str(SCRIPTS / "foreign_watch.py")]
     if args.watch_args_file:
+        flags = shlex.split(args.watch_args_file.read_text())
         if previous:
-            raise ValueError("use the existing foreign service arguments rather than a second flags source")
-        argv.extend(shlex.split(args.watch_args_file.read_text()))
+            index = next(index for index, value in enumerate(argv) if Path(value).name == "foreign_watch.py") + 1
+            if argv[index : index + len(flags)] != flags:
+                raise ValueError("existing foreign service differs from the supplied adoption flags")
+        else:
+            argv.extend(flags)
     ledger = (args.ledger or Path(option_value(argv, "--ledger") or root / "workers.json")).resolve()
     state = (args.foreign_state or Path(option_value(argv, "--state") or root / "foreign.json")).resolve()
     for option, value in (
@@ -100,14 +127,15 @@ def configure_locked(args: argparse.Namespace, root: Path, config_path: Path) ->
         same = (
             Path(existing).resolve() == Path(value).resolve()
             if existing is not None and option in {"--state", "--ledger", "--notify-config"}
-            else existing == value
+            else existing is not None and existing.casefold() == value.casefold()
         )
         if existing is not None and not same:
-            raise ValueError(f"existing {option} differs; preserve its custody and choose matching startup arguments")
+            raise ValueError(f"existing {option} differs; choose matching startup arguments rather than changing custody")
         if existing is None:
             argv.extend([option, value])
-    if "--own-login" not in argv:
-        argv.extend(["--own-login", args.owner])
+    if not any(value == "--own-login" or value.startswith("--own-login=") for value in argv):
+        for login in filter(None, [args.owner, github_identity.automation_login(), *github_identity.configured_bot_logins()]):
+            argv.extend(["--own-login", login])
     if "--persistent" not in argv:
         argv.append("--persistent")
     if args.events and "--events" not in argv:
@@ -121,8 +149,6 @@ def configure_locked(args: argparse.Namespace, root: Path, config_path: Path) ->
         with ledger.open("x") as stream:
             stream.write("[]\n")
         ledger.chmod(0o600)
-    from session_record import load_ledger
-
     load_ledger(ledger)
     save_state(config_path, config)
     return ledger, state
@@ -136,18 +162,16 @@ def launch_supervisor(args: argparse.Namespace, root: Path, config_path: Path, l
     journal["attempt"] = str(attempt)
     save_state(root / "start.json", journal)
     save_state(registration, [])
-    provider = {"codex": "openai", "claude": "anthropic"}[args.harness]
     command = attempt / "command.txt"
     command.write_text(
         f"cd {shlex.quote(str(args.directory.resolve()))} && exec "
         + ("codex --remote unix://" if args.harness == "codex" else "claude")
         + "\n"
     )
-    brief = attempt / "brief.txt"
     recovery = (
         f"Read the existing recovery note at {args.recovery.resolve()}."
         if args.recovery
-        else "Start from current repository direction and the work queue."
+        else "Read current repository direction and the work queue."
     )
     routine = (
         [
@@ -167,28 +191,34 @@ def launch_supervisor(args: argparse.Namespace, root: Path, config_path: Path, l
             "--miss-issue",
             args.miss_issue,
             "--foreign-log",
-            str(root / "logs/foreign.jsonl"),
+            str(root / "jobs/logs/foreign.jsonl"),
         ]
         if args.queue
         else []
     )
+    brief = attempt / "brief.txt"
     brief.write_text(
         "You are the Director's managed Supervisor. Read the supervisor skill in full before supervising.\n"
         f"Catalog: {CATALOG}. Owner: {args.owner}. Worker ledger: {ledger}. Foreign state: {state}. "
         f"Notification configuration: {config_path}. {recovery}\n"
         + (
-            f"Use the existing scheduled-check feature about every 23 minutes with this foreground digest: {shlex.join(routine)}.\n"
+            f"Use the harness's scheduled-check feature about every 23 minutes with this foreground digest: {shlex.join(routine)}.\n"
             if routine
             else "Read any configured Director question queue; do not invent one.\n"
         )
-        + "The start command registers and binds this actual session and runs the foreign watcher outside your conversation. "
-        "Keep yourself out of the worker ledger. Reuse the persistent foreign service; do not start another watcher. "
+        + "The start command binds this actual session and runs the foreign service outside your conversation. "
+        "Keep yourself out of the worker ledger. Reuse that service; do not start another watcher. "
         "On Claude, leave an idle empty prompt without ordinary background tasks between scheduled checks. "
-        "Do not change credentials, access or the Director's settings. Follow the Director's stop boundaries.\n"
+        "Follow the Director's stop boundaries and do not change access, credentials or personal settings.\n"
         f"Rules for this brief: {SCRIPTS.parent / 'references/brief-rules.md'}\n"
     )
     base = [shutil.which("uv") or "uv", "run", str(SCRIPTS / "iterm_tab.py"), "--backend", "tmux", "--tmux-socket", args.tmux_socket]
-    container = run_json([*base, "window"])
+    try:
+        container = run_json([*base, "window"], receipt=attempt / "window.json")
+    except (ValueError, OSError, subprocess.SubprocessError):
+        journal["status"] = "not_started"
+        save_state(root / "start.json", journal)
+        raise
     argv = [
         *base,
         "new",
@@ -201,23 +231,45 @@ def launch_supervisor(args: argparse.Namespace, root: Path, config_path: Path, l
         "--ledger",
         str(registration),
         "--account-provider",
-        provider,
+        {"codex": "openai", "claude": "anthropic"}[args.harness],
         "--without-browser",
     ]
     if args.account:
         argv.extend(["--account", args.account])
     if args.account_config:
         argv.extend(["--account-config", str(args.account_config)])
-    receipt = run_json(argv)
-    save_state(attempt / "receipt.json", receipt)
+    try:
+        run_json(argv, receipt=attempt / "receipt.json")
+    except LaunchCommandError as error:
+        if error.not_started:
+            journal["status"] = "not_started"
+            save_state(root / "start.json", journal)
+        raise
     return recover_supervisor(root, config_path, ledger)
 
 
 def recover_supervisor(root: Path, config_path: Path, ledger: Path) -> dict:
     journal = json.loads((root / "start.json").read_text())
     attempt = Path(journal["attempt"])
-    receipt = json.loads((attempt / "receipt.json").read_text())
+    receipt_path = attempt / "registered.json" if (attempt / "registered.json").exists() else attempt / "receipt.json"
+    receipt = json.loads(receipt_path.read_text())
     registration = attempt / "launch.json"
+    if "native_session_id" not in receipt:
+        if not isinstance(receipt.get("failed_launch", {}).get("launch"), dict):
+            raise ValueError("retained launcher receipt has no registered source; inspect its exact terminal before recovery")
+        receipt = run_json(
+            [
+                shutil.which("uv") or "uv",
+                "run",
+                str(SCRIPTS / "iterm_tab.py"),
+                "register",
+                "--receipt-file",
+                str(attempt / "receipt.json"),
+                "--ledger",
+                str(registration),
+            ],
+            receipt=attempt / "registered.json",
+        )
     if not registration.exists():
         recipient = verify_existing_supervisor(config_path)
         if recipient["session_id"] != receipt["native_session_id"]:
@@ -239,93 +291,20 @@ def verify_existing_supervisor(config_path: Path) -> dict:
     return services.verify_managed_supervisor(services.supervisor_recipient(config_path))
 
 
-def service_process(terminal: Terminal, identity: str, config_path: Path) -> bool:
-    from session_liveness import inventory
-    from tmux_terminal import belongs_to, process_parents
-
-    pane = terminal.select(identity)
-    suffix = [str(SCRIPTS / "services.py"), "run", "--config", str(config_path), "--service", "foreign"]
-    processes = inventory()
-    runners = [
-        row for row in processes if row[1] == pane["tty"].removeprefix("/dev/") and shlex.split(row[2])[-len(suffix) :] == suffix
-    ]
-    if pane["dead"] or len(runners) != 1:
-        return False
-    argv = services.load_config(config_path)["services"]["foreign"]["argv"]
-    script_index = argv.index(str(SCRIPTS / "foreign_watch.py"))
-    watch = argv[script_index:]
-    parents = process_parents()
-    return any(shlex.split(row[2])[-len(watch) :] == watch and belongs_to(row[0], runners[0][0], parents) for row in processes)
+def prepare_foreign_service(root: Path, config_path: Path) -> dict:
+    host = services.prepare_service_host(config_path, CATALOG, root / "jobs", "foreign")
+    if services.reconciliation_marker(config_path, "foreign").exists() and not services.service_host_active(host):
+        raise ValueError("foreign service requires reconciliation; inspect its logs and use services.py clear before retrying")
+    return host
 
 
-def ensure_foreign_service(args: argparse.Namespace, root: Path, config_path: Path, journal: dict) -> dict:
-    terminal = Terminal(args.tmux_socket)
-    existing = journal.get("service")
-    if existing:
-        if service_process(terminal, existing["session_id"], config_path):
-            return existing
-        raise ValueError("foreign service stopped or changed; reconcile its existing receipt and logs")
-    if services.reconciliation_marker(config_path, "foreign").exists():
-        raise ValueError("foreign service requires reconciliation before startup")
-    base = [shutil.which("uv") or "uv", "run", str(SCRIPTS / "iterm_tab.py"), "--backend", "tmux", "--tmux-socket", args.tmux_socket]
-    container = run_json([*base, "window"])
-    logs = root / "logs"
-    logs.mkdir(exist_ok=True, mode=0o700)
-    config = services.load_config(config_path)
-    runner = [
-        config["uv"],
-        "run",
-        "--no-project",
-        str(SCRIPTS / "services.py"),
-        "run",
-        "--config",
-        str(config_path),
-        "--service",
-        "foreign",
-    ]
-    script = root / "foreign-service.sh"
-    script.write_text(
-        f"exec {shlex.join(runner)} >> {shlex.quote(str(logs / 'foreign.jsonl'))} "
-        f"2>> {shlex.quote(str(logs / 'foreign.stderr.log'))}\n"
-    )
-    identity = uuid.uuid4().hex
-    service = {"session_id": f"tmux:{args.tmux_socket}:{identity}", "logs": str(logs)}
-    journal["service"] = service
-    save_state(root / "start.json", journal)
-    environment = [
-        argument
-        for key in ("PATH", "CODE_HOME", "CODEX_HOME", "LANG", "LC_ALL")
-        if key in os.environ
-        for argument in ("-e", key + "=" + os.environ[key])
-    ]
-    created = terminal.run(
-        "new-window",
-        "-d",
-        "-t",
-        container["window_id"] + ":",
-        "-n",
-        "foreign",
-        *environment,
-        "-P",
-        "-F",
-        "#{pane_id}",
-        "exec /bin/sh " + shlex.quote(str(script)),
-    ).stdout.strip()
-    terminal.run("set-option", "-w", "-t", created, "remain-on-exit", "on")
-    terminal.run("set-option", "-p", "-t", created, "@supervisor_identity", identity)
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        if service_process(terminal, service["session_id"], config_path):
-            return service
-        if terminal.select(service["session_id"])["dead"]:
-            break
-        time.sleep(0.1)
-    raise ValueError("foreign service startup unconfirmed; reconcile the retained service receipt and logs")
+def ensure_foreign_service(root: Path, config_path: Path) -> dict:
+    return services.ensure_service_host(prepare_foreign_service(root, config_path), config_path, "foreign")
 
 
 def start(args: argparse.Namespace) -> dict:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", args.owner) or not re.fullmatch(
-        rf"{re.escape(args.owner)}/[A-Za-z0-9_.-]+#[1-9][0-9]*", args.miss_issue
+        rf"{re.escape(args.owner)}/[A-Za-z0-9_.-]+#[1-9][0-9]*", args.miss_issue, re.I
     ):
         raise ValueError("--miss-issue must identify the Director's existing repair issue")
     root = (
@@ -342,20 +321,21 @@ def start(args: argparse.Namespace) -> dict:
             raise ValueError("--recover requires a retained startup and cannot launch a takeover")
         if config_path.exists() and services.load_config(config_path).get("supervisor") and not previous and not args.takeover:
             raise ValueError("an existing Supervisor is bound; use --takeover only after its handoff")
-        if previous and previous.get("status") != "running" and not args.recover:
-            raise ValueError(f"startup requires reconciliation; inspect {path}; do not replay a partial launch")
+        if previous and previous.get("status") not in {"running", "not_started"} and not args.recover:
+            raise ValueError(f"startup requires reconciliation; inspect {path}; --recover never replays a launch")
         if previous.get("status") == "running" and not args.takeover and not args.recover:
-            recipient = verify_existing_supervisor(config_path)
-            service = ensure_foreign_service(args, root, config_path, previous)
-            return {"status": "already_running", "supervisor": recipient, "service": service}
-        if services.reconciliation_marker(config_path, "foreign").exists() and not previous.get("service"):
+            try:
+                recipient = verify_existing_supervisor(config_path)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                if not generation_ended(services.supervisor_recipient(config_path)):
+                    raise
+            else:
+                return {"status": "already_running", "supervisor": recipient, "service": ensure_foreign_service(root, config_path)}
+        if services.reconciliation_marker(config_path, "foreign").exists() and not config_path.exists():
             raise ValueError("foreign service requires reconciliation before launching a Supervisor")
         ledger, state = configure(args, root, config_path)
-        journal = (
-            previous
-            if args.recover
-            else {"status": "launching", **({"service": previous["service"]} if previous.get("service") else {})}
-        )
+        prepare_foreign_service(root, config_path)
+        journal = previous if args.recover else {"status": "launching"}
         save_state(path, journal)
         recipient = (
             recover_supervisor(root, config_path, ledger)
@@ -365,7 +345,7 @@ def start(args: argparse.Namespace) -> dict:
         journal = json.loads(path.read_text())
         journal["supervisor"] = recipient["session_id"]
         save_state(path, journal)
-        service = ensure_foreign_service(args, root, config_path, journal)
+        service = ensure_foreign_service(root, config_path)
         journal["status"] = "running"
         save_state(path, journal)
         return {
@@ -385,7 +365,8 @@ def main() -> int:
         print(json.dumps(start(args)))
         return 0
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-        print(json.dumps({"status": "reconciliation_required", "error": str(error)}))
+        status = "not_started" if isinstance(error, LaunchCommandError) and error.not_started else "reconciliation_required"
+        print(json.dumps({"status": status, "error": str(error)}))
         return 1
 
 

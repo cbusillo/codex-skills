@@ -934,12 +934,16 @@ worker ledger, and is removed after binding. Codex uses its existing native
 queue; Claude uses its exact managed pane and must be idle with an empty
 prompt and no ordinary background task to receive a notice.
 
-The same `services.py run --service foreign` runner lives in a separate
-detached tmux pane. It survives Supervisor conversation restarts and owns the
-existing watcher lock, failure marker and logs. It does not add a collector or
-dispatcher. Restart this command after host login; existing launchd-managed
-services retain the procedure below. Startup success proves the registered
-Supervisor and running reader, not delivery of a person's message.
+The same `services.py run --service foreign` runner lives in the user service
+manager: launchd on macOS, systemd on Linux. The command installs a matching
+job if missing and reuses an already-running matching job. A different job
+under that name refuses before a Supervisor is launched. It survives
+Supervisor conversation restarts and owns the existing watcher lock, failure
+marker and logs under `jobs/logs`. It adds no collector, dispatcher or tmux
+service host. After login, repeat the command to start a new Supervisor only
+when its previous process generation has ended. Startup success proves the
+registered Supervisor and service manager's running reader, not delivery of a
+person's message.
 
 Add `--events` only when the existing optional Launchplane operator source is
 configured. Without it the existing polling backstop runs and event-triggered
@@ -960,13 +964,17 @@ before this command adopts it. Never start a second watcher against that state.
 
 An existing binding requires an explicit `--takeover` after its handoff.
 Repeating a completed start verifies and returns the current session and service.
-An incomplete start retains `start.json`, native receipts and service logs;
+An incomplete start retains `start.json`, the launcher's original stdout,
+native receipts and service logs;
 `--recover` completes that same registered launch without creating another
-Supervisor or service. If registration itself failed, use the launcher's
-existing receipt-based `register` recovery first. An uncertain terminal or
-service launch stays held for exact receipt reconciliation; never delete state
-to make the command run again. Neither takeover nor recovery clears a service
-hold or replays an uncertain message.
+Supervisor. When registration failed, recovery calls the launcher's existing
+receipt-based `register` on the retained result. A certainly unstarted
+preflight can be retried after correcting its cause. An uncertain terminal
+launch stays held for exact receipt reconciliation; never delete state to make
+the command run again. Neither takeover nor recovery clears a service hold or
+replays an uncertain message. For a stopped reader, inspect its logs, use
+`services.py clear --config PATH --service foreign` after reconciliation, and
+repeat the start command to restart that same managed job.
 
 ## Persistent Supervisor services
 

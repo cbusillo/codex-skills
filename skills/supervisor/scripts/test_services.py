@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from typing import Any
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -218,6 +219,73 @@ class ServicesTests(unittest.TestCase):
                 with services.service_lock(self.config, "drive"):
                     self.fail("duplicate service acquired the lock")
 
+    def test_managed_service_reuses_its_host_and_restarts_after_a_cleared_failure(self) -> None:
+        for platform in ("darwin", "linux"):
+            with self.subTest(platform=platform):
+                self.assert_service_host_recovers(platform)
+
+    def assert_service_host_recovers(self, platform: str) -> None:
+        self.data["uv"] = "/fixture/uv"
+        self.save()
+        output = self.root / platform
+        state = {"loaded": False, "active": False}
+        operations = []
+
+        def manager(argv: list[str]) -> subprocess.CompletedProcess:
+            operations.append(argv)
+            if argv[:2] == ["launchctl", "print"]:
+                if not state["loaded"]:
+                    return subprocess.CompletedProcess(argv, 113, "", "Could not find service")
+                definition = plistlib.loads(next(output.glob("*.foreign.plist")).read_bytes())
+                arguments = "\n".join(definition["ProgramArguments"])
+                status = "running" if state["active"] else "not running"
+                return subprocess.CompletedProcess(argv, 0, f"state = {status}\narguments = {{\n{arguments}\n}}\n", "")
+            if "show" in argv:
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            if "is-active" in argv:
+                return subprocess.CompletedProcess(argv, 0 if state["active"] else 3,
+                                                   "active" if state["active"] else "inactive", "")
+            if "bootstrap" in argv:
+                state["loaded"] = True
+            if "kickstart" in argv or "enable" in argv:
+                state.update(loaded=True, active=True)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        with (patch.object(services.sys, "platform", platform),
+              patch.object(services.Path, "home", return_value=self.root / platform / "home"),
+              patch.dict(services.os.environ, {"XDG_CONFIG_HOME": str(output / "config")}),
+              patch.object(services.shutil, "which", return_value="/fixture/systemctl"),
+              patch.object(services, "host_command", side_effect=manager)):
+            host = services.prepare_service_host(self.config, Path(__file__).resolve().parents[3], output, "foreign")
+            services.ensure_service_host(host, self.config, "foreign")
+            mutations = sum("bootstrap" in row or "enable" in row or "kickstart" in row for row in operations)
+            services.ensure_service_host(host, self.config, "foreign")
+            self.assertEqual(sum("bootstrap" in row or "enable" in row or "kickstart" in row for row in operations), mutations)
+            state["active"] = False
+            marker = services.reconciliation_marker(self.config, "foreign")
+            marker.touch()
+            with self.assertRaisesRegex(ValueError, "reconcil"):
+                services.ensure_service_host(host, self.config, "foreign")
+            with patch.object(services.sys, "argv", ["services.py", "clear", "--config", str(self.config), "--service", "foreign"]):
+                self.assertEqual(services.main(), 0)
+            services.ensure_service_host(host, self.config, "foreign")
+            self.assertTrue(state["active"])
+            self.assertTrue(Path(host["installed"]).is_file())
+
+    def test_service_host_refuses_another_config_or_a_denied_manager_read(self) -> None:
+        self.save()
+        with (patch.object(services.sys, "platform", "darwin"),
+              patch.object(services.Path, "home", return_value=self.root / "home"),
+              patch.object(services, "host_command", return_value=subprocess.CompletedProcess([], 0, "arguments = {\n/other/service\n}\n", "")) as commands):
+            with self.assertRaisesRegex(ValueError, "another configuration"):
+                services.prepare_service_host(self.config, Path(__file__).resolve().parents[3], self.root / "jobs", "foreign")
+            self.assertEqual(commands.call_count, 1)
+        with (patch.object(services.sys, "platform", "darwin"),
+              patch.object(services, "host_command", return_value=subprocess.CompletedProcess([], 1, "", "permission denied")) as commands):
+            with self.assertRaisesRegex(ValueError, "unavailable"):
+                services.prepare_service_host(self.config, Path(__file__).resolve().parents[3], self.root / "jobs", "foreign")
+            self.assertEqual(commands.call_count, 1)
+
     def codex_source(self, identity: str) -> tuple[Path, dict[str, str]]:
         home = self.root / "account"
         transcript = home / "sessions" / f"{identity}.jsonl"
@@ -313,6 +381,7 @@ class ServicesTests(unittest.TestCase):
 
     def test_startup_binding_validates_launched_native_identity_on_both_harnesses(self) -> None:
         import codex_session_proxy
+        import github_plan_closure
         import session_liveness
         import tmux_terminal
         self.save()
@@ -327,10 +396,13 @@ class ServicesTests(unittest.TestCase):
                 transcript, env = self.codex_source(identity)
                 entry.update(transcript=str(transcript), codex_home=env["CODEX_HOME"], tty="ttys001")
             with (self.subTest(harness=harness),
-                  patch.object(tmux_terminal.Terminal, "select", return_value=source.pane),
+                  patch.object(tmux_terminal.Terminal, "list", return_value=[source.pane]),
                   patch.object(tmux_terminal, "process_parents", return_value={50: 20, 20: 1}),
-                  patch.object(session_liveness, "inventory", return_value=[(50, "ttys001", harness)]),
-                  patch.object(codex_session_proxy, "source_endpoint")):
+                  patch.object(session_liveness, "inventory", return_value=[(50, "ttys001", "claude" if harness == "claude" else "python codex_session_proxy.py")]),
+                  patch.object(session_liveness, "native_arguments", return_value=["python", "codex_session_proxy.py"]),
+                  patch.object(session_liveness, "process_started_at", return_value=datetime.now(timezone.utc)),
+                  patch.object(github_plan_closure, "guarded_launch_endpoint", side_effect=lambda pid, _: "/fixture/socket" if pid == 50 else None),
+                  patch.object(codex_session_proxy, "source_endpoint", return_value=Path("/fixture/socket"))):
                 bound = services.bind_launched_supervisor(self.config, entry)
                 self.assertEqual(bound["session_id"], identity)
                 self.assertEqual(bound["role"], "supervisor")

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +19,11 @@ class SupervisorStartTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name).resolve()
+        self.enterContext(patch.object(supervisor, "prepare_foreign_service", return_value={}))
+        import github_identity
+
+        self.enterContext(patch.object(github_identity, "automation_login", return_value="automation[bot]"))
+        self.enterContext(patch.object(github_identity, "configured_bot_logins", return_value=()))
         self.args = supervisor.parser().parse_args(
             [
                 "start",
@@ -102,7 +108,7 @@ class SupervisorStartTests(unittest.TestCase):
         self.assertEqual(launch.call_count, 1)
 
     def test_held_service_refuses_before_launch_or_binding(self) -> None:
-        (self.root / "services.json.foreign.reconcile").touch()
+        supervisor.services.reconciliation_marker(self.root / "services.json", "foreign").touch()
         with (
             patch.object(supervisor, "launch_supervisor") as launch,
             patch.object(supervisor.shutil, "which", return_value="/fixture/uv"),
@@ -164,9 +170,9 @@ class SupervisorStartTests(unittest.TestCase):
                     observed: list = commands,
                     workers: Path = ledger,
                     **_: object,
-                ) -> dict:
+                ) -> subprocess.CompletedProcess:
                     if argv[-1] == "window":
-                        return {"window_id": "$1"}
+                        return subprocess.CompletedProcess(argv, 0, json.dumps({"window_id": "$1"}), "")
                     command = Path(argv[argv.index("--command-file") + 1]).read_text().rstrip("\n")
                     words = iterm_tab.launch_words(command)
                     if selected_harness == "codex":
@@ -177,10 +183,10 @@ class SupervisorStartTests(unittest.TestCase):
                     registration = Path(argv[argv.index("--ledger") + 1])
                     self.assertNotEqual(registration, workers)
                     supervisor.save_state(registration, [{"session_id": "actual-native"}])
-                    return {"native_session_id": "actual-native"}
+                    return subprocess.CompletedProcess(argv, 0, json.dumps({"native_session_id": "actual-native"}), "")
 
                 with (
-                    patch.object(supervisor, "run_json", side_effect=launch),
+                    patch.object(supervisor.subprocess, "run", side_effect=launch),
                     patch.object(
                         supervisor.services, "bind_launched_supervisor", return_value={"session_id": "actual-native"}
                     ) as bind,
@@ -191,6 +197,118 @@ class SupervisorStartTests(unittest.TestCase):
                 self.assertEqual(len(commands), 1)
                 self.assertEqual(result["session_id"], bind.return_value["session_id"])
                 self.assertEqual(json.loads(ledger.read_text()), [])
+
+    def test_recovery_registers_the_original_failed_launcher_receipt(self) -> None:
+        attempt = self.root / "attempt"
+        attempt.mkdir()
+        payload = {"failed_launch": {"launch": {"session_id": "retained-terminal"}, "phase": "register_ledger"}}
+        supervisor.save_state(attempt / "receipt.json", payload)
+        original = (attempt / "receipt.json").read_bytes()
+        supervisor.save_state(attempt / "launch.json", [])
+        supervisor.save_state(self.root / "start.json", {"status": "launching", "attempt": str(attempt)})
+        workers = self.root / "workers.json"
+        supervisor.save_state(workers, [])
+
+        def register(argv: list[str], **_: object) -> subprocess.CompletedProcess:
+            self.assertIn("register", argv)
+            self.assertEqual(Path(argv[argv.index("--receipt-file") + 1]).read_bytes(), original)
+            supervisor.save_state(attempt / "launch.json", [{"session_id": "original-native"}])
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"native_session_id": "original-native"}), "")
+
+        with (
+            patch.object(supervisor.subprocess, "run", side_effect=register) as commands,
+            patch.object(supervisor.services, "bind_launched_supervisor", return_value={"session_id": "original-native"}),
+        ):
+            result = supervisor.recover_supervisor(self.root, self.root / "services.json", workers)
+        self.assertEqual(result["session_id"], "original-native")
+        self.assertEqual(commands.call_count, 1)
+        self.assertEqual((attempt / "receipt.json").read_bytes(), original)
+        self.assertFalse((attempt / "launch.json").exists())
+
+    def test_certainly_unstarted_preflight_can_be_retried_without_recovery(self) -> None:
+        failed = {"mutation_started": False, "launched": [], "failed_launch": {"phase": "prepare_launches"}}
+        with (
+            patch.object(
+                supervisor.subprocess,
+                "run",
+                side_effect=[
+                    subprocess.CompletedProcess([], 0, json.dumps({"window_id": "$1"}), ""),
+                    subprocess.CompletedProcess([], 1, json.dumps(failed), "missing CLI"),
+                ],
+            ),
+            patch.object(supervisor.shutil, "which", return_value="/fixture/uv"),
+        ):
+            with self.assertRaises(supervisor.LaunchCommandError):
+                supervisor.start(self.args)
+        self.assertEqual(json.loads((self.root / "start.json").read_text())["status"], "not_started")
+        with (
+            patch.object(supervisor, "launch_supervisor", return_value={"session_id": "new-native"}) as launch,
+            patch.object(supervisor, "ensure_foreign_service", return_value={}),
+            patch.object(supervisor.shutil, "which", return_value="/fixture/uv"),
+        ):
+            result = supervisor.start(self.args)
+        self.assertEqual(result["supervisor"]["session_id"], "new-native")
+        launch.assert_called_once()
+
+    def test_equals_form_paths_and_automation_filters_are_preserved(self) -> None:
+        flags = self.root / "flags.txt"
+        state = self.root / "state with spaces.json"
+        flags.write_text(f"--owner example --state='{state}'")
+        self.args.watch_args_file = flags
+        with (
+            patch.object(supervisor, "launch_supervisor", return_value={"session_id": "native"}),
+            patch.object(supervisor, "ensure_foreign_service", return_value={}),
+            patch.object(supervisor.shutil, "which", return_value="/fixture/uv"),
+        ):
+            result = supervisor.start(self.args)
+        argv = json.loads((self.root / "services.json").read_text())["services"]["foreign"]["argv"]
+        self.assertEqual(result["state"], str(state))
+        self.assertNotIn("--state", argv)
+        self.assertIn("automation[bot]", argv)
+
+    def test_recovery_after_registration_does_not_register_again(self) -> None:
+        attempt = self.root / "attempt"
+        attempt.mkdir()
+        supervisor.save_state(attempt / "receipt.json", {"failed_launch": {"launch": {"session_id": "terminal"}}})
+        supervisor.save_state(attempt / "registered.json", {"native_session_id": "retained-native"})
+        supervisor.save_state(attempt / "launch.json", [{"session_id": "retained-native"}])
+        supervisor.save_state(self.root / "start.json", {"attempt": str(attempt), "status": "launching"})
+        ledger = self.root / "workers.json"
+        supervisor.save_state(ledger, [])
+        with (
+            patch.object(supervisor.subprocess, "run") as launch,
+            patch.object(supervisor.services, "bind_launched_supervisor", return_value={"session_id": "retained-native"}),
+        ):
+            result = supervisor.recover_supervisor(self.root, self.root / "services.json", ledger)
+        self.assertEqual(result["session_id"], "retained-native")
+        launch.assert_not_called()
+
+    def test_ended_supervisor_generation_can_restart_but_unknown_liveness_cannot(self) -> None:
+        with (
+            patch.object(supervisor, "launch_supervisor", return_value={"session_id": "first"}),
+            patch.object(supervisor, "ensure_foreign_service", return_value={}),
+            patch.object(supervisor.shutil, "which", return_value="/fixture/uv"),
+        ):
+            supervisor.start(self.args)
+        with (
+            patch.object(supervisor, "verify_existing_supervisor", side_effect=ValueError("old process ended")),
+            patch.object(supervisor.services, "supervisor_recipient", return_value={"pid": 50}),
+            patch.object(supervisor, "generation_ended", return_value=False),
+            patch.object(supervisor, "launch_supervisor") as launch,
+        ):
+            with self.assertRaisesRegex(ValueError, "ended"):
+                supervisor.start(self.args)
+            launch.assert_not_called()
+        with (
+            patch.object(supervisor, "verify_existing_supervisor", side_effect=ValueError("old process ended")),
+            patch.object(supervisor.services, "supervisor_recipient", return_value={"pid": 50}),
+            patch.object(supervisor, "generation_ended", return_value=True),
+            patch.object(supervisor, "launch_supervisor", return_value={"session_id": "successor"}) as launch,
+            patch.object(supervisor, "ensure_foreign_service", return_value={}),
+            patch.object(supervisor.shutil, "which", return_value="/fixture/uv"),
+        ):
+            self.assertEqual(supervisor.start(self.args)["supervisor"]["session_id"], "successor")
+            launch.assert_called_once()
 
 
 if __name__ == "__main__":
