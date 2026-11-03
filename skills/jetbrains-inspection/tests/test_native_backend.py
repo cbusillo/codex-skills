@@ -1981,6 +1981,12 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
         result = self.assess()
         self.assertEqual(result["agent_result"]["verdict"], "RED")
         self.assertEqual(result["cleanup"]["status"], "closed")
+        (self.repo / "workspace.toml").write_text('[build]\nodoo_version = "19.0"\n')
+        with self.native_host():
+            self.assertIsNotNone(native.eligibility_reason(self.args, host, self.repo, {}))
+        result = self.assess()
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertNotIn("worker_pid", result["diagnostic"]["native"])
 
     def test_guardian_cleans_up_after_invoking_group_is_killed(self):
         process = self.start_guarded_fixture()

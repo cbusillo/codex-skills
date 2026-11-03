@@ -155,6 +155,8 @@ class NativeCommonTests(unittest.TestCase):
         ):
             with self.subTest(selected=selected):
                 self.assertEqual(common.is_odoo(self.repo, selected), expected)
+        (self.repo / "workspace.toml").write_text('[build]\nodoo_version = "19.0"\n')
+        self.assertTrue(common.is_odoo(self.repo, {"scripts/helper.py", "workflow.yaml"}))
 
     def test_scope_honors_lane_exclusions_and_explicit_file_override(self) -> None:
         self.declare_inspection({"lanes": [{"id": "python", "ide": "PyCharm", "required": True,

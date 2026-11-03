@@ -173,9 +173,9 @@ Record the framework commits and follow the tenant workspace's declared dependen
 locations and ref policy, rather than borrowing another tenant's roots. The
 runner compares the selected addon's manifest and `workspace.toml` build series
 with public `odoo/release.py`; an absent or mismatched declaration stays UNKNOWN.
-Python/YAML selections outside addon directories use ordinary Python inspection,
-even when the repository contains addons. XML keeps its repository-level Odoo
-classification.
+Without a tenant workspace, Python/YAML selections outside addon directories use
+ordinary Python inspection even when the repository contains addons. Declared
+workspaces and XML keep their repository-level Odoo classification.
 For a different tenant or branch, supply its matching roots with repeatable
 `--native-framework-root`, following that workspace's dependency refs.
 For a declared `repos.shared_addons`, the runner resolves its location from the

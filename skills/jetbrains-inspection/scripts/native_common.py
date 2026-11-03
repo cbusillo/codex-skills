@@ -388,7 +388,7 @@ def has_odoo_manifest(paths):
 def is_odoo(repo: Path, selected: set[str] | None = None) -> bool:
     paths = checked(["git", "-C", str(repo), "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*__manifest__.py"])
     manifests = paths.decode().split("\0")
-    if selected is not None and not any(Path(source).suffix == ".xml" for source in selected):
+    if selected is not None and not (repo / "workspace.toml").is_file() and not any(Path(source).suffix == ".xml" for source in selected):
         manifests = [path for path in manifests if path and any(
             Path(source).is_relative_to(Path(path).parent) for source in selected)]
     return has_odoo_manifest(manifests)
