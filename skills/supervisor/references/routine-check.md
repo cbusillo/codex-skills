@@ -64,7 +64,8 @@ decisions, statuses, board contents or narrative; open linked records for action
    when assigning an unclaimed worker or reconciling its custody. Leads update
    each delegated child's staffing action under the [brief rules](brief-rules.md#rules-every-brief-carries).
    There is no separate staffing-comment queue.
-   Route Client and Client-agent comments to the owning worker for an answer.
+   Route Client and Client-agent comments to the owning worker under the
+   [Client-reply rule](../../references/talking-with-the-director.md#client-replies).
    Open full source comments before acting; register/present decisions needed
    from this Director through the existing queue rules. Optional routing writes
    the existing watch receipts
