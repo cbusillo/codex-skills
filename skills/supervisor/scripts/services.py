@@ -33,7 +33,7 @@ import time
 
 SERVICES = ("enqueue", "drive", "foreign", "throughput")
 IDLE_SERVICES = ("idle-codex", "idle-claude")
-OPTIONAL_SERVICES = IDLE_SERVICES + ("catalog",)
+OPTIONAL_SERVICES = IDLE_SERVICES + ("inspection", "catalog",)
 LABEL_PREFIX = "com.codex-skills.supervisor"
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
@@ -50,7 +50,7 @@ def load_config(path):
         raise ValueError("configure at least one supported service")
     for value in config["services"].values():
         if not isinstance(value, dict) or not {"argv", "cwd", "restart_seconds"} <= set(value) <= {
-            "argv", "cwd", "restart_seconds"
+            "argv", "cwd", "restart_seconds", "calendar"
         }:
             raise ValueError("each service requires argv, cwd and restart_seconds")
         argv = value["argv"]
@@ -60,6 +60,13 @@ def load_config(path):
             raise ValueError("argv must be a nonempty argument array")
         absolute_path(argv[0])
         absolute_path(value["cwd"])
+        if "calendar" in value:
+            calendar = value["calendar"]
+            bounds = {"Weekday": (0, 6), "Hour": (0, 23), "Minute": (0, 59)}
+            if (not isinstance(calendar, dict) or set(calendar) != set(bounds)
+                    or any(type(calendar[key]) is not int or not low <= calendar[key] <= high
+                           for key, (low, high) in bounds.items())):
+                raise ValueError("calendar requires weekly Weekday, Hour and Minute values")
         delay = value["restart_seconds"]
         if isinstance(delay, bool) or not isinstance(delay, (int, float)) or not math.isfinite(delay) or delay <= 0:
             raise ValueError("restart_seconds must be finite and positive")
@@ -98,6 +105,9 @@ def render(config_path, catalog, output):
             "StandardOutPath": str(log_dir / f"{name}.jsonl"),
             "StandardErrorPath": str(log_dir / f"{name}.stderr.log"),
         }
+        if "calendar" in config["services"][name]:
+            job["StartCalendarInterval"] = config["services"][name]["calendar"]
+            job["RunAtLoad"] = False
         path = output / f"{label}.plist"
         with path.open("wb") as stream:
             plistlib.dump(job, stream)
@@ -303,6 +313,8 @@ def supervise(settings, stopped, marker, uv_executable):
             emit("reconciliation_required", exit_code=code)
             return 1
         marker.unlink()
+        if "calendar" in settings:
+            return 0
         stopped.wait(settings["restart_seconds"])
     return 0
 
