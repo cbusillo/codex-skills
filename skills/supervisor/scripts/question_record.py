@@ -157,6 +157,16 @@ class QuestionStorage(Protocol):
     def update(self, url: str, body: str, expected_body: str, expected_updated_at: str) -> dict[str, Any]: ...
 
 
+def source_from_comments(url: str, comments: list[dict[str, Any]]) -> dict[str, Any]:
+    match = delivery.COMMENT_URL.fullmatch(url)
+    if match is None:
+        raise ValueError("invalid question URL")
+    source = next((comment for comment in comments if comment["url"] == url), None)
+    if source is None:
+        raise ValueError(f"source question is unavailable: {url}")
+    return {**source, "issue": f"https://github.com/{match[1]}/issues/{match[2]}"}
+
+
 class GitHubComments:
     def __init__(self, fetch: DiscussionReader) -> None:
         self.fetch = fetch
@@ -175,12 +185,7 @@ class GitHubComments:
         return {**result["comment"], "issue": issue}
 
     def read(self, url: str) -> dict[str, Any]:
-        source = next((c for c in self.fetch(delivery.source_item(url)) if c["url"] == url), None)
-        if source is None:
-            raise ValueError(f"source question is unavailable: {url}")
-        match = delivery.COMMENT_URL.fullmatch(url)
-        assert match is not None
-        return {**source, "issue": f"https://github.com/{match[1]}/issues/{match[2]}"}
+        return source_from_comments(url, self.fetch(delivery.source_item(url)))
 
     @staticmethod
     def update(url: str, body: str, expected_body: str, expected_updated_at: str) -> dict[str, Any]:
@@ -199,7 +204,8 @@ def update(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
     if errors:
         raise ValueError("Invalid Director question:\n" + "\n".join(errors))
     with delivery.queue_lock():
-        source = storage.read(args.url)
+        comments = fetch(delivery.source_item(args.url))
+        source = source_from_comments(args.url, comments)
         view = read_record(source)
         if not args.expected_updated_at or source.get("updated_at") != args.expected_updated_at:
             raise ValueError("question changed; read its current version before revising")
@@ -208,7 +214,6 @@ def update(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
         trusted = {author.casefold() for author in [args.owner, *args.decision_author]}
         if source["author"].casefold() not in trusted:
             raise ValueError("question writer must be the Director or a configured --decision-author")
-        comments = fetch(delivery.source_item(args.url))
         queue = question_id.configured_queue()
         related = []
         if isinstance(queue, str) and queue != delivery.source_item(args.url):

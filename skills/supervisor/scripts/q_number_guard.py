@@ -58,9 +58,12 @@ def asks_director(text: str) -> bool:
 
 
 def director_question_rule() -> str:
-    from question_record import OPTION_FIELDS, TEXT_FIELDS
+    try:
+        from question_record import OPTION_FIELDS, TEXT_FIELDS
 
-    fields = ", ".join(("version", *TEXT_FIELDS, f"options ({', '.join(OPTION_FIELDS)})"))
+        fields = ", ".join(("version", *TEXT_FIELDS, f"options ({', '.join(OPTION_FIELDS)})"))
+    except (ImportError, SyntaxError, OSError):
+        fields = "see talking-with-the-director.md#director-questions"
     return (
         "Create the Director question with `oq.py create --record-file FILE --owner OWNER`, or revise an unanswered one with `oq.py update`.\n"
         f"Required record keys: {fields}.\n"

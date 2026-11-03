@@ -143,6 +143,12 @@ class DeliveryTests(unittest.TestCase):
         self.assertTrue(revised["resurface"])
         self.assertIsNone(revised["delivery_url"])
         self.assertEqual(revised["registration_url"], row["registration_url"])
+        acknowledged = self.run_queue(ack=target, delivery_url=receipt)
+        current = next(q for q in acknowledged["questions"] if q["url"] == target)
+        self.assertFalse(current["resurface"])
+        count = len(self.comments)
+        self.run_queue(ack=target, delivery_url=receipt)
+        self.assertEqual(len(self.comments), count)
         source.pop("updated_at")
         # "Later" or a receipt from the owner must not become a decision.
         self.comments[-1]["author"] = self.owner

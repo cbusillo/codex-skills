@@ -102,6 +102,11 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(self.run_hook(stop(last_assistant_message=NUMBERED)), "")
         self.assertEqual([r["verdict"] for r in self.logged()], ["pass"])
 
+    def test_unavailable_schema_import_still_blocks(self) -> None:
+        with mock.patch.dict("sys.modules", {"question_record": None}):
+            decision = json.loads(self.run_hook(stop(last_assistant_message=UNNUMBERED_ASK)))
+        self.assertEqual(decision["decision"], "block")
+
     def test_numbered_question_context_is_checked_once(self):
         for context in ("An experienced developer would keep the job.", "Ongoing cost: none.", ""):
             with self.subTest(context=context):

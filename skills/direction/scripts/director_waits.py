@@ -178,7 +178,7 @@ def normalized_comments(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
              "url": comment.get("html_url") or comment.get("url")} for comment in comments]
 
 
-def recorded_decisions(reader: GitHubReader, wait: dict[str, Any], owner: str,
+def linked_questions(reader: GitHubReader, wait: dict[str, Any], owner: str,
                        discussions: dict[tuple[str, int], Any], errors: list[dict[str, Any]],
                        related_comments: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     if wait.get("state") != "waiting":
@@ -188,13 +188,17 @@ def recorded_decisions(reader: GitHubReader, wait: dict[str, Any], owner: str,
         repo, number = match[1], int(match[2])
         comments = read_discussion(reader, repo, number, discussions, errors)
         if comments is None:
+            found.append({"url": match[0], "status": "unavailable", "answers": []})
             continue
         normalized = normalized_comments(comments)
         trusted = github_plan_wait.trusted_authors(owner, configured_bots=github_identity.configured_bot_logins(),
                                                   automation=github_identity.automation_login())
-        sources = [comment for comment in normalized if comment["url"] == match[0]
-                   and comment["author"].casefold() in trusted]
+        sources = [comment for comment in normalized if comment["url"] == match[0]]
         if len(sources) != 1:
+            errors.append({"scope": "question evidence", "url": match[0], "error": "source comment is missing or ambiguous"})
+            found.append({"url": match[0], "status": "unavailable", "answers": []})
+            continue
+        if sources[0]["author"].casefold() not in trusted:
             continue
         source_urls = {comment["url"] for comment in normalized}
         related = [comment for comment in normalized_comments(related_comments or []) if comment["url"] not in source_urls]
@@ -207,7 +211,7 @@ def recorded_decisions(reader: GitHubReader, wait: dict[str, Any], owner: str,
             matched = [question for question in questions.questions(normalized, owner, trusted,
                        [*related, *normalized_comments(queue_comments or [])], recorded_decisions_only=True)
                        if question["url"] == match[0]]
-        found.extend(question for question in matched if question["answers"])
+        found.extend(matched)
     return found
 
 
@@ -268,14 +272,15 @@ def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting f
                     resolution = resolve_wait(repo, entry, comments)
                     wait_record = resolution.record
                     decisions = []
-                    evidence_urls = set()
-                    if wait_record is not None:
-                        decisions = recorded_decisions(reader, wait_record, owner, discussions, result["errors"], comments)
-                        evidence_urls = {match[0] for match in questions.COMMENT_URL.finditer(wait_record["evidence"])}
-                    if decisions and evidence_urls <= {question["url"] for question in decisions}:
+                    question_states = []
+                    if waits and wait_record is not None:
+                        question_states = linked_questions(reader, wait_record, owner, discussions, result["errors"], comments)
+                        decisions = [question for question in question_states if question["answers"]]
+                    if question_states and all(question["answers"] for question in question_states):
                         result["needs_status"].extend({**row, "next_actor": "agent", "recorded_decisions": decisions,
                                                      "structured_wait": resolution.record,
-                                                     "next_action": "Read the recorded answers and reconcile within existing authority; preserve every other hold."}
+                                                     "next_action": "Read the recorded answers; leave the foreign record to its owner." if row["untrusted"] else
+                                                     "Read the recorded answers and reconcile within existing authority; preserve every other hold."}
                                                     for row in waits)
                     else:
                         rows.extend({**row, **({"recorded_decisions": decisions} if decisions else {})} for row in waits)

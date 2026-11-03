@@ -69,10 +69,12 @@ def validate_receipt(url):
         raise ValueError("delivery receipt must be a GitHub or Discord message URL")
 
 
-def marker_body(event, question_url, delivery_url=None):
+def marker_body(event: str, question_url: str, delivery_url: str | None = None, *, source_updated_at: str | None = None) -> str:
     record = {"version": 1, "event": event, "question_url": question_url}
     if delivery_url is not None:
         record["delivery_url"] = delivery_url
+    if event == "delivered" and source_updated_at is not None:
+        record["source_updated_at"] = source_updated_at
     line = "<!-- director-question:delivery " + json.dumps(record, sort_keys=True) + " -->"
     return f"{line}\n\nQuestion {event}: [original question]({question_url})." + (
         f" [Presentation receipt]({delivery_url}). This acknowledges delivery, not a decision.\n" if delivery_url else "\n"
@@ -124,6 +126,8 @@ def is_receipt(comment) -> bool:
 def receipt_is_current(receipt: dict[str, Any] | None, updated_at: str | None) -> bool:
     if receipt is None:
         return False
+    if "source_updated_at" in receipt:
+        return receipt["source_updated_at"] == updated_at
     if not updated_at:
         return True
     created_at: str | None = receipt.get("created_at")
@@ -174,7 +178,7 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
         receipt = acknowledgements.get(url)
         if not receipt_is_current(receipt, source_updates[url]):
             receipt = None
-        rows.append({**question, "question_id": number,
+        rows.append({**question, "question_id": number, "updated_at": source_updates[url],
                      "question": question["question"] if number else None,
                      "status": question["status"] if number else "needs_number",
                      "needs_repair": number is None, "deliverable": number is not None,
@@ -272,7 +276,7 @@ def reconcile(args, fetch):
         if args.delivery_url in {args.ack, question["registration_url"]}:
             raise ValueError("source/registration is not a presentation receipt")
         if not question["delivery_url"]:
-            writes.append(marker_body("delivered", args.ack, args.delivery_url))
+            writes.append(marker_body("delivered", args.ack, args.delivery_url, source_updated_at=question.get("updated_at")))
     for body in writes:
         saved = post(args.queue, body).get("comment")
         if (not isinstance(saved, dict) or not saved.get("body", "").strip().startswith(body.strip())
