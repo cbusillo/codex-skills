@@ -211,7 +211,7 @@ def update(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
         comments = fetch(delivery.source_item(args.url))
         queue = question_id.configured_queue()
         related = []
-        if queue is not None and queue != delivery.source_item(args.url):
+        if isinstance(queue, str) and queue != delivery.source_item(args.url):
             related = fetch(queue)
         question = next((q for q in delivery.oq.questions(comments, args.owner, args.decision_author, related)
                          if q["url"] == args.url), None)

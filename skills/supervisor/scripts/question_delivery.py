@@ -126,10 +126,10 @@ def receipt_is_current(receipt: dict[str, Any] | None, updated_at: str | None) -
         return False
     if not updated_at:
         return True
-    created_at = receipt.get("created_at")
+    created_at: str | None = receipt.get("created_at")
     if not created_at:
         return False
-    return datetime.fromisoformat(updated_at.replace("Z", "+00:00")) < datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    return datetime.fromisoformat(updated_at) < datetime.fromisoformat(created_at)
 
 
 def inventory(source_comments, queue_comments, owner, decision_authors, now=None, *, question_urls=None) -> dict[str, Any]:
