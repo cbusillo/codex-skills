@@ -252,8 +252,9 @@ UNKNOWN.
 
 Prefer fixing code or narrowing the scope first. In every repository, an agent
 may add a suppression only when it covers one line or one rule, never a whole
-file, carries a written reason on the same line, and is named in the PR body
-so the second-model review sees it. Reviewers may still reject it.
+file, and is named with its reason in the PR body so the second-model review
+sees it. Also put the reason on the same line when the tool and repository
+style accept it; otherwise keep the directive bare. Reviewers may still reject it.
 
 Disabling inspections, changing inspection profiles, or changing baselines
 requires explicit approval unless the repo already has an established approved
