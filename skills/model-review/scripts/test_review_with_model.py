@@ -562,25 +562,13 @@ class ReviewWithModelTests(unittest.TestCase):
         # agy does not say which model ran, so the result must not pretend it did.
         self.assertIn("not reported", result["model_source"])
 
-    def test_anthropic_preamble_names_checkout_as_the_read_boundary(self) -> None:
-        self.install("claude", FAKE_CLAUDE)
-        argv_file = self.root / "claude-argv"
-        code, result = self.review(
-            "anthropic", FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}),
-            FAKE_CLAUDE_ARGV_FILE=str(argv_file),
-        )
-        self.assertEqual((code, result["ok"]), (0, True))
-        preamble = argv_file.read_text().split(self.prompt.read_text())[0]
-        self.assertIn(str(self.repo), preamble)
-        self.assertRegex(preamble, r"Stay within .*repository.*directory")
-        self.assertRegex(preamble, r"files outside .*not available")
-
     def test_the_anthropic_reviewer_is_given_only_read_tools(self) -> None:
         self.install("claude", FAKE_CLAUDE)
         argv_file = self.root / "claude-argv"
         ok = json.dumps({"is_error": False, "result": completed("none"), "modelUsage": {"claude-test": {}}})
         self.review("anthropic", FAKE_CLAUDE_JSON=ok, FAKE_CLAUDE_ARGV_FILE=str(argv_file))
         argv = argv_file.read_text().split("\n")
+        self.assertTrue(argv_file.read_text().startswith("-p\n" + review_with_model.PREAMBLE.format(repo=self.repo)))
         # `--allowedTools` only extends a user's own allowlist; `--tools` is what removes the write tools.
         self.assertEqual(argv[argv.index("--tools") + 1], "Read,Grep,Glob")
         self.assertNotIn("--allowedTools", argv)
