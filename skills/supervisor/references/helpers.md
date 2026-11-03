@@ -1454,7 +1454,9 @@ as unknown. Normal `session_closeout.py` verifies the native final response,
 claims, handoff and process exit, then retains model, effort and outcome in the
 existing closed-session log. Google still uses only the existing AGY login and
 Context Panel capacity reader. Unknown native child or background-work coverage
-stays UNKNOWN and preserves the worker. Use `cd /absolute/repository && exec agy`
+stays UNKNOWN and preserves the worker. Completed native compaction and
+`manage_task list` calls do not count as background work; unfinished commands still do.
+Use `cd /absolute/repository && exec agy`
 so folder trust has an exact target. Under the same approved Developer and
 registered-worktree boundary as Claude, the shared atomic writer adds only that
 workspace to AGY's `trustedWorkspaces`, preserving permissions, model and all

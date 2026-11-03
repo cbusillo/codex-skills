@@ -314,7 +314,7 @@ def agy_step_records(session: str, ordinal: int, kind: int, status: int, childre
     timestamp = datetime.fromtimestamp(clock[1] + clock.get(2, 0) / 1e9, timezone.utc).isoformat()
     row: dict[str, Any] = {"sessionId": session, "timestamp": timestamp, "type": "user", "message": {"content": ""}}
     pending = ("native child history is unavailable" if children else
-               "native step kind is unknown" if kind not in {14, 15, 101, 132} else
+               "native step kind is unknown" if kind not in {14, 15, 23, 101, 132} else
                "native step is pending" if status not in {3, 6, 7} else None)
     records = []
     if kind == 14 and status == 3:
@@ -323,6 +323,8 @@ def agy_step_records(session: str, ordinal: int, kind: int, status: int, childre
         response = fields(step[20])
         row.update(type="assistant", message={"content": [{"type": "text", "text": response.get(8, response.get(1, b"")).decode()}],
                    "stop_reason": "end_turn" if 7 not in response else None})
+    elif kind == 23:
+        row["type"] = "system"
     elif kind == 101:
         if status != 3 or not agy_task_notification(step, session, ordinal, tasks):
             pending = pending or "native notification provenance is unavailable"
@@ -336,7 +338,8 @@ def agy_step_records(session: str, ordinal: int, kind: int, status: int, childre
             content = {"type": "tool_use", "id": identifier, "name": "Bash" if command else name,
                        "input": {"command": arguments["CommandLine"]} if command else arguments}
             records.append({"sessionId": session, "timestamp": timestamp, "type": "assistant", "message": {"content": [content]}})
-            task_status = name == "manage_task" and arguments.get("Action") == "status" and arguments.get("TaskId") in tasks
+            task_status = name == "manage_task" and (arguments.get("Action") == "list" or
+                                                   arguments.get("Action") == "status" and arguments.get("TaskId") in tasks)
             if name not in {"read_file", "write_file", "edit_file", "list_dir", "grep_search", "find_by_name", "run_command"} and not task_status:
                 pending = pending or f"native tool coverage is unavailable for {name}"
             if status in {3, 6, 7} and kind == 132:
