@@ -955,7 +955,7 @@ if args and args[0] == "api" and context.bucket == "graphql":
 allowed = bool(args) and (args[0] == "api" or
     (len(args) > 1 and args[:2] in [["repo", "list"], ["repo", "view"], ["issue", "list"],
         ["issue", "view"], ["pr", "list"], ["pr", "view"], ["pr", "checks"],
-        ["run", "list"], ["run", "view"], ["search", "issues"], ["search", "prs"]]))
+        ["run", "list"], ["run", "view"], ["run", "download"], ["search", "issues"], ["search", "prs"]]))
 if context.is_write or not allowed:
     message = "error: read-only GitHub authentication refuses a write or unverified command before sending"
     if sys.argv[3]:

@@ -331,10 +331,19 @@ class ReaderIdentityTests(unittest.TestCase):
 
     def test_wrapper_delegates_rest_and_graphql_reads_with_reader_token(self):
         wrapper = Path(api.__file__).with_name('gh-with-env-token')
+        identity_calls = self.root / 'identity-calls'
+        gh_calls = self.root / 'gh-calls'
         fake_identity = self.root / 'identity.py'
-        fake_identity.write_text("import sys\nassert sys.argv[1] == '--reader'\nprint('reader-app[bot]')\nif sys.argv[2] == 'app-auth': print('synthetic-reader-token')\n")
+        fake_identity.write_text(
+            "import json, sys\nfrom pathlib import Path\n"
+            f"with Path({str(identity_calls)!r}).open('a') as stream: stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "assert sys.argv[1] == '--reader'\nprint('reader-app[bot]')\n"
+            "if sys.argv[2] == 'app-auth': print('synthetic-reader-token')\n")
         fake_gh = self.root / 'gh'
-        fake_gh.write_text('#!/bin/sh\n[ "$GH_TOKEN" = synthetic-reader-token ] || exit 9\nprintf \'{"ok":true}\\n\'\n')
+        fake_gh.write_text(
+            f"#!{sys.executable}\nimport json, os, sys\nfrom pathlib import Path\n"
+            f"with Path({str(gh_calls)!r}).open('a') as stream: stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "assert os.environ['GH_TOKEN'] == 'synthetic-reader-token'\nprint(json.dumps({'ok': True}))\n")
         fake_gh.chmod(0o700)
         env = {**os.environ, 'GITHUB_READER_APP_ID': '54321', 'GITHUB_READER_APP_INSTALLATION_ID': '76543',
                'GITHUB_READER_APP_PRIVATE_KEY_PATH': str(self.root / 'unused-synthetic-path'),
@@ -343,13 +352,27 @@ class ReaderIdentityTests(unittest.TestCase):
         for args, body in [(['api', '/repos/example/app/issues'], ''),
                 (['api', 'graphql', '--input', '-'], '{"query":"query { viewer { login } }"}'),
                 (['api', 'graphql', '--field=query=query { viewer { login } }'], ''),
-                (['repo', 'view', 'example/app', '--json', 'name'], '')]:
+                (['repo', 'view', 'example/app', '--json', 'name'], ''),
+                (['run', 'download', '42', '--repo', 'example/app', '--name', 'proof',
+                  '--dir', str(self.root / 'evidence')], '')]:
             result = subprocess.run([str(wrapper), '--reader', *args], input=body, text=True, capture_output=True, env=env)
             self.assertEqual(result.returncode, 0, f'{args}: {result.stderr}')
             self.assertEqual(json.loads(result.stdout), {'ok': True})
+            if args[:2] == ['run', 'download']:
+                calls = [json.loads(line) for line in identity_calls.read_text().splitlines()]
+                request = next(call for call in reversed(calls) if call[:2] == ['--reader', 'app-auth'])
+                self.assertEqual(request[request.index('--repo') + 1], args[args.index('--repo') + 1])
         checked = subprocess.run([str(wrapper), '--reader', '--check'], text=True, capture_output=True, env=env)
         self.assertEqual(checked.returncode, 0, checked.stderr)
         self.assertIn('reader-app[bot]', checked.stdout)
+        before = (identity_calls.read_bytes(), gh_calls.read_bytes())
+        mutations = [['run', command, '42', '--repo', 'example/app']
+                     for command in ('cancel', 'rerun', 'delete', 'approve')]
+        mutations.append(['run', '-R', 'example/app', 'cancel', '42'])
+        for args in mutations:
+            result = subprocess.run([str(wrapper), '--reader', *args], text=True, capture_output=True, env=env)
+            self.assertNotEqual(result.returncode, 0, args)
+            self.assertEqual((identity_calls.read_bytes(), gh_calls.read_bytes()), before, args)
 
     def test_graphql_strings_comments_and_fragments_are_reads(self):
         for document in ['query { node(id: "mutation") { id } }',
