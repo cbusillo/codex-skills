@@ -4248,6 +4248,8 @@ def wait_summary(wait: dict[str, Any]) -> str:
         if "release" in entry:
             release = entry["release"]
             line += f" {github_plan_wait.release_event_hint(release['product'], release['source_commit'])}. {release['next_action']}"
+        if "recheck" in entry:
+            line += f" An agent rechecks it on {entry['recheck']}."
         lines.append(line)
     summary = "\n\n".join(lines) or "Nothing here is waiting on a person or event."
     if mentions := github_comment_core.live_mentions(summary):
@@ -4264,11 +4266,23 @@ def reviewed_wait(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
                                         release_commit=getattr(args, "release_commit", None),
                                         release_next_action=getattr(args, "release_next_action", None),
                                         not_before=getattr(args, "not_before", None),
-                                        event=json.loads(args.event) if getattr(args, "event", None) else None)
-        github_comment_core.validate_planning_references(wait, issue_ref(args.issue, default_repo(args.repo))[0])
+                                        event=json.loads(args.event) if getattr(args, "event", None) else None,
+                                        recheck=getattr(args, "recheck", None))
+        repo = issue_ref(args.issue, default_repo(args.repo))[0]
+        github_comment_core.validate_planning_references(wait, repo)
     except ValueError as exc:
         raise PlanError(str(exc)) from exc
+    require_recheck_dates(repo, wait)
     return wait, wait_summary(wait)
+
+
+def require_recheck_dates(repo: str, wait: dict[str, Any]) -> None:
+    asked = set(director_question_gate.waits_on_director(repo.split("/")[0], wait))
+    unchecked = [entry["waiting_for"] for entry in wait["waits"]
+                 if not github_plan_wait.machine_checked(entry) and "recheck" not in entry and entry["waiting_for"] not in asked]
+    if unchecked:
+        raise PlanError(f"Nothing checks when this wait ends: {'; '.join(unchecked)}. Add --recheck YYYY-MM-DD "
+                        "for when an agent looks again, or --event with a checked kind")
 
 
 def readable_comment(path: str) -> dict[str, Any] | None:
@@ -4301,7 +4315,7 @@ def wait_once(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
     if args.all:
         if (args.issue or args.clear or args.waiting_for or args.ends_when or args.evidence
-                or any(getattr(args, field, None) for field in ("release_product", "release_commit", "release_next_action", "not_before", "event"))):
+                or any(getattr(args, field, None) for field in ("release_product", "release_commit", "release_next_action", "not_before", "event", "recheck"))):
             raise PlanError("--all is a read-only inventory; choose a single issue to record a review")
         _, issues = collect_paged_rest_items(f"/repos/{repo}/issues", query={"state": "open"},
                                             bucket="rest_core", step_prefix="wait_inventory")
@@ -4333,7 +4347,7 @@ def wait_once(args: argparse.Namespace) -> None:
     current = issue["claim_wait"]
     if recorded is None:
         if (args.ends_when or args.evidence or any(getattr(args, field, None)
-                for field in ("release_product", "release_commit", "release_next_action", "not_before", "event"))):
+                for field in ("release_product", "release_commit", "release_next_action", "not_before", "event", "recheck"))):
             raise PlanError("Choose --clear or --waiting-for with --ends-when and --evidence")
         emit({"ok": True, "review_required": current["state"] == "review", "structured_wait": current,
               "issue": compact_issue(issue), "review_evidence": {
@@ -4394,12 +4408,14 @@ def cmd_create(args: argparse.Namespace) -> None:
                                              release_commit=getattr(args, "release_commit", None),
                                              release_next_action=getattr(args, "release_next_action", None),
                                         not_before=getattr(args, "not_before", None),
-                                        event=json.loads(args.event) if getattr(args, "event", None) else None)
+                                        event=json.loads(args.event) if getattr(args, "event", None) else None,
+                                        recheck=getattr(args, "recheck", None))
             github_comment_core.validate_planning_references(wait, repo)
         except ValueError as exc:
             raise PlanError(str(exc)) from exc
+        require_recheck_dates(repo, wait)
     elif (getattr(args, "ends_when", None) or getattr(args, "wait_evidence", None)
-          or any(getattr(args, field, None) for field in ("release_product", "release_commit", "release_next_action", "not_before", "event"))):
+          or any(getattr(args, field, None) for field in ("release_product", "release_commit", "release_next_action", "not_before", "event", "recheck"))):
         raise PlanError("Choose --wait-clear or --waiting-for with --ends-when and --wait-evidence")
     if wait is not None:
         require_asked_director_wait(repo, wait, creating=True)
@@ -7721,6 +7737,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--release-next-action", help="Concrete next agent action after that release")
     p.add_argument("--not-before", help="First wait ends on this YYYY-MM-DD or timezone-qualified timestamp")
     p.add_argument("--event", help="First wait ends on this JSON event, using the reopen-trigger kinds")
+    p.add_argument("--recheck", help="YYYY-MM-DD when an agent rechecks each wait nothing else checks; never ends the wait")
     p.set_defaults(func=cmd_wait)
 
     p = sub.add_parser("create", help="Create a durable plan issue")
@@ -7746,6 +7763,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--release-next-action", help="Concrete next agent action after that release")
     p.add_argument("--not-before", help="First wait ends on this YYYY-MM-DD or timezone-qualified timestamp")
     p.add_argument("--event", help="First wait ends on this JSON event, using the reopen-trigger kinds")
+    p.add_argument("--recheck", help="YYYY-MM-DD when an agent rechecks each wait nothing else checks; never ends the wait")
     p.set_defaults(func=cmd_create)
 
     p = sub.add_parser("update-section", help="Patch one markdown section")

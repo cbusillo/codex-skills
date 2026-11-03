@@ -38,7 +38,7 @@ def agent_step(actor: str) -> bool:
 def reviewed(*, evidence: str, waiting_for: str | list[str] | None = None,
              ends_when: str | list[str] | None = None, release_product: str | None = None,
              release_commit: str | None = None, release_next_action: str | None = None, not_before: str | None = None,
-             event: dict[str, Any] | None = None) -> dict[str, Any]:
+             event: dict[str, Any] | None = None, recheck: str | None = None) -> dict[str, Any]:
     if not evidence.strip():
         raise ValueError("Wait review requires existing evidence")
     actors = [waiting_for] if isinstance(waiting_for, str) else waiting_for or []
@@ -50,22 +50,32 @@ def reviewed(*, evidence: str, waiting_for: str | list[str] | None = None,
     record: dict[str, Any] = {"version": 1, "state": "waiting" if waiting_for else "clear", "evidence": evidence,
               "waits": [{"waiting_for": actor, "ends_when": end} for actor, end in zip(actors, endings)]}
     if not_before is not None or event is not None:
-        from . import events
         if not actors or (not_before is not None and event is not None):
             raise ValueError("Supply a wait and either --not-before or --event")
         event = {"version": 1, "kind": "date", "at": not_before, "evidence": evidence} if not_before is not None else event
-        assert event is not None
-        events.validate(event)
-        if event.get("state") == "clear" or event.get("kind") == "recurrence":
-            raise ValueError("A wait needs a machine-checkable event")
         record["waits"][0]["event"] = event
     if any(value is not None for value in (release_product, release_commit, release_next_action)):
         if not actors:
             raise ValueError("A release pointer requires a wait")
         record["waits"][0]["release"] = {"product": " ".join(release_product.split()).casefold() if release_product else release_product, "source_commit": release_commit.strip().lower() if release_commit else release_commit,
                                          "next_action": " ".join(release_next_action.split()) if release_next_action else release_next_action}
+    if recheck is not None:
+        unchecked = [entry for entry in record["waits"] if not machine_checked(entry)]
+        if not unchecked:
+            raise ValueError("--recheck needs a wait that nothing else checks")
+        for entry in unchecked:
+            entry["recheck"] = recheck
     validate(record)
     return record
+
+
+def machine_checked(wait: dict[str, Any]) -> bool:
+    return "event" in wait or "release" in wait
+
+
+def recheck_due(wait: dict[str, Any], now: dt.datetime) -> bool:
+    from . import events
+    return "recheck" in wait and events.date(wait["recheck"]) <= now
 
 
 def validate(record: Any) -> None:
@@ -82,7 +92,7 @@ def validate(record: Any) -> None:
     if bool(record["waits"]) != (record["state"] == "waiting"):
         raise ValueError("Structured wait state and entries disagree")
     for wait in record["waits"]:
-        if (not isinstance(wait, dict) or (set(wait) - {"event"}) not in ({"waiting_for", "ends_when"}, {"waiting_for", "ends_when", "release"})
+        if (not isinstance(wait, dict) or (set(wait) - {"event", "recheck"}) not in ({"waiting_for", "ends_when"}, {"waiting_for", "ends_when", "release"})
                 or any(not isinstance(value, str) or not value.strip() for value in (wait["waiting_for"], wait["ends_when"]))):
             raise ValueError("A structured wait needs its actor/event and ending condition")
 
@@ -91,6 +101,11 @@ def validate(record: Any) -> None:
             events.validate(wait["event"])
             if wait["event"].get("state") == "clear" or wait["event"].get("kind") == "recurrence" or "release" in wait:
                 raise ValueError("A wait has one machine-checkable ending event")
+        if "recheck" in wait:
+            from . import events
+            if not isinstance(wait["recheck"], str) or machine_checked(wait):
+                raise ValueError("A recheck date belongs only on a wait nothing checks")
+            events.date(wait["recheck"])
         if "release" in wait:
             release = wait["release"]
             if (not isinstance(release, dict) or set(release) != {"product", "source_commit", "next_action"}
