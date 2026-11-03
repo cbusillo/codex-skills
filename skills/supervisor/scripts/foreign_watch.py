@@ -408,7 +408,8 @@ def scan_mentions(args, repos, watermarks, seen, own_logins, started, reader):
             comments = read_mention_discussion(issue_url, seen.get(notice["url"], since))
             authors = {((comment.get("user") or {}).get("login") or "").casefold() for comment in comments}
             newest = max((comment.get("updated_at", "") for comment in comments), default="")
-            if authors and (len(authors) == 1 or authors <= {login.casefold() for login in own_logins}) and newest == notice["updated_at"]:
+            if (authors and (len(authors) == 1 or authors <= {login.casefold() for login in own_logins})
+                    and newest == notice["updated_at"]):
                 notice["author"] = authors.pop()
         except director_mentions.MentionSearchError as failure:
             gaps.append({"lane": MENTIONS, "gap": str(failure)})

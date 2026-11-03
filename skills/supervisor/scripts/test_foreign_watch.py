@@ -137,7 +137,7 @@ class WatchTests(unittest.TestCase):
                 reader = Mock()
                 thread = {**mention(REPO, 1), "user": {"login": opener}}
                 reader.request.return_value = SimpleNamespace(body={"items": [thread], "total_count": 1})
-                reader.paged_json.return_value = [{**comment(author, "@director please decide", STARTED)} for author in authors]
+                reader.paged_json.return_value = [comment(author, "@director please decide", STARTED) for author in authors]
                 args = argparse.Namespace(owner="director", repo=["director/other"], state=Path(directory) / "state.json",
                                           since=None, own_login=["agent[bot]"], launchplane_login=[],
                                           interval=foreign_watch.NOTICE_SETTLE_SECONDS, once=False, persistent=True)
