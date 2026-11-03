@@ -21,11 +21,12 @@ import time
 import urllib.parse
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any, NoReturn, Optional
+from typing import Any, NamedTuple, NoReturn, Optional
 
 import github_api as github_api_core
 import github_http_cache
 import github_identity
+import github_plan_status
 import github_request_usage
 import github_repository_scope
 from github_plan_status.workflow_runs import current_workflow_runs, workflow_execution_identity
@@ -571,6 +572,154 @@ class GitHubReader:
 
 def automation_only_gh_prefix_args() -> list[str]:
     return ["--require-automation-auth"]
+
+
+class GraphQLConnection(NamedTuple):
+    nodes: list[dict[str, Any]]
+    cursor: str | None
+    total: int
+
+
+def graphql_connection_page(value: Any) -> GraphQLConnection:
+    if not isinstance(value, dict):
+        raise GitHubReadShapeError("missing GraphQL connection")
+    nodes, info, total = (
+        value.get("nodes"),
+        value.get("pageInfo"),
+        value.get("totalCount"),
+    )
+    if (
+        not isinstance(nodes, list)
+        or any(not isinstance(n, dict) for n in nodes)
+        or type(total) is not int
+        or total < 0
+        or not isinstance(info, dict)
+        or type(info.get("hasNextPage")) is not bool
+    ):
+        raise GitHubReadShapeError("invalid GraphQL connection")
+    cursor = info.get("endCursor") if info["hasNextPage"] else None
+    if info["hasNextPage"] and (not nodes or not isinstance(cursor, str) or not cursor):
+        raise GitHubReadShapeError("GraphQL cursor did not advance")
+    return GraphQLConnection(nodes, cursor, total)
+
+
+def graphql_data(result: github_api_core.ApiResult) -> dict[str, Any]:
+    body = result.body
+    if not isinstance(body, dict) or body.get("errors") or not isinstance(body.get("data"), dict):
+        raise GitHubReadShapeError("GraphQL returned partial or missing data")
+    return body["data"]
+
+
+def graphql_author(author: dict[str, Any] | None) -> dict[str, str]:
+    if author is None:
+        return {"login": "ghost", "type": "User"}
+    return github_plan_status.normalize_author({"author": author})
+
+def graphql_comment(node: dict[str, Any]) -> dict[str, Any]:
+    return {"id": node["databaseId"], "body": node["body"], "created_at": node["createdAt"],
+        "updated_at": node["updatedAt"], "html_url": node["url"], "user": graphql_author(node["author"])}
+
+
+DISCUSSION_REACTIONS = """reactions(first:10, orderBy:{field:CREATED_AT,direction:ASC}) {
+ totalCount nodes { content createdAt user { login } } pageInfo { hasNextPage endCursor }
+}"""
+DISCUSSION_COMMENT_FIELDS = f"""__typename id databaseId body createdAt updatedAt url author {{ __typename login }}
+ ... on Comment {{ lastEditedAt editor {{ login }} }}
+ ... on Reactable {{ {DISCUSSION_REACTIONS} }}"""
+DISCUSSION_INLINE_FIELDS = DISCUSSION_COMMENT_FIELDS + " replyTo { databaseId }"
+DISCUSSION_REVIEW_FIELDS = DISCUSSION_COMMENT_FIELDS + " submittedAt " + (
+    "comments(first:10) { totalCount nodes { " + DISCUSSION_INLINE_FIELDS + " } pageInfo { hasNextPage endCursor } }"
+)
+
+
+def discussion_connection(field: str, fields: str, cursor: str | None = None) -> str:
+    return (f"{field}(first:{10 if field == 'reviews' else 100}, after:{json.dumps(cursor)}) {{ totalCount nodes {{ {fields} }}"
+            " pageInfo { hasNextPage endCursor } }")
+
+
+def discussion_query(reader: GitHubReader, document: str, variables: dict[str, Any]) -> dict[str, Any]:
+    result = reader.graphql_json(document, variables, step="discussion",
+                                 deadline_at=min(reader.deadline_at or float("inf"), time.time() + 60))
+    if not result.ok:
+        message = result.failure.message if result.failure else "GitHub discussion query failed"
+        raise GitHubReadError(message, result=result, diagnostics=reader.diagnostics())
+    return graphql_data(result)
+
+
+def discussion_nodes(reader: GitHubReader, parent: dict[str, Any], field: str, fields: str) -> list[dict[str, Any]]:
+    value = parent[field]
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    expected = None
+    while True:
+        page, cursor, total = graphql_connection_page(value)
+        if any(not isinstance(node.get("id"), str) for node in page) or expected is not None and total != expected:
+            raise GitHubReadShapeError(f"Incomplete discussion {field} connection")
+        expected = total
+        result.extend(page)
+        if cursor is None:
+            if len(result) != expected or len({node["id"] for node in result}) != expected:
+                raise GitHubReadShapeError(f"Incomplete discussion {field} inventory")
+            return result
+        if cursor in seen:
+            raise GitHubReadShapeError(f"Discussion {field} pagination did not advance")
+        seen.add(cursor)
+        document = ("query($id:ID!) { node(id:$id) { ... on " + parent["__typename"] + " { "
+                    + discussion_connection(field, fields, cursor) + " } } rateLimit { cost } }")
+        data = discussion_query(reader, document, {"id": parent["id"]})
+        node = data.get("node")
+        if not isinstance(node, dict):
+            raise GitHubReadShapeError("Discussion disappeared during pagination")
+        value = node.get(field)
+
+
+def discussion_comment(node: dict[str, Any], repo: str, number: int) -> dict[str, Any]:
+    if type(node.get("databaseId")) is not int:
+        raise GitHubReadShapeError("Discussion message identity is unavailable")
+    return {
+        **graphql_comment(node), "node_id": node["id"],
+        "issue_url": f"https://api.github.com/repos/{repo}/issues/{number}",
+        "pull_request_url": f"https://api.github.com/repos/{repo}/pulls/{number}",
+        "in_reply_to_id": (node.get("replyTo") or {}).get("databaseId"),
+        "submitted_at": node.get("submittedAt"),
+        "_graphql": {key: node[key] for key in ("lastEditedAt", "editor", "reactions") if key in node},
+    }
+
+
+def read_discussion(reader: GitHubReader, repo: str, number: int, *, issue_id: int | None = None) -> dict[str, Any]:
+    owner, name = repo.split("/")
+    fields = DISCUSSION_COMMENT_FIELDS + " number title state closedAt " + discussion_connection("comments", DISCUSSION_COMMENT_FIELDS)
+    review_fields = discussion_connection("reviews", DISCUSSION_REVIEW_FIELDS)
+    document = (
+        "query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { "
+        "issueOrPullRequest(number:$number) { ... on Issue { " + fields + " } ... on PullRequest { "
+        + fields + " " + review_fields + " } } } rateLimit { cost } }"
+    )
+    data = discussion_query(reader, document, {"owner": owner, "name": name, "number": number})
+    repository_node = data.get("repository")
+    thread = repository_node.get("issueOrPullRequest") if isinstance(repository_node, dict) else None
+    if not isinstance(thread, dict) or thread.get("__typename") not in {"Issue", "PullRequest"}:
+        raise GitHubReadShapeError(f"GitHub did not expose {repo}#{number}")
+    resolved_id = thread.get("databaseId")
+    if thread["__typename"] == "PullRequest":
+        resolved_id = issue_id if issue_id is not None else reader.get_json(
+            f"/repos/{repo}/issues/{number}", step="discussion_issue_identity"
+        )["id"]
+    result: dict[str, Any] = {
+        **discussion_comment({**thread, "databaseId": resolved_id}, repo, number), "number": thread["number"], "title": thread["title"],
+        "state": "closed" if thread["state"] in {"CLOSED", "MERGED"} else "open",
+        "closed_at": thread["closedAt"],
+        "comments": [discussion_comment(node, repo, number) for node in discussion_nodes(reader, thread, "comments", DISCUSSION_COMMENT_FIELDS)],
+        "reviews": [], "review_comments": [],
+    }
+    if thread["__typename"] == "PullRequest":
+        result["pull_request"] = {"url": f"https://api.github.com/repos/{repo}/pulls/{number}"}
+        for review in discussion_nodes(reader, thread, "reviews", DISCUSSION_REVIEW_FIELDS):
+            result["reviews"].append(discussion_comment(review, repo, number))
+            result["review_comments"].extend(
+                discussion_comment(node, repo, number) for node in discussion_nodes(reader, review, "comments", DISCUSSION_INLINE_FIELDS)
+            )
+    return result
 
 
 def request_diagnostic(
