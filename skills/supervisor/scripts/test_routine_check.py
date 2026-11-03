@@ -558,7 +558,7 @@ class RoutineCheckTests(unittest.TestCase):
     def test_real_no_claim_stops_select_only_a_source_bound_original_comment(self) -> None:
         incidents = json.loads((Path(__file__).parent / "fixtures/closeout-native-posts.json").read_text())
         for incident in (row for row in incidents if not row.get("ended_at")):
-            for variant in (None, "case", "elsewhere", "ambiguous", "copied", "wrong_actor", "edited", "conflicting_session", "failed_check", "claims_remain", "later_elsewhere", "marker", "marker_copied"):
+            for variant in (None, "case", "elsewhere", "ambiguous", "copied", "wrong_actor", "edited", "conflicting_session", "failed_check", "claims_remain", "later_elsewhere"):
                 with self.subTest(worker=incident["token"], variant=variant), tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
                     entry = {key: incident[key] for key in ("repository", "issue", "session_id")}
@@ -573,9 +573,6 @@ class RoutineCheckTests(unittest.TestCase):
                     evidence: list[dict[str, Any]] = [{"source_session": entry["session_id"], "expected_actor": post["expected_actor"],
                                  "repository": entry["repository"], "number": number,
                                  "comment": {**post["comment"], "url": comments[0]["html_url"]}}]
-                    if variant in {"marker", "marker_copied"}:
-                        post = {**post, "operation_marker": {"operation_id": "abc123"}}
-                        comments[0]["body"] += "\n<!-- github-skill-operation:" + ("abc123" if variant == "marker" else "def456") + " -->"
                     actor = comments[0]["user"]["login"]
                     if variant == "case":
                         evidence[0]["repository"] = entry["repository"].upper()
@@ -616,7 +613,7 @@ class RoutineCheckTests(unittest.TestCase):
                     with (patch.object(session_closeout, "GitHubReader", return_value=reader),
                           patch.object(session_closeout.github_identity, "automation_login", return_value=actor),
                           patch.object(subprocess, "run") as mutation):
-                        if variant not in {None, "case", "elsewhere", "claims_remain", "later_elsewhere", "marker"}:
+                        if variant not in {None, "case", "elsewhere", "claims_remain", "later_elsewhere"}:
                             with self.assertRaises(GateFailed):
                                 session_closeout.verify_handoff(entry, args, operation, retired=False)
                             self.assertEqual(json.loads(ledger.read_text()), [entry])

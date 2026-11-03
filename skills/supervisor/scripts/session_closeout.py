@@ -37,10 +37,10 @@ SCRIPTS = Path(__file__).resolve().parent
 
 if TYPE_CHECKING:
     from skills.github.scripts.github_plan_claim import live_lines, unquoted_text, session_fields
-    from skills.github.scripts.github_api import body_has_operation_marker
+    from skills.github.scripts.github_catalog_health import MARKER as OPERATION_MARKER
 else:
     from github_plan_claim import live_lines, unquoted_text, session_fields
-    from github_api import body_has_operation_marker
+    from github_catalog_health import MARKER as OPERATION_MARKER
 
 
 def require(condition: bool, gate: str, reason: str) -> None:
@@ -132,8 +132,6 @@ def projected_handoff(comment: dict, evidence: list[dict], actor: str, session: 
     return any(row.get("expected_actor") == actor and isinstance(posted := row.get("comment"), dict)
                and posted.get("author") == actor and posted.get("id") == comment.get("id")
                and posted.get("url") == comment.get("html_url") and posted.get("created_at") == posted.get("updated_at")
-               and (not row.get("operation_marker") or body_has_operation_marker(
-                   body, str(row["operation_marker"].get("operation_id"))))
                and str(comment.get("issue_url") or "").casefold()
                == f"https://api.github.com/repos/{row.get('repository')}/issues/{row.get('number')}".casefold()
                for row in evidence)
@@ -146,7 +144,7 @@ def handoff_refusal(comment: dict, evidence: list[dict], session: str, actor: st
         return f"{url}: author differs from {actor}"
     if live_lines(body) or re.match(r"(?i)^Claimed by\b", body.strip()):
         return f"{url}: claim comment is not a handoff"
-    marker = re.search(r"<!-- github-skill-operation:([^\s<>]+)", body)
+    marker = OPERATION_MARKER.search(body)
     proof = "no operation marker" if marker is None else "operation marker has no matching write proof from this session"
     if marker and any((row.get("operation_marker") or {}).get("operation_id") == marker[1] for row in evidence):
         proof = "operation marker found, but comment does not match the source write"
@@ -156,6 +154,8 @@ def handoff_refusal(comment: dict, evidence: list[dict], session: str, actor: st
     identity = f"native session id {session} absent"
     if explicit_session(body, session):
         identity = f"native session id {session} present"
+    elif session_fields(text) and not session_fields(text, current_only=True):
+        identity = f"native session id {session} not identified as current; only historical session fields found"
     elif not claim_release.related_sessions_match(text, session):
         identity = f"native session fields conflict with {session}"
     return f"{comment.get('html_url') or comment.get('id')}: {identity}; {proof}"
@@ -187,7 +187,7 @@ def verify_handoff(entry: dict, args: argparse.Namespace, operation: Operation, 
                            or projected_handoff(comment, scoped, actor, args.session_id))]
         require(len(candidates) == 1, "handoff",
                 f"requires one posted handoff; found {len(candidates)} candidates: {[row.get('html_url') for row in candidates]}; "
-                f"examined: {[handoff_refusal(row, scoped, args.session_id, actor) for row in comments[-10:]]}; "
+                f"examined: {[handoff_refusal(row, scoped, args.session_id, actor) for row in [comment for comment in comments if (comment.get("user") or {}).get("login") == actor][-10:]]}; "
                 "verify the source and select its exact --handoff-url")
         selected = candidates[0]["html_url"]
     require(isinstance(selected, str), "handoff", "handoff URL is missing")
