@@ -267,7 +267,7 @@ def read_opened(reader, repo: str, since: str, client_agents=()) -> list[dict]:
                 user = review.get("user") or {}
                 if not (review.get("body") or "").strip():
                     continue
-                if user.get("type") == "Bot" and user.get("login", "").casefold() not in client_agents:
+                if radar.is_github_bot(user.get("login", ""), user.get("type", "")) and user.get("login", "").casefold() not in client_agents:
                     bot_reviews.append({**review, "updated_at": review.get("submitted_at") or review["created_at"]})
                 else:
                     messages.append(review)
@@ -281,7 +281,7 @@ def source_messages(source: dict, client_agents: Any = ()) -> list[dict]:
     user = source.get("user") or {}
     if timestamp(source["updated_at"]) <= timestamp(source["created_at"]):
         return [opening]
-    if user.get("type") == "Bot" and user.get("login", "").casefold() not in client_agents:
+    if radar.is_github_bot(user.get("login", ""), user.get("type", "")) and user.get("login", "").casefold() not in client_agents:
         return [opening]
     return [opening, source]
 
@@ -1030,13 +1030,9 @@ def main() -> int:
     args.director_names = identities["director_names"]
     args.recipient_identity_gap = (identities.get("error") or "Director aliases are ambiguous"
                                    if identities["status"] == "error" or identities["director_ambiguous"] else None)
-    args.client_agent_logins = set()
-    if args.ledger:
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github-work-rollup/scripts"))
-        identities = radar.people_identities({args.owner.casefold()}, args.people_index)
-        if identities.get("status") == "error":
-            parser.error(identities["error"])
-        args.client_agent_logins = {login for login, person in identities["automation"].items() if person}
+    if args.ledger and identities.get("status") == "error":
+        parser.error(identities["error"])
+    args.client_agent_logins = {login for login, person in identities["automation"].items() if person}
     if args.github_cli_login:
         args.github_cli_login = github_access.select_login(args.github_cli_login)
     deadline = time.monotonic() + args.deadline_seconds

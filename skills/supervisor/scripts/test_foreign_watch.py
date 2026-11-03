@@ -85,15 +85,24 @@ class WatchTests(unittest.TestCase):
                     reader.request.side_effect = getattr(foreign_watch, "GitHubReadShapeError")("external search unavailable")
                     args = argparse.Namespace(owner="director", state=Path(directory) / "state.json", since=None,
                         own_login=["director", "agent[bot]"], launchplane_login=[], interval=300,
-                        once=False, persistent=persistent, client_agent_logins={"client-agent[bot]"})
+                        once=False, persistent=persistent)
                     output = io.StringIO()
                     clock = WatchClock()
+                    argv = ["foreign_watch.py", "--owner", args.owner, "--repo", REPO,
+                            "--own-login", "director", "--own-login", "agent[bot]", "--state", str(args.state),
+                            "--since", "2026-10-30T19:35:00Z", "--deadline-seconds", "60"]
+                    if persistent:
+                        argv.append("--persistent")
+                    identities = {"status": "ok", "director_names": [], "director_ambiguous": False,
+                                  "automation": {"client-agent[bot]": "Client"}}
                     with (patch_attr(foreign_watch, "GitHubReader", return_value=reader),
+                          patch_attr(foreign_watch.radar, "people_identities", return_value=identities),
+                          patch.object(foreign_watch.sys, "argv", argv),
                           patch.object(foreign_watch, "utc_now", return_value="2026-10-30T19:40:00Z"),
                           patch.object(foreign_watch.time, "monotonic", side_effect=clock.monotonic),
                           patch.object(foreign_watch.time, "sleep", side_effect=clock.sleep),
                           redirect_stdout(output)):
-                        result = foreign_watch.watch(args, [REPO], "2026-10-30T19:35:00Z", 60)
+                        result = foreign_watch.main()
                     self.assertEqual(result, 0)
                     self.assertEqual(clock.now, foreign_watch.NOTICE_SETTLE_SECONDS)
                     [notice] = json.loads(output.getvalue().splitlines()[0])["notices"]
