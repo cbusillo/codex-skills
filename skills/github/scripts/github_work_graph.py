@@ -777,7 +777,9 @@ def read_native_graph(
     return NativeGraphRead({key: records[key] for key in graph.nodes}, sorted(set(unavailable)), not graph.complete)
 
 
-def cached_reads(fetch: Callable[[list[str]], Any]) -> Callable[[list[str]], Any]:
+def cached_reads(
+    fetch: Callable[[list[str]], Any], *, reads: github_next_reads.NextReads | None = None,
+) -> Callable[[list[str]], Any]:
     cache: dict[tuple[str, ...], Any] = {}
 
     def read(args: list[str]) -> Any:
@@ -795,6 +797,8 @@ def cached_reads(fetch: Callable[[list[str]], Any]) -> Callable[[list[str]], Any
             if len(normalized) == 2 and normalized[1] != "graphql":
                 normalized.extend(["--method", "GET"])
         key = tuple(normalized)
+        if reads is not None:
+            return reads.observe(json.dumps(key), lambda: fetch(args))
         if key not in cache:
             try:
                 cache[key] = fetch(args)

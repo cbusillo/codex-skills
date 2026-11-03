@@ -10,6 +10,7 @@ import json
 import math
 import re
 import unittest
+import threading
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
@@ -273,6 +274,27 @@ class WorkGraphTests(unittest.TestCase):
                 read(args)
             self.assertIs(caught.exception, failure)
         self.assertEqual(fetch.call_count, 2)
+
+    def test_parallel_cache_observes_each_source_once_and_keeps_private_copies(self) -> None:
+        started = threading.Event()
+        finish = threading.Event()
+
+        def fetch(_args: list[str]) -> list[dict[str, str]]:
+            started.set()
+            if not finish.wait(5):
+                raise AssertionError("Parallel consumer did not start")
+            return [{"body": "Provider body"}]
+
+        with graph.github_next_reads.NextReads(workers=2, seconds=0) as reads:
+            read = graph.cached_reads(fetch, reads=reads)
+            first = reads.submit("first", lambda: read(["api", "repos/Owner/Repo/issues"]))
+            self.assertTrue(started.wait(5))
+            second = reads.submit("second", lambda: read(["api", "/repos/owner/repo/issues", "--method", "GET"]))
+            finish.set()
+            first.result()[0]["body"] = "Consumer edit"
+            self.assertEqual(second.result(), [{"body": "Provider body"}])
+            self.assertEqual(reads.requests, 1)
+            self.assertEqual(reads.reused, 1)
 
     def test_raw_relationship_rows_preserve_attribution_metadata_before_compaction(self) -> None:
         source = {
