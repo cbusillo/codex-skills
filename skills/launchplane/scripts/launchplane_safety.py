@@ -262,18 +262,6 @@ def public_identifier(value: object, *, pattern: re.Pattern[str] = IDENTIFIER_RE
     return PublicIdentifier(compact)
 
 
-def public_display_name(value: object) -> str:
-    if (
-        not isinstance(value, str)
-        or not value.strip()
-        or len(value) > 256
-        or not value.isprintable()
-        or _redact_token_like(value, identifier=True) != value
-        or any(is_denied_key(match[1]) for match in CREDENTIAL_ASSIGNMENT_HEAD_RE.finditer(value))
-    ):
-        raise LaunchplaneSafetyError("invalid_response")
-    return PublicIdentifier(value)
-
 def public_trace_id(value: object) -> str:
     if value is None or value == "":
         return ""
@@ -324,6 +312,19 @@ CREDENTIAL_VALUE_RE = re.compile(
     r"\"(?:\\.|[^\"\\])*(?:\"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s]+"
 )
 FREE_TEXT_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s<>\"']+", re.IGNORECASE)
+
+
+def public_display_name(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value) > 256
+        or not value.isprintable()
+        or _redact_token_like(value, identifier=True) != value
+        or any(is_denied_key(match[1]) for match in CREDENTIAL_ASSIGNMENT_HEAD_RE.finditer(value))
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    return PublicIdentifier(value)
 
 
 def public_operator_text(
