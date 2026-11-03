@@ -1534,6 +1534,17 @@ class ReleaseTests(unittest.TestCase):
         with patch.object(helper.account_choice, "load_config", side_effect=ValueError("missing")):
             self.assertEqual(helper.transcript_roots("codex", None, [self.root]), [str(self.root.resolve())])
 
+    def test_plain_install_closeout_searches_recorded_source_home(self) -> None:
+        source = self.root / "worker-home"
+        entry = {"codex_home": str(source), "transcript": str(source / "sessions/source.jsonl")}
+        with patch.object(helper.account_choice, "load_config", return_value={"accounts": []}):
+            roots = helper.transcript_roots("codex", None, [], entry)
+            self.assertIn(str(source / "sessions"), roots)
+            self.assertIn(str(source / "archived_sessions"), roots)
+            transcript = source / "projects/repository/source.jsonl"
+            roots = helper.transcript_roots("claude", None, [], {"transcript": str(transcript)})
+            self.assertIn(str(transcript.parent.parent), roots)
+
     def test_deleted_attestation_restores_claim_and_does_not_poison_other_session(self):
         evidence = {**comment(99, "Closed session source-session\nEnded at: 2026-01-01T00:02:00Z\nSafe to exit: yes"),
                     "created_at": "2026-01-01T00:04:00Z", "updated_at": "2026-01-01T00:04:00Z"}

@@ -339,7 +339,8 @@ terminal text, including non-dim text, proves neither authorship nor approval.
 
 ## Accounts, Pace, And Launch Effort
 
-Follow Context Panel's account/capacity choice. Never apply banked resets;
+Use [account selection](references/helpers.md#choosing-the-account), including
+the optional Context Panel integration. Never apply banked resets;
 ask the Director only when every provider account including use-last is empty.
 Relay expiry notices within 24 hours without treating them as early reset
 authority. Fill productive capacity, soonest expiry first. Default launch effort
@@ -391,8 +392,8 @@ for the weekly direction audit. Client test notes already settling acceptance
 need no new pre-merge question.
 
 Run [Routine check](references/routine-check.md) about every 23 minutes and act
-on finished notices immediately. Read host `[staffing]` `openai_workers` and
-`load1_limit`; report missing values and continue available work. Refill below
+on finished notices immediately. Read optional host `[staffing]` `openai_workers` and
+`load1_limit` when present; missing tuning does not block available work. Refill below
 target in the same turn a worker closes. Add CPU-light work at high load and use
 actionable unclaimed active issues/Cloud findings under the overall Order when
 `next` is thin. Require complete paginated staffing coverage; add no staffing
@@ -433,7 +434,9 @@ PR carries `## Client test notes`. Discussions are drafts; issues are requests.
 
 ## Milestone State
 
-Use the full goal board at takeover and after compaction, and the
+Use `gh-plan.py next` and the Director's listed milestones. Track issues and
+their goal board are optional; when used, read the board at takeover and after
+compaction. Use the
 [routine digest](references/routine-check.md) at each check. Coverage gaps stay unknown.
 Open the linked decision and Current Status before repeating a hold or briefing
 work. PR handoffs stay open until merged; read current head, mergeability and
@@ -450,11 +453,12 @@ owns status/decisions; keep no copied prose/rules or historical recovery narrati
 ## Procedure
 
 At takeover check permission mode and load `direction` for daily-turn reads.
+Use the brief's handoff anchor, or the optional private handoff setting.
 Read this Director's latest handoff and later comments, original Director words,
 full current board and registry, each named thread/screen and the recovery note.
 Verify pending actions at their source and list actual watcher/driver processes.
-Recreate the check/digest with the harness scheduler. Bind existing persistent
-services; otherwise start scoped bounded idle/foreign watches with separate
+Recreate the check/digest with the harness scheduler. Persistent services are optional. Bind existing services when present;
+otherwise start scoped bounded idle/foreign watches with separate
 harness watermarks, processing closeout notices immediately and re-arming after
 exit. Preserve coverage gaps, watch live Client releases, and schedule the
 pending-review dispatcher while requests exist. Never duplicate live services.

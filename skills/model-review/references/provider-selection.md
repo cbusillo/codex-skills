@@ -6,7 +6,8 @@ Keep those decisions in the shared Code home's private
 catalog, reviewed repositories and provider account homes. Cite the recorded
 decision there; update this one file when it changes, rather than copying a
 provider list into briefs or shared skill text. The catalog installer does not
-create or modify it.
+create or modify it. A missing policy under `CODE_HOME` also checks `~/.code`;
+provider account homes never supply shared review policy.
 
 For example, after the Director has recorded the corresponding decision:
 
@@ -33,33 +34,30 @@ timeout is the maximum: callers may use a shorter budget. Without a configured
 budget, reviews use 900 seconds. File-read probes default to 300 seconds or the
 configured limit if shorter.
 
-Create the private file from verified Director decisions before the first run;
-missing or malformed policy stops before inference. This is decision storage,
+The private file is optional. Without it, select an installed provider other
+than the author and use its CLI login. When present, it governs provider roles,
+models and budgets; malformed or unreadable policy stops before inference. This is decision storage,
 not a new request for approval. Never invent a fallback or supplement that the
 recorded decision does not permit.
 
 Pass the actual author's provider with `--author-provider`. The default run
 uses the first allowed primary provider other than the author that has an
-installed CLI and a Context Panel account choice:
+installed CLI and an available account choice:
 
 ```sh
 uv run scripts/review_with_model.py run --author-provider openai --repo <repo> --prompt-file <file> --out <review.md>
 ```
 
-The existing Supervisor account reader loads account mappings and reads one
-Context Panel snapshot. It follows `useNext` and the supported recent-stale
-launch order, without adding its own reserve or reading credentials. The chosen
-account is passed through to launch, so selection and inference use the same
-choice. This includes Google's single existing agy login and count-only receipt.
-Skipped providers and their reasons, including the published next capacity time,
-appear in the result. An unavailable snapshot stops before launching any provider.
-If no eligible primary remains, report that outcome, including why; do not elevate
-a supplement. Nothing retries a review failure or refusal on another provider.
+Use the shared [account selection](../../supervisor/references/helpers.md#choosing-the-account)
+with its optional Context Panel integration. Selection and inference use the same
+account. Skipped providers and their reasons appear in the result. If no eligible
+primary remains, report that outcome; do not elevate a supplement. Nothing retries
+a review failure or refusal on another provider.
 
 `--provider NAME` explicitly selects one permitted provider; it does not choose a
 fallback. Pass it when using `--model`, so another provider cannot inherit that
 model name. Explicit selection still enforces the standing role, independence
-and Context Panel choice. A file-read `check` uses the same gates.
+and the configured account choice. A file-read `check` uses the same gates.
 
 Finish the primary review before running a permitted supplement. Run each
 supplement once, serially, with its recorded budget:

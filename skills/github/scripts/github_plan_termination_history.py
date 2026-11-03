@@ -20,8 +20,7 @@ import github_plan_termination as termination
 
 
 def source_accounts() -> list[dict[str, Any]]:
-    config = sessions.native_helpers()[0].load_config(path=closure.closed_log().with_name("supervisor.toml"))
-    accounts = [account for account in config["accounts"] if account["provider"] == "anthropic"]
+    accounts = [account for account in sessions.native_helpers()[0].inventory_accounts() if account["provider"] == "anthropic"]
     if not accounts:
         raise ValueError("Configured source account coverage is unavailable")
     return accounts

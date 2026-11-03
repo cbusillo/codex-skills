@@ -199,6 +199,17 @@ class LaunchIssueTests(unittest.TestCase):
 
 
 class ResumeLaunchTests(unittest.TestCase):
+    def test_plain_install_resume_preserves_source_home(self) -> None:
+        with patch.object(account_choice, "load_config", return_value={"snapshot_command": None, "accounts": []}):
+            commands, choices = iterm_tab.prepare_launches(self.args)
+            self.assertTrue(commands)
+            choice = choices[0]
+            assert choice is not None
+            self.assertEqual(choice["env"], self.account["env"])
+            self.select.return_value = {**self.choice, "env": {"CODEX_HOME": str(self.root / "other")}}
+            with self.assertRaises(ValueError):
+                iterm_tab.prepare_launches(self.args)
+
     def test_preparation_read_deadline_leaves_account_probes_and_writes_their_own_bounds(self) -> None:
         def select(*args: object) -> dict:
             time.sleep(0.1)

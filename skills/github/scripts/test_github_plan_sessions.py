@@ -990,6 +990,35 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
             self.assertIsNone(CLOSURE.guarded_launch_endpoint(456, [native[0], "--model", "changed", *native[1:]]))
 
 class AccountHomeTests(unittest.TestCase):
+    def test_plain_install_inventory_uses_current_login_without_account_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder}, clear=True):
+            root = Path(folder)
+            expected = Path(SESSIONS.native_helpers()[0].login_environment("openai")["CODEX_HOME"])
+            self.assertEqual(SESSIONS.configured_homes(strict=True), [expected.resolve()])
+            with patch.dict(os.environ, {"CODEX_HOME": str(root / "active")}):
+                self.assertEqual(SESSIONS.configured_homes(strict=True), [(root / "active").resolve()])
+            path = CLOSURE.closed_log().with_name("supervisor.toml")
+            path.parent.mkdir(parents=True)
+            path.write_text("invalid TOML")
+            with self.assertRaises(ValueError):
+                SESSIONS.configured_homes(strict=True)
+            path.unlink()
+            path.symlink_to(root / "missing-config")
+            with self.assertRaises(ValueError):
+                SESSIONS.configured_homes(strict=True)
+
+    def test_alternate_account_settings_never_become_unconfigured_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder}, clear=True):
+            root = Path(folder)
+            alternate = root / "alternate"
+            path = alternate / "skill-data/supervisor.toml"
+            path.parent.mkdir(parents=True)
+            path.write_text('[[accounts.account]]\nname="configured"\nprovider="openai"\ncontext_panel_label="fixture"\n'
+                            + 'env={CODEX_HOME=' + json.dumps(str(root / "configured")) + '}\n')
+            with patch.dict(os.environ, {"CODE_HOME": str(alternate)}):
+                with self.assertRaises(ValueError):
+                    SESSIONS.configured_homes(strict=True)
+
     def test_runtime_and_account_overrides_cannot_hide_a_frozen_source(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder, "CODE_HOME": str(Path(folder) / ".code")}):
             path = CLOSURE.closed_log()
@@ -1022,7 +1051,7 @@ class AccountHomeTests(unittest.TestCase):
     def test_configured_receipt_homes_do_not_depend_on_caller_account_or_order(self):
         config = {"accounts": [{"provider": "openai", "env": {"CODEX_HOME": "/fixture/b"}},
                                {"provider": "openai", "env": {"CODEX_HOME": "/fixture/a"}}]}
-        helpers = SimpleNamespace(load_config=lambda **_kw: config)
+        helpers = SimpleNamespace(inventory_accounts=lambda: config["accounts"])
         results = []
         for current in ("/fixture/a", "/fixture/b", "/fixture/unconfigured"):
             with patch.dict(os.environ, {"CODEX_HOME": current}), \
@@ -1035,7 +1064,7 @@ class AccountHomeTests(unittest.TestCase):
             self.assertIn((Path(folder) / ".codex").resolve(), SESSIONS.observation_homes(strict=True))
 
     def test_receipt_proofs_require_available_account_inventory(self):
-        config = SimpleNamespace(load_config=lambda **_kw: (_ for _ in ()).throw(ValueError("missing account inventory")))
+        config = SimpleNamespace(inventory_accounts=lambda: (_ for _ in ()).throw(ValueError("missing account inventory")))
         with patch.object(SESSIONS, "native_helpers", return_value=(config, None)):
             self.assertTrue(SESSIONS.observation_homes())
             with self.assertRaisesRegex(ValueError, "missing account inventory"):

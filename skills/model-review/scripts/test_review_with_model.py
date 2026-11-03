@@ -304,10 +304,27 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertFalse(cwd_file.exists())
         self.assertEqual(len(list((self.storage / "Launch Receipts").glob("*.json"))), 1)
 
-    def test_missing_or_malformed_decision_never_launches(self) -> None:
+    def test_plain_install_reviews_with_existing_login(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        self.policy.unlink()
+        (self.home / ".code/skill-data/supervisor.toml").unlink()
+        capture = self.root / "child-env"
+        token = "fixture-existing-login"
+        code, result = self.run_helper("run", "--repo", str(self.repo), "--prompt-file", str(self.prompt),
+                                      "--author-provider", "openai", ANTHROPIC_API_KEY=token,
+                                      FAKE_REVIEW_ENV_FILE=str(capture),
+                                      FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}))
+        self.assertEqual((code, result["ok"]), (0, True))
+        self.assertTrue(capture.exists())
+        child = dict(line.split("=", 1) for line in capture.read_text().splitlines())
+        self.assertEqual(child["ANTHROPIC_API_KEY"], token)
+        self.assertIsNone(result["launch_receipt"])
+        self.assertFalse((self.storage / "Launch Receipts").exists())
+
+    def test_malformed_decision_never_launches(self) -> None:
         self.install("claude", FAKE_CLAUDE)
         capture = self.root / "child-env"
-        bodies = [None, "invalid TOML", 'version = 1\nproviders = ["anthropic"]',
+        bodies = ["invalid TOML", 'version = 1\nproviders = ["anthropic"]',
                   'version = 1\ndecision = "bad provider"\nproviders = [{name="anthropic"}]']
         for body in bodies:
             with self.subTest(body=body):
@@ -318,6 +335,16 @@ class ReviewWithModelTests(unittest.TestCase):
                 self.assertEqual((code, result["ok"]), (1, False))
                 self.assertFalse(capture.exists())
                 self.assertFalse((self.storage / "Launch Receipts").exists())
+
+    def test_shared_policy_still_restricts_review_when_code_home_has_no_policy(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        self.policy.write_text('version = 1\ndecision = "restricted"\nproviders = ["openai"]\n')
+        capture = self.root / "child-env"
+        code, result = self.review("anthropic", CODE_HOME=str(self.root / "other-code-home"),
+                                   FAKE_REVIEW_ENV_FILE=str(capture))
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertEqual(result["phase"], "selection")
+        self.assertFalse(capture.exists())
 
     def test_policy_model_budget_and_actual_provenance_reach_the_review(self) -> None:
         self.install("claude", FAKE_CLAUDE)
@@ -463,11 +490,6 @@ class ReviewWithModelTests(unittest.TestCase):
                 self.assertEqual((code, result["ok"]), (1, False))
                 self.assertFalse(capture.exists())
                 self.assertFalse((self.storage / "Launch Receipts").exists())
-        self.snapshot_file.write_text(original)
-        (self.home / ".code/skill-data/supervisor.toml").unlink()
-        code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture))
-        self.assertEqual((code, result["ok"], result["phase"]), (1, False, "selection"))
-        self.assertFalse(capture.exists())
 
     def test_receipt_failure_prevents_launch_and_provider_failure_retains_receipt(self) -> None:
         self.install("claude", FAKE_CLAUDE)
