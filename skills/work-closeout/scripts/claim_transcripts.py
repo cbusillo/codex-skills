@@ -2785,7 +2785,7 @@ def claim_arguments(argv: list[str]) -> list[str] | None:
         return None
     argv = argv[position.index :]
     executable = Path(argv[0]).name
-    if re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", executable):
+    if re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", executable, re.IGNORECASE):
         argv = argv[1:]
     elif executable != "gh-plan.py":
         return None
