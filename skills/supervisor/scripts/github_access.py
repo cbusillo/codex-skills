@@ -73,6 +73,8 @@ def reader_options(login: str | None = None) -> dict[str, Any]:
 
 
 def write_environment(login: str | None = None) -> dict[str, str]:
+    if login and identity_context()[1]:
+        raise ValueError("selected CLI login now conflicts with configured automation; reconcile before writing")
     env = {key: value for key, value in os.environ.items() if key != github_identity.OWN_USER_OPT_IN}
     if login:
         env.update(GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK="1", GH_WITH_ENV_TOKEN_EXPECTED_LOGIN=login)

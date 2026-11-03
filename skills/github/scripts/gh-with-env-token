@@ -150,7 +150,7 @@ if [ "$require_automation_auth_from_process" -eq 1 ]; then
 fi
 readonly require_automation_auth
 
-expected_login=${process_expected_login:-${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-${CODEX_AUTOMATION_LOGIN:-}}}
+expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-${CODEX_AUTOMATION_LOGIN:-}}
 
 # github_api.parse_gh_api_args is the one reading of `gh api` arguments, as
 # gh's own flag parser reads them; every check below uses its answer. A `gh
@@ -1141,7 +1141,7 @@ if [ "$app_variable_count" -gt 0 ] || [ "$client_app" -eq 1 ]; then
 	if [ "$reader_app" -eq 1 ]; then
 		expected_login=$app_login
 	elif [ "$client_app" -eq 1 ]; then
-		expected_login=${process_expected_login:-${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-$app_login}}
+		expected_login=${GH_WITH_ENV_TOKEN_EXPECTED_LOGIN:-$app_login}
 	fi
 elif [ "$reader_app" -eq 1 ]; then
 	echo "error: read-only GitHub App is not configured" >&2
@@ -1171,6 +1171,7 @@ if [ -z "$expected_login" ] && [ -z "${GH_TOKEN:-}" ] && is_write_command "$@"; 
 fi
 
 if [ -z "${GH_TOKEN:-}" ] && [ -n "$process_expected_login" ] && allows_active_auth_fallback; then
+	expected_login=$process_expected_login
 	verify_bot_login_for_write "$@" || exit $?
 fi
 

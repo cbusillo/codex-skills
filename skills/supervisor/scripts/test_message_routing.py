@@ -358,6 +358,7 @@ class MessageRoutingTests(unittest.TestCase):
             self.assertEqual(post.call_count, 2)
 
     def test_plain_install_miss_write_and_reconciliation_use_the_same_selected_actor(self) -> None:
+        self.enterContext(patch_attr(watch.github_access, "identity_context", return_value=({}, False)))
         self.args.github_cli_login = "director"
         receipt = {}
         with patch.object(watch.subprocess, "run", return_value=Mock(returncode=1, stdout="")) as post:

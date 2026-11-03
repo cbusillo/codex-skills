@@ -959,7 +959,7 @@ After its cause is resolved, `--recover` resumes the same native Supervisor and 
 Intentional job retirement uses the existing [service stop and removal procedure](#persistent-supervisor-services);
 changing state locations never silently replaces a differently configured job.
 
-Add `--events` only when the existing optional Launchplane operator source is
+Add `--events` only when the existing optional Launchplane attention source is
 configured. Without it the existing polling backstop runs and event-triggered
 delivery remains unqualified. No new receiver, credential or access is created.
 Add `--queue OWNER/REPO#NUMBER` to give the Supervisor the complete routine

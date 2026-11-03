@@ -99,6 +99,11 @@ class GitHubAccessTests(unittest.TestCase):
         reader.assert_not_called()
         cli.assert_not_called()
 
+    def test_selected_cli_writer_refuses_later_automation_configuration(self) -> None:
+        with patch.dict(os.environ, {"CODEX_AUTOMATION_LOGIN": "new-automation"}):
+            with self.assertRaises(ValueError):
+                github_access.write_environment("director")
+
     def test_plain_login_lists_private_owned_repositories_with_owner_and_archive_filter(self) -> None:
         reader = Mock()
 
