@@ -45,11 +45,6 @@ ANSWERED = re.compile(r"\s*[*_]*(yes|no|not yet)[*_]*\s*[,.;—–-]", re.IGNORE
 NEGATED = re.compile(r"\b(nothing|no|not|never)\b[^.!?\n]{0,20}$", re.IGNORECASE)
 COST = re.compile(r"\b(costs?|upkeep|maintenance|ongoing effort)\b", re.IGNORECASE)
 DEVELOPER = re.compile(r"\b(experienced|senior|sr\.?)\s+(professional\s+)?(developers?|devs?|engineers?)\b", re.IGNORECASE)
-REASON = (
-    "Create the Director question with `oq.py create --record-file FILE --owner OWNER`, or revise an unanswered one with `oq.py update`.\n"
-    "Required record keys: version, issue, decision, basis, options (answer, changes, cost, next), recommendation, comparison, manual.\n"
-    "Send only the numbered question returned by the helper; do not repeat the whole reply. If no question was asked, end unchanged."
-)
 LOOKUP_TIMEOUT = 3
 API_HELPER = Path(__file__).resolve().parents[2] / "github/scripts/github_api.py"
 
@@ -62,18 +57,29 @@ def asks_director(text: str) -> bool:
             or any(not NEGATED.search(text, endpos=ask.start()) for ask in ASK.finditer(text)))
 
 
+def director_question_rule() -> str:
+    from question_record import OPTION_FIELDS, TEXT_FIELDS
+
+    fields = ", ".join(("version", *TEXT_FIELDS, f"options ({', '.join(OPTION_FIELDS)})"))
+    return (
+        "Create the Director question with `oq.py create --record-file FILE --owner OWNER`, or revise an unanswered one with `oq.py update`.\n"
+        f"Required record keys: {fields}.\n"
+        "Send only the numbered question returned by the helper; do not repeat the whole reply. If no question was asked, end unchanged."
+    )
+
+
 def missing_context(message: str) -> str | None:
     text = QUOTED.sub(" ", message)
     if not asks_director(text):
         return None
     has_context = bool(COST.search(text) and DEVELOPER.search(text))
     if not NUMBERED.search(text):
-        return REASON
+        return director_question_rule()
     if has_context:
         return None
     if not has_unnumbered_ask(text) and registered_records_cover(message):
         return None
-    return REASON
+    return director_question_rule()
 
 
 def has_unnumbered_ask(text: str) -> bool:

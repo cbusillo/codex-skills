@@ -42,7 +42,7 @@ def fetch(item):
         raise ValueError(f"issue discussion read is incomplete: {error}") from error
     if not isinstance(comments, list) or not all(isinstance(c, dict) for c in comments):
         raise ValueError("issue discussion comments are malformed")
-    return [{**comment, "author": comment["user"]["login"], "url": comment["html_url"]} for comment in comments]
+    return [{**comment, "author": (comment.get("user") or {}).get("login") or "", "url": comment["html_url"]} for comment in comments]
 
 
 def default_decision_authors() -> list[str]:

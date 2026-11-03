@@ -21,9 +21,12 @@ SKILLS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SKILLS / "github/scripts"))
 sys.path.insert(0, str(SKILLS / "github-work-rollup/scripts"))
 import github_direction_next
+import github_identity
 import github_plan_wait
 import github_repository_scope as repository_scope
 import github_unanswered_comments as attention
+import question_id
+from github_plan_status import questions
 from github_read import (
     GitHubReader,
     GitHubReadError,
@@ -31,8 +34,6 @@ from github_read import (
     automation_only_gh_prefix_args,
     path_with_query,
 )
-
-from skills.github.scripts.github_plan_status import questions
 
 
 def parse_date(value):
@@ -172,8 +173,14 @@ def read_discussion(reader, repo, number, discussions, errors):
     return discussions[key]
 
 
+def normalized_comments(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{**comment, "author": (comment.get("user") or {}).get("login") or comment.get("author") or "",
+             "url": comment.get("html_url") or comment.get("url")} for comment in comments]
+
+
 def recorded_decisions(reader: GitHubReader, wait: dict[str, Any], owner: str,
-                       discussions: dict[tuple[str, int], Any], errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                       discussions: dict[tuple[str, int], Any], errors: list[dict[str, Any]],
+                       related_comments: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     if wait.get("state") != "waiting":
         return []
     found = []
@@ -182,15 +189,25 @@ def recorded_decisions(reader: GitHubReader, wait: dict[str, Any], owner: str,
         comments = read_discussion(reader, repo, number, discussions, errors)
         if comments is None:
             continue
-        normalized = [{**comment, "author": (comment.get("user") or {}).get("login") or comment.get("author") or "",
-                       "url": comment.get("html_url") or comment.get("url")} for comment in comments]
-        trusted = github_plan_wait.authors(repo) | {owner.casefold()}
+        normalized = normalized_comments(comments)
+        trusted = github_plan_wait.trusted_authors(owner, configured_bots=github_identity.configured_bot_logins(),
+                                                  automation=github_identity.automation_login())
         sources = [comment for comment in normalized if comment["url"] == match[0]
                    and comment["author"].casefold() in trusted]
         if len(sources) != 1:
             continue
-        found.extend(question for question in questions.questions(normalized, owner, trusted, recorded_decisions_only=True)
-                     if question["url"] == match[0] and question["answers"])
+        source_urls = {comment["url"] for comment in normalized}
+        related = [comment for comment in normalized_comments(related_comments or []) if comment["url"] not in source_urls]
+        matched = [question for question in questions.questions(normalized, owner, trusted, related, recorded_decisions_only=True)
+                   if question["url"] == match[0]]
+        queue = question_id.configured_queue()
+        if matched and not matched[0]["answers"] and queue:
+            queue_repo, queue_number = queue.split("#")
+            queue_comments = read_discussion(reader, queue_repo, int(queue_number), discussions, errors)
+            matched = [question for question in questions.questions(normalized, owner, trusted,
+                       [*related, *normalized_comments(queue_comments or [])], recorded_decisions_only=True)
+                       if question["url"] == match[0]]
+        found.extend(question for question in matched if question["answers"])
     return found
 
 
@@ -249,14 +266,15 @@ def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting f
                             continue
                     waits = wait_rows(repo, [entry], terms, owner, now, {entry["number"]: comments}, errors=result["errors"])
                     resolution = resolve_wait(repo, entry, comments)
-                    decisions = recorded_decisions(reader, resolution.record, owner, discussions, result["errors"]) if resolution.record else []
-                    if decisions:
+                    decisions = recorded_decisions(reader, resolution.record, owner, discussions, result["errors"], comments) if resolution.record else []
+                    evidence_urls = {match[0] for match in questions.COMMENT_URL.finditer(resolution.record["evidence"])} if resolution.record else set()
+                    if decisions and evidence_urls <= {question["url"] for question in decisions}:
                         result["needs_status"].extend({**row, "next_actor": "agent", "recorded_decisions": decisions,
                                                      "structured_wait": resolution.record,
-                                                     "next_action": "Read the recorded answers and reconcile the wait; preserve every other hold."}
+                                                     "next_action": "Read the recorded answers and reconcile within existing authority; preserve every other hold."}
                                                     for row in waits)
                     else:
-                        rows.extend(waits)
+                        rows.extend({**row, **({"recorded_decisions": decisions} if decisions else {})} for row in waits)
                 except (GitHubReadShapeError, ValueError, TypeError, KeyError) as error:
                     result["errors"].append({"scope": "search item", "error": str(error)})
             if read_count >= total or len(items) < min(bound, 100) or read_count >= bound:

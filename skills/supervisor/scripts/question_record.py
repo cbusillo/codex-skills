@@ -144,6 +144,7 @@ def read_record(source: dict[str, Any]) -> dict[str, Any]:
         "author": source["author"],
         "question_id": number,
         "url": source["url"],
+        "updated_at": source.get("updated_at"),
         "text": rendered.removeprefix("Director question: "),
     }
 
@@ -153,7 +154,7 @@ class QuestionStorage(Protocol):
 
     def read(self, url: str) -> dict[str, Any]: ...
 
-    def update(self, url: str, body: str, expected_body: str) -> dict[str, Any]: ...
+    def update(self, url: str, body: str, expected_body: str, expected_updated_at: str) -> dict[str, Any]: ...
 
 
 class GitHubComments:
@@ -165,12 +166,12 @@ class GitHubComments:
         match = ISSUE_URL.fullmatch(issue)
         if match is None:
             raise ValueError("invalid issue URL")
-        def validate_writer(context: dict[str, Any]) -> None:
-            if context["actor"].casefold() not in trusted:
+        def validate_writer(actor: str) -> None:
+            if actor.casefold() not in trusted:
                 raise ValueError("question writer must be the Director or a configured --decision-author")
 
         result = github_comment.comment("issue", int(match[2]), body, repo=match[1], dedupe_body=True,
-                                        before_create=validate_writer, include_body=True)
+                                        validate_actor=validate_writer, include_body=True)
         return {**result["comment"], "issue": issue}
 
     def read(self, url: str) -> dict[str, Any]:
@@ -181,14 +182,15 @@ class GitHubComments:
         assert match is not None
         return {**source, "issue": f"https://github.com/{match[1]}/issues/{match[2]}"}
 
-    def update(self, url: str, body: str, expected_body: str) -> dict[str, Any]:
+    def update(self, url: str, body: str, expected_body: str, expected_updated_at: str) -> dict[str, Any]:
         match = delivery.COMMENT_URL.fullmatch(url)
         if match is None:
             raise ValueError("invalid question URL")
-        github_comment.comment(
-            "issue", int(match[2]), body, repo=match[1], edit_comment=int(match[3]), expected_body=expected_body
+        result = github_comment.comment(
+            "issue", int(match[2]), body, repo=match[1], edit_comment=int(match[3]), expected_body=expected_body,
+            expected_updated_at=expected_updated_at, include_body=True,
         )
-        return self.read(url)
+        return {**result["comment"], "issue": f"https://github.com/{match[1]}/issues/{match[2]}"}
 
 
 def update(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetch: DiscussionReader) -> dict[str, Any]:
@@ -198,7 +200,7 @@ def update(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
     with delivery.queue_lock():
         source = storage.read(args.url)
         view = read_record(source)
-        if source["body"] != args.expected_body_file.read_text():
+        if not args.expected_updated_at or source.get("updated_at") != args.expected_updated_at:
             raise ValueError("question changed; read its current version before revising")
         if record["issue"] != view["record"]["issue"]:
             raise ValueError("question cannot move to another issue")
@@ -220,7 +222,7 @@ def update(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
         github_comment.validate_planning_references(body, delivery.COMMENT_URL.fullmatch(args.url)[1])
         if len(body.encode()) + 128 > COMMENT_LIMIT:
             raise ValueError("record and rendered text exceed the GitHub comment limit")
-        saved = read_record(storage.update(args.url, body, source["body"]))
+        saved = read_record(storage.update(args.url, body, source["body"], args.expected_updated_at))
         if saved["record"] != record or saved["question_id"] != view["question_id"] or saved["url"] != args.url:
             raise ValueError(f"Question update at {args.url} disagrees with the requested record")
         return {**saved, "registration": "unchanged"}
@@ -292,7 +294,7 @@ def main(argv: list[str], fetch: DiscussionReader) -> int:
     revise = commands.add_parser("update")
     revise.add_argument("url")
     revise.add_argument("--record-file", type=Path, required=True)
-    revise.add_argument("--expected-body-file", type=Path, required=True)
+    revise.add_argument("--expected-updated-at", required=True)
     revise.add_argument("--owner", required=True)
     revise.add_argument("--decision-author", action="append", default=delivery.oq.default_decision_authors())
     show = commands.add_parser("show-question")
@@ -315,7 +317,7 @@ def main(argv: list[str], fetch: DiscussionReader) -> int:
     except github_comment.CommentError as error:
         print(
             json.dumps(
-                github_comment.terminal_failure(error, "github.question.create", expected_actor=github_comment.EXPECTED_ACTOR)
+                github_comment.terminal_failure(error, f"github.question.{args.command}", expected_actor=github_comment.EXPECTED_ACTOR)
             ),
             file=sys.stderr,
         )

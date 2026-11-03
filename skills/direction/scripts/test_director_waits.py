@@ -306,6 +306,20 @@ class StructuredWaitTests(unittest.TestCase):
                     row = result["needs_status"][0]
                     self.assertEqual(row["structured_wait"], wait)
                     self.assertEqual(row["recorded_decisions"][0]["answers"], [answer["html_url"]])
+        unanswered = {**source, "id": 13, "html_url": issue()["html_url"] + "#issuecomment-13",
+                      "body": "Director question: Q1190. Approve a release?"}
+        mixed = {**wait, "evidence": source["html_url"] + " " + unanswered["html_url"]}
+        hold = wait_comment("owner", marker=director_waits.github_plan_wait.marker(mixed))
+        result = self.collect_one(issue(), [source, unanswered, hold, answer])
+        self.assertEqual(result["needs_status"], [])
+        self.assertTrue(result["waits"][0]["recorded_decisions"])
+        external = {**source, "html_url": "https://github.com/outsider/repo/issues/1#issuecomment-10", "user": {"login": "outsider"}}
+        external_answer = {**answer, "user": {"login": "outsider"}, "body": f"Director decision: {external['html_url']}: Agree"}
+        discussion = {("outsider/repo", 1): [external, external_answer]}
+        self.assertEqual(director_waits.recorded_decisions(Mock(), {**wait, "evidence": external["html_url"]},
+                                                         "owner", discussion, []), [])
+        decisions = director_waits.recorded_decisions(Mock(), wait, "owner", {("owner/repo", 1): [source]}, [], [answer])
+        self.assertEqual(decisions[0]["answers"], [answer["html_url"]])
 
     def test_untrusted_clear_cannot_release_a_trusted_hold(self):
         comments = [wait_comment("owner", waiting_for="Director to approve", ends_when="Approved"),

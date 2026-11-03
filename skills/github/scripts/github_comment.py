@@ -770,6 +770,7 @@ def _comment_impl(
     before_create: Callable[[dict[str, Any]], None] | None = None,
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
     verified_actor: str | None = None,
+    validate_actor: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     operation = operation or f"github.comment.{kind}"
     expected_actor = effective_expected_actor(expected_actor)
@@ -844,6 +845,8 @@ def _comment_impl(
         write_repository=resolved_repo,
         retry_summaries=collected_retry_summaries,
     )
+    if validate_actor is not None:
+        validate_actor(actor)
     if expected_actor:
         expected_actor = actor
     steps = list(completed_steps or [])
@@ -1342,6 +1345,7 @@ def comment(
     attachments: list[str] | None = None,
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
     include_body: bool = False,
+    validate_actor: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     collected_retry_summaries = retry_summaries if retry_summaries is not None else []
     try:
@@ -1357,7 +1361,7 @@ def comment(
                 ) from error
         if attachments:
             if (kind not in ("issue", "pr") or number <= 0 or edit_last or edit_comment is not None
-                    or expected_body is not None or expected_updated_at is not None or create_if_none or dedupe_body or before_create is not None):
+                    or expected_body is not None or expected_updated_at is not None or create_if_none or dedupe_body or before_create is not None or validate_actor is not None):
                 raise _local_error(
                     "--attach requires a new issue or PR comment with a positive target; editing and deduplication are unsupported",
                     operation=operation or f"github.comment.{kind}", cause="validation_error", failed_step="input_validation",
@@ -1385,6 +1389,7 @@ def comment(
                 dedupe_body=dedupe_body,
                 before_create=before_create,
                 retry_summaries=collected_retry_summaries,
+                validate_actor=validate_actor,
             )
         question_body = body.removeprefix(AGENT_POSTED_LINE).lstrip()
         if question_id.QUESTION_HEADING.match(question_body):

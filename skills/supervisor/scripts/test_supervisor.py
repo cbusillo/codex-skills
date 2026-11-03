@@ -1354,9 +1354,9 @@ class QuestionTests(unittest.TestCase):
     def test_paged_helper_failure_never_means_no_questions(self) -> None:
         from skills.github.scripts import github_read
 
-        with patch.object(github_read.GitHubReader, "paged_json", side_effect=github_read.GitHubReadShapeError("missing page")):
-            with self.assertRaises(ValueError):
-                oq.fetch("example/repo#1")
+        with patch.object(github_read.GitHubReader, "paged_json", side_effect=github_read.GitHubReadShapeError("missing page")), \
+                self.assertRaises(ValueError):
+            oq.fetch("example/repo#1")
         with self.assertRaises(ValueError):
             oq.fetch("repo#1")
 
@@ -1370,9 +1370,8 @@ class QuestionTests(unittest.TestCase):
         self.assertEqual([row["url"] for row in fetched], [row["html_url"] for row in comments])
         self.assertEqual(oq.questions(fetched, "owner", {"bot"})[0]["status"], "answered")
         for malformed in ({}, [None]):
-            with patch.object(github_read.GitHubReader, "paged_json", return_value=malformed):
-                with self.assertRaises(ValueError):
-                    oq.fetch("example/repo#1")
+            with patch.object(github_read.GitHubReader, "paged_json", return_value=malformed), self.assertRaises(ValueError):
+                oq.fetch("example/repo#1")
 
 
 NOW = datetime(2026, 10, 3, 16, tzinfo=timezone.utc)

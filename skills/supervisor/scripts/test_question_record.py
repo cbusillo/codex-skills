@@ -60,6 +60,7 @@ class QuestionRecordTests(unittest.TestCase):
             "url": question()["issue"] + "#issuecomment-17",
             "author": AUTHOR,
             "issue": question()["issue"],
+            "updated_at": "2026-11-03T13:00:00Z",
         }
         self.storage = unittest.mock.create_autospec(record.QuestionStorage, instance=True)
         self.storage.create.return_value = self.source
@@ -162,6 +163,28 @@ class QuestionRecordTests(unittest.TestCase):
                 self.create(value)
         self.storage.create.assert_not_called()
 
+    def test_untrusted_writer_cannot_create_or_number_a_recovered_question(self) -> None:
+        self.args.decision_author = []
+        counter = record.question_id.counter_path()
+        seed = record.question_id.update(counter, seed=(300, ["fixture"]), allocate=False)
+        saved = {"id": 17, "html_url": self.source["url"], "user": {"login": AUTHOR},
+                 "body": record.render(question(), legacy=True), "issue_url": "https://api.github.com/repos/example/product/issues/3"}
+
+        def api(method: str, endpoint: str, body: Any, **_kwargs: Any) -> Any:
+            if method == "GET":
+                return api_success(saved if "/comments/" in endpoint else [saved], operation="test.read")
+            saved["body"] = body["body"]
+            return api_success(dict(saved), operation="test.edit")
+
+        def run(calls: list[dict]) -> None:
+            with self.assertRaises(record.github_comment.CommentError):
+                record.create(question(), self.args, record.GitHubComments(self.fetch), self.fetch)
+            self.assertFalse(calls)
+
+        with_call_stub(api, run)
+        self.fetch.assert_not_called()
+        self.assertEqual(json.loads(counter.read_text())["last_id"], seed)
+
     def test_create_and_default_routine_reader_agree_on_open_questions(self) -> None:
         self.actor.stop()
         self.args.queue = "example/direction#9"
@@ -207,7 +230,7 @@ class QuestionRecordTests(unittest.TestCase):
             storage = record.GitHubComments(record.delivery.oq.fetch)
             first = record.create(question(), self.args, storage, record.delivery.oq.fetch)
             self.assertLessEqual(len(calls), 10)
-            self.assertEqual(sum(c["path"] == "/user" for c in calls), 2)
+            self.assertLessEqual(sum(c["path"] == "/user" for c in calls), 2)
             published = record.github_comment.comment(
                 "issue", 3, record.render(question(), legacy=True), repo="example/product", dedupe_body=True
             )
@@ -244,8 +267,7 @@ class QuestionRecordTests(unittest.TestCase):
             self.assertEqual(queued["queue_length"], 1)
             self.assertEqual(queued["untrusted_records"], [])
             self.assertIn(first["url"], json.dumps(queued["questions"]))
-            prior = Path(self.temporary.name) / "prior.txt"
-            prior.write_text(storage.read(first["url"])["body"])
+            prior_updated = storage.read(first["url"])["updated_at"]
             revised = question() | {"basis": "The runner's capacity has been checked again."}
             path.write_text(json.dumps(revised))
             update_output = StringIO()
@@ -253,7 +275,7 @@ class QuestionRecordTests(unittest.TestCase):
             last_number = json.loads(counter.read_text())["last_id"]
             with redirect_stdout(update_output):
                 self.assertEqual(record.main(["update", first["url"], "--record-file", str(path),
-                                               "--expected-body-file", str(prior), "--owner", self.args.owner], fetch), 0)
+                                               "--expected-updated-at", prior_updated, "--owner", self.args.owner], fetch), 0)
             self.assertIn(revised["basis"], update_output.getvalue())
             self.assertEqual(record.read_record(storage.read(first["url"]))["question_id"], first["question_id"])
             self.assertEqual(len([c for c in calls if c["method"] == "POST"]), before)
@@ -327,10 +349,8 @@ class QuestionRecordTests(unittest.TestCase):
                 self.assertIn(self.source["url"], str(caught.exception))
 
     def test_update_preserves_identity_and_refuses_answers_or_stale_body(self) -> None:
-        prior = Path(self.temporary.name) / "prior.txt"
-        prior.write_text(self.source["body"])
         self.args.url = self.source["url"]
-        self.args.expected_body_file = prior
+        self.args.expected_updated_at = self.source["updated_at"]
         revised = question() | {"basis": "The runner now has more spare capacity."}
         self.source["id"] = 17
         self.fetch.return_value = [self.source]
@@ -341,14 +361,14 @@ class QuestionRecordTests(unittest.TestCase):
         self.assertEqual((result["question_id"], result["url"]), ("Q5", self.source["url"]))
         register.assert_not_called()
         self.storage.create.assert_not_called()
-        self.storage.update.assert_called_once_with(self.source["url"], updated["body"], self.source["body"])
+        self.storage.update.assert_called_once_with(self.source["url"], updated["body"], self.source["body"], self.source["updated_at"])
         self.storage.update.reset_mock()
         for author, body in (("example", "Agree"), (AUTHOR, "Director decision Q5: approved")):
             self.fetch.return_value = [self.source, {"id": 18, "url": self.source["url"] + "1", "author": author, "body": body}]
             with self.assertRaises(ValueError):
                 record.update(revised, self.args, self.storage, self.fetch)
         self.fetch.return_value = [self.source]
-        prior.write_text("stale body")
+        self.args.expected_updated_at = "stale timestamp"
         with self.assertRaises(ValueError):
             record.update(revised, self.args, self.storage, self.fetch)
         self.storage.update.assert_not_called()

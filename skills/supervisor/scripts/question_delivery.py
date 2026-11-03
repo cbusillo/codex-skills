@@ -57,7 +57,7 @@ def records(comments, trusted):
         source_item(record["question_url"])
         if record["event"] == "delivered":
             validate_receipt(record["delivery_url"])
-        result.append({**record, "record_url": comment["url"]})
+        result.append({**record, "record_url": comment["url"], "created_at": comment.get("created_at")})
     return result
 
 
@@ -144,6 +144,7 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
     found = oq.questions(source_comments, owner, decision_authors, answers, recorded_decisions_only=True)
     candidates = {q["url"]: q["answers"] for q in oq.questions(source_comments, owner, decision_authors, answers)}
     source_authors = {c["url"]: (c.get("author") or "") for c in source_comments}
+    source_updates = {c["url"]: c.get("updated_at") for c in source_comments}
     for question in found:
         if question["status"] == "answered":
             continue
@@ -160,6 +161,11 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
                 raise ValueError("question timestamp needs a timezone")
             age = max(0, (now - parsed).total_seconds())
         receipt = acknowledgements.get(url)
+        if receipt and source_updates[url]:
+            updated = datetime.fromisoformat(source_updates[url].replace("Z", "+00:00"))
+            delivered = datetime.fromisoformat(receipt["created_at"].replace("Z", "+00:00")) if receipt["created_at"] else None
+            if delivered is None or updated >= delivered:
+                receipt = None
         rows.append({**question, "question_id": number,
                      "question": question["question"] if number else None,
                      "status": question["status"] if number else "needs_number",
@@ -221,7 +227,7 @@ def reconcile(args, fetch):
     errors = []
     for item in items:
         try:
-            source_comments = fetch(item)
+            source_comments = queue_comments if item == args.queue else fetch(item)
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
             errors.append({"item": item, "error": str(error)})
             continue
