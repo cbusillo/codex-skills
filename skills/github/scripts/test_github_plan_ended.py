@@ -611,6 +611,20 @@ class ClaimReceiptBoundaryTests(unittest.TestCase):
 
 
 class HistoryCoverageTests(unittest.TestCase):
+    def test_plain_install_claude_history_uses_login_without_replacing_configured_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder}, clear=True):
+            root = Path(folder)
+            helper = ended.sessions.native_helpers()[0]
+            self.assertEqual(ended.source_accounts()[0]["env"], helper.login_environment("anthropic"))
+            with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(root / "active")}):
+                self.assertEqual(ended.source_accounts()[0]["env"], helper.login_environment("anthropic"))
+            path = ended.closure.closed_log().with_name("supervisor.toml")
+            path.parent.mkdir(parents=True)
+            path.write_text('[[accounts.account]]\nname="configured"\nprovider="openai"\ncontext_panel_label="fixture"\n'
+                            + 'env={CODEX_HOME=' + json.dumps(str(root / "configured")) + '}\n')
+            with self.assertRaises(ValueError):
+                ended.source_accounts()
+
     def test_native_inventory_is_negative_only_and_every_account_must_answer(self) -> None:
         fixture = json.loads((Path(__file__).parent / "fixtures/native-session-inventory.json").read_text())
         accounts = [{"provider": "anthropic", "env": {}}, {"provider": "anthropic", "env": {"CLAUDE_CONFIG_DIR": "/second"}}]

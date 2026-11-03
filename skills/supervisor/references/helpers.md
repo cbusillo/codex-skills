@@ -1869,8 +1869,8 @@ settings, use each CLI's existing login, including an explicitly inherited
 `CODEX_HOME` or `CLAUDE_CONFIG_DIR`; no credential or login file is read or copied.
 Context Panel is recommended, not required. Multiple detected accounts without
 it produce one host-local recommendation per provider and do not refuse launch.
-An optional account table without a snapshot command may name existing homes;
-`--account` explicitly selects one, otherwise the CLI's current home is retained.
+Configured account mappings require their snapshot command for launch and review.
+Without it selection refuses; the mappings remain available to source inventory.
 
 With a configured snapshot command, Context Panel is the account-choice source.
 A missing or failed configured reader still refuses; no silent fallback. This

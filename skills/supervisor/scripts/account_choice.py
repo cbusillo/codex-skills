@@ -98,9 +98,7 @@ def validate_config(section):
         if account.get("provider") not in PROVIDERS:
             raise ValueError(f"account {name}: provider must be one of {', '.join(PROVIDERS)}")
         keys = [k for k in ("context_panel_label", "context_panel_configuration_id") if k in account]
-        if keys and command is None:
-            raise ValueError("Context Panel account mappings need snapshot_command")
-        if (command is not None or keys) and (len(keys) != 1 or not isinstance(account[keys[0]], str) or not account[keys[0]]):
+        if len(keys) != 1 or not isinstance(account[keys[0]], str) or not account[keys[0]]:
             raise ValueError(
                 f"account {name}: set exactly one of context_panel_label or context_panel_configuration_id"
             )
@@ -128,8 +126,8 @@ def validate_config(section):
             {
                 "name": name,
                 "provider": account["provider"],
-                "match": keys[0] if keys else None,
-                "match_value": account[keys[0]] if keys else None,
+                "match": keys[0],
+                "match_value": account[keys[0]],
                 "env": dict(launch_env),
             }
         )
@@ -277,8 +275,8 @@ def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, na
     now = now or datetime.now(timezone.utc)
     if isinstance(count, bool) or not isinstance(count, int) or count < 1:
         raise ValueError("launch count must be a positive integer")
-    if config.get("snapshot_command") is None and snapshot is None:
-        return [existing_login(provider, config, name) for _ in range(count)]
+    if not config["accounts"] and config.get("snapshot_command") is None:
+        return [existing_login(provider, name) for _ in range(count)]
     accounts = [a for a in config["accounts"] if a["provider"] == provider]
     if not accounts:
         raise ValueError(f"no configured {provider} accounts")
@@ -415,29 +413,29 @@ def login_environment(provider: str) -> dict[str, str]:
     return environment
 
 
-def existing_login(provider: str, config: dict, name: str | None = None) -> dict:
-    accounts = [account for account in config["accounts"] if account["provider"] == provider]
+def inventory_accounts() -> list[dict]:
+    config = load_config(env={}, home=Path.home())
+    return config["accounts"] or [{"provider": provider, "name": "existing-login", "env": login_environment(provider)}
+                                   for provider in ACCOUNT_VARIABLES]
+
+
+def existing_login(provider: str, name: str | None = None) -> dict:
     environment = login_environment(provider)
     if name is not None:
-        matches = [account for account in accounts if account["name"] == name]
-        if len(matches) != 1:
-            raise ValueError(f"no configured {provider} account named {name}")
-        environment = dict(matches[0]["env"])
+        raise ValueError(f"no configured {provider} account named {name}")
     if provider == "openai":
         codex_health().require_usable(Path(environment["CODEX_HOME"]).expanduser())
-    recommend_context_panel(provider, accounts, environment)
-    return decision({"provider": provider, "name": name or "existing-login", "env": environment},
-                    "account-login" if name else "cli-login", "CLI login; Context Panel is optional")
+    recommend_context_panel(provider, environment)
+    return decision({"provider": provider, "name": "existing-login", "env": environment},
+                    "cli-login", "CLI login; Context Panel is optional")
 
 
-def recommend_context_panel(provider: str, accounts: list[dict], environment: dict) -> None:
+def recommend_context_panel(provider: str, environment: dict) -> None:
     variable = ACCOUNT_VARIABLES.get(provider)
     if variable is None:
         return
     default = Path.home() / {"openai": ".codex", "anthropic": ".claude"}[provider]
-    homes = {str(Path(account["env"].get(variable) or default).expanduser().resolve())
-             for account in accounts}
-    homes.update(str(path.expanduser().resolve()) for path in (default, Path(environment.get(variable) or default)) if path.is_dir())
+    homes = {str(path.expanduser().resolve()) for path in (default, Path(environment.get(variable) or default)) if path.is_dir()}
     if len(homes) < 2 or provider in RECOMMENDATIONS:
         return
     marker = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "codex-skills" / f"context-panel-{provider}"
@@ -469,7 +467,7 @@ def select(provider, config_path=None, name=None):
 
 def prepare_launch(choice):
     """Detect storage failures before making tabs, without creating a receipt."""
-    if choice.get("source") in {"cli-login", "account-login"}:
+    if choice.get("source") == "cli-login":
         return
     app = choice.get("receipt_app")
     if app is not None:
@@ -505,7 +503,7 @@ class PartialReceiptFailure(ValueError):
 
 
 def record_launch(choice, now=None, runner=None):
-    if choice.get("source") in {"cli-login", "account-login"}:
+    if choice.get("source") == "cli-login":
         return None
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     provider, account_id = choice["provider"], choice.get("account_id")
