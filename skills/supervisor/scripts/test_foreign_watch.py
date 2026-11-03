@@ -62,6 +62,12 @@ def patch_attr(target: object, name: str, **kwargs: Any) -> Any:
     return patch.object(target, name, **kwargs)
 
 
+def persistent_watch_args(directory: str, since: str | None = None) -> argparse.Namespace:
+    return argparse.Namespace(owner="director", state=Path(directory) / "state.json", since=since,
+                              own_login=["director", "agent[bot]"], launchplane_login=[], interval=10,
+                              once=False, persistent=True)
+
+
 class WatchClock:
     def __init__(self) -> None:
         self.now = 0.0
@@ -133,9 +139,7 @@ class WatchTests(unittest.TestCase):
             linkback = comment("linear-code[bot]", '<!-- linear-linkback -->\n<p><a href="https://linear.app/team/issue/TEST-1">TEST-1</a></p>')
             linkback = {**linkback, "user": {"login": "linear-code[bot]", "type": "Bot"}}
             reader.paged_json.side_effect = feeds([linkback], [], opened_items=[opened("director")])
-            args = argparse.Namespace(owner="director", state=Path(directory) / "state.json", since=None,
-                                      own_login=["director", "agent[bot]"], launchplane_login=[], interval=10,
-                                      once=False, persistent=True)
+            args = persistent_watch_args(directory)
             elapsed, logged = self.run_persistent_watch(args, reader)
             self.assertEqual(elapsed, foreign_watch.NOTICE_SETTLE_SECONDS + args.interval)
             self.assertEqual([notice["url"] for notice in logged], [linkback["html_url"]])
@@ -150,9 +154,7 @@ class WatchTests(unittest.TestCase):
                 reader.graphql_json.return_value = ApiResult(ok=True, status=200, body={"data": {"nodes": [
                     {"lastEditedAt": SINCE, "editor": {"login": login, "__typename": actor_type}}
                 ]}})
-                args = argparse.Namespace(owner="director", state=Path(directory) / "state.json", since=None,
-                                          own_login=["director", "agent[bot]"], launchplane_login=[], interval=10,
-                                          once=False, persistent=True)
+                args = persistent_watch_args(directory)
                 elapsed, logged = self.run_persistent_watch(args, reader)
                 self.assertEqual(elapsed, foreign_watch.NOTICE_SETTLE_SECONDS + args.interval)
                 self.assertEqual([notice["url"] for notice in logged], [issue["html_url"]] if opener == "client" else [])
@@ -164,9 +166,7 @@ class WatchTests(unittest.TestCase):
     def test_restart_does_not_rewind_past_an_unchanged_notice(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             reader = Mock()
-            args = argparse.Namespace(owner="director", state=Path(directory) / "state.json", since=SINCE,
-                                      own_login=["director", "agent[bot]"], launchplane_login=[], interval=10,
-                                      once=False, persistent=True)
+            args = persistent_watch_args(directory, SINCE)
             for updated, wakes in ((SINCE, True), (SINCE, False), ("2026-10-09T12:06:00Z", True)):
                 with self.subTest(updated=updated, wakes=wakes):
                     reader.paged_json.side_effect = feeds(*[[comment(updated=updated)]] * 3)
