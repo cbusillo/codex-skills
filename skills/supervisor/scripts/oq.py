@@ -10,9 +10,11 @@ import json
 import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 from skills.github.scripts import github_identity
 from skills.github.scripts.github_plan_status import questions as question_records
 from skills.supervisor.scripts.check_changes import changes, fingerprint
@@ -66,10 +68,13 @@ def main() -> int:
     parser.add_argument("--ack", metavar="QUESTION_URL", help="Acknowledge actual presentation to the Director")
     parser.add_argument("--delivery-url", help="Durable receipt for the presentation, not just queue registration")
     parser.add_argument("--changes-state", type=Path, help="print changed question pointers; save only fingerprints")
+    parser.add_argument("--include-answers", action="store_true", help="Include accepted answer text and source links in item reads")
     args = parser.parse_args()
     args.decision_author = sorted({author.casefold() for author in args.decision_author})
     if args.changes_state and (args.register or args.ack):
         parser.error("changes mode is read-only; use a separate registration or presentation acknowledgement")
+    if args.include_answers and (args.queue or args.changes_state):
+        parser.error("include-answers requires ordinary item reads")
     if args.queue:
         from question_delivery import run_queue
         if (args.register and args.ack) or bool(args.ack) != bool(args.delivery_url):
@@ -89,11 +94,17 @@ def main() -> int:
     reports = []
     for item in args.items:
         try:
+            comments = fetch(item)
+            found = questions(comments, args.owner, args.decision_author, recorded_decisions_only=args.include_answers)
+            if args.include_answers:
+                numbers = Counter(question_records.heading_id(question["question"]) for question in found)
+                for question in found:
+                    number = question_records.heading_id(question["question"])
+                    question["number"] = number if number and numbers[number] == 1 else None
+                    question["decision_comments"] = [comment for comment in comments if comment["url"] in question["answers"]]
             report = {
                         "item": item,
-                        "questions": questions(
-                            fetch(item), args.owner, args.decision_author
-                        ),
+                        "questions": found,
                     }
             reports.append(report)
             if not args.changes_state:
