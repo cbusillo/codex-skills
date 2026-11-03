@@ -261,9 +261,7 @@ def read_opened(reader, repo: str, since: str, client_agents=()) -> list[dict]:
     )
     messages, bot_reviews = [], []
     for issue in issues:
-        user = issue.get("user") or {}
-        if user.get("type") != "Bot" or user.get("login", "").casefold() in client_agents:
-            messages.append({**issue, "body": f"{issue['title']}\n{issue.get('body') or ''}"})
+        messages.append({**issue, "body": f"{issue['title']}\n{issue.get('body') or ''}"})
         if "pull_request" in issue:
             for review in reader.paged_json(f"repos/{repo}/pulls/{issue['number']}/reviews", step_prefix="foreign_reviews"):
                 user = review.get("user") or {}
@@ -415,6 +413,11 @@ def load_dispatched(path: Path) -> set[str]:
 def dispatch_once(notices: list[dict], dispatched: set[str]) -> list[dict]:
     fresh = []
     for notice in notices:
+        if notice.get("kind") == "foreign_opened":
+            opening = f"opened:{notice['url']}"
+            if opening in dispatched:
+                continue
+            dispatched.add(opening)
         record = notice.get("change_request", {}).get("record_id")
         if record in dispatched:
             notice = {key: value for key, value in notice.items() if key != "change_request"}
@@ -467,7 +470,7 @@ def save_state_locked(path: Path, watermarks, mention_seen=None, dispatched=(), 
                 **state,
                 "watermarks": watermarks,
                 "mention_seen": mention_seen or {},
-                "change_requests_dispatched": sorted(dispatched),
+                "change_requests_dispatched": sorted(set(dispatched) | load_dispatched(path)),
                 "message_deliveries": deliveries if deliveries is not None else load_deliveries(path),
             }
         )
@@ -550,6 +553,10 @@ def handle_message_hint(args: Any, hint: dict, reader: GitHubReader) -> None:
         deliveries = load_deliveries(args.state)
         persist = lambda: save_deliveries(args.state, deliveries)
         route_notices(args, notices, deliveries, reader, event=True, persist=persist)
+    with watch_lock(args.state, wait=True):
+        dispatched = load_dispatched(args.state)
+        notices = dispatch_once(notices, dispatched)
+        save_state_locked(args.state, load_state(args.state, [], utc_now()), load_mention_seen(args.state), dispatched)
     print(json.dumps({"notices": notices, "errors": [], "coverage_gaps": [], "untrusted": True}), flush=True)
 
 
@@ -574,9 +581,9 @@ def make_notice(repo: str, comment: dict, own_logins: list[str], launchplane_log
         "author": login,
         "author_type": user.get("type", "") if isinstance(user, dict) else "",
         "url": url,
-        "updated_at": updated,
+        "updated_at": comment.get("created_at", updated) if "#" not in url else updated,
         "excerpt": excerpt(body),
-        "kind": "director_question" if is_question else "launchplane" if is_launchplane else "foreign",
+        "kind": "director_question" if is_question else "launchplane" if is_launchplane else "foreign_opened" if "#" not in url else "foreign",
         "untrusted": True,
         "review_marker": marker is not None,
     }
@@ -760,8 +767,9 @@ def audit_miss(args: Any, receipt: dict, persist: Any) -> None:
 
 def route_notices(args: Any, notices: list[dict], deliveries: dict, reader: GitHubReader, *, event: bool, persist: Any) -> None:
     for notice in notices:
-        if notice.get("kind") != "foreign" or (
-            (notice.get("author_type") == "Bot" or str(notice.get("author", "")).endswith("[bot]"))
+        if notice.get("kind") not in {"foreign", "foreign_opened"} or (
+            notice.get("kind") != "foreign_opened"
+            and (notice.get("author_type") == "Bot" or str(notice.get("author", "")).endswith("[bot]"))
             and not (notice.get("author_class") == "automation" and notice.get("automation_for"))
             and str(notice.get("author", "")).casefold() not in getattr(args, "client_agent_logins", ())
         ):
@@ -873,7 +881,8 @@ def route_report_locked(args: Any, report: dict, reader: GitHubReader, own_login
             try:
                 timestamp(row["updated_at"])
                 notices.append({
-                    "repository": row["repo"], "url": row["comment_url"], "updated_at": row["updated_at"],
+                    "repository": row["repo"], "url": row["comment_url"],
+                    "updated_at": row.get("created_at", row["updated_at"]) if row.get("comment_kind") == "issue_body" else row["updated_at"],
                     "author": row["author"], "author_class": row.get("author_class"),
                     "automation_for": row.get("automation_for"), "kind": "foreign", "untrusted": True,
                 })
@@ -1001,7 +1010,7 @@ def watch(args, repos, initial, deadline):
             mentions, gaps, mention_errors, watermarks, seen = scan_mentions(
                 args, watched, watermarks, seen, args.own_login, started, reader
             )
-            notices, errors = dispatch_once(notices, dispatched) + mentions, errors + mention_errors
+            notices, errors = notices + mentions, errors + mention_errors
         with watch_lock(args.state.with_name(args.state.name + ".routing"), wait=True):
             deliveries = load_deliveries(args.state)
             checkpoint = json.loads(args.state.read_text()) if args.state.exists() else {}
@@ -1015,8 +1024,9 @@ def watch(args, repos, initial, deadline):
                     persist=lambda: save_deliveries(args.state, deliveries),
                 )
                 maintain_receipts(args, deliveries, lambda: save_deliveries(args.state, deliveries))
-            print(json.dumps({"notices": notices, "errors": errors, "coverage_gaps": gaps, "untrusted": True}), flush=True)
             retry_repos = {row["repository"] for row in notices if row.get("routing", {}).get("status") in {"pending", "not_attempted"}}
+            notices = dispatch_once(notices, dispatched)
+            print(json.dumps({"notices": notices, "errors": errors, "coverage_gaps": gaps, "untrusted": True}), flush=True)
             for repo in retry_repos:
                 watermarks[repo] = checkpoint.get("watermarks", {}).get(repo, initial)
             save_state(args.state, watermarks, seen, dispatched, deliveries)

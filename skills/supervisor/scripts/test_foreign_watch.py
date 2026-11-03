@@ -187,7 +187,7 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual([(n["author"], n["url"], n["excerpt"]) for n in notices],
                          [(author, "https://github.com/director/project/pull/50", "Add tvOS support")
-                          for author in ("client", "client-agent[bot]")])
+                          for author in ("client", "client-agent[bot]", "dependabot[bot]")])
 
     def test_sweep_recovers_inline_and_bare_review_on_an_old_pull(self):
         reader = Mock()

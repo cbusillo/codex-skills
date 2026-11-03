@@ -128,6 +128,47 @@ class RoutineCheckTests(unittest.TestCase):
             output = routine_check.digest({"comments": {"attention": rows}})
             self.assertEqual(opening.url in output, len(comments) == 1)
 
+    def test_bot_opened_issue_with_no_comments_produces_one_notice_and_digest_row_until_reply(self) -> None:
+        since = "2026-11-02T22:30:00Z"
+        created = "2026-11-02T22:34:00Z"
+        for repo, number in (("cbusillo/odoo-tenant-cm", 335), ("cbusillo/odoo-tenant-cm-website", 296)):
+            for pull in (False, True):
+                with self.subTest(repo=repo, pull=pull), tempfile.TemporaryDirectory() as directory:
+                    source = {
+                        "id": number, "number": number, "title": "Add a collaborator", "body": "Please review this request.",
+                        "user": {"login": "cellmechanic-website-agent[bot]", "type": "Bot"},
+                        "created_at": created, "updated_at": created,
+                        "html_url": f"https://github.com/{repo}/{'pull' if pull else 'issues'}/{number}",
+                        **({"pull_request": {}} if pull else {}),
+                    }
+                    reader = Mock()
+                    reader.paged_json.side_effect = lambda path, **_: [source] if path == f"repos/{repo}/issues" else []
+                    watch = routine_check.foreign_watch
+                    notices, errors, watermarks = watch.scan([repo], {repo: since}, ["cbusillo", "agent[bot]"], [], created, reader)
+                    self.assertEqual(errors, [])
+                    self.assertEqual(len(notices), 1)
+                    self.assertEqual(notices[0]["kind"], "foreign_opened")
+                    self.assertTrue(notices[0]["untrusted"])
+                    self.assertEqual(notices[0]["url"], source["html_url"])
+                    dispatched = set()
+                    self.assertEqual(watch.dispatch_once(notices, dispatched), notices)
+                    state = Path(directory) / "state.json"
+                    watch.save_state(state, watermarks, dispatched=dispatched)
+                    self.assertEqual(watch.dispatch_once([{**notices[0], "updated_at": "2026-11-03T12:00:00Z"}],
+                                                         watch.load_dispatched(state)), [])
+                    opening = routine_check.radar.normalize_opening_post(repo, source)
+                    self.assertIsNotNone(opening)
+                    assert opening is not None
+                    self.assertTrue(routine_check.radar.is_external_comment(opening, {"cbusillo"}, {"agent[bot]"}))
+                    reply = replace(opening, kind="issue_comment", comment_id=number + 1, author="another-person",
+                                    created_at="2026-11-02T22:35:00Z", url="reply")
+                    for comments in ([opening], [opening, reply]):
+                        rows = routine_check.radar.comment_states_for_thread(
+                            source, comments, {opening.key}, {"cbusillo"}, {"agent[bot]"}, {opening.key: []},
+                        )
+                        output = routine_check.digest({"comments": {"attention": rows}})
+                        self.assertEqual(f"COMMENT {opening.url} (untrusted):" in output, len(comments) == 1)
+
     def test_held_accept_and_agent_next_action_survive_unchanged_checks(self) -> None:
         staffing = comment("## Current Status\nNext actor: agent:integrator\nNext action: Finish the two source slices.", ident=6532738729)
         program = goal_board.child_row(child(277, comments=[staffing]), TRUSTED)

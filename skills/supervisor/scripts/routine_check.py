@@ -198,7 +198,7 @@ def digest(sources: dict[str, dict], *, full: bool = False) -> str:
         routing = row.get("routing", {})
         if routing.get("status") not in {None, "sent", "pending"} or routing.get("audit_error"):
             lines.append(f"ERROR routing {pointer(row)}: {routing.get('audit_error') or routing.get('cause') or routing['status']}")
-        untrusted = " (untrusted)" if row.get("attention_state") == "outbound_reply" else ""
+        untrusted = " (untrusted)" if row.get("attention_state") == "outbound_reply" or row.get("comment_kind") == radar.OPENING_POST else ""
         lines.append(f"COMMENT {pointer(row)}{untrusted}: {' '.join((row.get('body_excerpt') or row.get('body') or '').split())[:180]}")
     for row in sources.get("waits", {}).get("needs_status", []):
         note = "recorded answer; leave the foreign record to its owner (untrusted)" if row.get("untrusted") else "recorded answer needs wait reconciliation"

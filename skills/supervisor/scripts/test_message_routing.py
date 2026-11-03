@@ -409,7 +409,8 @@ class MessageRoutingTests(unittest.TestCase):
         other = "director/other"
         self.args.since, self.args.once, self.args.interval = None, True, 1
         initial = "2026-10-31T01:00:00Z"
-        batch = [notice(), {**notice(), "repository": other, "url": URL.replace(REPO, other), "kind": "launchplane", "change_request": {"record_id": "request"}}]
+        opening = {**notice(), "kind": "foreign_opened", "url": URL.split("#")[0]}
+        batch = [opening, {**notice(), "repository": other, "url": URL.replace(REPO, other), "kind": "launchplane", "change_request": {"record_id": "request"}}]
         self.args.state.write_text(json.dumps({"watermarks": {REPO: initial, other: initial}}))
         with patch_attr(watch, "scan", return_value=(batch, [], {REPO: STAMP, other: STAMP})), patch_attr(watch, "scan_mentions", return_value=([], [], [], {REPO: STAMP, other: STAMP}, {"seen": STAMP})), patch_attr(watch.review_notifications, "send", side_effect=watch.review_notifications.NotSent("busy", needs_attention=False)), redirect_stdout(io.StringIO()):
             watch.watch(self.args, [REPO, other], initial, watch.time.monotonic() + 10)
@@ -418,6 +419,11 @@ class MessageRoutingTests(unittest.TestCase):
         self.assertEqual(state["watermarks"][other], STAMP)
         self.assertIn("request", state["change_requests_dispatched"])
         self.assertIn("seen", state["mention_seen"])
+        with patch_attr(watch, "scan", return_value=([dict(opening)], [], {REPO: STAMP})), patch_attr(watch, "scan_mentions", return_value=([], [], [], {REPO: STAMP}, {})), patch_attr(watch.review_notifications, "send") as send, redirect_stdout(io.StringIO()) as output:
+            watch.watch(self.args, [REPO], initial, watch.time.monotonic() + 10)
+        send.assert_called_once()
+        self.assertEqual(json.loads(output.getvalue())["notices"], [])
+        self.assertEqual(json.loads(self.args.state.read_text())["watermarks"][REPO], STAMP)
 
     def test_unstarted_or_failed_event_stream_backs_off_and_stops_on_configuration_error(self) -> None:
         stop, wake = threading.Event(), threading.Event()
