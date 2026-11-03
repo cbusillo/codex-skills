@@ -6,6 +6,7 @@
 """Synthetic provider fixtures exercise evidence extraction, not instruction text."""
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -113,6 +114,15 @@ class SearchHistoryTests(unittest.TestCase):
         unknown = [hit for hit in self.search()["hits"] if hit["timestamp"] is None]
         self.assertEqual(len(unknown), 2)
         self.assertTrue(all(hit["time_et"] is None for hit in unknown))
+
+    def test_since_prunes_stale_files_before_file_limit(self) -> None:
+        old = bound("2026-10-01T00:00:00Z")
+        for name in ("0.jsonl", "1.jsonl"):
+            os.utime(self.write(name, [codex("preview")]), (old, old))
+        self.write("2.jsonl", [codex("in-window preview", timestamp="2026-10-26T14:20:00Z")])
+        result = self.search(since=bound("2026-10-22T00:00:00Z"), max_files=1)
+        self.assertEqual([hit["text"] for hit in result["hits"]], ["in-window preview"])
+        self.assertTrue(result["coverage_complete"])
 
     def test_signals_are_candidates_with_query_intersection(self):
         self.write("source.jsonl", [codex("preview: DIRECTION.md keeps blocking work"),

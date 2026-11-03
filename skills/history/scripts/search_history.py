@@ -54,13 +54,10 @@ def positive(value: str) -> int:
 
 
 def bound(value: str) -> float:
-    try:
-        date = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("use an ISO timestamp with timezone") from exc
-    if date.tzinfo is None:
+    seconds = source_seconds(value)
+    if seconds is None:
         raise argparse.ArgumentTypeError("use an ISO timestamp with timezone")
-    return date.timestamp()
+    return seconds
 
 
 def source_seconds(timestamp: str | None) -> float | None:
@@ -118,7 +115,7 @@ def scan(roots: list[Path], *, queries: list[str], signals: list[str], since: fl
         try:
             for path in paths:
                 path = path.resolve()
-                if path in files:
+                if path in files or (since is not None and path.stat().st_mtime < since):
                     continue
                 if len(files) >= max_files:
                     limitations.append({"kind": "file_limit", "source": str(root)})
