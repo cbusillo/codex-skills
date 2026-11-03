@@ -25,6 +25,7 @@ DIRECTIVE = re.compile(
     r"|(?:type|pyright): ignore\[[\w-]+(?:, ?[\w-]+)*]"
     r"|noinspection \w+(?:,\w+)*"
     r"|fmt: (?:off|on|skip)"
+    r"|isort: split"
     r"|pragma: no cover"
 )
 LINK = re.compile(r"#\s*<?https?://\S+>?")

@@ -84,14 +84,18 @@ class NewCommentsCheck(unittest.TestCase):
             "value: int = os.environ  # type: ignore[assignment]\n"
             "other: int = sys.argv  # pyright: ignore[reportAssignmentType]\n"
             "# noinspection PyUnresolvedReferences\n"
+            "# isort: split\n"
             "import missing  # ruff: noqa: F401  # noqa: I001\n"
         )
 
     def test_unscoped_or_explained_directives_fail(self) -> None:
-        source = "import os  # noqa\nvalue: int = os.sep  # type: ignore\nimport sys  # noqa: F401  # imported for side effects\n"
+        source = (
+            "import os  # noqa\nvalue: int = os.sep  # type: ignore\nimport sys  # noqa: F401  # imported for side effects\n"
+            "# isort: split because the base loads first\n"
+        )
         self.assertEqual(
             self.findings({"app.py": BASE}, {"app.py": source}),
-            {("app.py", 1, "comment"), ("app.py", 2, "comment"), ("app.py", 3, "comment")},
+            {("app.py", 1, "comment"), ("app.py", 2, "comment"), ("app.py", 3, "comment"), ("app.py", 4, "comment")},
         )
 
     def test_shebang_and_script_metadata_pass(self) -> None:
