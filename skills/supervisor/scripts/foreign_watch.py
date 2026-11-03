@@ -301,7 +301,7 @@ def versioned_messages(reader: GitHubReader, sources: list[dict]) -> list[dict]:
     for offset in range(0, len(identifiers), 100):
         batch = identifiers[offset:offset + 100]
         result = reader.graphql_json(
-            "query($ids: [ID!]!) { nodes(ids: $ids) { ... on Issue { lastEditedAt } ... on PullRequest { lastEditedAt } ... on PullRequestReview { lastEditedAt } } }",
+            "query($ids: [ID!]!) { nodes(ids: $ids) { ... on Comment { lastEditedAt editor { login __typename } } } }",
             {"ids": batch}, step="foreign_message_versions",
         )
         if not result.ok:
@@ -311,7 +311,8 @@ def versioned_messages(reader: GitHubReader, sources: list[dict]) -> list[dict]:
             raise ValueError("message versions have incomplete coverage")
         versions.update(zip(batch, nodes, strict=True))
     return [
-        {**source, "updated_at": (versions.get(source.get("node_id")) or {}).get("lastEditedAt") or source.get("created_at") or source["submitted_at"]}
+        {**source, "updated_at": (versions.get(source.get("node_id")) or {}).get("lastEditedAt") or source.get("created_at") or source["submitted_at"],
+         "editor": (versions.get(source.get("node_id")) or {}).get("editor")}
         for source in sources if not source.get("node_id") or versions[source["node_id"]] is not None
     ]
 
@@ -401,7 +402,48 @@ def scan_mentions(args, repos, watermarks, seen, own_logins, started, reader):
     if gap:
         gaps.append({"lane": MENTIONS, "gap": f"mentions outside the watched list are not covered: {gap}"})
     errors = [{"repository": MENTIONS, "error": error, "retryable": True, "retry_at": None}] if error else []
+    for notice in fresh:
+        notice["author"] = None
+        try:
+            notice["author"] = mention_activity_author(reader, notice, seen, since, own_logins)
+        except (*READ_ERRORS, director_mentions.MentionSearchError) as failure:
+            gaps.append({"lane": MENTIONS, "gap": str(failure)})
     return fresh, gaps, errors, watermarks if gap or error else {**watermarks, MENTIONS: started}, kept
+
+
+def mention_activity_author(reader: GitHubReader, notice: dict, seen: dict[str, str], since: str,
+                            own_logins: list[str]) -> str | None:
+    path = f"repos/{notice['repository']}/issues/{notice['number']}"
+    thread = reader.get_json(path, step="foreign_mention_thread")
+    if "pull_request" in thread or not thread.get("node_id"):
+        return None
+    cutoff_text = seen.get(notice["url"], since)
+    query = {"since": (timestamp(cutoff_text) - timedelta(seconds=1)).isoformat()}
+    comments = reader.paged_json(f"{path}/comments", step_prefix="foreign_mention_activity",
+                                 params=query, required_query_params=query)
+    originals = [thread, *comments]
+    if any(not source.get("node_id") for source in originals):
+        return None
+    versions = versioned_messages(reader, originals)
+    if len(versions) != len(originals):
+        return None
+    sources = []
+    for source in versions:
+        sources.append({**source, "updated_at": source["created_at"]})
+        if timestamp(source["updated_at"]) > timestamp(source["created_at"]):
+            editor = source.get("editor") or {}
+            login = editor.get("login") or ""
+            if login and editor.get("__typename") == "Bot":
+                login = f"{login.removesuffix('[bot]')}[bot]"
+            sources.append({**source, "user": {"login": login}})
+    cutoff = timestamp(seen.get(notice["url"], since))
+    recent = [source for source in sources if timestamp(source["updated_at"]) > cutoff
+              or notice["url"] not in seen and timestamp(source["updated_at"]) == cutoff]
+    if not recent or max(timestamp(source["updated_at"]) for source in recent) != timestamp(notice["updated_at"]):
+        return None
+    authors = {((source.get("user") or {}).get("login") or "").casefold() for source in recent}
+    own = {login.casefold() for login in own_logins}
+    return next(iter(authors - own), next(iter(authors)))
 
 
 def load_mention_seen(path: Path) -> dict[str, str]:
@@ -1068,7 +1110,12 @@ def watch(args, repos, initial, deadline):
         persistent = getattr(args, "persistent", False)
         if errors and getattr(args, "events", False) and any(not error["retryable"] for error in errors):
             raise ValueError("Scheduled message source read is nonretryable; reconcile the service before restarting.")
-        wakes_supervisor = any(notice.get("kind") != "director_question" for notice in notices)
+        own_logins = {login.casefold() for login in args.own_login}
+        wakes_supervisor = any(
+            notice.get("kind") not in {"director_question", "director_mention"}
+            or (notice.get("author") or "").casefold() not in own_logins
+            for notice in notices
+        )
         if wakes_supervisor and not errors and settle_at is None:
             settle_at = min(deadline, time.monotonic() + NOTICE_SETTLE_SECONDS)
         settled = settle_at is not None and time.monotonic() >= settle_at
