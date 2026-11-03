@@ -118,6 +118,10 @@ unclear code stand by explaining it.
 - Never build SQL from an f-string or `%`. Use `odoo.tools.SQL`, with
   `SQL.identifier()` for table and column names, or pass values as
   `cr.execute` parameters (Ruff `S608`; Odoo's lint has an SQL injection check).
+  For MySQL drivers, a line-scoped `S608` exception requires review and a
+  behavior test proving that values stay bound and interpolated identifiers
+  or fragments are fixed, validated or correctly quoted for MySQL. Keep the
+  native driver; add no query-builder dependency or file-wide ignore.
 - Pass a logging template and its arguments separately, never an f-string:
   `_logger.info("Imported %s orders", count)` (Ruff `G004`). Logging formats
   only the messages it emits.
