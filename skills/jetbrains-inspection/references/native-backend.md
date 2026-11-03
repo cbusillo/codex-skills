@@ -556,6 +556,10 @@ universal tools to every selected file. General whitespace, formatting, line
 separator and TODO checks require completed tool/file pairs too. `EmptyDirectory`
 checks directories and is inapplicable to exact-file and changed-file selections;
 broad scopes retain UNKNOWN until directory execution can be proved.
+`Annotator` is universal and requires its own completed pair on every selected
+file; a backend that emits no such pair stays UNKNOWN. `IgnoreCoverEntry` is
+inapplicable only when every selected file has a source suffix proven by that
+backend. Selections containing ignore files or unknown suffixes retain UNKNOWN.
 
 Distinct private defect canaries independently prove the named tools detect
 known defects. `coverage.canary_results` records their expected source and
