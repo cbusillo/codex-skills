@@ -1436,7 +1436,7 @@ def milestone_outcomes(
                 outcome["issues_open"] += 1
                 try:
                     wait = current_audit_wait(node, repo, fetch=fetch)
-                    outcome["issues_waiting"] += int(wait is not None and wait["state"] == "waiting")
+                    outcome["issues_waiting"] += int((wait or {}).get("state") == "waiting")
                 except (AuditError, ValueError):
                     outcome["unavailable"].append(f"wait:{repo}#{number}")
             return outcome
@@ -1858,8 +1858,8 @@ def collect_weekly_audit(
     def fetch(args: list[str]) -> Any:
         try:
             return observed(args)
-        except github_next_reads.ReadDeadline as exc:
-            raise AuditError(str(exc)) from exc
+        except github_next_reads.ReadDeadline as deadline_error:
+            raise AuditError(str(deadline_error)) from deadline_error
 
     reads.start_phase("discovery")
     direction_repo = f"{owner}/direction"
@@ -1869,7 +1869,7 @@ def collect_weekly_audit(
         listed, cut = owner_repositories(owner, fetch=fetch)
         discovery["gaps"] = repository_listing_gaps(cut, fetch=fetch)
         names = [str(listed[key].get("full_name")) for key in sorted(listed) if key != direction_repo.casefold()]
-        states = reads.map(lambda name: direction_adoption(name, fetch=fetch), names)
+        states = reads.map(lambda target_repo: direction_adoption(target_repo, fetch=fetch), names)
         for name, (state, reason) in zip(names, states, strict=True):
             if state == "adopted":
                 adopted.append(name)
