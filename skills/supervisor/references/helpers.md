@@ -1136,6 +1136,10 @@ Catalog verification needs no `services.py bind` or managed Supervisor pane.
 Include its existing `logs/catalog.jsonl` in the
 [routine digest](routine-check.md) with `--service-log`. The service stops and
 records each failure there; it has no separate notification sender or delivery state.
+Before updating an existing installation, remove `failure_argv` from its catalog
+service configuration, the unused `DIRECTOR_DIGEST_DISCORD_WEBHOOK_URL` setting,
+and `<config>.catalog.notice*.json` receipts. Preserve the service log, stop marker
+and report/closeout journals.
 
 The first run checks the current landing and explicitly leaves earlier history
 unverified. Later runs enumerate every first-parent landing since the saved

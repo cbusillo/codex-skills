@@ -102,6 +102,7 @@ class ServicesTests(unittest.TestCase):
         self.assertEqual(cleared.returncode, 0, cleared.stderr)
         resumed = subprocess.run(job["ProgramArguments"], cwd=job["WorkingDirectory"], capture_output=True, text=True, timeout=15)
         self.assertEqual(resumed.returncode, 1, resumed.stderr)
+        self.assertTrue(any(json.loads(line)["event"] == "started" for line in resumed.stdout.splitlines()))
         self.assertTrue(services.reconciliation_marker(self.config, name).exists())
 
     def test_runner_reports_stale_marker_without_restarting_child(self) -> None:
@@ -331,7 +332,7 @@ class ServicesTests(unittest.TestCase):
             lambda: self.data["services"]["enqueue"].update(argv="a shell command"),
             lambda: self.data["services"]["drive"].update(restart_seconds=0),
             lambda: self.data["services"]["foreign"].update(cwd="relative"),
-            lambda: self.data["services"]["foreign"].update(failure_argv=[sys.executable]),
+            lambda: self.data["services"]["foreign"].update(unexpected=[sys.executable]),
         ):
             original = json.loads(json.dumps(self.data))
             change()
