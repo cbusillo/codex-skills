@@ -4593,7 +4593,6 @@ def cmd_update_section(args: argparse.Namespace) -> None:
                 new_text = github_plan_next_actor.write(new_text, next_actor)
         elif getattr(args, "next_actor", None) is not None:
             raise ValueError("--next-actor applies only to Current Status")
-        github_comment_core.validate_planning_references(args.next_actor if actor_only else new_text, issue_repo)
         preparation_step = "section_replacement"
         updated = replace_issue_plan_section(issue, args.section, new_text)
         before, after = (
@@ -4602,6 +4601,10 @@ def cmd_update_section(args: argparse.Namespace) -> None:
         )
         if before != after:
             raise ValueError("Section corrections preserve planning records; use wait, claim or release to change them")
+        preparation_step = "input_validation"
+        preserved = {line for lines in before.values() for line in lines}
+        authored = "\n".join(line for line in new_text.splitlines() if line not in preserved)
+        github_comment_core.validate_planning_references(args.next_actor if actor_only else authored, issue_repo)
     except (OSError, ValueError, re.error) as exc:
         message = f"Cannot prepare plan section update: {exc}"
         failure = github_api_core.FailureDetail(
