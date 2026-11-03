@@ -103,7 +103,7 @@ def select_backend(args, host):
                 return "unavailable", "selection_file_type_unsupported"
             if common.lane_gaps(host, config, selected):
                 return "unavailable", "selection_outside_root_pycharm_lane"
-            odoo = is_odoo(repo)
+            odoo = is_odoo(repo, selected)
             if not odoo and any(Path(f).suffix == ".xml" for f in selected):
                 return "unavailable", "xml_selection_requires_odoo"
         if not eligible(args, host, repo, config, product_key):
@@ -187,7 +187,7 @@ def listing(labels: set[str]) -> str:
 
 def coverage_gaps(host: Any, repo: Path, config: dict[str, Any], selected: set[str]):
     lanes = host.parse_inspection_lanes(config) if config.get("lanes") else ()
-    odoo = any(Path(f).suffix == ".xml" for f in selected) and is_odoo(repo)
+    odoo = any(Path(f).suffix == ".xml" for f in selected) and is_odoo(repo, selected)
     groups: dict[tuple[str, tuple[tuple[str, str], ...]], set[str]] = {}
     for path in sorted(selected):
         suffix = Path(path).suffix
@@ -322,10 +322,12 @@ def eligibility_reason(args, host, repo, settings, product_key=PYTHON_PRODUCT_KE
             return None
         if settings.get("prepare") and common.requested_python_version(settings) is None:
             return "native_preparation_shape_unsupported"
-        if is_odoo(repo) and not framework_available(roots):
+        selected = common.scope_selection(args, host)[3]
+        odoo = is_odoo(repo, selected)
+        if odoo and not framework_available(roots):
             return "native_odoo_framework_required"
-        if is_odoo(repo):
-            framework_context(repo, common.scope_selection(args, host)[3], roots)
+        if odoo:
+            framework_context(repo, selected, roots)
         if not (repo / ".venv/bin/python").is_file() and common.requested_python_version(settings) is None:
             return "native_python_environment_required"
         common.profile_for(repo, args.profile or settings.get("profile", ""))
@@ -1817,7 +1819,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_required_plugin_missing")
         if selected and native_product_key(host, settings, selected) != product.key:
             raise Blocked("native_source_selection_changed")
-        odoo = product.key == PYTHON_PRODUCT_KEY and is_odoo(repo)
+        odoo = product.key == PYTHON_PRODUCT_KEY and is_odoo(repo, selected)
         if not odoo:
             framework = []
         elif not framework:
