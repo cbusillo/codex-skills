@@ -450,6 +450,11 @@ available for a one-off check.
 uv run --no-cache skills/supervisor/scripts/foreign_watch.py --owner OWNER --own-login OWN-LOGIN --own-login AUTOMATION-LOGIN --launchplane-login DELIVERY-LOGIN --state <private-watch-state.json> --deadline-seconds 1800
 ```
 
+The poll reports non-own issue and PR openings as `foreign_opened` notices,
+including bot authors, with the same untrusted marking as comments. The existing
+state records each opening URL once, so overlaps do not repeat it. Later body
+edits retain the existing versioned foreign-post notices. Routine digests keep an untrusted `COMMENT` row until the thread has a reply.
+
 For Q1101 event delivery, add `--events --ledger <ledger.json>
 --notify-config <services.json> --miss-issue OWNER/REPO#NUMBER` to that same
 foreign service. It subscribes outbound to Launchplane's existing attention
@@ -571,9 +576,7 @@ A foreign author stays `foreign` even when its comment has a review marker.
 Configure known service bots among own logins when their ordinary posts should
 not wake the Supervisor; no suffix rule silently excludes unknown posters.
 Read the canonical record before acting under existing authority. The watcher
-does not launch agents, post messages, grant access or widen briefs. New issue
-bodies, inline review comments and Discussions are outside this bounded comment
-feed; the existing work rollup still supplies broader discussion coverage.
+does not launch agents, post messages, grant access or widen briefs.
 
 A Launchplane notice for a Client's "Changes requested" decision on a pull
 request also carries `change_request`: the PR, the reviewed commit, the

@@ -1185,17 +1185,19 @@ def test_outside_pull_request_opened_in_window_needs_attention(monkeypatch) -> N
     assert "opened it" in github_unanswered_comments.render_markdown(payload)
 
 
-def test_owner_or_unrecognized_automation_opened_threads_are_not_external(monkeypatch) -> None:
+def test_own_openings_are_excluded_and_non_own_bot_openings_need_attention(monkeypatch) -> None:
     own = opening(number=1, author="cbusillo", pull_request=False)
     automation = opening(number=2, author="fixture-automation")
     app = opening(number=3, author="dependency-updates[bot]", author_type="Bot")
-    fake = FakeGitHub({"repos/example/repo/issues": [own, automation, app]})
+    fake = FakeGitHub({"repos/example/repo/issues": [own, automation, app], "repos/example/repo/issues/3": app})
     monkeypatch.setattr(github_unanswered_comments, "run_json", fake)
 
     payload = github_unanswered_comments.collect_payload(portfolio_settings())
 
-    assert payload["status"] == "clear"
-    assert payload["coverage"]["candidate_thread_count"] == 0
+    assert payload["status"] == "attention"
+    [item] = payload["attention"]
+    assert item["number"] == app["number"]
+    assert item["comment_url"] == app["html_url"]
 
 
 def test_opened_threads_stop_at_window_start_and_skip_after_until(monkeypatch) -> None:

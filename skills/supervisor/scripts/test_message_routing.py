@@ -115,6 +115,15 @@ class MessageRoutingTests(unittest.TestCase):
                 watch.handle_message_hint(self.args, self.hint, self.reader)
             send.assert_called_once()
         self.assertEqual(json.loads(self.args.state.read_text())["watermarks"], {REPO: STAMP})
+        self.args.state.write_text(json.dumps({"watermarks": {REPO: "2026-11-01T00:00:00Z"}, "event_started_at": "2026-10-31T01:00:00Z"}))
+        opening = {"html_url": URL.split("#")[0], "created_at": STAMP, "updated_at": "2026-11-01T00:00:00Z",
+                   "body": "Request", "user": {"login": "client-agent[bot]", "type": "Bot"}}
+        with patch_attr(watch, "read_message_hint", return_value=(REPO, opening)), patch_attr(watch, "recipient", return_value=(self.entry, False, "")), patch_attr(watch.review_notifications, "send") as send, redirect_stdout(io.StringIO()) as output:
+            watch.handle_message_hint(self.args, self.hint, self.reader)
+            watch.handle_message_hint(self.args, self.hint, self.reader)
+        send.assert_called_once()
+        self.assertEqual([len(json.loads(line)["notices"]) for line in output.getvalue().splitlines()], [1, 0])
+        self.assertEqual(json.loads(self.args.state.read_text())["watermarks"], {REPO: "2026-11-01T00:00:00Z"})
 
     def test_gone_worker_uses_supervisor_only_after_certainly_unsent_result(self) -> None:
         with patch_attr(
@@ -387,7 +396,9 @@ class MessageRoutingTests(unittest.TestCase):
         self.assertIsNotNone(event)
         assert event is not None
         self.reader.paged_json.return_value = [source]
-        [sweep] = watch.read_opened(self.reader, REPO, STAMP)
+        [opening, sweep] = watch.read_opened(self.reader, REPO, STAMP)
+        self.assertEqual(opening["updated_at"], source["created_at"])
+        self.assertEqual(watch.source_messages(event[1]), [opening, sweep])
         self.assertEqual(
             watch.delivery_key({"url": event[1]["html_url"], "updated_at": event[1]["updated_at"]}),
             watch.delivery_key({"url": sweep["html_url"], "updated_at": sweep["updated_at"]}),
@@ -400,6 +411,13 @@ class MessageRoutingTests(unittest.TestCase):
         with patch_attr(watch.review_notifications, "send") as send:
             watch.route_report(self.args, {"attention": rows}, self.reader, self.args.own_login)
         send.assert_not_called()
+        opening = {"repo": REPO, "comment_url": URL.split("#")[0], "created_at": STAMP,
+                   "updated_at": STAMP, "author": "unlisted[bot]", "comment_kind": "issue_body"}
+        with patch_attr(watch, "recipient", return_value=(self.entry, False, "")), patch_attr(watch.review_notifications, "send") as send:
+            watch.route_report(self.args, {"attention": [opening]}, self.reader, self.args.own_login)
+            with patch_attr(watch, "utc_now", return_value="2026-12-15T00:00:00Z"):
+                watch.route_report(self.args, {"attention": [{**opening, "updated_at": "2026-11-01T00:00:00Z"}]}, self.reader, self.args.own_login)
+        send.assert_called_once()
         self.args.state.write_text(json.dumps({"event_started_at": "2026-10-31T03:00:00Z"}))
         with patch_attr(watch, "recipient", return_value=(self.supervisor, True, "owner_finished")), patch_attr(watch.review_notifications, "send"), patch_attr(watch, "audit_miss") as audit:
             watch.route_notices(self.args, [notice()], {}, self.reader, event=False, persist=self.persist)
@@ -409,7 +427,8 @@ class MessageRoutingTests(unittest.TestCase):
         other = "director/other"
         self.args.since, self.args.once, self.args.interval = None, True, 1
         initial = "2026-10-31T01:00:00Z"
-        batch = [notice(), {**notice(), "repository": other, "url": URL.replace(REPO, other), "kind": "launchplane", "change_request": {"record_id": "request"}}]
+        opening = {**notice(), "kind": "foreign_opened", "url": URL.split("#")[0]}
+        batch = [opening, {**notice(), "repository": other, "url": URL.replace(REPO, other), "kind": "launchplane", "change_request": {"record_id": "request"}}]
         self.args.state.write_text(json.dumps({"watermarks": {REPO: initial, other: initial}}))
         with patch_attr(watch, "scan", return_value=(batch, [], {REPO: STAMP, other: STAMP})), patch_attr(watch, "scan_mentions", return_value=([], [], [], {REPO: STAMP, other: STAMP}, {"seen": STAMP})), patch_attr(watch.review_notifications, "send", side_effect=watch.review_notifications.NotSent("busy", needs_attention=False)), redirect_stdout(io.StringIO()):
             watch.watch(self.args, [REPO, other], initial, watch.time.monotonic() + 10)
@@ -418,6 +437,11 @@ class MessageRoutingTests(unittest.TestCase):
         self.assertEqual(state["watermarks"][other], STAMP)
         self.assertIn("request", state["change_requests_dispatched"])
         self.assertIn("seen", state["mention_seen"])
+        with patch_attr(watch, "scan", return_value=([dict(opening)], [], {REPO: STAMP})), patch_attr(watch, "scan_mentions", return_value=([], [], [], {REPO: STAMP}, {})), patch_attr(watch.review_notifications, "send") as send, redirect_stdout(io.StringIO()) as output:
+            watch.watch(self.args, [REPO], initial, watch.time.monotonic() + 10)
+        send.assert_called_once()
+        self.assertEqual(json.loads(output.getvalue())["notices"], [])
+        self.assertEqual(json.loads(self.args.state.read_text())["watermarks"][REPO], STAMP)
 
     def test_unstarted_or_failed_event_stream_backs_off_and_stops_on_configuration_error(self) -> None:
         stop, wake = threading.Event(), threading.Event()
