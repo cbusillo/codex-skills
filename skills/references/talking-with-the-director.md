@@ -88,7 +88,13 @@ context. This mode checks the opening, all timeline comments, PR reviews and
 inline comments, and the outgoing text for outside participants and mentions;
 unreadable coverage refuses the reply. It requires the configured automation
 identity. A refusal is not permission to omit the flag; obtain approval of the
-exact text instead. Other authorized flows and message-specific holds remain.
+exact text instead. Include verified Director/team/agent logins in the same
+list when they are not already configured as own identities. Unknown and
+third-party bots are outside participants. Link screenshot evidence in the
+reply; answer inline review comments on the PR timeline through this flow.
+For a post in the Director's voice, ask approval of the exact text as its own
+question, never bundled with push or code approval. Other authorized flows,
+explicit Director instructions and message-specific holds remain.
 
 ## Director Questions
 

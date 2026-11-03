@@ -1606,7 +1606,7 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
 
 
 def test_client_reply_refuses_outside_participants_and_mentions_before_writing() -> None:
-    for source in ("opening", "timeline", "review", "inline", "outgoing", "second_page", "missing_author", "unreadable", "allowed"):
+    for source in ("opening", "timeline", "review", "inline", "outgoing", "second_page", "missing_author", "malformed", "personal", "unreadable", "allowed"):
         def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
             if path == "/user":
                 return success({"login": "fixture-automation"})
@@ -1622,7 +1622,8 @@ def test_client_reply_refuses_outside_participants_and_mentions_before_writing()
                     if "page=2" in path:
                         return success([comment_body(2, actor="outsider")])
                     return success([], headers={"link": '<https://api.github.com/next>; rel="next"'})
-                return success([comment_body(2, actor="outsider")] if source == "timeline" else
+                return success([None] if source == "malformed" else
+                               [comment_body(2, actor="outsider")] if source == "timeline" else
                                [{"body": "missing identity"}] if source == "missing_author" else [])
             if "/pulls/42/reviews?" in path:
                 return success([comment_body(3, actor="client", body="<code>@outsider</code>")] if source == "review" else [])
@@ -1639,13 +1640,16 @@ def test_client_reply_refuses_outside_participants_and_mentions_before_writing()
             except github_comment.CommentError as error:
                 assert source != "allowed", error
                 assert error.failure.write_outcome == "not_started"
+                if source != "unreadable":
+                    assert error.failure.cause == "client_reply_refused", error
                 assert all(call["method"] == "GET" for call in calls), calls
             else:
                 assert source == "allowed", source
                 assert result["comment_action"] == "created"
                 assert sum(call["method"] == "POST" for call in calls) == 1
 
-        with_call_stub(callback, run)
+        with patch.object(github_comment.github_identity, "acts_as_own_user", return_value=source == "personal"):
+            with_call_stub(callback, run)
 
 
 TESTS: list[Callable[[], None]] = [
