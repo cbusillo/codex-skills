@@ -1606,7 +1606,7 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
 
 
 def test_client_reply_refuses_outside_participants_and_mentions_before_writing() -> None:
-    for source in ("opening", "timeline", "review", "inline", "outgoing", "second_page", "missing_author", "malformed", "personal", "unreadable", "allowed"):
+    for source in ("opening", "timeline", "review", "inline", "outgoing", "second_page", "missing_author", "malformed", "personal", "bot_slug_author", "unreadable", "allowed"):
         def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
             if path == "/user":
                 return success({"login": "fixture-automation"})
@@ -1614,7 +1614,8 @@ def test_client_reply_refuses_outside_participants_and_mentions_before_writing()
                 return success(comment_body(1001))
             if path.endswith("/issues/42"):
                 return success({"user": {"login": "client"}, "body": "@client", "pull_request": {}} | (
-                    {"user": {"login": "outsider"}} if source == "opening" else {}))
+                    {"user": {"login": "outsider"}} if source == "opening" else
+                    {"user": {"login": "own-app"}} if source == "bot_slug_author" else {}))
             if "/issues/42/comments?" in path:
                 if source == "unreadable":
                     return failure(403, {}, is_write=False)
@@ -1634,7 +1635,7 @@ def test_client_reply_refuses_outside_participants_and_mentions_before_writing()
         def run(calls: list[dict[str, Any]]) -> None:
             try:
                 result = github_comment.comment(
-                    "issue", 42, "@outsider status" if source == "outgoing" else "@client status",
+                    "issue", 42, "@outsider status" if source == "outgoing" else "@client @own-app status",
                     repo="owner/repo", gh_cmd="fake-gh", client_logins=["client"],
                 )
             except github_comment.CommentError as error:
@@ -1648,7 +1649,8 @@ def test_client_reply_refuses_outside_participants_and_mentions_before_writing()
                 assert result["comment_action"] == "created"
                 assert sum(call["method"] == "POST" for call in calls) == 1
 
-        with patch.object(github_comment.github_identity, "acts_as_own_user", return_value=source == "personal"):
+        with (patch.object(github_comment.github_identity, "acts_as_own_user", return_value=source == "personal"),
+              patch.object(github_comment.github_identity, "configured_bot_logins", return_value=("own-app[bot]",))):
             with_call_stub(callback, run)
 
 

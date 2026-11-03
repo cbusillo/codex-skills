@@ -532,7 +532,7 @@ def validate_client_reply(
     if actor.casefold() not in bots or github_identity.acts_as_own_user(repo):
         raise ValueError("Client replies require the configured automation identity")
     allowed = own | {login.casefold() for login in client_logins}
-    allowed |= {login.removesuffix("[bot]") for login in allowed}
+    mention_logins = allowed | {login.removesuffix("[bot]") for login in allowed}
     context = dict(
         gh_cmd=gh_cmd, operation=operation, actor=actor, expected_actor=actor,
         completed_steps=[], retry_summaries=retry_summaries,
@@ -556,7 +556,7 @@ def validate_client_reply(
         if not isinstance(author, str) or author.casefold() not in allowed:
             raise ValueError("Client reply refused: outside or unknown participant; obtain exact-text approval")
     for text in [body, *(str(record.get("body") or "") + " " + str(record.get("title") or "") for record in records)]:
-        if any(match["login"].casefold() not in allowed for match in MENTION_RE.finditer(html.unescape(text))):
+        if any(match["login"].casefold() not in mention_logins for match in MENTION_RE.finditer(html.unescape(text))):
             raise ValueError("Client reply refused: outside mention; obtain exact-text approval")
 
 
