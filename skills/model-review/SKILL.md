@@ -81,7 +81,8 @@ budget, and put both results in the PR's review note.
    `openai` reviewer also ignores `~/.codex/config.toml`, so settings there,
    such as its default model, do not apply.
 
-   Reviewers have no network, and some read only granted roots. Pass each
+   Reviewers have no network and are told to read only the checkout and files
+   the helper names. Pass each
    file outside the repository that the review needs, such as a saved issue
    or the overall DIRECTION.md, with a repeated `--input FILE`. The helper
    copies it next to the diff, names it in the preamble and removes it after
