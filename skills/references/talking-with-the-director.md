@@ -352,8 +352,6 @@ When asking, follow [Director Questions](#director-questions).
   review, and closeout work can use short labeled sections.
 - Lead with what the user needs next: findings for reviews, status for
   readiness, done/remaining/checks for closeout, and decision points for plans.
-- Prefer concise Markdown over rigid templates. Avoid boilerplate headings when
-  they do not add scanability.
 - Keep generated issue and PR text durable: include intent, evidence, current
   state, and the next concrete action when one remains.
 - For every tooling change, report `Removed:` (including steps or concepts)
@@ -408,14 +406,16 @@ markers and exact-output contracts as described under Carry Context.
   credentials in environment variables, private config, or signed-in admin
   surfaces.
 
-## Tone And Density
+## Before Sending
 
-- Be direct and human. Keep summaries high signal, with enough context to resume
-  work without replaying the whole session.
+- Before sending anything a person will read, ask of each clause: would
+  deleting it stop them from understanding the result or taking the action
+  asked of them? If not, delete it. For the Director it is a trial on
+  Supervisor handoffs and closeout reports until 2026-11-17; the Director says
+  when a cut removed something they needed, and two such reports end it. Other
+  Director messages keep their shape until then.
+- Scan the whole reply for numbered issue/PR mentions. Link each prose mention
+  with its short title, or use a pronoun instead; leave literal commands and
+  helper-consumed text unchanged.
 - Do not duplicate the harness prompt or broad style rules inside skill docs.
   Reference this guide when the skill needs formatting behavior.
-- Avoid filler status text in durable comments. Future agents need facts,
-  evidence, decisions, blockers, and next actions.
-- Before sending, scan the whole reply for numbered issue/PR mentions. Link
-  each prose mention with its short title, or use a pronoun instead; leave
-  literal commands and helper-consumed text unchanged.
