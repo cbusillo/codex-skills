@@ -427,19 +427,17 @@ class CatalogLandingTests(unittest.TestCase):
     def test_supersede_requires_one_publication_without_other_uncertainty(self) -> None:
         failed = {"ok": False, "landings": ["B"]}
         confirmed = {"complete": True, "result": {"url": "confirmed-report"}}
-        for extra, report, result in (
-            ({"launch": {"complete": False}}, confirmed, failed),
-            ({"report_another": confirmed}, confirmed, failed),
-            ({}, {"complete": True, "result": {}}, failed),
+        for extra, report in (
+            ({"launch": {"complete": False}}, confirmed),
+            ({"report_another": confirmed}, confirmed),
+            ({}, {"complete": True, "result": {}}),
         ):
-            with self.subTest(extra=extra, report=report, result=result):
+            with self.subTest(extra=extra, report=report):
                 operation = Operation(self.root, [self.config["repo"], "B"])
-                pending = "report_" + landing.fingerprint(result)
+                pending = "report_" + landing.fingerprint(failed)
                 operation.state["steps"] = {pending: {"complete": False}, "report_earlier": report, **extra}
-                landing.save_state(operation.path, operation.state)
-                landing.save_state(self.root / "result.json", result)
                 with self.assertRaises(GateFailed) as failure:
-                    landing.require_closed_smokes(self.config, operation, result)
+                    landing.require_closed_smokes(self.config, operation, failed)
                 self.assertEqual(failure.exception.gate, "supersede")
 
     def test_supersede_revalidates_closed_resume_without_rewriting_original_generation(self) -> None:

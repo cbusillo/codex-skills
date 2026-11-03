@@ -199,14 +199,14 @@ class OperationTests(unittest.TestCase):
                                       "supervisor_session": args.supervisor_session}
 
                             with patch.object(parent, "run") as checked:
-                                catalog_landing.require_closed_smokes(config, parent)
+                                catalog_landing.require_closed_smokes(config, parent, {})
                                 checked.assert_not_called()
                                 parent.state["steps"][entry["harness"] + "_source"]["generation"] = "changed"
                                 with self.assertRaises(check_operation.GateFailed):
-                                    catalog_landing.require_closed_smokes(config, parent)
+                                    catalog_landing.require_closed_smokes(config, parent, {})
                                 parent.state["steps"]["uncertain"] = {"complete": False}
                                 with self.assertRaises(check_operation.GateFailed):
-                                    catalog_landing.require_closed_smokes(config, parent)
+                                    catalog_landing.require_closed_smokes(config, parent, {})
                     if outcome in {"finish_refused", "close_uncertain", "resumed"}:
                         self.assertLess(calls.index("clear"), calls.index("send"))
                         self.assertEqual(calls.count("send"), 1)
@@ -300,17 +300,17 @@ class OperationTests(unittest.TestCase):
                                        side_effect=ValueError("pending native action") if failure == "native_action" else None)):
                         if failure not in {None, "quit", "close"}:
                             with self.assertRaises(check_operation.GateFailed) as refusal:
-                                catalog_landing.require_closed_smokes(config, parent)
+                                catalog_landing.require_closed_smokes(config, parent, {})
                             self.assertEqual(refusal.exception.gate, "supersede")
                             if failure == "active":
                                 session_closeout.closeout(args, operation)
                                 self.assertEqual(json.loads(ledger.read_text()), [])
-                                catalog_landing.require_closed_smokes(config, parent)
+                                catalog_landing.require_closed_smokes(config, parent, {})
                             else:
                                 with self.assertRaises(ValueError):
                                     session_closeout.closeout(args, operation)
                         else:
-                            catalog_landing.require_closed_smokes(config, parent)
+                            catalog_landing.require_closed_smokes(config, parent, {})
                             session_closeout.closeout(args, operation)
                     self.assertEqual({path: path.read_bytes() for path in parent.evidence.rglob("*") if path.is_file()}, preserved)
 
