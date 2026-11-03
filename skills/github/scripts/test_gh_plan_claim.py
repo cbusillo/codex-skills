@@ -2528,6 +2528,7 @@ class ClaimTests(unittest.TestCase):
                 setattr(self, stage, invalidate)
                 with self.assertRaises(PLAN.PlanError) as caught:
                     self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_resume_source_incomplete" if change == "reopened" else "claim_conflict")
                 self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 
     def test_canonical_issue_admits_completed_child_exact_handoff_without_changing_source_or_holds(self) -> None:

@@ -1161,7 +1161,7 @@ is required. When the retained PR lives in another repository, run from that PR'
 checkout with `--repo PR_OWNER/PR_REPO claim PLAN_OWNER/PLAN_REPO#N` and
 `--planning-checkout /absolute/planning/checkout`. The claim belongs to the open
 canonical issue, preserving its remaining-work custody. A claim supplies ownership,
-not authority to revive scope the Director cut; close an abandoned PR instead.
+not authority to revive scope the Director cut.
 
 `release-claim` accepts the same PR references and attestation URLs on either
 issue or PR timeline comments. It checks the claimed source branch against the closed-session attestation. A
