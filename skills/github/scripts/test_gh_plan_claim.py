@@ -2491,6 +2491,28 @@ class ClaimTests(unittest.TestCase):
             pull["body"] += "\nRefs #42"
             pull["head"]["sha"] = "source-head"
 
+    def test_canonical_issue_adopts_consolidated_child_in_another_repository(self) -> None:
+        self.completed_child_handoff_fixture()
+        self.args.issue = "other/plans#42"
+        self.args.planning_checkout = "/verified/plans"
+        self.planning_inventory = {"worktrees": [], "local_branches": [], "remote_branches": []}
+        self.parent.update(repo="other/plans", html_url="https://github.com/other/plans/issues/42")
+        self.targets["41"].update(state_reason="not_planned", repo="other/plans")
+        self.args.resume_from = "https://github.com/other/plans/issues/41#issuecomment-1"
+        self.children = {"/repos/other/plans/issues/42/sub_issues": [copy.deepcopy(self.targets["41"])]}
+        source_comments = self.target_comments.pop("/repos/owner/repo/issues/41/comments")
+        source_comments[-1]["body"] = "Released claim 1\nHandoff: owner/repo#99 and owner/repo#100"
+        self.target_comments["/repos/other/plans/issues/41/comments"] = source_comments
+        for pull in [*self.pulls, *self.closed_pulls.values()]:
+            pull["body"] = "Refs other/plans#41\nRefs other/plans#42"
+        before = copy.deepcopy((self.targets, self.target_comments, self.inventory, self.pulls))
+        self.run_claim()
+        result = self.emitted.call_args.args[0]
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.post_route, ("issue", 42, "other/plans"))
+        self.assertEqual(result["claim"]["retained_handoff"], CLAIM.handoff_url("other/plans", 41, self.handoff_id))
+        self.assertEqual(before, (self.targets, self.target_comments, self.inventory, self.pulls))
+
     def test_canonical_issue_admits_completed_child_exact_handoff_without_changing_source_or_holds(self) -> None:
         self.completed_child_handoff_fixture()
         sibling = self.closed_pulls.pop(100)
@@ -2514,18 +2536,18 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(len(self.comments), 1)
 
     def test_canonical_child_handoff_preserves_proof_ownership_and_wait_refusals(self) -> None:
-        for change in ("no_release", "foreign_release", "old_release", "open_source", "not_completed", "wrong_parent",
+        for change in ("no_release", "foreign_release", "old_release", "open_source", "wrong_parent",
                        "foreign_source", "wrong_artifact", "mixed_artifact", "extra_canonical", "closed_peer", "live_source", "live_sibling", "earlier_sibling", "unknown_artifact",
                        "source_branch", "target_wait", "retained_wait", "unknown_inventory"):
             with self.subTest(change=change):
                 self.setUp()
                 self.completed_child_handoff_fixture()
+                self.targets["41"]["state_reason"] = "not_planned"
                 source_comments = self.target_comments["/repos/owner/repo/issues/41/comments"]
                 if change == "no_release": source_comments.pop()
                 elif change == "foreign_release": source_comments[-1]["user"] = {"login": "unrelated"}
                 elif change == "old_release": source_comments[-1]["created_at"] = "2026-09-01T00:00:00Z"
                 elif change == "open_source": self.targets["41"]["state"] = "open"
-                elif change == "not_completed": self.targets["41"]["state_reason"] = "not_planned"
                 elif change == "wrong_parent": self.parent["number"] = 43; self.parent["html_url"] = "https://github.com/owner/repo/issues/43"
                 elif change == "foreign_source": self.args.resume_from = "https://github.com/other/repo/issues/41#issuecomment-1"
                 elif change == "wrong_artifact": self.pulls[0]["body"] = "Refs #41\nRefs #43"
@@ -2562,7 +2584,7 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                 expected = {"no_release": "claim_resume_source_unreleased", "foreign_release": "claim_resume_source_unreleased",
                             "old_release": "claim_resume_source_unreleased", "open_source": "claim_resume_source_incomplete",
-                            "not_completed": "claim_resume_source_incomplete", "wrong_parent": "claim_native_parent_required",
+                            "wrong_parent": "claim_native_parent_required",
                             "wrong_artifact": "claim_handoff_pr_required", "mixed_artifact": "claim_handoff_pr_required",
                             "extra_canonical": "claim_issue_record_required",
                             "closed_peer": "claim_conflict",
