@@ -59,6 +59,10 @@ MAX_MESSAGE_HINTS = 256
 MISS_GRACE_SECONDS = 120
 
 
+def radar_module() -> Any:
+    return importlib.import_module("github_unanswered_comments")
+
+
 def validate_message_hint(args: Any, repos: list[str] | None, hint: dict) -> dict | None:
     repo = hint["repository"]
     if not isinstance(repo, str) or not REPOSITORY.fullmatch(repo):
@@ -266,7 +270,7 @@ def read_opened(reader, repo: str, since: str, client_agents=()) -> list[dict]:
                 user = review.get("user") or {}
                 if not (review.get("body") or "").strip():
                     continue
-                if user.get("type") == "Bot" and user.get("login", "").casefold() not in client_agents:
+                if radar_module().is_github_bot(user.get("login", ""), user.get("type", "")) and user.get("login", "").casefold() not in client_agents:
                     bot_reviews.append({**review, "updated_at": review.get("submitted_at") or review["created_at"]})
                 else:
                     messages.append(review)
@@ -280,7 +284,7 @@ def source_messages(source: dict, client_agents: Any = ()) -> list[dict]:
     user = source.get("user") or {}
     if timestamp(source["updated_at"]) <= timestamp(source["created_at"]):
         return [opening]
-    if user.get("type") == "Bot" and user.get("login", "").casefold() not in client_agents:
+    if radar_module().is_github_bot(user.get("login", ""), user.get("type", "")) and user.get("login", "").casefold() not in client_agents:
         return [opening]
     return [opening, source]
 
@@ -831,13 +835,19 @@ def audit_miss(args: Any, receipt: dict, persist: Any) -> None:
         persist()
 
 
+def is_ordinary_bot_notice(notice: dict, client_agents: Any = ()) -> bool:
+    return (
+        notice.get("kind") == "foreign"
+        and radar_module().is_github_bot(str(notice.get("author") or ""), notice.get("author_type", ""))
+        and not (notice.get("author_class") == "automation" and notice.get("automation_for"))
+        and str(notice.get("author", "")).casefold() not in client_agents
+    )
+
+
 def route_notices(args: Any, notices: list[dict], deliveries: dict, reader: GitHubReader, *, event: bool, persist: Any) -> None:
     for notice in notices:
-        if notice.get("kind") not in {"foreign", "foreign_opened"} or (
-            notice.get("kind") != "foreign_opened"
-            and (notice.get("author_type") == "Bot" or str(notice.get("author", "")).endswith("[bot]"))
-            and not (notice.get("author_class") == "automation" and notice.get("automation_for"))
-            and str(notice.get("author", "")).casefold() not in getattr(args, "client_agent_logins", ())
+        if notice.get("kind") not in {"foreign", "foreign_opened"} or is_ordinary_bot_notice(
+            notice, getattr(args, "client_agent_logins", ())
         ):
             continue
         receipt = deliveries.setdefault(delivery_key(notice), {})
@@ -1019,18 +1029,13 @@ def main() -> int:
         parser.error("routing needs --ledger, --notify-config and --miss-issue together")
     if args.miss_issue and not re.fullmatch(rf"{re.escape(args.owner)}/[A-Za-z0-9_.-]+#[1-9][0-9]*", args.miss_issue, re.I):
         parser.error("--miss-issue must belong to the configured Director")
-    radar: Any = importlib.import_module("github_unanswered_comments")
-    identities = radar.people_identities({(args.director_login or args.owner).casefold()}, args.people_index)
+    identities = radar_module().people_identities({(args.director_login or args.owner).casefold()}, args.people_index)
     args.director_names = identities["director_names"]
     args.recipient_identity_gap = (identities.get("error") or "Director aliases are ambiguous"
                                    if identities["status"] == "error" or identities["director_ambiguous"] else None)
-    args.client_agent_logins = set()
-    if args.ledger:
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github-work-rollup/scripts"))
-        identities = radar.people_identities({args.owner.casefold()}, args.people_index)
-        if identities.get("status") == "error":
-            parser.error(identities["error"])
-        args.client_agent_logins = {login for login, person in identities["automation"].items() if person}
+    if args.ledger and identities.get("status") == "error":
+        parser.error(identities["error"])
+    args.client_agent_logins = {login for login, person in identities["automation"].items() if person}
     if args.github_cli_login:
         args.github_cli_login = github_access.select_login(args.github_cli_login)
     deadline = time.monotonic() + args.deadline_seconds
@@ -1117,6 +1122,7 @@ def watch(args, repos, initial, deadline):
             notice.get("kind") not in {"director_question", "director_mention"}
             or (notice.get("author") or "").casefold() not in own_logins
             for notice in notices
+            if not is_ordinary_bot_notice(notice, getattr(args, "client_agent_logins", ()))
         )
         if wakes_supervisor and not errors and settle_at is None:
             settle_at = min(deadline, time.monotonic() + NOTICE_SETTLE_SECONDS)
