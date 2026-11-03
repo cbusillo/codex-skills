@@ -117,7 +117,9 @@ Last verified: [Date/Commit]
 - **Out**: What is intentionally NOT being changed (important for limiting drift).
 
 ### Acceptance Criteria
-A checklist of functional and technical requirements.
+Plain bullets of functional and technical requirements, not checkboxes; the
+issue closes on evidence. A requirement that needs its own work is a native
+sub-issue.
 
 ### Relationships
 Native GitHub dependencies and sub-issue links, plus explanatory prose if

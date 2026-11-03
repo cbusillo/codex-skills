@@ -460,6 +460,8 @@ Current Status on waiting issues without an execution claim; the writer
 preserves wait and ownership records. Use `wait` for wait changes; source edits
 and execution still require their normal claim.
 Keep the finish line observable, with scope, acceptance evidence, and one next action.
+Write finish-line and acceptance items as plain bullets, not checkboxes; real
+pieces of work are native sub-issues.
 Size implementation issues and record event waits under GitHub's
 [issue closing and post-merge proof](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof).
 Keep Current Status concise:
