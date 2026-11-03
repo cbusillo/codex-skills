@@ -233,7 +233,7 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
         repo_owner=[] if args.repo else [args.owner],
         thread=args.thread,
         outbound=True,
-        self_login=[args.owner],
+        self_login=list(filter(None, [args.owner, getattr(args, "github_cli_login", None)])),
         director_login=args.owner,
         bot_login=[],
         people_index=None,

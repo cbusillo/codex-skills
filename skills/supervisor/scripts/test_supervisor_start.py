@@ -33,6 +33,13 @@ class SupervisorStartTests(unittest.TestCase):
         self.enterContext(patch_attr(github_identity, "automation_login", return_value="automation[bot]"))
         self.enterContext(patch_attr(github_identity, "configured_bot_logins", return_value=()))
         self.enterContext(patch.object(supervisor.github_access, "select_login", return_value=None))
+        self.enterContext(
+            patch.object(
+                supervisor.github_access,
+                "persistent_environment",
+                return_value={"CODEX_SKILLS_ENV_FILE": str(self.root / "fixture.env")},
+            )
+        )
         self.args = supervisor.parser().parse_args(
             [
                 "start",
@@ -100,7 +107,8 @@ class SupervisorStartTests(unittest.TestCase):
             supervisor.start(self.args)
         updated = json.loads(config.read_text())
         foreign = updated["services"]["foreign"]["argv"]
-        self.assertEqual(foreign[: len(original)], original)
+        offset = foreign.index(original[0])
+        self.assertEqual(foreign[offset : offset + len(original)], original)
         self.assertEqual(updated["services"]["catalog"], data["services"]["catalog"])
         self.assertIn(str(ledger), foreign)
         self.assertEqual(updated["services"]["foreign"]["restart_seconds"], 12)
@@ -368,6 +376,29 @@ class SupervisorStartTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 supervisor.start(self.args)
         launch.assert_not_called()
+
+    def test_gate_blocked_terminal_is_certainly_unstarted_but_uncertain_submission_is_held(self) -> None:
+        for submission in ("not_attempted", "unknown", "submitted"):
+            error = supervisor.LaunchCommandError(
+                "failed",
+                {
+                    "launched": [],
+                    "mutation_started": True,
+                    "failed_launch": {"phase": "prepare_terminal", "submission": submission},
+                },
+            )
+            self.assertEqual(error.not_started, submission == "not_attempted")
+
+    def test_selected_cli_login_is_filtered_even_when_repository_owner_differs(self) -> None:
+        with (
+            patch.object(supervisor.github_access, "select_login", return_value="person"),
+            patch.object(supervisor.shutil, "which", return_value="/fixture/uv"),
+        ):
+            supervisor.configure(self.args, self.root, self.root / "services.json")
+        argv = supervisor.services.load_config(self.root / "services.json")["services"]["foreign"]["argv"]
+        own = [argv[index + 1] for index, value in enumerate(argv) if value == "--own-login"]
+        self.assertIn("person", own)
+        self.assertIn("example", own)
 
     def test_ended_supervisor_generation_can_restart_but_unknown_liveness_cannot(self) -> None:
         with (

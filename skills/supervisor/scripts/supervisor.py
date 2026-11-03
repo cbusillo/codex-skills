@@ -29,7 +29,10 @@ START_TIMEOUT = 900
 class LaunchCommandError(ValueError):
     def __init__(self, message: str, payload: dict) -> None:
         super().__init__(message)
-        self.not_started = payload.get("mutation_started") is False and not payload.get("launched")
+        failed = payload.get("failed_launch", {})
+        self.not_started = not payload.get("launched") and (
+            payload.get("mutation_started") is False or failed.get("submission") == "not_attempted"
+        )
 
 
 def parser() -> argparse.ArgumentParser:
@@ -147,12 +150,19 @@ def configure_locked(args: argparse.Namespace, root: Path, config_path: Path) ->
             )
         if existing is None:
             argv.extend([option, value])
+    args.github_environment = github_access.persistent_environment()
     args.github_cli_login = github_access.select_login(option_value(argv, "--github-cli-login"))
     if args.github_cli_login and option_value(argv, "--github-cli-login") is None:
         argv.extend(["--github-cli-login", args.github_cli_login])
     if not any(value == "--own-login" or value.startswith("--own-login=") for value in argv):
         for login in filter(
-            None, [args.owner, github_identity.automation_login(), *github_identity.configured_bot_logins()]
+            None,
+            [
+                args.owner,
+                args.github_cli_login,
+                github_identity.automation_login(),
+                *github_identity.configured_bot_logins(),
+            ],
         ):
             argv.extend(["--own-login", login])
     if "--persistent" not in argv:
@@ -162,6 +172,13 @@ def configure_locked(args: argparse.Namespace, root: Path, config_path: Path) ->
     if previous and previous["argv"] != argv:
         with services.service_lock(config_path, "foreign"):
             pass
+    prefix = github_access.environment_prefix(args.github_environment)
+    if argv[0] == prefix[0]:
+        persisted = dict(value.split("=", 1) for value in argv[1:] if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", value))
+        if any(persisted.get(name) != value for name, value in args.github_environment.items()):
+            raise ValueError("existing service authentication selectors differ; preserve its configured environment")
+    else:
+        argv = [*prefix, *argv]
     config["services"]["foreign"] = {**(previous or {"cwd": str(CATALOG), "restart_seconds": 60}), "argv": argv}
     ledger.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if not ledger.exists():
@@ -184,6 +201,22 @@ def launch_supervisor(args: argparse.Namespace, root: Path, config_path: Path, l
     command = attempt / "command.txt"
     command.write_text(
         f"cd {shlex.quote(str(args.directory.resolve()))} && exec "
+        + shlex.join(
+            [
+                "env",
+                *github_access.environment_prefix(
+                    {
+                        **getattr(args, "github_environment", {}),
+                        **(
+                            {"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1"}
+                            if getattr(args, "github_cli_login", None)
+                            else {}
+                        ),
+                    }
+                )[1:],
+            ]
+        )
+        + " "
         + ("codex --remote unix://" if args.harness == "codex" else "claude")
         + "\n"
     )
@@ -215,6 +248,8 @@ def launch_supervisor(args: argparse.Namespace, root: Path, config_path: Path, l
         if args.queue
         else []
     )
+    if routine:
+        routine = [*github_access.environment_prefix(getattr(args, "github_environment", {})), *routine]
     if routine and args.github_cli_login:
         routine.extend(["--github-cli-login", args.github_cli_login])
     brief = attempt / "brief.txt"
@@ -295,7 +330,10 @@ def recover_supervisor(root: Path, config_path: Path, ledger: Path) -> dict:
                 row
                 for row in rows
                 if row.get("tab_id") == original.get("tab_id")
-                and (row["session_id"] != failed["session_id"] or row.get("pid") != failed.get("pid", original.get("pid")))
+                and (
+                    row["session_id"] != failed["session_id"]
+                    or row.get("pid") != failed.get("pid", original.get("pid"))
+                )
             ]
             if changed or len(matches) > 1:
                 raise ValueError("retained terminal generation changed; preserve it for reconciliation")
@@ -412,8 +450,6 @@ def start(args: argparse.Namespace) -> dict:
         if recipient.get("status") == "not_started":
             return {"status": "not_started", "next_action": "Correct the exited launch's cause, then repeat start."}
         journal = json.loads(path.read_text())
-        journal["supervisor"] = recipient["session_id"]
-        save_state(path, journal)
         service = ensure_foreign_service(root, config_path)
         journal["status"] = "running"
         save_state(path, journal)

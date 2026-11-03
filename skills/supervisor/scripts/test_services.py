@@ -392,38 +392,27 @@ class ServicesTests(unittest.TestCase):
         self.assertEqual(bound["session_id"], env["CLAUDE_CODE_SESSION_ID"])
         self.assertNotIn("supervisor_owned", bound)
 
-    def test_startup_binding_validates_launched_native_identity_on_both_harnesses(self) -> None:
-        import codex_session_proxy
-        github_plan_closure = importlib.import_module("github_plan_closure")
+    def test_startup_binding_validates_launched_claude_native_identity(self) -> None:
         import session_liveness
         import tmux_terminal
+
         self.save()
         source = self.claude_source()
-        for harness in ("claude", "codex"):
-            identity = source.env["CLAUDE_CODE_SESSION_ID"]
-            transcript = source.transcript
-            entry = {**source.pane, "session_id": identity, "harness": harness,
-                     "transcript": str(transcript), "tmux_session_id": source.pane["session_id"],
-                     "pid": 50, "supervisor_owned": True}
-            if harness == "codex":
-                transcript, env = self.codex_source(identity)
-                entry.update(transcript=str(transcript), codex_home=env["CODEX_HOME"], tty="ttys001")
-            with (self.subTest(harness=harness),
-                  patch.object(tmux_terminal.Terminal, "list", return_value=[source.pane]),
-                  patch.object(tmux_terminal, "process_parents", return_value={50: 20, 20: 1}),
-                  patch.object(session_liveness, "inventory", return_value=[(50, "ttys001", "claude" if harness == "claude" else "python codex_session_proxy.py")]),
-                  patch.object(session_liveness, "native_arguments", return_value=["python", "codex_session_proxy.py"]),
-                  patch.object(session_liveness, "process_started_at", return_value=datetime.now(timezone.utc)),
-                  patch_attr(github_plan_closure, "guarded_launch_endpoint", side_effect=lambda pid, _: "/fixture/socket" if pid == 50 else None),
-                  patch.object(codex_session_proxy, "source_endpoint", return_value=Path("/fixture/socket"))):
-                bound = services.bind_launched_supervisor(self.config, entry)
-                self.assertEqual(bound["session_id"], identity)
-                self.assertEqual(bound["role"], "supervisor")
-                self.assertNotIn("supervisor_owned", bound)
-                before = self.config.read_bytes()
-                with self.assertRaises(ValueError):
-                    services.bind_launched_supervisor(self.config, {**entry, "pid": 51})
-                self.assertEqual(self.config.read_bytes(), before)
+        identity = source.env["CLAUDE_CODE_SESSION_ID"]
+        entry = {**source.pane, "session_id": identity, "harness": "claude", "transcript": str(source.transcript),
+                 "tmux_session_id": source.pane["session_id"], "pid": 50, "supervisor_owned": True}
+        with (patch.object(tmux_terminal.Terminal, "list", return_value=[source.pane]),
+              patch.object(tmux_terminal, "process_parents", return_value={50: 20, 20: 1}),
+              patch.object(session_liveness, "inventory", return_value=[(50, "ttys001", "claude")]),
+              patch.object(session_liveness, "process_started_at", return_value=datetime.now(timezone.utc))):
+            bound = services.bind_launched_supervisor(self.config, entry)
+            self.assertEqual(bound["session_id"], identity)
+            self.assertEqual(bound["role"], "supervisor")
+            self.assertNotIn("supervisor_owned", bound)
+            before = self.config.read_bytes()
+            with self.assertRaises(ValueError):
+                services.bind_launched_supervisor(self.config, {**entry, "pid": 51})
+            self.assertEqual(self.config.read_bytes(), before)
 
     def test_codex_binding_uses_the_real_interpreter_normalized_proxy_guard(self) -> None:
         import codex_session_proxy

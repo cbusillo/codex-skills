@@ -71,6 +71,32 @@ class GitHubAccessTests(unittest.TestCase):
                     github_access.select_login("director")
                 cli.assert_not_called()
 
+    def test_service_environment_preserves_selectors_without_copying_transient_credentials(self) -> None:
+        env_file = self.root / "configured.env"
+        env_file.write_text("CODEX_GITHUB_TOKEN=fixture-secret\nCODEX_AUTOMATION_LOGIN=agent\n")
+        with patch.dict(
+            os.environ,
+            {
+                "CODEX_SKILLS_ENV_FILE": str(env_file),
+                "CODE_HOME": str(self.root / "code"),
+                "GH_CONFIG_DIR": str(self.root / "gh"),
+            },
+        ):
+            environment = github_access.persistent_environment()
+        self.assertEqual(environment["CODEX_SKILLS_ENV_FILE"], str(env_file.resolve()))
+        self.assertEqual(environment["CODE_HOME"], str(self.root / "code"))
+        self.assertEqual(environment["GH_CONFIG_DIR"], str(self.root / "gh"))
+        self.assertNotIn("fixture-secret", str(environment))
+        with (
+            patch.dict(os.environ, {"GH_TOKEN": "transient-secret"}),
+            patch_attr(github_access.github_read, "GitHubReader") as reader,
+            patch.object(github_access.subprocess, "run") as cli,
+        ):
+            with self.assertRaises(ValueError):
+                github_access.persistent_environment()
+        reader.assert_not_called()
+        cli.assert_not_called()
+
     def test_plain_login_lists_private_owned_repositories_with_owner_and_archive_filter(self) -> None:
         reader = Mock()
         reader.paged_json.return_value = [
@@ -79,7 +105,9 @@ class GitHubAccessTests(unittest.TestCase):
             {"full_name": "other/shared", "archived": False},
         ]
         self.assertEqual(foreign_watch.installed_repositories(reader, "director", "director"), ["director/private"])
-        self.assertEqual(reader.paged_json.call_args.args[0], "/user/repos?affiliation=owner&per_page=100")
+        self.assertEqual(
+            foreign_watch.installed_repositories(reader, "director", "different-login"), ["director/private"]
+        )
 
 
 if __name__ == "__main__":

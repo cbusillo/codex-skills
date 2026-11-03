@@ -34,6 +34,44 @@ def automation_configured() -> bool:
     ) or str(values.get("GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH", "")).casefold() in {"1", "yes", "true"}
 
 
+def persistent_environment() -> dict[str, str]:
+    local_values = github_identity.load_local_env()
+    transient_tokens = [
+        name
+        for name in ("GH_TOKEN", "GITHUB_TOKEN", "CODEX_GITHUB_TOKEN")
+        if os.environ.get(name) and os.environ[name] != local_values.get(name)
+    ]
+    if transient_tokens and not github_identity.github_app_config():
+        raise ValueError(
+            "shell-only GitHub tokens cannot reach the service; use gh auth login or the existing local.env credential route"
+        )
+    selected = {
+        name: value
+        for name, value in os.environ.items()
+        if name
+        in {
+            "CODE_HOME",
+            "GH_CONFIG_DIR",
+            "XDG_CONFIG_HOME",
+            "CODEX_AUTOMATION_LOGIN",
+            "CODEX_AUTOMATION_BOT_LOGINS",
+            "GH_WITH_ENV_TOKEN_EXPECTED_LOGIN",
+            "GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH",
+        }
+        or re.fullmatch(
+            r"GITHUB_(?:READER_|CLIENT_)?APP_(?:ID|INSTALLATION_ID|PRIVATE_KEY_PATH|API_URL|TOKEN_CACHE_DIR|OWNERS)",
+            name,
+        )
+    }
+    path = github_identity.env_file_path()
+    selected["CODEX_SKILLS_ENV_FILE"] = str((path or Path.home() / ".code/local.env").resolve())
+    return selected
+
+
+def environment_prefix(environment: dict[str, str]) -> list[str]:
+    return ["/usr/bin/env", *[f"{name}={value}" for name, value in sorted(environment.items())]]
+
+
 def select_login(login: str | None = None) -> str | None:
     if automation_configured():
         if login:

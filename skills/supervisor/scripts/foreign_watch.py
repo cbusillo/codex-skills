@@ -307,7 +307,7 @@ def versioned_messages(reader: GitHubReader, sources: list[dict]) -> list[dict]:
 
 
 def installed_repositories(reader, owner: str, cli_login: str | None = None) -> list[str]:
-    repositories = (reader.paged_json("/user/repos?affiliation=owner&per_page=100", step_prefix="foreign_repositories")
+    repositories = (reader.paged_json("/user/repos?affiliation=owner,organization_member&per_page=100", step_prefix="foreign_repositories")
                     if cli_login else reader.paged_json("/installation/repositories", collection_key="repositories", step_prefix="foreign_repositories"))
     return [
         r["full_name"]

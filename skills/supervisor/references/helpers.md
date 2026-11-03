@@ -926,7 +926,10 @@ It needs the existing `uv`, `tmux`, `gh auth login` and chosen agent CLI.
 Configured GitHub automation stays selected and is checked before launch.
 On a plain install with no automation configuration, startup selects the existing
 GitHub CLI login before requests and pins it for reader and miss-record writes.
-A configured identity failure never switches to that login.
+A configured identity failure never switches to that login. The same nonsecret
+configuration selectors are retained for the reader, Supervisor and routine command.
+Shell-only GitHub tokens cannot be copied into a service: use the normal
+`gh auth login` or the existing `local.env` credential route instead.
 No hand-written Supervisor configuration, ledger or recipient is needed.
 
 The command creates missing state under the shared Code home's
@@ -949,7 +952,12 @@ inspect its logs and use `services.py clear` after reconciliation before restart
 After login, repeat the command to start a new Supervisor only
 when its previous process generation has ended. Startup success proves the
 registered Supervisor and service manager's running reader, not delivery of a
-person's message.
+person's message. On macOS, keep state and logs where launchd can access them.
+If the service manager refuses a path or permission, stop that action and retain
+the launch receipts and binding. Do not switch paths or permissions as a workaround.
+After its cause is resolved, `--recover` resumes the same native Supervisor and job.
+Intentional job retirement uses the existing [service stop and removal procedure](#persistent-supervisor-services);
+changing state locations never silently replaces a differently configured job.
 
 Add `--events` only when the existing optional Launchplane operator source is
 configured. Without it the existing polling backstop runs and event-triggered
