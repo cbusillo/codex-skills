@@ -40,7 +40,7 @@ Rules for this brief (every Supervisor brief carries them):
   exempt from this cap; their briefs name the repair and exemption.
 - Pace (Director, October 18, 2026): never open PRs faster than they can land.
   Finish and hand off what you open before starting anything new.
-- Never use Chris's own Chrome (the ChatGPT for Chrome extension, Claude in
+- Never use the Director's own Chrome (the ChatGPT for Chrome extension, Claude in
   Chrome, or any automation of his browser) unless the brief is a GUI task
   that names it. Browser and page checks run headless (Playwright or the
   repository's own browser harness). Close anything you open
@@ -81,13 +81,15 @@ Rules for this brief (every Supervisor brief carries them):
   Name your intended task path, never the result of `pwd` or Git discovery
   ([bot helpers](../../github/SKILL.md#helpers-and-identity)). Never
   force-push or use `git stash`.
-- PRs land only through the merge train. When a PR is green and reviewed,
+- Land through the GitHub skill's Merging procedure. Launchplane is optional
+  unless this Director's direction or active policy requires its train. A missing
+  or unreadable configured route stays unknown. For train-routed PRs, when green and reviewed,
   hand off with `uv run <catalog>/skills/github/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
   under the [ready handoff contract](../../github/references/cli-reference.md#ready-handoffs);
   a later push needs a fresh `ready`. A PR that needs the Client's acceptance
   hands off with `--waiting-for-client` ("Engineering ready; waiting for the
   Client's acceptance") until the Client accepts its current head. When the
-  brief holds a PR for anyone else before the train (Chris, the Supervisor, a
+  brief holds a PR for anyone else before the train (the Director, the Supervisor, a
   landing decision), never post plain `ready`: the train enqueues it within
   minutes ([codex-skills#2428](https://github.com/cbusillo/codex-skills/issues/2428)).
   Post the waiting handoff instead, a `gh-pr.py comment <pr> --body-file <file>`
@@ -104,7 +106,7 @@ Rules for this brief (every Supervisor brief carries them):
   authority, Client-visible, or large work gets its own issue (search first).
 - New issues
   ([Q586](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6300583500)):
-  before opening one, search open and closed issues across Chris's
+  before opening one, search open and closed issues across the Director's
   repositories, and add to the existing issue when one fits. Open a new issue
   only when nothing fits; link it to its parent, and name the next actor and
   the finish line. A slice of ongoing work goes on its parent. Close the issue
@@ -146,7 +148,7 @@ Rules for this brief (every Supervisor brief carries them):
 - Inspection: run it through the
   [jetbrains-inspection](../../jetbrains-inspection/SKILL.md) skill's
   supported route for the repository; the skill owns which backend applies.
-  Never open Chris's desktop IDE or his normal PyCharm profile. If no
+  Never open the Director's desktop IDE or their normal PyCharm profile. If no
   supported route can run, record UNKNOWN with the helper's exact reason
   ([gate selection](../../repo-readiness/SKILL.md#gate-selection)); never
   report it as passed.
@@ -157,7 +159,7 @@ Rules for this brief (every Supervisor brief carries them):
   existing PR watcher or comment radar. Give short, accurate replies; never
   promise what is the Director's to decide. Outbound messages anywhere else
   stay a stop boundary under the overall
-  [DIRECTION.md](https://github.com/cbusillo/direction/blob/main/DIRECTION.md#stop-boundaries).
+  Director's overall `DIRECTION.md` stop boundaries.
 - When you need the Director, create every new Director question on the item with
   [`oq.py create`](../../references/talking-with-the-director.md#director-questions),
   rather than authoring a prose question comment. Re-present existing questions
@@ -170,7 +172,7 @@ Rules for this brief (every Supervisor brief carries them):
   yourself: the comment helpers number it from the
   [shared counter](../../references/talking-with-the-director.md#decisions-holds-and-work-state)
   and keep any number already there. Only a reply from
-  cbusillo or a recorded "Director decision" counts
+  this Director or a recorded "Director decision" counts
   ([talking with the Director](../../references/talking-with-the-director.md)).
 - Post progress and run results only on your own child issue. Track parents hold
   proof, decisions and their finish line; do not copy per-slice progress,
@@ -195,42 +197,49 @@ Rules for this brief (every Supervisor brief carries them):
 
 ## Milestone lead briefs
 
-A milestone lead brief
-([Milestone lead trial, codex-skills#2277](https://github.com/cbusillo/codex-skills/issues/2277);
-Q515) fills the placeholders in double underscores, then carries the rules
-above by link or inclusion. When several leads share a repository, the
-Supervisor spreads work so one lead does not take the whole PR cap.
+A lead works one of the Director's listed `DIRECTION.md` milestones through
+`gh-plan.py next`, claims and the installed harness bindings. A Track issue and
+its goal board are optional views when that Director uses them. Do not require
+Chris's Track graph, trial record or host configuration to start a lead.
+When several leads share a repository, spread work within its shared PR cap.
+
+Fill the placeholders below and carry the shared rules by link or inclusion.
 
 ```text
-Brief from the Supervisor (__HANDOFF_RECORD__), __DATE__. Trial token: __TOKEN__. Milestone lead brief (Milestone lead trial, https://github.com/cbusillo/codex-skills/issues/2277; Director decision Q515).
+Brief from the Supervisor (__HANDOFF_RECORD__), __DATE__. Trial token: __TOKEN__. Milestone lead brief.
 
-You are the long-running lead for: __TRACK__.
-Admission: milestone (__MILESTONE__); __TRACK_URL__
-Every item you take is linked into that Track's graph.
+You are the long-running lead for: __MILESTONE__.
+Scope: __REPOSITORIES__
+Admission: milestone (__MILESTONE__)
 
 How a lead works:
-1. Own the Track's progress, not one item. Read the Track issue in full, its native children and their Current Status, and the overall and repository DIRECTION.md. Do not claim the Track issue itself.
-2. Take the Track's next actionable items in order: not waiting on a person or event, not natively blocked, not owned by another running session. Currently owned by other sessions, leave alone: __OWNED__. Recheck ownership before each claim. Hold up to three concurrent claims across repositories on your Track.
-3. Do your slices with subagents (the Agent tool): implementation, reading and diagnosis, tests, your own review of record, drafting comments. Each claim has its own task worktree, with only one editor (you or a subagent) per worktree at a time. For a separate parallel session, follow the shared rules' child Current Status request; the Supervisor remains the only launcher.
-4. After each item: post results on the child issue, keep its Current Status current, and release its claim before replacing it with another item. Track comments are for decisions, not per-slice progress or staffing lists.
-5. People waits: when an item needs a person (the Director, a Client, an outside party), record the wait on the item, follow the shared brief rules for any Director question, and move to the next item. Never wait idle on a person. For every Client question you or your workers write, follow [Asking a Client](../../references/talking-with-the-director.md#asking-a-client).
-6. Stop working only when no item on the Track is actionable by an agent or you need the Director; then keep each child's Current Status and structured waits current, close out with work-closeout, and end with a standalone final line: Safe to exit: yes
+1. Read the Director's overall and repository DIRECTION.md, the milestone's finish line, and gh-plan.py next. If a Track is supplied, read it and its native children too; do not claim the Track itself. Take only work belonging to this milestone.
+2. Take the next actionable items in that order: not waiting on a person or event, not natively blocked, not owned by another running session. Recheck ownership before every claim. Hold up to three concurrent claims across the milestone's repositories.
+3. Do your slices with the harness's built-in subagents: implementation, reading and diagnosis, tests, your own review of record, drafting comments. Each claim has its own task worktree, with only one editor per worktree at a time. For a separate parallel session, use the shared rules' child Current Status request; the Supervisor remains the only launcher.
+4. After each item: post results on that issue, keep its Current Status current, and release its claim before replacing it. Optional Track comments hold decisions and finish-line proof, not per-slice progress or staffing lists.
+5. When an item needs a person, record its wait, follow the shared brief rules for Director questions and Asking a Client for Client questions, and move to the next independent item. Never wait idle on a person.
+6. Stop only when no milestone item is actionable by an agent or you need the Director. Keep issue status and structured waits current, close out with work-closeout, and end with a standalone final line: Safe to exit: yes
 
-For work subject to the shared rules' PR cap, instead of opening another PR:
-1. Help land what is already open there: fix a failing check, resolve a conflict, or answer review findings on the oldest stuck PR.
-2. If nothing open there is agent-fixable, finish your change on its branch, leave it unopened, and move to work in a repository under the cap. Note the held branch in your Track handoff.
-3. Report "nothing actionable" only when no repository you may work in has actionable work.
+At the shared PR cap, help land existing work first. If nothing open is agent-fixable, finish on your branch, record the unopened branch on its issue, and move to another repository in scope below the cap. Report nothing actionable only when none of those repositories has available work.
 
-Waiting on CI or the train: do not wait on a background polling loop for CI or a landing. Do other Track work and check `gh-pr.py checks <pr>` yourself between steps; run `ready` the moment checks settle green with a weighed review for the current head.
+While CI or landing runs, do other milestone work and check gh-pr.py checks between steps. Land through the GitHub skill's Merging procedure; for train-routed work, run ready as soon as checks are green with a weighed review for the current head.
 
 __SPECIFIC__
 
 Rules for this brief: https://github.com/cbusillo/codex-skills/blob/main/skills/supervisor/references/brief-rules.md
 ```
 
-On October 19 four leads sat idle for 20 to 40 minutes because their
-background polling loops never fired (one had a case-sensitive status match);
-that is why leads check CI directly.
+Context Panel is recommended, not required. Without account settings, the
+launcher uses the CLI's existing login; configured account and review settings
+still govern and their failures never silently fall back. The account helper
+names Context Panel once when it detects multiple accounts without that integration.
+Launchplane uses the optional route above. Private staffing targets, host worktree
+settings, persistent services and question queues are optional additions to the
+catalog defaults, subject to the Director's own stricter instructions. Use the
+brief's handoff anchor when no private handoff setting exists, and the existing
+unconfigured-queue handoff when no question queue exists. Neither GUI tooling,
+Docker nor a desktop IDE is a lead prerequisite; use the shared rules and
+owning skills only when an item calls for them, preserving required checks and UNKNOWN.
 
 ## Codex Cloud pass briefs
 

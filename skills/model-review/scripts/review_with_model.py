@@ -554,7 +554,7 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                 choice = choice or account_choice.select(provider)
                 account_choice.prepare_launch(choice)
                 receipt = account_choice.record_launch(choice)
-                launch = {"account": account_choice.public(choice), "launch_receipt": str(receipt)}
+                launch = {"account": account_choice.public(choice), "launch_receipt": str(receipt) if receipt else None}
             if provider in account_choice.ACCOUNT_VARIABLES:
                 result = REVIEWERS[provider](preamble + prompt + OUTPUT_INSTRUCTIONS, repo, model, timeout,
                                              Path(scratch), reviewer_environment(choice))

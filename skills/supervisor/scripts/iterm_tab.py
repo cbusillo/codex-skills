@@ -1267,9 +1267,12 @@ def prepare_resume(args):
         config = account_choice.load_config(args.account_config)
         accounts = [account for account in config["accounts"] if account["provider"] == "openai"
                     and Path(account["env"]["CODEX_HOME"]).expanduser().resolve() == home]
-    if len(accounts) != 1 or (args.account is not None and args.account != accounts[0]["name"]):
+    if not config["accounts"] and not config.get("snapshot_command") and args.account is None:
+        choice = account_choice.select("openai", args.account_config)
+    elif len(accounts) != 1 or (args.account is not None and args.account != accounts[0]["name"]):
         raise ValueError("resume requires the source's unique configured account; account switching is unsupported")
-    choice = account_choice.select("openai", args.account_config, accounts[0]["name"])
+    else:
+        choice = account_choice.select("openai", args.account_config, accounts[0]["name"])
     with preparation_read():
         if Path(choice["env"]["CODEX_HOME"]).expanduser().resolve() != home:
             raise ValueError("selected resume account differs from the source")
@@ -2067,8 +2070,7 @@ async def operate(app, args):
                 progress["account"] = account_choice.public(choice)
             try:
                 if choice:
-                    account_choice.record_launch(choice)
-                    progress["receipt_written"] = True
+                    progress["receipt_written"] = account_choice.record_launch(choice) is not None
                 progress.update(phase="create_tab", mutation_started=True)
                 tab = await windows[0].async_create_tab(select=False)
                 progress.update(tab_id=tab.tab_id if tab else None, phase="wait_for_session")

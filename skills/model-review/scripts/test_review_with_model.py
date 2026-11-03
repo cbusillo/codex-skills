@@ -304,10 +304,22 @@ class ReviewWithModelTests(unittest.TestCase):
         self.assertFalse(cwd_file.exists())
         self.assertEqual(len(list((self.storage / "Launch Receipts").glob("*.json"))), 1)
 
-    def test_missing_or_malformed_decision_never_launches(self) -> None:
+    def test_plain_install_reviews_with_existing_login(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        self.policy.unlink()
+        (self.home / ".code/skill-data/supervisor.toml").unlink()
+        capture = self.root / "child-env"
+        code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture),
+                                   FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}))
+        self.assertEqual((code, result["ok"]), (0, True))
+        self.assertTrue(capture.exists())
+        self.assertIsNone(result["launch_receipt"])
+        self.assertFalse((self.storage / "Launch Receipts").exists())
+
+    def test_malformed_decision_never_launches(self) -> None:
         self.install("claude", FAKE_CLAUDE)
         capture = self.root / "child-env"
-        bodies = [None, "invalid TOML", 'version = 1\nproviders = ["anthropic"]',
+        bodies = ["invalid TOML", 'version = 1\nproviders = ["anthropic"]',
                   'version = 1\ndecision = "bad provider"\nproviders = [{name="anthropic"}]']
         for body in bodies:
             with self.subTest(body=body):
@@ -463,11 +475,6 @@ class ReviewWithModelTests(unittest.TestCase):
                 self.assertEqual((code, result["ok"]), (1, False))
                 self.assertFalse(capture.exists())
                 self.assertFalse((self.storage / "Launch Receipts").exists())
-        self.snapshot_file.write_text(original)
-        (self.home / ".code/skill-data/supervisor.toml").unlink()
-        code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture))
-        self.assertEqual((code, result["ok"], result["phase"]), (1, False, "selection"))
-        self.assertFalse(capture.exists())
 
     def test_receipt_failure_prevents_launch_and_provider_failure_retains_receipt(self) -> None:
         self.install("claude", FAKE_CLAUDE)

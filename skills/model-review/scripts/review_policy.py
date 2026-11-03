@@ -35,6 +35,9 @@ def load_policy(path=None):
     path = path or policy_path()
     try:
         policy = tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"version": 1, "decision": "catalog independent-review default", "providers": list(account_choice.PROVIDERS),
+                "supplementary": []}
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
         raise ValueError("cannot read standing review decisions (skill-data/model-review.toml); "
                          "record the Director's decisions using references/provider-selection.md") from error
@@ -88,8 +91,9 @@ def select(policy, author, requested=None, supplementary=False, model=None, time
                          f"(allowed {allowed_roles}): {policy['decision']}")
     candidates = [requested] if requested else default_providers(allowed, author)
     config = account_choice.load_config()
-    snapshot, problem = account_choice.read_snapshot(config["snapshot_command"])
-    if snapshot is None:
+    snapshot, problem = (account_choice.read_snapshot(config["snapshot_command"])
+                         if config["snapshot_command"] else (None, None))
+    if config["snapshot_command"] and snapshot is None:
         raise ValueError(f"Context Panel snapshot unavailable ({problem}); no review launched")
     skipped = []
     executables = {"openai": "codex", "anthropic": "claude", "google": "agy"}
@@ -107,7 +111,8 @@ def select(policy, author, requested=None, supplementary=False, model=None, time
             continue
         if timeout and settings.get("timeout") and timeout > settings["timeout"]:
             raise PolicyConflict(provider, skipped, "--timeout exceeds the standing review limit; no review launched")
-        choice.update(account_choice.receipt_route(config["snapshot_command"]))
+        if config["snapshot_command"]:
+            choice.update(account_choice.receipt_route(config["snapshot_command"]))
         budget = settings.get("timeout", 900)
         return {"provider": provider, "model": model or settings.get("model"),
                 "timeout": timeout or (min(300, budget) if probe else budget), "choice": choice,

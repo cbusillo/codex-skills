@@ -33,21 +33,23 @@ timeout is the maximum: callers may use a shorter budget. Without a configured
 budget, reviews use 900 seconds. File-read probes default to 300 seconds or the
 configured limit if shorter.
 
-Create the private file from verified Director decisions before the first run;
-missing or malformed policy stops before inference. This is decision storage,
+The private file is optional. Without it, select an installed provider other
+than the author and use its CLI login. When present, it governs provider roles,
+models and budgets; malformed or unreadable policy stops before inference. This is decision storage,
 not a new request for approval. Never invent a fallback or supplement that the
 recorded decision does not permit.
 
 Pass the actual author's provider with `--author-provider`. The default run
 uses the first allowed primary provider other than the author that has an
-installed CLI and a Context Panel account choice:
+installed CLI and an available account choice:
 
 ```sh
 uv run scripts/review_with_model.py run --author-provider openai --repo <repo> --prompt-file <file> --out <review.md>
 ```
 
-The existing Supervisor account reader loads account mappings and reads one
-Context Panel snapshot. It follows `useNext` and the supported recent-stale
+The existing Supervisor account reader uses the CLI login without account
+settings. Context Panel is recommended, not required; when configured, the
+reader loads its mappings and reads one snapshot. It follows `useNext` and the supported recent-stale
 launch order, without adding its own reserve or reading credentials. The chosen
 account is passed through to launch, so selection and inference use the same
 choice. This includes Google's single existing agy login and count-only receipt.
@@ -59,7 +61,7 @@ a supplement. Nothing retries a review failure or refusal on another provider.
 `--provider NAME` explicitly selects one permitted provider; it does not choose a
 fallback. Pass it when using `--model`, so another provider cannot inherit that
 model name. Explicit selection still enforces the standing role, independence
-and Context Panel choice. A file-read `check` uses the same gates.
+and the configured account choice. A file-read `check` uses the same gates.
 
 Finish the primary review before running a permitted supplement. Run each
 supplement once, serially, with its recorded budget:

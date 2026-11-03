@@ -31,7 +31,8 @@ preflight refusal can be repeated after its prerequisite is resolved.
 
 Each Director's handoffs, takeover comments and lessons go to that
 Director's own record, never to an issue in another person's repository.
-Read it at takeover:
+Use the handoff anchor supplied by the brief. For a run with an optional private
+handoff setting, resolve it at takeover:
 
 ```bash
 uv run skills/supervisor/scripts/handoff_record.py --owner OWNER
@@ -46,9 +47,9 @@ has one, in the same order as [accounts](#choosing-the-account), or from
 issue = "OWNER/direction#123"
 ```
 
-With no `[handoff]` it refuses, so a successor never guesses the record by
-title. Open the record under `github-plan` in the Director's private
-`OWNER/direction` if none exists, then add its line. The helper also refuses
+With no `[handoff]` the helper refuses; use the supplied brief anchor instead.
+If neither exists, create the Director's own record through `github-plan`;
+private configuration is optional. Never guess another Director's record by title. The helper also refuses
 an issue outside the Director's own account and a malformed value; fix the
 private config. Lessons about shared skills that other Directors would
 also hit go to the [field reports](field-reports.md) issue.
@@ -1485,7 +1486,7 @@ After the catalog's [pinned Chrome server](https://github.com/cbusillo/codex-ski
 is installed for the selected Claude home, omit `--chrome` from launch files:
 the user MCP entry already supplies those tools regardless of the session account.
 Every `new` launch requires
-`--account-provider` as below; keep account variables out of launch files.
+`--account-provider` as below; Context Panel account mappings are optional; keep account variables out of launch files.
 The direct invocation must match the selected provider: `openai` runs `codex`,
 `anthropic` runs `claude`, and `google` runs `agy`. A mismatch anywhere in a
 batch refuses before daemon startup, receipt preparation, terminal creation or
@@ -1863,8 +1864,17 @@ and active sessions alone.
 
 ## Choosing the account
 
-Launch with `--account-provider openai|anthropic|google`. Context Panel is the
-only account-choice source, under the decisions on
+Launch with `--account-provider openai|anthropic|google`. Without account
+settings, use each CLI's existing login, including an explicitly inherited
+`CODEX_HOME` or `CLAUDE_CONFIG_DIR`; no credential or login file is read or copied.
+Context Panel is recommended, not required. Multiple detected accounts without
+it produce one host-local recommendation per provider and do not refuse launch.
+An optional account table without a snapshot command may name existing homes;
+`--account` explicitly selects one, otherwise the CLI's current home is retained.
+
+With a configured snapshot command, Context Panel is the account-choice source.
+A missing or failed configured reader still refuses; no silent fallback. This
+preserves the configured-host decisions on
 [codex-skills#1270](https://github.com/cbusillo/codex-skills/issues/1270).
 A single launch follows `answers.useNext`; repeat `--command-file` for a batch,
 and the helper uses the first corresponding IDs in the provider's published
@@ -1887,7 +1897,7 @@ it reaches 30 minutes, and reports `nextCapacityAt` when nothing is rankable.
 Reader failure refuses; for OpenAI and Anthropic, `--account <name>` is the explicit override, but still
 needs a snapshot row so its launch receipt uses the correct opaque ID.
 Configuration errors and Context Panel's plain reset prompt lines are reported
-in launch output. Never apply a reset; Chris does that.
+in launch output. Never apply a reset; the Director does that.
 
 The helper exports the account's `env` ahead of the command, including an agent
 started after `cd`. A command that sets or unsets account variables refuses, including through
@@ -1974,7 +1984,7 @@ Both use noninteractive zsh: use executable paths/explicit exports, not aliases
 or interactive directory hooks. Keep raw screens/briefs/account-home diagnostics
 private and redact public reports.
 
-Accounts live only in private config, the first `[accounts]` table in
+Optional Context Panel mappings live in private config, the first `[accounts]` table in
 `$CODE_HOME`, then `$CODEX_HOME`, then `~/.code`, under
 `skill-data/supervisor.toml`, or `--account-config`. List each provider's
 accounts in any order:

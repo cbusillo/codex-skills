@@ -89,15 +89,15 @@ budget, and put both results in the PR's review note.
    so and lists them in the result's `unreachable_links`. Before weighing the
    review, pass any linked content it needed with `--input` and run it again.
 
-   All reviews select their provider's Context Panel use-next
-   account at launch through the [Supervisor account reader](../supervisor/scripts/account_choice.py).
+   Reviews use the provider CLI's existing login when account settings are absent.
+   Context Panel is recommended, not required. With a configured snapshot command,
+   reviews select its use-next account at launch through the [Supervisor account reader](../supervisor/scripts/account_choice.py).
    They use its private `skill-data/supervisor.toml` mappings and snapshot command;
    see [account configuration](../supervisor/references/helpers.md). The chosen
    `CODEX_HOME` or `CLAUDE_CONFIG_DIR` applies only to the reviewer child. A default
    Anthropic choice removes an inherited home override. Inherited provider token/key and cloud-routing
    overrides are removed by name so they cannot bypass the selected home's login;
-   no credentials or logins are read or changed by the helper. Missing config,
-   unavailable choices or receipt-storage failures stop the review before launch.
+   no credentials or logins are read or changed by the helper. Unavailable configured choices or receipt-storage failures stop the review before launch.
    JSON reports the account name and opaque ID plus the count-only launch receipt.
    The receipt goes through the installed Context Panel's `--record-launch`, so a
    session macOS refuses the App Group store, such as a worker under the
