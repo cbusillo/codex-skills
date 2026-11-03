@@ -3559,6 +3559,16 @@ def test_growth_trigger_uses_the_larger_of_the_floor_and_share_of_repository_lin
     finished = subprocess.CompletedProcess([], 0, stdout=archive.getvalue(), stderr=b"")
     with patch.object(subprocess, "run", return_value=finished):
         assert module.tarball_text_lines("o/live", "grow", gh="gh") == 3
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": "1"}):
+        stalled = Path(tmp) / "gh"
+        stalled.write_text("#!/bin/sh\nsleep 30\n")
+        stalled.chmod(0o755)
+        try:
+            module.tarball_text_lines("o/live", "grow", gh=str(stalled))
+        except module.AuditError as exc:
+            assert "deadline" in str(exc)
+        else:
+            raise AssertionError("an expired read deadline still read the archive")
 
 
 def test_capacity_attaches_lines_and_retains_unknown_reads() -> None:

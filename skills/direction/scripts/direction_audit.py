@@ -37,7 +37,7 @@ if str(REPO_ROOT) not in sys.path:
 from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_plan_wait, github_read, github_work_graph, github_next_reads
 from skills.github.scripts import github_repository_scope as repository_scope
 from skills.direction.scripts import direction_mark, direction_reporting
-from skills.github.scripts import github_plan_closure, github_plan_release
+from skills.github.scripts import github_api, github_plan_closure, github_plan_release
 from skills.supervisor.scripts import session_outcomes
 
 REQUIRED_HEADINGS = ("Purpose", "Stop Boundaries", "Journey", "Retired", "Milestones")
@@ -1795,7 +1795,11 @@ def default_branch_net_lines(
 
 
 def tarball_text_lines(repo: str, sha: str, *, gh: str) -> int:
-    proc = subprocess.run([gh, "api", f"repos/{repo}/tarball/{sha}"], capture_output=True)
+    try:
+        proc = subprocess.run([gh, "api", f"repos/{repo}/tarball/{sha}"], capture_output=True,
+                              timeout=github_api.remaining_retry_timeout_seconds())
+    except subprocess.TimeoutExpired as exc:
+        raise AuditError("tarball read exceeded the read deadline") from exc
     if proc.returncode != 0:
         raise AuditError(f"tarball read failed: {proc.stderr.decode(errors='replace').strip()[:400]}")
     lines = 0
