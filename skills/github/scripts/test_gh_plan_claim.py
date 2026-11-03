@@ -2491,7 +2491,7 @@ class ClaimTests(unittest.TestCase):
             pull["body"] += "\nRefs #42"
             pull["head"]["sha"] = "source-head"
 
-    def test_canonical_issue_adopts_consolidated_child_in_another_repository(self) -> None:
+    def consolidated_child_handoff_fixture(self) -> None:
         self.completed_child_handoff_fixture()
         self.args.issue = "other/plans#42"
         self.args.planning_checkout = "/verified/plans"
@@ -2505,6 +2505,8 @@ class ClaimTests(unittest.TestCase):
         self.target_comments["/repos/other/plans/issues/41/comments"] = source_comments
         for pull in [*self.pulls, *self.closed_pulls.values()]:
             pull["body"] = "Refs other/plans#41\nRefs other/plans#42"
+    def test_canonical_issue_adopts_consolidated_child_in_another_repository(self) -> None:
+        self.consolidated_child_handoff_fixture()
         before = copy.deepcopy((self.targets, self.target_comments, self.inventory, self.pulls))
         self.run_claim()
         result = self.emitted.call_args.args[0]
@@ -2512,6 +2514,21 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(self.post_route, ("issue", 42, "other/plans"))
         self.assertEqual(result["claim"]["retained_handoff"], CLAIM.handoff_url("other/plans", 41, self.handoff_id))
         self.assertEqual(before, (self.targets, self.target_comments, self.inventory, self.pulls))
+
+    def test_consolidated_cross_repository_source_rechecks_closure_and_planning_ownership(self) -> None:
+        for stage, change in product(("after_post", "after_status"), ("reopened", "planning_owner")):
+            with self.subTest(stage=stage, change=change):
+                self.setUp()
+                self.consolidated_child_handoff_fixture()
+                def invalidate() -> None:
+                    if change == "reopened":
+                        self.targets["41"]["state"] = "open"
+                    else:
+                        self.planning_inventory["worktrees"].append({"branch": "work/other-42", "path": "/planning/issue-42"})
+                setattr(self, stage, invalidate)
+                with self.assertRaises(PLAN.PlanError) as caught:
+                    self.run_claim()
+                self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 
     def test_canonical_issue_admits_completed_child_exact_handoff_without_changing_source_or_holds(self) -> None:
         self.completed_child_handoff_fixture()
