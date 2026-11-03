@@ -19,8 +19,9 @@ import time
 from datetime import UTC, datetime, timezone
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
+from unittest.mock import Mock
 
 import pytest
 
@@ -34,6 +35,12 @@ github_unanswered_comments = importlib.util.module_from_spec(MODULE_SPEC)
 assert MODULE_SPEC.loader is not None
 sys.modules[MODULE_SPEC.name] = github_unanswered_comments
 MODULE_SPEC.loader.exec_module(github_unanswered_comments)
+if TYPE_CHECKING:
+    from skills.github.scripts import github_read
+else:
+    github_read = github_unanswered_comments.github_read
+REAL_READ_DISCUSSION = github_read.read_discussion
+REAL_DISCUSSION_QUERY = github_read.discussion_query
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +48,32 @@ def no_host_people_index(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     """Keep the default people index lookup off the host's private files."""
     monkeypatch.setenv("CODE_HOME", str(tmp_path / "missing-code-home"))
     monkeypatch.chdir(tmp_path)
+    def discussion(_reader: Any, repo: str, number: int, **_kwargs: Any) -> dict[str, Any]:
+        fake = github_unanswered_comments.run_json
+        def get(command: list[str]) -> Any:
+            try:
+                return fake(command)
+            except github_unanswered_comments.rollup.RollupError as error:
+                raise github_unanswered_comments.github_read.GitHubReadShapeError(str(error)) from error
+        prefix = f"repos/{repo}/issues/{number}"
+        issue = get([github_unanswered_comments.GH, "api", prefix])
+        if not isinstance(issue, dict):
+            issue = {"number": number}
+        def items(endpoint: str) -> list[dict[str, Any]]:
+            payload = get([github_unanswered_comments.GH, "api", endpoint, "--paginate", "--slurp"])
+            return [row for page in payload for row in page]
+        return {**issue, "number": number, "comments": items(f"{prefix}/comments?per_page=100"),
+                "reviews": items(f"repos/{repo}/pulls/{number}/reviews?per_page=100") if "pull_request" in issue else [],
+                "review_comments": items(f"repos/{repo}/pulls/{number}/comments?per_page=100") if "pull_request" in issue else []}
+
+    def query(_reader: Any, _document: str, variables: dict[str, Any]) -> dict[str, Any]:
+        command = [github_unanswered_comments.GH, "api", "graphql", "-F", f"id={variables['id']}"]
+        if variables.get("after"):
+            command.extend(["-F", f"after={variables['after']}"])
+        return github_unanswered_comments.run_json(command)["data"]
+
+    monkeypatch.setattr(github_read, "read_discussion", discussion)
+    monkeypatch.setattr(github_read, "discussion_query", query)
 
 
 def comment(
@@ -142,7 +175,7 @@ def test_radar_flags_only_comments_without_a_targeted_reply(
     reply = comment(comment_id=3, author=reply_author, body=f"Yes, please: {answered.url}",
                     created_at="2026-07-25T11:00:00Z")
     patch_radar(monkeypatch, "authenticated_login", lambda: "fixture-automation")
-    patch_radar(monkeypatch, "collect_thread", lambda repo, number: (
+    patch_radar(monkeypatch, "collect_thread", lambda repo, number, _sources=None, _issue_id=None: (
         {**thread(), "state": state, "closed_at": "2026-07-25T12:00:00Z" if state == "closed" else None},
         [answered, unanswered, reply], [],
     ))
@@ -671,7 +704,8 @@ def test_api_list_rejects_malformed_payload(monkeypatch) -> None:
         github_unanswered_comments.api_list("repos/example/repo/issues/comments")
 
 
-def test_collect_comment_reactions_paginates(monkeypatch) -> None:
+@pytest.mark.parametrize("embedded", [False, True])
+def test_collect_comment_reactions_paginates(monkeypatch: pytest.MonkeyPatch, embedded: bool) -> None:
     external = comment(
         comment_id=1,
         author="outside-user",
@@ -711,6 +745,8 @@ def test_collect_comment_reactions_paginates(monkeypatch) -> None:
         ]
     )
     commands: list[list[str]] = []
+    if embedded:
+        external = github_unanswered_comments.replace(external, metadata=next(payloads)["data"]["node"])
 
     def fake_run_json(command: list[str]) -> object:
         commands.append(command)
@@ -722,7 +758,8 @@ def test_collect_comment_reactions_paginates(monkeypatch) -> None:
 
     assert reactions == [reaction(content="HEART")]
     assert last_edit is None
-    assert any("after=cursor-1" in argument for argument in commands[1])
+    assert len(commands) == (1 if embedded else 2)
+    assert any("after=cursor-1" in argument for argument in commands[-1])
 
 
 @pytest.mark.parametrize("outbound", [False, True])
@@ -774,7 +811,7 @@ def test_full_history_thread_includes_old_review_body(monkeypatch) -> None:
     monkeypatch.setattr(
         github_unanswered_comments,
         "collect_thread",
-        lambda repo, number: ({**thread(), "pull_request": {}}, [old_review], []),
+        lambda repo, number, _sources=None, _issue_id=None: ({**thread(), "pull_request": {}}, [old_review], []),
     )
     monkeypatch.setattr(
         github_unanswered_comments,
@@ -806,7 +843,7 @@ def test_graphql_last_edit_reopens_review_body_after_reaction(monkeypatch) -> No
     monkeypatch.setattr(
         github_unanswered_comments,
         "collect_thread",
-        lambda repo, number: ({**thread(), "pull_request": {}}, [review], []),
+        lambda repo, number, _sources=None, _issue_id=None: ({**thread(), "pull_request": {}}, [review], []),
     )
     monkeypatch.setattr(
         github_unanswered_comments,
@@ -832,7 +869,7 @@ def test_no_cutoff_classifies_comments_fetched_after_the_scan_end(monkeypatch) -
     posted = comment(comment_id=2, author="outside-user", body="Correction: use the new sheet.",
                      created_at="2026-07-25T18:00:01Z")
     monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
-    monkeypatch.setattr(github_unanswered_comments, "collect_thread", lambda repo, number: (thread(), [reply, posted], []))
+    patch_radar(monkeypatch, "collect_thread", lambda repo, number, _sources=None, _issue_id=None: (thread(), [reply, posted], []))
     monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
                         lambda comments, deadline: ({posted.global_key: []}, {}, []))
 
@@ -855,7 +892,7 @@ def test_reaction_failure_degrades_and_keeps_comment_visible(monkeypatch) -> Non
         created_at="2026-07-25T14:59:27Z",
     )
     monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
-    monkeypatch.setattr(github_unanswered_comments, "collect_thread", lambda repo, number: (thread(), [external], []))
+    patch_radar(monkeypatch, "collect_thread", lambda repo, number, _sources=None, _issue_id=None: (thread(), [external], []))
     monkeypatch.setattr(
         github_unanswered_comments,
         "collect_candidate_reactions",
@@ -1258,7 +1295,7 @@ def test_watch_hints_retain_old_client_agents_until_reply_and_ignore_unrelated_b
     requested = []
     source_comments = [client]
 
-    def read_thread(repo: str, number: int) -> tuple[dict, list, list]:
+    def read_thread(repo: str, number: int, _sources: Any = None, _issue_id: int | None = None) -> tuple[dict, list, list]:
         requested.append((repo, number))
         return thread(), source_comments, []
 
@@ -1571,7 +1608,7 @@ def test_include_handled_lists_closed_thread_comments_apart_from_attention(monke
     monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
     reply = comment(comment_id=2, author="example", body=f"Thanks: {external.url}",
                     created_at="2026-07-25T11:00:00Z")
-    patch_radar(monkeypatch, "collect_thread", lambda repo, number: (closed, [external, reply], []))
+    patch_radar(monkeypatch, "collect_thread", lambda repo, number, _sources=None, _issue_id=None: (closed, [external, reply], []))
     monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
                         lambda comments, deadline: ({external.global_key: []}, {}, []))
 
@@ -1598,8 +1635,8 @@ def test_director_login_keeps_another_accounts_own_comment_outside(monkeypatch, 
     by_thread_owner = comment(comment_id=1, author="example", body="Corrected sheet attached.",
                               created_at="2026-07-25T10:00:00Z")
     monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: authenticated)
-    monkeypatch.setattr(github_unanswered_comments, "collect_thread",
-                        lambda repo, number: (thread(), [by_thread_owner], []))
+    patch_radar(monkeypatch, "collect_thread",
+                        lambda repo, number, _sources=None, _issue_id=None: (thread(), [by_thread_owner], []))
     monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
                         lambda comments, deadline: ({by_thread_owner.global_key: []}, {}, []))
 
@@ -2164,19 +2201,27 @@ FAKE_GH = """
 import json, sys, time
 
 stuck, thread = sys.argv[1], json.loads(sys.argv[2])
-endpoint = sys.argv[4]
-if stuck in endpoint:
-    time.sleep(120)
-if endpoint == "user":
+if "/graphql" in sys.argv:
+    query = json.load(sys.stdin)["query"]
+    if stuck == "thread" or stuck == "reactions" and "$id" in query:
+        time.sleep(120)
+    reactions = {"nodes": [], "totalCount": 0,
+                 "pageInfo": {"hasNextPage": stuck == "reactions", "endCursor": "more"}}
+    node = {"__typename": "Issue", "id": "thread", "databaseId": thread["id"], "number": thread["number"],
+            "body": thread["body"], "title": thread["title"], "state": "OPEN", "closedAt": None,
+            "createdAt": thread["created_at"], "updatedAt": thread["updated_at"], "url": thread["html_url"],
+            "author": {"login": thread["user"]["login"], "__typename": "User"},
+            "lastEditedAt": None, "reactions": reactions,
+            "comments": {"nodes": [], "totalCount": 0, "pageInfo": {"hasNextPage": False, "endCursor": None}}}
+    print(json.dumps({"data": {"repository": {"issueOrPullRequest": node}}}))
+elif "user" in sys.argv:
     print(json.dumps({"login": "fixture-automation"}))
-elif endpoint == "graphql":
-    print(json.dumps({"data": {"node": {"lastEditedAt": None, "reactions": {
-        "nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None}}}}}))
 elif "--slurp" in sys.argv:
     print("[[]]")
 else:
     print(json.dumps(thread))
 """
+
 
 RADAR_WITH_SHORT_DEADLINE = """
 import importlib.util, sys
@@ -2190,7 +2235,7 @@ sys.exit(radar.main())
 """
 
 
-@pytest.mark.parametrize(("stuck_endpoint", "lane"), [("repos/example/repo/issues/1", "thread"), ("graphql", "reactions/")])
+@pytest.mark.parametrize(("stuck_endpoint", "lane"), [("thread", "thread"), ("reactions", "reactions/")])
 def test_stuck_discussion_read_ends_the_radar_at_the_deadline(tmp_path: Path, stuck_endpoint: str, lane: str) -> None:
     # The stuck gh call is never released: the radar process itself must exit.
     fake_gh = tmp_path / "gh"
@@ -2262,6 +2307,72 @@ def test_november_triage_skips_history_until_outside_thread_changes(monkeypatch:
     payload = github_unanswered_comments.collect_payload(settings)
     assert any(row["comment_id"] == 3 for row in payload["attention"])
     assert any(call.startswith("repos/openai/codex/issues/44682/comments") for call in fake.calls)
+
+
+def test_wait_and_attention_read_unchanged_history_once_and_next_scan_sees_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    issue = opening(number=7, pull_request=False, created_at='2026-07-25T00:00:00Z')
+    issue['body'] = '## Current Status\n\nWaiting for: @cbusillo to approve.'
+    message = api_comment(11, 'outside', '2026-07-25T01:00:00Z', 'Please answer.',
+                          issue_url='https://api.github.com/repos/example/repo/issues/7')
+    history = [message]
+    fake = FakeGitHub({'repos/example/repo/issues': [issue], 'repos/example/repo/issues/7': issue,
+                      'repos/example/repo/issues/7/comments': history, 'repos/example/repo/issues/comments': [message]})
+    patch_radar(monkeypatch, 'run_json', fake)
+    patch_radar(monkeypatch, 'people_identities', lambda *_: {
+        'status': 'ok', 'director_names': [], 'automation': {}, 'address_names': {}, 'director_ambiguous': False})
+    patch_radar(monkeypatch, 'collect_candidate_reactions', lambda rows, _deadline: ({row.global_key: [] for row in rows}, {}, []))
+    settings = portfolio_settings()
+    first = github_unanswered_comments.collect_payload(settings)
+    assert first['attention']
+    assert fake.calls.count('repos/example/repo/issues/7/comments?per_page=100') == 1
+    fake.calls.clear()
+    history.append(api_comment(12, 'cbusillo', '2026-07-25T02:00:00Z', f"Answered: {message['html_url']}"))
+    issue['updated_at'] = '2026-07-25T02:00:00Z'
+    second = github_unanswered_comments.collect_payload(settings)
+    assert all(row['comment_id'] != message['id'] for row in second['attention'])
+    assert fake.calls.count('repos/example/repo/issues/7/comments?per_page=100') == 1
+
+
+@pytest.mark.parametrize("scope", ["portfolio", "thread"])
+@pytest.mark.parametrize("answered", [False, True])
+def test_graphql_pr_identity_and_bot_body_anchor_reply(
+    monkeypatch: pytest.MonkeyPatch, scope: str, answered: bool,
+) -> None:
+    issue: dict[str, Any] = opening(number=7, author="outside", created_at="2026-07-25T00:00:00Z")
+    issue_id, pull_id = issue["id"], 700
+    empty = {"nodes": [], "totalCount": 0, "pageInfo": {"hasNextPage": False, "endCursor": None}}
+    node = {"__typename": "PullRequest", "id": "PR_7", "databaseId": pull_id, "number": 7,
+            "body": issue["body"], "title": issue["title"], "state": "OPEN", "closedAt": None,
+            "createdAt": issue["created_at"], "updatedAt": issue["updated_at"], "url": issue["html_url"],
+            "author": {"__typename": "User", "login": "outside"}, "lastEditedAt": None,
+            "reactions": empty, "comments": empty, "reviews": empty}
+    if answered:
+        reply = {"__typename": "IssueComment", "id": "reply", "databaseId": 701,
+                 "body": f"Done: #issue-{issue_id}", "createdAt": "2026-07-25T01:00:00Z",
+                 "updatedAt": "2026-07-25T01:00:00Z", "lastEditedAt": None,
+                 "url": f"{issue['html_url']}#issuecomment-701",
+                 "author": {"__typename": "Bot", "login": "own-app"}, "reactions": empty}
+        node["comments"] = {**empty, "nodes": [reply], "totalCount": 1}
+    reader = Mock(deadline_at=None)
+    reader.graphql_json.return_value = github_read.github_api_core.ApiResult(
+        ok=True, status=200, body={"data": {"repository": {"issueOrPullRequest": node}}})
+    reader.get_json.return_value = {"id": issue_id}
+    monkeypatch.setattr(github_read, "read_discussion", REAL_READ_DISCUSSION)
+    monkeypatch.setattr(github_read, "discussion_query", REAL_DISCUSSION_QUERY)
+    patch_radar(monkeypatch, "discussion_reader", lambda _repo: reader)
+    patch_radar(monkeypatch, "run_json", FakeGitHub({"repos/example/repo/issues": [issue]}))
+    settings = github_unanswered_comments.resolve_settings(args(
+        repo=["example/repo"] if scope == "portfolio" else [],
+        thread=["example/repo#7"] if scope == "thread" else [],
+        self_login=["cbusillo"], bot_login=["own-app[bot]"], until="2026-07-26T20:00:00Z",
+    ), {})
+    payload = github_unanswered_comments.collect_payload(settings)
+    assert not payload["coverage"]["errors"]
+    assert payload["status"] == ("clear" if answered else "attention")
+    if not answered:
+        assert payload["attention"][0]["comment_id"] == issue_id
+    reader.graphql_json.assert_called_once()
+    assert reader.get_json.call_count == (1 if scope == "thread" else 0)
 
 
 if __name__ == "__main__":
