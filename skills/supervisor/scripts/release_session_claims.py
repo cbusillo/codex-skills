@@ -1073,15 +1073,16 @@ def main():
         return 0 if ok else 1
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError,
             GitHubReadError, GitHubReadShapeError, CommentError) as error:
-        if isinstance(error, PartialRelease):
-            reports.append(error.report)
-        retryable = isinstance(error, closure.LeaseBusy) and all(
+        read = error.result.as_dict() if isinstance(error, GitHubReadError) else {}
+        retryable = (isinstance(error, closure.LeaseBusy)
+                     or read.get("recommended_next_action") in ("retry_after_reported_reset", "rerun_when_ready")) and all(
             report.get("retryable") is True for report in reports
             if "error" in report or report.get("issue_refusals") or report.get("pr_claim_handoffs"))
         print(json.dumps({"ok": False, "error": str(error), "completed_sessions": reports,
-                          "retryable": retryable,
-                          "next_action": ("retry after the shared closure log is available" if retryable else
-                                          "inspect posted records and remaining claims; do not replay an uncertain write")}))
+                          "retryable": retryable, "retry_at": read.get("retry_at"),
+                          "next_action": ("no release was posted; rerun finish once GitHub or the shared closure log is available"
+                                          if retryable else
+                                          "no release was posted; inspect the error and per-session reports before rerunning finish")}))
         return 1
     finally:
         if lock_stream is not None:
