@@ -29,7 +29,6 @@ import sys
 import tempfile
 import threading
 import time
-import uuid
 
 
 SERVICES = ("enqueue", "drive", "foreign", "throughput")
@@ -51,7 +50,7 @@ def load_config(path):
         raise ValueError("configure at least one supported service")
     for value in config["services"].values():
         if not isinstance(value, dict) or not {"argv", "cwd", "restart_seconds"} <= set(value) <= {
-            "argv", "cwd", "restart_seconds", "failure_argv"
+            "argv", "cwd", "restart_seconds"
         }:
             raise ValueError("each service requires argv, cwd and restart_seconds")
         argv = value["argv"]
@@ -60,11 +59,6 @@ def load_config(path):
         ):
             raise ValueError("argv must be a nonempty argument array")
         absolute_path(argv[0])
-        if "failure_argv" in value:
-            failure = value["failure_argv"]
-            if not isinstance(failure, list) or not failure or any(not isinstance(arg, str) or not arg for arg in failure):
-                raise ValueError("failure_argv must be a nonempty argument array accepting Markdown on stdin")
-            absolute_path(failure[0])
         absolute_path(value["cwd"])
         delay = value["restart_seconds"]
         if isinstance(delay, bool) or not isinstance(delay, (int, float)) or not math.isfinite(delay) or delay <= 0:
@@ -279,23 +273,6 @@ def reconciliation_marker(config_path, name):
     return config_path.with_name(f"{config_path.name}.{name}.reconcile")
 
 
-def notify_failure(settings: dict, marker: Path, name: str) -> None:
-    if not settings.get("failure_argv"):
-        return
-    from check_changes import save_state
-
-    notice = marker.with_suffix(".notice.json")
-    if notice.exists():
-        return
-    save_state(notice, {"complete": False})
-    message = f"Supervisor service {name} FAILED and is stopped for reconciliation. Inspect its retained logs and verification comments.\n"
-    sent = subprocess.run(settings["failure_argv"], input=message, cwd=settings["cwd"], capture_output=True, text=True, timeout=120)
-    save_state(notice, {"complete": sent.returncode == 0, "exit_code": sent.returncode,
-                        "stdout": sent.stdout, "stderr": sent.stderr})
-    if sent.returncode:
-        raise ValueError("failure notification incomplete; reconcile the retained notice before clearing")
-
-
 def supervise(settings, stopped, marker, uv_executable):
     """Keep successful bounded jobs running; preserve failures for the Supervisor."""
     while not stopped.is_set():
@@ -368,9 +345,6 @@ def main(argv=None):
         marker = reconciliation_marker(config_path, args.service)
         if args.command == "clear":
             with service_lock(config_path, args.service):
-                notice = marker.with_suffix(".notice.json")
-                if notice.exists():
-                    notice.rename(notice.with_name(f"{notice.stem}.{uuid.uuid4().hex}.json"))
                 marker.unlink(missing_ok=True)
                 emit("reconciled", service=args.service)
             return 0
@@ -380,14 +354,10 @@ def main(argv=None):
             previous[sig] = signal.signal(sig, lambda _sig, _frame: stopped.set())
         try:
             with service_lock(config_path, args.service):
-                try:
-                    if marker.exists():
-                        emit("reconciliation_required", reason="previous command did not finish cleanly")
-                        return 1
-                    return supervise(settings, stopped, marker, config["uv"])
-                finally:
-                    if marker.exists():
-                        notify_failure(settings, marker, args.service)
+                if marker.exists():
+                    emit("reconciliation_required", reason="previous command did not finish cleanly")
+                    return 1
+                return supervise(settings, stopped, marker, config["uv"])
         finally:
             for sig, handler in previous.items():
                 signal.signal(sig, handler)
