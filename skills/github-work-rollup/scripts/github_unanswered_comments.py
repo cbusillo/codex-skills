@@ -724,24 +724,10 @@ def discussion_reader(repo: str) -> github_read.GitHubReader:
 
 def discussion_source(
     repo: str, number: int, sources: dict[tuple[str, int], dict[str, Any]] | None = None,
-    *, updated_at: str | None = None,
 ) -> dict[str, Any]:
     key = (repo.casefold(), number)
-    previous = sources.get(key) if sources is not None else None
-    if previous and previous.get("updated_at"):
-        version = updated_at
-        if version is None and previous.get("node_id"):
-            data = github_read.discussion_query(
-                discussion_reader(repo),
-                "query($id:ID!) { node(id:$id) { ... on Issue { updatedAt } ... on PullRequest { updatedAt } } rateLimit { cost } }",
-                {"id": previous["node_id"]},
-            )
-            node = data.get("node")
-            if not isinstance(node, dict) or not isinstance(node.get("updatedAt"), str):
-                raise github_read.GitHubReadShapeError("Discussion version is unavailable")
-            version = node["updatedAt"]
-        if version == previous["updated_at"]:
-            return previous
+    if sources is not None and key in sources:
+        return sources[key]
     thread = github_read.read_discussion(discussion_reader(repo), repo, number)
     if sources is not None:
         sources[key] = thread
@@ -765,12 +751,9 @@ def collect_thread(
     number: int,
     sources: dict[tuple[str, int], dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any] | None, list[Comment], list[dict[str, str]]]:
-    previous = sources.get((repo.casefold(), number)) if sources is not None else None
     try:
         thread = discussion_source(repo, number, sources)
         comments = discussion_comments(repo, thread)
-        if thread is previous:
-            comments = [replace(comment, metadata=None) for comment in comments]
         return thread, comments, []
     except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError) as error:
         return None, [], [{"repo": repo, "lane": "thread", "error": rollup.trim(str(error))}]
@@ -1396,7 +1379,7 @@ def unasked_director_waits(
         # Body prose can be stale: a newer trusted comment may record or clear a
         # hold before search indexes it, so read every candidate's discussion.
         try:
-            items = discussion_source(repo, number, discussions, updated_at=issue.get("updated_at"))["comments"]
+            items = discussion_source(repo, number, discussions)["comments"]
         except (rollup.RollupError, github_read.GitHubReadError, github_read.GitHubReadShapeError) as exc:
             errors.append({"repo": repo, "lane": f"director_waits/{number}", "error": rollup.trim(str(exc))})
             continue
@@ -1467,8 +1450,7 @@ def settled_outside_threads(
                 repo = rollup.repo_from_search_url(item.get("repository_url"))
                 if not repo or normalize_login(repo.split("/", 1)[0]) != login:
                     continue
-                for raw in discussion_source(repo, item["number"], settings.get("discussion_sources"),
-                                             updated_at=item.get("updated_at"))["comments"]:
+                for raw in discussion_source(repo, item["number"], settings.get("discussion_sources"))["comments"]:
                     author = normalize_login((raw.get("user") or {}).get("login"))
                     body = str(raw.get("body") or "")
                     created = str(raw.get("created_at") or "")

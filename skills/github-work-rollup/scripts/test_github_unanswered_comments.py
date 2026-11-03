@@ -2302,10 +2302,6 @@ def test_november_triage_skips_history_until_outside_thread_changes(monkeypatch:
     assert any(call.startswith("repos/openai/codex/issues/44682/comments") for call in fake.calls)
 
 
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__]))
-
-
 def test_wait_and_attention_read_unchanged_history_once_and_next_scan_sees_reply(monkeypatch: pytest.MonkeyPatch) -> None:
     issue = opening(number=7, pull_request=False, created_at='2026-07-25T00:00:00Z')
     issue['body'] = '## Current Status\n\nWaiting for: @cbusillo to approve.'
@@ -2315,11 +2311,8 @@ def test_wait_and_attention_read_unchanged_history_once_and_next_scan_sees_reply
     fake = FakeGitHub({'repos/example/repo/issues': [issue], 'repos/example/repo/issues/7': issue,
                       'repos/example/repo/issues/7/comments': history, 'repos/example/repo/issues/comments': [message]})
     patch_radar(monkeypatch, 'run_json', fake)
-    def metadata(_reader: Any, _document: str, _variables: dict[str, Any]) -> dict[str, Any]:
-        return {'node': {'updatedAt': issue['updated_at']}}
     patch_radar(monkeypatch, 'people_identities', lambda *_: {
         'status': 'ok', 'director_names': [], 'automation': {}, 'address_names': {}, 'director_ambiguous': False})
-    monkeypatch.setattr(github_unanswered_comments.github_read, 'discussion_query', metadata)
     patch_radar(monkeypatch, 'collect_candidate_reactions', lambda rows, _deadline: ({row.global_key: [] for row in rows}, {}, []))
     settings = portfolio_settings()
     first = github_unanswered_comments.collect_payload(settings)
@@ -2331,3 +2324,7 @@ def test_wait_and_attention_read_unchanged_history_once_and_next_scan_sees_reply
     second = github_unanswered_comments.collect_payload(settings)
     assert all(row['comment_id'] != message['id'] for row in second['attention'])
     assert fake.calls.count('repos/example/repo/issues/7/comments?per_page=100') == 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))

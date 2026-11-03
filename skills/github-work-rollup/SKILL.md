@@ -215,9 +215,9 @@ Structured-wait searches share one such budget across repository accounts.
 Repository comments are read one page at a time, retaining earlier candidates
 if a later page fails. Thread histories use the shared GraphQL transport,
 including authors, edit times and reactions, with complete pagination.
-Sections reuse a discussion within one run only while its version agrees;
-reactions are refreshed independently on reuse. Each new run reads its
-sources again, with no persistent cache. All thread and reaction reads share
+Sections share the same current-run thread observation, including its
+reaction and edit metadata. Each new run reads fresh sources, with no
+persistent cache. All thread and reaction reads share
 one deadline; a read that misses either
 bound is reported as degraded coverage rather than stalling the report.
 

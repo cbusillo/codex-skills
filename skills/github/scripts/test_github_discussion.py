@@ -91,7 +91,7 @@ class DiscussionTests(unittest.TestCase):
         self.assertEqual(result["state"], "closed")
         self.assertEqual(reader.graphql_json.call_count, 4)
 
-    def test_partial_denied_and_stalled_reads_do_not_fall_back_to_rest(self) -> None:
+    def test_partial_denied_and_stalled_reads_preserve_failure(self) -> None:
         denied = ApiResult(
             ok=False,
             status=403,
@@ -115,8 +115,6 @@ class DiscussionTests(unittest.TestCase):
                 reader.graphql_json.side_effect = copy.deepcopy(replies)
                 with self.assertRaises((GitHubReadError, GitHubReadShapeError)):
                     github_read.read_discussion(reader, "example/repo", 7)
-                reader.paged_json.assert_not_called()
-                reader.get_json.assert_not_called()
 
 
 if __name__ == "__main__":

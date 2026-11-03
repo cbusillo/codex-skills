@@ -48,6 +48,35 @@ class RoutineCheckTests(unittest.TestCase):
         self.enterContext(patch_attr(routine_check.radar.github_identity, "automation_login", return_value="agent[bot]"))
         self.enterContext(patch_attr(routine_check.radar.github_identity, "configured_bot_logins", return_value=["agent[bot]"]))
 
+    def test_graphql_bot_authors_remain_trusted_by_queue_and_radar(self) -> None:
+        stamp = "2026-11-01T00:00:00Z"
+        def message(ident: int, body: str) -> dict[str, Any]:
+            return {"__typename": "IssueComment", "id": f"node-{ident}", "databaseId": ident,
+                    "body": body, "createdAt": stamp, "updatedAt": stamp,
+                    "url": f"https://github.com/owner/repo/issues/8#issuecomment-{ident}",
+                    "author": {"__typename": "Bot", "login": "agent"}}
+        messages = [message(80, "Director question: Q80. Proceed?"), message(81, "Director question: Q81. Publish?"),
+                    message(82, "Director decision Q80: Yes. https://github.com/owner/repo/issues/8#issuecomment-80")]
+        def response(_query: str, variables: dict[str, Any], **_kwargs: Any) -> ApiResult:
+            number = variables["number"]
+            comments = messages if number == 8 else []
+            node = {**message(number, "Work"), "__typename": "Issue", "number": number,
+                    "title": "Work", "state": "OPEN", "closedAt": None,
+                    "comments": {"nodes": comments, "totalCount": len(comments),
+                                 "pageInfo": {"hasNextPage": False, "endCursor": None}}}
+            return ApiResult(ok=True, status=200, body={"data": {"repository": {"issueOrPullRequest": node}}})
+        reader = SimpleNamespace(deadline_at=None, graphql_json=Mock(side_effect=response))
+        args = argparse.Namespace(owner="owner", queue="owner/direction#98", source=["owner/repo#8"],
+                                  repo=[], thread=[], radar_config=Path("/absent/radar.yaml"))
+        with patch_attr(routine_check.github_read, "GitHubReader", return_value=reader):
+            report = routine_check.build_readers(args, {})["questions"]()
+            discussion = routine_check.github_read.read_discussion(reader, "owner/repo", 8)
+        self.assertTrue(report["complete"], report)
+        self.assertEqual([row["url"] for row in report["questions"]], [messages[1]["url"]])
+        self.assertTrue(report["questions"][0]["author_trusted"])
+        opening = routine_check.radar.normalize_opening_post("owner/repo", discussion)
+        self.assertFalse(routine_check.radar.is_external_comment(opening, {"owner"}, {"agent[bot]"}))
+
     def test_owner_only_digest_finds_foreign_questions_and_waits_without_watch_history(self) -> None:
         args = argparse.Namespace(owner="cellmechanic", queue="cellmechanic/direction#11", source=[], repo=[], thread=[],
                                   radar_config=Path("/absent/radar.yaml"))

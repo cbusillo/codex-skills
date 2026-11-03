@@ -13,7 +13,6 @@ import re
 from typing import Any, Callable, NamedTuple
 
 import github_read
-import github_plan_status
 
 
 class NativeIssueGraph(NamedTuple):
@@ -63,27 +62,7 @@ CONNECTIONS = {
 }
 
 
-def connection_page(value: Any) -> tuple[list[dict[str, Any]], str | None, int]:
-    if not isinstance(value, dict):
-        raise github_read.GitHubReadShapeError("missing GraphQL connection")
-    nodes, info, total = (
-        value.get("nodes"),
-        value.get("pageInfo"),
-        value.get("totalCount"),
-    )
-    if (
-        not isinstance(nodes, list)
-        or any(not isinstance(n, dict) for n in nodes)
-        or type(total) is not int
-        or total < 0
-        or not isinstance(info, dict)
-        or type(info.get("hasNextPage")) is not bool
-    ):
-        raise github_read.GitHubReadShapeError("invalid GraphQL connection")
-    cursor = info.get("endCursor") if info["hasNextPage"] else None
-    if info["hasNextPage"] and (not nodes or not isinstance(cursor, str) or not cursor):
-        raise github_read.GitHubReadShapeError("GraphQL cursor did not advance")
-    return nodes, cursor, total
+connection_page = github_read.graphql_connection_page
 
 
 def query_data(
@@ -105,16 +84,7 @@ def query_data(
             result=result,
             diagnostics=reader.diagnostics(),
         )
-    body = result.body
-    if (
-        not isinstance(body, dict)
-        or body.get("errors")
-        or not isinstance(body.get("data"), dict)
-    ):
-        raise github_read.GitHubReadShapeError(
-            "GraphQL returned partial or missing data"
-        )
-    return body["data"]
+    return github_read.graphql_data(result)
 
 
 def connection_query(name: str, cursor: str | None = None) -> str:
@@ -170,10 +140,7 @@ def complete_issue(
     return node
 
 
-def rest_author(author: dict[str, Any] | None) -> dict[str, str]:
-    if author is None:
-        return {"login": "ghost", "type": "User"}
-    return github_plan_status.normalize_author({"author": author})
+rest_author = github_read.graphql_author
 
 
 def rest_related_issue(node: dict[str, Any]) -> dict[str, Any]:
@@ -181,9 +148,7 @@ def rest_related_issue(node: dict[str, Any]) -> dict[str, Any]:
         "title": node.get("title"), "state": node["state"].lower(), "html_url": node["url"]}
 
 
-def rest_comment(node: dict[str, Any]) -> dict[str, Any]:
-    return {"id": node["databaseId"], "body": node["body"], "created_at": node["createdAt"],
-        "updated_at": node["updatedAt"], "html_url": node["url"], "user": rest_author(node["author"])}
+rest_comment = github_read.graphql_comment
 
 
 def rest_milestone(milestone: dict[str, Any] | None) -> dict[str, Any] | None:

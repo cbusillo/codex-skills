@@ -21,11 +21,12 @@ import time
 import urllib.parse
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any, NoReturn, Optional
+from typing import Any, NamedTuple, NoReturn, Optional
 
 import github_api as github_api_core
 import github_http_cache
 import github_identity
+import github_plan_status
 import github_request_usage
 import github_repository_scope
 from github_plan_status.workflow_runs import current_workflow_runs, workflow_execution_identity
@@ -573,6 +574,52 @@ def automation_only_gh_prefix_args() -> list[str]:
     return ["--require-automation-auth"]
 
 
+class GraphQLConnection(NamedTuple):
+    nodes: list[dict[str, Any]]
+    cursor: str | None
+    total: int
+
+
+def graphql_connection_page(value: Any) -> GraphQLConnection:
+    if not isinstance(value, dict):
+        raise GitHubReadShapeError("missing GraphQL connection")
+    nodes, info, total = (
+        value.get("nodes"),
+        value.get("pageInfo"),
+        value.get("totalCount"),
+    )
+    if (
+        not isinstance(nodes, list)
+        or any(not isinstance(n, dict) for n in nodes)
+        or type(total) is not int
+        or total < 0
+        or not isinstance(info, dict)
+        or type(info.get("hasNextPage")) is not bool
+    ):
+        raise GitHubReadShapeError("invalid GraphQL connection")
+    cursor = info.get("endCursor") if info["hasNextPage"] else None
+    if info["hasNextPage"] and (not nodes or not isinstance(cursor, str) or not cursor):
+        raise GitHubReadShapeError("GraphQL cursor did not advance")
+    return GraphQLConnection(nodes, cursor, total)
+
+
+def graphql_data(result: github_api_core.ApiResult) -> dict[str, Any]:
+    body = result.body
+    if not isinstance(body, dict) or body.get("errors") or not isinstance(body.get("data"), dict):
+        raise GitHubReadShapeError("GraphQL returned partial or missing data")
+    return body["data"]
+
+
+def graphql_author(author: dict[str, Any] | None) -> dict[str, str]:
+    if author is None:
+        return {"login": "ghost", "type": "User"}
+    return github_plan_status.normalize_author({"author": author})
+
+def graphql_comment(node: dict[str, Any]) -> dict[str, Any]:
+    return {"id": node["databaseId"], "body": node["body"], "created_at": node["createdAt"],
+        "updated_at": node["updatedAt"], "html_url": node["url"], "user": graphql_author(node["author"])}
+
+
 DISCUSSION_REACTIONS = """reactions(first:10, orderBy:{field:CREATED_AT,direction:ASC}) {
  totalCount nodes { content createdAt user { login } } pageInfo { hasNextPage endCursor }
 }"""
@@ -596,10 +643,7 @@ def discussion_query(reader: GitHubReader, document: str, variables: dict[str, A
     if not result.ok:
         message = result.failure.message if result.failure else "GitHub discussion query failed"
         raise GitHubReadError(message, result=result, diagnostics=reader.diagnostics())
-    body = result.body
-    if not isinstance(body, dict) or body.get("errors") or not isinstance(body.get("data"), dict):
-        raise GitHubReadShapeError("GitHub discussion query returned partial or invalid data")
-    return body["data"]
+    return graphql_data(result)
 
 
 def discussion_nodes(reader: GitHubReader, parent: dict[str, Any], field: str, fields: str) -> list[dict[str, Any]]:
@@ -608,21 +652,16 @@ def discussion_nodes(reader: GitHubReader, parent: dict[str, Any], field: str, f
     seen: set[str] = set()
     expected = None
     while True:
-        if not isinstance(value, dict):
-            raise GitHubReadShapeError(f"Missing discussion {field} connection")
-        page, info, total = value.get("nodes"), value.get("pageInfo"), value.get("totalCount")
-        if (not isinstance(page, list) or any(not isinstance(node, dict) or not isinstance(node.get("id"), str) for node in page)
-                or not isinstance(info, dict) or type(info.get("hasNextPage")) is not bool
-                or type(total) is not int or total < 0 or expected is not None and total != expected):
+        page, cursor, total = graphql_connection_page(value)
+        if any(not isinstance(node.get("id"), str) for node in page) or expected is not None and total != expected:
             raise GitHubReadShapeError(f"Incomplete discussion {field} connection")
         expected = total
         result.extend(page)
-        if not info["hasNextPage"]:
+        if cursor is None:
             if len(result) != expected or len({node["id"] for node in result}) != expected:
                 raise GitHubReadShapeError(f"Incomplete discussion {field} inventory")
             return result
-        cursor = info.get("endCursor")
-        if not page or not isinstance(cursor, str) or not cursor or cursor in seen:
+        if cursor in seen:
             raise GitHubReadShapeError(f"Discussion {field} pagination did not advance")
         seen.add(cursor)
         document = ("query($id:ID!) { node(id:$id) { ... on " + parent["__typename"] + " { "
@@ -635,11 +674,8 @@ def discussion_nodes(reader: GitHubReader, parent: dict[str, Any], field: str, f
 
 
 def discussion_comment(node: dict[str, Any], repo: str, number: int) -> dict[str, Any]:
-    author = node.get("author") or {}
     return {
-        "id": node["databaseId"], "node_id": node["id"], "body": node["body"],
-        "created_at": node["createdAt"], "updated_at": node["updatedAt"], "html_url": node["url"],
-        "user": {"login": author.get("login", ""), "type": author.get("__typename", "")},
+        **graphql_comment(node), "node_id": node["id"],
         "issue_url": f"https://api.github.com/repos/{repo}/issues/{number}",
         "pull_request_url": f"https://api.github.com/repos/{repo}/pulls/{number}",
         "in_reply_to_id": (node.get("replyTo") or {}).get("databaseId"),

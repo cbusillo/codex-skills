@@ -17,6 +17,7 @@ from unittest.mock import Mock
 
 import github_api
 import github_plan_wait
+import github_plan_status
 import github_next_queue
 import github_work_graph as graph
 
@@ -104,7 +105,7 @@ def cached_issue(reads: graph.github_next_reads.NextReads, number: int = 1, repo
 def evaluate(row: dict[str, Any], *, limit: int = 100, read_comments: Any = unavailable) -> dict[str, Any]:
     return graph.read_direction_node(
         row,
-        config={"labels": graph.github_plan_graph.github_plan_status.DEFAULT_STATUS_LABELS},
+        config={"labels": github_plan_status.DEFAULT_STATUS_LABELS},
         focus=None,
         comment_limit=limit,
         read_comments=read_comments,
