@@ -49,6 +49,8 @@ AGY_RETIRED_COMMANDS = ("find", "rg")
 PREAMBLE = (
     "The repository to examine is at {repo} (absolute path). Read its files with your own tools. "
     "Resolve paths in the diff relative to that repository, and use absolute paths when reading them. "
+    "Stay within this repository's directory: files outside it are not available to you. "
+    "The diff and supporting files explicitly named below are the only exceptions. "
     "Do not modify, create, or delete anything.\n\n"
 )
 UNREACHABLE_LINKS_HINT = "The reviewer could not open these; save any content the review needs and pass it with --input."
