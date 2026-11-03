@@ -436,19 +436,19 @@ class PublicReadTests(unittest.TestCase):
     def test_public_read_works_outside_the_catalog(self) -> None:
         result = self.read()
         self.assertEqual(result.returncode, 0, result.stderr)
-        question = json.loads(result.stdout)["questions"][0]
-        self.assertEqual(question["status"], "answered")
-        self.assertNotIn("decision_comments", question)
+        entry = json.loads(result.stdout)["questions"][0]
+        self.assertEqual(entry["status"], "answered")
+        self.assertNotIn("decision_comments", entry)
 
     def test_public_read_exposes_only_accepted_answer_text_and_its_source(self) -> None:
         result = self.read("--include-answers")
         self.assertEqual(result.returncode, 0, result.stderr)
-        question = json.loads(result.stdout)["questions"][0]
-        self.assertEqual(question["number"], "Q1218")
-        accepted = question["decision_comments"]
+        entry = json.loads(result.stdout)["questions"][0]
+        self.assertEqual(entry["number"], "Q1218")
+        accepted = entry["decision_comments"]
         self.assertEqual(len(accepted), 1)
         self.assertEqual(accepted[0]["body"], self.accepted_body)
-        self.assertEqual(accepted[0]["url"], question["answers"][0])
+        self.assertEqual(accepted[0]["url"], entry["answers"][0])
 
 
 if __name__ == "__main__":
