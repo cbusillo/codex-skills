@@ -3104,8 +3104,8 @@ def claim_once(args: argparse.Namespace) -> None:
                 parent = read_next_parent(source_repo, source_number)
                 if parent is None or parent["repo"].casefold() != issue_repo.casefold() or parent["number"] != number:
                     raise ClassifiedPlanError("claim_native_parent_required", "Explicit issue resume requires the source's native parent as the claim target")
-                if source.get("state") != "closed" or source.get("state_reason") != "completed":
-                    raise ClassifiedPlanError("claim_resume_source_incomplete", "Canonical issue resume requires a completed source child")
+                if source.get("state") != "closed":
+                    raise ClassifiedPlanError("claim_resume_source_incomplete", "Canonical issue resume requires a closed source child")
             resume_source_number = source_number
             return source_number, source_comments, source_status
         if resume_source_number is None and any(c.get("id") == args.resume_from for c in current_comments):
