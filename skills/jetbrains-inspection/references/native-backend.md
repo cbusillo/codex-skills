@@ -245,8 +245,9 @@ without an `id` or with a bound that has no leading number is UNKNOWN with
 `native_required_plugins_unreadable`. A plugin descriptor or
 `disabled_plugins.txt` that breaks them, including a linked one, is UNKNOWN with
 `native_worker_plugins_unreadable`; an unusable `product-info.json` keeps its
-worker configuration reason. Without the Required Plugins file nothing
-in the worker's plugins is read. Verified plugins are listed in the receipt's
+worker configuration reason. Without the Required Plugins file, repository
+plugin checks are skipped; Python's automatic support setup below still applies.
+Verified plugins are listed in the receipt's
 `required_plugins`.
 
 ## Missing shared profile
@@ -314,6 +315,10 @@ Receipts retain the interpreter, `python_sdk_observed` from the matching
 `pydantic_plugin_version` actually loaded by the engine. Descriptor presence
 alone does not establish that a plugin loaded; a missing Pydantic load
 observation keeps the run UNKNOWN.
+An existing incompatible or damaged plugin still needs a worker-level update
+or reinstall through that worker's Plugins screen after an IDE upgrade; the
+built-in installer does not update an already installed version. No repository
+configuration changes are needed.
 
 Correct interpreter and plugin setup can still leave PyCharm findings for
 Pydantic Literal fields, Click parameter constructors and decorated commands,

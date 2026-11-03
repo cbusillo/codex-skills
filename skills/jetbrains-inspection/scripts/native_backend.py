@@ -1393,7 +1393,7 @@ def python_support_plugins(sdk: SdkEntry) -> set[str]:
 
 def python_scanner_environment(interpreter: Path, private: Path, prepare: Callable[[list[str], dict[str, str]], None],
                                preparation_env: dict[str, str]) -> dict[str, str]:
-    if common.checked([str(interpreter), "-c", "import importlib.util; print(importlib.util.find_spec('pip') is not None)"]).strip() == b"True":
+    if common.checked([str(interpreter), "-I", "-c", "import importlib.util; print(importlib.util.find_spec('pip') is not None)"]).strip() == b"True":
         return {}
     support = private / "packaging-support"
     prepare(["uv", "pip", "install", "--python", str(interpreter), "--target", str(support), "pip"], preparation_env)
@@ -1633,7 +1633,9 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
     elif reason in {"native_required_plugin_missing", "native_required_plugins_unreadable", "native_worker_plugins_unreadable"}:
         action = UNAVAILABLE_REASONS[reason][1].format(**(PLUGIN_FALLBACK | receipt.get("missing_plugins", {})), product=product.display_name)
     elif reason == "native_python_support_plugin_unavailable":
-        action = "The Pydantic support plugin was not installed, enabled or loaded. Check its compatibility with the configured PyCharm build and the independent worker's plugin installation before one fresh assessment."
+        action = ("The Pydantic support plugin was not installed, enabled or loaded. Check first-install network access and "
+                  "compatibility with the configured PyCharm build. An installed incompatible or damaged plugin needs an "
+                  "update or reinstall through the independent worker's Plugins screen, using its launcher, before one fresh assessment.")
     elif reason in {"native_node_not_configured", "native_node_unavailable"}:
         action = "Set jetbrains.nativeWorkers.webstorm.node in the shared helper config to the absolute path of an executable node with npm in the same directory. See references/native-backend.md."
     elif reason in {"native_jdk_not_configured", "native_jdk_unavailable"}:
@@ -1965,9 +1967,14 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
                 for plugin_id in sorted(support_plugins - (installed.keys() - disabled)):
                     installer = private / "install-plugins.py"
                     installer.write_text("import subprocess, sys\nraise SystemExit(subprocess.run(sys.argv[1:]).returncode)\n")
-                    launch(["/usr/bin/nice", "-n", str(NICE), sys.executable, str(installer), str(app / "Contents/MacOS" / product.launcher_names[0]),
-                            "installPlugins", plugin_id, "--give-consent-to-use-third-party-plugins"],
-                           re.compile(r"(?:installed plugin: .*|already installed: " + re.escape(plugin_id) + r")"))
+                    try:
+                        launch(["/usr/bin/nice", "-n", str(NICE), sys.executable, "-I", str(installer), str(app / "Contents/MacOS" / product.launcher_names[0]),
+                                "installPlugins", plugin_id, "--give-consent-to-use-third-party-plugins"],
+                               re.compile(r"(?:installed plugin: .*|already installed: " + re.escape(plugin_id) + r")"))
+                    except Blocked as error:
+                        if str(error) in {"native_execution_incomplete", "native_engine_error"}:
+                            raise Blocked("native_python_support_plugin_unavailable") from None
+                        raise
                     if not receipt["license_observation_complete"]:
                         raise Blocked("native_license_observation_unproven")
                     installed, disabled = common.worker_plugins(app, config, plugins)

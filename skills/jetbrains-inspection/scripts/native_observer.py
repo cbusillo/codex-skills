@@ -121,7 +121,7 @@ class EngineObserver:
         if plugin:
             self.receipt["odoo_plugin_version"] = plugin.group(1)
         if not partial:
-            plugin = re.search(r"Loaded (?:bundled|custom) plugins: .*?\bPydantic \(([0-9][\w.+-]*)\)", event)
+            plugin = re.search(r"Loaded (?:bundled|custom) plugins:(?: .*?,)? Pydantic \(([0-9][\w.+-]*)\)", event)
             if plugin:
                 self.receipt["pydantic_plugin_version"] = plugin.group(1)
             sdk = re.search(r"Binary skeletons directory for SDK (jb-native-[\w-]+) \((.*?)\)\):", event)

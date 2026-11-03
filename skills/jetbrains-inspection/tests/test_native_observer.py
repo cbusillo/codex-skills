@@ -66,10 +66,12 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(receipt["engine_error_category"], "#c.i.vfs.Store")
         self.assertNotIn("private customer", str(receipt))
 
-    def test_python_support_receipt_requires_complete_current_worker_log_lines(self):
+    def test_python_support_receipt_requires_complete_current_worker_log_lines(self) -> None:
         receipt = {"run_id": "fixture", "python_interpreter": "/private/project/.venv/bin/python"}
         project = Path("/private/project")
         events = observer.EngineObserver(project, receipt)
+        events.observe("Loaded custom plugins: Other Pydantic (1.2.3)")
+        self.assertNotIn("pydantic_plugin_version", receipt)
         plugin = "Loaded custom plugins: Pydantic (1.2.3), Other (4.5)"
         events.observe(plugin, partial=True)
         self.assertNotIn("pydantic_plugin_version", receipt)
