@@ -77,6 +77,23 @@ class ServicesTests(unittest.TestCase):
         self.assertEqual(resumed.returncode, 1)
         self.assertEqual(len((self.root / "passes.txt").read_text().splitlines()), 4)
 
+    def test_calendar_job_exits_after_one_success_and_still_serializes(self) -> None:
+        self.data["services"] = {"inspection": {**self.data["services"]["foreign"],
+                                               "calendar": {"Weekday": 0, "Hour": 1, "Minute": 0}}}
+        self.fixture.write_text("from pathlib import Path\np=Path('passes.txt')\np.write_text((p.read_text() if p.exists() else '')+'pass\\n')\n")
+        self.save()
+        output = services.render(self.config, Path(__file__).resolve().parents[3], self.root / "jobs")
+        with next(output.glob("*.plist")).open("rb") as stream:
+            job = plistlib.load(stream)
+        result = subprocess.run(job["ProgramArguments"], cwd=job["WorkingDirectory"], capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / "passes.txt").read_text().splitlines(), ["pass"])
+        self.assertFalse(services.reconciliation_marker(self.config, "inspection").exists())
+        with services.service_lock(self.config, "inspection"):
+            blocked = subprocess.run(job["ProgramArguments"], capture_output=True, text=True, timeout=15)
+        self.assertNotEqual(blocked.returncode, 0)
+        self.assertEqual((self.root / "passes.txt").read_text().splitlines(), ["pass"])
+
     def test_running_service_and_uv_child_leave_shared_cache_prunable(self):
         self.assert_service_cache_prunable([])
 

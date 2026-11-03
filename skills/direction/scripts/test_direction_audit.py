@@ -194,7 +194,7 @@ def test_cli_marker_failure_is_not_a_successful_or_silently_unmarked_audit() -> 
             parent.write_text("keep")
             marker = parent / "marker.json"
             output, errors = StringIO(), StringIO()
-            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker), "JB_WEEKLY_BASELINE": str(marker.with_name("inspection.json"))}),
                   patch.object(module, "merged_direction", return_value=DIRECTION),
                   patch.object(module, "gh_json", return_value={"login": "owner"}),
                   patch.object(module, "fetch_paginated", return_value=([], False)),
@@ -501,7 +501,7 @@ def test_archived_audit_with_direction_does_not_reenter_weekly_marker() -> None:
                 return {"archived": archived} if args[1] == "repos/o/r" else []
 
             output = StringIO()
-            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker), "JB_WEEKLY_BASELINE": str(marker.with_name("inspection.json"))}),
                   patch.dict(vars(module), {"merged_direction": lambda *_args, **_kwargs: DIRECTION,
                                             "gh_json": fetch}), redirect_stdout(output)):
                 module.main(["--repo", "o/r", "--automation", "bot", "--gh", "fixture-gh"])
@@ -522,7 +522,7 @@ def test_audit_that_confirms_archive_drops_the_repository_from_the_marker() -> N
         for archived in (None, True):
             marker.write_text(json.dumps(original))
             output = StringIO()
-            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker), "JB_WEEKLY_BASELINE": str(marker.with_name("inspection.json"))}),
                   patch.dict(vars(module), {"merged_direction": lambda *_args, **_kwargs: DIRECTION,
                                             "gh_json": lambda args, **_kwargs: {"archived": archived} if args[1] == "repos/o/r" else []}),
                   redirect_stdout(output)):
@@ -3211,7 +3211,7 @@ class WeeklyAccount:
 
     def run(self, argv: list[str], marker: Path) -> tuple[int, dict[str, Any]]:
         output = StringIO()
-        with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+        with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker), "JB_WEEKLY_BASELINE": str(marker.with_name("inspection.json"))}),
               patch.dict(vars(self.module), {
                   "gh_json": self.fetch,
                   "fetch_capacity": lambda *_args, **_kwargs: (summary(self.module), list(self.capacity_errors)),
@@ -3248,6 +3248,7 @@ def test_weekly_audit_records_once_every_adopted_repository_was_read() -> None:
         assert receipt["repos"] == ["o/direction", "o/a", "o/b"], "OWNER/direction first, then each adopted repository"
         assert receipt["unread"] == {} and receipt["held"] == {}
         assert code == (0 if receipt["ok"] else 3)
+        assert set(receipt["audits"]["o/direction"]["capacity"]["project_inspections"]) == set(receipt["repos"])
         saved = json.loads(marker.read_text())
         assert receipt["weekly_recorded"]["ran"] == saved["weekly_audit"]["ran"] == receipt["started"]
         assert saved["weekly_audit"]["record"] == "o/direction"
@@ -3308,7 +3309,7 @@ def test_weekly_output_failure_preserves_every_repository_window() -> None:
                 with patch.object(sys, "stdout", output), patch.object(os, "fsync", side_effect=OSError("fixture disk full")):
                     module.emit_weekly_receipt(receipt_data)
 
-        with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+        with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker), "JB_WEEKLY_BASELINE": str(marker.with_name("inspection.json"))}),
               patch.dict(vars(module), {
                   "gh_json": account.fetch,
                   "fetch_capacity": lambda *_args, **_kwargs: (summary(module), []),
