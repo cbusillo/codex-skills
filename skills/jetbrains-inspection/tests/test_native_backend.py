@@ -1972,6 +1972,22 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
         self.assertEqual(result["inspection_outcome"]["reason"], "native_odoo_framework_required")
         self.assertNotIn("worker_pid", result["diagnostic"]["native"])
 
+    def test_helpers_outside_addons_run_without_framework_roots(self) -> None:
+        manifest = self.repo / "addons/probe/__manifest__.py"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text('{"version":"1.0"}\n')
+        with self.native_host():
+            self.assertIsNone(native.eligibility_reason(self.args, host, self.repo, {}))
+        result = self.assess()
+        self.assertEqual(result["agent_result"]["verdict"], "RED")
+        self.assertEqual(result["cleanup"]["status"], "closed")
+        (self.repo / "workspace.toml").write_text('[build]\nodoo_version = "19.0"\n')
+        with self.native_host():
+            self.assertIsNotNone(native.eligibility_reason(self.args, host, self.repo, {}))
+        result = self.assess()
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertNotIn("worker_pid", result["diagnostic"]["native"])
+
     def test_guardian_cleans_up_after_invoking_group_is_killed(self):
         process = self.start_guarded_fixture()
         try:
