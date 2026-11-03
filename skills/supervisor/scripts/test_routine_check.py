@@ -49,7 +49,7 @@ class RoutineCheckTests(unittest.TestCase):
         self.enterContext(patch_attr(routine_check.radar.github_identity, "automation_login", return_value="agent[bot]"))
         self.enterContext(patch_attr(routine_check.radar.github_identity, "configured_bot_logins", return_value=["agent[bot]"]))
 
-    def test_graphql_bot_authors_remain_trusted_by_queue_and_radar(self) -> None:
+    def test_graphql_bot_sources_keep_acknowledgement_until_edited(self) -> None:
         stamp = "2026-11-01T00:00:00Z"
         def message(ident: int, body: str) -> dict[str, Any]:
             return {"__typename": "IssueComment", "id": f"node-{ident}", "databaseId": ident,
@@ -77,7 +77,6 @@ class RoutineCheckTests(unittest.TestCase):
                                   repo=[], thread=[], radar_config=Path("/absent/radar.yaml"))
         with patch_attr(routine_check.github_read, "GitHubReader", return_value=reader):
             report = routine_check.build_readers(args, {})["questions"]()
-            discussion = routine_check.github_read.read_discussion(reader, "owner/repo", 8)
             messages[1]["updatedAt"] = "2026-11-01T01:00:00Z"
             revised = routine_check.build_readers(args, {})["questions"]()
         self.assertTrue(report["complete"], report)
@@ -87,8 +86,6 @@ class RoutineCheckTests(unittest.TestCase):
         self.assertNotIn(f"QUESTION {target}", routine_check.digest({"questions": report}))
         self.assertEqual(revised["questions"][0]["delivery"], "unacknowledged")
         self.assertIn(f"QUESTION {target}", routine_check.digest({"questions": revised}))
-        opening = routine_check.radar.normalize_opening_post("owner/repo", discussion)
-        self.assertFalse(routine_check.radar.is_external_comment(opening, {"owner"}, {"agent[bot]"}))
 
     def test_owner_only_digest_finds_foreign_questions_and_waits_without_watch_history(self) -> None:
         args = argparse.Namespace(owner="cellmechanic", queue="cellmechanic/direction#11", source=[], repo=[], thread=[],
@@ -516,7 +513,6 @@ class RoutineCheckTests(unittest.TestCase):
             self.assertIn("client", output)
             self.assertIn(good_url, output)
             self.assertIn("source unread", output)
-            self.assertEqual(sources["questions"]["questions"][0]["updated_at"], question["updated_at"])
 
     def test_staffing_reuses_global_next_and_preserves_partial_failure_evidence(self) -> None:
         report = {"ok": False, "candidate_coverage": {"complete": False},

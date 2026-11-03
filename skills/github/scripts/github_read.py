@@ -674,6 +674,8 @@ def discussion_nodes(reader: GitHubReader, parent: dict[str, Any], field: str, f
 
 
 def discussion_comment(node: dict[str, Any], repo: str, number: int) -> dict[str, Any]:
+    if type(node.get("databaseId")) is not int:
+        raise GitHubReadShapeError("Discussion message identity is unavailable")
     return {
         **graphql_comment(node), "node_id": node["id"],
         "issue_url": f"https://api.github.com/repos/{repo}/issues/{number}",
@@ -698,17 +700,19 @@ def read_discussion(reader: GitHubReader, repo: str, number: int, *, issue_id: i
     thread = repository.get("issueOrPullRequest") if isinstance(repository, dict) else None
     if not isinstance(thread, dict) or thread.get("__typename") not in {"Issue", "PullRequest"}:
         raise GitHubReadShapeError(f"GitHub did not expose {repo}#{number}")
+    resolved_id = thread.get("databaseId")
+    if thread["__typename"] == "PullRequest":
+        resolved_id = issue_id if issue_id is not None else reader.get_json(
+            f"/repos/{repo}/issues/{number}", step="discussion_issue_identity"
+        )["id"]
     result: dict[str, Any] = {
-        **discussion_comment(thread, repo, number), "number": thread["number"], "title": thread["title"],
+        **discussion_comment({**thread, "databaseId": resolved_id}, repo, number), "number": thread["number"], "title": thread["title"],
         "state": "closed" if thread["state"] in {"CLOSED", "MERGED"} else "open",
         "closed_at": thread["closedAt"],
         "comments": [discussion_comment(node, repo, number) for node in discussion_nodes(reader, thread, "comments", DISCUSSION_COMMENT_FIELDS)],
         "reviews": [], "review_comments": [],
     }
     if thread["__typename"] == "PullRequest":
-        result["id"] = issue_id if issue_id is not None else reader.get_json(
-            f"/repos/{repo}/issues/{number}", step="discussion_issue_identity"
-        )["id"]
         result["pull_request"] = {"url": f"https://api.github.com/repos/{repo}/pulls/{number}"}
         for review in discussion_nodes(reader, thread, "reviews", DISCUSSION_REVIEW_FIELDS):
             result["reviews"].append(discussion_comment(review, repo, number))

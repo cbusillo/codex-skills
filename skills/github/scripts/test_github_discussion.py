@@ -74,7 +74,7 @@ class DiscussionTests(unittest.TestCase):
         )
         another = comment(12, "PullRequestReview", comments=connection([]))
         node = thread(
-            "PullRequest", state="MERGED", reviews=connection([review], "reviews", 2), comments=connection([comment(8)], "next", 2)
+            "PullRequest", databaseId=None, state="MERGED", reviews=connection([review], "reviews", 2), comments=connection([comment(8)], "next", 2)
         )
         reader = Mock(deadline_at=None)
         reader.graphql_json.side_effect = [
@@ -102,6 +102,9 @@ class DiscussionTests(unittest.TestCase):
             ),
         )
         cases = [
+            [response({"repository": {"issueOrPullRequest": thread(databaseId=None)}})],
+            [response({"repository": {"issueOrPullRequest": thread(comments=connection([comment(8, databaseId=None)]))}})],
+            [response({"repository": {"issueOrPullRequest": thread("PullRequest", reviews=connection([]))}})],
             [denied],
             [response({"repository": {"issueOrPullRequest": thread()}}, errors=[{"message": "partial"}])],
             [
@@ -113,6 +116,7 @@ class DiscussionTests(unittest.TestCase):
         for replies in cases:
             with self.subTest(replies=replies):
                 reader = Mock(deadline_at=None)
+                reader.get_json.return_value = {"id": None}
                 reader.graphql_json.side_effect = copy.deepcopy(replies)
                 with self.assertRaises((GitHubReadError, GitHubReadShapeError)):
                     github_read.read_discussion(reader, "example/repo", 7)
