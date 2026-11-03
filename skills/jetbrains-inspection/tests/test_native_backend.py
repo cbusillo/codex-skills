@@ -86,6 +86,13 @@ def hold_lock(path, seconds, held, release_when=None):
             time.sleep(0.02)
 
 
+def commit_profile_fixture(repo: Path, profile: Path, *additional: Path) -> None:
+    subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "--", *[str(path.relative_to(repo)) for path in (profile, *additional)]], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@localhost",
+                    "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "Profile fixture"], check=True)
+
+
 class NativeTests(unittest.TestCase):
     def test_scanner_support_is_private_and_importable_without_system_packages(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -115,7 +122,7 @@ class NativeTests(unittest.TestCase):
 
     def test_missing_profile_verdict_names_a_path_that_resolves_the_prerequisite(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            repo = Path(directory)
+            repo = Path(directory).resolve()
             with self.assertRaises(native.Blocked) as caught:
                 native.common.profile_for(repo, None)
             receipt = native.new_receipt(host) | {"scope": "files", "selected_file_count": 1}
@@ -139,9 +146,43 @@ class NativeTests(unittest.TestCase):
             profile.parent.mkdir(parents=True)
             fixture = SCRIPTS.parent / "tests/fixtures/native-odoo/.idea/inspectionProfiles/Controls.xml"
             profile.write_bytes(fixture.read_bytes())
+            with self.assertRaises(native.Blocked):
+                native.common.profile_for(repo, paths[0])
+            commit_profile_fixture(repo, profile)
             resolved, enabled = native.common.profile_for(repo, paths[0])
             self.assertEqual(resolved, profile)
             self.assertTrue(enabled)
+            (repo / ".gitignore").write_text(".idea/\n")
+            profile.with_name("Untracked.xml").write_bytes(fixture.read_bytes())
+            self.assertEqual(native.common.profile_for(repo, None)[0], profile)
+
+    def test_declared_external_profile_uses_committed_source_and_refuses_dirty_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            repo = root / "consumer"
+            repo.mkdir()
+            shared = root / "devkit"
+            profile = shared / ".idea/inspectionProfiles/Controls.xml"
+            profile.parent.mkdir(parents=True)
+            fixture = SCRIPTS.parent / "tests/fixtures/native-odoo/.idea/inspectionProfiles/Controls.xml"
+            profile.write_bytes(fixture.read_bytes())
+            with self.assertRaises(native.Blocked):
+                native.common.profile_for(repo, str(profile))
+            commit_profile_fixture(shared, profile)
+            resolved, enabled = native.common.profile_for(repo, str(profile))
+            self.assertEqual(resolved, profile)
+            self.assertTrue(enabled)
+            original = profile.read_bytes()
+            for flag in ("assume-unchanged", "skip-worktree"):
+                with self.subTest(flag=flag):
+                    profile.write_bytes(original)
+                    subprocess.run(["git", "-C", str(shared), "update-index", "--" + flag, str(profile.relative_to(shared))], check=True)
+                    try:
+                        profile.write_bytes(original + b"\n")
+                        with self.assertRaises(native.Blocked):
+                            native.common.profile_for(repo, str(profile))
+                    finally:
+                        subprocess.run(["git", "-C", str(shared), "update-index", "--no-" + flag, str(profile.relative_to(shared))], check=True)
 
     def test_process_group_exit_waits_through_permission_transition(self):
         with patch.object(os, os.killpg.__name__, side_effect=[PermissionError(errno.EPERM, "exiting"), PermissionError(errno.EPERM, "exiting"), ProcessLookupError(errno.ESRCH, "gone")]), \
@@ -736,6 +777,7 @@ class NativeLifecycleTests(unittest.TestCase):
         profile.parent.mkdir(parents=True)
         profile.write_text('<profile><option name="myName" value="Test"/>'
                            '<inspection_tool class="PyUnresolvedReferencesInspection" enabled="true"/></profile>')
+        commit_profile_fixture(self.repo, profile)
         (self.repo / ".venv/bin").mkdir(parents=True)
         (self.repo / ".venv/bin/python").symlink_to(sys.executable)
         self.worker = self.root / "worker"
@@ -807,6 +849,23 @@ print('Done.')
         result = self.assess(lambda: (native.LOAD_LIMIT + 10, 1, 1))
         self.assertEqual(result["inspection_outcome"]["reason"], "native_host_load_paused")
         self.assertGreaterEqual(result["diagnostic"]["native"]["load_wait_ms"], 1500)
+        self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def test_external_profile_commit_cannot_change_during_inspection(self) -> None:
+        shared = self.root / "shared-profile"
+        profile = shared / ".idea/inspectionProfiles/Test.xml"
+        profile.parent.mkdir(parents=True)
+        profile.write_bytes((self.repo / ".idea/inspectionProfiles/Test.xml").read_bytes())
+        commit_profile_fixture(shared, profile)
+        self.args.profile = str(profile)
+        argv = ["git", "-C", str(shared), "-c", "user.name=Fixture", "-c", "user.email=fixture@localhost",
+                "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "--allow-empty", "-m", "Changed source"]
+        changed = self.root / "profile-commit-changed"
+        self.script.write_text(self.script.read_text() + "import subprocess\n" + f"subprocess.run({argv!r}, check=True)\n"
+                               + f"pathlib.Path({str(changed)!r}).touch()\n")
+        result = self.assess()
+        self.assertTrue(changed.exists())
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
         self.assertEqual(result["cleanup"]["status"], "closed")
 
     def test_findings_require_current_reports_and_cleanup_sdk_in_place(self):
@@ -2191,6 +2250,7 @@ class WebStormLifecycleTests(unittest.TestCase):
         profile.parent.mkdir(parents=True)
         profile.write_text('<profile><option name="myName" value="Test"/>'
                            '<inspection_tool class="TypeScriptUnresolvedReference" enabled="true"/></profile>')
+        commit_profile_fixture(self.repo, profile)
         self.worker = self.root / "worker"
         for name in ("config/options", "plugins", "home"):
             (self.worker / name).mkdir(parents=True)
@@ -2572,6 +2632,7 @@ class IntelliJLifecycleTests(unittest.TestCase):
         profile.parent.mkdir(parents=True)
         profile.write_text('<profile><option name="myName" value="Test"/>'
                            '<inspection_tool class="RedundantSemicolon" enabled="true"/></profile>')
+        commit_profile_fixture(self.repo, profile)
         self.worker = self.root / "worker"
         for name in ("config/options", "plugins", "home"):
             (self.worker / name).mkdir(parents=True)

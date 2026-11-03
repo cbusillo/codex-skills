@@ -1613,12 +1613,14 @@ def next_action_for_reason(host: Any, receipt: dict[str, Any], reason: str, verd
     if reason in {"native_owner_activation_required", "native_activation_stop_recorded"}:
         action = "Owner question: the Director must restore the configured independent worker's activation through the product UI using existing entitlements. Stop licensed runs; never start a trial or copy credentials."
     elif reason == "native_populated_profile_required":
-        action = ("If a populated profile is already tracked, set `qualityGate.inspection.profile` to its repository-relative path. "
+        action = ("Use a populated profile committed in Git; untracked local profiles, including ignored ones, do not qualify. "
+                  "Set `qualityGate.inspection.profile` to its path, or declare a path to the committed profile in a shared Git checkout. "
+                  "An external profile must be unchanged from that checkout's commit. "
                   f"Otherwise obtain a populated {product.display_name} default project inspection profile. "
                   "Tracking a new shared profile needs explicit Director approval unless already recorded or covered by "
                   "an established approved convention; reuse that approval. "
-                  "Track only `.idea/inspectionProfiles/Project_Default.xml`, keep other IDE state ignored, and set "
-                  "`qualityGate.inspection.profile` in `.github/github.json` to that repository-relative path. "
+                  "Track `.idea/inspectionProfiles/Project_Default.xml`, keep machine-local IDE state ignored, and set "
+                  "`qualityGate.inspection.profile` in `.github/github.json` to the selected profile path. "
                   "Do not disable or tune inspections to pass. Run a fresh assessment after the prerequisite is resolved.")
     elif reason in {"native_worker_not_configured", "native_app_not_configured"}:
         action = f"Configure jetbrains.nativeWorkers.{product.key}.path/app in the shared helper config for the independently Director-activated worker, or supply --native-worker and --ide-app. See references/native-backend.md."
@@ -1856,6 +1858,8 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         if intellij:
             gradle_build_file(repo)
             expected |= set(proof.INTELLIJ_CANARY_FILES)
+        profile_source = common.resolve_profile_source(repo, profile)
+        receipt["profile_source"] = {"commit": profile_source[1], "path": profile.relative_to(profile_source[0]).as_posix()}
         receipt["profile_sha256"] = common.digest(profile)
         planned_private = state / ("private-" + receipt["run_id"])
         source_interpreter = repo / ".venv/bin/python"
@@ -2026,7 +2030,9 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_snapshot_inputs_changed")
         if common.scope_selection(args, host)[3] != selected:
             raise Blocked("native_source_selection_changed")
-        if common.digest(profile) != receipt["profile_sha256"] or common.digest(private / "profile.xml") != receipt["profile_sha256"]:
+        if (common.resolve_profile_source(repo, profile) != profile_source or profile.is_symlink() or profile.resolve() != profile
+                or common.digest(profile) != receipt["profile_sha256"]
+                or common.digest(private / "profile.xml") != receipt["profile_sha256"]):
             raise Blocked("native_profile_inputs_changed")
         if [host.git_head_sha(root) for root in framework] != receipt["framework_revisions"]:
             raise Blocked("native_framework_inputs_changed")
