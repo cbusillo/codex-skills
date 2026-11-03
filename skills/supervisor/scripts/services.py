@@ -24,6 +24,7 @@ from typing import Any
 import plistlib
 import re
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -39,7 +40,7 @@ LABEL_PREFIX = "com.codex-skills.supervisor"
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 
 
-def load_config(path):
+def load_config(path: Path) -> dict[str, Any]:
     config = json.loads(path.read_text())
     if (not isinstance(config, dict) or not {"uv", "services"} <= set(config)
             or set(config) - {"uv", "services", "supervisor"}):
@@ -81,6 +82,49 @@ def absolute_path(value):
     return Path(value)
 
 
+def bind_launched_supervisor(config_path: Path, entry: dict) -> dict:
+    return store_supervisor(config_path, verify_managed_supervisor(entry))
+
+
+def verify_managed_supervisor(entry: dict) -> dict:
+    from session_record import session_status
+    from session_liveness import process_started_at
+
+    if (entry.get("supervisor_owned") is not True and entry.get("role") != "supervisor") or entry.get("backend") != "tmux":
+        raise ValueError("Supervisor startup requires a registered managed launch")
+    fields = ("harness", "session_id", "transcript", "backend", "tmux_socket", "tmux_session_id",
+              "pid", "tty", "window_id", "tab_id")
+    recipient = {key: entry[key] for key in fields}
+    recipient["role"] = "supervisor"
+    started_at = process_started_at(entry["pid"]).isoformat()
+    if entry.get("launch_started_at", started_at) != started_at:
+        raise ValueError("Supervisor launch process generation changed")
+    recipient["launch_started_at"] = started_at
+    if entry["harness"] == "codex":
+        from codex_session_proxy import source_endpoint
+        guarded_launch_endpoint = importlib.import_module("github_plan_closure").guarded_launch_endpoint
+        from session_liveness import execution_arguments, native_arguments
+        recipient["codex_home"] = entry["codex_home"]
+        endpoint = source_endpoint(entry["session_id"], Path(entry["codex_home"]), transcript=Path(entry["transcript"]))
+        if guarded_launch_endpoint(entry["pid"], execution_arguments(native_arguments(entry["pid"]))[0]) != str(endpoint):
+            raise ValueError("Supervisor managed Codex generation changed")
+    else:
+        route = claude_supervisor_route(entry["tmux_socket"], source_pid=entry["pid"])
+        for key, value in route.items():
+            actual = recipient[key].removeprefix("/dev/") if key == "tty" else recipient[key]
+            expected = value.removeprefix("/dev/") if key == "tty" else value
+            if actual != expected:
+                raise ValueError("Supervisor launch terminal identity changed")
+    validate_supervisor(recipient)
+    session_status(recipient)
+    return recipient
+
+
+def service_arguments(uv: str, config_path: Path, catalog: Path, name: str) -> list[str]:
+    return [uv, "run", "--no-project", "--no-cache", str(catalog.resolve() / "skills/supervisor/scripts/services.py"),
+            "run", "--config", str(config_path), "--service", name]
+
+
 def render(config_path, catalog, output):
     config_path = config_path.resolve()
     config = load_config(config_path)
@@ -95,8 +139,7 @@ def render(config_path, catalog, output):
         label = f"{LABEL_PREFIX}.{name}"
         job = {
             "Label": label,
-            "ProgramArguments": [config["uv"], "run", "--no-project", "--no-cache", str(runner),
-                                 "run", "--config", str(config_path), "--service", name],
+            "ProgramArguments": service_arguments(config["uv"], config_path, catalog, name),
             "WorkingDirectory": str(catalog.resolve()),
             "EnvironmentVariables": {"PATH": f"{Path(config['uv']).parent}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"},
             "RunAtLoad": True,
@@ -174,12 +217,12 @@ def supervisor_recipient(config_path: Path) -> dict:
     return dict(recipient)
 
 
-def claude_supervisor_route(tmux_socket: str) -> dict:
+def claude_supervisor_route(tmux_socket: str, *, source_pid: int | None = None) -> dict:
     from session_liveness import harness_arguments, harness_family, inventory
     from tmux_terminal import Terminal, belongs_to, process_parents
 
     parents, processes = process_parents(), inventory()
-    pid, visited = os.getppid(), set()
+    pid, visited = source_pid if source_pid is not None else os.getppid(), set()
     source: tuple[int, str, str] | None = None
     while pid in parents and pid not in visited:
         visited.add(pid)
@@ -191,6 +234,8 @@ def claude_supervisor_route(tmux_socket: str) -> dict:
             if arguments and harness_family(arguments[0]) == "claude":
                 source = matches[0]
                 break
+        if source_pid is not None:
+            break
         pid = parents[pid]
     if source is None:
         raise ValueError("current Claude harness ancestor is unavailable")
@@ -243,6 +288,10 @@ def bind_supervisor(config_path: Path, transcript: Path | None = None, tmux_sock
         recipient.update(claude_supervisor_route(tmux_socket))
     session_status(recipient)
     validate_supervisor(recipient)
+    return store_supervisor(config_path, recipient)
+
+
+def store_supervisor(config_path: Path, recipient: dict) -> dict:
     config_path = config_path.resolve()
     with supervisor_lock(config_path):
         config = load_config(config_path)
@@ -260,6 +309,115 @@ def bind_supervisor(config_path: Path, transcript: Path | None = None, tmux_sock
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
     return recipient
+
+
+def host_command(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, capture_output=True, text=True, timeout=20)
+
+
+def checked_host_command(argv: list[str]) -> None:
+    result = host_command(argv)
+    if result.returncode:
+        raise ValueError(f"service manager failed: {result.stderr.strip()}")
+
+
+def launchd_status(target: str) -> subprocess.CompletedProcess[str]:
+    result = host_command(["launchctl", "print", target])
+    if result.returncode and "Could not find service" not in result.stderr:
+        raise ValueError(f"service status unavailable: {result.stderr.strip()}")
+    return result
+
+
+def systemd_value(value: str) -> str:
+    if any(character in value for character in "\r\n\0"):
+        raise ValueError("service paths and arguments must be single lines")
+    return json.dumps(value.replace("%", "%%"), ensure_ascii=False)
+
+
+def prepare_service_host(config_path: Path, catalog: Path, output: Path, name: str) -> dict:
+    config_path = config_path.resolve()
+    output.mkdir(parents=True, exist_ok=True, mode=0o700)
+    label = f"{LABEL_PREFIX}.{name}"
+    if sys.platform == "darwin":
+        render(config_path, catalog, output)
+        staged = output / f"{label}.plist"
+        target = f"gui/{os.getuid()}/{label}"
+        loaded = launchd_status(target)
+        expected = plistlib.loads(staged.read_bytes())["ProgramArguments"]
+        if loaded.returncode == 0:
+            block = re.search(r"(?ms)^\s*arguments = \{\n(.*?)^\s*}", loaded.stdout)
+            if not block or [line.strip() for line in block[1].splitlines()] != expected:
+                raise ValueError("loaded service belongs to another configuration; preserve it")
+        installed = Path.home() / "Library/LaunchAgents" / staged.name
+        if installed.exists() and plistlib.loads(installed.read_bytes())["ProgramArguments"] != expected:
+            raise ValueError("installed service belongs to another configuration; preserve it")
+        job = plistlib.loads((installed if installed.exists() else staged).read_bytes())
+        loaded_log = re.search(r"(?m)^\s*stdout path = (.+)$", loaded.stdout) if loaded.returncode == 0 else None
+        return {"backend": "launchd", "target": target, "staged": str(staged), "installed": str(installed),
+                "log": loaded_log[1].strip() if loaded_log else job["StandardOutPath"]}
+    if sys.platform != "linux" or not shutil.which("systemctl"):
+        raise ValueError("persistent Supervisor services require launchd or a systemd user manager")
+    config = load_config(config_path)
+    logs = output / "logs"
+    logs.mkdir(exist_ok=True, mode=0o700)
+    argv = service_arguments(config["uv"], config_path, catalog, name)
+    content = ("[Unit]\nDescription=Managed Supervisor reader\n[Service]\nType=exec\n"
+               + "ExecStart=:" + " ".join(map(systemd_value, argv)) + "\n"
+               + f"WorkingDirectory={str(catalog).replace(chr(37), chr(37) * 2)}\n"
+               + f"Environment={systemd_value('PATH=' + os.environ.get('PATH', os.defpath))}\n"
+               + f"StandardOutput=append:{str(logs / (name + '.jsonl')).replace('%', '%%')}\n"
+               + f"StandardError=append:{str(logs / (name + '.stderr.log')).replace('%', '%%')}\n"
+               + "Restart=no\nTimeoutStopSec=180\n[Install]\nWantedBy=default.target\n")
+    staged = output / f"{label}.service"
+    staged.write_text(content)
+    installed = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "systemd/user" / staged.name
+    loaded = host_command(["systemctl", "--user", "show", staged.name, "--property=FragmentPath", "--value"])
+    if loaded.returncode and not any(text in loaded.stderr for text in ("not found", "could not be found")):
+        raise ValueError(f"service status unavailable: {loaded.stderr.strip()}")
+    if loaded.returncode == 0 and loaded.stdout.strip():
+        if Path(loaded.stdout.strip()).read_text() != content:
+            raise ValueError("loaded service belongs to another configuration; preserve it")
+    if installed.exists() and installed.read_text() != content:
+        raise ValueError("installed service belongs to another configuration; preserve it")
+    return {"backend": "systemd", "target": staged.name, "staged": str(staged), "installed": str(installed),
+            "log": str(logs / (name + ".jsonl"))}
+
+
+def service_host_active(host: dict) -> bool:
+    if host["backend"] == "launchd":
+        result = launchd_status(host["target"])
+        return result.returncode == 0 and re.search(r"(?m)^\s*state = running\s*$", result.stdout) is not None
+    result = host_command(["systemctl", "--user", "is-active", host["target"]])
+    state = result.stdout.strip()
+    if state not in {"active", "inactive", "failed", "unknown", "activating", "deactivating", "reloading", "refreshing", "maintenance"}:
+        raise ValueError(f"service status unavailable: {result.stderr.strip()}")
+    return state in {"active", "reloading", "refreshing"}
+
+
+def ensure_service_host(host: dict, config_path: Path, name: str) -> dict:
+    if service_host_active(host):
+        return host
+    if reconciliation_marker(config_path, name).exists():
+        raise ValueError("service is stopped for reconciliation; inspect its logs, then use services.py clear before retrying")
+    installed = Path(host["installed"])
+    installed.parent.mkdir(parents=True, exist_ok=True)
+    if not installed.exists():
+        with installed.open("xb") as stream:
+            stream.write(Path(host["staged"]).read_bytes())
+        installed.chmod(0o600)
+    if host["backend"] == "launchd":
+        if launchd_status(host["target"]).returncode:
+            checked_host_command(["launchctl", "bootstrap", host["target"].rsplit("/", 1)[0], str(installed)])
+        checked_host_command(["launchctl", "kickstart", host["target"]])
+    else:
+        checked_host_command(["systemctl", "--user", "daemon-reload"])
+        checked_host_command(["systemctl", "--user", "enable", "--now", host["target"]])
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if service_host_active(host):
+            return host
+        time.sleep(0.1)
+    raise ValueError("service startup is unconfirmed; reconcile its existing manager status and logs")
 
 
 def stop_child(child):

@@ -4,6 +4,9 @@ description: Use to hand implementation work to a separate agent process on any 
 metadata:
   short-description: Brief, watch, nudge, and record agent sessions
 resources:
+  - path: scripts/supervisor.py
+    kind: script
+    description: Start a managed Codex or Claude Supervisor with a worker ledger, native binding and persistent foreign reader.
   - path: scripts/routine_check.py
     kind: script
     description: Combine current readers into one digest, retaining unresolved comments, staffing requests and coverage errors.
@@ -80,6 +83,11 @@ resources:
     kind: reference
     description: Rules every Supervisor brief carries by link, and the milestone lead brief template.
 commands:
+  - name: supervisor-start
+    source: skill
+    resource_path: scripts/supervisor.py
+    example_argv: ["uv", "run", "scripts/supervisor.py", "start", "--owner", "OWNER", "--harness", "claude", "--miss-issue", "OWNER/REPO#NUMBER"]
+    purpose: Starts either supported Supervisor harness through the shared managed launcher, with no private setup files required.
   - name: supervisor-routine-check
     source: skill
     resource_path: scripts/routine_check.py
@@ -316,6 +324,12 @@ For a separate worker under existing delegation authority, read
 That role does not start a full Supervisor run.
 
 ## Before Taking Over: Permission Mode
+
+For a fresh Supervisor or an authorized takeover, use the shared
+[Supervisor start command](references/helpers.md#managed-supervisor-start).
+It uses the existing launcher and service runner, keeps the Supervisor out of
+the worker ledger, and binds the verified native launch. A worker preparing
+this command does not run a Director-owned takeover.
 
 Check the current permission mode. If it blocks a needed step, name that step
 in the first message, before a denial. Claude auto mode is not launch or train

@@ -6,6 +6,8 @@
 """Exercise generated service entry points with bounded offline child fixtures."""
 
 import json
+import importlib
+import socket
 import os
 from pathlib import Path
 import plistlib
@@ -16,11 +18,16 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from typing import Any
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import services
+
+
+def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    return patch.object(target, name, *args, **kwargs)
 
 
 class ServicesTests(unittest.TestCase):
@@ -235,6 +242,80 @@ class ServicesTests(unittest.TestCase):
                 with services.service_lock(self.config, "drive"):
                     self.fail("duplicate service acquired the lock")
 
+    def test_managed_service_reuses_its_host_and_restarts_after_a_cleared_failure(self) -> None:
+        for platform in ("darwin", "linux"):
+            with self.subTest(platform=platform):
+                self.assert_service_host_recovers(platform)
+
+    def assert_service_host_recovers(self, platform: str) -> None:
+        self.data["uv"] = "/fixture/uv"
+        self.save()
+        output = self.root / platform
+        state = {"loaded": False, "active": False}
+        operations = []
+
+        def manager(argv: list[str]) -> subprocess.CompletedProcess:
+            operations.append(argv)
+            if argv[:2] == ["launchctl", "print"]:
+                if not state["loaded"]:
+                    return subprocess.CompletedProcess(argv, 113, "", "Could not find service")
+                definition = plistlib.loads(next(output.glob("*.foreign.plist")).read_bytes())
+                arguments = "\n".join(definition["ProgramArguments"])
+                status = "running" if state["active"] else "not running"
+                return subprocess.CompletedProcess(argv, 0, f"state = {status}\narguments = {{\n{arguments}\n}}\n", "")
+            if "show" in argv:
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            if "is-active" in argv:
+                return subprocess.CompletedProcess(argv, 0 if state["active"] else 3,
+                                                   "active" if state["active"] else "inactive", "")
+            if "bootstrap" in argv:
+                state["loaded"] = True
+            if "kickstart" in argv or "enable" in argv:
+                state.update(loaded=True, active=True)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        with (patch.object(services.sys, "platform", platform),
+              patch.object(services.Path, "home", return_value=self.root / platform / "home"),
+              patch.dict(services.os.environ, {"XDG_CONFIG_HOME": str(output / "config")}),
+              patch.object(services.shutil, "which", return_value="/fixture/systemctl"),
+              patch.object(services, "host_command", side_effect=manager)):
+            host = services.prepare_service_host(self.config, Path(__file__).resolve().parents[3], output, "foreign")
+            services.ensure_service_host(host, self.config, "foreign")
+            mutations = sum("bootstrap" in row or "enable" in row or "kickstart" in row for row in operations)
+            services.ensure_service_host(host, self.config, "foreign")
+            self.assertEqual(sum("bootstrap" in row or "enable" in row or "kickstart" in row for row in operations), mutations)
+            if platform == "darwin":
+                installed = Path(host["installed"])
+                installed_job = plistlib.loads(installed.read_bytes())
+                installed_job["StandardOutPath"] = str(self.root / "existing-reader-log.jsonl")
+                installed.write_bytes(plistlib.dumps(installed_job))
+                reused = services.prepare_service_host(self.config, Path(__file__).resolve().parents[3], output, "foreign")
+                self.assertEqual(reused["log"], installed_job["StandardOutPath"])
+            state["active"] = False
+            marker = services.reconciliation_marker(self.config, "foreign")
+            marker.touch()
+            with self.assertRaises(ValueError):
+                services.ensure_service_host(host, self.config, "foreign")
+            with patch.object(services.sys, "argv", ["services.py", "clear", "--config", str(self.config), "--service", "foreign"]):
+                self.assertEqual(services.main(), 0)
+            services.ensure_service_host(host, self.config, "foreign")
+            self.assertTrue(state["active"])
+            self.assertTrue(Path(host["installed"]).is_file())
+
+    def test_service_host_refuses_another_config_or_a_denied_manager_read(self) -> None:
+        self.save()
+        with (patch.object(services.sys, "platform", "darwin"),
+              patch.object(services.Path, "home", return_value=self.root / "home"),
+              patch.object(services, "host_command", return_value=subprocess.CompletedProcess([], 0, "arguments = {\n/other/service\n}\n", "")) as commands):
+            with self.assertRaisesRegex(ValueError, "another configuration"):
+                services.prepare_service_host(self.config, Path(__file__).resolve().parents[3], self.root / "jobs", "foreign")
+            self.assertEqual(commands.call_count, 1)
+        with (patch.object(services.sys, "platform", "darwin"),
+              patch.object(services, "host_command", return_value=subprocess.CompletedProcess([], 1, "", "permission denied")) as commands):
+            with self.assertRaisesRegex(ValueError, "unavailable"):
+                services.prepare_service_host(self.config, Path(__file__).resolve().parents[3], self.root / "jobs", "foreign")
+            self.assertEqual(commands.call_count, 1)
+
     def codex_source(self, identity: str) -> tuple[Path, dict[str, str]]:
         home = self.root / "account"
         transcript = home / "sessions" / f"{identity}.jsonl"
@@ -327,6 +408,58 @@ class ServicesTests(unittest.TestCase):
         self.assertEqual(bound["tmux_session_id"], pane["session_id"])
         self.assertEqual(bound["session_id"], env["CLAUDE_CODE_SESSION_ID"])
         self.assertNotIn("supervisor_owned", bound)
+
+    def test_startup_binding_validates_launched_claude_native_identity(self) -> None:
+        import session_liveness
+        import tmux_terminal
+
+        self.save()
+        source = self.claude_source()
+        identity = source.env["CLAUDE_CODE_SESSION_ID"]
+        entry = {**source.pane, "session_id": identity, "harness": "claude", "transcript": str(source.transcript),
+                 "tmux_session_id": source.pane["session_id"], "pid": 50, "supervisor_owned": True}
+        with (patch.object(tmux_terminal.Terminal, "list", return_value=[source.pane]),
+              patch.object(tmux_terminal, "process_parents", return_value={50: 20, 20: 1}),
+              patch.object(session_liveness, "inventory", return_value=[(50, "ttys001", "claude")]),
+              patch.object(session_liveness, "process_started_at", return_value=datetime.now(timezone.utc))):
+            bound = services.bind_launched_supervisor(self.config, entry)
+            self.assertEqual(bound["session_id"], identity)
+            self.assertEqual(bound["role"], "supervisor")
+            self.assertNotIn("supervisor_owned", bound)
+            before = self.config.read_bytes()
+            with self.assertRaises(ValueError):
+                services.bind_launched_supervisor(self.config, {**entry, "pid": 51})
+            self.assertEqual(self.config.read_bytes(), before)
+
+    def test_codex_binding_uses_the_real_interpreter_normalized_proxy_guard(self) -> None:
+        import codex_session_proxy
+        import session_liveness
+
+        closure = importlib.import_module("github_plan_closure")
+        self.save()
+        identity = self.claude_source().env["CLAUDE_CODE_SESSION_ID"]
+        transcript, env = self.codex_source(identity)
+        home = Path(env["CODEX_HOME"])
+        endpoint = self.root / "guard.sock"
+        guard = socket.socket(socket.AF_UNIX)
+        self.addCleanup(guard.close)
+        guard.bind(str(endpoint))
+        endpoint.chmod(0o600)
+        argv = [str(self.root / "catalog with spaces/codex-session.py"), "launch", "--codex-home", str(home)]
+        entry = {"harness": "codex", "session_id": identity, "transcript": str(transcript), "codex_home": str(home),
+                 "backend": "tmux", "supervisor_owned": True, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:identity",
+                 "pid": os.getpid(), "tty": "ttys001", "window_id": "$1", "tab_id": "@1"}
+        with (patch_attr(closure, "closed_log", return_value=self.root / "closed.json"),
+              patch_attr(closure.sys, "argv", argv),
+              patch.object(session_liveness, "native_arguments", return_value=[sys.executable, *argv]),
+              patch.object(codex_session_proxy, "source_endpoint", return_value=home / "app-server.sock"),
+              patch_attr(closure, "daemon_endpoint", return_value=home / "app-server.sock")):
+            closure.register_proxy(str(home), str(endpoint))
+            bound = services.bind_launched_supervisor(self.config, entry)
+            self.assertEqual(bound["session_id"], identity)
+            with patch.object(session_liveness, "native_arguments", return_value=[sys.executable, *argv, "--changed"]):
+                with self.assertRaises(ValueError):
+                    services.bind_launched_supervisor(self.config, entry)
 
     def test_bind_claude_refuses_unmanaged_or_ambiguous_terminal(self) -> None:
         import session_liveness

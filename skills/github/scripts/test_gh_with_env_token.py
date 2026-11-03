@@ -416,6 +416,43 @@ def test_no_token_command_preserves_authorized_active_auth_fallback() -> None:
         assert "'active-login'" in result.stderr
 
 
+def test_active_cli_write_retains_selected_login_before_sending() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        classifier = root / "classifier.py"
+        fake_gh = root / "gh"
+        called = root / "called"
+        write(fake_gh, f"#!/bin/sh\ntouch '{called}'\n")
+        env_file = root / "local.env"
+        env_file.write_text("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN=file-login\n")
+        for actual in ("director", "changed"):
+            called.unlink(missing_ok=True)
+            write(classifier, "import json\n" + f"print(json.dumps({{'body': {{'login': {actual!r}}}}}))\n")
+            result = run_wrapper(env_file, classifier, root / "unused.py", "issue", "comment", "1", "--body", "fixture",
+                                 gh_command=fake_gh, extra_env={"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1",
+                                                             "GH_WITH_ENV_TOKEN_EXPECTED_LOGIN": "director"})
+            assert (result.returncode == 0) == (actual == "director"), result.stderr
+            assert called.exists() == (actual == "director")
+
+
+def test_approved_active_fallback_keeps_the_default_automation_login_route() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        unused = root / "unused.py"
+        write(unused, "raise AssertionError('explicit fallback should not pin the default bot')\n")
+        fake_gh = root / "gh"
+        write(fake_gh, "#!/bin/sh\n"
+              "if [ \"$*\" = 'api user --jq .login' ]; then echo person; exit 0; fi\n"
+              "printf 'written\\n'\n")
+        env_file = root / "local.env"
+        env_file.write_text("GH_WITH_ENV_TOKEN_EXPECTED_LOGIN=stale-app-login\n")
+        result = run_wrapper(env_file, unused, unused, "issue", "comment", "1", "--body", "fixture",
+                             gh_command=fake_gh, extra_env={"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1",
+                                                         "CODEX_AUTOMATION_LOGIN": "agent"})
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "written\n"
+
+
 def test_partial_app_configuration_fails_closed() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -1591,6 +1628,8 @@ def main() -> None:
         test_no_token_check_fails_explicitly_without_running_gh,
         test_check_rejects_commands_before_active_auth_fallback,
         test_no_token_command_preserves_authorized_active_auth_fallback,
+        test_active_cli_write_retains_selected_login_before_sending,
+        test_approved_active_fallback_keeps_the_default_automation_login_route,
         test_partial_app_configuration_fails_closed,
         test_app_auth_failure_never_falls_back_to_active_user,
         test_empty_app_auth_response_fails_closed,
