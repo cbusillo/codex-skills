@@ -115,7 +115,7 @@ class MessageRoutingTests(unittest.TestCase):
                 watch.handle_message_hint(self.args, self.hint, self.reader)
             send.assert_called_once()
         self.assertEqual(json.loads(self.args.state.read_text())["watermarks"], {REPO: STAMP})
-        opening = {"html_url": URL.split("#")[0], "created_at": STAMP, "updated_at": STAMP,
+        opening = {"html_url": URL.split("#")[0], "created_at": STAMP, "updated_at": "2026-11-01T00:00:00Z",
                    "body": "Request", "user": {"login": "client-agent[bot]", "type": "Bot"}}
         with patch_attr(watch, "read_message_hint", return_value=(REPO, opening)), patch_attr(watch, "recipient", return_value=(self.entry, False, "")), patch_attr(watch.review_notifications, "send") as send, redirect_stdout(io.StringIO()) as output:
             watch.handle_message_hint(self.args, self.hint, self.reader)
@@ -395,7 +395,9 @@ class MessageRoutingTests(unittest.TestCase):
         self.assertIsNotNone(event)
         assert event is not None
         self.reader.paged_json.return_value = [source]
-        [sweep] = watch.read_opened(self.reader, REPO, STAMP)
+        [opening, sweep] = watch.read_opened(self.reader, REPO, STAMP)
+        self.assertEqual(opening["updated_at"], source["created_at"])
+        self.assertEqual(watch.source_messages(event[1]), [opening, sweep])
         self.assertEqual(
             watch.delivery_key({"url": event[1]["html_url"], "updated_at": event[1]["updated_at"]}),
             watch.delivery_key({"url": sweep["html_url"], "updated_at": sweep["updated_at"]}),
@@ -408,6 +410,12 @@ class MessageRoutingTests(unittest.TestCase):
         with patch_attr(watch.review_notifications, "send") as send:
             watch.route_report(self.args, {"attention": rows}, self.reader, self.args.own_login)
         send.assert_not_called()
+        opening = {"repo": REPO, "comment_url": URL.split("#")[0], "created_at": STAMP,
+                   "updated_at": STAMP, "author": "unlisted[bot]", "comment_kind": "issue_body"}
+        with patch_attr(watch, "recipient", return_value=(self.entry, False, "")), patch_attr(watch.review_notifications, "send") as send:
+            watch.route_report(self.args, {"attention": [opening]}, self.reader, self.args.own_login)
+            watch.route_report(self.args, {"attention": [{**opening, "updated_at": "2026-11-01T00:00:00Z"}]}, self.reader, self.args.own_login)
+        send.assert_called_once()
         self.args.state.write_text(json.dumps({"event_started_at": "2026-10-31T03:00:00Z"}))
         with patch_attr(watch, "recipient", return_value=(self.supervisor, True, "owner_finished")), patch_attr(watch.review_notifications, "send"), patch_attr(watch, "audit_miss") as audit:
             watch.route_notices(self.args, [notice()], {}, self.reader, event=False, persist=self.persist)

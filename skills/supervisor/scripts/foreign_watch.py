@@ -271,7 +271,19 @@ def read_opened(reader, repo: str, since: str, client_agents=()) -> list[dict]:
                     bot_reviews.append({**review, "updated_at": review.get("submitted_at") or review["created_at"]})
                 else:
                     messages.append(review)
-    return versioned_messages(reader, messages) + bot_reviews
+    return [event for source in versioned_messages(reader, messages) for event in source_messages(source, client_agents)] + bot_reviews
+
+
+def source_messages(source: dict, client_agents: Any = ()) -> list[dict]:
+    if "#" in source["html_url"]:
+        return [source]
+    opening = {**source, "updated_at": source["created_at"]}
+    user = source.get("user") or {}
+    if timestamp(source["updated_at"]) <= timestamp(source["created_at"]):
+        return [opening]
+    if user.get("type") == "Bot" and user.get("login", "").casefold() not in client_agents:
+        return [opening]
+    return [opening, source]
 
 
 def read_inline_comments(reader: GitHubReader, repo: str, since: str) -> list[dict]:
@@ -406,7 +418,7 @@ def load_dispatched(path: Path) -> set[str]:
     data = json.loads(path.read_text()) if path.exists() else {}
     dispatched = data.get("change_requests_dispatched", []) if isinstance(data, dict) else None
     if not isinstance(dispatched, list) or not all(isinstance(record, str) for record in dispatched):
-        raise ValueError("change_requests_dispatched must be a list of record IDs")
+        raise ValueError("change_requests_dispatched must contain record IDs or notice keys")
     return set(dispatched)
 
 
@@ -414,11 +426,9 @@ def dispatch_once(notices: list[dict], dispatched: set[str]) -> list[dict]:
     fresh = []
     for notice in notices:
         if notice.get("kind") == "foreign_opened":
-            opening = f"opened:{notice['url']}"
+            opening = delivery_key(notice)
             if opening in dispatched:
-                if timestamp(notice["updated_at"]) <= timestamp(notice.get("created_at", notice["updated_at"])):
-                    continue
-                notice = {**notice, "kind": "foreign"}
+                continue
             dispatched.add(opening)
         record = notice.get("change_request", {}).get("record_id")
         if record in dispatched:
@@ -549,8 +559,16 @@ def handle_message_hint(args: Any, hint: dict, reader: GitHubReader) -> None:
     if source is None:
         return
     repo, comment = source
-    notice = make_notice(repo, comment, args.own_login, args.launchplane_login)
-    notices = [{**notice, "hook_received_at": hint["received_at"]}] if notice else []
+    with watch_lock(args.state, wait=True):
+        state = json.loads(args.state.read_text()) if args.state.exists() else {}
+        since = state.get("watermarks", {}).get(repo) or state.get("event_started_at") or hint["received_at"]
+    notices = []
+    for message in source_messages(comment, getattr(args, "client_agent_logins", ())):
+        if "#" not in message["html_url"] and message["updated_at"] == message["created_at"] and timestamp(message["created_at"]) < timestamp(since):
+            continue
+        notice = make_notice(repo, message, args.own_login, args.launchplane_login)
+        if notice:
+            notices.append({**notice, "hook_received_at": hint["received_at"]})
     with watch_lock(args.state.with_name(args.state.name + ".routing"), wait=True):
         deliveries = load_deliveries(args.state)
         persist = lambda: save_deliveries(args.state, deliveries)
@@ -578,6 +596,7 @@ def make_notice(repo: str, comment: dict, own_logins: list[str], launchplane_log
     is_question = (login or "").casefold() in own and body.strip().lstrip("*").startswith(QUESTION_PREFIXES)
     if not (is_question or is_launchplane or (login or "").casefold() not in own):
         return None
+    is_opening = "#" not in url and updated == comment.get("created_at", updated)
     notice = {
         "repository": repo,
         "author": login,
@@ -585,12 +604,10 @@ def make_notice(repo: str, comment: dict, own_logins: list[str], launchplane_log
         "url": url,
         "updated_at": updated,
         "excerpt": excerpt(body),
-        "kind": "director_question" if is_question else "launchplane" if is_launchplane else "foreign_opened" if "#" not in url else "foreign",
+        "kind": "director_question" if is_question else "launchplane" if is_launchplane else "foreign_opened" if is_opening else "foreign",
         "untrusted": True,
         "review_marker": marker is not None,
     }
-    if notice["kind"] == "foreign_opened":
-        notice["created_at"] = comment.get("created_at", updated)
     requested = change_request(lines, marker, url) if is_launchplane else None
     return {**notice, "change_request": requested} if requested else notice
 
@@ -884,12 +901,18 @@ def route_report_locked(args: Any, report: dict, reader: GitHubReader, own_login
                 continue
             try:
                 timestamp(row["updated_at"])
-                notices.append({
+                notice = {
                     "repository": row["repo"], "url": row["comment_url"], "updated_at": row["updated_at"],
                     "author": row["author"], "author_class": row.get("author_class"),
                     "automation_for": row.get("automation_for"),
-                    "kind": "foreign_opened" if row.get("comment_kind") == "issue_body" else "foreign", "untrusted": True,
-                })
+                    "kind": "foreign", "untrusted": True,
+                }
+                if row.get("comment_kind") == "issue_body":
+                    created = row.get("created_at", row["updated_at"])
+                    notices.append({**notice, "updated_at": created, "kind": "foreign_opened"})
+                    if timestamp(row["updated_at"]) <= timestamp(created):
+                        continue
+                notices.append(notice)
             except READ_ERRORS as error:
                 report.setdefault("routing_errors", []).append(redact_string(f"{type(error).__name__}: {error}"))
         routing_args = argparse.Namespace(**{**vars(args), "own_login": own_logins, "state": state_path})
@@ -902,7 +925,7 @@ def route_report_locked(args: Any, report: dict, reader: GitHubReader, own_login
             persist=lambda: save_deliveries(state_path, deliveries),
         )
         maintain_receipts(routing_args, deliveries, lambda: save_deliveries(state_path, deliveries))
-        routing = {notice["url"]: notice.get("routing", {}) for notice in notices}
+        routing = {notice["url"]: notice["routing"] for notice in notices if notice.get("routing")}
         for row in report.get("attention", []):
             if row.get("comment_url") in routing:
                 row["routing"] = routing[row["comment_url"]]

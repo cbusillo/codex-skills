@@ -137,11 +137,12 @@ class RoutineCheckTests(unittest.TestCase):
                     source = {
                         "id": number, "number": number, "title": "Add a collaborator", "body": "Please review this request.",
                         "user": {"login": "cellmechanic-website-agent[bot]", "type": "Bot"},
-                        "created_at": created, "updated_at": created,
+                        "created_at": created, "updated_at": "2026-11-02T22:34:30Z", "node_id": "opening-node",
                         "html_url": f"https://github.com/{repo}/{'pull' if pull else 'issues'}/{number}",
                         **({"pull_request": {}} if pull else {}),
                     }
                     reader = Mock()
+                    reader.graphql_json.return_value = ApiResult(ok=True, status=200, body={"data": {"nodes": [{"lastEditedAt": source["updated_at"]}]}})
                     reader.paged_json.side_effect = lambda path, **_: [source] if path == f"repos/{repo}/issues" else []
                     watch = routine_check.foreign_watch
                     notices, errors, watermarks = watch.scan([repo], {repo: since}, ["cbusillo", "agent[bot]"], [], created, reader)
@@ -155,10 +156,9 @@ class RoutineCheckTests(unittest.TestCase):
                     state = Path(directory) / "state.json"
                     watch.save_state(state, watermarks, dispatched=dispatched)
                     self.assertEqual(watch.dispatch_once(notices, watch.load_dispatched(state)), [])
-                    [edit] = watch.dispatch_once([{**notices[0], "updated_at": "2026-11-03T12:00:00Z"}],
-                                                 watch.load_dispatched(state))
-                    self.assertEqual(edit["kind"], "foreign")
-                    self.assertEqual(edit["updated_at"], "2026-11-03T12:00:00Z")
+                    self.assertEqual(notices[0]["updated_at"], source["created_at"])
+                    old_notices, errors, _ = watch.scan([repo], {repo: source["updated_at"]}, ["cbusillo", "agent[bot]"], [], source["updated_at"], reader)
+                    self.assertEqual((old_notices, errors), ([], []))
                     args = argparse.Namespace(owner="cbusillo", repo=[], thread=[], radar_config=Path("/absent/radar.yaml"))
                     report = {"attention": [], "coverage": {"errors": []}, "ok": True}
                     with patch_attr(routine_check.radar, "resolve_settings", return_value={}), patch_attr(routine_check.radar.rollup, "load_config", return_value={}), patch_attr(routine_check.radar, "collect_payload", return_value=report) as collect:

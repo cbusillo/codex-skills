@@ -207,11 +207,16 @@ class WatchTests(unittest.TestCase):
         first = {**opened(), "node_id": "first"}
         second = {**opened(), "node_id": "second", "html_url": f"https://github.com/{REPO}/issues/51"}
         reader.paged_json.side_effect = feeds([], opened_items=[first, second])
-        reader.graphql_json.return_value = ApiResult(ok=True, status=200, body={"data": {"nodes": [{"lastEditedAt": SINCE}, {"lastEditedAt": SINCE}]}})
+        reader.graphql_json.return_value = ApiResult(ok=True, status=200, body={"data": {"nodes": [{"lastEditedAt": STARTED}, {"lastEditedAt": STARTED}]}})
         notices, errors, _ = self.scan(reader)
         self.assertEqual(errors, [])
         self.assertEqual({item["url"] for item in notices}, {first["html_url"], second["html_url"]})
         reader.graphql_json.assert_called_once()
+        self.assertEqual([item["kind"] for item in notices], ["foreign_opened", "foreign"] * 2)
+        reader.paged_json.side_effect = feeds([], opened_items=[{**first, "created_at": "2026-10-08T00:00:00Z"}])
+        reader.graphql_json.return_value = ApiResult(ok=True, status=200, body={"data": {"nodes": [{"lastEditedAt": STARTED}]}})
+        [edit] = self.scan(reader)[0]
+        self.assertEqual((edit["kind"], edit["updated_at"]), ("foreign", STARTED))
 
     def test_version_failures_keep_retryability_and_deleted_nodes_are_skipped(self):
         reader = Mock()
