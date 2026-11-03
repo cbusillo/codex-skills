@@ -230,7 +230,7 @@ class SupervisorStartTests(unittest.TestCase):
             self.assertEqual(effective["selector"], selector)
             self.assertEqual(effective["account"], account)
             if self.args.harness == "codex":
-                self.assertIn(str(Path(iterm_tab.__file__).with_name("codex-session.py")), effective["argv"])
+                self.assertIn(str(supervisor.SCRIPTS / "codex-session.py"), effective["argv"])
             commands.append(words)
             registration = Path(argv[argv.index("--ledger") + 1])
             self.assertNotEqual(registration, ledger)
