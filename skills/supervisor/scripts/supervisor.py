@@ -198,6 +198,7 @@ def launch_supervisor(args: argparse.Namespace, root: Path, config_path: Path, l
     journal["attempt"] = str(attempt)
     save_state(root / "start.json", journal)
     save_state(registration, [])
+    environment: dict[str, str] = vars(args).get("github_environment", {})
     command = attempt / "command.txt"
     command.write_text(
         f"cd {shlex.quote(str(args.directory.resolve()))} && exec "
@@ -206,7 +207,7 @@ def launch_supervisor(args: argparse.Namespace, root: Path, config_path: Path, l
                 "env",
                 *github_access.environment_prefix(
                     {
-                        **getattr(args, "github_environment", {}),
+                        **environment,
                         **(
                             {"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1"}
                             if getattr(args, "github_cli_login", None)
@@ -249,7 +250,7 @@ def launch_supervisor(args: argparse.Namespace, root: Path, config_path: Path, l
         else []
     )
     if routine:
-        routine = [*github_access.environment_prefix(getattr(args, "github_environment", {})), *routine]
+        routine = [*github_access.environment_prefix(environment), *routine]
     if routine and args.github_cli_login:
         routine.extend(["--github-cli-login", args.github_cli_login])
     brief = attempt / "brief.txt"
