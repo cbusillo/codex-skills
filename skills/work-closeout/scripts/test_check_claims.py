@@ -502,8 +502,10 @@ class ClaimCloseoutTests(unittest.TestCase):
         projection = {"claim": SOURCE, "completed_steps": ["post_claim"], "release_command": command}
         self.assertEqual(helper.history.claim_target({"claim": SOURCE, "release_command": command}, SESSION), (REPO, 1))
         entry = self.entry()
+        claim_command = f"uv run gh-plan.py --repo {REPO} claim 1 --session {SESSION}"
         rows = [
-            {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "projection", "input": 'text(load("receipt"));'}},
+            {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "projection",
+                         "input": 'text(await tools.exec_command({cmd:' + json.dumps(claim_command) + '}));'}},
             {"payload": {"type": "custom_tool_call_output", "call_id": "projection", "output": json.dumps(projection)}},
         ]
         with Path(entry["transcript"]).open("a") as stream:
@@ -1870,6 +1872,24 @@ class ClaimCloseoutTests(unittest.TestCase):
         report = helper.check([root])
         self.assertFalse(report["claims_clear"])
         self.assertTrue(any(line.startswith(f"{REPO}#1:") for line in report["blocked"]))
+
+    def test_bounded_checkpoint_output_preserves_journal_coverage_and_held_claims(self) -> None:
+        rows = [
+            {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "checkpoint",
+                         "input": 'text(load("checkpoint")); text(ALL_TOOLS.filter(x=>/exec_command/.test(x.name)));'}},
+            native_terminal_result("checkpoint", json.dumps({"claim": {"worker": "task", "held": False}}), javascript=True),
+        ]
+        root = self.journal_era_session(*finished_opaque_call(), *rows)
+        discovery = helper.recorded_targets(root)
+        self.assertTrue(discovery["journal_era"], discovery)
+        self.assertFalse(discovery["receipts"], discovery)
+        report = helper.check([root])
+        self.assertTrue(report["claims_clear"], report)
+        self.assertTrue(report["coverage"]["complete"], report)
+        self.comments.remove(self.release)
+        report = helper.check([root])
+        self.assertFalse(report["claims_clear"], report)
+        self.assertTrue(report["blocked"], report)
 
     def test_quoted_historical_receipts_do_not_force_computed_reads_through_reconstruction(self) -> None:
         for session, rendering in ((session, rendering) for session in (SESSION, "historical-session")

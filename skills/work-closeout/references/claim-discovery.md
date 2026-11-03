@@ -43,7 +43,9 @@ fields is data. Receipt discovery unwraps native output and text blocks, not
 arbitrary fields inside returned documents. Output from proven data readers is
 data too, including raw issue bodies, saved receipts and their matching empty
 polls. Unknown scripts, opaque commands and typed interactive input retain their
-receipt evidence. Unclassified tool outputs remain conservative. Merged output from
+receipt evidence. Bounded code-mode cells without shell sites also return data,
+including stored snapshots; an empty process poll remains a shell site.
+Unclassified tool outputs remain conservative. Merged output from
 other executable commands cannot resolve a bare claim's repository. Shell
 syntax that the maintained parser cannot decode also stays conditional; use
 the explicit literal target form above and restore its complete native output.
