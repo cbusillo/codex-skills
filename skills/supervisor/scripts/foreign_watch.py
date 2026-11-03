@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import director_mentions
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github-work-rollup/scripts"))
 import review_notifications
+radar: Any = importlib.import_module("github_unanswered_comments")
 import services
 import github_access
 
@@ -831,13 +832,19 @@ def audit_miss(args: Any, receipt: dict, persist: Any) -> None:
         persist()
 
 
+def is_ordinary_bot_notice(notice: dict, client_agents: Any = ()) -> bool:
+    return (
+        notice.get("kind") == "foreign"
+        and radar.is_github_bot(str(notice.get("author") or ""), notice.get("author_type", ""))
+        and not (notice.get("author_class") == "automation" and notice.get("automation_for"))
+        and str(notice.get("author", "")).casefold() not in client_agents
+    )
+
+
 def route_notices(args: Any, notices: list[dict], deliveries: dict, reader: GitHubReader, *, event: bool, persist: Any) -> None:
     for notice in notices:
-        if notice.get("kind") not in {"foreign", "foreign_opened"} or (
-            notice.get("kind") != "foreign_opened"
-            and (notice.get("author_type") == "Bot" or str(notice.get("author", "")).endswith("[bot]"))
-            and not (notice.get("author_class") == "automation" and notice.get("automation_for"))
-            and str(notice.get("author", "")).casefold() not in getattr(args, "client_agent_logins", ())
+        if notice.get("kind") not in {"foreign", "foreign_opened"} or is_ordinary_bot_notice(
+            notice, getattr(args, "client_agent_logins", ())
         ):
             continue
         receipt = deliveries.setdefault(delivery_key(notice), {})
@@ -1019,7 +1026,6 @@ def main() -> int:
         parser.error("routing needs --ledger, --notify-config and --miss-issue together")
     if args.miss_issue and not re.fullmatch(rf"{re.escape(args.owner)}/[A-Za-z0-9_.-]+#[1-9][0-9]*", args.miss_issue, re.I):
         parser.error("--miss-issue must belong to the configured Director")
-    radar: Any = importlib.import_module("github_unanswered_comments")
     identities = radar.people_identities({(args.director_login or args.owner).casefold()}, args.people_index)
     args.director_names = identities["director_names"]
     args.recipient_identity_gap = (identities.get("error") or "Director aliases are ambiguous"
@@ -1117,6 +1123,7 @@ def watch(args, repos, initial, deadline):
             notice.get("kind") not in {"director_question", "director_mention"}
             or (notice.get("author") or "").casefold() not in own_logins
             for notice in notices
+            if not is_ordinary_bot_notice(notice, getattr(args, "client_agent_logins", ()))
         )
         if wakes_supervisor and not errors and settle_at is None:
             settle_at = min(deadline, time.monotonic() + NOTICE_SETTLE_SECONDS)
