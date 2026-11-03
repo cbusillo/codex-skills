@@ -460,10 +460,18 @@ def superseded_closeout(operation: Operation, harness: str, source: dict) -> tup
     return matches[0], generation
 
 
-def require_closed_smokes(config: dict, operation: Operation) -> None:
+def require_closed_smokes(config: dict, operation: Operation, result: dict) -> str | None:
     steps = operation.state["steps"]
-    require(not any(step.get("complete") is False for step in steps.values()),
-            "supersede", "resolve every uncertain mutation in the original journal before superseding")
+    incomplete = {name for name, step in steps.items() if step.get("complete") is False}
+    reported_url = steps.get("report_" + fingerprint(result), {}).get("result", {}).get("url")
+    if incomplete:
+        require(incomplete == {"report_" + fingerprint(result)},
+                "supersede", "resolve every uncertain mutation other than this failed result's report")
+        reports = [url for name, step in steps.items()
+                   if name.startswith("report_") and step.get("complete") is True
+                   and isinstance(url := step.get("result", {}).get("url"), str) and url]
+        require(len(reports) == 1, "supersede", "requires one confirmed earlier report for this failed attempt")
+        reported_url = reports[0]
     for harness in ("codex", "claude"):
         if not steps.get(harness + "_launch"):
             continue
@@ -479,6 +487,7 @@ def require_closed_smokes(config: dict, operation: Operation) -> None:
                                                          supervisor_session=config["supervisor_session"]), closed)
         except ValueError as error:
             raise GateFailed("supersede", str(error)) from error
+    return reported_url
 
 
 def require_supervisor_identity(config: dict) -> None:
@@ -508,9 +517,8 @@ def poll(config: dict, evidence: Path, *, supersede_failed: bool = False) -> dic
             require(old_result.get("ok") is False,
                     "supersede", "only a failed verification can be superseded")
             with closure.store_lock(old.evidence / "verification", create=True):
-                require_closed_smokes(current, old)
+                superseded_url = require_closed_smokes(current, old, old_result)
             superseded = str(old.evidence)
-            superseded_url = old.state["steps"].get("report_" + fingerprint(old_result), {}).get("result", {}).get("url")
             landings += pending_landings(source, landings[-1], runtime["after_sha"])
             state.update(attempt=landings[-1] + "-" + uuid.uuid4().hex,
                          superseded=superseded, superseded_url=superseded_url)

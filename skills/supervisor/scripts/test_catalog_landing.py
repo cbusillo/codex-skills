@@ -393,6 +393,53 @@ class CatalogLandingTests(unittest.TestCase):
             self.assertEqual(landing.post_result(self.config, operation, result), posted["html_url"])
             write.assert_not_called()
 
+    def test_supersede_uses_confirmed_failure_without_replaying_or_rewriting_duplicate_report(self) -> None:
+        operation = Operation(self.root / "B", [self.config["repo"], "B"])
+        reported = {"ok": False, "gate": "runtime", "landings": ["B"], "runtime_sha": "old"}
+        pending = {**reported, "runtime_sha": "new"}
+        confirmed_url = f"https://github.com/{self.config['repo']}/issues/{self.config['issue']}#issuecomment-2"
+        pending_phase = "report_" + landing.fingerprint(pending)
+        operation.state["steps"] = {
+            "report_" + landing.fingerprint(reported): {"complete": True, "result": {"url": confirmed_url}},
+            pending_phase: {"complete": False},
+        }
+        landing.save_state(operation.path, operation.state)
+        landing.save_state(operation.evidence / "result.json", pending)
+        (operation.evidence / "result.md").write_text("Retained unconfirmed report body\n")
+        landing.save_state(self.root / "cursor.json", {"repo": self.config["repo"], "last_sha": "A", "pending": ["B"], "attempt": "B"})
+        retained = {path: path.read_bytes() for path in operation.evidence.iterdir()}
+        self.runner.side_effect = lambda gate, *_, **__: (
+            {"url": "new-report"} if gate.startswith("report_") else {"status": "already_current", "after_sha": "tip"})
+        with (patch.object(landing, "pending_landings", return_value=["C"]),
+              patch.object(landing, "git", return_value="script.py"),
+              patch.object(landing, "verify", return_value={"ok": True}), patch.object(subprocess, "run") as write):
+            result = landing.poll(self.config, self.root, supersede_failed=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["superseded_url"], confirmed_url)
+        self.assertEqual(result["landings"], ["B", "C"])
+        write.assert_not_called()
+        self.assertNotIn(pending_phase, [call.args[0] for call in self.runner.call_args_list])
+        self.assertEqual({path: path.read_bytes() for path in retained}, retained)
+        new_reports = [path for path in self.root.glob("*/result.md") if path.parent.resolve() != operation.evidence]
+        self.assertEqual(len(new_reports), 1)
+        self.assertIn(confirmed_url, new_reports[0].read_text())
+
+    def test_supersede_requires_one_publication_without_other_uncertainty(self) -> None:
+        failed = {"ok": False, "landings": ["B"]}
+        confirmed = {"complete": True, "result": {"url": "confirmed-report"}}
+        for extra, report in (
+            ({"launch": {"complete": False}}, confirmed),
+            ({"report_another": confirmed}, confirmed),
+            ({}, {"complete": True, "result": {}}),
+        ):
+            with self.subTest(extra=extra, report=report):
+                operation = Operation(self.root, [self.config["repo"], "B"])
+                pending = "report_" + landing.fingerprint(failed)
+                operation.state["steps"] = {pending: {"complete": False}, "report_earlier": report, **extra}
+                with self.assertRaises(GateFailed) as failure:
+                    landing.require_closed_smokes(self.config, operation, failed)
+                self.assertEqual(failure.exception.gate, "supersede")
+
     def test_supersede_revalidates_closed_resume_without_rewriting_original_generation(self) -> None:
         original: dict[str, Any] = {"session_id": "native", "harness": "codex", "supervisor_owned": True,
                     "backend": "tmux", "tmux_session_id": "old-pane", "pid": 8, "tty": "ttys001",
@@ -461,11 +508,11 @@ class CatalogLandingTests(unittest.TestCase):
                       patch.object(landing, "validate_retired_closeout") as revalidate):
                     if failure not in {None, "no_original_journal", "late_registration", "unrelated_uncertain", "retired_lost_ack"}:
                         with self.assertRaises(GateFailed) as refusal:
-                            landing.require_closed_smokes(self.config, operation)
+                            landing.require_closed_smokes(self.config, operation, {})
                         self.assertEqual(refusal.exception.gate, "supersede")
                         revalidate.assert_not_called()
                     else:
-                        landing.require_closed_smokes(self.config, operation)
+                        landing.require_closed_smokes(self.config, operation, {})
                         self.assertEqual(revalidate.call_args.args[1].evidence, recovery.evidence)
                         self.assertNotEqual(revalidate.call_args.args[1].evidence, old.evidence)
                 self.assertEqual({path: path.read_bytes() for path in retained}, retained)
