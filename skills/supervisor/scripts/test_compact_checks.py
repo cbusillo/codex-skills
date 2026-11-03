@@ -337,7 +337,10 @@ class OperationTests(unittest.TestCase):
         report: dict[str, Any] = {"complete": True, "questions": [{"url": "q", "question": "question", "resurface": True}]}
         for _ in range(2):
             self.assertTrue(oq.question_changes(report, self.root / "questions.json", ["source"])["questions"])
-        self.assertFalse(session_closeout.explicit_session("Catalog landing verified", "native"))
+        for body in ("Catalog landing verified", '<!-- github-plan:abandoned-release {"source": {"session": "native"}} -->',
+                     '<!-- github-plan:termination {"session_id": "native"} -->', "Previous session: native; continuing"):
+            self.assertFalse(session_closeout.explicit_session(body, "native"))
+        self.assertTrue(session_closeout.explicit_session("Explicit handoff from native session native (worker).", "native"))
         self.assertTrue(session_closeout.explicit_session("Session: native", "native"))
         self.assertFalse(session_closeout.explicit_session("Session: another", "native"))
         self.assertTrue(session_closeout.explicit_session("Session: native\n\n> Session: another", "native"))
