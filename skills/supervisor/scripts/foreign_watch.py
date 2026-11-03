@@ -301,7 +301,7 @@ def versioned_messages(reader: GitHubReader, sources: list[dict]) -> list[dict]:
     for offset in range(0, len(identifiers), 100):
         batch = identifiers[offset:offset + 100]
         result = reader.graphql_json(
-            "query($ids: [ID!]!) { nodes(ids: $ids) { ... on Issue { lastEditedAt } ... on PullRequest { lastEditedAt } ... on PullRequestReview { lastEditedAt } } }",
+            "query($ids: [ID!]!) { nodes(ids: $ids) { ... on Comment { lastEditedAt editor { login } } } }",
             {"ids": batch}, step="foreign_message_versions",
         )
         if not result.ok:
@@ -311,7 +311,8 @@ def versioned_messages(reader: GitHubReader, sources: list[dict]) -> list[dict]:
             raise ValueError("message versions have incomplete coverage")
         versions.update(zip(batch, nodes, strict=True))
     return [
-        {**source, "updated_at": (versions.get(source.get("node_id")) or {}).get("lastEditedAt") or source.get("created_at") or source["submitted_at"]}
+        {**source, "updated_at": (versions.get(source.get("node_id")) or {}).get("lastEditedAt") or source.get("created_at") or source["submitted_at"],
+         "editor": (versions.get(source.get("node_id")) or {}).get("editor")}
         for source in sources if not source.get("node_id") or versions[source["node_id"]] is not None
     ]
 
@@ -404,16 +405,37 @@ def scan_mentions(args, repos, watermarks, seen, own_logins, started, reader):
     for notice in fresh:
         notice["author"] = None
         try:
-            issue_url = f"https://api.github.com/repos/{notice['repository']}/issues/{notice['number']}"
-            comments = read_mention_discussion(issue_url, seen.get(notice["url"], since))
-            authors = {((comment.get("user") or {}).get("login") or "").casefold() for comment in comments}
-            newest = max((comment.get("updated_at", "") for comment in comments), default="")
-            if (authors and (len(authors) == 1 or authors <= {login.casefold() for login in own_logins})
-                    and newest == notice["updated_at"]):
-                notice["author"] = authors.pop()
-        except director_mentions.MentionSearchError as failure:
+            notice["author"] = mention_activity_author(reader, notice, seen, watermarks[MENTIONS], own_logins)
+        except (*READ_ERRORS, director_mentions.MentionSearchError) as failure:
             gaps.append({"lane": MENTIONS, "gap": str(failure)})
     return fresh, gaps, errors, watermarks if gap or error else {**watermarks, MENTIONS: started}, kept
+
+
+def mention_activity_author(reader: GitHubReader, notice: dict, seen: dict[str, str], since: str,
+                            own_logins: list[str]) -> str | None:
+    path = f"repos/{notice['repository']}/issues/{notice['number']}"
+    thread = reader.get_json(path, step="foreign_mention_thread")
+    if "pull_request" in thread or not thread.get("node_id"):
+        return None
+    versions = versioned_messages(reader, [thread])
+    if not versions:
+        return None
+    body = versions[0]
+    opening = {**thread, "updated_at": thread["created_at"]}
+    query = {"since": seen.get(notice["url"], since)}
+    comments = reader.paged_json(f"{path}/comments", step_prefix="foreign_mention_activity",
+                                 params=query, required_query_params=query)
+    sources = [opening, *comments]
+    if timestamp(body["updated_at"]) > timestamp(thread["created_at"]):
+        sources.append({**body, "user": body.get("editor")})
+    cutoff = timestamp(seen.get(notice["url"], since))
+    recent = [source for source in sources if timestamp(source["updated_at"]) > cutoff
+              or notice["url"] not in seen and timestamp(source["updated_at"]) == cutoff]
+    if not recent or max(timestamp(source["updated_at"]) for source in recent) != timestamp(notice["updated_at"]):
+        return None
+    authors = {((source.get("user") or {}).get("login") or "").casefold() for source in recent}
+    own = {login.casefold() for login in own_logins}
+    return next(iter(authors - own), next(iter(authors)))
 
 
 def load_mention_seen(path: Path) -> dict[str, str]:
