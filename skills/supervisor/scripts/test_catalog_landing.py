@@ -418,10 +418,9 @@ class CatalogLandingTests(unittest.TestCase):
         self.assertEqual(operation.state["steps"][phase]["delivery"], "unknown")
         self.assertEqual(read.call_count, 1)
         posted = {"user": {"login": "agent[bot]"}, "body": github_api.body_with_operation_marker(report, "a" * 32),
-                  "html_url": "original-comment", "created_at": (
+                  "html_url": "original-comment", "updated_at": operation.state["steps"][phase]["started_at"], "created_at": (
                       landing.claim_release.stamp(operation.state["steps"][phase]["started_at"])
                       - landing.timedelta(seconds=github_comment.RECONCILIATION_CLOCK_SKEW_SECONDS)).isoformat()}
-        posted["updated_at"] = operation.state["steps"][phase]["started_at"]
         older = {**posted, "html_url": "older-comment", "created_at": "2000-01-01T00:00:00Z"}
         responses = iter([[], [posted, posted], [older, posted]])
 
