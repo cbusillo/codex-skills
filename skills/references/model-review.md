@@ -32,13 +32,15 @@ fails loudly when a reviewer could not read or returned nothing.
   If a reviewer cannot read files, fix its access or give it absolute paths.
 - Ask for a concrete, realistic way each problem would occur, and a severity.
   Let the reviewer answer "none". A prompt that demands a list gets one.
-- Include this question in each review: "Does this PR add a test that
-  pins a literal, version, wording or config text?" Identify a realistic
-  intended change that would break it, and distinguish behavior checks,
-  agreement with one source of truth, and real artifact or immutable-evidence
-  checks. The warning scanner and its CI wiring are documented in
-  [test quality](test-quality.md). This question does not expand when a review
-  is required; the criteria above still own that decision.
+- Include these questions in each review: "What does this change duplicate,
+  and which existing path should it have extended?" and "Which new test could
+  not fail if the product broke, or pins a literal, version, wording or config
+  text?" For a pinning test, identify a realistic intended change that would
+  break it, and distinguish behavior checks, agreement with one source of
+  truth, and real artifact or immutable-evidence checks. The author fixes what
+  these find in the same PR. The warning scanner and its CI wiring are
+  documented in [test quality](test-quality.md). These questions do not expand
+  when a review is required; the criteria above still own that decision.
 - Also ask: "Read the Director's overall DIRECTION.md and the repository's
   own, if it has one. Does this work fit them, and would they prefer a simpler
   way?" Reviewers have no network. Pass the overall file, from a checkout

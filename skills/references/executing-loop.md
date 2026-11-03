@@ -61,6 +61,12 @@ Before recording a split or handoff, read github-plan's
 Never substitute a comment for an unmet finish line, or keep completed work
 open for an agent to return.
 
+While building, extend the nearest existing path before adding a new one. A
+bug fix carries a test that fails before the fix. Removing the code and tests
+the change replaces is part of finishing it, not a follow-up. These habits are
+a trial until the audit recorded on
+[direction#154](https://github.com/cbusillo/direction/issues/154).
+
 Use [reviews by another model](model-review.md) to decide when a review is
 needed. Before the first PR push, run focused local checks and that required
 review, address findings locally, and batch fixes into one push. Avoid fix-up
