@@ -278,7 +278,7 @@ retains its error code and trace, with no second request.
 `result.settings` contains only each record's scope, context, instance, `keys`
 and `withheld_keys`. `result.secrets` contains only name, integration, scope
 and status. Unknown fields, values, ciphertext, descriptions and audit metadata
-are never projected. Malformed retained metadata fails the read. The service
+are never projected. Secret display names retain their exact printable text, including spaces; credential-like names still fail the read. Malformed retained metadata fails the read. The service
 accepts any non-empty settings key, so a key that is not env-key shaped is left
 out and counted in `dropped_name_count`; a secret-looking key fails the read.
 The envelope

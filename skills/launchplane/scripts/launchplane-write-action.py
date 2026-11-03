@@ -40,6 +40,7 @@ from launchplane_safety import (  # noqa: E402
     build_launchplane_url,
     is_denied_key,
     public_code,
+    public_display_name,
     public_identifier,
     public_operator_text,
     public_summary_string,
@@ -6741,8 +6742,8 @@ def summarize_names_only_read(
                         for value in values[:NAMES_ONLY_MAX_ITEMS]]
                 item[name] = [value for value in kept if value]
         else:
-            for name in ("name", "integration"):
-                item[name] = public_identifier(record.get(name))
+            item["name"] = public_display_name(record.get("name"))
+            item["integration"] = public_identifier(record.get("integration"))
             item["status"] = public_code(record.get("status"))
         projected.append(item)
     result = {field: projected, "records_truncated": len(records) > NAMES_ONLY_MAX_ITEMS,
