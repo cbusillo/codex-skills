@@ -165,6 +165,13 @@ def configure_locked(args: argparse.Namespace, root: Path, config_path: Path) ->
             ],
         ):
             argv.extend(["--own-login", login])
+    own_logins = [
+        value.split("=", 1)[1] if value.startswith("--own-login=") else argv[index + 1]
+        for index, value in enumerate(argv)
+        if value == "--own-login" or value.startswith("--own-login=")
+    ]
+    if args.github_cli_login and args.github_cli_login.casefold() not in {value.casefold() for value in own_logins}:
+        argv.extend(["--own-login", args.github_cli_login])
     if "--persistent" not in argv:
         argv.append("--persistent")
     if args.events and "--events" not in argv:

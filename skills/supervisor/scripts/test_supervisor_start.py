@@ -390,6 +390,9 @@ class SupervisorStartTests(unittest.TestCase):
             self.assertEqual(error.not_started, submission == "not_attempted")
 
     def test_selected_cli_login_is_filtered_even_when_repository_owner_differs(self) -> None:
+        flags = self.root / "filters.txt"
+        flags.write_text("--own-login=example")
+        self.args.watch_args_file = flags
         with (
             patch.object(supervisor.github_access, "select_login", return_value="person"),
             patch.object(supervisor.shutil, "which", return_value="/fixture/uv"),
@@ -398,7 +401,7 @@ class SupervisorStartTests(unittest.TestCase):
         argv = supervisor.services.load_config(self.root / "services.json")["services"]["foreign"]["argv"]
         own = [argv[index + 1] for index, value in enumerate(argv) if value == "--own-login"]
         self.assertIn("person", own)
-        self.assertIn("example", own)
+        self.assertIn("--own-login=example", argv)
 
     def test_ended_supervisor_generation_can_restart_but_unknown_liveness_cannot(self) -> None:
         with (
