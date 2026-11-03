@@ -141,6 +141,21 @@ class NativeCommonTests(unittest.TestCase):
         (self.repo / "addon/__manifest__.py").write_text("{}\n")
         self.assertTrue(common.is_odoo(self.repo))
 
+    def test_helper_selection_uses_only_its_own_addon_context(self) -> None:
+        manifest = self.repo / "addons/probe/__manifest__.py"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text('{"version":"1.0"}\n')
+        for selected, expected in (
+            ({"scripts/helper.py", "workflow.yaml"}, False),
+            ({"addons/probe_other/model.py"}, False),
+            ({"addons/probe/model.py"}, True),
+            ({"addons/probe/__manifest__.py"}, True),
+            ({"scripts/helper.py", "addons/probe/model.py"}, True),
+            ({"views/form.xml"}, True),
+        ):
+            with self.subTest(selected=selected):
+                self.assertEqual(common.is_odoo(self.repo, selected), expected)
+
     def test_scope_honors_lane_exclusions_and_explicit_file_override(self) -> None:
         self.declare_inspection({"lanes": [{"id": "python", "ide": "PyCharm", "required": True,
                                             "include": ["**/*.py"], "exclude": ["fixtures/**"]}]})

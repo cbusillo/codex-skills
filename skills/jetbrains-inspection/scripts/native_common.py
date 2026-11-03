@@ -385,9 +385,13 @@ def has_odoo_manifest(paths):
     return any(Path(path).name == "__manifest__.py" and not fixture_roots.intersection(Path(path).parts) for path in paths if path)
 
 
-def is_odoo(repo):
+def is_odoo(repo: Path, selected: set[str] | None = None) -> bool:
     paths = checked(["git", "-C", str(repo), "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*__manifest__.py"])
-    return has_odoo_manifest(paths.decode().split("\0"))
+    manifests = paths.decode().split("\0")
+    if selected is not None and not any(Path(source).suffix == ".xml" for source in selected):
+        manifests = [path for path in manifests if path and any(
+            Path(source).is_relative_to(Path(path).parent) for source in selected)]
+    return has_odoo_manifest(manifests)
 
 
 def scope_selection(args: Any, host: Any, receipt: dict[str, Any] | None = None) -> tuple[Path, dict[str, Any], str, set[str]]:
