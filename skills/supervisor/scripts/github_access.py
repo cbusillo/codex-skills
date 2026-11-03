@@ -8,11 +8,12 @@ import importlib
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
-import services
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 
 github_identity = importlib.import_module("github_identity")
 github_read = importlib.import_module("github_read")
