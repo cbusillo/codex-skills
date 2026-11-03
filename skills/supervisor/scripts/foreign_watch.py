@@ -416,7 +416,9 @@ def dispatch_once(notices: list[dict], dispatched: set[str]) -> list[dict]:
         if notice.get("kind") == "foreign_opened":
             opening = f"opened:{notice['url']}"
             if opening in dispatched:
-                continue
+                if timestamp(notice["updated_at"]) <= timestamp(notice.get("created_at", notice["updated_at"])):
+                    continue
+                notice = {**notice, "kind": "foreign"}
             dispatched.add(opening)
         record = notice.get("change_request", {}).get("record_id")
         if record in dispatched:
@@ -581,12 +583,14 @@ def make_notice(repo: str, comment: dict, own_logins: list[str], launchplane_log
         "author": login,
         "author_type": user.get("type", "") if isinstance(user, dict) else "",
         "url": url,
-        "updated_at": comment.get("created_at", updated) if "#" not in url else updated,
+        "updated_at": updated,
         "excerpt": excerpt(body),
         "kind": "director_question" if is_question else "launchplane" if is_launchplane else "foreign_opened" if "#" not in url else "foreign",
         "untrusted": True,
         "review_marker": marker is not None,
     }
+    if notice["kind"] == "foreign_opened":
+        notice["created_at"] = comment.get("created_at", updated)
     requested = change_request(lines, marker, url) if is_launchplane else None
     return {**notice, "change_request": requested} if requested else notice
 
@@ -881,10 +885,10 @@ def route_report_locked(args: Any, report: dict, reader: GitHubReader, own_login
             try:
                 timestamp(row["updated_at"])
                 notices.append({
-                    "repository": row["repo"], "url": row["comment_url"],
-                    "updated_at": row.get("created_at", row["updated_at"]) if row.get("comment_kind") == "issue_body" else row["updated_at"],
+                    "repository": row["repo"], "url": row["comment_url"], "updated_at": row["updated_at"],
                     "author": row["author"], "author_class": row.get("author_class"),
-                    "automation_for": row.get("automation_for"), "kind": "foreign", "untrusted": True,
+                    "automation_for": row.get("automation_for"),
+                    "kind": "foreign_opened" if row.get("comment_kind") == "issue_body" else "foreign", "untrusted": True,
                 })
             except READ_ERRORS as error:
                 report.setdefault("routing_errors", []).append(redact_string(f"{type(error).__name__}: {error}"))

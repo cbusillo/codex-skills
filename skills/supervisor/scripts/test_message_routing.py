@@ -115,6 +115,14 @@ class MessageRoutingTests(unittest.TestCase):
                 watch.handle_message_hint(self.args, self.hint, self.reader)
             send.assert_called_once()
         self.assertEqual(json.loads(self.args.state.read_text())["watermarks"], {REPO: STAMP})
+        opening = {"html_url": URL.split("#")[0], "created_at": STAMP, "updated_at": STAMP,
+                   "body": "Request", "user": {"login": "client-agent[bot]", "type": "Bot"}}
+        with patch_attr(watch, "read_message_hint", return_value=(REPO, opening)), patch_attr(watch, "recipient", return_value=(self.entry, False, "")), patch_attr(watch.review_notifications, "send") as send, redirect_stdout(io.StringIO()) as output:
+            watch.handle_message_hint(self.args, self.hint, self.reader)
+            watch.handle_message_hint(self.args, self.hint, self.reader)
+        send.assert_called_once()
+        self.assertEqual([len(json.loads(line)["notices"]) for line in output.getvalue().splitlines()], [1, 0])
+        self.assertEqual(json.loads(self.args.state.read_text())["watermarks"], {REPO: STAMP})
 
     def test_gone_worker_uses_supervisor_only_after_certainly_unsent_result(self) -> None:
         with patch_attr(

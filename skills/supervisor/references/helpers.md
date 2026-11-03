@@ -452,8 +452,8 @@ uv run --no-cache skills/supervisor/scripts/foreign_watch.py --owner OWNER --own
 
 The poll reports non-own issue and PR openings as `foreign_opened` notices,
 including bot authors, with the same untrusted marking as comments. The existing
-state records each opening URL once, so overlaps and body edits do not repeat
-it. Routine digests keep an untrusted `COMMENT` row until the thread has a reply.
+state records each opening URL once, so overlaps do not repeat it. Later body
+edits retain the existing versioned foreign-post notices. Routine digests keep an untrusted `COMMENT` row until the thread has a reply.
 
 For Q1101 event delivery, add `--events --ledger <ledger.json>
 --notify-config <services.json> --miss-issue OWNER/REPO#NUMBER` to that same

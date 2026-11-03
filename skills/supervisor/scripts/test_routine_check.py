@@ -154,8 +154,18 @@ class RoutineCheckTests(unittest.TestCase):
                     self.assertEqual(watch.dispatch_once(notices, dispatched), notices)
                     state = Path(directory) / "state.json"
                     watch.save_state(state, watermarks, dispatched=dispatched)
-                    self.assertEqual(watch.dispatch_once([{**notices[0], "updated_at": "2026-11-03T12:00:00Z"}],
-                                                         watch.load_dispatched(state)), [])
+                    self.assertEqual(watch.dispatch_once(notices, watch.load_dispatched(state)), [])
+                    [edit] = watch.dispatch_once([{**notices[0], "updated_at": "2026-11-03T12:00:00Z"}],
+                                                 watch.load_dispatched(state))
+                    self.assertEqual(edit["kind"], "foreign")
+                    self.assertEqual(edit["updated_at"], "2026-11-03T12:00:00Z")
+                    args = argparse.Namespace(owner="cbusillo", repo=[], thread=[], radar_config=Path("/absent/radar.yaml"))
+                    report = {"attention": [], "coverage": {"errors": []}, "ok": True}
+                    with patch_attr(routine_check.radar, "resolve_settings", return_value={}), patch_attr(routine_check.radar.rollup, "load_config", return_value={}), patch_attr(routine_check.radar, "collect_payload", return_value=report) as collect:
+                        routine_check.build_readers(args, {"history": notices})["comments"]()
+                    [hint] = collect.call_args.kwargs["comment_hints"]
+                    self.assertEqual(hint.url, source["html_url"])
+                    self.assertEqual(hint.kind, routine_check.radar.OPENING_POST)
                     opening = routine_check.radar.normalize_opening_post(repo, source)
                     self.assertIsNotNone(opening)
                     assert opening is not None

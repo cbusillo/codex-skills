@@ -298,7 +298,7 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
         hints = []
         errors = []
         for notice in watch.get("history", []):
-            if notice.get("kind") != "foreign":
+            if notice.get("kind") not in {"foreign", "foreign_opened"}:
                 continue
             try:
                 hints.append(comment_hint(notice))
