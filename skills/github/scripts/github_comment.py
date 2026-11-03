@@ -523,7 +523,10 @@ def validate_client_reply(
     repo: str, number: int, body: str, client_logins: list[str], *, actor: str,
     gh_cmd: str, operation: str, retry_summaries: list[github_api_core.RetrySummary],
 ) -> None:
-    bots = {login.casefold() for login in (github_identity.automation_login(), *github_identity.configured_bot_logins()) if login}
+    bots = {login.casefold() for login in github_identity.configured_bot_logins()}
+    primary_bot = github_identity.automation_login()
+    if primary_bot:
+        bots.add(primary_bot.casefold())
     own_login = github_identity.configured_value("GH_WITH_ENV_TOKEN_OWN_USER_LOGIN")
     own = bots | ({own_login.casefold()} if own_login else set())
     if actor.casefold() not in bots or github_identity.acts_as_own_user(repo):

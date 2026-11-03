@@ -1607,7 +1607,7 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
 
 def test_client_reply_refuses_outside_participants_and_mentions_before_writing() -> None:
     for source in ("opening", "timeline", "review", "inline", "outgoing", "second_page", "missing_author", "unreadable", "allowed"):
-        def callback(method: str, path: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
             if path == "/user":
                 return success({"login": "fixture-automation"})
             if method == "POST":
