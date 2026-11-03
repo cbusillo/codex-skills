@@ -2205,7 +2205,8 @@ proof retains the existing timestamp and release-reconciliation checks.
 Slow verification and runtime-registration probes run outside the shared log
 mutation lock. Busy closure/ownership locks report `retryable: true`; preserve
 records and retry after the holder finishes. A discovery read that stops at its
-retry deadline reports `retryable: true` with `retry_at`; rerun finish after it.
+retry deadline reports `retryable: true`; rerun finish once GitHub is
+available, after `retry_at` when it is set.
 Require `ok: true` and `needs_reconciliation: false` before guarded close and
 confirmed disappearance. Only then remove the unchanged active row under source
 ownership; finish retains its full source identity in the canonical log.
