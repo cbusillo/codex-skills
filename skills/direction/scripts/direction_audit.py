@@ -21,9 +21,10 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import time
 from typing import Any, Callable
-from io import UnsupportedOperation
+from io import BytesIO, UnsupportedOperation
 from urllib.parse import quote
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -36,7 +37,7 @@ if str(REPO_ROOT) not in sys.path:
 from skills.github.scripts import github_identity, github_rulesets, github_direction_next, github_plan_claim, github_plan_wait, github_read, github_work_graph, github_next_reads
 from skills.github.scripts import github_repository_scope as repository_scope
 from skills.direction.scripts import direction_mark, direction_reporting
-from skills.github.scripts import github_plan_closure, github_plan_release
+from skills.github.scripts import github_api, github_plan_closure, github_plan_release
 from skills.supervisor.scripts import session_outcomes
 
 REQUIRED_HEADINGS = ("Purpose", "Stop Boundaries", "Journey", "Retired", "Milestones")
@@ -57,6 +58,9 @@ WRAPPER = pathlib.Path(__file__).resolve().parents[2] / "github" / "scripts" / "
 MAX_ADMISSION_ISSUES = 50
 MAX_INBOUND_ISSUES = 50
 COMMIT_FILES_PER_RESPONSE = 300
+GROWTH_FLOOR_LINES = 2000
+GROWTH_SHARE = 0.02
+LARGEST_CONTRIBUTORS = 5
 WAIT_REFERENCE = re.compile(
     r"https://github\.com/([\w.-]+/[\w.-]+)/(issues|pull)/(\d+)"
     r"|(?<![\w/])([\w.-]+/[\w.-]+)?#(\d+)\b"
@@ -1712,6 +1716,10 @@ def line_bucket(filename: str) -> str:
     ) else "other"
 
 
+def text_lines(content: bytes) -> int:
+    return 0 if b"\0" in content else content.count(b"\n") + int(bool(content) and not content.endswith(b"\n"))
+
+
 def commit_line_changes(repo: str, commit: dict[str, Any], *, fetch: Callable[[list[str]], Any]) -> dict[str, int]:
     files = commit.get("files")
     if not isinstance(files, list):
@@ -1736,7 +1744,7 @@ def commit_line_changes(repo: str, commit: dict[str, Any], *, fetch: Callable[[l
             if not isinstance(blob, dict) or blob.get("encoding") != "base64" or not isinstance(blob.get("content"), str):
                 raise AuditError("renamed file contents unavailable")
             content = base64.b64decode(blob["content"])
-            lines = 0 if b"\0" in content else content.count(b"\n") + int(bool(content) and not content.endswith(b"\n"))
+            lines = text_lines(content)
             changes[line_bucket(previous)] -= lines
             changes[bucket] += lines + net
         else:
@@ -1754,6 +1762,7 @@ def default_branch_net_lines(
                               "tests": 0, "other": 0, "total": 0, "basis": "default_branch_first_parent"}
     ref = quote(branch, safe="")
     seen: set[str] = set()
+    contributors: list[dict[str, Any]] = []
     for _ in range(max_commits):
         commit = fetch(["api", f"repos/{repo}/commits/{ref}", "--method", "GET"])
         if not isinstance(commit, dict) or not isinstance(commit.get("sha"), str):
@@ -1772,13 +1781,43 @@ def default_branch_net_lines(
             changes = commit_line_changes(repo, commit, fetch=fetch)
             for bucket, net in changes.items():
                 result[bucket] += net
+            subject = str((commit.get("commit") or {}).get("message") or "").partition("\n")[0]
+            contributors.append({"sha": sha, "subject": subject, "total": sum(changes.values())})
         if not parents:
             break
         ref = parents[0]["sha"]
     else:
         raise AuditError("default branch history limit reached")
     result["total"] = result["tests"] + result["other"]
+    growing = sorted((row for row in contributors if row["total"] > 0), key=lambda row: -row["total"])
+    result["largest"] = growing[:LARGEST_CONTRIBUTORS]
     return result
+
+
+def tarball_text_lines(repo: str, sha: str, *, gh: str) -> int:
+    try:
+        proc = subprocess.run([gh, "api", f"repos/{repo}/tarball/{sha}"], capture_output=True,
+                              timeout=github_api.remaining_retry_timeout_seconds())
+    except subprocess.TimeoutExpired as exc:
+        raise AuditError("tarball read exceeded the read deadline") from exc
+    if proc.returncode != 0:
+        raise AuditError(f"tarball read failed: {proc.stderr.decode(errors='replace').strip()[:400]}")
+    lines = 0
+    try:
+        with tarfile.open(fileobj=BytesIO(proc.stdout), mode="r:gz") as archive:
+            for member in archive:
+                handle = archive.extractfile(member) if member.isfile() else None
+                if handle is not None:
+                    lines += text_lines(handle.read())
+    except (tarfile.TarError, OSError) as exc:
+        raise AuditError(f"tarball unreadable: {exc}") from exc
+    return lines
+
+
+def growth_trigger(total: int, lines_at_head: int) -> dict[str, Any]:
+    lines_before = lines_at_head - total
+    threshold = max(GROWTH_FLOOR_LINES, math.floor(GROWTH_SHARE * lines_before))
+    return {"lines_before": lines_before, "threshold": threshold, "exceeded": total > threshold}
 
 
 def owner_repositories(owner: str, *, fetch: Callable[[list[str]], Any], include_archived: bool = False) -> tuple[dict[str, dict[str, Any]], bool]:
@@ -1999,7 +2038,7 @@ def active_unadopted_report(
 
 def fetch_capacity(
     direction_repo: str, since: dt.datetime, until: dt.datetime, *, fetch: Callable[[list[str]], Any], include_archived: bool = False,
-    reads: github_next_reads.NextReads | None = None,
+    reads: github_next_reads.NextReads | None = None, tree_lines: Callable[[str, str], int] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Read merged direction, its Track graph and per-repository listings."""
     owner = direction_repo.split("/")[0].casefold()
@@ -2147,15 +2186,26 @@ def fetch_capacity(
     )
     def read_net_lines(target_repo: str) -> dict[str, Any]:
         try:
-            return default_branch_net_lines(
+            counts = default_branch_net_lines(
                 target_repo, str(repos[target_repo.casefold()].get("default_branch") or ""), since, until, fetch=fetch,
             )
         except (AuditError, KeyError, TypeError, ValueError) as line_error:
             return {"status": "unknown", "reason": str(line_error), "tests": None, "other": None, "total": None}
+        if counts["total"] > GROWTH_FLOOR_LINES:
+            counts["growth"] = read_growth(target_repo, counts)
+        return counts
+
+    def read_growth(target_repo: str, counts: dict[str, Any]) -> dict[str, Any]:
+        if tree_lines is None:
+            return {"status": "unknown", "reason": "repository line count unavailable"}
+        try:
+            return {"status": "complete", **growth_trigger(counts["total"], tree_lines(target_repo, counts["head"]))}
+        except AuditError as size_error:
+            return {"status": "unknown", "reason": str(size_error)}
 
     if reads:
         reads.start_phase("capacity_net_lines")
-    names = [repo_name for repo_name, report in summary["by_repository"].items() if report["merged_by_rank"]["tooling"]]
+    names = list(summary["by_repository"])
     line_results = reads.map(read_net_lines, names) if reads else list(map(read_net_lines, names))
     for line_repo, line_counts in zip(names, line_results, strict=True):
         summary["by_repository"][line_repo]["net_lines"] = line_counts
@@ -2230,7 +2280,8 @@ def audit_one(
             if reads:
                 reads.start_phase("capacity")
             capacity, cut = fetch_capacity(repo, audit_since, capacity_until, fetch=fetch,
-                                           include_archived=include_archived, reads=reads)
+                                           include_archived=include_archived, reads=reads,
+                                           tree_lines=lambda target, sha: tarball_text_lines(target, sha, gh=gh))
             truncated.extend(cut)
             if reads:
                 reads.start_phase("milestone_outcomes")

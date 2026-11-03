@@ -650,7 +650,7 @@ limits. `read_metrics` reports reads, reuse and elapsed time by section. Reopene
 signal the throughput numbers do not carry; report it with the share. Provider
 capacity left unused stays manual until an account reader exists.
 
-For each repository with tooling merges, `capacity.by_repository[REPO]`
+For each repository with merges in the window, `capacity.by_repository[REPO]`
 includes `net_lines` for its whole default branch over that window, split into
 `tests`, `other` and `total`. It sums first-parent commit diffs, including train
 merges once and reversions, using committer dates and the same half-open window.
@@ -662,6 +662,16 @@ Unavailable or capped history and file reads leave the counts null with
 `status: unknown` and a reason; they do not hold the audit window open. These
 numbers add no gate. The time window assumes first-parent committer dates run
 backward through history, as they do for GitHub and train merge commits.
+
+`net_lines.largest` lists the window's five largest growing first-parent
+commits. When `total` passes 2,000 lines, `net_lines.growth` compares it with
+the larger of 2,000 lines or 2% of the repository's text lines before the
+window, read once from the source archive at `head` (a Q1191 trial until the
+audit on [direction#154](https://github.com/cbusillo/direction/issues/154)).
+When `growth.exceeded` is true, the receiving session reports the largest
+contributors and opens one concrete deletion task in that repository, titled
+`Growth deletion:` and naming what to remove. It opens none while an earlier
+`Growth deletion:` issue there is still open; it links that one instead.
 
 Beside the net-line report, report `capacity.session_outcomes`: closed Supervisor
 sessions on this host within the same `[since, until)` window, grouped by

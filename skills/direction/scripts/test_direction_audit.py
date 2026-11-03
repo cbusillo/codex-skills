@@ -3487,6 +3487,7 @@ def test_default_branch_lines_follow_first_parents_and_half_open_window() -> Non
     result = module.default_branch_net_lines("o/tools", "trunk", SINCE, WINDOW_END, fetch=fetch)
     assert (result["tests"], result["other"], result["total"]) == (7, 2, 9)
     assert (result["base"], result["head"]) == ("before", "merge")
+    assert [row["sha"] for row in result["largest"]] == ["start"]
     assert not any("feature" in call for call in calls)
     for limit in (1, 2):
         try:
@@ -3522,7 +3523,55 @@ def test_line_counts_page_commit_files_and_transfer_renamed_tests() -> None:
         raise AssertionError("partial file counts accepted")
 
 
-def test_capacity_attaches_lines_only_to_tooling_and_retains_unknown_reads() -> None:
+def test_growth_trigger_uses_the_larger_of_the_floor_and_share_of_repository_lines() -> None:
+    import io
+    import tarfile
+    module = load()
+    base = capacity_fetch_with_unchanged_tree(reporting_fetch(module, OWN_DIRECTION, [{**merged_pull(1, NOW), "labels": []}], []))
+    history = {
+        "trunk": {**line_commit("grow", NOW, ["old"], [{"filename": "app.py", "additions": 5000, "deletions": 0}]),
+                  "commit": {"committer": {"date": stamp(NOW)}, "message": "Merge pull request #7\n\nbody"}},
+        "old": line_commit("old", SINCE - dt.timedelta(seconds=1), [], []),
+    }
+    def fetch(args: list[str]) -> Any:
+        if "/commits/" in args[1]:
+            return history[args[1].rsplit("/", 1)[1]]
+        return base(args)
+    def growth(repository_lines: int) -> dict[str, Any]:
+        result, _ = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=fetch,
+                                          tree_lines=lambda repo, sha: repository_lines)
+        return result["by_repository"]["o/live"]["net_lines"]
+    floor_sized = round(module.GROWTH_FLOOR_LINES / module.GROWTH_SHARE / 2)
+    small = growth(5000 + floor_sized)
+    assert small["growth"] == {"status": "complete", "lines_before": floor_sized,
+                               "threshold": module.GROWTH_FLOOR_LINES, "exceeded": True}
+    assert small["largest"] == [{"sha": "grow", "subject": "Merge pull request #7", "total": 5000}]
+    assert growth(5000 + round(5000 / module.GROWTH_SHARE * 1.2))["growth"]["exceeded"] is False
+    unsized, _ = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=fetch)
+    assert unsized["by_repository"]["o/live"]["net_lines"]["growth"]["status"] == "unknown"
+
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+        for name, content in (("r/a.py", b"one\ntwo\n"), ("r/b.md", b"three"), ("r/logo.png", b"\0\n\n")):
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+    finished = subprocess.CompletedProcess([], 0, stdout=archive.getvalue(), stderr=b"")
+    with patch.object(subprocess, "run", return_value=finished):
+        assert module.tarball_text_lines("o/live", "grow", gh="gh") == 3
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": "1"}):
+        stalled = Path(tmp) / "gh"
+        stalled.write_text("#!/bin/sh\nsleep 30\n")
+        stalled.chmod(0o755)
+        try:
+            module.tarball_text_lines("o/live", "grow", gh=str(stalled))
+        except module.AuditError as exc:
+            assert "deadline" in str(exc)
+        else:
+            raise AssertionError("an expired read deadline still read the archive")
+
+
+def test_capacity_attaches_lines_and_retains_unknown_reads() -> None:
     module = load()
     calls: list[str] = []
     base = capacity_fetch_with_unchanged_tree(reporting_fetch(module, OWN_DIRECTION, [
