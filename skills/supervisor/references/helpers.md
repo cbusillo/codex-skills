@@ -1113,6 +1113,12 @@ job is absent and its children have ended. To keep it stopped after login,
 remove only its reviewed plist from `~/Library/LaunchAgents/`; retain the
 configuration, holds, watch state and logs for takeover or reconciliation.
 
+The optional `inspection` job uses this same runner for
+[weekly project counts](../../jetbrains-inspection/references/native-backend.md#weekly-project-counts).
+An entry with `calendar` (`Weekday`, `Hour`, `Minute`) renders a weekly launchd
+calendar job instead of a persistent restart loop. It runs once per firing,
+with the existing lock and reconciliation behavior, and has no startup run.
+
 ## Catalog landing verification
 
 Catalog verification runs independently through the existing service runner.

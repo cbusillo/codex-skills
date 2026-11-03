@@ -588,3 +588,61 @@ named Odoo findings, with corrected controls clean. The fixture's collection-val
 package option also exercises completed inspection on every selected Python file.
 `JB_NATIVE_LIVE_OUT` can retain its sanitized result. Qualify with a real tenant change too; a synthetic
 RED alone does not prove that repository's profile or model is complete.
+
+## Weekly project counts
+
+`weekly_inspection.py` runs the same native worker serially over the repository
+list shared with the direction weekly audit. Give it `--owner OWNER`,
+`--repository-root /absolute/local/checkouts` and an existing external
+`--evidence-root`. An optional repeatable `--repo OWNER/REPO` bounds the first
+proof. Omit it for the audit list. Missing local repositories, unsupported
+selections and incomplete execution stay UNKNOWN; another repository still runs.
+No CI or per-PR step is added.
+
+The job creates dedicated linked worktrees through `dev-worktree`, retains their
+ownership in the baseline file and fast-forwards only those clean worktrees on
+later weeks. It never inspects a primary checkout. Ordinary qualified retirement may remove
+idle worktrees; the next run recreates a missing worktree through the same helper.
+Each configured lane is one exhaustive code selection, preserving repository
+exclusions. Generated `pnpm-lock.yaml` files remain dependency/snapshot inputs
+and are named as scope exceptions: the native YAML tools do not traverse them.
+Unmatched files are recorded, not claimed covered. A single-IDE repository uses
+the same exhaustive files scope, with the native backend's supported code suffixes. Configure its existing `cacheRoot` under shared host caches so dependency caches
+stay separate from per-run evidence. The shared worker retains its existing memory,
+processor, admission, load and custody bounds.
+
+By default the small baseline file is
+`~/.code/jetbrains-inspection/weekly-baselines.json`; `JB_WEEKLY_BASELINE` or
+`--baseline` selects another path; set `JB_WEEKLY_BASELINE` for the audit too
+when choosing an alternate CLI path. It records full-artifact category counts,
+including zero counts, existing findings and language advice, exact source/profile/helper/IDE
+provenance, evidence paths, the previous week's qualified observation and a
+ceiling that can only decrease, also shown with each top category. New categories have a zero ceiling after the
+initial observation. Incomplete runs never replace qualified counts or ceilings.
+Profile/helper/IDE changes or missing weeks leave trends unavailable. Partial discovery still runs known repositories and records unread adoption as
+UNKNOWN. Lock contention skips one firing. An unreadable baseline is preserved;
+these read failures do not stop future firings. Evidence write failures retain
+the existing service reconciliation hold. A failed latest attempt or evidence older than eight days makes the report UNKNOWN.
+A rise is a named category in the report, never a new gate or cleanup task.
+
+Schedule it as the optional `inspection` entry in the existing Supervisor
+[service runner](../../supervisor/references/helpers.md#persistent-supervisor-services),
+using the same private configuration shape as catalog verification:
+
+```json
+"inspection": {
+  "argv": ["/absolute/path/to/uv", "run", "/runtime/catalog/skills/jetbrains-inspection/scripts/weekly_inspection.py", "--owner", "OWNER", "--repository-root", "/absolute/local/checkouts", "--evidence-root", "/absolute/external/evidence"],
+  "cwd": "/runtime/catalog",
+  "restart_seconds": 604800,
+  "calendar": {"Weekday": 0, "Hour": 0, "Minute": 30}
+}
+```
+
+Render and install the one plist through that service's existing setup.
+`calendar` uses launchd's local time, with Sunday `0`, so choose a weekly quiet
+hour for this host. Calendar jobs run once and exit, with no startup run; their
+service lock and reconciliation hold remain the existing ones. The baseline's
+own lock also excludes a concurrent manual invocation. For a real first run,
+use the ordinary service `run` entry point or `launchctl kickstart` without `-k`.
+The weekly audit reads the same baseline file beside its net-line report;
+missing evidence stays unavailable without holding the audit window open.

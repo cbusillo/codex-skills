@@ -11,6 +11,7 @@ import argparse
 import base64
 import datetime as dt
 import fnmatch
+import importlib
 import json
 import math
 import os
@@ -1887,20 +1888,9 @@ def weekly_audit(
                                     emit=emit, reads=reads)
 
 
-def collect_weekly_audit(
-    owner: str, *, gh: str, automation: str | None, include_archived: bool,
-    emit: Callable[[dict[str, Any]], None], reads: github_next_reads.NextReads,
-) -> tuple[int, dict[str, Any]]:
-    started = dt.datetime.now(dt.timezone.utc)
-    observed = github_work_graph.cached_reads(lambda args: gh_json(args, gh=gh), reads=reads)
-
-    def fetch(args: list[str]) -> Any:
-        try:
-            return observed(args)
-        except github_next_reads.ReadDeadline as deadline_error:
-            raise AuditError(str(deadline_error)) from deadline_error
-
-    reads.start_phase("discovery")
+def weekly_repositories(
+    owner: str, *, fetch: Callable[[list[str]], Any], reads: github_next_reads.NextReads,
+) -> tuple[list[str], dict[str, Any]]:
     direction_repo = f"{owner}/direction"
     discovery: dict[str, Any] = {"complete": False, "gaps": [], "unknown": {}}
     adopted: list[str] = []
@@ -1918,6 +1908,25 @@ def collect_weekly_audit(
         discovery["gaps"].append({"source": "repositories", "reason": "unavailable", "detail": str(exc)[:300]})
     discovery["complete"] = not discovery["gaps"] and not discovery["unknown"]
     repos = [direction_repo, *adopted]
+    return repos, discovery
+
+
+def collect_weekly_audit(
+    owner: str, *, gh: str, automation: str | None, include_archived: bool,
+    emit: Callable[[dict[str, Any]], None], reads: github_next_reads.NextReads,
+) -> tuple[int, dict[str, Any]]:
+    started = dt.datetime.now(dt.timezone.utc)
+    observed = github_work_graph.cached_reads(lambda args: gh_json(args, gh=gh), reads=reads)
+
+    def fetch(args: list[str]) -> Any:
+        try:
+            return observed(args)
+        except github_next_reads.ReadDeadline as deadline_error:
+            raise AuditError(str(deadline_error)) from deadline_error
+
+    reads.start_phase("discovery")
+    direction_repo = f"{owner}/direction"
+    repos, discovery = weekly_repositories(owner, fetch=fetch, reads=reads)
     audits: dict[str, dict[str, Any]] = {}
     unread: dict[str, str] = {name: f"adoption unknown: {reason}" for name, reason in discovery["unknown"].items()}
     held: dict[str, str] = {}
@@ -1941,6 +1950,11 @@ def collect_weekly_audit(
             held[repo] = ", ".join(held_reads([item for finding in result.get("findings", [])
                                                if finding.get("kind") == "coverage_incomplete"
                                                for item in finding.get("listings", [])])) or "window_open"
+    inspection = importlib.import_module("skills.jetbrains-inspection.scripts.weekly_inspection")
+    inspections = {repo: inspection.report(repo) for repo in repos}
+    capacity = audits.get(direction_repo, {}).get("capacity")
+    if isinstance(capacity, dict):
+        capacity["project_inspections"] = inspections
     receipt: dict[str, Any] = {
         "owner": owner, "weekly": True, "read_only": True, "started": direction_mark.utc_stamp(started),
         "repos": repos, "discovery": discovery, "unread": unread, "held": held, "audits": audits,

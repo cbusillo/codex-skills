@@ -673,6 +673,15 @@ contributors and opens one concrete deletion task in that repository, titled
 `Growth deletion:` and naming what to remove. It opens none while an earlier
 `Growth deletion:` issue there is still open; it links that one instead.
 
+Beside net lines, report `capacity.project_inspections`, including repositories
+without merges in the window. It reads the existing headless worker's
+[weekly baseline](../jetbrains-inspection/references/native-backend.md#weekly-project-counts):
+the three largest categories for each repository, their counts and whether
+they went down, stayed or went up since the previous week. Name other rising
+categories from `increased_categories` without opening tasks or adding gates.
+Missing, stale or incomplete evidence stays UNKNOWN; an incomparable profile,
+helper, IDE or missing week leaves direction unavailable.
+
 Beside the net-line report, report `capacity.session_outcomes`: closed Supervisor
 sessions on this host within the same `[since, until)` window, grouped by
 repository, native model and effort, with counts of changes landed without

@@ -3211,7 +3211,7 @@ class WeeklyAccount:
 
     def run(self, argv: list[str], marker: Path) -> tuple[int, dict[str, Any]]:
         output = StringIO()
-        with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+        with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker), "JB_WEEKLY_BASELINE": str(marker.with_name("inspection.json"))}),
               patch.dict(vars(self.module), {
                   "gh_json": self.fetch,
                   "fetch_capacity": lambda *_args, **_kwargs: (summary(self.module), list(self.capacity_errors)),
@@ -3248,10 +3248,30 @@ def test_weekly_audit_records_once_every_adopted_repository_was_read() -> None:
         assert receipt["repos"] == ["o/direction", "o/a", "o/b"], "OWNER/direction first, then each adopted repository"
         assert receipt["unread"] == {} and receipt["held"] == {}
         assert code == (0 if receipt["ok"] else 3)
+        assert set(receipt["audits"]["o/direction"]["capacity"]["project_inspections"]) == set(receipt["repos"])
         saved = json.loads(marker.read_text())
         assert receipt["weekly_recorded"]["ran"] == saved["weekly_audit"]["ran"] == receipt["started"]
         assert saved["weekly_audit"]["record"] == "o/direction"
         assert set(saved["audits"]) == {"o/direction", "o/a", "o/b"}, "each repository's own window still advances"
+
+
+def test_weekly_audit_reports_qualified_category_counts_and_trends() -> None:
+    module = load()
+    account = WeeklyAccount(module)
+    now = dt.datetime.now(dt.timezone.utc)
+    week = now.date() - dt.timedelta(days=now.weekday())
+    latest = {"status": "complete", "at": now.isoformat(), "week": week.isoformat(), "source": "fixture",
+              "signature": {}, "counts": {"types": 8, "duplicates": 7, "spelling": 10}, "evidence": "receipt"}
+    previous = {**latest, "week": (week - dt.timedelta(days=7)).isoformat(), "counts": {"types": 9, "duplicates": 6, "spelling": 10}}
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        marker.with_name("inspection.json").write_text(json.dumps({"repositories": {"o/a": {
+            "latest": latest, "previous": previous, "attempt": {"status": "complete"}, "ceiling": previous["counts"]}}}))
+        _, receipt = account.run(["--weekly", "--owner", "o"], marker)
+    row = receipt["audits"]["o/direction"]["capacity"]["project_inspections"]["o/a"]
+    assert row["status"] == "complete"
+    assert [(item["category"], item["count"], item["direction"]) for item in row["top_categories"]] == [
+        ("spelling", 10, "stayed"), ("types", 8, "down"), ("duplicates", 7, "up")]
 
 
 def test_interrupted_weekly_collection_preserves_windows_and_rereads_the_finding() -> None:
@@ -3308,7 +3328,7 @@ def test_weekly_output_failure_preserves_every_repository_window() -> None:
                 with patch.object(sys, "stdout", output), patch.object(os, "fsync", side_effect=OSError("fixture disk full")):
                     module.emit_weekly_receipt(receipt_data)
 
-        with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+        with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker), "JB_WEEKLY_BASELINE": str(marker.with_name("inspection.json"))}),
               patch.dict(vars(module), {
                   "gh_json": account.fetch,
                   "fetch_capacity": lambda *_args, **_kwargs: (summary(module), []),
