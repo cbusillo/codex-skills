@@ -232,6 +232,11 @@ def search(*items):
 class StructuredWaitTests(unittest.TestCase):
     """The shared resolver over the complete discussion owns each issue's current wait."""
 
+    def setUp(self) -> None:
+        self.enterContext(patch.object(director_waits.question_id, "configured_queue", return_value=None))
+        self.enterContext(patch.object(director_waits.github_identity, "configured_bot_logins", return_value=[]))
+        self.enterContext(patch.object(director_waits.github_identity, "automation_login", return_value=None))
+
     def collect_one(self, record, comments):
         reader = Mock()
         reader.request.return_value = search(record)
@@ -286,6 +291,63 @@ class StructuredWaitTests(unittest.TestCase):
         result = self.collect_one(issue(), comments)
         self.assertTrue(result["complete"])
         self.assertEqual(result["waits"], [])
+
+    def test_live_recorded_answer_routes_stale_wait_to_agent_without_clearing_holds(self) -> None:
+        source = {"id": 10, "html_url": issue()["html_url"] + "#issuecomment-10", "user": {"login": "owner"},
+                  "body": "Director question: Q1183. Keep the archive?"}
+        wait = {"version": 1, "state": "waiting", "evidence": source["html_url"],
+                "waits": [{"waiting_for": "Director to decide", "ends_when": "Answer recorded"},
+                          {"waiting_for": "Client to finish testing", "ends_when": "Testing complete"}]}
+        held = wait_comment("owner", marker=director_waits.github_plan_wait.marker(wait))
+        answer = {"id": 12, "html_url": issue()["html_url"] + "#issuecomment-12", "user": {"login": "owner"},
+                  "body": f"Director decision: {source['html_url']} (Q1183), via Discord: Agree"}
+        for author, answered in (("owner", True), ("outsider", False)):
+            with self.subTest(author=author):
+                result = self.collect_one(issue(), [source, held, {**answer, "user": {"login": author}}])
+                self.assertTrue(result["complete"])
+                self.assertEqual(bool(result["needs_status"]), answered)
+                self.assertEqual(bool(result["waits"]), not answered)
+                if answered:
+                    row = result["needs_status"][0]
+                    self.assertEqual(row["structured_wait"], wait)
+                    self.assertEqual(row["recorded_decisions"][0]["answers"], [answer["html_url"]])
+        unanswered = {**source, "id": 13, "html_url": issue()["html_url"] + "#issuecomment-13",
+                      "body": "Director question: Q1190. Approve a release?"}
+        mixed = {**wait, "evidence": f"{source['html_url']} {unanswered['html_url']}"}
+        hold = wait_comment("owner", marker=director_waits.github_plan_wait.marker(mixed))
+        result = self.collect_one(issue(), [source, unanswered, hold, answer])
+        self.assertEqual(result["needs_status"], [])
+        self.assertTrue(result["waits"][0]["recorded_decisions"])
+        external = {**source, "html_url": "https://github.com/outsider/repo/issues/1#issuecomment-10", "user": {"login": "outsider"}}
+        external_answer = {**answer, "user": {"login": "outsider"}, "body": f"Director decision: {external['html_url']}: Agree"}
+        discussion = {("outsider/repo", 1): [external, external_answer]}
+        self.assertEqual(director_waits.linked_questions(Mock(), {**wait, "evidence": external["html_url"]},
+                                                         "owner", discussion, []), [])
+        decisions = director_waits.linked_questions(Mock(), wait, "owner", {("owner/repo", 1): [source]}, [], [answer])
+        self.assertEqual(decisions[0]["answers"], [answer["html_url"]])
+        contextual = {**wait, "evidence": f"{source['html_url']} {answer['html_url']}"}
+        result = self.collect_one(issue(), [source, wait_comment("owner", marker=director_waits.github_plan_wait.marker(contextual)), answer])
+        self.assertTrue(result["needs_status"])
+        with patch.object(director_waits.question_id, "configured_queue", return_value="owner/direction#9"):
+            discussions = {("owner/repo", 1): [source], ("owner/direction", 9): [answer]}
+            states = director_waits.linked_questions(Mock(), wait, "owner", discussions, [])
+            self.assertEqual(states[0]["answers"], [answer["html_url"]])
+
+    def test_non_director_wait_skips_unavailable_linked_evidence(self) -> None:
+        wait = {"version": 1, "state": "waiting", "evidence": "https://github.com/elsewhere/private/issues/2#issuecomment-10",
+                "waits": [{"waiting_for": "Client to finish testing", "ends_when": "Testing complete"}]}
+        reader = Mock()
+        reader.request.return_value = search(issue(reason="Client to finish testing"))
+        def read(path: str, **_kwargs: object) -> list[dict]:
+            if path != "/repos/owner/repo/issues/1/comments":
+                raise director_waits.GitHubReadShapeError("unavailable")
+            return [wait_comment("owner", marker=director_waits.github_plan_wait.marker(wait))]
+
+        reader.paged_json.side_effect = read
+        result = director_waits.collect_query(reader, "owner", ["Director"], NOW)
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["waits"], [])
+        self.assertEqual(reader.paged_json.call_count, 1)
 
     def test_untrusted_clear_cannot_release_a_trusted_hold(self):
         comments = [wait_comment("owner", waiting_for="Director to approve", ends_when="Approved"),

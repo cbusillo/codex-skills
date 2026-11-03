@@ -57,7 +57,7 @@ def records(comments, trusted):
         source_item(record["question_url"])
         if record["event"] == "delivered":
             validate_receipt(record["delivery_url"])
-        result.append({**record, "record_url": comment["url"]})
+        result.append({**record, "record_url": comment["url"], "created_at": comment.get("created_at")})
     return result
 
 
@@ -69,10 +69,12 @@ def validate_receipt(url):
         raise ValueError("delivery receipt must be a GitHub or Discord message URL")
 
 
-def marker_body(event, question_url, delivery_url=None):
+def marker_body(event: str, question_url: str, delivery_url: str | None = None, *, source_updated_at: str | None = None) -> str:
     record = {"version": 1, "event": event, "question_url": question_url}
     if delivery_url is not None:
         record["delivery_url"] = delivery_url
+    if event == "delivered" and source_updated_at is not None:
+        record["source_updated_at"] = source_updated_at
     line = "<!-- director-question:delivery " + json.dumps(record, sort_keys=True) + " -->"
     return f"{line}\n\nQuestion {event}: [original question]({question_url})." + (
         f" [Presentation receipt]({delivery_url}). This acknowledges delivery, not a decision.\n" if delivery_url else "\n"
@@ -86,7 +88,7 @@ def post(queue, body):
     # The maintained helper owns automation identity, body deduplication and
     # uncertain-write reconciliation. Never retry its unknown outcome here.
     try:
-        result = github_comment.comment("issue", int(match[2]), body, repo=match[1], dedupe_body=True)
+        result = github_comment.comment("issue", int(match[2]), body, repo=match[1], dedupe_body=True, include_body=True)
     except github_comment.CommentError as error:
         raise ValueError(str(error)) from error
     # Library payloads have no CLI `ok` envelope. A created/reused comment plus
@@ -121,6 +123,19 @@ def is_receipt(comment) -> bool:
     return bool(lines) and MARKER.fullmatch(lines[0]) is not None
 
 
+def receipt_is_current(receipt: dict[str, Any] | None, updated_at: str | None) -> bool:
+    if receipt is None:
+        return False
+    if "source_updated_at" in receipt:
+        return receipt["source_updated_at"] == updated_at
+    if not updated_at:
+        return True
+    created_at: str | None = receipt.get("created_at")
+    if not created_at:
+        return False
+    return datetime.fromisoformat(updated_at) < datetime.fromisoformat(created_at)
+
+
 def inventory(source_comments, queue_comments, owner, decision_authors, now=None, *, question_urls=None) -> dict[str, Any]:
     """Read-only view; a delivery receipt never removes an unanswered question."""
     now = now or datetime.now(timezone.utc)
@@ -144,6 +159,7 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
     found = oq.questions(source_comments, owner, decision_authors, answers, recorded_decisions_only=True)
     candidates = {q["url"]: q["answers"] for q in oq.questions(source_comments, owner, decision_authors, answers)}
     source_authors = {c["url"]: (c.get("author") or "") for c in source_comments}
+    source_updates = {c["url"]: c.get("updated_at") for c in source_comments}
     for question in found:
         if question["status"] == "answered":
             continue
@@ -160,7 +176,9 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
                 raise ValueError("question timestamp needs a timezone")
             age = max(0, (now - parsed).total_seconds())
         receipt = acknowledgements.get(url)
-        rows.append({**question, "question_id": number,
+        if not receipt_is_current(receipt, source_updates[url]):
+            receipt = None
+        rows.append({**question, "question_id": number, "updated_at": source_updates[url],
                      "question": question["question"] if number else None,
                      "status": question["status"] if number else "needs_number",
                      "needs_repair": number is None, "deliverable": number is not None,
@@ -221,7 +239,7 @@ def reconcile(args, fetch):
     errors = []
     for item in items:
         try:
-            source_comments = fetch(item)
+            source_comments = queue_comments if item == args.queue else fetch(item)
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
             errors.append({"item": item, "error": str(error)})
             continue
@@ -258,15 +276,14 @@ def reconcile(args, fetch):
         if args.delivery_url in {args.ack, question["registration_url"]}:
             raise ValueError("source/registration is not a presentation receipt")
         if not question["delivery_url"]:
-            writes.append(marker_body("delivered", args.ack, args.delivery_url))
+            writes.append(marker_body("delivered", args.ack, args.delivery_url, source_updated_at=question.get("updated_at")))
     for body in writes:
-        post(args.queue, body)
-        # Read back each record before the next write. A missing record remains
-        # unacknowledged rather than being optimistically hidden.
-        queue_comments = fetch(args.queue)
-        if not any(c.get("body", "").strip().startswith(body.strip())
-                   and (c.get("author") or "").casefold() in trusted for c in queue_comments):
-            raise ValueError("question delivery record readback failed")
+        saved = post(args.queue, body).get("comment")
+        if (not isinstance(saved, dict) or not saved.get("body", "").strip().startswith(body.strip())
+                or (saved.get("author") or "").casefold() not in trusted
+                or source_item(saved.get("url", "")).casefold() != args.queue.casefold()):
+            raise ValueError("question delivery record confirmation failed")
+        queue_comments = [*queue_comments, saved]
     report = inventory(comments, queue_comments, args.owner, args.decision_author, question_urls=selected)
     return {"queue": args.queue, "scope": items, **report,
             "source_errors": errors, "complete": report["complete"] and not errors}
