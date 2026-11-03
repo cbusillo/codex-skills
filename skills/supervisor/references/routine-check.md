@@ -35,7 +35,9 @@ decisions, statuses, board contents or narrative; open linked records for action
    coverage errors repeat until settled at source. Unregistered question hints
    appear as one count with a source link, not as queue entries. Watch history
    seeds full-history radar threads and question sources; fresh source
-   readers decide what is still unanswered. Historical board questions are not
+   readers decide what is still unanswered. Questions and radar share their
+   collected discussions within a run after checking that the thread version
+   still agrees; each new run reads fresh sources. Historical board questions are not
    a second queue.
    A later reply on the same thread by the Director or configured own automation,
    including a merge or closing comment, clears a comment from this digest after

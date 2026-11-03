@@ -442,6 +442,7 @@ class RoutineCheckTests(unittest.TestCase):
                 "html_url": good_url,
                 "user": {"login": "owner"},
                 "created_at": "2026-10-30T20:00:00Z",
+                "updated_at": "2026-10-30T20:30:00Z",
             }
 
             def paged(endpoint: str, **_: object) -> list[dict]:
@@ -453,6 +454,8 @@ class RoutineCheckTests(unittest.TestCase):
 
             with (
                 patch_attr(routine_check.github_read, "GitHubReader", return_value=SimpleNamespace(paged_json=paged)),
+                patch_attr(routine_check.github_read, "read_discussion",
+                           side_effect=lambda _reader, repo, number: {"comments": paged(f"/repos/{repo}/issues/{number}/comments")}),
                 patch.object(routine_check, "staffing", return_value={"candidates": [], "candidate_coverage": {"complete": True}}),
                 patch_attr(
                     routine_check.radar,
@@ -466,10 +469,12 @@ class RoutineCheckTests(unittest.TestCase):
                         {"kind": "director_question", "url": good_url},
                     ]
                 }
-                output = routine_check.digest(routine_check.collect(routine_check.build_readers(args, watch)))
+                sources = routine_check.collect(routine_check.build_readers(args, watch))
+                output = routine_check.digest(sources)
             self.assertIn("client", output)
             self.assertIn(good_url, output)
             self.assertIn("source unread", output)
+            self.assertEqual(sources["questions"]["questions"][0]["updated_at"], question["updated_at"])
 
     def test_staffing_reuses_global_next_and_preserves_partial_failure_evidence(self) -> None:
         report = {"ok": False, "candidate_coverage": {"complete": False},

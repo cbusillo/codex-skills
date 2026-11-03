@@ -213,7 +213,12 @@ incomplete coverage is never an all-clear. Each `gh` call has a timeout, and
 each repository's discovery and wait scan has the existing discussion-read budget.
 Structured-wait searches share one such budget across repository accounts.
 Repository comments are read one page at a time, retaining earlier candidates
-if a later page fails. All thread and reaction reads share one deadline; a read that misses either
+if a later page fails. Thread histories use the shared GraphQL transport,
+including authors, edit times and reactions, with complete pagination.
+Sections reuse a discussion within one run only while its version agrees;
+reactions are refreshed independently on reuse. Each new run reads its
+sources again, with no persistent cache. All thread and reaction reads share
+one deadline; a read that misses either
 bound is reported as degraded coverage rather than stalling the report.
 
 Add `--outbound --self-login LOGIN` to find replies in repositories the Director

@@ -219,6 +219,8 @@ def digest(sources: dict[str, dict], *, full: bool = False) -> str:
 
 
 def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[], dict]]:
+    discussions: dict[tuple[str, int], dict[str, Any]] = {}
+
     def github_reader(deadline_seconds: float = 120) -> github_read.GitHubReader:
         return github_read.GitHubReader(
             operation="github.supervisor.routine_check",
@@ -254,9 +256,9 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
         if not match:
             raise ValueError("question source must be OWNER/REPO#NUMBER")
         try:
-            source_comments = github_reader().paged_json(
-                f"/repos/{match[1]}/issues/{match[2]}/comments", step_prefix="routine_questions"
-            )
+            discussion = github_read.read_discussion(github_reader(), match[1], int(match[2]))
+            discussions[(match[1].casefold(), int(match[2]))] = discussion
+            source_comments = discussion["comments"]
         except (github_read.GitHubReadError, github_read.GitHubReadShapeError) as error:
             raise ValueError(str(error)) from error
         return [
@@ -266,6 +268,7 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
                 "body": row["body"],
                 "author": row["user"]["login"],
                 "created_at": row["created_at"],
+                "updated_at": row.get("updated_at") or row["created_at"],
             }
             for row in source_comments
         ]
@@ -305,6 +308,7 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
             except (ValueError, KeyError, TypeError, SystemExit) as error:
                 errors.append({"repo": notice.get("repository", "-"), "lane": "watch_hint", "error": str(error)})
         settings = radar.resolve_settings(radar_args, radar.rollup.load_config(args.radar_config))
+        settings["discussion_sources"] = discussions
         result = radar.collect_payload(settings, comment_hints=tuple(hints))
         result["coverage"]["errors"].extend(errors)
         result["ok"] = result["ok"] and not errors

@@ -1615,14 +1615,14 @@ entrypoint = "github-work-rollup/scripts/github_unanswered_comments.py"
 intent = "Report external comments needing attention, handled closed threads, and replies after the Director's last human activity in outside repositories."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "Paged GET /search/issues for outbound involvement with archive scope; repository issue/PR comment, opening post and review reads; GraphQL Comment.lastEditedAt, Comment.editor and Reactable.reactions for awareness and verified human edits"
+endpoint_or_command = "Paged GET /search/issues for outbound involvement with archive scope; REST repository comment streams and issue discovery; shared-transport GraphQL issue/PR histories with comments, reviews, inline replies, authors, edit times and reactions; version checks reuse already-collected histories within a report"
 quota_bucket = "mixed"
 actor_policy = "automation_required"
 mutation_class = "read"
 idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "degraded_snapshot"
-retained_graphql_rationale = "GraphQL reaction timestamps and description/review lastEditedAt are required to compare awareness and human activity against the current message version; REST issue updated_at also changes on unrelated thread activity."
+retained_graphql_rationale = "GraphQL consolidates complete histories and reaction/edit metadata without REST page walks or per-comment metadata requests. Nested connections have smaller first pages to bound query cost and paginate completely. Reused histories retain fresh reaction/edit reads; a new report always reads its sources again."
 source_refs = ["github-work-rollup/scripts/github_unanswered_comments.py:collect_payload", "github-work-rollup/scripts/github_unanswered_comments.py:outbound_threads", "github-work-rollup/scripts/github_unanswered_comments.py:collect_thread", "github-work-rollup/scripts/github_unanswered_comments.py:collect_comment_reactions", "github-work-rollup/scripts/github_unanswered_comments.py:outbound_mentions"]
 test_refs = ["github-work-rollup/scripts/test_github_unanswered_comments.py:test_outbound_lists_authored_and_commented_threads_after_last_human_activity", "github-work-rollup/scripts/test_github_unanswered_comments.py:test_outbound_search_paginates_and_reports_search_cap", "github-work-rollup/scripts/test_github_unanswered_comments.py:test_outbound_partial_or_malformed_search_is_degraded", "github-work-rollup/scripts/test_github_unanswered_comments.py:test_outbound_read_failure_preserves_attention_and_degrades", "github-work-rollup/scripts/test_github_unanswered_comments.py:test_outbound_uses_existing_exit_contract", "github-work-rollup/scripts/test_github_unanswered_comments.py:test_others_edits_do_not_advance_outbound_human_cutoff", "github-work-rollup/scripts/test_github_unanswered_comments.py:test_outbound_lists_mentions_outside_scope_including_private_and_mention_only_threads", "github-work-rollup/scripts/test_github_unanswered_comments.py:test_outbound_without_mention_approval_reads_visible_old_open_questions"]
 

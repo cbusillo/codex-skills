@@ -20,7 +20,7 @@ import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextvars import ContextVar, copy_context
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import partial
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -40,6 +40,7 @@ if str(IDENTITY_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(IDENTITY_SCRIPT_DIR))
 import director_mentions
 import github_identity
+import github_read
 import github_direction_next
 import github_plan_wait
 import github_repository_scope as repository_scope
@@ -91,6 +92,7 @@ query($id: ID!, $after: String) {
       }
     }
   }
+  rateLimit { cost }
 }
 """.strip()
 
@@ -109,6 +111,7 @@ class Comment:
     url: str
     node_id: str = ""
     in_reply_to_id: int | None = None
+    metadata: dict[str, Any] | None = field(default=None, compare=False, repr=False)
 
     @property
     def key(self) -> tuple[str, int]:
@@ -553,6 +556,7 @@ def normalize_issue_comment(repo: str, item: dict[str, Any]) -> Comment | None:
         body=str(item.get("body") or ""),
         url=str(item.get("html_url") or ""),
         node_id=str(item.get("node_id") or ""),
+        metadata=item.get("_graphql"),
     )
 
 
@@ -575,6 +579,7 @@ def normalize_review_comment(repo: str, item: dict[str, Any]) -> Comment | None:
         body=str(item.get("body") or ""),
         url=str(item.get("html_url") or ""),
         node_id=str(item.get("node_id") or ""),
+        metadata=item.get("_graphql"),
         in_reply_to_id=reply_id if isinstance(reply_id, int) else None,
     )
 
@@ -603,6 +608,7 @@ def normalize_opening_post(repo: str, item: dict[str, Any]) -> Comment | None:
         body=str(item.get("body") or ""),
         url=str(item.get("html_url") or ""),
         node_id=str(item.get("node_id") or ""),
+        metadata=item.get("_graphql"),
     )
 
 
@@ -624,6 +630,7 @@ def normalize_review(repo: str, number: int, item: dict[str, Any]) -> Comment | 
         body=str(item.get("body") or ""),
         url=str(item.get("html_url") or ""),
         node_id=str(item.get("node_id") or ""),
+        metadata=item.get("_graphql"),
     )
 
 
@@ -705,53 +712,68 @@ def repository_activity(
     return candidate_ids, errors
 
 
+def discussion_reader(repo: str) -> github_read.GitHubReader:
+    deadline = read_deadline.get()
+    return github_read.GitHubReader(
+        gh_cmd=GH, operation="github.comment_radar", strict_actor=True,
+        gh_prefix_args=["--main-app-only"] if Path(GH).name == "gh-with-env-token" else [], repository=repo,
+        deadline_at=time.time() + max(0.0, deadline - time.monotonic()) if deadline is not None
+        else time.time() + DISCUSSION_READ_DEADLINE_SECONDS,
+    )
+
+
+def discussion_source(
+    repo: str, number: int, sources: dict[tuple[str, int], dict[str, Any]] | None = None,
+    *, updated_at: str | None = None,
+) -> dict[str, Any]:
+    key = (repo.casefold(), number)
+    previous = sources.get(key) if sources is not None else None
+    if previous and previous.get("updated_at"):
+        version = updated_at
+        if version is None and previous.get("node_id"):
+            data = github_read.discussion_query(
+                discussion_reader(repo),
+                "query($id:ID!) { node(id:$id) { ... on Issue { updatedAt } ... on PullRequest { updatedAt } } rateLimit { cost } }",
+                {"id": previous["node_id"]},
+            )
+            node = data.get("node")
+            if not isinstance(node, dict) or not isinstance(node.get("updatedAt"), str):
+                raise github_read.GitHubReadShapeError("Discussion version is unavailable")
+            version = node["updatedAt"]
+        if version == previous["updated_at"]:
+            return previous
+    thread = github_read.read_discussion(discussion_reader(repo), repo, number)
+    if sources is not None:
+        sources[key] = thread
+    return thread
+
+
+def discussion_comments(repo: str, thread: dict[str, Any]) -> list[Comment]:
+    opening = normalize_opening_post(repo, thread)
+    comments = [opening] if opening is not None else []
+    comments.extend(comment for item in thread["comments"]
+                    if (comment := normalize_issue_comment(repo, item)) is not None)
+    comments.extend(comment for item in thread["review_comments"]
+                    if (comment := normalize_review_comment(repo, item)) is not None)
+    comments.extend(comment for item in thread["reviews"]
+                    if (comment := normalize_review(repo, thread["number"], item)) is not None)
+    return comments
+
+
 def collect_thread(
     repo: str,
     number: int,
+    sources: dict[tuple[str, int], dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any] | None, list[Comment], list[dict[str, str]]]:
-    errors: list[dict[str, str]] = []
+    previous = sources.get((repo.casefold(), number)) if sources is not None else None
     try:
-        thread = run_json([GH, "api", f"repos/{repo}/issues/{number}"])
-    except rollup.RollupError as exc:
-        return None, [], [{"repo": repo, "lane": "thread", "error": rollup.trim(str(exc))}]
-    if not isinstance(thread, dict):
-        return None, [], [{"repo": repo, "lane": "thread", "error": "GitHub returned an invalid thread payload."}]
-
-    comments: list[Comment] = []
-    opening = normalize_opening_post(repo, thread)
-    if opening is not None:
-        comments.append(opening)
-    try:
-        issue_items = api_list(f"repos/{repo}/issues/{number}/comments?per_page=100")
-        comments.extend(
-            comment
-            for item in issue_items
-            if (comment := normalize_issue_comment(repo, item)) is not None
-        )
-    except rollup.RollupError as exc:
-        errors.append({"repo": repo, "lane": "issue_comments", "error": rollup.trim(str(exc))})
-
-    if isinstance(thread.get("pull_request"), dict):
-        try:
-            review_items = api_list(f"repos/{repo}/pulls/{number}/comments?per_page=100")
-            comments.extend(
-                comment
-                for item in review_items
-                if (comment := normalize_review_comment(repo, item)) is not None
-            )
-        except rollup.RollupError as exc:
-            errors.append({"repo": repo, "lane": "review_comments", "error": rollup.trim(str(exc))})
-        try:
-            review_items = api_list(f"repos/{repo}/pulls/{number}/reviews?per_page=100")
-            comments.extend(
-                review
-                for item in review_items
-                if (review := normalize_review(repo, number, item)) is not None
-            )
-        except rollup.RollupError as exc:
-            errors.append({"repo": repo, "lane": "reviews", "error": rollup.trim(str(exc))})
-
-    return thread, comments, errors
+        thread = discussion_source(repo, number, sources)
+        comments = discussion_comments(repo, thread)
+        if thread is previous:
+            comments = [replace(comment, metadata=None) for comment in comments]
+        return thread, comments, []
+    except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError) as error:
+        return None, [], [{"repo": repo, "lane": "thread", "error": rollup.trim(str(error))}]
 
 
 def collect_comment_reactions(comment: Comment) -> tuple[list[Reaction], Edit | None]:
@@ -762,10 +784,17 @@ def collect_comment_reactions(comment: Comment) -> tuple[list[Reaction], Edit | 
     after = ""
     seen_cursors: set[str] = set()
     while True:
-        command = [GH, "api", "graphql", "-f", f"query={REACTIONS_QUERY}", "-F", f"id={comment.node_id}"]
-        if after:
-            command.extend(["-F", f"after={after}"])
-        payload = run_json(command)
+        if comment.metadata is not None and not after:
+            payload = {"data": {"node": comment.metadata}}
+        else:
+            try:
+                data = github_read.discussion_query(
+                    discussion_reader(comment.repo), REACTIONS_QUERY,
+                    {"id": comment.node_id, "after": after or None},
+                )
+                payload = {"data": data}
+            except (github_read.GitHubReadError, github_read.GitHubReadShapeError) as error:
+                raise rollup.RollupError(str(error)) from error
         if not isinstance(payload, dict) or payload.get("errors"):
             raise rollup.RollupError(f"GitHub returned an invalid reaction payload for comment {comment.comment_id}.")
         data = payload.get("data")
@@ -1348,6 +1377,7 @@ def unasked_director_waits(
     decision_authors: set[str],
     structured: dict[int, dict[str, Any]] | None = None,
     recent: set[int] | None = None,
+    discussions: dict[tuple[str, int], dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     query = urlencode({"state": "open", "per_page": 100})
     try:
@@ -1366,8 +1396,8 @@ def unasked_director_waits(
         # Body prose can be stale: a newer trusted comment may record or clear a
         # hold before search indexes it, so read every candidate's discussion.
         try:
-            items = api_list(f"repos/{repo}/issues/{number}/comments?per_page=100")
-        except rollup.RollupError as exc:
+            items = discussion_source(repo, number, discussions, updated_at=issue.get("updated_at"))["comments"]
+        except (rollup.RollupError, github_read.GitHubReadError, github_read.GitHubReadShapeError) as exc:
             errors.append({"repo": repo, "lane": f"director_waits/{number}", "error": rollup.trim(str(exc))})
             continue
         unresolved = False
@@ -1437,7 +1467,8 @@ def settled_outside_threads(
                 repo = rollup.repo_from_search_url(item.get("repository_url"))
                 if not repo or normalize_login(repo.split("/", 1)[0]) != login:
                     continue
-                for raw in api_list(f"repos/{repo}/issues/{item['number']}/comments?per_page=100"):
+                for raw in discussion_source(repo, item["number"], settings.get("discussion_sources"),
+                                             updated_at=item.get("updated_at"))["comments"]:
                     author = normalize_login((raw.get("user") or {}).get("login"))
                     body = str(raw.get("body") or "")
                     created = str(raw.get("created_at") or "")
@@ -1463,7 +1494,7 @@ def settled_outside_threads(
                             continue
                         url = f"https://github.com/{match[1].casefold()}/issues/{match[2]}"
                         settled[url] = max(settled.get(url, ""), created)
-        except (rollup.RollupError, ValueError, KeyError, TypeError) as exc:
+        except (rollup.RollupError, github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError, KeyError, TypeError) as exc:
             errors.append({"repo": login, "lane": "outside_triage", "error": rollup.trim(str(exc))})
     return settled, errors
 
@@ -1599,6 +1630,7 @@ def outbound_states_for_thread(
 
 
 def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, ...] = ()) -> dict[str, Any]:
+    settings = {**settings, "discussion_sources": dict(settings.get("discussion_sources", {}))}
     self_logins = {normalize_login(login) for login in settings["self_logins"] if normalize_login(login)}
     bot_logins = {normalize_login(login) for login in settings["bot_logins"] if normalize_login(login)}
     outbound_self = {normalize_login(login) for login in settings.get("outbound_self_logins", []) if normalize_login(login)}
@@ -1655,7 +1687,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
             wait_futures = [
                 executor.submit(bounded_discovery,
                     partial(unasked_director_waits, repo, wait_terms, self_logins, bot_logins,
-                            structured_waits.get(repo, {}), recent_waits[repo]))
+                            structured_waits.get(repo, {}), recent_waits[repo], settings["discussion_sources"]))
                 for repo in repositories
             ]
             for future in as_completed(wait_futures):
@@ -1713,7 +1745,7 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
     executor = ThreadPoolExecutor(max_workers=thread_worker_count)
     try:
         futures = {
-            executor.submit(copy_context().run, partial(collect_thread, repo, number)): (repo, number, ids)
+            executor.submit(copy_context().run, partial(collect_thread, repo, number, settings["discussion_sources"])): (repo, number, ids)
             for (repo, number), ids in candidate_ids.items()
         }
         unread = dict(futures)
