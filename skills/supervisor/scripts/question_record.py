@@ -182,7 +182,8 @@ class GitHubComments:
         assert match is not None
         return {**source, "issue": f"https://github.com/{match[1]}/issues/{match[2]}"}
 
-    def update(self, url: str, body: str, expected_body: str, expected_updated_at: str) -> dict[str, Any]:
+    @staticmethod
+    def update(url: str, body: str, expected_body: str, expected_updated_at: str) -> dict[str, Any]:
         match = delivery.COMMENT_URL.fullmatch(url)
         if match is None:
             raise ValueError("invalid question URL")
@@ -209,7 +210,9 @@ def update(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
             raise ValueError("question writer must be the Director or a configured --decision-author")
         comments = fetch(delivery.source_item(args.url))
         queue = question_id.configured_queue()
-        related = fetch(queue) if queue is not None and queue != delivery.source_item(args.url) else []
+        related = []
+        if queue is not None and queue != delivery.source_item(args.url):
+            related = fetch(queue)
         question = next((q for q in delivery.oq.questions(comments, args.owner, args.decision_author, related)
                          if q["url"] == args.url), None)
         if question is None or question["answers"]:

@@ -266,8 +266,12 @@ def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting f
                             continue
                     waits = wait_rows(repo, [entry], terms, owner, now, {entry["number"]: comments}, errors=result["errors"])
                     resolution = resolve_wait(repo, entry, comments)
-                    decisions = recorded_decisions(reader, resolution.record, owner, discussions, result["errors"], comments) if resolution.record else []
-                    evidence_urls = {match[0] for match in questions.COMMENT_URL.finditer(resolution.record["evidence"])} if resolution.record else set()
+                    wait_record = resolution.record
+                    decisions = []
+                    evidence_urls = set()
+                    if wait_record is not None:
+                        decisions = recorded_decisions(reader, wait_record, owner, discussions, result["errors"], comments)
+                        evidence_urls = {match[0] for match in questions.COMMENT_URL.finditer(wait_record["evidence"])}
                     if decisions and evidence_urls <= {question["url"] for question in decisions}:
                         result["needs_status"].extend({**row, "next_actor": "agent", "recorded_decisions": decisions,
                                                      "structured_wait": resolution.record,

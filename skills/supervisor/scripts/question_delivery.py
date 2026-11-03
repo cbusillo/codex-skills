@@ -121,6 +121,17 @@ def is_receipt(comment) -> bool:
     return bool(lines) and MARKER.fullmatch(lines[0]) is not None
 
 
+def receipt_is_current(receipt: dict[str, Any] | None, updated_at: str | None) -> bool:
+    if receipt is None:
+        return False
+    if not updated_at:
+        return True
+    created_at = receipt.get("created_at")
+    if not created_at:
+        return False
+    return datetime.fromisoformat(updated_at.replace("Z", "+00:00")) < datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+
+
 def inventory(source_comments, queue_comments, owner, decision_authors, now=None, *, question_urls=None) -> dict[str, Any]:
     """Read-only view; a delivery receipt never removes an unanswered question."""
     now = now or datetime.now(timezone.utc)
@@ -161,11 +172,8 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
                 raise ValueError("question timestamp needs a timezone")
             age = max(0, (now - parsed).total_seconds())
         receipt = acknowledgements.get(url)
-        if receipt and source_updates[url]:
-            updated = datetime.fromisoformat(source_updates[url].replace("Z", "+00:00"))
-            delivered = datetime.fromisoformat(receipt["created_at"].replace("Z", "+00:00")) if receipt["created_at"] else None
-            if delivered is None or updated >= delivered:
-                receipt = None
+        if not receipt_is_current(receipt, source_updates[url]):
+            receipt = None
         rows.append({**question, "question_id": number,
                      "question": question["question"] if number else None,
                      "status": question["status"] if number else "needs_number",

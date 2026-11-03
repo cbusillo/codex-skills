@@ -308,7 +308,7 @@ class StructuredWaitTests(unittest.TestCase):
                     self.assertEqual(row["recorded_decisions"][0]["answers"], [answer["html_url"]])
         unanswered = {**source, "id": 13, "html_url": issue()["html_url"] + "#issuecomment-13",
                       "body": "Director question: Q1190. Approve a release?"}
-        mixed = {**wait, "evidence": source["html_url"] + " " + unanswered["html_url"]}
+        mixed = {**wait, "evidence": f"{source['html_url']} {unanswered['html_url']}"}
         hold = wait_comment("owner", marker=director_waits.github_plan_wait.marker(mixed))
         result = self.collect_one(issue(), [source, unanswered, hold, answer])
         self.assertEqual(result["needs_status"], [])
