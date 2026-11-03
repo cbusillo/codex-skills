@@ -89,7 +89,8 @@ inline comments, and the outgoing text for outside participants and mentions;
 unreadable coverage refuses the reply. It requires the configured automation
 identity. A refusal is not permission to omit the flag; obtain approval of the
 exact text instead. Include verified Director/team/agent logins in the same
-list when they are not already configured as own identities. Unknown and
+list, including the product's own Launchplane bot, when not already configured
+as own identities. Unknown and
 third-party bots are outside participants. Link screenshot evidence in the
 reply; answer inline review comments on the PR timeline through this flow.
 For a post in the Director's voice, ask approval of the exact text as its own
