@@ -1174,7 +1174,7 @@ receipt and retry on the next poll without advancing the cursor or reporting a
 failed verification. A retry requires explicit proof that the runtime was not
 mutated; pending uncertain mutations still stop the service. Read private evidence and reconcile any
 uncertain launch, request, comment or notification before recovery. An uncertain
-report is settled automatically only by one exact marker/body/author match on
+report in ordinary polling is settled only by one exact marker/body/author match on
 the owning issue; missing or ambiguous matches never cause another post. After
 reconciliation, clear the runner's `catalog` marker and restart it through the
 existing service route. Polling rechecks a failed attempt using its original
@@ -1186,7 +1186,7 @@ and the original `<attempt>/<harness>-closeout` evidence directory. The saved
 `<harness>_source` gives its native ID, original ledger and generation. Once all
 old sessions have retired, run the poll command with `--supersede-failed`. It
 validates those exact retired journals in process, refuses changed generations
-or uncertain mutations, includes later landings, and preserves the
+or uncovered uncertain mutations, includes later landings, and preserves the
 old attempt while starting fresh sessions. It can retry the same tip after an
 environment repair. It never skips missing merged-PR proof or rewritten history.
 
@@ -1222,6 +1222,14 @@ Freshness checks include configured transcript copies. Uncertain effects
 without that proof stop without replay.
 The old smoke remains a failed attempt;
 only the new batch may pass. No original fingerprint or receipt is replaced.
+
+Explicit `--supersede-failed` can preserve one unknown duplicate report when its
+key matches the saved failed result and exactly one earlier report in that same
+attempt is complete with a confirmed URL. The earlier report supplies the fresh
+batch's superseded-verification link. The original report remains unknown and is
+never replayed; every original launch and closeout proof still runs. Any other
+incomplete operation refuses. A transient discovery read before the cursor moves
+can still stop recovery at the original uncertain report; preserve that evidence.
 
 After recovery succeeds, clear the runner's `catalog` marker and restart that
 job through the existing service route. Never remove a journal or replay an
