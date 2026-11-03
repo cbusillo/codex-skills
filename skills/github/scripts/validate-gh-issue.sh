@@ -11,6 +11,26 @@ tmpdir="$(mktemp -d)"
 # relationships, the closing issue, and the comment radar's thread reads).
 cat >"$tmpdir/gate-reads.sh" <<'EOF'
 case "$*" in
+	*'/graphql'*)
+		gate_payload="${payload:-}"
+		if [[ -z "$gate_payload" ]]; then gate_payload="$(cat)"; fi
+		printf '%s' "$gate_payload" | python3 -c '
+import json
+import sys
+number = json.load(sys.stdin)["variables"]["number"]
+empty = {"nodes": [], "totalCount": 0, "pageInfo": {"hasNextPage": False, "endCursor": None}}
+node = {"__typename": "Issue", "id": f"issue-{number}", "databaseId": int(f"90{number}"),
+        "number": number, "title": "Issue title", "body": "", "state": "OPEN", "closedAt": None,
+        "url": f"https://github.com/owner/repo/issues/{number}",
+        "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+        "author": {"__typename": "User", "login": "fixture-automation"},
+        "reactions": empty, "comments": empty}
+if len(sys.argv) > 1 and sys.argv[1]:
+    message = json.loads(sys.argv[1])
+    message["reactions"] = empty
+    node["comments"] = {**empty, "nodes": [message], "totalCount": 1}
+print(json.dumps({"data": {"repository": {"issueOrPullRequest": node}}}))' "${gate_comment:-}"
+		exit 0 ;;
 	*'/dependencies/'* | *'/sub_issues'*) printf '[]\n'; exit 0 ;;
 	'api user') printf '{"login":"fixture-automation"}\n'; exit 0 ;;
 	*'--slurp'*) printf '[[]]\n'; exit 0 ;;
@@ -1471,17 +1491,7 @@ cat >"$tmpdir/unanswered-gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
-case "$*" in
-	*'/issues/95/comments'*'--slurp'*)
-		printf '[[{"id":951,"node_id":"IC_951","body":"Can I send a corrected sheet?","user":{"login":"client-staff","type":"User"},"created_at":"2026-10-17T17:33:49Z","updated_at":"2026-10-17T17:33:49Z","html_url":"https://github.com/owner/repo/issues/95#issuecomment-951","issue_url":"https://api.github.com/repos/owner/repo/issues/95"}]]\n'
-		exit 0
-		;;
-	'api graphql'*)
-		printf '{"data":{"node":{"lastEditedAt":null,"editor":null,"reactions":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}\n'
-		exit 0
-		;;
-	*'/user'*) printf '{"login":"fixture-automation"}\n'; exit 0 ;;
-esac
+gate_comment='{"__typename":"IssueComment","id":"IC_951","databaseId":951,"body":"Can I send a corrected sheet?","author":{"__typename":"User","login":"client-staff"},"createdAt":"2026-10-17T17:33:49Z","updatedAt":"2026-10-17T17:33:49Z","url":"https://github.com/owner/repo/issues/95#issuecomment-951"}'
 . "$GH_ISSUE_GATE_READS"
 printf 'unexpected gh args: %s\n' "$*" >&2
 exit 1
