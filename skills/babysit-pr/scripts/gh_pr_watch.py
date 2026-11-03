@@ -1462,6 +1462,13 @@ def has_confirmed_conflict(pr):
     )
 
 
+def workflows_settled_for_retry(checks_summary: dict[str, Any]) -> bool:
+    return (
+        checks_summary.get("evidence_complete") is True
+        and checks_summary.get("unfinished_workflow_run_count") == 0
+    )
+
+
 def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_items, retries_used, max_retries, owner_review_items=(), owner_review_errors=(), allow_no_checks=False):
     actions = []
     if owner_review_errors:
@@ -1530,11 +1537,11 @@ def recommend_actions(pr, checks_summary, failed_runs, failed_jobs, new_review_i
         actions.append("check_evidence_incomplete")
 
     if has_failed_pr_checks:
-        if checks_summary["all_terminal"] and retries_used >= max_retries:
+        if workflows_settled_for_retry(checks_summary) and retries_used >= max_retries:
             actions.append("stop_exhausted_retries")
         else:
             actions.append("diagnose_ci_failure")
-            if checks_summary["all_terminal"] and failed_runs and retries_used < max_retries:
+            if workflows_settled_for_retry(checks_summary) and failed_runs and retries_used < max_retries:
                 actions.append("retry_failed_checks")
 
     if (
@@ -1612,7 +1619,7 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
     retries_used = current_retry_count(state, pr["head_sha"])
     evidence_reader = None
     if (not pr["closed"] and not pr["merged"] and not pending_reruns
-            and checks_summary.get("evidence_complete") is True and checks_summary["all_terminal"]
+            and workflows_settled_for_retry(checks_summary)
             and retries_used < args.max_flaky_retries):
         ordinary_retry_ids = {run["run_id"] for run in retryable_failed_runs(failed_runs, failed_jobs)}
         for run in failed_runs:
@@ -1939,7 +1946,7 @@ def retry_failed_now(args):
     if not failed_runs:
         result["reason"] = "no_failed_runs"
         return result
-    if not checks_summary["all_terminal"]:
+    if not workflows_settled_for_retry(checks_summary):
         result["reason"] = "checks_still_pending"
         return result
     if retries_used >= max_retries:

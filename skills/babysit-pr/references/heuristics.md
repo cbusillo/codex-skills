@@ -29,7 +29,7 @@ If uncertain, inspect failed logs once before choosing rerun.
    - Diagnose first.
    - If checks are still pending but an individual job has already failed: fetch that job's logs and diagnose now.
    - If branch-related: fix, commit, and push under [Fixes And Pushes](../SKILL.md#fixes-and-pushes).
-   - If likely flaky/unrelated and all checks for the current SHA are terminal: rerun failed jobs.
+   - If likely flaky/unrelated and complete, head-matched evidence shows all Actions workflows have settled: rerun qualified failed jobs. Pending outside checks, including a Client review, still block merge readiness but do not block this retry.
    - If likely flaky/unrelated and not safely rerunnable: stop and report the blocker; do not edit unrelated tests, build scripts, CI configuration, dependency pins, or infrastructure code.
    - If checks are still pending and no failed job is available yet: wait.
 3. If flaky reruns for the same SHA reach the configured limit (default 3): stop and report persistent failure.
