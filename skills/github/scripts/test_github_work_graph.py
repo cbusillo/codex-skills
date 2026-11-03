@@ -9,8 +9,8 @@ import copy
 import json
 import math
 import re
-import unittest
 import threading
+import unittest
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
@@ -295,6 +295,31 @@ class WorkGraphTests(unittest.TestCase):
             self.assertEqual(second.result(), [{"body": "Provider body"}])
             self.assertEqual(reads.requests, 1)
             self.assertEqual(reads.reused, 1)
+
+    def test_parallel_relationship_reads_keep_graph_order_limits_and_unavailable_evidence(self) -> None:
+        roots = [{"repo": "owner/repo", "number": 1, "state": "open"}]
+        barrier = threading.Barrier(2)
+        parallel = False
+
+        def read(path: str, _limit: int) -> tuple[list[dict[str, Any]], bool]:
+            if "/issues/1/" in path:
+                if parallel:
+                    barrier.wait(timeout=5)
+                if path.endswith("blocked_by"):
+                    raise ValueError("Provider unavailable")
+                return [{"number": 2, "state": "closed", "html_url": "https://github.com/owner/repo/issues/2"},
+                        {"number": 3, "state": "open"}], True
+            return [], False
+
+        for limit in (1, 2):
+            parallel = False
+            expected = graph.read_native_graph(roots, read, max_nodes=limit)
+            parallel = True
+            with graph.github_next_reads.NextReads(workers=2, seconds=0) as reads:
+                actual = graph.read_native_graph(roots, read, max_nodes=limit, reads=reads)
+            self.assertEqual(actual, expected)
+            self.assertEqual(actual.truncated, limit == 1)
+            self.assertEqual(set(actual.unavailable), {"owner/repo#1:dependencies/blocked_by", "owner/repo#1:sub_issues"})
 
     def test_raw_relationship_rows_preserve_attribution_metadata_before_compaction(self) -> None:
         source = {

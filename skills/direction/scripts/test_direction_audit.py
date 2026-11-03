@@ -18,6 +18,7 @@ import sys
 import tempfile
 import types
 from contextlib import nullcontext, redirect_stderr, redirect_stdout
+from functools import partial
 from io import StringIO
 from pathlib import Path
 from typing import Any, Self
@@ -2058,7 +2059,6 @@ def test_milestone_outcomes_report_closed_open_and_waiting_graph_nodes() -> None
     def fetch(args: list[str]) -> Any:
         path = args[1].split("?")[0]
         if path == "graphql":
-            values = dict(arg.split("=", 1) for arg in args if "=" in arg and not arg.startswith("query="))
             if any("lastEditedAt" in arg for arg in args):
                 return {"data": {"repository": {"issue": {"createdAt": before, "lastEditedAt": before}}}}
             raise AssertionError("Activity history is outside the report")
@@ -2086,7 +2086,7 @@ def test_milestone_outcomes_report_closed_open_and_waiting_graph_nodes() -> None
     waiting = edges["repos/o/direction/issues/1/dependencies/blocked_by"][0]
     waiting["user"]["login"] = "untrusted"
     unknown = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=fetch)[0]
-    assert unknown["issues_waiting"] is None and not unknown["complete"]
+    assert unknown["issues_waiting"] == 0 and unknown["complete"]
     waiting["user"]["login"] = "o"
 
     full_nodes = {"repos/" + value["html_url"].removeprefix("https://github.com/"): value
@@ -2108,16 +2108,18 @@ def test_milestone_outcomes_report_closed_open_and_waiting_graph_nodes() -> None
     assert projected["complete"] and projected["issues_closed"] == thin["issues_closed"]
     assert set(hydrated) == set(full_nodes)
 
-    for response in (None, {}):
-        def unread_node(args: list[str], response: dict[str, Any] | None = response) -> Any:
-            if args[1].split("?")[0] in full_nodes:
-                if response is None:
-                    raise module.AuditError("Canonical node unavailable")
-                return response
-            return minimal_edges(args)
+    def unread_node(args: list[str], *, candidate: dict[str, Any] | None) -> Any:
+        if args[1].split("?")[0] in full_nodes:
+            if candidate is None:
+                raise module.AuditError("Canonical node unavailable")
+            return candidate
+        return minimal_edges(args)
 
-        unread = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=unread_node)[0]
+    for response in (None, {}):
+        unread = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW,
+                                           fetch=partial(unread_node, candidate=response))[0]
         assert not unread["complete"] and unread["issues_closed"] == []
+
 
 def test_stale_wait_report_checks_realistic_parked_records_without_writes() -> None:
     module = load()
@@ -3425,6 +3427,17 @@ def test_weekly_audit_refuses_an_incomplete_or_unknown_repository_listing() -> N
             else:
                 assert {"source": "repositories", "reason": gap} in receipt["discovery"]["gaps"]
             assert "weekly_audit" not in json.loads(marker.read_text())
+
+
+def test_expired_inherited_weekly_deadline_reports_unread_evidence_without_a_stamp() -> None:
+    module = load()
+    account = WeeklyAccount(module)
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": "1"}):
+        marker = Path(tmp) / "marker.json"
+        code, receipt = account.run(["--weekly", "--owner", "o"], marker)
+        assert code == 1 and receipt["unread"] and not receipt["discovery"]["complete"]
+        assert receipt["weekly_recorded"] is None
+        assert "weekly_audit" not in json.loads(marker.read_text())
 
 
 def test_weekly_mode_requires_an_owner_and_no_other_mode() -> None:

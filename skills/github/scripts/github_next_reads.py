@@ -33,7 +33,8 @@ class ReadDeadline(Exception):
 
 
 class NextReads:
-    def __init__(self, *, workers: int, seconds: float, progress_seconds: float = 15):
+    def __init__(self, *, workers: int, seconds: float, progress_seconds: float = 15, label: str = "global next"):
+        self.label = label
         self.workers = workers
         self.seconds = seconds
         self.started = time.monotonic()
@@ -107,7 +108,7 @@ class NextReads:
 
     def progress(self) -> None:
         # No repository names, issue text, URLs, credentials or session data.
-        print(f"global next: {self.phase_name}; {time.monotonic() - self.started:.1f}s; "
+        print(f"{self.label}: {self.phase_name}; {time.monotonic() - self.started:.1f}s; "
               f"{self.requests} reads, {self.reused} reused", file=sys.stderr, flush=True)
 
     def start_phase(self, name: str) -> None:
