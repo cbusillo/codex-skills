@@ -248,8 +248,7 @@ def parse_args():
     )
     parser.add_argument("--state-file", help="Path to state JSON file")
     parser.add_argument("--once", action="store_true", help="Emit one snapshot and exit")
-    parser.add_argument("--batch-read", action=argparse.BooleanOptionalAction, default=True,
-                        help="Batch cold/new-head check reads through GraphQL; unchanged heads keep conditional REST")
+    parser.add_argument("--batch-read", action="store_true", help="Explicit cold/changed observation enrichment; default REST preserves idle 304 savings")
     parser.add_argument("--watch", action="store_true", help="Continuously emit JSONL snapshots")
     parser.add_argument(
         "--wait-ci",
@@ -1581,6 +1580,11 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
         state["started_at"] = int(time.time())
 
     reader = watcher_reader()
+    if getattr(args, "batch_read", False) and (fresh_state or state.get("last_seen_head_sha") != pr["head_sha"]):
+        batch = github_pr_batch.try_batch(reader, pr["repo"], [pr["number"]], include_discussion=False)
+        if batch is not None and batch[pr["number"]]["head"]["sha"] != pr["head_sha"]:
+            reader.batch_responses.clear()
+            reader.batch_diagnostic.update({"used": False, "fallback_reason": "head changed after orientation"})
     authenticated_login = get_authenticated_login(reader)
     new_review_items = fetch_new_review_items(
         pr,
@@ -1589,11 +1593,6 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
         authenticated_login=authenticated_login,
         reader=reader,
     )
-    if getattr(args, "batch_read", False) and (fresh_state or state.get("last_seen_head_sha") != pr["head_sha"]):
-        batch = github_pr_batch.try_batch(reader, pr["repo"], [pr["number"]], include_discussion=False)
-        if batch is not None and batch[pr["number"]]["head"]["sha"] != pr["head_sha"]:
-            reader.batch_responses.clear()
-            reader.batch_diagnostic.update({"used": False, "fallback_reason": "head changed after orientation"})
     # Surface review feedback before drilling into CI and mergeability details.
     # That keeps the babysitter responsive to new comments even when other
     # actions are also available.

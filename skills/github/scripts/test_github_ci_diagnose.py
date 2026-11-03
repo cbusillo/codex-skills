@@ -116,7 +116,6 @@ def base_responses(details_url: str = "https://github.com/o/r/actions/runs/22/jo
             },
         },
         "/repos/o/r/commits/abc/statuses?per_page=100&page=1": {"body": []},
-        "/repos/o/r/commits/abc/status": {"body": {"state": "failure"}},
         "/repos/o/r/actions/runs?head_sha=abc&per_page=100&page=1": {"body": {"workflow_runs": [run_metadata()]}},
         "/repos/o/r/actions/runs/22": {"body": run_metadata()},
         "/repos/o/r/actions/jobs/33/logs": {
@@ -463,7 +462,6 @@ def test_external_status_remains_explicit_without_actions_job_reads() -> None:
                 "target_url": "https://ci.example.invalid/build/1",
             }],
         },
-        "/repos/o/r/commits/abc/status": {"body": {"state": "failure"}},
         "/repos/o/r/actions/runs?head_sha=abc&per_page=100&page=1": {"body": {"workflow_runs": []}},
     }
     process, calls = run_fixture(responses)
@@ -499,7 +497,6 @@ def test_current_branch_pr_can_resolve_from_upstream_for_fork() -> None:
         "/repos/base/r/pulls/7": {"body": fork_pull},
         "/repos/base/r/commits/abc/check-runs?per_page=100&page=1": {"body": {"check_runs": []}},
         "/repos/base/r/commits/abc/statuses?per_page=100&page=1": {"body": []},
-        "/repos/base/r/commits/abc/status": {"body": {"state": "success"}},
         "/repos/base/r/actions/runs?head_sha=abc&per_page=100&page=1": {"body": {"workflow_runs": []}},
     }
     process, calls = run_fixture(
@@ -525,7 +522,6 @@ def test_primary_branch_match_skips_inaccessible_upstream() -> None:
         "/repos/fork/r/pulls/7": {"body": origin_pull},
         "/repos/fork/r/commits/abc/check-runs?per_page=100&page=1": {"body": {"check_runs": []}},
         "/repos/fork/r/commits/abc/statuses?per_page=100&page=1": {"body": []},
-        "/repos/fork/r/commits/abc/status": {"body": {"state": "success"}},
         "/repos/fork/r/actions/runs?head_sha=abc&per_page=100&page=1": {"body": {"workflow_runs": []}},
     }
     process, calls = run_fixture(

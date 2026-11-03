@@ -276,8 +276,6 @@ def test_batch_keeps_actions_evidence_and_cannot_hide_missing_runs():
     observed = reader()
     with patch.object(observed, "_transport_request", return_value=response(fixture)):
         batch.batch_pull_requests(observed, "owner/repo", [node["number"]])
-    # Combined status remains a real REST read; missing Actions run identity
-    # cannot become green merely because the batched checks all succeeded.
     with patch.object(
         observed, "request", return_value=response({"state": "success"})
     ) as rest:
@@ -288,7 +286,7 @@ def test_batch_keeps_actions_evidence_and_cannot_hide_missing_runs():
             head_sha=node["headRefOid"],
             workflow_runs=[],
         )
-    assert rest.call_args.args[1].endswith("/status")
+    rest.assert_not_called()
     assert result["summary"]["countsComplete"] is False
     assert "workflowSelection" in result["summary"]["unavailableComponents"]
     expected = reader()
