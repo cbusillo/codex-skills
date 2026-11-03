@@ -2186,6 +2186,14 @@ class ClaimCloseoutTests(unittest.TestCase):
     def test_live_claim_writers_ignore_launcher_briefs_but_block_real_writes(self) -> None:
         pid = os.getpid()
         orphaned_post = f"gh api --method POST --include /repos/{REPO}/issues/1/comments --input -"
+        other_writes = [
+            f"gh api repos/{REPO}/issues/1/comments -f body=claim",
+            f"gh api /repos/{REPO}/issues/1/comments --input -",
+            f"gh api -X post /repos/{REPO}/issues/1/comments",
+            f"gh api -iXPOST -- repos/{REPO}/issues/1/comments",
+            f"/Library/Python.app/Contents/MacOS/Python /catalog/gh-plan.py claim 1 --session {SESSION}",
+            f"uv run gh-plan.py claim 1 --session={SESSION}",
+        ]
         listing = "\n".join([
             f"{pid} 40 uv run check_claims.py --session {SESSION}",
             f"40 1 zsh -c 'uv run gh-plan.py release 1 --session {SESSION}; uv run check_claims.py --session {SESSION}'",
@@ -2199,12 +2207,13 @@ class ClaimCloseoutTests(unittest.TestCase):
             f"48 1 /usr/bin/python3 /catalog/gh-plan.py --repo {REPO} claim 1 --session {SESSION}",
             f"49 1 /catalog/gh-plan.py --repo {REPO} claim 1 --session {SESSION}",
             f"50 1 uv run gh-plan.py --repo {REPO} show 1 --session {SESSION}",
+            *(f"{index} 1 {command}" for index, command in enumerate(other_writes, start=51)),
         ])
         with patch.object(helper.subprocess, "run", return_value=SimpleNamespace(stdout=listing)):
             self.assertEqual(helper.live_claim_writers(SESSION, {(REPO, 1)}),
                              [f"uv run gh-plan.py --repo {REPO} claim 2 --session {SESSION}", orphaned_post,
                               f"/usr/bin/python3 /catalog/gh-plan.py --repo {REPO} claim 1 --session {SESSION}",
-                              f"/catalog/gh-plan.py --repo {REPO} claim 1 --session {SESSION}"])
+                              f"/catalog/gh-plan.py --repo {REPO} claim 1 --session {SESSION}", *other_writes])
 
     def test_orphan_saved_shell_output_cannot_prove_complete_claim_coverage(self) -> None:
         root = self.entry()

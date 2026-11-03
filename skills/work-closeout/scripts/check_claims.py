@@ -28,6 +28,7 @@ import github_plan_claim_log as claim_log
 import github_plan_release as release
 import github_plan_termination as termination
 import release_session_claims as sessions
+from github_api import parse_gh_api_args
 from github_read import (
     GitHubReader,
     GitHubReadError,
@@ -371,15 +372,15 @@ def is_claim_writer(command: str, native: str, posts: list[str]) -> bool:
     argv = command.split()
     arguments = history.claim_arguments(argv)
     if arguments is not None:
-        return "claim" in arguments and native in arguments
+        return "claim" in arguments and (native in arguments or f"--session={native}" in arguments)
     position = history.command_position(argv)
     if position is None or position.index >= len(argv):
         return False
     argv = argv[position.index:]
-    return (Path(argv[0]).name == "gh" and argv[1:2] == ["api"]
-            and any(argv[index:index + 2] in (["--method", "POST"], ["-X", "POST"])
-                    or argument in {"--method=POST", "-XPOST"} for index, argument in enumerate(argv))
-            and any(post in argv for post in posts))
+    if Path(argv[0]).name != "gh" or argv[1:2] != ["api"]:
+        return False
+    request = parse_gh_api_args(argv[2:])
+    return request is not None and request.sent_method == "POST" and request.endpoint.lstrip("/") in posts
 
 
 def live_claim_writers(native: str, targets: AbstractSet[tuple[str, int]]) -> list[str]:
@@ -390,7 +391,7 @@ def live_claim_writers(native: str, targets: AbstractSet[tuple[str, int]]) -> li
     while pid in processes and pid not in own_lineage:
         own_lineage.add(pid)
         pid = processes[pid][0]
-    posts = [f"/repos/{repo}/issues/{number}/comments" for repo, number in targets]
+    posts = [f"repos/{repo}/issues/{number}/comments" for repo, number in targets]
     return [command for pid, (_, command) in sorted(processes.items())
             if pid not in own_lineage and is_claim_writer(command, native, posts)]
 
