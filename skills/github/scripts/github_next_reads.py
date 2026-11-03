@@ -139,7 +139,7 @@ class NextReads:
 
     def request(self, read: Callable[[], T]) -> T:
         if self.expired:
-            raise ReadDeadline("global next time budget exhausted; evidence unread")
+            raise ReadDeadline(f"{self.label} time budget exhausted; evidence unread")
         with self.lock:
             self.requests += 1
         return self._read(read)

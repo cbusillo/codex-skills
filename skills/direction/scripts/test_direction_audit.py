@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import importlib.util
 import json
 import math
@@ -18,7 +19,6 @@ import sys
 import tempfile
 import types
 from contextlib import nullcontext, redirect_stderr, redirect_stdout
-from functools import partial
 from io import StringIO
 from pathlib import Path
 from typing import Any, Self
@@ -2050,8 +2050,9 @@ def test_milestone_outcomes_report_closed_open_and_waiting_graph_nodes() -> None
             {"html_url": "https://github.com/x/product/issues/9", "state": "closed", "title": "Ship it",
              "closed_at": inside, "updated_at": inside}],
         "repos/o/direction/issues/1/dependencies/blocked_by": [
-            {"html_url": "https://github.com/o/tools/issues/3", "state": "open", "updated_at": before, "comments": 0, "user": {"login": "o"},
-             "body": '## Current Status\n<!-- github-plan:wait {"version":1,"state":"waiting","waits":[{"waiting_for":"o","ends_when":"hands-on test complete"}],"evidence":"hands-on"} -->'}],
+            {"number": 3, "html_url": "https://github.com/o/tools/issues/3", "state": "open", "updated_at": before, "comments": 0, "user": {"login": "o"},
+             "body": "## Current Status\n" + module.github_plan_wait.marker(module.github_plan_wait.reviewed(
+                 evidence="hands-on", waiting_for="o", ends_when="hands-on test complete"))}],
     }
     completion = {"id": 1, "user": {"login": "o"}, "created_at": inside,
                   "body": "## Current Status\nState: The accepted release is complete.\n"}
@@ -2089,6 +2090,16 @@ def test_milestone_outcomes_report_closed_open_and_waiting_graph_nodes() -> None
     assert unknown["issues_waiting"] == 0 and unknown["complete"]
     waiting["user"]["login"] = "o"
 
+    def unread_wait(args: list[str]) -> Any:
+        if args[1].startswith("repos/o/tools/issues/3/comments"):
+            raise module.AuditError("Discussion unavailable")
+        return fetch(args)
+
+    waiting["comments"] = 1
+    unread_discussion = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=unread_wait)[0]
+    assert unread_discussion["issues_waiting"] is None and not unread_discussion["complete"]
+    waiting["comments"] = 0
+
     full_nodes = {"repos/" + value["html_url"].removeprefix("https://github.com/"): value
                   for values in edges.values() for value in values}
     hydrated = []
@@ -2117,7 +2128,7 @@ def test_milestone_outcomes_report_closed_open_and_waiting_graph_nodes() -> None
 
     for response in (None, {}):
         unread = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW,
-                                           fetch=partial(unread_node, candidate=response))[0]
+                                           fetch=functools.partial(unread_node, candidate=response))[0]
         assert not unread["complete"] and unread["issues_closed"] == []
 
 
