@@ -1872,6 +1872,15 @@ it produce one host-local recommendation per provider and do not refuse launch.
 Configured account mappings require their snapshot command for launch and review.
 Without it selection refuses; the mappings remain available to source inventory.
 
+Recovery inventory uses the user-wide `~/.code/skill-data/supervisor.toml`.
+Configured accounts there remain authoritative. Settings found only in another
+Code or provider home leave recovery inventory unavailable; they never become
+an unconfigured fallback. A genuinely unconfigured inventory covers the current
+CLI home plus an existing default home, without reading credentials.
+Run unconfigured resume and closeout with the launch environment recorded in
+the ledger (`CODEX_HOME` or `CLAUDE_CONFIG_DIR`). A source-home mismatch refuses;
+use that recorded environment for the helper invocation, never change the login.
+
 With a configured snapshot command, Context Panel is the account-choice source.
 A missing or failed configured reader still refuses; no silent fallback. This
 preserves the configured-host decisions on

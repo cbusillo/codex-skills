@@ -179,7 +179,7 @@ def gap_text(row: dict[str, Any]) -> str:
 
 
 def codex_accounts() -> list[dict[str, Any]]:
-    return [account for account in account_choice.load_config()["accounts"] if account["provider"] == "openai"]
+    return [account for account in account_choice.inventory_accounts() if account["provider"] == "openai"]
 
 
 def main(argv: list[str] | None = None) -> int:

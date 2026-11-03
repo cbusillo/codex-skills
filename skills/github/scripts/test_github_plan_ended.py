@@ -616,8 +616,11 @@ class HistoryCoverageTests(unittest.TestCase):
             root = Path(folder)
             helper = ended.sessions.native_helpers()[0]
             self.assertEqual(ended.source_accounts()[0]["env"], helper.login_environment("anthropic"))
+            (root / helper.DEFAULT_HOMES["anthropic"]).mkdir()
             with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(root / "active")}):
-                self.assertEqual(ended.source_accounts()[0]["env"], helper.login_environment("anthropic"))
+                environments = [account["env"] for account in ended.source_accounts()]
+                self.assertEqual(environments[0], helper.login_environment("anthropic"))
+                self.assertIn({}, environments)
             path = ended.closure.closed_log().with_name("supervisor.toml")
             path.parent.mkdir(parents=True)
             path.write_text('[[accounts.account]]\nname="configured"\nprovider="openai"\ncontext_panel_label="fixture"\n'

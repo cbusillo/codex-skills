@@ -206,18 +206,15 @@ def transcript_roots(harness: str, configured: Path | None, explicit: list[Path]
         return [str(p.expanduser().resolve()) for p in explicit]
     if harness == "agy":
         return [str(session_record.claim_history.AGY_HOME.expanduser() / "conversations")]
-    config = account_choice.load_config(configured)
+    accounts = account_choice.load_config(configured)["accounts"] if configured else account_choice.inventory_accounts()
     roots = []
-    for account in config["accounts"]:
+    for account in accounts:
         if account["provider"] == ("openai" if harness == "codex" else "anthropic"):
             variable = "CODEX_HOME" if harness == "codex" else "CLAUDE_CONFIG_DIR"
             home = Path(account["env"].get(variable, str(Path.home() / ".claude"))).expanduser()
             roots.extend([str(home / "sessions"), str(home / "archived_sessions")] if harness == "codex" else [str(home / "projects")])
     if not roots:
-        provider = "openai" if harness == "codex" else "anthropic"
-        variable = account_choice.ACCOUNT_VARIABLES[provider]
-        home = Path(account_choice.login_environment(provider).get(variable, str(Path.home() / ".claude"))).expanduser()
-        roots.extend([str(home / "sessions"), str(home / "archived_sessions")] if harness == "codex" else [str(home / "projects")])
+        raise ValueError("source harness homes unavailable; supply --transcript-root for known native transcript directories")
     if entry and harness == "codex" and entry.get("codex_home"):
         home = Path(entry["codex_home"]).expanduser()
         roots.extend([str(home / "sessions"), str(home / "archived_sessions")])

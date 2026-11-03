@@ -1007,6 +1007,18 @@ class AccountHomeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 SESSIONS.configured_homes(strict=True)
 
+    def test_alternate_account_settings_never_become_unconfigured_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder}, clear=True):
+            root = Path(folder)
+            alternate = root / "alternate"
+            path = alternate / "skill-data/supervisor.toml"
+            path.parent.mkdir(parents=True)
+            path.write_text('[[accounts.account]]\nname="configured"\nprovider="openai"\ncontext_panel_label="fixture"\n'
+                            + 'env={CODEX_HOME=' + json.dumps(str(root / "configured")) + '}\n')
+            with patch.dict(os.environ, {"CODE_HOME": str(alternate)}):
+                with self.assertRaises(ValueError):
+                    SESSIONS.configured_homes(strict=True)
+
     def test_runtime_and_account_overrides_cannot_hide_a_frozen_source(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder, "CODE_HOME": str(Path(folder) / ".code")}):
             path = CLOSURE.closed_log()

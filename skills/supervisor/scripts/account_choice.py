@@ -35,6 +35,7 @@ class UnconfiguredChoice(ValueError):
     pass
 # Supported variables that put a launched harness on an account. AGY uses its existing login.
 ACCOUNT_VARIABLES = {"openai": "CODEX_HOME", "anthropic": "CLAUDE_CONFIG_DIR"}
+DEFAULT_HOMES = {"openai": ".codex", "anthropic": ".claude"}
 GOOGLE_ACCOUNT_BINDING = "existing-agy-login"
 SNAPSHOT_TIMEOUT_SECONDS = 60
 RECORD_LAUNCH_TIMEOUT_SECONDS = 30
@@ -55,7 +56,7 @@ def config_paths(env, home):
     return list(dict.fromkeys(paths))
 
 
-def load_config(path=None, env=None, home=None):
+def load_config(path=None, env=None, home=None) -> dict[str, Any]:
     """Read [accounts] from the first private config that has it; invalid config fails closed."""
     env = os.environ if env is None else env
     home = Path.home() if home is None else home
@@ -409,14 +410,28 @@ def login_environment(provider: str) -> dict[str, str]:
     if variable and (value := os.environ.get(variable)):
         environment[variable] = value
     if provider == "openai":
-        environment.setdefault("CODEX_HOME", str(Path.home() / ".codex"))
+        environment.setdefault("CODEX_HOME", str(Path.home() / DEFAULT_HOMES[provider]))
     return environment
+
+
+def login_accounts(provider: str) -> list[dict]:
+    environment = login_environment(provider)
+    variable = ACCOUNT_VARIABLES[provider]
+    default = Path.home() / DEFAULT_HOMES[provider]
+    current = Path(environment.get(variable) or default).expanduser()
+    environments = [environment]
+    if default.is_dir() and default.resolve() != current.resolve():
+        environments.append({variable: str(default)} if provider == "openai" else {})
+    return [{"provider": provider, "name": f"native-{index}", "env": values} for index, values in enumerate(environments)]
 
 
 def inventory_accounts() -> list[dict]:
     config = load_config(env={}, home=Path.home())
-    return config["accounts"] or [{"provider": provider, "name": "existing-login", "env": login_environment(provider)}
-                                   for provider in ACCOUNT_VARIABLES]
+    if config["accounts"]:
+        return config["accounts"]
+    if load_config()["accounts"]:
+        raise ValueError("account settings exist outside the canonical ~/.code/skill-data/supervisor.toml; native inventory is unavailable")
+    return [account for provider in ACCOUNT_VARIABLES for account in login_accounts(provider)]
 
 
 def existing_login(provider: str, name: str | None = None) -> dict:
@@ -425,18 +440,14 @@ def existing_login(provider: str, name: str | None = None) -> dict:
         raise ValueError(f"no configured {provider} account named {name}")
     if provider == "openai":
         codex_health().require_usable(Path(environment["CODEX_HOME"]).expanduser())
-    recommend_context_panel(provider, environment)
+    if provider in ACCOUNT_VARIABLES:
+        recommend_context_panel(provider, len(login_accounts(provider)))
     return decision({"provider": provider, "name": "existing-login", "env": environment},
                     "cli-login", "CLI login; Context Panel is optional")
 
 
-def recommend_context_panel(provider: str, environment: dict) -> None:
-    variable = ACCOUNT_VARIABLES.get(provider)
-    if variable is None:
-        return
-    default = Path.home() / {"openai": ".codex", "anthropic": ".claude"}[provider]
-    homes = {str(path.expanduser().resolve()) for path in (default, Path(environment.get(variable) or default)) if path.is_dir()}
-    if len(homes) < 2 or provider in RECOMMENDATIONS:
+def recommend_context_panel(provider: str, home_count: int) -> None:
+    if home_count < 2 or provider in RECOMMENDATIONS:
         return
     marker = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "codex-skills" / f"context-panel-{provider}"
     try:
@@ -454,7 +465,7 @@ def recommend_context_panel(provider: str, environment: dict) -> None:
 def select_batch(provider, config_path=None, name=None, count=1):
     config = load_config(config_path)
     if config["snapshot_command"] is None:
-        return choose_batch(provider, config, None, None, count=count, name=name)
+        return choose_batch(provider, config, None, "no snapshot_command configured", count=count, name=name)
     snapshot, problem = read_snapshot(config["snapshot_command"])
     choices = choose_batch(provider, config, snapshot, problem, count=count, name=name)
     route = receipt_route(config["snapshot_command"])
