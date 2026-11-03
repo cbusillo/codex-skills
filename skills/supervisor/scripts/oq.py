@@ -95,7 +95,7 @@ def main() -> int:
     for item in args.items:
         try:
             comments = fetch(item)
-            found = questions(comments, args.owner, args.decision_author)
+            found = questions(comments, args.owner, args.decision_author, recorded_decisions_only=args.include_answers)
             if args.include_answers:
                 numbers = Counter(question_records.heading_id(question["question"]) for question in found)
                 for question in found:

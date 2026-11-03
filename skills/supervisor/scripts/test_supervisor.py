@@ -1231,6 +1231,8 @@ class QuestionTests(unittest.TestCase):
             ("bot", "Director decision Q907: no. See https://example.test/questions/101 for Q906's comparison.", False),
             ("bot", "Director decision Q906: later", False),
             ("bot", "Director decision Q906: later\n\nQuestion: https://example.test/questions/101", False),
+            ("bot", "Director decision Q906: later\r\n\r\nQuestion: https://example.test/questions/101", False),
+            ("bot", "Director decision Q906: pending\nQuestion: https://example.test/questions/101", False),
             ("bot", "Director decision Q906: not yet\n\n<!-- operation -->", False),
             ("bot", "Director decision Q906 pending; continuing independent work.", False),
             ("bot", "Director decision Q906 still needed.", False),

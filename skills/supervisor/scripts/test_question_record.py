@@ -402,6 +402,8 @@ class PublicReadTests(unittest.TestCase):
                 "user": {"login": "outsider"},
                 "body": f"Director decision Q1218: Drop both.\n\nQuestion: {source}",
             },
+            {"id": 4, "html_url": source.replace("-1", "-4"), "user": {"login": "director"},
+             "body": f"Not sure yet, what is the cost? {source}"},
         ]
         response = "HTTP/2.0 200\ncontent-type: application/json\n\n" + json.dumps(comments)
         with tempfile.TemporaryDirectory() as home:

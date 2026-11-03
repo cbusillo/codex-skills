@@ -58,7 +58,8 @@ def questions(comments: list[dict[str, Any]], owner: str, decision_authors: Iter
             decision_number = heading_number or (number_match[0] if number_match else None)
             content = re.sub(r"^Q[1-9][0-9]*\s*[:=,.—-]?\s*", "", content)
             content = re.sub(r"https://\S+", "", content).strip()
-            if recorded and re.fullmatch(r"(?i)(?:later|not now|not yet|waiting|pending)[\s.;!—-]*", content.split("\n\n", 1)[0]):
+            paragraph = re.split(r"\r?\n(?:[ \t]*\r?\n|[ \t]*(?:Question:|<!--))", content, 1)[0]
+            if recorded and re.fullmatch(r"(?i)(?:later|not now|not yet|waiting|pending)[\s.;!—-]*", paragraph):
                 continue
             numbered = (
                 recorded and number is not None and numbers[number] == 1
