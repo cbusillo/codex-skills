@@ -3213,13 +3213,16 @@ counts and GraphQL points are separate from whole-fleet hourly savings.
 `github_pr_batch.batch_pull_requests(reader, repo, numbers)` refreshes up to
 twenty PRs through the existing reader transport and fills one-pass,
 REST-shaped metadata, reviews, comments, check runs and latest status contexts.
-The Supervisor auto-enqueue observer and PR watcher support `--batch-read` for
-explicitly cold or changing passes. The watcher batches only its first
-snapshot or a new head, then uses REST while that head remains unchanged.
+The PR watcher batches check runs and latest status contexts automatically on
+its first snapshot or a new head, then uses conditional REST while that head
+remains unchanged. `--no-batch-read` selects REST for a diagnostic comparison.
+The Supervisor auto-enqueue observer supports `--batch-read` for explicitly
+cold or changing passes.
 The Supervisor flag requires `--once` for a cold/changed pass; its continuous
 mode uses conditional REST. The watcher keeps discussion/Client feedback reads
-on REST so publisher IDs and App provenance retain their verification path. The flag defaults off: unchanged polling
-keeps its authenticated conditional REST savings. There is no persisted GraphQL
+on REST so publisher IDs and App provenance retain their verification path.
+The Supervisor flag defaults off. Unchanged polling keeps its authenticated
+conditional REST savings. There is no persisted GraphQL
 body cache or credential/actor change.
 
 Connections are paginated before any result is published. Partial errors,

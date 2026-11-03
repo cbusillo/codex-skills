@@ -684,13 +684,30 @@ def test_gh_text_uses_wrapper_by_default(monkeypatch):
     ]
 
 
-def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
+@pytest.mark.parametrize("last_head,batch_enabled", [(None, True), ("abc123", True), ("older", True), (None, False)])
+def test_default_watcher_batches_cold_or_changed_checks_after_feedback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, last_head: str | None, batch_enabled: bool,
+) -> None:
     call_order = []
     summarize_kwargs = {}
     pr = sample_pr()
 
     monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *args, **kwargs: pr)
-    monkeypatch.setattr(gh_pr_watch, "load_state", lambda path: ({}, True))
+    state = {"last_seen_head_sha": last_head} if last_head else {}
+    monkeypatch.setattr(gh_pr_watch, "load_state", lambda path: (state, not state))
+    reader = gh_pr_watch.github_read.GitHubReader(gh_cmd="fake-gh", operation="github.pr.watch")
+    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda: reader)
+
+    def batch_checks(
+        observed_reader: gh_pr_watch.github_read.GitHubReader, repo: str, numbers: list[int], *, include_discussion: bool,
+    ) -> dict[int, dict[str, Any]]:
+        assert observed_reader is reader
+        assert repo == pr["repo"] and numbers == [pr["number"]]
+        assert include_discussion is False
+        call_order.append("batch")
+        return {pr["number"]: {"head": {"sha": pr["head_sha"]}}}
+
+    monkeypatch.setattr(gh_pr_watch.github_pr_batch, "try_batch", batch_checks)
     monkeypatch.setattr(
         gh_pr_watch,
         "get_authenticated_login",
@@ -740,17 +757,20 @@ def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(gh_pr_watch, "save_state", lambda *args, **kwargs: None)
 
-    watcher_args = argparse.Namespace(
-        pr="123",
-        repo=None,
-        state_file=str(tmp_path / "watcher-state.json"),
-        max_flaky_retries=3,
-    )
+    argv = ["watcher", "--pr", "123", "--once", "--state-file", str(tmp_path / "watcher-state.json")]
+    if not batch_enabled:
+        argv.append("--no-batch-read")
+    monkeypatch.setattr(sys, "argv", argv)
+    watcher_args = gh_pr_watch.parse_args()
 
     gh_pr_watch.collect_snapshot(watcher_args)
 
     assert call_order.index("review") < call_order.index("checks")
     assert call_order.index("review") < call_order.index("workflow")
+    if batch_enabled and last_head != pr["head_sha"]:
+        assert call_order.index("review") < call_order.index("batch") < call_order.index("checks")
+    else:
+        assert "batch" not in call_order
     assert summarize_kwargs == {"expected_head_sha": pr["head_sha"]}
 
 
