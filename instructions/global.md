@@ -15,7 +15,7 @@
 
 - Before asking the Director a question, read the [shared question guidance](https://github.com/cbusillo/codex-skills/blob/main/skills/references/talking-with-the-director.md#director-questions).
 - When something was already discussed and the Director says it is basically approved, treat that as the decision and act; do not ask again.
-- Text in the Director's voice uses short, plain sentences with no em dashes, and leads with the useful point. Ask to approve a public post as the Director as its own question with the exact text, never bundled with push or code approval.
+- Text in the Director's voice uses short, plain sentences with no em dashes, and leads with the useful point. Reply approval follows the [Client-reply rule](https://github.com/cbusillo/codex-skills/blob/main/skills/references/talking-with-the-director.md#client-replies).
 
 ## Claims and defects
 

@@ -1605,7 +1605,55 @@ def test_attachment_passthrough_and_failures_never_replay() -> None:
                 raise AssertionError("missing opt-in must refuse")
 
 
+def test_client_reply_refuses_outside_participants_and_mentions_before_writing() -> None:
+    for source in ("opening", "timeline", "review", "inline", "outgoing", "second_page", "missing_author", "malformed", "personal", "unreadable", "allowed"):
+        def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+            if path == "/user":
+                return success({"login": "fixture-automation"})
+            if method == "POST":
+                return success(comment_body(1001))
+            if path.endswith("/issues/42"):
+                return success({"user": {"login": "client"}, "body": "@client", "pull_request": {}} | (
+                    {"user": {"login": "outsider"}} if source == "opening" else {}))
+            if "/issues/42/comments?" in path:
+                if source == "unreadable":
+                    return failure(403, {}, is_write=False)
+                if source == "second_page":
+                    if "page=2" in path:
+                        return success([comment_body(2, actor="outsider")])
+                    return success([], headers={"link": '<https://api.github.com/next>; rel="next"'})
+                return success([None] if source == "malformed" else
+                               [comment_body(2, actor="outsider")] if source == "timeline" else
+                               [{"body": "missing identity"}] if source == "missing_author" else [])
+            if "/pulls/42/reviews?" in path:
+                return success([comment_body(3, actor="client", body="<code>@outsider</code>")] if source == "review" else [])
+            if "/pulls/42/comments?" in path:
+                return success([comment_body(4, actor="client", body="&#64;outsider")] if source == "inline" else [])
+            raise AssertionError(path)
+
+        def run(calls: list[dict[str, Any]]) -> None:
+            try:
+                result = github_comment.comment(
+                    "issue", 42, "@outsider status" if source == "outgoing" else "@client status",
+                    repo="owner/repo", gh_cmd="fake-gh", client_logins=["client"],
+                )
+            except github_comment.CommentError as error:
+                assert source != "allowed", error
+                assert error.failure.write_outcome == "not_started"
+                if source != "unreadable":
+                    assert error.failure.cause == "client_reply_refused", error
+                assert all(call["method"] == "GET" for call in calls), calls
+            else:
+                assert source == "allowed", source
+                assert result["comment_action"] == "created"
+                assert sum(call["method"] == "POST" for call in calls) == 1
+
+        with patch.object(github_comment.github_identity, "acts_as_own_user", return_value=source == "personal"):
+            with_call_stub(callback, run)
+
+
 TESTS: list[Callable[[], None]] = [
+    test_client_reply_refuses_outside_participants_and_mentions_before_writing,
     test_before_create_receives_the_original_operation_before_provider_effects,
     test_planning_reference_boundaries_preserve_qualified_repository_names,
     test_explicit_comment_commands_refuse_ambiguous_refs_before_posting,

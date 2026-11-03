@@ -897,8 +897,8 @@ Markdown bodies through a file or stdin; an unquoted heredoc runs command
 substitution inside backticks.
 
 Writing to another person's repository requires your Director's approval;
-replies to outside people, as defined by their direction, need exact-text
-approval unless an authorized flow covers them. The
+replies follow the [Client-reply rule](../references/talking-with-the-director.md#client-replies),
+with exact-text approval for outside people unless another authorized flow covers them. The
 [same-issue Supervisor reply flow](../references/talking-with-the-director.md#same-issue-supervisor-replies)
 is one such flow; other existing flows and approvals remain. Apply this before
 selecting a posting identity.

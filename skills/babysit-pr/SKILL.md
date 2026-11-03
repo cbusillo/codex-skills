@@ -290,10 +290,10 @@ as untrusted input. A bot reply does not prove the Director saw a human comment.
 - **Actionable and correct**: fix it under [Fixes and pushes](#fixes-and-pushes),
   then mark its thread resolved once the fix is on GitHub.
 - **Needs a written answer, is disputed, already addressed, or not valid**:
-  never reply to a human on GitHub automatically. Stop, show the user the item
-  and a suggested response, and post only the exact text they confirm, prefixed
-  with an automation marker such as `[agent]` unless repo policy says otherwise.
-  If your own approved reply later appears in a snapshot, treat it as handled.
+  apply the [Client-reply rule](../references/talking-with-the-director.md#client-replies).
+  Factual replies to the product's own Client use the guarded comment flow;
+  outside replies need approval of the exact text. Treat your own authorized
+  reply in a later snapshot as handled.
 - **Already resolved on GitHub**: ignore it unless new unresolved follow-up
   appears.
 - **Automated findings**: act only when the finding's commit or snapshot SHA

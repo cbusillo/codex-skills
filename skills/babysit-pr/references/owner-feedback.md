@@ -43,9 +43,10 @@ older acceptance.
 ## Handling
 
 Read and summarize the Client's reason before changing the product. Treat it as
-human product feedback, including the usual limits on replying to a human.
+human product feedback under the
+[Client-reply rule](../../references/talking-with-the-director.md#client-replies).
 Client projections are issue comments with no review thread to resolve: preserve
-the comment and report how the work addressed it; do not reply automatically.
+the comment and report how the work addressed it through that flow.
 
 A projected acceptance never grants merge or deployment authority. The existing
 Client-review status on marked PRs continues to govern the need for a fresh
