@@ -41,7 +41,7 @@ common: Any = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(common)
 Blocked = common.Blocked
 LOAD_LIMIT = common.LOAD_LIMIT
-HEAP_LIMIT_MIB = 1536
+HEAP_LIMIT_MIB = 6144
 ACTIVE_PROCESSORS = 2
 NICE = 10
 DRAIN_SECONDS = 2
