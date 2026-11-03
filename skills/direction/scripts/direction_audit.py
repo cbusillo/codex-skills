@@ -2201,7 +2201,7 @@ def fetch_capacity(
 
     if reads:
         reads.start_phase("capacity_net_lines")
-    names = [repo_name for repo_name, report in summary["by_repository"].items() if report["merged_by_rank"]["tooling"]]
+    names = list(summary["by_repository"])
     line_results = reads.map(read_net_lines, names) if reads else list(map(read_net_lines, names))
     for line_repo, line_counts in zip(names, line_results, strict=True):
         summary["by_repository"][line_repo]["net_lines"] = line_counts

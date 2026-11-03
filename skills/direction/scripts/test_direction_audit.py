@@ -3541,10 +3541,12 @@ def test_growth_trigger_uses_the_larger_of_the_floor_and_share_of_repository_lin
         result, _ = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=fetch,
                                           tree_lines=lambda repo, sha: repository_lines)
         return result["by_repository"]["o/live"]["net_lines"]
-    small = growth(5000 + 50_000)
-    assert small["growth"] == {"status": "complete", "lines_before": 50_000, "threshold": 2000, "exceeded": True}
+    floor_sized = round(module.GROWTH_FLOOR_LINES / module.GROWTH_SHARE / 2)
+    small = growth(5000 + floor_sized)
+    assert small["growth"] == {"status": "complete", "lines_before": floor_sized,
+                               "threshold": module.GROWTH_FLOOR_LINES, "exceeded": True}
     assert small["largest"] == [{"sha": "grow", "subject": "Merge pull request #7", "total": 5000}]
-    assert growth(5000 + 300_000)["growth"]["exceeded"] is False
+    assert growth(5000 + round(5000 / module.GROWTH_SHARE * 1.2))["growth"]["exceeded"] is False
     unsized, _ = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=fetch)
     assert unsized["by_repository"]["o/live"]["net_lines"]["growth"]["status"] == "unknown"
 
@@ -3559,7 +3561,7 @@ def test_growth_trigger_uses_the_larger_of_the_floor_and_share_of_repository_lin
         assert module.tarball_text_lines("o/live", "grow", gh="gh") == 3
 
 
-def test_capacity_attaches_lines_only_to_tooling_and_retains_unknown_reads() -> None:
+def test_capacity_attaches_lines_and_retains_unknown_reads() -> None:
     module = load()
     calls: list[str] = []
     base = capacity_fetch_with_unchanged_tree(reporting_fetch(module, OWN_DIRECTION, [

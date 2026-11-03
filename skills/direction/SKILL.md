@@ -650,7 +650,7 @@ limits. `read_metrics` reports reads, reuse and elapsed time by section. Reopene
 signal the throughput numbers do not carry; report it with the share. Provider
 capacity left unused stays manual until an account reader exists.
 
-For each repository with tooling merges, `capacity.by_repository[REPO]`
+For each repository with merges in the window, `capacity.by_repository[REPO]`
 includes `net_lines` for its whole default branch over that window, split into
 `tests`, `other` and `total`. It sums first-parent commit diffs, including train
 merges once and reversions, using committer dates and the same half-open window.
