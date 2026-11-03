@@ -15,7 +15,9 @@ says "House rule" and why, in one line; everywhere else the convention wins.
 A comment is a second source of truth. It drifts from the code, and it lets
 unclear code stand by explaining it.
 
-- Write no docstrings.
+- Write no docstrings, except those a tool renders, such as CLI help or
+  published library API documentation. Whether a tool consumes one is a review
+  rule.
 - Write no comment that restates the code.
 - Write no "why" comment that a name or structure could carry. Extract the
   step and name it for the reason:

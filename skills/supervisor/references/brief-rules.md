@@ -138,8 +138,8 @@ Rules for this brief (every Supervisor brief carries them):
 - Style ([codex-skills#2455](https://github.com/cbusillo/codex-skills/issues/2455)):
   before writing Python, Odoo XML or JavaScript, read
   [python-odoo-style](../../references/python-odoo-style.md) in full, and
-  check your diff against it before handoff. CI fails on new comments and
-  docstrings outside its exceptions.
+  check your diff against it before handoff. CI fails on new comments outside
+  its exceptions; review whether a docstring is rendered by a tool.
 - Tests ([Q375](https://github.com/cbusillo/codex-skills/issues/1884#issuecomment-6215129557)):
   run focused tests plus the full test modules for the safety areas you touch
   locally ([gate selection](../../repo-readiness/SKILL.md#gate-selection));
