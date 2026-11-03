@@ -26,6 +26,16 @@ ADMISSION_OPEN = json.loads((Path(__file__).parent / "fixtures" / "codex-admissi
 RPC_FAILURE = {"error": {"code": -1, "message": "server-payload-sentinel:private-native-detail"}}
 
 
+def terminal_fixture() -> Mock:
+    row = {"window_id": "$1", "tab_id": "@1", "pane_id": "%1", "tty": "fixture",
+           "pid": 1, "backend": "tmux", "tmux_socket": "fixture"}
+    terminal = Mock()
+    terminal.run.return_value.stdout = "@1\t%1"
+    terminal.select.side_effect = lambda identity: {**row, "session_id": identity}
+    terminal.send = AsyncMock()
+    return terminal
+
+
 class DaemonTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
@@ -248,12 +258,7 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
     async def test_codex_hook_review_after_short_check_still_blocks_launch(self):
         # Codex draws its first screen seconds after exec; the prompt must not
         # be missed because the immediate-exit check has already passed.
-        row = {"window_id": "$1", "tab_id": "@1", "pane_id": "%1", "session_id": "tmux:fixture:identity", "tty": "fixture",
-               "pid": 1, "backend": "tmux", "tmux_socket": "fixture"}
-        terminal = Mock()
-        terminal.run.return_value.stdout = "@1\t%1"
-        terminal.select.return_value = row
-        terminal.send = AsyncMock()
+        terminal = terminal_fixture()
         starting = {"dead": False, "exit_status": "", "exit_signal": "", "screen": []}
         prompt = {**starting, "screen": ["› 1. Trust all and continue", "2. Continue without trusting"]}
         reads = 0
@@ -370,12 +375,7 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         await iterm_tab.verify_startup(AsyncMock(return_value={"dead": False, "screen": ["ready"]}), timeout=0)
 
     async def test_tmux_failed_launch_retains_receipt_identity_and_output(self):
-        row = {"window_id": "$1", "tab_id": "@1", "pane_id": "%1", "session_id": "tmux:fixture:identity", "tty": "fixture",
-               "pid": 1, "backend": "tmux", "tmux_socket": "fixture"}
-        terminal = Mock()
-        terminal.run.return_value.stdout = "@1\t%1"
-        terminal.select.return_value = row
-        terminal.send = AsyncMock()
+        terminal = terminal_fixture()
         terminal.read.return_value = {"dead": True, "exit_status": "1", "exit_signal": "", "screen": ["thread/start failed"]}
         args = argparse.Namespace(command="new", tmux_socket="fixture", window_id="$1")
         choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/codex"}}
@@ -395,12 +395,7 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         terminal.view.assert_not_called()
 
     async def test_tmux_hook_review_stops_batch_after_first_submitted_worker(self):
-        row = {"window_id": "$1", "tab_id": "@1", "pane_id": "%1", "session_id": "tmux:fixture:identity", "tty": "fixture",
-               "pid": 1, "backend": "tmux", "tmux_socket": "fixture"}
-        terminal = Mock()
-        terminal.run.return_value.stdout = "@1\t%1"
-        terminal.select.return_value = row
-        terminal.send = AsyncMock()
+        terminal = terminal_fixture()
         terminal.read.return_value = {"dead": False, "exit_status": "", "exit_signal": "",
                                      "screen": ["› 1. Trust all and continue", "2. Continue without trusting"]}
         args = argparse.Namespace(command="new", tmux_socket="fixture", window_id="$1")
