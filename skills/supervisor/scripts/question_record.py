@@ -204,7 +204,8 @@ def update(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
     if errors:
         raise ValueError("Invalid Director question:\n" + "\n".join(errors))
     with delivery.queue_lock():
-        comments = fetch(delivery.source_item(args.url))
+        item = delivery.source_item(args.url)
+        comments = fetch(item)
         source = source_from_comments(args.url, comments)
         view = read_record(source)
         if not args.expected_updated_at or source.get("updated_at") != args.expected_updated_at:
@@ -214,9 +215,9 @@ def update(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
         trusted = {author.casefold() for author in [args.owner, *args.decision_author]}
         if source["author"].casefold() not in trusted:
             raise ValueError("question writer must be the Director or a configured --decision-author")
-        queue = question_id.configured_queue()
+        queue = question_id.configured_queue() or ""
         related = []
-        if isinstance(queue, str) and queue != delivery.source_item(args.url):
+        if queue and queue != item:
             related = fetch(queue)
         question = next((q for q in delivery.oq.questions(comments, args.owner, args.decision_author, related)
                          if q["url"] == args.url), None)
@@ -226,8 +227,9 @@ def update(record: Any, args: argparse.Namespace, storage: QuestionStorage, fetc
         if any((comment.get("author") or "").casefold() == args.owner.casefold() for comment in comments[position + 1:]):
             raise ValueError("Director replied after this question; confirm the answer before revising")
         body = question_id.number_heading(render(record, legacy=True), view["question_id"])
-        github_comment.validate_question_mentions(body, delivery.COMMENT_URL.fullmatch(args.url)[1])
-        github_comment.validate_planning_references(body, delivery.COMMENT_URL.fullmatch(args.url)[1])
+        repo = item.split("#", 1)[0]
+        github_comment.validate_question_mentions(body, repo)
+        github_comment.validate_planning_references(body, repo)
         if len(body.encode()) + 128 > COMMENT_LIMIT:
             raise ValueError("record and rendered text exceed the GitHub comment limit")
         saved = read_record(storage.update(args.url, body, source["body"], args.expected_updated_at))
