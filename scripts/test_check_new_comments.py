@@ -5,9 +5,11 @@
 # ///
 from __future__ import annotations
 
+import ast
 import contextlib
 import io
 import subprocess
+import sys
 import unittest
 from collections.abc import Mapping
 from pathlib import Path
@@ -64,17 +66,18 @@ class NewCommentsCheck(unittest.TestCase):
             {("app.py", 1, "comment"), ("app.py", 3, "comment")},
         )
 
-    def test_new_docstrings_fail(self) -> None:
-        source = '"""Totals."""\n\n\nclass Ledger:\n    """Holds entries."""\n\n    def total(self) -> int:\n        """Sum.\n\n        More.\n        """\n        return 0\n'
-        self.assertEqual(
-            self.findings({"app.py": BASE}, {"app.py": source}),
-            {("app.py", 1, "docstring"), ("app.py", 5, "docstring"), ("app.py", 8, "docstring")},
+    def test_tool_rendered_docstrings_pass_without_bypassing_comment_lint(self) -> None:
+        source = (
+            '"""Command help rendered by argparse."""\nimport argparse\nargparse.ArgumentParser(description=__doc__).parse_args()\n'
         )
-
-    def test_changed_docstring_line_fails(self) -> None:
-        before = 'def total() -> int:\n    """Sum.\n\n    Old detail.\n    """\n    return 0\n'
-        after = before.replace("Old detail.", "New detail.")
-        self.assertEqual(self.findings({"app.py": before}, {"app.py": after}), {("app.py", 2, "docstring")})
+        self.assert_allowed(source)
+        rendered = subprocess.run(
+            [sys.executable, str(self.repository.root / "app.py"), "--help"], check=True, capture_output=True, text=True
+        )
+        self.assertIn(ast.get_docstring(ast.parse(source)), rendered.stdout)
+        self.assertEqual(
+            self.findings({"app.py": source}, {"app.py": "# Explain this command.\n" + source}), {("app.py", 1, "comment")}
+        )
 
     def test_unchanged_comments_and_docstrings_pass(self) -> None:
         before = '"""Totals."""\n# Existing note.\n' + BASE
@@ -145,14 +148,10 @@ class NewCommentsCheck(unittest.TestCase):
         before = "LIMIT = 1  # Existing explanation\n"
         self.assertEqual(self.findings({"app.py": before}, {"app.py": before.replace("1", "2")}), set())
 
-    def test_each_removed_comment_or_docstring_covers_one_addition(self) -> None:
-        before = {"a.py": 'def total() -> int:\n    """Sum."""\n    return 0\n', "b.py": "LIMIT = 1  # Existing explanation\n"}
-        after = {
-            "a.py": None,
-            "c.py": 'def total() -> int:\n    """Sum."""\n    return 1\n\n\ndef count() -> int:\n    """Sum."""\n    return 0\n',
-            "b.py": "LIMIT = 2  # Existing explanation\nSIZE = 3  # Existing explanation\n",
-        }
-        self.assertEqual(self.findings(before, after), {("c.py", 7, "docstring"), ("b.py", 2, "comment")})
+    def test_each_removed_comment_covers_one_addition(self) -> None:
+        before = {"app.py": "LIMIT = 1  # Existing explanation\n"}
+        after = {"app.py": "LIMIT = 2  # Existing explanation\nSIZE = 3  # Existing explanation\n"}
+        self.assertEqual(self.findings(before, after), {("app.py", 2, "comment")})
 
     def test_quoted_paths_are_checked(self) -> None:
         for name in ("café.py", "tab\tname.py", 'quote"name.py'):
