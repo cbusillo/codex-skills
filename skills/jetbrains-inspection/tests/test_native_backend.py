@@ -87,6 +87,32 @@ def hold_lock(path, seconds, held, release_when=None):
 
 
 class NativeTests(unittest.TestCase):
+    def test_scanner_support_is_private_and_importable_without_system_packages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            private = Path(directory)
+            interpreter = private / "source-python"
+            interpreter.symlink_to(sys.executable)
+            def install(argv: list[str], _environment: dict[str, str]) -> None:
+                target = Path(argv[argv.index("--target") + 1])
+                target.mkdir()
+                (target / "pip.py").write_text("marker = 'private scanner'\n")
+            with patch_attr(native.common, "checked", return_value=b"False\n"):
+                env = native.python_scanner_environment(interpreter, private, install, {})
+            output = subprocess.check_output([sys.executable, "-S", "-c", "import pip; print(pip.marker)"], env=env)
+            self.assertEqual(output.strip(), b"private scanner")
+            def unexpected_install(_argv: list[str], _environment: dict[str, str]) -> None:
+                raise AssertionError("already available")
+            with patch_attr(native.common, "checked", return_value=b"True\n"):
+                self.assertEqual(native.python_scanner_environment(interpreter, private, unexpected_install, {}), {})
+
+    def test_pydantic_detection_uses_the_selected_sdk_roots(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sdk root ") as directory:
+            root = Path(directory)
+            sdk = native.SdkEntry(native.PYTHON_SDK_TYPE, "fixture", [root.as_uri()])
+            self.assertFalse(native.python_support_plugins(sdk))
+            (root / "pydantic").mkdir()
+            self.assertEqual(native.python_support_plugins(sdk), {native.PYDANTIC_PLUGIN})
+
     def test_missing_profile_verdict_names_a_path_that_resolves_the_prerequisite(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
@@ -746,6 +772,7 @@ print('Done.')
     @contextmanager
     def native_host(self, loads=None):
         with patch.object(sys, "platform", "darwin"), \
+                patch_attr(native, "python_scanner_environment", return_value={}), \
                 patch_attr(host, "cache_dir", return_value=self.root / "cache"), \
                 patch_attr(host, "read_global_config", return_value={}), \
                 patch_attr(host, "trusted_auto_open_roots", return_value=[str(self.repo)]), \
@@ -790,6 +817,66 @@ print('Done.')
         self.assertFalse((self.worker / "config/options/jdk.table.xml").exists())
         self.assertFalse(list((self.root / "cache/native").glob("private-*")))
         self.assertEqual((self.repo / "source.py").read_text(), "print(missing)\n")
+
+    def test_pydantic_is_installed_once_in_the_worker_before_inspection(self) -> None:
+        launcher = self.app / "Contents/MacOS" / host.IDE_PRODUCTS[native.PYTHON_PRODUCT_KEY].launcher_names[0]
+        launcher.parent.mkdir()
+        marker = self.root / "plugin-installations"
+        launcher.write_text(f"#!{sys.executable}\nimport os,pathlib,sys,zipfile\n"
+                            f"plugins=pathlib.Path({str(self.worker / 'plugins')!r})\n"
+                            "plugin=sys.argv[2]\njar=plugins/plugin/'lib/plugin.jar'\nalready=jar.exists()\njar.parent.mkdir(parents=True,exist_ok=True)\n"
+                            "with zipfile.ZipFile(jar,'w') as archive:\n"
+                            " archive.writestr('META-INF/plugin.xml',f'<idea-plugin><id>{plugin}</id><version>1.2</version></idea-plugin>')\n"
+                            f"disabled=pathlib.Path({str(self.worker / 'config/disabled_plugins.txt')!r})\n"
+                            "if disabled.exists(): disabled.write_text('\\n'.join(line for line in disabled.read_text().splitlines() if line != plugin))\n"
+                            f"pathlib.Path({str(marker)!r}).touch()\n"
+                            "print(('already installed: ' if already else 'installed plugin: ')+plugin)\n")
+        launcher.chmod(0o700)
+        self.script.write_text(self.script.read_text() + "print('Loaded custom plugins: Pydantic (1.2)')\n" + f"assert __import__('pathlib').Path({str(marker)!r}).exists()\n")
+        with patch_attr(native, "python_support_plugins", return_value={native.PYDANTIC_PLUGIN}):
+            first = self.assess()
+            self.assertEqual(first["inspection_outcome"]["reason"], "native_completed")
+            marker.unlink()
+            self.script.write_text(self.script.read_text().split("assert __import__")[0])
+            second = self.assess()
+            self.assertFalse(marker.exists())
+            (self.worker / "config/disabled_plugins.txt").write_text(native.PYDANTIC_PLUGIN + "\n")
+            third = self.assess()
+        self.assertEqual(second["inspection_outcome"]["reason"], "native_completed")
+        self.assertEqual(third["inspection_outcome"]["reason"], "native_completed")
+        self.assertTrue(marker.exists())
+        self.assertEqual(first["diagnostic"]["native"]["python_support_plugins"], second["diagnostic"]["native"]["python_support_plugins"])
+
+    def test_an_installed_plugin_that_does_not_load_cannot_qualify_inspection(self) -> None:
+        self.install_plugin(native.PYDANTIC_PLUGIN)
+        with patch_attr(native, "python_support_plugins", return_value={native.PYDANTIC_PLUGIN}):
+            result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_python_support_plugin_unavailable")
+        self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def test_incomplete_installer_licensing_observation_cannot_be_overwritten_by_inspection(self) -> None:
+        def incomplete_install(argv: list[str], _env: dict[str, str], _private: Path, deadline: float, _parent_fd: int | None,
+                               receipt: dict[str, Any], **_kwargs: Any) -> float:
+            self.assertIn("installPlugins", argv)
+            receipt["license_observation_complete"] = False
+            return deadline
+        with patch_attr(native, "python_support_plugins", return_value={native.PYDANTIC_PLUGIN}), \
+                patch_attr(native, "execute", side_effect=incomplete_install):
+            result = self.assess(direct=True)
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_license_observation_unproven")
+        self.assertNotIn("inspected_files", result["diagnostic"]["native"])
+
+    def test_failed_plugin_install_cannot_start_inspection_and_closes_custody(self) -> None:
+        launcher = self.app / "Contents/MacOS" / host.IDE_PRODUCTS[native.PYTHON_PRODUCT_KEY].launcher_names[0]
+        launcher.parent.mkdir()
+        launcher.write_text(f"#!{sys.executable}\nraise SystemExit(1)\n")
+        launcher.chmod(0o700)
+        with patch_attr(native, "python_support_plugins", return_value={native.PYDANTIC_PLUGIN}):
+            result = self.assess()
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_python_support_plugin_unavailable")
+        self.assertNotIn("inspected_files", result["diagnostic"]["native"])
+        self.assertEqual(result["cleanup"]["status"], "closed")
 
     def test_guardian_reaps_under_an_ignored_parent_sigchld_without_changing_it(self):
         original = signal.signal(signal.SIGCHLD, signal.SIG_IGN)

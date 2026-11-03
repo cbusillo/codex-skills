@@ -245,8 +245,9 @@ without an `id` or with a bound that has no leading number is UNKNOWN with
 `native_required_plugins_unreadable`. A plugin descriptor or
 `disabled_plugins.txt` that breaks them, including a linked one, is UNKNOWN with
 `native_worker_plugins_unreadable`; an unusable `product-info.json` keeps its
-worker configuration reason. Without the Required Plugins file nothing
-in the worker's plugins is read. Verified plugins are listed in the receipt's
+worker configuration reason. Without the Required Plugins file, repository
+plugin checks are skipped; Python's automatic support setup below still applies.
+Verified plugins are listed in the receipt's
 `required_plugins`.
 
 ## Missing shared profile
@@ -298,6 +299,34 @@ unrelated entries remain. The snapshot gets canonical project and framework
 roots; its private `PyProjectModelSettings.usePyprojectToml=false` preserves that
 model when uv workspace discovery would otherwise replace module roots and
 break exact named scopes. No source project metadata is changed.
+
+When the interpreter lacks `pip`, which PyCharm's package scanner calls even
+when uv installed the dependencies, uv installs it into a private support
+directory exposed to the engine through `PYTHONPATH`. This covers both
+prepared and source virtualenvs without changing either or their lockfile.
+A cold support cache needs network access, as does the first plugin install.
+When the SDK contains Pydantic, the worker uses
+JetBrains' built-in `installPlugins` command to install and enable
+`com.koxudaxi.pydantic` once in the independent worker, with consent for that
+plugin. This launch shares the inspection's locks, custody, licence observation
+and deadline. No repository plugin declaration or hand step is needed.
+Receipts retain the interpreter, `python_sdk_observed` from the matching
+`PythonSdkUpdater` log line, the installed support-plugin versions and the
+`pydantic_plugin_version` actually loaded by the engine. Descriptor presence
+alone does not establish that a plugin loaded; a missing Pydantic load
+observation keeps the run UNKNOWN.
+An existing incompatible or damaged plugin still needs a worker-level update
+or reinstall through that worker's Plugins screen after an IDE upgrade; the
+built-in installer does not update an already installed version. No repository
+configuration changes are needed.
+
+Correct interpreter and plugin setup can still leave PyCharm findings for
+Pydantic Literal fields, Click parameter constructors and decorated commands,
+dynamic/unbound callables, standard-library overloads, collection inference,
+guarded values and test doubles. The measured Launchplane sample and per-pattern
+counts live on [#3363](https://github.com/cbusillo/codex-skills/issues/3363).
+Read those as checker limits only for matching, verified patterns; keep both
+type and argument inspections enabled and do not add per-line suppressions.
 
 A per-user lock and the independent profile's lock allow one worker.
 An ordinary request takes a ticket in its own queue under the per-user state
