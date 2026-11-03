@@ -108,6 +108,8 @@ def outside_fences(lines: list[str]) -> bool:
 
 
 def read_jsonl(path: Path) -> list[dict]:
+    if path.suffix == ".db":
+        return claim_history.read_agy_records(path)
     records = []
     with path.open(encoding="utf-8") as stream:
         for number, line in enumerate(stream, 1):
@@ -127,6 +129,8 @@ def read_jsonl(path: Path) -> list[dict]:
                 raise TypeError(f"{path.name}:{number}: {error}") from error
             records.append(record)
     return records
+
+
 
 
 def normalize_ledger_entry(path: Path, entry: dict) -> dict:
@@ -160,8 +164,8 @@ def load_ledger(path: Path, *, harness: str | None = None,
     The default remains strict for readers that decide completion or closure.
     Harness-specific readers can collect a diagnostic for every excluded entry.
     """
-    if harness is not None and harness not in {"claude", "codex"}:
-        raise ValueError("selected harness must be claude or codex")
+    if harness is not None and harness not in {"claude", "codex", "agy"}:
+        raise ValueError("selected harness must be claude, codex or agy")
     entries = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(entries, list):
         raise TypeError("ledger must be an array of session objects")
@@ -178,8 +182,8 @@ def load_ledger(path: Path, *, harness: str | None = None,
                                 "harness": entry.get("harness"), "skipped": True,
                                 "reason": f"watching only {harness} entries", "clean": None})
             continue
-        if entry.get("harness") not in {"claude", "codex"}:
-            raise ValueError("ledger harness must be claude or codex")
+        if entry.get("harness") not in {"claude", "codex", "agy"}:
+            raise ValueError("ledger harness must be claude, codex or agy")
         for key in ("session_id", "transcript"):
             if not isinstance(entry.get(key), str) or not entry[key].strip():
                 raise ValueError(f"ledger requires {key}")
@@ -267,7 +271,7 @@ def native_results(blocks: list[object], *, document: bool = False) -> list[dict
 
 def posted_comments(entry: dict) -> list[dict]:
     path = Path(entry["transcript"])
-    before = path.stat()
+    before = transcript_revision(path)
     records = claim_history.root_records(path, entry["harness"], entry["session_id"], read_jsonl(path))
     found = []
     for record in records:
@@ -292,8 +296,7 @@ def posted_comments(entry: dict) -> list[dict]:
             if (value.get("ok") is True and value.get("outcome_certainty") == "confirmed"
                     and value.get("operation") == "github.plan.release"):
                 found.append({**value, "observed_at": record.get("timestamp")})
-    after = path.stat()
-    if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
+    if before != transcript_revision(path):
         raise TranscriptChanged("transcript changed during comment receipt read; check again")
     return found
 
@@ -418,6 +421,7 @@ def track_claude_background_tasks(record: dict, running: dict, scheduled: dict, 
 
 
 def summarize(records: list[dict], harness: str) -> dict:
+    native_pending = [row["native_pending"] for row in records if row.get("native_pending")]
     result = {
         "last_text": "",
         "timestamp": None,
@@ -439,13 +443,13 @@ def summarize(records: list[dict], harness: str) -> dict:
     scheduled_jobs: dict = {}
     scheduled_tools: dict = {}
     active_realtime: set[str] = set()
-    if harness == "claude":
+    if harness in {"claude", "agy"}:
         records = strip_claude_exit_tail(records)
     previous: dict = {}
     for record in records:
         payload = record.get("payload") or {}
         kind = payload.get("type")
-        if harness == "claude":
+        if harness in {"claude", "agy"}:
             track_claude_background_tasks(record, running_tasks, scheduled_jobs, scheduled_tools)
             message = record.get("message") or {}
             # Compaction writes its summary as a user record right after the boundary;
@@ -559,6 +563,7 @@ def summarize(records: list[dict], harness: str) -> dict:
         and result["at_turn_end"]
         and result["turn_end"] != "turn_aborted"
         and result["capacity_stop"] is None
+        and not native_pending
     )
     result["verdict_recognition"] = (
         "recognized" if result["safe_verdict"] else
@@ -567,7 +572,7 @@ def summarize(records: list[dict], harness: str) -> dict:
     # A turn end with a live task is a wait on that task; with none, nothing will resume the turn.
     result["background_tasks"] = [
         {"task_id": task_id, "started": started} for task_id, started in running_tasks.items()
-    ] + [{"task_id": identity, **job} for identity, job in scheduled_jobs.items()]
+    ] + [{"task_id": identity, **job} for identity, job in scheduled_jobs.items()] + native_pending
     result["state"] = (
         "provider_capacity" if result["capacity_stop"] else
         "turn_ended" if result["at_turn_end"] else "active"
@@ -579,15 +584,22 @@ class TranscriptChanged(ValueError):
     """The native transcript changed while its status was being read."""
 
 
+def transcript_revision(path: Path) -> tuple[tuple[int, int], ...]:
+    paths = [path]
+    wal = path.with_name(path.name + "-wal")
+    if path.suffix == ".db" and wal.exists():
+        paths.append(wal)
+    return tuple((info.st_mtime_ns, info.st_size) for info in map(Path.stat, paths))
+
+
 def session_status(entry: dict) -> dict:
     path = Path(entry["transcript"])
-    before = path.stat()
+    before = transcript_revision(path)
 
     def checked_stat():
-        after = path.stat()
-        if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
+        if before != transcript_revision(path):
             raise TranscriptChanged("transcript changed during read; check again")
-        return after
+        return path.stat()
 
     try:
         records = read_jsonl(path)

@@ -238,8 +238,9 @@ A reproduced defect within the agreed outcome enters staffing in the overall
 DIRECTION Order and available capacity; no second ticket or Director intake step
 is needed. Outside-user bugs use the own-projects share; other tooling still needs
 Order item 3 admission. Features, preferences and unclear reports get a clarifying
-question or investigation, not an invented build. Keep stop boundaries and Client
-release acceptance in force.
+question or investigation, not an invented build. For clarifying questions on
+Client reports, follow [Asking a Client](../references/talking-with-the-director.md#asking-a-client).
+Keep stop boundaries and Client release acceptance in force.
 
 For a new request on closed work, reopen its source issue. For a merged change
 that cannot be reopened, reuse or record one source issue with the comment link

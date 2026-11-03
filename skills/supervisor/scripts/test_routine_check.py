@@ -176,7 +176,25 @@ class RoutineCheckTests(unittest.TestCase):
             self.assertIn(client["comment_url"], output)
             self.assertIn(program["url"], output)
             self.assertIn("worker", output)
-            self.assertIn("question", output)
+
+    def test_default_omits_acknowledged_questions_and_full_restores_them(self) -> None:
+        sources = {
+            "questions": {"queue": "owner/direction#98", "questions": [
+                {"url": "seen", "registration_url": "registration", "delivery": "acknowledged"},
+                {"url": "unseen", "registration_url": "registration", "delivery": "unacknowledged"},
+            ]},
+            "next": {"candidates": [{"url": "unclaimed", "state": "OPEN", "queue": {
+                "state": "available", "next_actor": "agent", "next_action": "Implement."}}]},
+            "comments": {"attention": [{"url": "client", "body_excerpt": "Please fix."}]},
+        }
+        compact = routine_check.digest(sources)
+        self.assertNotIn("QUESTION seen:", compact)
+        self.assertIn("OMITTED 1", compact)
+        complete = routine_check.digest(sources, full=True)
+        self.assertIn("QUESTION seen:", complete)
+        for prefix in ("QUESTION unseen:", "NEXT unclaimed:", "COMMENT client", "LOAD "):
+            self.assertIn(prefix, compact)
+            self.assertIn(prefix, complete)
 
     def test_reader_failure_does_not_hide_other_results_and_repeats_errors(self) -> None:
         readers = {

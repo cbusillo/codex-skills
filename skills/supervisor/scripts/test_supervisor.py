@@ -2771,7 +2771,11 @@ class ClaudeTrustTests(unittest.TestCase):
         data = json.loads(self.configs[2].read_text())
         del data["projects"]
         self.configs[2].write_text(json.dumps(data))
+        linked_config = self.root / "claude-dotfiles.json"
+        self.configs[0].rename(linked_config)
+        self.configs[0].symlink_to(linked_config)
         self.launch(repository / "addons")
+        self.assertTrue(self.configs[0].is_symlink())
         for config in self.configs:
             with self.subTest(config=config):
                 data = json.loads(config.read_text())
@@ -2791,6 +2795,51 @@ class ClaudeTrustTests(unittest.TestCase):
                 projects = claude_projects(config)
                 self.assertIs(projects[str(repository)]["hasTrustDialogAccepted"], True)
                 self.assertIs(projects[str(worktree)]["hasTrustDialogAccepted"], True)
+
+    def test_google_worktree_trust_preserves_settings_and_the_same_directory_boundary(self) -> None:
+        repository = git_repository(self.developer / "repository")
+        worktree = self.worktrees / "repository" / "task"
+        git_fixture("-C", str(repository), "worktree", "add", "--detach", str(worktree))
+        config = self.user / ".gemini/antigravity-cli/settings.json"
+        config.parent.mkdir(parents=True)
+        original = {"model": "fixture-model", "permissions": {"allow": ["fixture-rule"]}, "trustedWorkspaces": []}
+        config.write_text(json.dumps(original))
+        config.chmod(0o600)
+        linked_config = self.root / "agy-dotfiles.json"
+        config.rename(linked_config)
+        config.symlink_to(linked_config)
+        claude_before = [path.read_bytes() for path in self.configs]
+        self.choice = {"provider": "google", "env": {}}
+        command = self.root / "google-command"
+        command.write_text(f"cd {shlex.quote(str(worktree))} && exec agy")
+        args = account_launch_args(command)
+        args.account_provider = "google"
+        exchange = iterm_tab.claude_trust.exchange
+        saves = []
+
+        def concurrent_save(source: str | Path, target: str | Path) -> None:
+            if Path(target).resolve() == config.resolve() and not saves:
+                data = json.loads(config.read_text())
+                data["parallel_save"] = "preserved"
+                config.write_text(json.dumps(data))
+                saves.append(target)
+            exchange(source, target)
+
+        with patch.object(iterm_tab.claim_history, "AGY_SETTINGS", config):
+            with patch.object(iterm_tab.claude_trust, "exchange", side_effect=concurrent_save):
+                iterm_tab.prepare_launches(args)
+            after = json.loads(config.read_text())
+            self.assertTrue(config.is_symlink())
+            self.assertIn(str(worktree), after.pop("trustedWorkspaces"))
+            self.assertEqual(after, {**{key: value for key, value in original.items() if key != "trustedWorkspaces"}, "parallel_save": "preserved"})
+            self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+            self.assertEqual([path.read_bytes() for path in self.configs], claude_before)
+            outside = git_repository(self.root / "outside-google")
+            command.write_text(f"cd {shlex.quote(str(outside))} && exec agy")
+            trusted = config.read_bytes()
+            with self.assertRaises(ValueError):
+                iterm_tab.prepare_launches(args)
+            self.assertEqual(config.read_bytes(), trusted)
 
     def test_folders_outside_developer_refuse_before_any_write_or_launch_step(self):
         outside = git_repository(self.root / "outside")
@@ -3061,7 +3110,7 @@ class TerminalTests(unittest.TestCase):
         startup.start()
         self.addCleanup(startup.stop)
         # Claude folder trust has its own tests (ClaudeTrustTests); keep host homes untouched.
-        trust = patch.object(iterm_tab, "claude_trust_writes", return_value=[])
+        trust = patch.object(iterm_tab, "folder_trust_writes", return_value=[])
         trust.start()
         self.addCleanup(trust.stop)
 
@@ -3254,6 +3303,7 @@ class TerminalTests(unittest.TestCase):
             child = root / "agy"
             child.write_text(f'#!{sys.executable}\nimport argparse\n'
                              'parser = argparse.ArgumentParser()\n'
+                             'parser.add_argument("--dangerously-skip-permissions", action="store_true", required=True)\n'
                              'parser.add_argument("--prompt-interactive", required=True)\n'
                              'print(parser.parse_args().prompt_interactive, end="")\n')
             child.chmod(0o700)
@@ -3266,6 +3316,7 @@ class TerminalTests(unittest.TestCase):
             terminal, window, app = launch_terminal_fixture()
             with (patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                   patch.object(account_choice, "read_snapshot", return_value=(google_snapshot(), None)),
+                  patch.object(iterm_tab.claude_trust, "plan", return_value=[]),
                   patch.object(account_choice, "receipt_route", return_value={"storage_root": root})):
                 result = asyncio.run(iterm_tab.operate(app, args))
             sent = terminal.async_send_text.await_args_list[0].args[0]

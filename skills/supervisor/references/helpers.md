@@ -1438,8 +1438,28 @@ For fresh Claude workers, use `--account-provider anthropic --ledger
 waits for that exact transcript under the selected account, matches the Claude
 process on the terminal, and appends the owned row; the receipt reports
 `native_session_id`, `transcript` and `ledger_recorded`. A failure keeps the
-launch object, including `claude_native`, for the same `register --receipt-file`
+launch object, including `file_native`, for the same `register --receipt-file`
 recovery.
+For fresh Google workers, use `--account-provider google --ledger` with the
+same direct interactive `agy` launch.
+The launcher adds session-only `--dangerously-skip-permissions`, so file edits
+and commands need no per-action approvals; it does not change saved permissions.
+The shared file-session registrar binds the conversation from a dedicated native
+log to its SQLite transcript and exact
+terminal process. Its retained `file_native` receipt uses the same registration
+recovery command. Registration reads native identity while the worker writes;
+completion checks belong to closeout. Keep the dedicated log until process exit
+so live conversation identity remains provable. Missing model attribution reads
+as unknown. Normal `session_closeout.py` verifies the native final response,
+claims, handoff and process exit, then retains model, effort and outcome in the
+existing closed-session log. Google still uses only the existing AGY login and
+Context Panel capacity reader. Unknown native child or background-work coverage
+stays UNKNOWN and preserves the worker. Use `cd /absolute/repository && exec agy`
+so folder trust has an exact target. Under the same approved Developer and
+registered-worktree boundary as Claude, the shared atomic writer adds only that
+workspace to AGY's `trustedWorkspaces`, preserving permissions, model and all
+other settings. Other folders need existing native trust or the Director's
+interactive review. Preserve a blocked terminal rather than launching another worker.
 Other fresh modes keep their launch procedure. Append their existing native
 ledger entries through `iterm_tab.py register --entry-file <entry.json>
 --ledger <ledger>` so every append shares the lock. Do existing-row maintenance

@@ -51,6 +51,18 @@ def explicit_session(body: str, session: str) -> bool:
 
 
 async def native_idle(entry: dict) -> None:
+    if entry["harness"] == "agy":
+        if session_liveness.process_absent(entry.get("pid")):
+            return
+        try:
+            log = Path(entry["agy_log"]).read_text()
+        except (KeyError, TypeError, OSError, UnicodeError) as error:
+            raise GateFailed("identity", "live AGY conversation identity is unavailable; preserve its terminal and receipt") from error
+        resumed = re.findall(r"\bResuming conversation[^\S\n]*([^\n]*)", log)
+        require(iterm_tab.claim_history.agy_conversations(log) == [entry["session_id"]]
+                and all(re.match(re.escape(entry["session_id"]) + r"(?:$|\s|\()", value) for value in resumed),
+                "identity", "AGY process may host another conversation; preserve its terminal")
+        return
     if entry["harness"] != "codex":
         return
 

@@ -88,7 +88,7 @@ class OperationTests(unittest.TestCase):
             self.assertEqual(run.call_count, 1)
 
     def test_closeout_uses_native_shapes_and_retires_only_verified_closures(self) -> None:
-        for outcome in ("complete", "finish_refused", "uncertain_exit", "close_interrupted", "close_uncertain", "resumed", "draft_before_clear", "draft_after_idle", "turn_after_idle"):
+        for outcome in ("complete", "google_complete", "harness_changed", "finish_refused", "uncertain_exit", "close_interrupted", "close_uncertain", "resumed", "draft_before_clear", "draft_after_idle", "turn_after_idle"):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 entry: dict[str, Any] = {"session_id": "native", "harness": "claude", "supervisor_owned": True,
@@ -96,6 +96,8 @@ class OperationTests(unittest.TestCase):
                          "pid": 8, "tty": "ttys001", "handoff_url": "https://github.com/owner/repo/issues/1#issuecomment-2"}
                 if outcome in {"draft_before_clear", "draft_after_idle", "turn_after_idle"}:
                     entry["harness"] = "codex"
+                elif outcome == "google_complete":
+                    entry["harness"] = "agy"
                 transcript = root / entry["transcript"]
                 safe = "Safe to exit: yes"
                 records = ([{"type": "session_meta", "payload": {"id": "native"}},
@@ -130,6 +132,8 @@ class OperationTests(unittest.TestCase):
                         self.assertFalse(draft, "clear erased a draft entered during native reads")
                     elif action == "send":
                         self.assertFalse(draft, "exit command appended to changed input")
+                        if entry["harness"] == "agy":
+                            self.assertIsNotNone(iterm_tab.exit_observer(argv[argv.index("--text") + 1], entry["tty"]))
                         live = False
                         if outcome == "uncertain_exit":
                             payload, code = {"status": "send_failed"}, 1
@@ -155,16 +159,16 @@ class OperationTests(unittest.TestCase):
                       patch.object(session_closeout.release, "handoff", return_value={"body": "Session: native"}),
                       patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]"),
                       patch.object(session_liveness, "process_absent", side_effect=lambda _: not live),
-                      patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", entry["harness"]) ]),
+                      patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", "agy" if outcome == "harness_changed" else entry["harness"]) ]),
                       patch.object(session_closeout.closure, "ownership", return_value=nullcontext()),
                       patch.object(session_closeout.closure, "store_lock", side_effect=lambda *_, **__: nullcontext()),
                       patch.object(session_closeout.closure, "source_records", return_value={"native": closed}),
                       patch.object(session_closeout.release, "transcript_roots", return_value=[str(root)]),
                       patch.object(session_closeout.release, "validate_closure")):
-                    if outcome in {"draft_before_clear", "draft_after_idle", "turn_after_idle"}:
+                    if outcome in {"draft_before_clear", "draft_after_idle", "turn_after_idle", "harness_changed"}:
                         with self.assertRaises(check_operation.GateFailed) as failure:
                             session_closeout.closeout(args, operation)
-                        self.assertEqual(failure.exception.gate, "verdict" if outcome == "turn_after_idle" else "input")
+                        self.assertEqual(failure.exception.gate, "process" if outcome == "harness_changed" else "verdict" if outcome == "turn_after_idle" else "input")
                         self.assertFalse({"send", "finish", "close"}.intersection(calls))
                         self.assertEqual(json.loads(ledger.read_text()), [entry])
                     elif outcome in {"uncertain_exit", "close_interrupted"}:
@@ -180,7 +184,7 @@ class OperationTests(unittest.TestCase):
                         self.assertEqual(json.loads(ledger.read_text()), [entry])
                     else:
                         session_closeout.closeout(args, operation)
-                    if outcome in {"complete", "uncertain_exit", "close_interrupted"}:
+                    if outcome in {"complete", "google_complete", "uncertain_exit", "close_interrupted"}:
                         self.assertEqual(json.loads(ledger.read_text()), [])
                         self.assertEqual(calls.count("send"), 1)
                         calls.clear()
@@ -372,7 +376,7 @@ class OperationTests(unittest.TestCase):
     def test_retained_claude_registration_resumes_without_relaunch(self) -> None:
         ledger = self.root / "ledger.json"
         native = {"session_id": "native-claude", "home": str(self.root)}
-        launch = {"session_id": "terminal", "pid": 8, "tty": "ttys001", "backend": "tmux", "claude_native": native}
+        launch = {"session_id": "terminal", "pid": 8, "tty": "ttys001", "backend": "tmux", "file_native": native}
         entry = {"session_id": native["session_id"], "transcript": str(self.root / "native.jsonl"), "pid": 8, "tty": "ttys001",
                  "harness": "claude", "supervisor_owned": True, "tmux_session_id": "terminal", "backend": "tmux"}
         ledger.write_text(json.dumps([entry]))
@@ -380,7 +384,7 @@ class OperationTests(unittest.TestCase):
         operation.state["steps"]["claude_launch"] = {"complete": False}
         check_operation.save_state(self.root / "claude_launch.json", {"stdout": json.dumps({"failed_launch": {"phase": "register_ledger", "launch": launch}})})
         config: dict[str, Any] = {"repo": "owner/catalog", "issue": 1, "landing_sha": "a" * 40, "ledger": str(ledger)}
-        with (patch.object(iterm_tab, "register_claude_launch", return_value=entry) as register,
+        with (patch.object(iterm_tab, "register_file_launch", return_value=entry) as register,
               patch.object(subprocess, "run") as run,
               patch.object(catalog_landing, "observe", side_effect=check_operation.GateFailed("response", "fixture"))):
             with self.assertRaises(check_operation.GateFailed) as failure:
@@ -483,14 +487,14 @@ class OperationTests(unittest.TestCase):
         result = dict(launch)
         with patch.object(session_liveness, "inventory", return_value=[(8, "ttys001", "claude")]):
             asyncio.run(iterm_tab.register_fresh_launch(argparse.Namespace(ledger=ledger), result, {"claude_native": native}))
-            second = iterm_tab.register_claude_launch(launch, native, ledger)
+            second = iterm_tab.register_file_launch(launch, native, ledger)
         self.assertEqual(result["native_session_id"], second["session_id"])
         self.assertTrue(result["ledger_recorded"])
         rows = json.loads(ledger.read_text())
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["tmux_session_id"], launch["session_id"])
         with self.assertRaises(ValueError):
-            iterm_tab.register_claude_launch({**launch, "session_id": "another-terminal"}, native, ledger)
+            iterm_tab.register_file_launch({**launch, "session_id": "another-terminal"}, native, ledger)
 
 
 if __name__ == "__main__":

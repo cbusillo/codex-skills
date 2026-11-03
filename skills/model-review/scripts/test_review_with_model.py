@@ -842,7 +842,7 @@ class ReviewWithModelTests(unittest.TestCase):
         denial = json.dumps({"conversation_id": conversation, "denied_actions": [{"action": "command"}]})
         calls = [subprocess.CompletedProcess([], 0, denial, ""),
                  subprocess.TimeoutExpired(["agy", "-p", "private review prompt"], 31)]
-        with patch.object(review_with_model, "AGY_SETTINGS", self.home / ".gemini/antigravity-cli/settings.json"), \
+        with patch.object(review_with_model.claim_history, "AGY_SETTINGS", self.home / ".gemini/antigravity-cli/settings.json"), \
              patch.object(review_with_model, "run_cli", side_effect=calls), \
              patch.object(review_with_model.shutil, "which", return_value="agy"):
             result = review_with_model.review("google", "private review prompt", self.repo, None, 1)
