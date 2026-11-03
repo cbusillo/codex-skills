@@ -322,7 +322,8 @@ def ownership_decision(reader, github_read, repo: str, pulls: Iterable[dict], br
         pull_repo = (base.get("repo") or {}).get("full_name") or repo
         owners[pull_repo.split("/")[0]] = None
         records += [(pull_repo, number), *github_plan_status.references.linked_issues(pull_repo, pull)]
-        if head_ref := (pull.get("head") or {}).get("ref"):
+        head_ref = (pull.get("head") or {}).get("ref")
+        if isinstance(head_ref, str):
             names[head_ref] = None
         if pull.get("merged_at") and base.get("ref") == (base.get("repo") or {}).get("default_branch"):
             records += github_plan_landing.closing_references(reader, pull_repo, number)[1]
