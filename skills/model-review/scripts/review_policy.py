@@ -2,7 +2,6 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Standing Director decisions, followed by Context Panel's account choice."""
 
 import os
 import shutil
@@ -28,7 +27,8 @@ class PolicyConflict(ValueError):
 
 def policy_path():
     # Shared Code home, never the provider account home or the reviewed repository.
-    return Path(os.environ.get("CODE_HOME", "~/.code")).expanduser() / "skill-data/model-review.toml"
+    selected = Path(os.environ.get("CODE_HOME", "~/.code")).expanduser() / "skill-data/model-review.toml"
+    return selected if selected.exists() or selected.is_symlink() else Path.home() / ".code/skill-data/model-review.toml"
 
 
 def load_policy(path=None):
@@ -36,6 +36,8 @@ def load_policy(path=None):
     try:
         policy = tomllib.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
+        if path.is_symlink():
+            raise ValueError("standing review decision symlink is unavailable") from None
         return {"version": 1, "decision": "catalog independent-review default", "providers": list(account_choice.PROVIDERS),
                 "supplementary": []}
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:

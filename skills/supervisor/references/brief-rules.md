@@ -199,8 +199,7 @@ Rules for this brief (every Supervisor brief carries them):
 
 A lead works one of the Director's listed `DIRECTION.md` milestones through
 `gh-plan.py next`, claims and the installed harness bindings. A Track issue and
-its goal board are optional views when that Director uses them. Do not require
-Chris's Track graph, trial record or host configuration to start a lead.
+its goal board are optional views when that Director uses them.
 When several leads share a repository, spread work within its shared PR cap.
 
 Fill the placeholders below and carry the shared rules by link or inclusion.
@@ -229,10 +228,8 @@ __SPECIFIC__
 Rules for this brief: https://github.com/cbusillo/codex-skills/blob/main/skills/supervisor/references/brief-rules.md
 ```
 
-Context Panel is recommended, not required. Without account settings, the
-launcher uses the CLI's existing login; configured account and review settings
-still govern and their failures never silently fall back. The account helper
-names Context Panel once when it detects multiple accounts without that integration.
+Use [account selection](helpers.md#choosing-the-account) for optional Context Panel
+integration and the CLI-login baseline.
 Launchplane uses the optional route above. Private staffing targets, host worktree
 settings, persistent services and question queues are optional additions to the
 catalog defaults, subject to the Director's own stricter instructions. Use the

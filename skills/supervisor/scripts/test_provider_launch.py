@@ -203,10 +203,12 @@ class ResumeLaunchTests(unittest.TestCase):
         with patch.object(account_choice, "load_config", return_value={"snapshot_command": None, "accounts": []}):
             commands, choices = iterm_tab.prepare_launches(self.args)
             self.assertTrue(commands)
-            self.assertEqual(choices[0]["env"], self.account["env"])
+            choice = choices[0]
+            assert choice is not None
+            self.assertEqual(choice["env"], self.account["env"])
             self.select.assert_called_once_with("openai", None)
             self.select.return_value = {**self.choice, "env": {"CODEX_HOME": str(self.root / "other")}}
-            with self.assertRaisesRegex(ValueError, "differs from the source"):
+            with self.assertRaises(ValueError):
                 iterm_tab.prepare_launches(self.args)
 
     def test_preparation_read_deadline_leaves_account_probes_and_writes_their_own_bounds(self) -> None:

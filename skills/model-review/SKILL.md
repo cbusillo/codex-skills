@@ -89,23 +89,15 @@ budget, and put both results in the PR's review note.
    so and lists them in the result's `unreachable_links`. Before weighing the
    review, pass any linked content it needed with `--input` and run it again.
 
-   Reviews use the provider CLI's existing login when account settings are absent.
-   Context Panel is recommended, not required. With a configured snapshot command,
-   reviews select its use-next account at launch through the [Supervisor account reader](../supervisor/scripts/account_choice.py).
-   They use its private `skill-data/supervisor.toml` mappings and snapshot command;
-   see [account configuration](../supervisor/references/helpers.md). The chosen
-   `CODEX_HOME` or `CLAUDE_CONFIG_DIR` applies only to the reviewer child. A default
-   Anthropic choice removes an inherited home override. Inherited provider token/key and cloud-routing
-   overrides are removed by name so they cannot bypass the selected home's login;
-   no credentials or logins are read or changed by the helper. Unavailable configured choices or receipt-storage failures stop the review before launch.
-   JSON reports the account name and opaque ID plus the count-only launch receipt.
-   The receipt goes through the installed Context Panel's `--record-launch`, so a
-   session macOS refuses the App Group store, such as a worker under the
-   Supervisor's launchd-started tmux server, runs its own review, with or without
-   a PR ([#2069](https://github.com/cbusillo/codex-skills/issues/2069)).
-   No fixed review-home
-   export is needed in a Supervisor launch file. Google uses the account reader's
-   single existing agy login binding, without an account override.
+   Use the shared [account-selection path](../supervisor/references/helpers.md#choosing-the-account),
+   where Context Panel is optional. The selected home applies only to the reviewer
+   child. Configured account selections remove inherited token and cloud-routing
+   overrides so they cannot bypass that home; the unconfigured CLI-login path
+   preserves the CLI's existing authentication environment. Neither reads or
+   changes credentials. JSON reports the selected account and, only for the
+   configured Context Panel integration, its count-only launch receipt. Receipt
+   failures stop a configured launch. See [account configuration](../supervisor/references/helpers.md#choosing-the-account)
+   for existing-account mapping, storage recovery and Google's login binding.
 
 3. Read `model` and `effort` in the JSON result and report the provider and
    confirmed model. When `model_source` says the CLI did not report it, say so

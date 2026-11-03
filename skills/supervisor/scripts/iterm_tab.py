@@ -1518,10 +1518,10 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
             raise ValueError("GUI tasks need local Codex; remove --remote and any prompt from the run file; put the prompt in --brief-file")
         gui_launch.require_unlocked()
         briefs[0] += ("\n\nGUI safety: Use only the named app " + apps[0] +
-                      ". Never target Chris's terminals or other windows. Check screen lock "
+                      ". Never target the Director's terminals or other windows. Check screen lock "
                       "before each GUI action and stop if locked or unknown; never unlock. "
                       "Use app-scoped computer-use operations, never global keyboard/focus fallbacks. "
-                      "Missing permissions or app approvals require Chris; do not change them.\n")
+                      "Missing permissions or app approvals require the Director; do not change them.\n")
     choices = [None] * len(files)
     if getattr(args, "account_provider", None):
         if len(files) == 1:

@@ -201,7 +201,7 @@ def validate_closure(entry: dict[str, Any], supervisor_session: str, *, native: 
     return status
 
 
-def transcript_roots(harness, configured, explicit):
+def transcript_roots(harness: str, configured: Path | None, explicit: list[Path], entry: dict | None = None) -> list[str]:
     if explicit:
         return [str(p.expanduser().resolve()) for p in explicit]
     if harness == "agy":
@@ -214,7 +214,17 @@ def transcript_roots(harness, configured, explicit):
             home = Path(account["env"].get(variable, str(Path.home() / ".claude"))).expanduser()
             roots.extend([str(home / "sessions"), str(home / "archived_sessions")] if harness == "codex" else [str(home / "projects")])
     if not roots:
-        raise ValueError("no configured source harness homes; supply --transcript-root for its known native transcript directories")
+        provider = "openai" if harness == "codex" else "anthropic"
+        variable = account_choice.ACCOUNT_VARIABLES[provider]
+        home = Path(account_choice.login_environment(provider).get(variable, str(Path.home() / ".claude"))).expanduser()
+        roots.extend([str(home / "sessions"), str(home / "archived_sessions")] if harness == "codex" else [str(home / "projects")])
+    if entry and harness == "codex" and entry.get("codex_home"):
+        home = Path(entry["codex_home"]).expanduser()
+        roots.extend([str(home / "sessions"), str(home / "archived_sessions")])
+    if entry and harness == "claude":
+        source = Path(entry["transcript"]).parent.parent
+        if source.name == "projects":
+            roots.append(str(source))
     return list(dict.fromkeys(roots))
 
 
@@ -975,7 +985,7 @@ def main():
                        for e in session_record.load_ledger(args.ledger) if e["session_id"] == args.session_id]
             if len(entries) != 1:
                 raise ValueError("native session must match exactly one ledger entry")
-            entries[0]["_transcript_roots"] = transcript_roots(entries[0]["harness"], args.account_config, args.transcript_root)
+            entries[0]["_transcript_roots"] = transcript_roots(entries[0]["harness"], args.account_config, args.transcript_root, entries[0])
             # record_closure verifies exit against the saved closure on retry,
             # or a fresh observation time for a new closure. A ledger timestamp
             # alone is not proof that this generation has already ended.
@@ -1009,7 +1019,7 @@ def main():
             if not entries:
                 raise ValueError("closed-session log has no matching records")
         entries = [{**e,
-                    "_transcript_roots": e.get("_transcript_roots") or transcript_roots(e["harness"], args.account_config, args.transcript_root),
+                    "_transcript_roots": e.get("_transcript_roots") or transcript_roots(e["harness"], args.account_config, args.transcript_root, e),
                     "_read_deadline_seconds": args.deadline_seconds} for e in entries]
         verified = []
         for entry in entries:

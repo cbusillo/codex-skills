@@ -309,10 +309,15 @@ class ReviewWithModelTests(unittest.TestCase):
         self.policy.unlink()
         (self.home / ".code/skill-data/supervisor.toml").unlink()
         capture = self.root / "child-env"
-        code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture),
-                                   FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}))
+        token = "fixture-existing-login"
+        code, result = self.run_helper("run", "--repo", str(self.repo), "--prompt-file", str(self.prompt),
+                                      "--author-provider", "openai", ANTHROPIC_API_KEY=token,
+                                      FAKE_REVIEW_ENV_FILE=str(capture),
+                                      FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}))
         self.assertEqual((code, result["ok"]), (0, True))
         self.assertTrue(capture.exists())
+        child = dict(line.split("=", 1) for line in capture.read_text().splitlines())
+        self.assertEqual(child["ANTHROPIC_API_KEY"], token)
         self.assertIsNone(result["launch_receipt"])
         self.assertFalse((self.storage / "Launch Receipts").exists())
 
@@ -330,6 +335,15 @@ class ReviewWithModelTests(unittest.TestCase):
                 self.assertEqual((code, result["ok"]), (1, False))
                 self.assertFalse(capture.exists())
                 self.assertFalse((self.storage / "Launch Receipts").exists())
+
+    def test_shared_policy_still_restricts_review_when_code_home_has_no_policy(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        self.policy.write_text('version = 1\ndecision = "restricted"\nproviders = ["openai"]\n')
+        capture = self.root / "child-env"
+        code, result = self.review("anthropic", CODE_HOME=str(self.root / "other-code-home"),
+                                   FAKE_REVIEW_ENV_FILE=str(capture))
+        self.assertEqual((code, result["ok"]), (1, False))
+        self.assertFalse(capture.exists())
 
     def test_policy_model_budget_and_actual_provenance_reach_the_review(self) -> None:
         self.install("claude", FAKE_CLAUDE)

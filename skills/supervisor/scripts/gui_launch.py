@@ -30,7 +30,7 @@ def declared_app(brief):
         raise ValueError("GUI task must declare exactly one app bundle ID")
     app = lines[0]
     if app.lower() in {"com.apple.terminal", "com.googlecode.iterm2", "dev.warp.warp-stable"}:
-        raise ValueError("GUI work must never target Chris's terminals")
+        raise ValueError("GUI work must never target the Director's terminals")
     return app
 
 
@@ -58,7 +58,7 @@ def require_unlocked():
     except (OSError, ValueError, plistlib.InvalidFileException, subprocess.SubprocessError) as error:
         raise ValueError("screen lock state unavailable; stop GUI work") from error
     if not flags or any(flags):
-        raise ValueError("screen locked or lock state unknown; stop GUI work; Chris unlocks it")
+        raise ValueError("screen locked or lock state unknown; stop GUI work; the Director unlocks it")
 
 
 def state_path():

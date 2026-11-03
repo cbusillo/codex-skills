@@ -1501,6 +1501,10 @@ class AccountChoiceTests(unittest.TestCase):
         command = iterm_tab.with_account("claude", choice, "A bounded task")
         self.assertIn(choice["env"]["CLAUDE_CONFIG_DIR"], command)
 
+    def test_incomplete_context_panel_settings_do_not_become_native_login(self) -> None:
+        with self.assertRaises(ValueError):
+            accounts_config(ACCOUNTS_TOML.replace('snapshot_command = ["context-panel-snapshot"]', ''))
+
     @staticmethod
     def snapshot(provider="anthropic", order=None, stale=False, age: float = 0) -> dict[str, Any]:
         rows = [account_row("main", .01, []), account_row("spare", .04, [], cfg="cfg-spare")]
