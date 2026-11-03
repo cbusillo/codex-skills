@@ -1,6 +1,6 @@
 # Routine check
 
-Use this for the existing ~23-minute check and immediate notices: established
+Use this for the existing ~30-minute check and immediate notices: established
 readers and one named normal closeout within the run's scope need no reload.
 Read the full skill at takeover; load owning skills/sections for rare events.
 Keep absolute pointers to the private ledger and one recovery note,

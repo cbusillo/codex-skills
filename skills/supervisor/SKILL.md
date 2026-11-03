@@ -1,6 +1,6 @@
 ---
 name: supervisor
-description: Use to hand implementation work to a separate agent process on any provider, including headless CLI handoffs, through the supported launcher; or when the Director asks a session to supervise other sessions for a stretch of work or take over a Supervisor handoff. Full supervision groups related work, checks sessions about every 23 minutes, records Director decisions, routes landings through the merge train, and hands off what needs the Director. Not for in-harness subagents, model reviews (model-review), Computer Use calls, doing an item's work (executing loop), judging supervised runs (direction, on another model), or watching one PR (babysit-pr).
+description: Use to hand implementation work to a separate agent process on any provider, including headless CLI handoffs, through the supported launcher; or when the Director asks a session to supervise other sessions for a stretch of work or take over a Supervisor handoff. Full supervision groups related work, checks sessions about every 30 minutes, records Director decisions, routes landings through the merge train, and hands off what needs the Director. Not for in-harness subagents, model reviews (model-review), Computer Use calls, doing an item's work (executing loop), judging supervised runs (direction, on another model), or watching one PR (babysit-pr).
 metadata:
   short-description: Brief, watch, nudge, and record agent sessions
 resources:
@@ -405,7 +405,7 @@ unresolved waits, point workers at the decision, and leave escalation labels
 for the weekly direction audit. Client test notes already settling acceptance
 need no new pre-merge question.
 
-Run [Routine check](references/routine-check.md) about every 23 minutes and act
+Run [Routine check](references/routine-check.md) about every 30 minutes and act
 on finished notices immediately. Read optional host `[staffing]` `openai_workers` and
 `load1_limit` when present; missing tuning does not block available work. Refill below
 target in the same turn a worker closes. Add CPU-light work at high load and use

@@ -272,7 +272,7 @@ def launch_supervisor(args: argparse.Namespace, root: Path, config_path: Path, l
         f"Catalog: {CATALOG}. Owner: {args.owner}. Worker ledger: {ledger}. Foreign state: {state}. "
         f"Notification configuration: {config_path}. {recovery}\n"
         + (
-            f"Use the harness's scheduled-check feature about every 23 minutes with this foreground digest: {shlex.join(routine)}.\n"
+            f"Use the harness's scheduled-check feature with this foreground digest: {shlex.join(routine)}.\n"
             if routine
             else "Read any configured Director question queue; do not invent one.\n"
         )
