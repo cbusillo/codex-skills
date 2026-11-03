@@ -1119,7 +1119,7 @@ with the existing lock and reconciliation behavior, and has no startup run.
 ## Catalog landing verification
 
 Catalog verification runs independently through the existing service runner.
-The Supervisor handles failure notices only; it does not inventory landings,
+The Supervisor reads failures through its routine digest; it does not inventory landings,
 launch smoke sessions or keep a latest-success pointer. Add the optional
 `catalog` entry to the same private service configuration and render/start it
 through the [existing service setup](#persistent-supervisor-services). A configuration
@@ -1129,8 +1129,7 @@ may contain only this job; unrelated Supervisor services are not required:
 "catalog": {
   "argv": ["/absolute/path/to/uv", "run", "/runtime/catalog/skills/supervisor/scripts/catalog_landing.py", "--poll", "--config", "/private/catalog-landing.json", "--evidence", "/private/catalog-evidence"],
   "cwd": "/runtime/catalog",
-  "restart_seconds": 60,
-  "failure_argv": ["/absolute/path/to/uv", "run", "/runtime/catalog/skills/supervisor/scripts/discord_digest.py"]
+  "restart_seconds": 60
 }
 ```
 
@@ -1140,20 +1139,13 @@ below, with `source_worktree` pointing to the durable runtime checkout. Omit
 history and exact merged-PR evidence. Keep the owning Supervisor's native ID
 in `supervisor_session` for closeout exclusion; update it at takeover.
 Catalog verification needs no `services.py bind` or managed Supervisor pane.
-The service entry's `failure_argv` uses the existing sender, accepting Markdown
-on stdin, to the channel Chris and the Supervisor already use.
-`discord_digest.py` reads `DIRECTOR_DIGEST_DISCORD_WEBHOOK_URL` from the
-process environment, otherwise `local.env` under `CODE_HOME`, then `CODEX_HOME`,
-then `~/.code`. Keep it in a private mode-600 file, never in arguments. A missing
-key fails with `digest_webhook_missing`. The sender accepts Markdown on stdin
-or `--file`, disables mentions, and prints each confirmed Discord message URL.
-It never retries; reconcile all parts after partial delivery before replaying.
-Do not use the real destination as a connectivity test. Offline checks:
-`uv run skills/supervisor/scripts/test_discord_digest.py`.
-No new account, recipient registry or delivery service is created.
 Include its existing `logs/catalog.jsonl` in the
-[routine digest](routine-check.md) with `--service-log` so failures remain
-visible there even when channel delivery fails.
+[routine digest](routine-check.md) with `--service-log`. The service stops and
+records each failure there; it has no separate notification sender or delivery state.
+Before updating an existing installation, remove `failure_argv` from its catalog
+service configuration, the unused `DIRECTOR_DIGEST_DISCORD_WEBHOOK_URL` setting,
+and `<config>.catalog.notice*.json` receipts. Preserve the service log, stop marker
+and report/closeout journals.
 
 The first run checks the current landing and explicitly leaves earlier history
 unverified. Later runs enumerate every first-parent landing since the saved
@@ -1172,14 +1164,14 @@ Missing exact merged-PR associations retry within the discovery reader's deadlin
 an unmatched result at expiry names the rejected landing SHA. Runtime
 reconciliation uses the same lookup for its configured PR. Transport failures
 retain the shared reader's retry and refusal policy.
-Verification failures post the failed gate. The existing runner notifies that
-channel on any failed child or stale reconciliation marker, including an
-interrupted run or a helper that cannot start, then keeps the
-service stopped. Retryable runtime discovery and reconciliation reads leave a bounded
+Verification failures post the failed gate. The existing runner records any failed
+child or stale reconciliation marker in its service log, including an interrupted
+run or a helper that cannot start, then keeps the service stopped.
+Retryable runtime discovery and reconciliation reads leave a bounded
 receipt and retry on the next poll without advancing the cursor or reporting a
 failed verification. A retry requires explicit proof that the runtime was not
 mutated; pending uncertain mutations still stop the service. Read private evidence and reconcile any
-uncertain launch, request, comment or notification before recovery. An uncertain
+uncertain launch, request or comment before recovery. An uncertain
 report is settled automatically only by one exact marker/body/author match on
 the owning issue; missing or ambiguous matches never cause another post. After
 reconciliation, clear the runner's `catalog` marker and restart it through the
@@ -1231,13 +1223,7 @@ only the new batch may pass. No original fingerprint or receipt is replaced.
 
 After recovery succeeds, clear the runner's `catalog` marker and restart that
 job through the existing service route. Never remove a journal or replay an
-uncertain mutation to clear a failure. The runner reserves each notice before
-sending and never replays an uncertain delivery. Before explicit `services.py
-clear`, inspect its retained evidence, resolve uncertain delivery at the existing
-channel, and ensure the failure is visible there. For a certainly unsent notice,
-fix the sender and deliver once through that existing route. Clear archives the
-original notice without relabeling it delivered or resending it; a later stopped
-episode gets its own notice. After shared transport retries are exhausted, prelaunch read failures stop
+uncertain mutation to clear a failure. After shared transport retries are exhausted, prelaunch read failures stop
 visibly but keep no saved failed verification, so the existing clear/restart route retries those reads.
 
 For one bounded manual verification or recovery:

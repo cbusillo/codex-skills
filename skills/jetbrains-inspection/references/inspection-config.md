@@ -21,6 +21,13 @@ The helper reads `.github/github.json` when present:
 `IntelliJ IDEA` or `WebStorm`. [SKILL.md](../SKILL.md) lists which selections
 each native worker serves; anything else is UNKNOWN.
 
+`profile` accepts a committed profile's name or path. Paths may name the shared
+profile in another Git checkout; an external profile must match that checkout's
+committed bytes. Use the consumer's existing pinned
+devkit location rather than copying the profile into every repository. Receipts
+bind the profile to its source commit and hash. See
+[native profile prerequisites](native-backend.md#missing-shared-profile).
+
 Mixed-language repositories may replace the single
 `qualityGate.inspection.ide` with ordered `qualityGate.inspection.lanes`. Each
 lane names a unique `id`, an `ide`, whether it is `required`, repository-relative
