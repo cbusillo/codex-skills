@@ -421,12 +421,13 @@ class CatalogLandingTests(unittest.TestCase):
                   "html_url": "original-comment", "created_at": (
                       landing.claim_release.stamp(operation.state["steps"][phase]["started_at"])
                       - landing.timedelta(seconds=github_comment.RECONCILIATION_CLOCK_SKEW_SECONDS)).isoformat()}
+        posted["updated_at"] = operation.state["steps"][phase]["started_at"]
         older = {**posted, "html_url": "older-comment", "created_at": "2000-01-01T00:00:00Z"}
         responses = iter([[], [posted, posted], [older, posted]])
 
         def comments(_path: str, **kwargs: Any) -> list[dict]:
             since = landing.claim_release.stamp(kwargs["params"]["since"])
-            return [row for row in next(responses) if landing.claim_release.stamp(row["created_at"]) > since]
+            return [row for row in next(responses) if landing.claim_release.stamp(row["updated_at"]) > since]
 
         with (patch.object(Operation, "run", operation_run), patch.object(subprocess, "run") as write,
               patch.object(landing.github_identity, "automation_login", return_value="agent[bot]"),
@@ -473,8 +474,6 @@ class CatalogLandingTests(unittest.TestCase):
             result = landing.poll(self.config, self.root, supersede_failed=True)
         self.assertTrue(result["ok"])
         self.assertIsNone(result["superseded_url"])
-        self.assertEqual(result["superseded_gate"], pending["gate"])
-        self.assertEqual(result["superseded_commit"], pending["landings"][-1])
         self.assertEqual(result["landings"], ["B", "C"])
         write.assert_not_called()
         self.assertNotIn(pending_phase, [call.args[0] for call in self.runner.call_args_list])

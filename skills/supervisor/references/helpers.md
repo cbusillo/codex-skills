@@ -1272,8 +1272,8 @@ mutated; pending uncertain mutations still stop the service. Read private eviden
 uncertain launch, request or comment before recovery. An uncertain
 report is checked once the posting process exits, using a comments read bounded
 by `since` the posting attempt started and matching its body and author. The
-comment helper owns the single operation marker. Zero matches means not posted;
-ambiguous matches or an incomplete read leave delivery unknown. Neither causes
+comment helper owns the single operation marker. Zero matches after a normal helper exit means not posted; after a timeout,
+ambiguous matches or an incomplete read, delivery stays unknown. Neither causes
 another post. Subprocess timeouts preserve stdout and stderr for reconciliation. After
 reconciliation, clear the runner's `catalog` marker and restart it through the
 existing service route. Polling rechecks a failed attempt using its original

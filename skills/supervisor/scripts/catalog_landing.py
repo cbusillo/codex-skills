@@ -377,6 +377,8 @@ def post_result(config: dict, operation: Operation, result: dict) -> str:
         require(body.is_file(), "report", "original report body is missing; no write replayed")
     else:
         outcome = "PASSED" if result["ok"] else "FAILED"
+        superseded = Path(result["superseded"]) if result.get("superseded") else None
+        previous = json.loads((superseded / "result.json").read_text()) if superseded else {}
         body.write_text(
             f"Catalog runtime verification {outcome}: `{result.get('runtime_sha', 'UNKNOWN')}`\n\n"
             f"Landings requested: {json.dumps(result['landings'])}.\n"
@@ -386,7 +388,7 @@ def post_result(config: dict, operation: Operation, result: dict) -> str:
             + ("Bootstrap: earlier history is unverified.\n" if result.get("bootstrap") else "")
             + (f"Supersedes failed verification: {result['superseded_url']}\n" if result.get("superseded_url") else "")
             + (f"Superseded attempt: `{Path(result['superseded']).name}`; "
-               f"failed gate: `{result['superseded_gate']}`; commit: `{result['superseded_commit']}`.\n"
+               f"failed gate: `{previous.get('gate', 'verification')}`; commit: `{previous['landings'][-1]}`.\n"
                if result.get("superseded") else "")
             + (f"Smoke skipped: {result['smoke_skipped']}.\n" if result.get("smoke_skipped") else "")
             + "\n".join(result.get("smoke_handoffs", []))
@@ -468,8 +470,11 @@ def superseded_closeout(operation: Operation, harness: str, source: dict) -> tup
                 "supersede", "closed source does not preserve the original smoke handoff")
         generation = fingerprint({key: value for key, value in current.items() if key != "handoff_url"})
     if original and generation == source["generation"]:
-        finish = json.loads((evidence / "finish.json").read_text())
-        result = json.loads(finish.get("stdout", "null"))
+        try:
+            finish = json.loads((evidence / "finish.json").read_text())
+            result = json.loads(finish.get("stdout", "null"))
+        except (OSError, ValueError, TypeError) as error:
+            raise GateFailed("supersede", "original normal finish evidence is unavailable") from error
         require(finish.get("exit_code") == 0 and isinstance(result, dict) and result.get("ok") is True
                 and result.get("needs_reconciliation") is False
                 and [row.get("session_id") for row in result.get("reports", [])] == [source["session_id"]],
@@ -534,8 +539,6 @@ def poll(config: dict, evidence: Path, *, supersede_failed: bool = False) -> dic
         landings = state.get("pending") or pending_landings(source, state["last_sha"], runtime["after_sha"])
         superseded = state.get("superseded")
         superseded_url = state.get("superseded_url")
-        superseded_gate = state.get("superseded_gate")
-        superseded_commit = state.get("superseded_commit")
         if supersede_failed:
             require(bool(state.get("pending") and state.get("attempt")), "supersede", "no failed attempt to supersede")
             old = Operation(evidence / state["attempt"], [config["repo"], *landings])
@@ -545,12 +548,9 @@ def poll(config: dict, evidence: Path, *, supersede_failed: bool = False) -> dic
             with closure.store_lock(old.evidence / "verification", create=True):
                 superseded_url = require_closed_smokes(current, old, old_result)
             superseded = str(old.evidence)
-            superseded_gate = old_result.get("gate", "verification")
-            superseded_commit = old_result["landings"][-1]
             landings += pending_landings(source, landings[-1], runtime["after_sha"])
             state.update(attempt=landings[-1] + "-" + uuid.uuid4().hex,
-                         superseded=superseded, superseded_url=superseded_url,
-                         superseded_gate=superseded_gate, superseded_commit=superseded_commit)
+                         superseded=superseded, superseded_url=superseded_url)
         if not landings:
             return {"ok": True, "landings": []}
         landing = landings[-1]
@@ -574,13 +574,12 @@ def poll(config: dict, evidence: Path, *, supersede_failed: bool = False) -> dic
                 except (OSError, ValueError, KeyError, TypeError, AttributeError, SubprocessError,
                         GitHubReadError, GitHubReadShapeError) as error:
                     result = receipt(landing, operation.evidence, error, gate=operation.gate)
-                result.update(landings=landings, bootstrap=state["last_sha"] is None, superseded=superseded, superseded_url=superseded_url,
-                         superseded_gate=superseded_gate, superseded_commit=superseded_commit)
+                result.update(landings=landings, bootstrap=state["last_sha"] is None, superseded=superseded, superseded_url=superseded_url)
                 save_state(result_path, result)
             url = post_result(current, operation, result)
             if result["ok"]:
                 state.update(last_sha=landing, pending=[])
-                for key in ("attempt", "superseded", "superseded_url", "superseded_gate", "superseded_commit"):
+                for key in ("attempt", "superseded", "superseded_url"):
                     state.pop(key, None)
                 save_state(state_path, state)
             return {**result, "verification_url": url}

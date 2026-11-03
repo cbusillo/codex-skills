@@ -216,7 +216,7 @@ class OperationTests(unittest.TestCase):
     def test_retired_smokes_reuse_completed_journals_without_process_or_network_probes(self) -> None:
         for harness, recovered in (("claude", False), ("codex", False), ("codex", True)):
             for failure in (None, "quit", "close", "incomplete_quit", "incomplete_close", "uncertain_other", "generation", "retirement", "handoff", "resumed",
-                            "active", "changed_active", "missing", "new_activity", "new_copy", "roots_unavailable", "native_action", "unverified_exit", "source_resume", "retained_terminal", "retained_live", "retained_changed", "retained_uncertain", "retained_finish"):
+                            "active", "changed_active", "missing", "new_activity", "new_copy", "roots_unavailable", "native_action", "unverified_exit", "source_resume", "retained_terminal", "retained_live", "retained_changed", "retained_uncertain", "retained_finish", "retained_report", "retained_reconciliation", "retained_missing"):
                 if failure and failure.startswith("retained_") and (harness != "codex" or recovered):
                     continue
                 with self.subTest(harness=harness, recovered=recovered, failure=failure), tempfile.TemporaryDirectory() as directory:
@@ -290,6 +290,12 @@ class OperationTests(unittest.TestCase):
                             operation.state["steps"]["quit"]["complete"] = False
                     if failure == "retained_finish":
                         check_changes.save_state(operation.evidence / "finish.json", {"exit_code": 1, "stdout": "{}"})
+                    if failure in {"retained_report", "retained_reconciliation"}:
+                        check_changes.save_state(operation.evidence / "finish.json", {"exit_code": 0, "stdout": json.dumps({
+                            "ok": True, "needs_reconciliation": failure == "retained_reconciliation",
+                            "reports": [{"session_id": "other" if failure == "retained_report" else closed["session_id"]}]})})
+                    if failure == "retained_missing":
+                        (operation.evidence / "finish.json").unlink()
                     ledger_before = ledger.read_bytes()
                     check_changes.save_state(operation.path, operation.state)
                     preserved = {path: path.read_bytes() for path in parent.evidence.rglob("*") if path.is_file()}
