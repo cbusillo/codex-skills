@@ -3543,6 +3543,25 @@ def test_capacity_attaches_lines_only_to_tooling_and_retains_unknown_reads() -> 
     result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=base)
     assert not errors and result["by_repository"]["o/live"]["net_lines"]["total"] == 0
 
+    def mixed_histories(args: list[str]) -> Any:
+        path = args[1]
+        if path.startswith("installation/repositories"):
+            listing = base(args)
+            return {**listing, "repositories": [*listing["repositories"],
+                {"full_name": "o/broken", "owner": {"login": "o"}, "default_branch": "main", "pushed_at": stamp(NOW)}]}
+        if path.startswith("repos/o/broken/commits/"):
+            raise module.AuditError("HTTP 502")
+        return base([args[0], path.replace("repos/o/broken/", "repos/o/live/"), *args[2:]])
+
+    expected = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=mixed_histories)
+    with module.github_next_reads.NextReads(workers=2, seconds=0) as reads:
+        observed = module.github_work_graph.cached_reads(mixed_histories, reads=reads)
+        actual = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=observed, reads=reads)
+    assert actual == expected
+    assert actual[0]["by_repository"]["o/live"]["net_lines"]["status"] == "complete"
+    assert actual[0]["by_repository"]["o/broken"]["net_lines"]["status"] == "unknown"
+    assert not module.held_reads(actual[1])
+
 
 def test_waiting_cross_repository_blocker_outside_milestones_is_a_named_finding() -> None:
     module = load()

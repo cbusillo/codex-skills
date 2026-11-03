@@ -2145,15 +2145,20 @@ def fetch_capacity(
         reporting_rules=reporting_rules, reporting_error=reporting_error,
         reporting_incomplete=bool(all_reporting_errors),
     )
-    for line_repo, line_report in summary["by_repository"].items():
-        if not line_report["merged_by_rank"]["tooling"]:
-            continue
+    def read_net_lines(target_repo: str) -> dict[str, Any]:
         try:
-            line_report["net_lines"] = default_branch_net_lines(
-                line_repo, str(repos[line_repo.casefold()].get("default_branch") or ""), since, until, fetch=fetch,
+            return default_branch_net_lines(
+                target_repo, str(repos[target_repo.casefold()].get("default_branch") or ""), since, until, fetch=fetch,
             )
-        except (AuditError, KeyError, TypeError, ValueError) as exc:
-            line_report["net_lines"] = {"status": "unknown", "reason": str(exc), "tests": None, "other": None, "total": None}
+        except (AuditError, KeyError, TypeError, ValueError) as line_error:
+            return {"status": "unknown", "reason": str(line_error), "tests": None, "other": None, "total": None}
+
+    if reads:
+        reads.start_phase("capacity_net_lines")
+    names = [repo_name for repo_name, report in summary["by_repository"].items() if report["merged_by_rank"]["tooling"]]
+    line_results = reads.map(read_net_lines, names) if reads else list(map(read_net_lines, names))
+    for line_repo, line_counts in zip(names, line_results, strict=True):
+        summary["by_repository"][line_repo]["net_lines"] = line_counts
     summary["session_outcomes"] = session_outcomes.weekly(
         github_plan_closure.closed_log(), owner=owner, since=since, until=until,
         comment_url=github_plan_release.COMMENT_URL,
