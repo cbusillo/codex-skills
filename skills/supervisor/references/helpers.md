@@ -1270,8 +1270,11 @@ receipt and retry on the next poll without advancing the cursor or reporting a
 failed verification. A retry requires explicit proof that the runtime was not
 mutated; pending uncertain mutations still stop the service. Read private evidence and reconcile any
 uncertain launch, request or comment before recovery. An uncertain
-report in ordinary polling is settled only by one exact marker/body/author match on
-the owning issue; missing or ambiguous matches never cause another post. After
+report is checked once the posting process exits, using a comments read bounded
+by `since` the posting attempt started and matching its body and author. The
+comment helper owns the single operation marker. Zero matches after a normal helper exit means not posted; after a timeout,
+ambiguous matches or an incomplete read, delivery stays unknown. Neither causes
+another post. Subprocess timeouts preserve stdout and stderr for reconciliation. After
 reconciliation, clear the runner's `catalog` marker and restart it through the
 existing service route. Polling rechecks a failed attempt using its original
 launch and closeout journals, settling any uncertain prior report first.
@@ -1280,8 +1283,8 @@ A completed bad acknowledgement needs a fresh attempt. First get each preserved
 session's normal handoff and run `session_closeout.py` with the exact native ID
 and the original `<attempt>/<harness>-closeout` evidence directory. The saved
 `<harness>_source` gives its native ID, original ledger and generation. Once all
-old sessions have retired, run the poll command with `--supersede-failed`. It
-validates those exact retired journals in process, refuses changed generations
+old sessions have closed normally, run the poll command with `--supersede-failed`. It
+validates those exact closure journals in process, refuses changed generations
 or uncovered uncertain mutations, includes later landings, and preserves the
 old attempt while starting fresh sessions. It can retry the same tip after an
 environment repair. It never skips missing merged-PR proof or rewritten history.
@@ -1319,13 +1322,15 @@ without that proof stop without replay.
 The old smoke remains a failed attempt;
 only the new batch may pass. No original fingerprint or receipt is replaced.
 
-Explicit `--supersede-failed` can preserve one unknown duplicate report when its
-key matches the saved failed result and exactly one earlier report in that same
-attempt is complete with a confirmed URL. The earlier report supplies the fresh
-batch's superseded-verification link. The original report remains unknown and is
-never replayed; every original launch and closeout proof still runs. Any other
-incomplete operation refuses. A transient discovery read before the cursor moves
-can still stop recovery at the original uncertain report; preserve that evidence.
+Explicit `--supersede-failed` preserves an uncertain failed-report receipt without
+reposting or marking it delivered or passed. Every original smoke must have
+closed normally; any other incomplete operation still refuses. The next batch's
+report names the superseded attempt, its failed gate and commit, even when the
+old report has no confirmed URL. The old attempt and delivery evidence remain
+unchanged. A normally finished original Codex session may retain its protected
+dead terminal: recovery reuses the full canonical closure verifier, checks the
+original generation and handoff, and leaves that terminal and ledger entry
+untouched. Resumed generations still require their exact retired recovery journal.
 
 After recovery succeeds, clear the runner's `catalog` marker and restart that
 job through the existing service route. Never remove a journal or replay an

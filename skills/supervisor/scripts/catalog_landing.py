@@ -11,6 +11,7 @@ import os
 import subprocess
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from subprocess import SubprocessError
 
@@ -32,6 +33,7 @@ from check_operation import (
     release,
 )
 from codex_session_proxy import read_launch_receipt
+from skills.github.scripts.github_comment import RECONCILIATION_CLOCK_SKEW_SECONDS, canonical_comment_body
 from session_closeout import closeout_mutations_settled, explicit_session, require, validate_retired_closeout
 from session_record import (
     TranscriptChanged,
@@ -278,7 +280,9 @@ def verify_smoke(config: dict, operation: Operation, harness: str, provider: str
     observe(entry, landing, after_size=operation.state["steps"][harness + "_acknowledgement"]["size"], final=True)
     operation.gate = harness + "_handoff"
     reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
-    comments = reader.paged_json(f"/repos/{repo}/issues/{config['issue']}/comments", step_prefix=harness + "_handoff")
+    since = comment_read_since(datetime.fromtimestamp(operation.state["steps"][harness + "_request_time"]["value"], timezone.utc))
+    comments = reader.paged_json(f"/repos/{repo}/issues/{config['issue']}/comments", step_prefix=harness + "_handoff",
+                                 params={"since": since}, required_query_params={"since": since})
     matches = [
         row
         for row in comments
@@ -358,57 +362,75 @@ def landing_pull(reader: GitHubReader, repo: str, landing: str, *, expected_pr: 
     raise GateFailed("discovery", f"default-branch commit {landing} has no exact merged PR{configured} after discovery deadline")
 
 
-def post_result(config: dict, operation: Operation, result: dict) -> str:
-    from skills.github.scripts import github_api, github_comment
+def comment_read_since(started: datetime) -> str:
+    return (started - timedelta(seconds=RECONCILIATION_CLOCK_SKEW_SECONDS + 1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+
+def post_result(config: dict, operation: Operation, result: dict) -> str:
     body = operation.evidence / "result.md"
-    outcome = "PASSED" if result["ok"] else "FAILED"
-    body.write_text(
-        f"Catalog runtime verification {outcome}: `{result.get('runtime_sha', 'UNKNOWN')}`\n\n"
-        f"Landings requested: {json.dumps(result['landings'])}.\n"
-        f"Runtime reconciled to `{result.get('runtime_sha', 'UNKNOWN')}`; "
-        f"HEAD observed after smoke: `{result.get('runtime_after_sha', 'not measured')}`.\n"
-        "Coverage is containment; per-session loaded SHA was not measured.\n"
-        + ("Bootstrap: earlier history is unverified.\n" if result.get("bootstrap") else "")
-        + (f"Supersedes failed verification: {result['superseded_url']}\n" if result.get("superseded_url") else "")
-        + (f"Smoke skipped: {result['smoke_skipped']}.\n" if result.get("smoke_skipped") else "")
-        + "\n".join(result.get("smoke_handoffs", []))
-        + (
-            f"\nFailed gate: {result.get('gate', 'verification')}. Inspect the retained service evidence.\n"
-            if not result["ok"]
-            else "\nRuntime reconciliation completed. Live smoke and closeout: "
-            + ("skipped for documentation only.\n" if result.get("smoke_skipped") else "both sessions acknowledged the landing and closed normally.\n")
-        )
-    )
     operation_id = fingerprint(result)
-    body.write_text(github_api.body_with_operation_marker(body.read_text(), operation_id))
     phase = "report_" + operation_id
     prior = operation.state["steps"].get(phase)
-    if prior and prior.get("complete") is not True:
+    if prior and prior.get("complete") is True:
+        return prior["result"]["url"]
+    if prior:
+        require(body.is_file(), "report", "original report body is missing; no write replayed")
+    else:
+        outcome = "PASSED" if result["ok"] else "FAILED"
+        superseded = Path(result["superseded"]) if result.get("superseded") else None
+        previous = json.loads((superseded / "result.json").read_text()) if superseded else {}
+        body.write_text(
+            f"Catalog runtime verification {outcome}: `{result.get('runtime_sha', 'UNKNOWN')}`\n\n"
+            f"Landings requested: {json.dumps(result['landings'])}.\n"
+            f"Runtime reconciled to `{result.get('runtime_sha', 'UNKNOWN')}`; "
+            f"HEAD observed after smoke: `{result.get('runtime_after_sha', 'not measured')}`.\n"
+            "Coverage is containment; per-session loaded SHA was not measured.\n"
+            + ("Bootstrap: earlier history is unverified.\n" if result.get("bootstrap") else "")
+            + (f"Supersedes failed verification: {result['superseded_url']}\n" if result.get("superseded_url") else "")
+            + (f"Superseded attempt: `{Path(result['superseded']).name}`; "
+               f"failed gate: `{previous.get('gate', 'verification')}`; commit: `{previous['landings'][-1]}`.\n"
+               if result.get("superseded") else "")
+            + (f"Smoke skipped: {result['smoke_skipped']}.\n" if result.get("smoke_skipped") else "")
+            + "\n".join(result.get("smoke_handoffs", []))
+            + (
+                f"\nFailed gate: {result.get('gate', 'verification')}. Inspect the retained service evidence.\n"
+                if not result["ok"]
+                else "\nRuntime reconciliation completed. Live smoke and closeout: "
+                + ("skipped for documentation only.\n" if result.get("smoke_skipped") else "both sessions acknowledged the landing and closed normally.\n")
+            )
+        )
+    def reconcile_report() -> str:
+        saved = operation.state["steps"][phase]
         reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 120)
-        comments = reader.paged_json(f"/repos/{config['repo']}/issues/{config['issue']}/comments", step_prefix="report_reconciliation")
-        canonical = lambda text: github_comment.OPERATION_MARKER_LINE_RE.sub("", text).rstrip()
+        started = claim_release.stamp(saved["started_at"])
+        since = comment_read_since(started)
+        comments = reader.paged_json(f"/repos/{config['repo']}/issues/{config['issue']}/comments", step_prefix="report_reconciliation",
+                                     params={"since": since}, required_query_params={"since": since})
         matches = [row for row in comments
                    if (row.get("user") or {}).get("login") == github_identity.automation_login()
-                   and github_api.body_has_operation_marker(row.get("body"), operation_id)
-                   and canonical(row["body"]) == canonical(body.read_text())]
-        require(len(matches) == 1, "report", "original report is missing or ambiguous; no write replayed")
+                   and canonical_comment_body(row["body"]) == canonical_comment_body(body.read_text())
+                   and claim_release.stamp(row["created_at"]) >= started - timedelta(seconds=RECONCILIATION_CLOCK_SKEW_SECONDS)]
+        saved["delivery"] = "not_posted" if not matches and saved.get("process_exited") is True else "unknown"
+        save_state(operation.path, operation.state)
+        require(len(matches) == 1, "report", "original report is not posted or ambiguous; no write replayed")
         operation.state["steps"][phase] = {"complete": True, "result": {"url": matches[0]["html_url"]}}
         save_state(operation.path, operation.state)
-    posted = operation.run(
-        phase,
-        [
-            str(Path(config["source_worktree"]) / "skills/github/scripts/gh-comment"),
-            "issue",
-            str(config["issue"]),
-            "--repo",
-            config["repo"],
-            "--body-file",
-            str(body),
-        ],
-        once=True,
-        timeout=360,
-    )
+        return matches[0]["html_url"]
+
+    if prior and prior.get("complete") is not True:
+        require(bool(prior.get("started_at")), "report", "legacy report has unknown delivery; no write replayed")
+        return reconcile_report()
+    try:
+        posted = operation.run(
+            phase,
+            [str(Path(config["source_worktree"]) / "skills/github/scripts/gh-comment"),
+             "issue", str(config["issue"]), "--repo", config["repo"], "--body-file", str(body)],
+            once=True, timeout=360,
+        )
+    except GateFailed:
+        if operation.state["steps"].get(phase, {}).get("complete") is False:
+            return reconcile_report()
+        raise
     return posted["url"]
 
 
@@ -447,6 +469,17 @@ def superseded_closeout(operation: Operation, harness: str, source: dict) -> tup
         require(not original or closed.get("handoff_url") == original.get("handoff", {}).get("url"),
                 "supersede", "closed source does not preserve the original smoke handoff")
         generation = fingerprint({key: value for key, value in current.items() if key != "handoff_url"})
+    if original and generation == source["generation"]:
+        try:
+            finish = json.loads((evidence / "finish.json").read_text())
+            result = json.loads(finish.get("stdout", "null"))
+        except (OSError, ValueError, TypeError) as error:
+            raise GateFailed("supersede", "original normal finish evidence is unavailable") from error
+        require(finish.get("exit_code") == 0 and isinstance(result, dict) and result.get("ok") is True
+                and result.get("needs_reconciliation") is False
+                and [row.get("session_id") for row in result.get("reports", [])] == [source["session_id"]],
+                "supersede", "original smoke has not completed normal finish")
+        return evidence, generation
     matches = []
     for path in operation.evidence.glob(harness + "-closeout-*/operation.json"):
         journal = json.loads(path.read_text())
@@ -467,11 +500,6 @@ def require_closed_smokes(config: dict, operation: Operation, result: dict) -> s
     if incomplete:
         require(incomplete == {"report_" + fingerprint(result)},
                 "supersede", "resolve every uncertain mutation other than this failed result's report")
-        reports = [url for name, step in steps.items()
-                   if name.startswith("report_") and step.get("complete") is True
-                   and isinstance(url := step.get("result", {}).get("url"), str) and url]
-        require(len(reports) == 1, "supersede", "requires one confirmed earlier report for this failed attempt")
-        reported_url = reports[0]
     for harness in ("codex", "claude"):
         if not steps.get(harness + "_launch"):
             continue
@@ -484,7 +512,8 @@ def require_closed_smokes(config: dict, operation: Operation, result: dict) -> s
         require(closed.state.get("generation") == generation, "supersede", "exact smoke generation changed")
         try:
             validate_retired_closeout(argparse.Namespace(ledger=Path(source["ledger"]), session_id=source["session_id"],
-                                                         supervisor_session=config["supervisor_session"]), closed)
+                                                         supervisor_session=config["supervisor_session"]), closed,
+                                     retain_terminal=closed.state.get("retired_generation") != generation)
         except ValueError as error:
             raise GateFailed("supersede", str(error)) from error
     return reported_url

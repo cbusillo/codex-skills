@@ -224,10 +224,12 @@ def closeout_mutations_settled(state: dict) -> bool:
                for gate, step in state["steps"].items())
 
 
-def validate_retired_closeout(args: argparse.Namespace, operation: Operation, *, finish_retirement: bool = False) -> None:
+def validate_retired_closeout(args: argparse.Namespace, operation: Operation, *, finish_retirement: bool = False,
+                             retain_terminal: bool = False) -> None:
     operation.gate = "retirement"
     generation = operation.state.get("generation")
-    require(isinstance(generation, str) and bool(generation) and operation.state.get("retired_generation") == generation,
+    require(isinstance(generation, str) and bool(generation)
+            and (operation.state.get("retired_generation") == generation or retain_terminal),
             "retirement", "journal has not completed retirement of this generation")
     require(closeout_mutations_settled(operation.state),
             "retirement", "closeout has an uncertain mutation")
@@ -248,15 +250,16 @@ def validate_retired_closeout(args: argparse.Namespace, operation: Operation, *,
             argv, bounded = session_liveness.process_arguments(pid, command)
             resumed, _kind, _exact = session_liveness.invocation(argv, bounded=bounded)
             session_liveness.require_source_not_resumed(args.session_id, resumed)
-        status = release.validate_closure_state({**saved, "_transcript_roots": release.transcript_roots(saved["harness"], None, [], saved)},
-                                               args.supervisor_session)
+        validate = release.validate_closure if retain_terminal else release.validate_closure_state
+        status = validate({**saved, "_transcript_roots": release.transcript_roots(saved["harness"], None, [], saved)},
+                          args.supervisor_session)
         require(status["state"] == "turn_ended" and not status["background_tasks"], "verdict", "closed source has unfinished native work")
         with closure.store_lock(args.ledger, create=True):
             rows = iterm_tab.read_launch_ledger(args.ledger)
             active = [normalize_ledger_entry(args.ledger, row) for row in rows if row.get("session_id") == args.session_id]
-            require(not active or finish_retirement and len(active) == 1 and release.closure_identity(active[0]) == identity,
+            require(not active or (finish_retirement or retain_terminal) and len(active) == 1 and release.closure_identity(active[0]) == identity,
                     "retirement", "active source changed or needs normal closeout to finish ledger retirement")
-            if active:
+            if active and finish_retirement:
                 save_state(args.ledger, [row for row in rows if row.get("session_id") != args.session_id])
 
 
