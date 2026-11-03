@@ -38,6 +38,31 @@ def protobuf(values: dict[int, int | bytes]) -> bytes:
 
 
 class GoogleWorkerTests(unittest.TestCase):
+    def test_completed_native_compaction_does_not_veto_final_verdict(self) -> None:
+        fields = iterm_tab.claim_history.protobuf_fields
+        metadata = protobuf({1: protobuf({1: 1})})
+        final = {"type": "assistant", "message": {"content": "Safe to exit: yes", "stop_reason": "end_turn"}}
+        for status, children in ((3, False), (2, False), (3, True)):
+            with self.subTest(status=status, children=children):
+                step = fields(protobuf({1: 23, 4: status, 5: metadata, 30: protobuf({5: b"<summary>context</summary>"})}))
+                records = iterm_tab.claim_history.agy_step_records("session", 0, 23, status, children, step, {})
+                summary = session_record.summarize([*records, final], "agy")
+                self.assertEqual(summary["safe_verdict"], status == 3 and not children)
+                self.assertEqual(bool(summary["background_tasks"]), status != 3 or children)
+
+    def test_finished_manage_task_does_not_count_as_background_work(self) -> None:
+        fields = iterm_tab.claim_history.protobuf_fields
+        final = {"type": "assistant", "message": {"content": "Safe to exit: yes", "stop_reason": "end_turn"}}
+        for status in (3, 2):
+            with self.subTest(status=status):
+                call = protobuf({1: b"call", 2: b"manage_task", 3: b'{"Action":"list"}'})
+                metadata = protobuf({1: protobuf({1: 1}), 4: call})
+                step = fields(protobuf({1: 132, 4: status, 5: metadata, 140: protobuf({2: protobuf({1: b"[]"})})}))
+                records = iterm_tab.claim_history.agy_step_records("session", 0, 132, status, False, step, {})
+                summary = session_record.summarize([*records, final], "agy")
+                self.assertEqual(summary["safe_verdict"], status == 3)
+                self.assertEqual(bool(summary["background_tasks"]), status != 3)
+
     def test_google_ledger_preparation_uses_the_existing_capacity_choice(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
