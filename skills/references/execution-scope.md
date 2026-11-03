@@ -16,8 +16,9 @@ For chat and durable reports, read [talking with the Director](talking-with-the-
 - Reuse authorization already given for the same action and scope. A requirement
   for explicit approval does not imply a fresh question when that approval is
   already present. Fresh readiness checks do not by themselves require renewed
-  user approval. Preserve narrower requirements such as approval of an exact
-  comment, production target, release, plan digest, or immediate device restart.
+  user approval. Preserve specific approval requirements for production targets, releases, plan
+  digests and immediate device restarts. Exact-comment approval follows the
+  [Client-reply rule](talking-with-the-director.md#client-replies).
 - Merge authorization attaches to a change and its destination, not to a pull
   request number. It comes from an instruction to merge or land the work,
   approval of a plan that says it ends in a merge, or a grant the user stated as

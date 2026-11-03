@@ -469,14 +469,16 @@ def list_comments(
     retry_context: Optional[github_api_core.ReconciliationContext] = None,
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
     since: Optional[str] = None,
+    endpoint: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     comments: list[dict[str, Any]] = []
     steps = list(completed_steps)
+    endpoint_path = endpoint or f"/repos/{repo}/issues/{number}/comments"
     for page in range(1, MAX_PAGES + 1):
         step = f"list_comments_page_{page}"
         result = _call_api(
             "GET",
-            f"/repos/{repo}/issues/{number}/comments?per_page={PER_PAGE}&page={page}"
+            f"{endpoint_path}?per_page={PER_PAGE}&page={page}"
             + ("&" + urllib.parse.urlencode({"since": since}) if since else ""),
             None,
             gh_cmd=gh_cmd,
@@ -499,6 +501,8 @@ def list_comments(
                 completed_steps=steps,
                 failed_step=step,
             )
+        if endpoint and any(not isinstance(item, dict) for item in result.body):
+            raise ValueError("Client reply discussion contains an unreadable record")
         comments.extend(item for item in result.body if isinstance(item, dict))
         steps.append(step)
         if not _has_next_page(result.headers):
@@ -513,6 +517,47 @@ def list_comments(
         completed_steps=steps,
         failed_step="list_comments",
     )
+
+
+def validate_client_reply(
+    repo: str, number: int, body: str, client_logins: list[str], *, actor: str,
+    gh_cmd: str, operation: str, retry_summaries: list[github_api_core.RetrySummary],
+) -> None:
+    bots = {login.casefold() for login in github_identity.configured_bot_logins()}
+    primary_bot = github_identity.automation_login()
+    if primary_bot:
+        bots.add(primary_bot.casefold())
+    own_login = github_identity.configured_value("GH_WITH_ENV_TOKEN_OWN_USER_LOGIN")
+    own = bots | ({own_login.casefold()} if own_login else set())
+    if actor.casefold() not in bots or github_identity.acts_as_own_user(repo):
+        raise ValueError("Client replies require the configured automation identity")
+    allowed = own | {login.casefold() for login in client_logins}
+    mention_logins = allowed | {login.removesuffix("[bot]") for login in allowed}
+    context = dict(
+        gh_cmd=gh_cmd, operation=operation, actor=actor, expected_actor=actor,
+        completed_steps=[], retry_summaries=retry_summaries,
+    )
+    opening = _call_api(
+        "GET", f"/repos/{repo}/issues/{number}", None,
+        failed_step="read_client_thread", is_write=False, **context,
+    ).body
+    if not isinstance(opening, dict):
+        raise ValueError("Client reply thread could not be verified")
+    records = [opening]
+    endpoints = [f"/repos/{repo}/issues/{number}/comments"]
+    if "pull_request" in opening:
+        endpoints.extend((f"/repos/{repo}/pulls/{number}/reviews", f"/repos/{repo}/pulls/{number}/comments"))
+    for endpoint in endpoints:
+        comments, _ = list_comments(repo, number, endpoint=endpoint, **context)
+        records.extend(comments)
+    for record in records:
+        user = record.get("user")
+        author = user.get("login") if isinstance(user, dict) else None
+        if not isinstance(author, str) or author.casefold() not in allowed:
+            raise ValueError("Client reply refused: outside or unknown participant; obtain exact-text approval")
+    for text in [body, *(str(record.get("body") or "") + " " + str(record.get("title") or "") for record in records)]:
+        if any(match["login"].casefold() not in mention_logins for match in MENTION_RE.finditer(html.unescape(text))):
+            raise ValueError("Client reply refused: outside mention; obtain exact-text approval")
 
 
 def _latest_actor_comment(comments: list[dict[str, Any]], actor: str) -> Optional[dict[str, Any]]:
@@ -771,6 +816,7 @@ def _comment_impl(
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
     verified_actor: str | None = None,
     validate_actor: Callable[[str], None] | None = None,
+    client_logins: list[str] | None = None,
 ) -> dict[str, Any]:
     operation = operation or f"github.comment.{kind}"
     expected_actor = effective_expected_actor(expected_actor)
@@ -851,6 +897,13 @@ def _comment_impl(
         expected_actor = actor
     steps = list(completed_steps or [])
     steps.append("resolve_actor")
+    if client_logins:
+        try:
+            validate_client_reply(resolved_repo, number, body, client_logins, actor=actor,
+                                  gh_cmd=gh_cmd, operation=operation, retry_summaries=collected_retry_summaries)
+        except ValueError as error:
+            raise _local_error(str(error), operation=operation, cause="client_reply_refused",
+                               expected_actor=expected_actor, failed_step="validate_client_reply") from error
     existing_comments: Optional[list[dict[str, Any]]] = None
 
     if edit_comment is not None:
@@ -1346,6 +1399,7 @@ def comment(
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
     include_body: bool = False,
     validate_actor: Callable[[str], None] | None = None,
+    client_logins: list[str] | None = None,
 ) -> dict[str, Any]:
     collected_retry_summaries = retry_summaries if retry_summaries is not None else []
     try:
@@ -1361,7 +1415,8 @@ def comment(
                 ) from error
         if attachments:
             if (kind not in ("issue", "pr") or number <= 0 or edit_last or edit_comment is not None
-                    or expected_body is not None or expected_updated_at is not None or create_if_none or dedupe_body or before_create is not None or validate_actor is not None):
+                    or expected_body is not None or expected_updated_at is not None or create_if_none or dedupe_body or before_create is not None
+                    or validate_actor is not None or client_logins):
                 raise _local_error(
                     "--attach requires a new issue or PR comment with a positive target; editing and deduplication are unsupported",
                     operation=operation or f"github.comment.{kind}", cause="validation_error", failed_step="input_validation",
@@ -1390,6 +1445,7 @@ def comment(
                 before_create=before_create,
                 retry_summaries=collected_retry_summaries,
                 validate_actor=validate_actor,
+                client_logins=client_logins,
             )
         question_body = body.removeprefix(AGENT_POSTED_LINE).lstrip()
         if question_id.QUESTION_HEADING.match(question_body):
@@ -1532,6 +1588,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--body-file", default="-", help="Read Markdown from a file, or '-' for stdin.")
     parser.add_argument("--verbatim", action="store_true", help="Relay source text or logs unchanged; not for authored planning text.")
     parser.add_argument("--attach", action="append", help="Attach FILE[#alt] through GitHub CLI; repeatable (images/videos only).")
+    parser.add_argument(
+        "--client-login", action="append",
+        help="Client-flow reply: verified Client/team/agent login; repeat for each. Refuses outside participants or mentions.",
+    )
     parser.add_argument("--edit-last", action="store_true")
     parser.add_argument("--edit-comment", type=int, help="Edit this exact timeline comment ID, after checking its thread and author.")
     parser.add_argument("--expected-body-file", help="Require an exact prior body from this UTF-8 file (including operation markers).")
@@ -1626,6 +1686,7 @@ def main() -> int:
             operation=operation,
             expected_actor=expected_actor,
             attachments=args.attach,
+            client_logins=args.client_login,
         )
     except CommentError as exc:
         return github_api_core.emit_terminal(

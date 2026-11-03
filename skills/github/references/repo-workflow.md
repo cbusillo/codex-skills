@@ -682,8 +682,10 @@ inline threads before deciding what to change.
   clear actionable request.
 - Summarize feedback as actionable items with file paths, reviewer, status, and
   proposed fix.
-- Ask before posting GitHub replies, resolving threads, or dismissing feedback
-  unless the user explicitly asked to handle review comments end-to-end.
+- GitHub replies follow the
+  [Client-reply rule](../../references/talking-with-the-director.md#client-replies).
+  Ask before resolving threads or dismissing feedback unless the user
+  explicitly asked to handle review comments end-to-end.
 - For issue and PR timeline comments, use `scripts/gh-comment` or
   `scripts/gh-pr.py comment --body-file`; both use the shared actor-aware REST
   implementation and never pass escaped `\n` through `--body`.

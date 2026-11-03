@@ -44,7 +44,8 @@ Address the comment when:
 - The requested change does not conflict with the user’s intent or recent guidance.
 - The change can be made safely without unrelated refactors.
 
-Fix valid human review feedback in code when possible, but do not post a GitHub reply to a human-authored comment/thread unless the user explicitly confirms the exact response.
+Fix valid human review feedback in code when possible. Written replies follow
+the [Client-reply rule](../../references/talking-with-the-director.md#client-replies).
 
 Do not auto-fix when:
 
@@ -52,7 +53,7 @@ Do not auto-fix when:
 - The request conflicts with explicit user instructions.
 - The proposed change requires product/design decisions the user has not made.
 - The codebase is in a dirty/unrelated state that makes safe editing uncertain.
-- The comment only needs a written answer or disagreement response; propose the reply to the user instead of posting it automatically.
+- The comment needs an outside reply: obtain exact-text approval under the Client-reply rule.
 
 ## Stop-and-ask conditions
 
@@ -65,4 +66,4 @@ Stop and ask the user instead of continuing automatically when:
 - The PR branch cannot be pushed.
 - CI failures persist after the flaky retry budget.
 - Reviewer feedback requires a product decision or cross-team coordination.
-- A human review comment requires a written GitHub reply instead of a code change.
+- A written reply requires approval under the Client-reply rule.
