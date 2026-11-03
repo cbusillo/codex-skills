@@ -326,11 +326,29 @@ def launch_supervisor(args: argparse.Namespace, root: Path, config_path: Path, l
     return recover_supervisor(root, config_path, ledger)
 
 
+def retained_receipt(attempt: Path) -> dict:
+    registered = attempt / "registered.json"
+    if registered.exists():
+        try:
+            candidate = json.loads(registered.read_text())
+        except ValueError:
+            candidate = {}
+        if (
+            isinstance(candidate, dict)
+            and isinstance(candidate.get("native_session_id"), str)
+            and candidate["native_session_id"]
+        ):
+            return candidate
+    original = json.loads((attempt / "receipt.json").read_text())
+    if not isinstance(original, dict):
+        raise ValueError("retained launcher receipt is malformed; preserve its original launch evidence")
+    return original
+
+
 def recover_supervisor(root: Path, config_path: Path, ledger: Path) -> dict:
     journal = json.loads((root / "start.json").read_text())
     attempt = Path(journal["attempt"])
-    receipt_path = attempt / "registered.json" if (attempt / "registered.json").exists() else attempt / "receipt.json"
-    receipt = json.loads(receipt_path.read_text())
+    receipt = retained_receipt(attempt)
     registration = attempt / "launch.json"
     if "native_session_id" not in receipt:
         failed = receipt.get("failed_launch", {})

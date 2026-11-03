@@ -251,8 +251,18 @@ class SupervisorStartTests(unittest.TestCase):
         self.assertEqual(json.loads(ledger.read_text()), [])
 
     def test_recovery_registers_the_original_failed_launcher_receipt(self) -> None:
+        for derived in (None, "", "partial stdout", "{}", "[]"):
+            with self.subTest(derived=derived):
+                self.assert_original_receipt_recovery(derived)
+
+    def assert_original_receipt_recovery(self, derived: str | None) -> None:
         attempt = self.root / "attempt"
-        attempt.mkdir()
+        attempt.mkdir(exist_ok=True)
+        registered = attempt / "registered.json"
+        if derived is None:
+            registered.unlink(missing_ok=True)
+        else:
+            registered.write_text(derived)
         payload = {"failed_launch": {"launch": {"session_id": "retained-terminal"}, "phase": "register_ledger"}}
         supervisor.save_state(attempt / "receipt.json", payload)
         original = (attempt / "receipt.json").read_bytes()
