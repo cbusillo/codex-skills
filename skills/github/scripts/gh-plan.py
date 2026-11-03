@@ -4419,7 +4419,7 @@ def cmd_create(args: argparse.Namespace) -> None:
         raise PlanError("Choose --wait-clear or --waiting-for with --ends-when and --wait-evidence")
     if wait is not None:
         require_asked_director_wait(repo, wait, creating=True)
-    release_summary = wait_summary(wait) if wait and any("release" in entry for entry in wait["waits"]) else ""
+    release_summary = wait_summary(wait) if wait and any("release" in entry or "recheck" in entry for entry in wait["waits"]) else ""
     completed_steps: list[str] = []
     actor, exact = find_existing_plan_issues(repo, title, completed_steps=completed_steps)
     if exact and not args.force:

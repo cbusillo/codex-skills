@@ -6290,6 +6290,8 @@ class ClaimTests(unittest.TestCase):
                     PLAN.cmd_create(args)
                 wait = wait_record.records(create.call_args.args[1])[0]
                 self.assertEqual(len(wait["waits"]), len(args.waiting_for or []))
+                if args.recheck:
+                    self.assertIn(f"An agent rechecks it on {args.recheck}.", create.call_args.args[1])
                 self.assertEqual(wait["evidence"], args.wait_evidence)
                 if args.release_product:
                     hint = wait_record.release_event_hint(args.release_product, args.release_commit)

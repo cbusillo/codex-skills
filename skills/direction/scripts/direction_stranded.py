@@ -394,8 +394,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                 add("aged_structured_wait", record, source.get("html_url") or url, since, "; ".join(receivers),
                     "Recorded receiver still has an unresolved wait. Body-only marker age is unknown; issue activity cannot reset the wait clock.",
                     evidence=wait["waits"])
-            unchecked = [w for w in wait["waits"] if not github_plan_wait.machine_checked(w)
-                         and w["waiting_for"] not in director and w["waiting_for"] not in receivers]
+            unchecked = [w for w in wait["waits"] if not github_plan_wait.machine_checked(w) and w["waiting_for"] not in director]
             due = [w for w in unchecked if github_plan_wait.recheck_due(w, now)]
             if due:
                 add("wait_recheck_due", record, source.get("html_url") or url, None, "Repository agent",

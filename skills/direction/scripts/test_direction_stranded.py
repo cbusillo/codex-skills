@@ -540,10 +540,11 @@ class OverdueTriggerTests(unittest.TestCase):
         day = dt.timedelta(days=1)
         records = [waiting(1), waiting(2, recheck=(self.now - day).date().isoformat()),
                    waiting(3, recheck=(self.now + day).date().isoformat()),
-                   waiting(4, not_before=(self.now + day).date().isoformat()), waiting(5, actor="Director")]
+                   waiting(4, not_before=(self.now + day).date().isoformat()), waiting(5, actor="Director"),
+                   waiting(6, actor="The upstream repository owner releases a fix", recheck=(self.now - day).date().isoformat())]
         rows = {(r["kind"], r["number"]) for r in self.report(records)["findings"]
                 if r["kind"] in {"unchecked_wait", "wait_recheck_due"}}
-        self.assertEqual(rows, {("unchecked_wait", 1), ("wait_recheck_due", 2)})
+        self.assertEqual(rows, {("unchecked_wait", 1), ("wait_recheck_due", 2), ("wait_recheck_due", 6)})
 
     def test_supervisor_routing_uses_the_current_actor_instead_of_action_wording(self) -> None:
         for action in ("Route the reviewed change.", "Fix skills/supervisor/scripts/tool.py."):
