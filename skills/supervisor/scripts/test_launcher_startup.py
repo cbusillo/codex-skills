@@ -394,6 +394,24 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         receipt.assert_called_once_with(choice)
         terminal.view.assert_not_called()
 
+    async def test_uncertain_gate_submission_retains_the_original_registration_descriptor(self) -> None:
+        terminal = terminal_fixture()
+        terminal.send.side_effect = OSError("transport interrupted")
+        args = argparse.Namespace(command="new", tmux_socket="fixture", window_id="$1")
+        native = {"harness": "claude", "session_id": "native", "home": "/fixture/account"}
+        choice = {"provider": "anthropic", "file_native": native}
+        with (patch.object(tmux_terminal, "Terminal", return_value=terminal),
+              patch.object(iterm_tab, "prepare_launches", return_value=(["agent"], [choice])),
+              patch.object(iterm_tab.account_choice, "public", return_value={}),
+              patch.object(iterm_tab.account_choice, "record_launch")):
+            with self.assertRaises(iterm_tab.LaunchFailure) as raised:
+                await tmux_terminal.operate(args)
+        failed = raised.exception.detail["failed_launch"]
+        self.assertEqual(failed["submission"], "unknown")
+        self.assertEqual(failed["launch"]["session_id"], failed["session_id"])
+        self.assertEqual(failed["launch"]["file_native"], native)
+        terminal.send.assert_awaited_once()
+
     async def test_tmux_hook_review_stops_batch_after_first_submitted_worker(self):
         terminal = terminal_fixture()
         terminal.read.return_value = {"dead": False, "exit_status": "", "exit_signal": "",

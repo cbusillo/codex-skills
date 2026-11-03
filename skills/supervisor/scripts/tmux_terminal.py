@@ -476,7 +476,6 @@ async def operate(args):
             row = terminal.select(sid)
             progress.update(session_id=sid)
             progress.update(submission="unknown", phase="submit_command")
-            await terminal.send(sid, gate)
             result = {key: row[key] for key in ("window_id", "tab_id", "session_id", "tty", "pid", "backend", "tmux_socket")}
             if choice:
                 result["account"] = account_choice.public(choice)
@@ -485,7 +484,9 @@ async def operate(args):
                         result[key] = choice[key]
                 if choice.get("provider") == "openai":
                     result["codex_home"] = str(Path(choice["env"]["CODEX_HOME"]).expanduser().resolve())
-            progress.update(submission="submitted", phase="verify_startup", launch=result)
+            progress["launch"] = result
+            await terminal.send(sid, gate)
+            progress.update(submission="submitted", phase="verify_startup")
 
             async def read_startup():
                 try:
