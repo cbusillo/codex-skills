@@ -1243,7 +1243,14 @@ blockers remain independent and cannot be cleared by a wait record.
 in UTC; a timestamp requires a timezone. `--event JSON` binds it to a checked
 reopen-event kind, such as `issue_closed` or `pr_merged`. Supply only one ending
 event per wait. `next` can surface a passed date immediately; the daily sweep
-records completed events and preserves every independent hold. Agent and
+records completed events and preserves every independent hold.
+
+A wait that nothing checks, with no ending event, release pointer or Director
+question, needs `--recheck YYYY-MM-DD`: the date an agent looks again. It
+applies to every such wait in the record, is shown in the visible text, and
+never ends the wait. `wait` and `create` refuse such a wait without one. When
+the date passes, the daily sweep lists the issue; the agent then clears the
+wait or records it again with a new `--recheck`. Agent and
 Supervisor steps use Next actor and Next action, never `--waiting-for`.
 
 `wait --all` reads every open issue and its complete discussion in the explicit
