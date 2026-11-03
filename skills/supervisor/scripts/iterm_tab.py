@@ -1242,7 +1242,7 @@ def prepare_resume(args):
 
     session = args.resume_session_id
     if (args.account_provider != "openai" or not getattr(args, "ledger", None)
-            or getattr(args, "command_file", None) or getattr(args, "brief_file", None)
+            or getattr(args, "command_file", None) or getattr(args, "brief_file", None) or getattr(args, "brief_issue", None)
             or getattr(args, "computer_use", None)
             or getattr(args, "require_browser", False) or getattr(args, "without_browser", False)):
         raise ValueError("resume needs --account-provider openai and --ledger, without launch/brief files or browser/Computer Use flags")
@@ -1315,6 +1315,36 @@ def read_launch_text(path: Path) -> str:
         return path.read_text(encoding="utf-8")
 
 
+def read_issue_brief(issue: str, header: str) -> str:
+    match = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/[1-9]\d*", issue)
+    if not match or not re.search(rf"(?m)^Anchor and claim: {re.escape(issue)}\s*$", header):
+        raise ValueError("--brief-issue needs a full issue URL matching the header's Anchor and claim")
+    helper = Path(__file__).resolve().parents[2] / "github/scripts/gh-plan.py"
+    try:
+        result = subprocess.run(["uv", "run", str(helper), "--repo", match[1], "show", issue, "--sections", "Current Status"],
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+        payload = json.loads(result.stdout)
+        status = payload["issue"]["recorded_current_status"] if not result.returncode and payload.get("ok") else ""
+        managed = payload["issue"]["provenance"]["section_updates_allowed"]
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as error:
+        raise ValueError(f"Brief source unavailable for {issue}") from error
+    if managed is not True:
+        raise ValueError(f"{issue} needs a managed Current Status written through gh-plan.py update-section")
+    status = status.replace("\r\n", "\n")
+    opening = re.search(r"(?m)^Brief:[ \t]*\n(?P<fence>`{3,}|~{3,})(?:text)?[ \t]*\n", status)
+    if not opening or not re.search(r"(?m)^Next actor: agent:supervisor[ \t]*$", status[:opening.start()]):
+        raise ValueError(f"{issue} needs Next actor: agent:supervisor and a fenced Brief: in Current Status; use ###, not ##, inside briefs")
+    content = status[opening.end():]
+    fence = opening["fence"]
+    closing = re.search(rf"(?m)^{re.escape(fence[0])}{{{len(fence)},}}[ \t]*$", content)
+    if not closing:
+        raise ValueError(f"{issue} needs a closing brief fence; use ###, not ##, inside briefs")
+    brief = content[:closing.start()]
+    if not brief.strip():
+        raise ValueError(f"{issue} has an empty worker brief")
+    return header.rstrip("\n") + "\n\n" + brief
+
+
 def check_launch_issue(brief: str) -> None:
     labels = re.findall(r"(?mi)^\s*(?:[-*] )?(?:\*\*)?(Read-only anchor|Anchor(?: and claim)?):(?:\*\*)?[^\S\n]*([^\n]*)", brief)
     anchors = []
@@ -1380,7 +1410,7 @@ def prepare_launches(args: argparse.Namespace) -> tuple[list[str], list[dict | N
                     "tmux_socket": getattr(args, "tmux_socket", None),
                     "resume_session_id": getattr(args, "resume_session_id", None),
                     "readback_required": True}
-        for name in ("command_file", "brief_file", "ledger"):
+        for name in ("command_file", "brief_file", "brief_issue", "ledger"):
             paths = getattr(args, name, None)
             progress[name] = [str(path) for path in paths] if isinstance(paths, list) else str(paths) if paths else None
         error = LaunchFailure([], progress, ValueError(
@@ -1453,19 +1483,26 @@ def prepare_launch_batch(args: argparse.Namespace) -> tuple[list[str], list[dict
             raise ValueError("fresh --ledger registration needs managed Codex --remote launches")
     for text in command_texts:
         validate_text(text)
-    brief_files = getattr(args, "brief_file", None)
-    if not brief_files:
+    brief_input: Path | list[Path] = getattr(args, "brief_file", None) or []
+    if not brief_input:
         raise ValueError("new launches require --brief-file; put the prompt in that file")
-    brief_files = brief_files if isinstance(brief_files, list) else [brief_files]
+    brief_files = [brief_input] if isinstance(brief_input, Path) else brief_input
     if len(brief_files) != len(files):
         raise ValueError("provide one --brief-file per --command-file, in launch order")
-    briefs = [read_launch_text(path) for path in brief_files]
+    headers = [read_launch_text(path) for path in brief_files]
+    brief_issues = getattr(args, "brief_issue", None) or []
+    if brief_issues:
+        if len(brief_issues) != len(files):
+            raise ValueError("provide one --brief-issue per --command-file, in launch order")
+        briefs = [read_issue_brief(issue, header) for issue, header in zip(brief_issues, headers)]
+    else:
+        briefs = headers
     for brief in briefs:
         if not brief.strip():
             raise ValueError("brief must be nonempty")
         validate_text(brief, allow_tabs=True)
+    for brief in headers:
         validate_brief_rules(brief)
-    for brief in briefs:
         check_launch_issue(brief)
     validate_computer_use_launch(args, command_texts, briefs)
     apps = [gui_launch.declared_app(brief) for brief in briefs]
@@ -2196,6 +2233,8 @@ def main():
                      help="one agent invocation and settings, without its prompt; repeat for a batch")
     new.add_argument("--brief-file", type=Path, action="append",
                      help="nonempty prompt to append as one argument; one per command file, in launch order")
+    new.add_argument("--brief-issue", action="append",
+                     help="child issue URL; append its Current Status Brief verbatim to --brief-file's standard header")
     new.add_argument("--resume-session-id", help="resume one exact Supervisor-owned Codex source from --ledger")
     new.add_argument("--ledger", type=Path, help="private source ledger for resume or atomic fresh managed Codex registration")
     new.add_argument(

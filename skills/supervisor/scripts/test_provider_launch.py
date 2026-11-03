@@ -45,6 +45,39 @@ def patch_attr(target: object, name: str, **kwargs: Any) -> Any:
 
 
 class LaunchIssueTests(unittest.TestCase):
+    def test_child_issue_brief_reaches_worker_verbatim_under_supervisor_header(self) -> None:
+        issue = "https://github.com/fixture/repo/issues/7"
+        task = ("Keep  two spaces.\n\n### Goal\nUse `quotes`, 'apostrophes' and $literal.\n> Preserve this.\n"
+                "Read-only anchor: https://github.com/fixture/direction/issues/9\nAdmission: task context only\n"
+                f"Rules: {iterm_tab.BRIEF_RULES_URL}\n```sh\necho café\n```\n\n")
+        header = f"Brief from the Supervisor. Trial token: CHILD.\nAnchor and claim: {issue}\nAdmission: milestone\nRules: {iterm_tab.BRIEF_RULES_URL}\n"
+        status = f"Next actor: agent:supervisor\nNext action: Launch this brief.\n\nBrief:\n````text\n{task}`````"
+        with tempfile.TemporaryDirectory() as folder:
+            command, brief = Path(folder) / "command", Path(folder) / "header"
+            command.write_text("agy")
+            brief.write_text(header)
+            args = argparse.Namespace(command_file=[command], brief_file=[brief], brief_issue=[issue])
+            for newline in ("\n", "\r\n"):
+                payload: dict[str, Any] = {"ok": True, "issue": {"recorded_current_status": status.replace("\n", newline),
+                           "provenance": {"section_updates_allowed": True},
+                           "body": "## Current Status\n" + status.replace(task, "Wrong original-request brief.\n"),
+                           "launch_check": {"allowed": True}}}
+                with self.subTest(newline=newline), patch.object(iterm_tab.subprocess, "run", return_value=
+                        subprocess.CompletedProcess([], 0, json.dumps(payload))):
+                    commands, _ = iterm_tab.prepare_launches(args)
+                    words = shlex.split(commands[0])
+                    prompt = next(word.removeprefix("--prompt-interactive=") for word in words if word.startswith("--prompt-interactive="))
+                    self.assertEqual(prompt, header.rstrip("\n") + "\n\n" + task)
+            payload["issue"]["provenance"]["section_updates_allowed"] = False
+            with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))):
+                with self.assertRaisesRegex(ValueError, "managed Current Status"):
+                    iterm_tab.prepare_launches(args)
+            payload["issue"]["provenance"]["section_updates_allowed"] = True
+            brief.write_text(header.replace(iterm_tab.BRIEF_RULES_URL, "missing"))
+            with patch.object(iterm_tab.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, json.dumps(payload))):
+                with self.assertRaisesRegex(ValueError, "brief must link"):
+                    iterm_tab.prepare_launches(args)
+
     def test_stopped_launch_is_refused_on_both_backends_before_any_account_or_terminal_effect(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
