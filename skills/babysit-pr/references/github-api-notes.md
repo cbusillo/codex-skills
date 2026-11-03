@@ -123,6 +123,10 @@ Used by Codex to classify branch-related vs flaky/unrelated failures. Prefer the
 
 Reruns only failed jobs (and dependencies) for a workflow run. This is a
 GitHub write and must be owned by the configured automation account.
+Retry admission requires complete, head-matched evidence with no unfinished
+Actions workflows. Pending outside checks, such as a Client review, do not
+block retry; they still block merge readiness. Missing or unknown workflow
+settlement evidence does not admit a retry.
 A retry needs a completed failed or timed-out job; a cancelled notification
 run with no such job is skipped. A job that ran out of its own `timeout-minutes`
 counts as timed out, although GitHub reports it as `cancelled`; see

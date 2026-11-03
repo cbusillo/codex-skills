@@ -65,6 +65,7 @@ def sample_checks(**overrides):
         "failed_count": 0,
         "passed_count": 12,
         "all_terminal": True,
+        "unfinished_workflow_run_count": 0,
         "evidence_complete": True,
         "counts_are_lower_bounds": False,
         "unavailable_components": [],
@@ -2699,7 +2700,7 @@ def test_acquisition_repository_names_are_case_insensitive():
 
 
 @pytest.mark.parametrize("admit", [True, False])
-@pytest.mark.parametrize("gate", ["terminal", "pending", "closed", "budget"])
+@pytest.mark.parametrize("gate", ["terminal", "external_pending", "pending", "closed", "budget"])
 def test_snapshot_offers_only_verified_acquisition_recovery(monkeypatch, tmp_path, admit, gate):
     reader = AcquisitionReader()
     watch_reader = ReviewReader()
@@ -2722,16 +2723,21 @@ def test_snapshot_offers_only_verified_acquisition_recovery(monkeypatch, tmp_pat
     monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_a, **_kw: "fixture-bot")
     monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *_a, **_kw: [])
     monkeypatch.setattr(gh_pr_watch.github_read, "pull_request_checks", lambda *_a, **_kw: {})
-    monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *_a, **_kw: sample_checks(failed_count=1, all_terminal=gate != "pending"))
+    monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *_a, **_kw: sample_checks(
+        failed_count=1, all_terminal=gate not in {"pending", "external_pending"},
+        unfinished_workflow_run_count=int(gate == "pending"),
+        pending_count=int(gate in {"pending", "external_pending"}),
+    ))
     monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *_a, **_kw: [reader.run])
     monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *_a, **_kw: [failed_job(1, "cancelled")])
     args = argparse.Namespace(max_flaky_retries=0 if gate == "budget" else 3)
     snapshot, _ = gh_pr_watch.collect_locked_snapshot(args, pr, {}, tmp_path / "state.json")
-    assert ("retry_failed_checks" in snapshot["actions"]) == (admit and gate == "terminal")
-    assert (snapshot["failed_runs"][0].get("retry_mode") == "runner_acquisition") == (admit and gate == "terminal")
-    assert reader_operations == ([None, gh_pr_watch.RERUN_READ_OPERATION] if gate == "terminal" else [None])
-    assert snapshot["read_diagnostics"]["runner_acquisition"] == (evidence_diagnostics if gate == "terminal" else None)
-    assert snapshot["minimum_poll_seconds"] == (90 if gate == "terminal" else 0)
+    settled = gate in {"terminal", "external_pending"}
+    assert ("retry_failed_checks" in snapshot["actions"]) == (admit and settled)
+    assert (snapshot["failed_runs"][0].get("retry_mode") == "runner_acquisition") == (admit and settled)
+    assert reader_operations == ([None, gh_pr_watch.RERUN_READ_OPERATION] if settled else [None])
+    assert snapshot["read_diagnostics"]["runner_acquisition"] == (evidence_diagnostics if settled else None)
+    assert snapshot["minimum_poll_seconds"] == (90 if settled else 0)
 
 
 def test_acquisition_bad_pagination_declines_without_crashing():
@@ -4215,6 +4221,82 @@ def test_own_timeout_retry_reruns_failed_jobs_within_the_budget(monkeypatch, tmp
     assert writes == [["run", "rerun", "1", "--failed"]]
     assert result["rerun_run_ids"] == [1]
     assert gh_pr_watch.current_retry_count(gh_pr_watch.load_state(path)[0], "abc123") == 1
+
+
+@pytest.mark.parametrize("outside_check", ["launchplane/owner-review", "external-preview"])
+@pytest.mark.parametrize("conclusion", ["failure", "cancelled"])
+def test_pending_outside_check_does_not_block_completed_failed_workflow_retry(
+    monkeypatch, tmp_path, outside_check, conclusion,
+):
+    run = execution(1, conclusion)
+    timeout_reader = TimeoutReader()
+    jobs = timeout_reader.jobs if conclusion == "cancelled" else [
+        {**failed_job(1), "id": 11, "run_attempt": 1, "head_sha": run["head_sha"]},
+    ]
+    checks = [execution_check(run, job["id"], job["conclusion"]) for job in jobs]
+    checks.append({
+        "id": 51, "name": outside_check, "head_sha": run["head_sha"],
+        "app": {"slug": "outside-app", "id": 101}, "status": "in_progress",
+        "conclusion": None, "details_url": "https://example.test/review",
+    })
+    reader = ExecutionReader([run], checks, jobs={1: jobs})
+    reader.degraded_reasons = []
+    read_page = reader.paged_json
+
+    def paged_json(path, **kwargs):
+        if "/attempts/" in path or path.endswith("/annotations"):
+            return timeout_reader.paged_json(path, **kwargs)
+        return read_page(path, **kwargs)
+
+    monkeypatch.setattr(reader, "paged_json", paged_json)
+    monkeypatch.setattr(gh_pr_watch, "resolve_pr", lambda *_a, **_kw: sample_pr())
+    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_a: "fixture-bot")
+    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *_a, **_kw: [])
+    monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda **_kwargs: reader)
+    writes = []
+    monkeypatch.setattr(gh_pr_watch, "gh_text", lambda args, **_kw: writes.append(args))
+    args = argparse.Namespace(
+        pr="123", repo=None, state_file=str(tmp_path / "state.json"), max_flaky_retries=3,
+    )
+
+    result = gh_pr_watch.retry_failed_now(args)
+
+    snapshot = result["snapshot"]
+    assert snapshot["checks"]["evidence_complete"] is True
+    assert snapshot["checks"]["all_terminal"] is False
+    assert snapshot["checks"]["unfinished_workflow_run_count"] == 0
+    assert "retry_failed_checks" in snapshot["actions"]
+    assert "ready_to_merge" not in snapshot["actions"]
+    assert writes == [["run", "rerun", "1", "--failed"]]
+    assert result["retries_used"] == 1
+    if conclusion == "cancelled":
+        assert snapshot["failed_runs"][0]["retry_mode"] == "job_timeout"
+
+
+@pytest.mark.parametrize("settlement", [1, None, "0", False])
+def test_unknown_or_unfinished_actions_refuse_retry_while_outside_check_pending(
+    monkeypatch, tmp_path, settlement,
+):
+    snapshot, _ = retry_snapshot(monkeypatch, tmp_path, [failed_run(1)], [failed_job(1)])
+    snapshot["checks"].update(
+        all_terminal=False, pending_count=1, unfinished_workflow_run_count=settlement,
+    )
+    monkeypatch.setattr(gh_pr_watch, "gh_text", lambda *_a, **_kw: pytest.fail("unexpected write"))
+    actions = gh_pr_watch.recommend_actions(
+        snapshot["pr"], snapshot["checks"], snapshot["failed_runs"], snapshot["failed_jobs"], [], 0, 3,
+    )
+    assert "retry_failed_checks" not in actions
+    assert gh_pr_watch.retry_failed_now(argparse.Namespace())["reason"] == "checks_still_pending"
+
+
+def test_exhausted_retry_budget_stops_despite_pending_outside_check():
+    actions = gh_pr_watch.recommend_actions(
+        sample_pr(), sample_checks(failed_count=1, all_terminal=False, pending_count=1),
+        [failed_run(1)], [failed_job(1)], [], 2, 2,
+    )
+    assert "stop_exhausted_retries" in actions
+    assert "retry_failed_checks" not in actions
+    assert "ready_to_merge" not in actions
 
 
 if __name__ == "__main__":
