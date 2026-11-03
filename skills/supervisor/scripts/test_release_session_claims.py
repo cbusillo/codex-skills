@@ -216,6 +216,32 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse(result["retryable"])
         self.assertTrue(result["needs_reconciliation"])
 
+    def test_discovery_deadline_stop_is_a_rerunnable_read_not_an_uncertain_write(self) -> None:
+        api = importlib.import_module("github_api")
+        ledger = self.root / "ledger.json"
+        ledger.write_text(json.dumps([self.entry]))
+        argv = ["helper", "finish", "--ledger", str(ledger), "--closed-log", str(self.root / "closed.json"),
+                "--session-id", "source-session", "--owner", "test", "--supervisor-session", "supervisor",
+                "--confirm-session-ended", "--transcript-root", str(self.root)]
+        for advice, retryable in (("retry_after_reported_reset", True), ("inspect_last_failure", False)):
+            with self.subTest(advice=advice):
+                stop = api.ApiResult(ok=False, status=0, body=None, retry_summary=api.RetrySummary(
+                    attempts=3, elapsed_wait=600.0, retry_eligible=True, last_actor=ACTOR, last_bucket="core",
+                    outcome_certainty="confirmed", reconciliation=None, recommended_next_action=advice,
+                    effective_deadline=0.0, exhausted_reason="deadline_exceeded"))
+                error = importlib.import_module("github_read").GitHubReadError("GitHub retry wait did not complete before the effective deadline",
+                                               result=stop, diagnostics={})
+                output = io.StringIO()
+                with patch.object(helper.sys, "argv", argv), \
+                        patch_attribute(identity, "automation_login", return_value=ACTOR), \
+                        patch.object(helper, "discover", side_effect=error), \
+                        patch.object(helper, "release_session") as release, contextlib.redirect_stdout(output):
+                    self.assertEqual(helper.main(), 1)
+                release.assert_not_called()
+                result = json.loads(output.getvalue())
+                self.assertIs(result["retryable"], retryable)
+                self.assertTrue(result["next_action"].startswith("no release was posted"))
+
     def test_pr_release_handoff_refuses_a_checkout_for_another_repository(self):
         handoff = dict(self.reader.get_json.return_value)
         self.reader.get_json.side_effect = lambda path, **_kw: handoff if "/issues/comments/" in path else {"pull_request": {}, "body": "Bump dependencies"}
