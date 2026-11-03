@@ -327,7 +327,8 @@ active issue labels and continuing background jobs do not lift a hold.
    `wait --clear --evidence ...`. `wait --all` reports unreviewed open issues
    without clearing them. For new plans, `create --wait-clear --wait-evidence ...`
    or `create --waiting-for ... --ends-when ... --wait-evidence ...` records the
-   reviewed request directly. Maintain waits with `wait`, not status prose;
+   reviewed request directly. A wait on an event nothing checks also takes
+   `--not-before` as its recheck date. Maintain waits with `wait`, not status prose;
    preserve all unresolved entries when replacing the whole record. Read
    [Planning: Claim](../github/references/cli-reference.md#planning-claim)
    for the format, authorship and existing-resolution contract.

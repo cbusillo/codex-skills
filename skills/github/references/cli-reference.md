@@ -1239,10 +1239,13 @@ waited for and when each wait ends, or that nothing is waited on; a wait that
 names someone as a live `@login` is refused, so write `<code>@login</code>`. Native open
 blockers remain independent and cannot be cleared by a wait record.
 
-`wait --not-before YYYY-MM-DD` binds the first wait to the start of that day
-in UTC; a timestamp requires a timezone. `--event JSON` binds it to a checked
-reopen-event kind, such as `issue_closed` or `pr_merged`. Supply only one ending
-event per wait. `next` can surface a passed date immediately; the daily sweep
+Something must check when each wait ends: the Director's question, a release
+pointer, or an ending event. `--event JSON` binds the first wait to a checked
+reopen-event kind, such as `issue_closed` or `pr_merged`. `--not-before
+YYYY-MM-DD` binds every other wait to the start of that day in UTC; a timestamp
+requires a timezone. For a wait on anything else, such as a scheduled run
+passing, that date is when an agent rechecks it, and `wait` and `create` refuse
+the wait without one. Each wait has one ending event. `next` can surface a passed date immediately; the daily sweep
 records completed events and preserves every independent hold. Agent and
 Supervisor steps use Next actor and Next action, never `--waiting-for`.
 

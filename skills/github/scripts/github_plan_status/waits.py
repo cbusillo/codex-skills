@@ -49,23 +49,27 @@ def reviewed(*, evidence: str, waiting_for: str | list[str] | None = None,
         raise ValueError("Agent and Supervisor steps belong in Next actor and Next action, not --waiting-for")
     record: dict[str, Any] = {"version": 1, "state": "waiting" if waiting_for else "clear", "evidence": evidence,
               "waits": [{"waiting_for": actor, "ends_when": end} for actor, end in zip(actors, endings)]}
-    if not_before is not None or event is not None:
-        from . import events
-        if not actors or (not_before is not None and event is not None):
-            raise ValueError("Supply a wait and either --not-before or --event")
-        event = {"version": 1, "kind": "date", "at": not_before, "evidence": evidence} if not_before is not None else event
-        assert event is not None
-        events.validate(event)
-        if event.get("state") == "clear" or event.get("kind") == "recurrence":
-            raise ValueError("A wait needs a machine-checkable event")
-        record["waits"][0]["event"] = event
     if any(value is not None for value in (release_product, release_commit, release_next_action)):
         if not actors:
             raise ValueError("A release pointer requires a wait")
         record["waits"][0]["release"] = {"product": " ".join(release_product.split()).casefold() if release_product else release_product, "source_commit": release_commit.strip().lower() if release_commit else release_commit,
                                          "next_action": " ".join(release_next_action.split()) if release_next_action else release_next_action}
+    if (not_before is not None or event is not None) and not actors:
+        raise ValueError("Supply a wait for --not-before or --event")
+    if event is not None:
+        record["waits"][0]["event"] = event
+    if not_before is not None:
+        unchecked = [entry for entry in record["waits"] if not machine_checked(entry)]
+        if not unchecked:
+            raise ValueError("Every wait already has its ending event; drop --not-before")
+        for entry in unchecked:
+            entry["event"] = {"version": 1, "kind": "date", "at": not_before, "evidence": evidence}
     validate(record)
     return record
+
+
+def machine_checked(wait: dict[str, Any]) -> bool:
+    return "event" in wait or "release" in wait
 
 
 def validate(record: Any) -> None:

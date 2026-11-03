@@ -4265,10 +4265,21 @@ def reviewed_wait(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
                                         release_next_action=getattr(args, "release_next_action", None),
                                         not_before=getattr(args, "not_before", None),
                                         event=json.loads(args.event) if getattr(args, "event", None) else None)
-        github_comment_core.validate_planning_references(wait, issue_ref(args.issue, default_repo(args.repo))[0])
+        repo = issue_ref(args.issue, default_repo(args.repo))[0]
+        github_comment_core.validate_planning_references(wait, repo)
     except ValueError as exc:
         raise PlanError(str(exc)) from exc
+    require_recheck_dates(repo, wait)
     return wait, wait_summary(wait)
+
+
+def require_recheck_dates(repo: str, wait: dict[str, Any]) -> None:
+    asked = set(director_question_gate.waits_on_director(repo.split("/")[0], wait))
+    unchecked = [entry["waiting_for"] for entry in wait["waits"]
+                 if not github_plan_wait.machine_checked(entry) and entry["waiting_for"] not in asked]
+    if unchecked:
+        raise PlanError(f"Nothing checks when this wait ends: {'; '.join(unchecked)}. Add --not-before YYYY-MM-DD "
+                        "as the date to recheck it, or --event with a checked kind")
 
 
 def readable_comment(path: str) -> dict[str, Any] | None:
@@ -4398,6 +4409,7 @@ def cmd_create(args: argparse.Namespace) -> None:
             github_comment_core.validate_planning_references(wait, repo)
         except ValueError as exc:
             raise PlanError(str(exc)) from exc
+        require_recheck_dates(repo, wait)
     elif (getattr(args, "ends_when", None) or getattr(args, "wait_evidence", None)
           or any(getattr(args, field, None) for field in ("release_product", "release_commit", "release_next_action", "not_before", "event"))):
         raise PlanError("Choose --wait-clear or --waiting-for with --ends-when and --wait-evidence")
@@ -7719,7 +7731,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--release-product", help="Bind the first wait to this Launchplane product's next successful production release")
     p.add_argument("--release-commit", help="Full product source commit that production must include before resolving this wait")
     p.add_argument("--release-next-action", help="Concrete next agent action after that release")
-    p.add_argument("--not-before", help="First wait ends on this YYYY-MM-DD or timezone-qualified timestamp")
+    p.add_argument("--not-before", help="Waits without another ending event end, for a recheck, on this YYYY-MM-DD or timezone-qualified timestamp")
     p.add_argument("--event", help="First wait ends on this JSON event, using the reopen-trigger kinds")
     p.set_defaults(func=cmd_wait)
 
@@ -7744,7 +7756,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--release-product", help="Bind the first wait to this Launchplane product's next successful production release")
     p.add_argument("--release-commit", help="Full product source commit that production must include before resolving this wait")
     p.add_argument("--release-next-action", help="Concrete next agent action after that release")
-    p.add_argument("--not-before", help="First wait ends on this YYYY-MM-DD or timezone-qualified timestamp")
+    p.add_argument("--not-before", help="Waits without another ending event end, for a recheck, on this YYYY-MM-DD or timezone-qualified timestamp")
     p.add_argument("--event", help="First wait ends on this JSON event, using the reopen-trigger kinds")
     p.set_defaults(func=cmd_create)
 
