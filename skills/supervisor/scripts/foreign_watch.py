@@ -281,12 +281,21 @@ def source_messages(source: dict, client_agents: Any = ()) -> list[dict]:
     if "#" in source["html_url"]:
         return [source]
     opening = {**source, "updated_at": source["created_at"]}
-    user = source.get("user") or {}
     if timestamp(source["updated_at"]) <= timestamp(source["created_at"]):
         return [opening]
-    if radar_module().is_github_bot(user.get("login", ""), user.get("type", "")) and user.get("login", "").casefold() not in client_agents:
+    user = source.get("user") or {}
+    if not source.get("editor") and radar_module().is_github_bot(user.get("login", ""), user.get("type", "")) and user.get("login", "").casefold() not in client_agents:
         return [opening]
-    return [opening, source]
+    return [opening, edited_message(source)]
+
+
+def edited_message(source: dict) -> dict:
+    editor = source.get("editor") or {}
+    login = editor.get("login") or ""
+    actor_type = editor.get("__typename", "")
+    if login and actor_type == "Bot":
+        login = f"{login.removesuffix('[bot]')}[bot]"
+    return {**source, "original_author": source.get("user"), "user": {"login": login, "type": actor_type}}
 
 
 def read_inline_comments(reader: GitHubReader, repo: str, since: str) -> list[dict]:
@@ -435,11 +444,7 @@ def mention_activity_author(reader: GitHubReader, notice: dict, seen: dict[str, 
     for source in versions:
         sources.append({**source, "updated_at": source["created_at"]})
         if timestamp(source["updated_at"]) > timestamp(source["created_at"]):
-            editor = source.get("editor") or {}
-            login = editor.get("login") or ""
-            if login and editor.get("__typename") == "Bot":
-                login = f"{login.removesuffix('[bot]')}[bot]"
-            sources.append({**source, "user": {"login": login}})
+            sources.append(edited_message(source))
     cutoff = timestamp(seen.get(notice["url"], since))
     recent = [source for source in sources if timestamp(source["updated_at"]) > cutoff
               or notice["url"] not in seen and timestamp(source["updated_at"]) == cutoff]
@@ -641,7 +646,8 @@ def make_notice(repo: str, comment: dict, own_logins: list[str], launchplane_log
     launchplane = {value.casefold() for value in launchplane_logins}
     is_launchplane = (login or "").casefold() in launchplane or ((login or "").casefold() in own and marker is not None)
     is_question = (login or "").casefold() in own and body.strip().lstrip("*").startswith(QUESTION_PREFIXES)
-    if not (is_question or is_launchplane or (login or "").casefold() not in own):
+    own_cross_author_edit = "original_author" in comment and bool(comment.get("editor")) and ((comment.get("original_author") or {}).get("login") or "").casefold() not in own
+    if not (own_cross_author_edit or is_question or is_launchplane or (login or "").casefold() not in own):
         return None
     is_opening = "#" not in url and updated == comment.get("created_at", updated)
     if is_opening and (login or "").casefold() in own and not is_question:
@@ -835,10 +841,11 @@ def audit_miss(args: Any, receipt: dict, persist: Any) -> None:
         persist()
 
 
-def is_ordinary_bot_notice(notice: dict, client_agents: Any = ()) -> bool:
+def is_ordinary_bot_notice(notice: dict, client_agents: Any = (), own_logins: Any = ()) -> bool:
     return (
         notice.get("kind") == "foreign"
-        and radar_module().is_github_bot(str(notice.get("author") or ""), notice.get("author_type", ""))
+        and (str(notice.get("author") or "").casefold() in {login.casefold() for login in own_logins}
+             or radar_module().is_github_bot(str(notice.get("author") or ""), notice.get("author_type", "")))
         and not (notice.get("author_class") == "automation" and notice.get("automation_for"))
         and str(notice.get("author", "")).casefold() not in client_agents
     )
@@ -847,7 +854,7 @@ def is_ordinary_bot_notice(notice: dict, client_agents: Any = ()) -> bool:
 def route_notices(args: Any, notices: list[dict], deliveries: dict, reader: GitHubReader, *, event: bool, persist: Any) -> None:
     for notice in notices:
         if notice.get("kind") not in {"foreign", "foreign_opened"} or is_ordinary_bot_notice(
-            notice, getattr(args, "client_agent_logins", ())
+            notice, getattr(args, "client_agent_logins", ()), args.own_login
         ):
             continue
         receipt = deliveries.setdefault(delivery_key(notice), {})
@@ -1066,7 +1073,8 @@ def main() -> int:
 
 def watch(args, repos, initial, deadline):
     covered = set(repos or [])
-    rewind = args.since is not None
+    persistent = getattr(args, "persistent", False)
+    rewind = args.since is not None and not persistent
     watermarks: dict[str, str] = {}
     seen: dict[str, str] = {}
     dispatched: set[str] = set()
@@ -1087,7 +1095,7 @@ def watch(args, repos, initial, deadline):
         except READ_ERRORS as error:
             notices, errors, gaps = [], [read_error("installation", error)], []
         else:
-            cover(watermarks, [repo for repo in watched if repo not in covered], initial, args.since is not None)
+            cover(watermarks, [repo for repo in watched if repo not in covered], initial, args.since is not None and not persistent)
             covered.update(watched)
             notices, errors, watermarks = scan(watched, watermarks, args.own_login, args.launchplane_login, started, reader, getattr(args, "client_agent_logins", ()))
             mentions, gaps, mention_errors, watermarks, seen = scan_mentions(
@@ -1114,7 +1122,6 @@ def watch(args, repos, initial, deadline):
                 watermarks[repo] = checkpoint.get("watermarks", {}).get(repo, initial)
             save_state(args.state, watermarks, seen, dispatched, deliveries)
         rewind = False
-        persistent = getattr(args, "persistent", False)
         if errors and getattr(args, "events", False) and any(not error["retryable"] for error in errors):
             raise ValueError("Scheduled message source read is nonretryable; reconcile the service before restarting.")
         own_logins = {login.casefold() for login in args.own_login}
@@ -1122,7 +1129,7 @@ def watch(args, repos, initial, deadline):
             notice.get("kind") not in {"director_question", "director_mention"}
             or (notice.get("author") or "").casefold() not in own_logins
             for notice in notices
-            if not is_ordinary_bot_notice(notice, getattr(args, "client_agent_logins", ()))
+            if not is_ordinary_bot_notice(notice, getattr(args, "client_agent_logins", ()), args.own_login)
         )
         if wakes_supervisor and not errors and settle_at is None:
             settle_at = min(deadline, time.monotonic() + NOTICE_SETTLE_SECONDS)
