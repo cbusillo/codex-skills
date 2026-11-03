@@ -511,6 +511,9 @@ def claim_receipt_outputs(records: list[dict], *, followups: bool = True) -> dic
             continue
         try:
             sources = shell_texts(text, javascript, exec_command=name == "exec_command")
+            if javascript and not sources.opaque and not claim_javascript.analyse(text)[1]:
+                outputs.pop(identifier, None)
+                continue
             if sources.opaque or not sources.commands or any(source.interactive for source in sources.commands):
                 continue
             data = all(shell_output_is_data(source.text) for source in sources.commands)
