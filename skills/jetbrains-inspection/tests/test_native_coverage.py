@@ -45,6 +45,30 @@ class CoverageTests(unittest.TestCase):
                 self.assertFalse(result["complete"])
                 self.assertEqual(result["missing_execution"][tool], ["workflow.yaml"])
 
+    def test_annotator_requires_completed_execution_on_every_selected_source(self) -> None:
+        selected = {"model.py", "view.xml", "workflow.yaml"}
+        result, gaps = self.assess({"Annotator"}, {"Annotator": selected}, selected=selected)
+        self.assertTrue(result["complete"], gaps)
+        result, _ = self.assess({"Annotator"}, {"Annotator": {"model.py"}}, selected=selected)
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["missing_execution"]["Annotator"], ["view.xml", "workflow.yaml"])
+
+    def test_ignore_check_cannot_block_source_only_selections_or_skip_ignore_files(self) -> None:
+        for selected, suffixes in (
+            ({"model.py", "view.xml", "workflow.yaml"}, coverage.NATIVE_PROVEN_SUFFIXES),
+            ({"policy.ts", "screen.tsx"}, coverage.WEBSTORM_PROVEN_SUFFIXES),
+        ):
+            with self.subTest(selected=selected):
+                result, gaps = coverage.assess(
+                    {"IgnoreCoverEntry", "TodoComment"}, {"TodoComment"}, {"TodoComment": selected}, set(),
+                    selected, [], control_root=CONTROL_ROOT, proven_suffixes=suffixes,
+                )
+                self.assertTrue(result["complete"], gaps)
+                self.assertIn("IgnoreCoverEntry", result["not_applicable"])
+                result, _ = self.assess({"IgnoreCoverEntry"}, {}, selected=selected | {".gitignore"})
+                self.assertFalse(result["complete"])
+                self.assertIn("IgnoreCoverEntry", result["applicability_unproven"])
+
     def test_yaml_language_metadata_does_not_drop_checks_from_mixed_selections(self) -> None:
         selected = {"model.py", "compose.yml", "workflow.yaml"}
         result, gaps = self.assess({"VendorYamlRule", "PyCompatibilityInspection"},

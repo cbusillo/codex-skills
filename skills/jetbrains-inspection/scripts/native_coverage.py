@@ -29,7 +29,7 @@ UNUSED_SPLIT = frozenset({
     "PyUnusedLocalVariableInspection", "PyUnusedParameterInspection", "PyUnusedFunctionInspection",
 })
 UNIVERSAL_TOOLS = frozenset({
-    "DuplicatedCode", "HttpUrlsUsage", "SpellCheckingInspection", "InconsistentLineSeparators",
+    "Annotator", "DuplicatedCode", "HttpUrlsUsage", "SpellCheckingInspection", "InconsistentLineSeparators",
     "IncorrectFormatting", "ProblematicWhitespace", "TodoComment",
 })
 
@@ -100,6 +100,8 @@ def applicable_files(tool: str, selected: set[str], language: str | None = None,
         return {path for path in selected if Path(path).suffix in {".yaml", ".yml"}}
     if tool == "EmptyDirectory" and scope in {"files", "changed_files"}:
         return set()
+    if tool == "IgnoreCoverEntry":
+        return set() if all(Path(path).suffix.casefold() in proven_suffixes for path in selected) else None
     if tool == "Eslint" and any(Path(path).suffix.casefold() in SCRIPT_SUFFIXES for path in selected):
         return None
     for language_suffixes in (web_language_suffixes(tool, language), jvm_language_suffixes(tool, language)):
