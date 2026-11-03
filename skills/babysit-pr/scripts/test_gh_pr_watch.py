@@ -3559,6 +3559,7 @@ class ExecutionReader:
         self.calls = []
         self.results = []
         self.cache_enabled = True
+        self.degraded_reasons: list[dict[str, str]] = []
 
     def paged_json(self, path, **kwargs):
         self.calls.append((path, kwargs))
@@ -4231,7 +4232,7 @@ def test_outside_check_wait_preserves_workflow_retry_admission(
 ) -> None:
     run = execution(1, conclusion)
     timeout_reader = TimeoutReader()
-    jobs = timeout_reader.jobs if conclusion == "cancelled" else [
+    jobs: list[dict[str, Any]] = timeout_reader.jobs if conclusion == "cancelled" else [
         {**failed_job(1), "id": 11, "run_attempt": 1, "head_sha": run["head_sha"]},
     ]
     checks = [execution_check(run, job["id"], job["conclusion"]) for job in jobs]
@@ -4247,7 +4248,6 @@ def test_outside_check_wait_preserves_workflow_retry_admission(
         runs, checks, jobs={1: jobs},
         unavailable="/repos/openai/codex/commits/abc123/statuses" if workflows == "unavailable" else None,
     )
-    reader.degraded_reasons = []
     read_page = reader.paged_json
 
     def paged_json(path: str, **kwargs: Any) -> list[dict[str, Any]]:
@@ -4261,7 +4261,7 @@ def test_outside_check_wait_preserves_workflow_retry_admission(
     monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *_a, **_kw: [])
     monkeypatch.setattr(gh_pr_watch, "watcher_reader", lambda **_kwargs: reader)
     writes = []
-    monkeypatch.setattr(gh_pr_watch, "gh_text", lambda args, **_kw: writes.append(args))
+    monkeypatch.setattr(gh_pr_watch, "gh_text", lambda command_args, **_kw: writes.append(command_args))
     args = argparse.Namespace(
         pr="123", repo=None, state_file=str(tmp_path / "state.json"), max_flaky_retries=3,
     )
