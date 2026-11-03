@@ -22,10 +22,10 @@ from typing import Any
 from unittest.mock import Mock, patch
 
 import check_claims as helper
-import github_api
 
 claim_logic: Any = importlib.import_module("github_plan_claim")
 claim_journal: Any = importlib.import_module("github_plan_claim_log")
+github_api: Any = importlib.import_module("github_api")
 
 
 def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:

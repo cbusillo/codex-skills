@@ -390,7 +390,7 @@ def is_claim_writer(command: str, native: str, posts: list[str]) -> bool:
     text = " ".join(argv[1:])
     methods = re.findall(r"(?:^|\s)(?:--method(?:=|\s+)|-i*X(?:=|\s*))(\S+)", text)
     method = methods[-1].upper() if methods else (
-        "POST" if re.search(r"(?:^|\s)(?:--(?:field|raw-field|input)(?:=|\s)|-i*[fF])", text) else "GET"
+        "POST" if re.search(r"(?:^|\s)(?:--(?:field|raw-field|input)[=\s]|-i*[fF])", text) else "GET"
     )
     return method == "POST" and any(word.removeprefix("https://api.github.com/").lstrip("/") in posts for word in argv[1:])
 
