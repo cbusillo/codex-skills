@@ -954,12 +954,41 @@ def top_level_json_records(value: Any) -> Iterable[tuple[int, Any]]:
         yield 1, value
 
 
+def transcript_suffix(path: Path) -> str:
+    """Return the record format suffix, looking through a .zst compression suffix."""
+    suffix = path.suffix.lower()
+    return Path(path.stem).suffix.lower() if suffix == ".zst" else suffix
+
+
+def read_transcript(path: Path, limit: int) -> bytes:
+    """Read up to limit bytes of a transcript, streaming a .zst file's decompressed bytes."""
+    if path.suffix.lower() != ".zst":
+        with path.open("rb") as handle:
+            return handle.read(limit)
+    try:
+        import zstandard
+    except ImportError as exc:
+        raise OSError("reading .zst transcripts needs the zstandard package") from exc
+    chunks: list[bytes] = []
+    remaining = limit
+    try:
+        with path.open("rb") as raw, zstandard.ZstdDecompressor().stream_reader(raw, read_across_frames=True) as reader:
+            while remaining > 0:
+                chunk = reader.read(min(remaining, 1 << 20))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+    except zstandard.ZstdError as exc:
+        raise OSError(f"invalid zstd data: {exc}") from exc
+    return b"".join(chunks)
+
+
 def iter_records(path: Path, max_bytes: int) -> Iterable[tuple[int, Any]]:
     if max_bytes <= 0:
         return
     try:
-        with path.open("rb") as handle:
-            data = handle.read(max_bytes + 1)
+        data = read_transcript(path, max_bytes + 1)
     except OSError as exc:
         yield 0, f"scanner_io_error unable to read file: {exc}"
         return
@@ -967,7 +996,7 @@ def iter_records(path: Path, max_bytes: int) -> Iterable[tuple[int, Any]]:
     if len(data) > max_bytes:
         data = data[:max_bytes]
     text = data.decode(errors="replace")
-    if path.suffix.lower() == ".json":
+    if transcript_suffix(path) == ".json":
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:

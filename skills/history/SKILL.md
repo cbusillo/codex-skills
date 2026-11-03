@@ -55,10 +55,11 @@ omit sensitive spans and mark omissions rather than calling a redaction exact.
    account homes under the user's home. Read `roots` and `limitations` in the
    result. Add repeatable `--root /exact/session/directory` for other account
    layouts or harness transcript roots present on the machine; explicit roots
-   replace discovery. JSON/JSONL is supported through rollout-friction's shared
-   readers; unrecognized records are reported as a coverage gap, not evidence
-   of absence. Use `rg --files` to locate other transcript layouts, then inspect
-   their source format locally if the shared reader cannot interpret it. Do not
+   replace discovery. JSON/JSONL, plain or zstd-compressed (`.jsonl.zst`), is
+   supported through rollout-friction's shared readers; unrecognized records
+   are reported as a coverage gap, not evidence of absence. Use `rg --files`
+   to locate other transcript layouts, then inspect their source format
+   locally if the shared reader cannot interpret it. Do not
    read credential/config stores to discover sessions. Encrypted records stay
    unknown.
 4. Use `--signal direction-friction`, `--signal frustration`, or

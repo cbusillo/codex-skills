@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["zstandard==0.25.0"]
 # ///
 """Synthetic provider fixtures exercise evidence extraction, not instruction text."""
 
@@ -14,6 +14,8 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+import zstandard
 
 from search_history import bound, discover_roots, eastern, scan
 from extract_rollout_memory import events_from_record
@@ -156,6 +158,22 @@ class SearchHistoryTests(unittest.TestCase):
         result = scan([unsupported], queries=["preview"], signals=[])
         self.assertFalse(result["coverage_complete"])
         self.assertTrue(any(item["kind"] == "unsupported_file" for item in result["limitations"]))
+
+    def test_zstd_transcripts_read_like_plain_ones(self):
+        original = "Compressed sessions keep preview evidence."
+        lines = "\n".join(json.dumps(record) for record in [codex(original), codex("filler " * 400)]) + "\n"
+        path = self.root / "archive.jsonl.zst"
+        path.write_bytes(zstandard.ZstdCompressor().compress(lines.encode()))
+        array = self.root / "array.json.zst"
+        array.write_bytes(zstandard.ZstdCompressor().compress(json.dumps([claude("preview in an array")]).encode()))
+        result = self.search()
+        self.assertEqual([hit["text"] for hit in result["hits"]], [original, "preview in an array"])
+        self.assertEqual(result["hits"][0]["source"], str(path))
+        self.assertEqual(result["hits"][1]["position_kind"], "record_index")
+        self.assertNotIn("byte_limit", {item["kind"] for item in result["limitations"]})
+        self.assertLess(path.stat().st_size, len(lines))
+        limited = self.search(max_bytes=path.stat().st_size + 1)
+        self.assertIn({"kind": "byte_limit", "source": str(path)}, limited["limitations"])
 
     def test_json_array_uses_record_index(self):
         path = self.root / "transcript.json"
