@@ -217,7 +217,9 @@ if a later page fails. Thread histories use the shared GraphQL transport,
 including authors, edit times and reactions, with complete pagination.
 Sections share the same current-run thread observation, including its
 reaction and edit metadata. Each new run reads fresh sources, with no
-persistent cache. All thread and reaction reads share
+persistent cache.
+Standalone PR reads retain one issue-metadata lookup for the exact opening-post
+identity when discovery has not supplied it. All thread and reaction reads share
 one deadline; a read that misses either
 bound is reported as degraded coverage rather than stalling the report.
 

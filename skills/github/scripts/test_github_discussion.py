@@ -83,7 +83,8 @@ class DiscussionTests(unittest.TestCase):
             response({"node": {"reviews": connection([another], total=2)}}),
             response({"node": {"comments": connection([comment(13, "PullRequestReviewComment")], total=2)}}),
         ]
-        result = github_read.read_discussion(reader, "example/repo", 7)
+        result = github_read.read_discussion(reader, "example/repo", 7, issue_id=17)
+        self.assertEqual(result["id"], 17)
         self.assertEqual([row["id"] for row in result["comments"]], [8, 11])
         self.assertEqual([row["id"] for row in result["reviews"]], [9, 12])
         self.assertEqual(result["review_comments"][0]["in_reply_to_id"], 3)

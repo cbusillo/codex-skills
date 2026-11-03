@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "work-closeout/scri
 
 import goal_board
 import routine_check
+import question_delivery
 import session_closeout
 claim_transcripts: Any = importlib.import_module("claim_transcripts")
 from check_operation import GateFailed, Operation
@@ -57,9 +58,15 @@ class RoutineCheckTests(unittest.TestCase):
                     "author": {"__typename": "Bot", "login": "agent"}}
         messages = [message(80, "Director question: Q80. Proceed?"), message(81, "Director question: Q81. Publish?"),
                     message(82, "Director decision Q80: Yes. https://github.com/owner/repo/issues/8#issuecomment-80")]
+        target = messages[1]["url"]
+        queue = [message(90, question_delivery.marker_body("registered", target)),
+                 message(91, question_delivery.marker_body(
+                     "delivered", target, "https://github.com/owner/direction/issues/98#issuecomment-92", source_updated_at=stamp))]
+        for row in queue:
+            row["url"] = f"https://github.com/owner/direction/issues/98#issuecomment-{row['databaseId']}"
         def response(_query: str, variables: dict[str, Any], **_kwargs: Any) -> ApiResult:
             number = variables["number"]
-            comments = messages if number == 8 else []
+            comments = messages if number == 8 else queue
             node = {**message(number, "Work"), "__typename": "Issue", "number": number,
                     "title": "Work", "state": "OPEN", "closedAt": None,
                     "comments": {"nodes": comments, "totalCount": len(comments),
@@ -71,9 +78,15 @@ class RoutineCheckTests(unittest.TestCase):
         with patch_attr(routine_check.github_read, "GitHubReader", return_value=reader):
             report = routine_check.build_readers(args, {})["questions"]()
             discussion = routine_check.github_read.read_discussion(reader, "owner/repo", 8)
+            messages[1]["updatedAt"] = "2026-11-01T01:00:00Z"
+            revised = routine_check.build_readers(args, {})["questions"]()
         self.assertTrue(report["complete"], report)
         self.assertEqual([row["url"] for row in report["questions"]], [messages[1]["url"]])
         self.assertTrue(report["questions"][0]["author_trusted"])
+        self.assertEqual(report["questions"][0]["delivery"], "acknowledged")
+        self.assertNotIn(f"QUESTION {target}", routine_check.digest({"questions": report}))
+        self.assertEqual(revised["questions"][0]["delivery"], "unacknowledged")
+        self.assertIn(f"QUESTION {target}", routine_check.digest({"questions": revised}))
         opening = routine_check.radar.normalize_opening_post("owner/repo", discussion)
         self.assertFalse(routine_check.radar.is_external_comment(opening, {"owner"}, {"agent[bot]"}))
 

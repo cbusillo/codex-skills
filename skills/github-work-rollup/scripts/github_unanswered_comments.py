@@ -724,11 +724,12 @@ def discussion_reader(repo: str) -> github_read.GitHubReader:
 
 def discussion_source(
     repo: str, number: int, sources: dict[tuple[str, int], dict[str, Any]] | None = None,
+    issue_id: int | None = None,
 ) -> dict[str, Any]:
     key = (repo.casefold(), number)
     if sources is not None and key in sources:
         return sources[key]
-    thread = github_read.read_discussion(discussion_reader(repo), repo, number)
+    thread = github_read.read_discussion(discussion_reader(repo), repo, number, issue_id=issue_id)
     if sources is not None:
         sources[key] = thread
     return thread
@@ -750,9 +751,10 @@ def collect_thread(
     repo: str,
     number: int,
     sources: dict[tuple[str, int], dict[str, Any]] | None = None,
+    issue_id: int | None = None,
 ) -> tuple[dict[str, Any] | None, list[Comment], list[dict[str, str]]]:
     try:
-        thread = discussion_source(repo, number, sources)
+        thread = discussion_source(repo, number, sources, issue_id)
         comments = discussion_comments(repo, thread)
         return thread, comments, []
     except (github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError) as error:
@@ -1380,7 +1382,7 @@ def unasked_director_waits(
         # hold before search indexes it, so read every candidate's discussion.
         try:
             items = discussion_source(repo, number, discussions)["comments"]
-        except (rollup.RollupError, github_read.GitHubReadError, github_read.GitHubReadShapeError) as exc:
+        except (rollup.RollupError, github_read.GitHubReadError, github_read.GitHubReadShapeError, KeyError, TypeError, ValueError) as exc:
             errors.append({"repo": repo, "lane": f"director_waits/{number}", "error": rollup.trim(str(exc))})
             continue
         unresolved = False
@@ -1727,7 +1729,10 @@ def collect_payload(settings: dict[str, Any], *, comment_hints: tuple[Comment, .
     executor = ThreadPoolExecutor(max_workers=thread_worker_count)
     try:
         futures = {
-            executor.submit(copy_context().run, partial(collect_thread, repo, number, settings["discussion_sources"])): (repo, number, ids)
+            executor.submit(copy_context().run, partial(
+                collect_thread, repo, number, settings["discussion_sources"],
+                next((ident for kind, ident in ids if kind == OPENING_POST), None),
+            )): (repo, number, ids)
             for (repo, number), ids in candidate_ids.items()
         }
         unread = dict(futures)

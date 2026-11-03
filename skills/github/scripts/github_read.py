@@ -684,7 +684,7 @@ def discussion_comment(node: dict[str, Any], repo: str, number: int) -> dict[str
     }
 
 
-def read_discussion(reader: GitHubReader, repo: str, number: int) -> dict[str, Any]:
+def read_discussion(reader: GitHubReader, repo: str, number: int, *, issue_id: int | None = None) -> dict[str, Any]:
     owner, name = repo.split("/")
     fields = DISCUSSION_COMMENT_FIELDS + " number title state closedAt " + discussion_connection("comments", DISCUSSION_COMMENT_FIELDS)
     review_fields = discussion_connection("reviews", DISCUSSION_REVIEW_FIELDS)
@@ -706,6 +706,9 @@ def read_discussion(reader: GitHubReader, repo: str, number: int) -> dict[str, A
         "reviews": [], "review_comments": [],
     }
     if thread["__typename"] == "PullRequest":
+        result["id"] = issue_id if issue_id is not None else reader.get_json(
+            f"/repos/{repo}/issues/{number}", step="discussion_issue_identity"
+        )["id"]
         result["pull_request"] = {"url": f"https://api.github.com/repos/{repo}/pulls/{number}"}
         for review in discussion_nodes(reader, thread, "reviews", DISCUSSION_REVIEW_FIELDS):
             result["reviews"].append(discussion_comment(review, repo, number))
