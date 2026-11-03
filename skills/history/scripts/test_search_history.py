@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["zstandard==0.25.0"]
 # ///
 """Synthetic provider fixtures exercise evidence extraction, not instruction text."""
 
@@ -14,6 +14,8 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+import zstandard
 
 from search_history import bound, discover_roots, eastern, scan
 from extract_rollout_memory import events_from_record
@@ -156,6 +158,34 @@ class SearchHistoryTests(unittest.TestCase):
         result = scan([unsupported], queries=["preview"], signals=[])
         self.assertFalse(result["coverage_complete"])
         self.assertTrue(any(item["kind"] == "unsupported_file" for item in result["limitations"]))
+
+    def test_zstd_transcripts_read_like_plain_ones(self):
+        original = "Compressed sessions keep preview evidence."
+        first = json.dumps(codex(original)) + "\n"
+        compressor = zstandard.ZstdCompressor(write_checksum=True)
+        path = self.root / "archive.jsonl.zst"
+        path.write_bytes(compressor.compress((first + json.dumps(codex("later preview")) + "\n").encode()))
+        array = self.root / "array.json.zst"
+        array.write_bytes(compressor.compress(json.dumps([claude("preview in an array")]).encode()))
+        result = self.search()
+        self.assertEqual([hit["text"] for hit in result["hits"]], [original, "later preview", "preview in an array"])
+        self.assertEqual(result["hits"][0]["source"], str(path))
+        self.assertEqual(result["hits"][2]["position_kind"], "record_index")
+        self.assertTrue(result["coverage_complete"])
+        array.unlink()
+        limited = self.search(max_bytes=len(first.encode()))
+        self.assertEqual([hit["text"] for hit in limited["hits"]], [original])
+        self.assertIn({"kind": "byte_limit", "source": str(path)}, limited["limitations"])
+
+    def test_cut_off_zstd_transcript_is_a_coverage_gap(self):
+        path = self.root / "archive.jsonl.zst"
+        whole = zstandard.ZstdCompressor(write_checksum=True).compress((json.dumps(codex("preview")) + "\n").encode())
+        for damaged in (whole[:-3], b""):
+            path.write_bytes(damaged)
+            result = self.search()
+            self.assertEqual(result["hits"], [])
+            self.assertFalse(result["coverage_complete"])
+            self.assertEqual([(item["kind"], item["source"]) for item in result["limitations"]], [("file_io_error", str(path))])
 
     def test_json_array_uses_record_index(self):
         path = self.root / "transcript.json"

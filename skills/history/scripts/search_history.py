@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["zstandard==0.25.0"]
 # ///
 """Search local session messages; exact private evidence, never policy authority."""
 
@@ -19,7 +19,8 @@ from zoneinfo import ZoneInfo
 
 # Reuse the catalog's transcript decoding and message extraction.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "rollout-friction" / "scripts"))
-from analyze_rollouts import iter_records  # noqa: E402
+# noinspection PyUnresolvedReferences
+from analyze_rollouts import parse_records, read_transcript, transcript_suffix  # noqa: E402
 from extract_rollout_memory import events_from_record  # noqa: E402
 
 SIGNALS = {
@@ -91,7 +92,7 @@ def candidate_files(root: Path):
         directories.sort()
         for filename in sorted(filenames):
             path = Path(directory) / filename
-            if path.suffix.lower() in {".jsonl", ".json"} and path.is_file():
+            if transcript_suffix(path) in {".jsonl", ".json"} and path.is_file():
                 yield path
 
 
@@ -106,7 +107,7 @@ def scan(roots: list[Path], *, queries: list[str], signals: list[str], since: fl
         if not root.exists():
             limitations.append({"kind": "missing_root", "source": str(root)})
             continue
-        if root.is_file() and root.suffix.lower() not in {".jsonl", ".json"}:
+        if root.is_file() and transcript_suffix(root) not in {".jsonl", ".json"}:
             limitations.append({"kind": "unsupported_file", "source": str(root)})
             continue
         pending.append((root, iter(candidate_files(root))))
@@ -130,17 +131,18 @@ def scan(roots: list[Path], *, queries: list[str], signals: list[str], since: fl
     mirrors = 0
     for path in files:
         try:
-            if path.stat().st_size > max_bytes:
-                limitations.append({"kind": "byte_limit", "source": str(path)})
+            data = read_transcript(path, max_bytes + 1)
         except OSError as exc:
             limitations.append({"kind": "file_io_error", "source": str(path), "error": str(exc)})
             continue
+        if len(data) > max_bytes:
+            limitations.append({"kind": "byte_limit", "source": str(path)})
         session = None
         provider = "unknown"
         sidechain = False
         candidates: list[dict] = []
         counts = {"unsupported_records": 0, "malformed_records": 0, "unknown_message_timestamps": 0}
-        for line, record in iter_records(path, max_bytes):
+        for line, record in parse_records(path, data[:max_bytes]):
             if not isinstance(record, dict):
                 counts["malformed_records"] += 1
                 continue
@@ -184,7 +186,7 @@ def scan(roots: list[Path], *, queries: list[str], signals: list[str], since: fl
                 if signals and not set(signals).intersection(tags):
                     continue
                 candidates.append({"provider": provider, "session": session, "source": str(path),
-                                   "position": line, "position_kind": "record_index" if path.suffix.lower() == ".json" else "line",
+                                   "position": line, "position_kind": "record_index" if transcript_suffix(path) == ".json" else "line",
                                    "timestamp": timestamp, "time_et": eastern(timestamp), "role": event.role,
                                    "attribution": "user_candidate" if event.role == "user" else "agent_text",
                                    "sidechain": sidechain or bool(record.get("isSidechain")),
