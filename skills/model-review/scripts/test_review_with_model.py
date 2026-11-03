@@ -568,6 +568,7 @@ class ReviewWithModelTests(unittest.TestCase):
         ok = json.dumps({"is_error": False, "result": completed("none"), "modelUsage": {"claude-test": {}}})
         self.review("anthropic", FAKE_CLAUDE_JSON=ok, FAKE_CLAUDE_ARGV_FILE=str(argv_file))
         argv = argv_file.read_text().split("\n")
+        self.assertTrue(argv_file.read_text().startswith("-p\n" + review_with_model.PREAMBLE.format(repo=self.repo)))
         # `--allowedTools` only extends a user's own allowlist; `--tools` is what removes the write tools.
         self.assertEqual(argv[argv.index("--tools") + 1], "Read,Grep,Glob")
         self.assertNotIn("--allowedTools", argv)
