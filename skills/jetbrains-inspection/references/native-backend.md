@@ -253,12 +253,23 @@ Verified plugins are listed in the receipt's
 ## Missing shared profile
 
 `native_populated_profile_required` means the repository has no unique populated
-profile matching its declaration. If a populated profile is already tracked,
-point `qualityGate.inspection.profile` at that file. Otherwise obtain the product's
+profile matching its declaration. Untracked local profiles, including ignored
+ones, do not qualify. If a populated profile is already committed, point
+`qualityGate.inspection.profile` at that file. A relative or absolute path can
+also select the canonical profile in another Git checkout, including a pinned
+devkit checkout. The external profile and its tracked `.idea/scopes/*.xml`
+definitions must be unchanged from its commit. The helper copies those inputs
+into the private assessment, records their commits and hashes, and rejects
+changes during the run. Consumer-local scope definitions do not replace the
+canonical profile's scopes. Source checkouts and independent worker configuration
+remain unchanged.
+
+Otherwise obtain the product's
 default project inspection profile. Tracking a new shared profile follows the existing Director-approval rule;
-reuse approval already recorded. Track only
-`.idea/inspectionProfiles/Project_Default.xml`, keep other IDE state ignored, and
-set `qualityGate.inspection.profile` to that repository-relative path. Do not
+reuse approval already recorded. Track
+`.idea/inspectionProfiles/Project_Default.xml` and its approved shared scopes,
+keep machine-local IDE state ignored, and set `qualityGate.inspection.profile`
+to the profile's path. Do not
 disable or tune inspections to make a prerequisite pass. A fresh assessment then
 reports actual findings or another explicit gap.
 

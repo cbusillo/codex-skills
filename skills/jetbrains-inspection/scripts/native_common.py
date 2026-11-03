@@ -190,16 +190,59 @@ def storage_identity(anchor):
     return {"device": anchor.stat().st_dev}
 
 
+def resolve_profile_source(repo: Path, profile: Path) -> tuple[Path, str]:
+    require_public_input(profile)
+    require_public_input(profile.resolve())
+    result = command(["git", "-C", str(profile.parent), "rev-parse", "--show-toplevel", "HEAD"])
+    lines = result.stdout.decode().splitlines()
+    if result.returncode or len(lines) != 2:
+        raise Blocked("native_populated_profile_required")
+    root, revision = Path(lines[0]).resolve(), lines[1]
+    relative = profile.resolve().relative_to(root).as_posix()
+    if command(["git", "-C", str(root), "ls-files", "--error-unmatch", "--", relative]).returncode:
+        raise Blocked("native_populated_profile_required")
+    if command(["git", "-C", str(root), "cat-file", "-e", f"{revision}:{relative}"]).returncode:
+        raise Blocked("native_populated_profile_required")
+    if root != repo.resolve():
+        status = checked(["git", "-C", str(root), "-c", "core.fsmonitor=false", "status", "--porcelain", "--", relative])
+        if status.strip():
+            raise Blocked("native_populated_profile_required")
+    return root, revision
+
+
+def resolve_profile_inputs(repo: Path, profile: Path) -> dict[Path, tuple[Path, str]]:
+    origin = resolve_profile_source(repo, profile)
+    inputs = {profile: origin}
+    root, _ = origin
+    paths = checked(["git", "-C", str(root), "ls-files", "-z", "--", ".idea/scopes"]).decode().split("\0")
+    for relative in filter(None, paths):
+        scope = root / relative
+        if scope.parent != root / ".idea/scopes" or scope.suffix != ".xml":
+            continue
+        if scope.is_symlink():
+            raise Blocked("native_snapshot_path_unsupported")
+        if resolve_profile_source(repo, scope) != origin:
+            raise Blocked("native_populated_profile_required")
+        inputs[scope] = origin
+    return inputs
+
+
 def profile_for(repo, name):
     candidates = list((repo / ".idea/inspectionProfiles").glob("*.xml"))
     if name:
         explicit = repo / name
-        if explicit.is_file() and explicit.resolve().is_relative_to(repo):
+        if explicit.is_file():
             candidates = [explicit]
     matches = []
     for path in candidates:
-        require_public_input(path.relative_to(repo))
+        require_public_input(path)
         if path.is_symlink():
+            continue
+        try:
+            resolve_profile_source(repo, path)
+        except Blocked as error:
+            if str(error) != "native_populated_profile_required":
+                raise
             continue
         root = ElementTree.parse(path).getroot()
         profile = root if root.tag == "profile" else root.find("profile")
@@ -210,7 +253,7 @@ def profile_for(repo, name):
             continue
         enabled = {tool.get("class") for tool in profile.findall("inspection_tool") if tool.get("enabled") == "true"}
         if enabled:
-            matches.append((path, enabled))
+            matches.append((path.resolve(), enabled))
     if len(matches) != 1:
         raise Blocked("native_populated_profile_required")
     return matches[0]
