@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -24,6 +25,8 @@ class WeeklyInspectionTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.path = Path(self.temporary.name) / "baselines.json"
         self.state = {"repositories": {}}
+        self.evidence = Path(self.temporary.name) / "evidence"
+        self.evidence.mkdir()
 
     def run_record(self, day: int, counts: dict[str, int], **changes: object) -> None:
         monday = dt.datetime(2026, 11, 2, tzinfo=dt.UTC) + dt.timedelta(days=day)
@@ -45,7 +48,7 @@ class WeeklyInspectionTests(unittest.TestCase):
         self.run_record(7, {"types": 8, "duplicates": 11, "spelling": 20, "new": 1})
         self.run_record(14, {"types": 9, "duplicates": 9, "spelling": 20, "new": 3})
         self.assertEqual(
-            self.state["repositories"]["owner/repo"]["ceiling"]["counts"], {"types": 8, "duplicates": 8, "spelling": 20, "new": 0}
+            self.state["repositories"]["owner/repo"]["ceiling"], {"types": 8, "duplicates": 8, "spelling": 20, "new": 0}
         )
         summary = weekly.report("owner/repo", path=self.path, now=dt.datetime(2026, 11, 16, tzinfo=dt.UTC))
         self.assertEqual(
@@ -56,11 +59,13 @@ class WeeklyInspectionTests(unittest.TestCase):
 
     def test_incomplete_run_preserves_baseline_and_exposes_unknown(self) -> None:
         self.run_record(0, {"types": 10})
-        self.run_record(7, {}, status="unknown", reason="coverage incomplete")
+        self.run_record(0, {}, status="unknown", reason="coverage incomplete")
         record = self.state["repositories"]["owner/repo"]
         self.assertEqual(record["latest"]["counts"], {"types": 10})
-        self.assertEqual(record["ceiling"]["counts"], {"types": 10})
-        self.assertEqual(weekly.report("owner/repo", path=self.path)["status"], "unknown")
+        self.assertEqual(record["ceiling"], {"types": 10})
+        self.assertEqual(
+            weekly.report("owner/repo", path=self.path, now=dt.datetime(2026, 11, 3, tzinfo=dt.UTC))["status"], "unknown"
+        )
 
     def test_same_week_and_incomparable_or_missing_week_never_invent_trends(self) -> None:
         self.run_record(0, {"types": 10})
@@ -70,7 +75,10 @@ class WeeklyInspectionTests(unittest.TestCase):
             self.run_record(day, {"types": 6}, signature=signature)
             summary = weekly.report("owner/repo", path=self.path)
             self.assertEqual(summary["top_categories"][0]["direction"], "unavailable")
-        self.assertEqual(self.state["repositories"]["owner/repo"]["ceiling"]["counts"], {"types": 6})
+        self.run_record(28, {"types": 4}, signature={"profile": "changed"})
+        summary = weekly.report("owner/repo", path=self.path, now=dt.datetime(2026, 11, 30, tzinfo=dt.UTC))
+        self.assertEqual(summary["top_categories"][0]["ceiling"], 4)
+        self.assertEqual(summary["top_categories"][0]["direction"], "down")
 
     def test_full_artifact_counts_existing_and_advisory_observations(self) -> None:
         findings = Path(self.temporary.name) / "findings.json"
@@ -84,6 +92,11 @@ class WeeklyInspectionTests(unittest.TestCase):
             "findings_artifact": str(findings),
         }
         self.assertEqual(weekly.category_counts(result), {"types": 1, "spelling": 1})
+        result.update(findings_artifact=None, finding_count=0, preexisting_finding_count=0, advisory_finding_count=0)
+        self.assertEqual(weekly.category_counts(result), {})
+        result["advisory_finding_count"] = 1
+        with self.assertRaisesRegex(ValueError, "artifact"):
+            weekly.category_counts(result)
         result["coverage"]["complete"] = False
         with self.assertRaisesRegex(ValueError, "incomplete"):
             weekly.category_counts(result)
@@ -123,6 +136,7 @@ class WeeklyInspectionTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(saved["owner/broken"]["attempt"]["status"], "unknown")
         self.assertEqual(saved["owner/good"]["latest"]["counts"], {"types": 4})
+        self.assertEqual(saved["owner/broken"]["attempt"]["at"], saved["owner/good"]["latest"]["at"])
 
     def test_lane_selection_keeps_exclusions_and_names_generated_lock_exception(self) -> None:
         root = Path(self.temporary.name)
@@ -162,6 +176,70 @@ class WeeklyInspectionTests(unittest.TestCase):
         self.assertEqual([row["file"] for row in omitted["excluded"]], ["vendor/dependency.py"])
         self.assertEqual(omitted["generated_locks"], ["frontend/pnpm-lock.yaml"])
         self.assertEqual(omitted["unmatched"], ["README.md"])
+
+    def test_retired_worktree_is_recreated_and_ignored_environment_is_preserved(self) -> None:
+        root = Path(self.temporary.name)
+        created = root / "created"
+        created.mkdir()
+        source = root / "repo"
+        self.state["repositories"]["owner/repo"] = {"worktree": str(root / "retired"), "branch": "work/retired"}
+
+        def fixture_git(path: Path, *args: str) -> str:
+            if args[:3] == ("remote", "get-url", "origin"):
+                return "https://github.com/owner/repo.git"
+            if args[0] == "symbolic-ref":
+                return "refs/remotes/origin/main"
+            if args[0] == "rev-parse":
+                return str(source / ".git")
+            if args[0] == "branch":
+                return self.state["repositories"]["owner/repo"]["branch"]
+            if args[0] == "status" and "--ignored" in args:
+                return "!! .venv/"
+            return ""
+
+        result = subprocess.CompletedProcess([], 0, stdout=f"{created}\n")
+        with patch.object(weekly, "git", side_effect=fixture_git), patch.object(subprocess, "run", return_value=result) as creator:
+            self.assertEqual(weekly.inspection_worktree("owner/repo", root, self.state), created)
+            (created / ".venv").mkdir()
+            self.assertEqual(weekly.inspection_worktree("owner/repo", root, self.state), created)
+            self.assertEqual(creator.call_count, 1)
+            self.assertTrue((created / ".venv").exists())
+
+    def test_discovery_failure_is_reported_and_next_schedule_can_run(self) -> None:
+        with patch.object(weekly, "audit_repositories", side_effect=ValueError("read unavailable")):
+            self.assertEqual(
+                weekly.main(
+                    [
+                        "--owner",
+                        "owner",
+                        "--repository-root",
+                        self.temporary.name,
+                        "--evidence-root",
+                        str(self.evidence),
+                        "--baseline",
+                        str(self.path),
+                    ]
+                ),
+                0,
+            )
+        self.assertEqual(weekly.read_baselines(self.path)["discovery"]["status"], "unknown")
+        with patch.object(weekly, "audit_repositories", return_value=[]):
+            self.assertEqual(
+                weekly.main(
+                    [
+                        "--owner",
+                        "owner",
+                        "--repository-root",
+                        self.temporary.name,
+                        "--evidence-root",
+                        str(self.evidence),
+                        "--baseline",
+                        str(self.path),
+                    ]
+                ),
+                0,
+            )
+        self.assertEqual(weekly.read_baselines(self.path)["discovery"]["status"], "complete")
 
     def test_missing_or_corrupt_baseline_is_unknown(self) -> None:
         self.assertEqual(weekly.report("owner/repo", path=self.path)["status"], "unknown")

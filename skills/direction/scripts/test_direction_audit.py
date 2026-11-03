@@ -3255,6 +3255,25 @@ def test_weekly_audit_records_once_every_adopted_repository_was_read() -> None:
         assert set(saved["audits"]) == {"o/direction", "o/a", "o/b"}, "each repository's own window still advances"
 
 
+def test_weekly_audit_reports_qualified_category_counts_and_trends() -> None:
+    module = load()
+    account = WeeklyAccount(module)
+    now = dt.datetime.now(dt.timezone.utc)
+    week = now.date() - dt.timedelta(days=now.weekday())
+    latest = {"status": "complete", "at": now.isoformat(), "week": week.isoformat(), "source": "fixture",
+              "signature": {}, "counts": {"types": 8, "duplicates": 7, "spelling": 10}, "evidence": "receipt"}
+    previous = {**latest, "week": (week - dt.timedelta(days=7)).isoformat(), "counts": {"types": 9, "duplicates": 6, "spelling": 10}}
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        marker.with_name("inspection.json").write_text(json.dumps({"repositories": {"o/a": {
+            "latest": latest, "previous": previous, "attempt": {"status": "complete"}, "ceiling": previous["counts"]}}}))
+        _, receipt = account.run(["--weekly", "--owner", "o"], marker)
+    row = receipt["audits"]["o/direction"]["capacity"]["project_inspections"]["o/a"]
+    assert row["status"] == "complete"
+    assert [(item["category"], item["count"], item["direction"]) for item in row["top_categories"]] == [
+        ("spelling", 10, "stayed"), ("types", 8, "down"), ("duplicates", 7, "up")]
+
+
 def test_interrupted_weekly_collection_preserves_windows_and_rereads_the_finding() -> None:
     module = load()
     account = WeeklyAccount(module)

@@ -43,6 +43,8 @@ def category_counts(result: dict[str, Any]) -> dict[str, int]:
         )
     artifact = result.get("findings_artifact")
     if not artifact:
+        if all(result.get(key) == 0 for key in ("finding_count", "preexisting_finding_count", "advisory_finding_count")):
+            return {}
         raise ValueError("full findings artifact is unavailable")
     findings = json.loads(Path(artifact).read_text())
     return dict(Counter(finding["rule_id"] for finding in findings))
@@ -57,18 +59,16 @@ def record_run(state: dict[str, Any], repo: str, run: dict[str, Any]) -> None:
     if latest and latest["week"] != run["week"]:
         record["previous"] = latest
     record["latest"] = run
-    if "ceiling" not in record:
-        record["ceiling"] = {"signature": run["signature"], "counts": dict(run["counts"])}
-    ceiling = record["ceiling"]
-    if ceiling["signature"] == run["signature"]:
-        ceiling["counts"] = {category: min(count, run["counts"].get(category, 0)) for category, count in ceiling["counts"].items()}
-        for category in run["counts"]:
-            ceiling["counts"].setdefault(category, 0)
+    ceiling = record.setdefault("ceiling", dict(run["counts"]))
+    record["ceiling"] = {category: min(count, run["counts"].get(category, 0)) for category, count in ceiling.items()}
+    for category in run["counts"]:
+        record["ceiling"].setdefault(category, 0)
 
 
 def report(repo: str, *, path: Path | None = None, now: dt.datetime | None = None) -> dict[str, Any]:
     try:
-        record = read_baselines(path or baseline_path())["repositories"].get(repo, {})
+        state = read_baselines(path or baseline_path())
+        record = state["repositories"].get(repo, {})
         latest, previous = record.get("latest"), record.get("previous")
         if not latest:
             return {"status": "unknown", "reason": "no qualified weekly inspection", "attempt": record.get("attempt")}
@@ -83,9 +83,21 @@ def report(repo: str, *, path: Path | None = None, now: dt.datetime | None = Non
         for category, count in sorted(latest["counts"].items(), key=lambda pair: (-pair[1], pair[0]))[:3]:
             before = previous["counts"].get(category, 0) if comparable else None
             direction = "unavailable" if before is None else "down" if count < before else "up" if count > before else "stayed"
-            categories.append({"category": category, "count": count, "previous": before, "direction": direction})
+            categories.append(
+                {
+                    "category": category,
+                    "count": count,
+                    "ceiling": record["ceiling"].get(category, 0),
+                    "previous": before,
+                    "direction": direction,
+                }
+            )
         return {
-            "status": "complete" if fresh and record.get("attempt", {}).get("status") == "complete" else "unknown",
+            "status": "complete"
+            if fresh
+            and record.get("attempt", {}).get("status") == "complete"
+            and state.get("discovery", {}).get("status") != "unknown"
+            else "unknown",
             "at": latest["at"],
             "source": latest["source"],
             "evidence": latest["evidence"],
@@ -96,6 +108,7 @@ def report(repo: str, *, path: Path | None = None, now: dt.datetime | None = Non
                 if comparable and count > previous["counts"].get(category, 0)
             ),
             "attempt": record.get("attempt"),
+            "discovery": state.get("discovery"),
             "baseline_file": str(path or baseline_path()),
         }
     except (OSError, ValueError, KeyError, TypeError) as error:
@@ -116,13 +129,13 @@ def inspection_worktree(repo: str, root: Path, state: dict[str, Any]) -> Path:
     git(source, "fetch", "origin")
     base = git(source, "symbolic-ref", "refs/remotes/origin/HEAD")
     entry = state["repositories"].setdefault(repo, {})
-    if entry.get("worktree"):
+    if entry.get("worktree") and Path(entry["worktree"]).exists():
         worktree = Path(entry["worktree"])
         if (
             git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")
             != git(source, "rev-parse", "--path-format=absolute", "--git-common-dir")
             or git(worktree, "branch", "--show-current") != entry["branch"]
-            or git(worktree, "status", "--porcelain", "--untracked-files=all", "--ignored")
+            or git(worktree, "status", "--porcelain", "--untracked-files=all")
         ):
             raise ValueError("weekly worktree identity or clean state changed; preserve it")
         git(worktree, "merge", "--ff-only", base)
@@ -132,6 +145,8 @@ def inspection_worktree(repo: str, root: Path, state: dict[str, Any]) -> Path:
         [str(CATALOG / "skills/github/scripts/dev-worktree"), str(source), slug, base], check=True, capture_output=True, text=True
     )
     worktree = Path(created.stdout.strip().splitlines()[-1])
+    if not worktree.is_absolute() or not worktree.is_dir():
+        raise ValueError("worktree creator did not return an existing absolute directory")
     entry.update(worktree=str(worktree), branch=f"work/{slug}")
     return worktree
 
@@ -150,16 +165,33 @@ def selections(worktree: Path) -> tuple[dict[str, list[str]], dict[str, Any]]:
     helper = inspection_helper()
     metadata = json.loads((worktree / ".github/github.json").read_text())["qualityGate"]["inspection"]
     lanes = helper.parse_inspection_lanes(metadata)
-    if not lanes:
-        return {"project": []}, {}
     args = helper.build_parser().parse_args(["agent-inspect", "--scope", "whole_project"])
+    policy = {key: metadata.get(key) for key in ("ide", "lanes", "coveredBy")}
+    if not lanes:
+        paths = helper.inspection_scope_paths(args, worktree, "whole_project")
+        native = helper.native_backend_module()
+        product = native.common.configured_product_key(helper, metadata, set(paths))
+        suffixes = {
+            "pycharm": native.proof.NATIVE_PROVEN_SUFFIXES,
+            "webstorm": native.proof.WEBSTORM_PROVEN_SUFFIXES,
+            "intellij": native.proof.INTELLIJ_PROVEN_SUFFIXES,
+        }.get(product)
+        if not suffixes:
+            raise ValueError("no configured native IDE")
+        files = [file for file in paths if Path(file).suffix in suffixes]
+        return {"project": files}, {"unmatched": sorted(set(paths) - set(files)), "policy": policy}
     selection = helper.resolve_inspection_lane_selection(
         args, {"scope": "whole_project", "worktree_root": str(worktree), "_inspection_lanes": lanes}
     )
     groups = {lane.lane_id: [entry["file"] for entry in selection["lane_files"][lane.lane_id]] for lane in lanes}
     generated = [file for files in groups.values() for file in files if Path(file).name == "pnpm-lock.yaml"]
     groups = {lane: [file for file in files if file not in generated] for lane, files in groups.items()}
-    return groups, {"excluded": selection["excluded_files"], "unmatched": selection["unmatched_files"], "generated_locks": generated}
+    return groups, {
+        "excluded": selection["excluded_files"],
+        "unmatched": selection["unmatched_files"],
+        "generated_locks": generated,
+        "policy": policy,
+    }
 
 
 def inspect_repository(worktree: Path, evidence: Path, now: dt.datetime) -> dict[str, Any]:
@@ -168,7 +200,7 @@ def inspect_repository(worktree: Path, evidence: Path, now: dt.datetime) -> dict
     counts: Counter[str] = Counter()
     signatures, results = {}, {}
     for lane, files in groups.items():
-        if not files and lane != "project":
+        if not files:
             continue
         command = [
             "uv",
@@ -180,7 +212,7 @@ def inspect_repository(worktree: Path, evidence: Path, now: dt.datetime) -> dict
             "--timeout-ms",
             "7200000",
             "--scope",
-            "files" if files else "whole_project",
+            "files",
         ]
         for file in files:
             command.extend(["--file", file])
@@ -201,7 +233,7 @@ def inspect_repository(worktree: Path, evidence: Path, now: dt.datetime) -> dict
         "at": now.isoformat(),
         "week": (now.date() - dt.timedelta(days=now.weekday())).isoformat(),
         "source": source,
-        "signature": {"lanes": signatures},
+        "signature": {"lanes": signatures, "selection_policy": omitted["policy"]},
         "selection": omitted,
         "counts": dict(counts),
         "evidence": str(evidence),
@@ -236,20 +268,30 @@ def main(argv: list[str] | None = None) -> int:
     args.baseline.parent.mkdir(parents=True, exist_ok=True)
     with service_lock(args.baseline, "inspection"):
         state = read_baselines(args.baseline)
-        repos = args.repo or audit_repositories(args.owner)
+        started = dt.datetime.now(dt.UTC)
+        try:
+            args.evidence_root.resolve(strict=True)
+            repos = args.repo or audit_repositories(args.owner)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            state["discovery"] = {"status": "unknown", "at": started.isoformat(), "reason": str(error)}
+            save_state(args.baseline, state)
+            print(json.dumps(state["discovery"]), flush=True)
+            return 0
+        state["discovery"] = {"status": "complete", "at": started.isoformat(), "repositories": repos}
+        save_state(args.baseline, state)
         for repo in repos:
-            now = dt.datetime.now(dt.UTC)
-            evidence = args.evidence_root / now.strftime("%Y%m%dT%H%M%S") / repo.replace("/", "--")
-            evidence.mkdir(parents=True, exist_ok=False)
+            evidence = args.evidence_root / started.strftime("%Y%m%dT%H%M%S%f") / repo.replace("/", "--")
             try:
+                evidence.mkdir(parents=True, exist_ok=False)
                 worktree = inspection_worktree(repo, args.repository_root, state)
                 save_state(args.baseline, state)
-                run = inspect_repository(worktree, evidence, now)
-            except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-                run = {"status": "unknown", "at": now.isoformat(), "evidence": str(evidence), "reason": str(error)}
-            save_state(evidence / "summary.json", run)
+                run = inspect_repository(worktree, evidence, started)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as error:
+                run = {"status": "unknown", "at": started.isoformat(), "evidence": str(evidence), "reason": str(error)}
             record_run(state, repo, run)
             save_state(args.baseline, state)
+            if evidence.is_dir():
+                save_state(evidence / "summary.json", run)
             print(json.dumps({"repo": repo, **report(repo, path=args.baseline)}), flush=True)
     return 0
 

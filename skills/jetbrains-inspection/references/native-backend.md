@@ -592,24 +592,25 @@ No CI or per-PR step is added.
 
 The job creates dedicated linked worktrees through `dev-worktree`, retains their
 ownership in the baseline file and fast-forwards only those clean worktrees on
-later weeks. It never inspects a primary checkout. Keep those worktrees while
-the schedule uses them; ordinary qualified retirement applies after disabling it.
+later weeks. It never inspects a primary checkout. Ordinary qualified retirement may remove
+idle worktrees; the next run recreates a missing worktree through the same helper.
 Each configured lane is one exhaustive code selection, preserving repository
 exclusions. Generated `pnpm-lock.yaml` files remain dependency/snapshot inputs
 and are named as scope exceptions: the native YAML tools do not traverse them.
 Unmatched files are recorded, not claimed covered. A single-IDE repository uses
-the helper's whole-project scope. The shared worker retains its existing memory,
+the same exhaustive files scope, with the native backend's supported code suffixes. Configure its existing `cacheRoot` under shared host caches so dependency caches
+stay separate from per-run evidence. The shared worker retains its existing memory,
 processor, admission, load and custody bounds.
 
 By default the small baseline file is
 `~/.code/jetbrains-inspection/weekly-baselines.json`; `JB_WEEKLY_BASELINE` or
 `--baseline` selects another path. It records full-artifact category counts,
-including existing findings and language advice, exact source/profile/helper/IDE
+including zero counts, existing findings and language advice, exact source/profile/helper/IDE
 provenance, evidence paths, the previous week's qualified observation and a
-ceiling that can only decrease. New categories have a zero ceiling after the
+ceiling that can only decrease, also shown with each top category. New categories have a zero ceiling after the
 initial observation. Incomplete runs never replace qualified counts or ceilings.
-Profile/helper/IDE changes or missing weeks leave trends unavailable. A failed
-latest attempt or evidence older than eight days makes the report UNKNOWN.
+Profile/helper/IDE changes or missing weeks leave trends unavailable. Discovery read failures are recorded without stopping future weekly firings.
+A failed latest attempt or evidence older than eight days makes the report UNKNOWN.
 A rise is a named category in the report, never a new gate or cleanup task.
 
 Schedule it as the optional `inspection` entry in the existing Supervisor

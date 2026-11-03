@@ -11,6 +11,7 @@ import argparse
 import base64
 import datetime as dt
 import fnmatch
+import importlib
 import json
 import math
 import os
@@ -1949,13 +1950,11 @@ def collect_weekly_audit(
             held[repo] = ", ".join(held_reads([item for finding in result.get("findings", [])
                                                if finding.get("kind") == "coverage_incomplete"
                                                for item in finding.get("listings", [])])) or "window_open"
-    inspection = runpy.run_path(str(REPO_ROOT / "skills/jetbrains-inspection/scripts/weekly_inspection.py"))
-    inspections = {repo: inspection["report"](repo) for repo in repos}
+    inspection = importlib.import_module("skills.jetbrains-inspection.scripts.weekly_inspection")
+    inspections = {repo: inspection.report(repo) for repo in repos}
     capacity = audits.get(direction_repo, {}).get("capacity")
     if isinstance(capacity, dict):
         capacity["project_inspections"] = inspections
-        for repo, row in capacity.get("by_repository", {}).items():
-            row["project_inspection"] = inspections.get(repo, inspection["report"](repo))
     receipt: dict[str, Any] = {
         "owner": owner, "weekly": True, "read_only": True, "started": direction_mark.utc_stamp(started),
         "repos": repos, "discovery": discovery, "unread": unread, "held": held, "audits": audits,
