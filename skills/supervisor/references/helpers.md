@@ -922,7 +922,11 @@ uv run skills/supervisor/scripts/supervisor.py start --owner OWNER --harness cla
 Choose `--harness codex` for Codex. `--miss-issue` is an existing issue owned by
 that Director where recovery records belong. The command uses each CLI's normal
 login; Context Panel, account maps, Discord and Launchplane are optional.
-It needs the existing `uv`, `tmux`, GitHub helper access and chosen agent CLI.
+It needs the existing `uv`, `tmux`, `gh auth login` and chosen agent CLI.
+Configured GitHub automation stays selected and is checked before launch.
+On a plain install with no automation configuration, startup selects the existing
+GitHub CLI login before requests and pins it for reader and miss-record writes.
+A configured identity failure never switches to that login.
 No hand-written Supervisor configuration, ledger or recipient is needed.
 
 The command creates missing state under the shared Code home's
@@ -940,7 +944,9 @@ job if missing and reuses an already-running matching job. A different job
 under that name refuses before a Supervisor is launched. It survives
 Supervisor conversation restarts and owns the existing watcher lock, failure
 marker and logs under `jobs/logs`. It adds no collector, dispatcher or tmux
-service host. After login, repeat the command to start a new Supervisor only
+service host. A logout or reboot can leave the reader's interrupted-run marker;
+inspect its logs and use `services.py clear` after reconciliation before restarting.
+After login, repeat the command to start a new Supervisor only
 when its previous process generation has ended. Startup success proves the
 registered Supervisor and service manager's running reader, not delivery of a
 person's message.
@@ -968,7 +974,11 @@ An incomplete start retains `start.json`, the launcher's original stdout,
 native receipts and service logs;
 `--recover` completes that same registered launch without creating another
 Supervisor. When registration failed, recovery calls the launcher's existing
-receipt-based `register` on the retained result. A certainly unstarted
+receipt-based `register` on the retained result, including after resolving a
+first-run prompt in that same pane. If the exact unregistered terminal is verified
+dead or absent, recovery marks it unstarted and returns without launching;
+correct its cause and repeat start. Changed or unknown terminal generations stay held.
+A certainly unstarted
 preflight can be retried after correcting its cause. An uncertain terminal
 launch stays held for exact receipt reconciliation; never delete state to make
 the command run again. Neither takeover nor recovery clears a service hold or

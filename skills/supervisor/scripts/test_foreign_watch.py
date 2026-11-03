@@ -355,7 +355,7 @@ class WatchTests(unittest.TestCase):
                                    / "github/references/operation-matrix.toml").read_text())
             self.assertIn(factory.call_args.kwargs["operation"], {row["id"] for row in matrix["operations"]})
             self.assertGreater(factory.call_args.kwargs["deadline_at"], 0)
-            self.assertEqual(factory.call_args.kwargs["gh_prefix_args"], foreign_watch.automation_only_gh_prefix_args())
+            self.assertEqual(factory.call_args.kwargs["gh_prefix_args"], foreign_watch.github_access.github_read.automation_only_gh_prefix_args())
             self.assertIn(REPO, json.loads(path.read_text())["watermarks"])
 
     def test_default_scope_is_the_installations_active_repositories_of_the_owner(self):

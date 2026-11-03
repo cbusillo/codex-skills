@@ -30,15 +30,14 @@ import director_mentions
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github-work-rollup/scripts"))
 import review_notifications
 import services
+import github_access
 
 if TYPE_CHECKING:
     from skills.github.scripts.github_api import redact_string
-    from skills.github.scripts.github_identity import OWN_USER_OPT_IN
-    from skills.github.scripts.github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args
+    from skills.github.scripts.github_read import GitHubReader, GitHubReadError, GitHubReadShapeError
 else:
     from github_api import redact_string
-    from github_identity import OWN_USER_OPT_IN
-    from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args
+    from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError
 from github_review_markers import PRODUCT_REVIEW_MARKER
 from oq import QUESTION_PREFIXES
 from pending_reviews import ReviewError, atomic_text, bind_session
@@ -146,7 +145,7 @@ def watch_events(args: Any, repos: list[str] | None, initial: str, deadline: flo
                     hint = hints.get_nowait()
                 except queue.Empty:
                     break
-                reader = message_reader(deadline)
+                reader = message_reader(deadline, getattr(args, "github_cli_login", None))
                 try:
                     handle_message_hint(args, hint, reader)
                 except GitHubReadError as error:
@@ -307,8 +306,9 @@ def versioned_messages(reader: GitHubReader, sources: list[dict]) -> list[dict]:
     ]
 
 
-def installed_repositories(reader, owner: str) -> list[str]:
-    repositories = reader.paged_json("/installation/repositories", collection_key="repositories", step_prefix="foreign_repositories")
+def installed_repositories(reader, owner: str, cli_login: str | None = None) -> list[str]:
+    repositories = (reader.paged_json("/user/repos?affiliation=owner&per_page=100", step_prefix="foreign_repositories")
+                    if cli_login else reader.paged_json("/installation/repositories", collection_key="repositories", step_prefix="foreign_repositories"))
     return [
         r["full_name"]
         for r in repositories
@@ -535,8 +535,8 @@ def read_message_hint(reader: GitHubReader, hint: dict) -> tuple[str, dict] | No
     return repo, comment
 
 
-def message_reader(deadline: float) -> GitHubReader:
-    return GitHubReader(operation="github.supervisor.foreign_watch", strict_actor=True, gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + max(0, deadline - time.monotonic()))
+def message_reader(deadline: float, cli_login: str | None = None) -> GitHubReader:
+    return GitHubReader(operation="github.supervisor.foreign_watch", **github_access.reader_options(cli_login), deadline_at=time.time() + max(0, deadline - time.monotonic()))
 
 
 def handle_message_hint(args: Any, hint: dict, reader: GitHubReader) -> None:
@@ -701,10 +701,10 @@ def audit_miss(args: Any, receipt: dict, persist: Any) -> None:
         return
     if receipt.get("audit_status") == "attempted":
         repo, number = args.miss_issue.split("#")
-        reader = GitHubReader(operation="github.supervisor.foreign_watch", strict_actor=True, gh_prefix_args=automation_only_gh_prefix_args(), deadline_at=time.time() + 30)
+        reader = message_reader(time.monotonic() + 30, getattr(args, "github_cli_login", None))
         try:
             comments = reader.paged_json(f"repos/{repo}/issues/{number}/comments", step_prefix="routing_miss_reconciliation")
-            matching = [row for row in comments if (row.get("user") or {}).get("login", "").casefold() in {value.casefold() for value in args.own_login} and f"private receipt {receipt['audit_token']}." in (row.get("body") or "")]
+            matching = [row for row in comments if (row.get("user") or {}).get("login", "").casefold() in {value.casefold() for value in ([args.github_cli_login] if getattr(args, "github_cli_login", None) else args.own_login)} and f"private receipt {receipt['audit_token']}." in (row.get("body") or "")]
             if len(matching) == 1:
                 receipt.update(audit_status="sent", audit_url=matching[0]["html_url"])
                 receipt.pop("audit_error", None)
@@ -733,7 +733,7 @@ def audit_miss(args: Any, receipt: dict, persist: Any) -> None:
             input=body,
             text=True,
             capture_output=True,
-            env={key: value for key, value in os.environ.items() if key != OWN_USER_OPT_IN},
+            env=github_access.write_environment(getattr(args, "github_cli_login", None)),
             timeout=120,
         )
         if result.returncode:
@@ -899,8 +899,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--owner", required=True)
     parser.add_argument(
-        "--repo", action="append", help="default: the automation installation's non-archived repositories of --owner"
+        "--repo", action="append", help="default: the selected login's non-archived repositories of --owner"
     )
+    parser.add_argument("--github-cli-login", help="retain the plain install login selected by supervisor.py start")
     parser.add_argument("--own-login", action="append", required=True)
     parser.add_argument("--launchplane-login", action="append", default=[])
     parser.add_argument("--director-login", help="the Director's own login for mention searches outside the watched repositories")
@@ -945,6 +946,8 @@ def main() -> int:
         if identities.get("status") == "error":
             parser.error(identities["error"])
         args.client_agent_logins = {login for login, person in identities["automation"].items() if person}
+    if args.github_cli_login:
+        args.github_cli_login = github_access.select_login(args.github_cli_login)
     deadline = time.monotonic() + args.deadline_seconds
     initial = args.since or utc_now()
     try:
@@ -986,12 +989,11 @@ def watch(args, repos, initial, deadline):
         started = utc_now()
         reader = GitHubReader(
             operation="github.supervisor.foreign_watch",
-            strict_actor=True,
-            gh_prefix_args=automation_only_gh_prefix_args(),
+            **github_access.reader_options(getattr(args, "github_cli_login", None)),
             deadline_at=time.time() + max(0, deadline - time.monotonic()),
         )
         try:
-            watched = repos or installed_repositories(reader, args.owner)
+            watched = repos or installed_repositories(reader, args.owner, getattr(args, "github_cli_login", None))
         except READ_ERRORS as error:
             notices, errors, gaps = [], [read_error("installation", error)], []
         else:

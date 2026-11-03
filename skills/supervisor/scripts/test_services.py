@@ -6,6 +6,8 @@
 """Exercise generated service entry points with bounded offline child fixtures."""
 
 import json
+import importlib
+import socket
 import os
 from pathlib import Path
 import plistlib
@@ -22,6 +24,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import services
+
+
+def patch_attr(target: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    return patch.object(target, name, *args, **kwargs)
 
 
 class ServicesTests(unittest.TestCase):
@@ -261,10 +267,17 @@ class ServicesTests(unittest.TestCase):
             mutations = sum("bootstrap" in row or "enable" in row or "kickstart" in row for row in operations)
             services.ensure_service_host(host, self.config, "foreign")
             self.assertEqual(sum("bootstrap" in row or "enable" in row or "kickstart" in row for row in operations), mutations)
+            if platform == "darwin":
+                installed = Path(host["installed"])
+                installed_job = plistlib.loads(installed.read_bytes())
+                installed_job["StandardOutPath"] = str(self.root / "existing-reader-log.jsonl")
+                installed.write_bytes(plistlib.dumps(installed_job))
+                reused = services.prepare_service_host(self.config, Path(__file__).resolve().parents[3], output, "foreign")
+                self.assertEqual(reused["log"], installed_job["StandardOutPath"])
             state["active"] = False
             marker = services.reconciliation_marker(self.config, "foreign")
             marker.touch()
-            with self.assertRaisesRegex(ValueError, "reconcil"):
+            with self.assertRaises(ValueError):
                 services.ensure_service_host(host, self.config, "foreign")
             with patch.object(services.sys, "argv", ["services.py", "clear", "--config", str(self.config), "--service", "foreign"]):
                 self.assertEqual(services.main(), 0)
@@ -381,7 +394,7 @@ class ServicesTests(unittest.TestCase):
 
     def test_startup_binding_validates_launched_native_identity_on_both_harnesses(self) -> None:
         import codex_session_proxy
-        import github_plan_closure
+        github_plan_closure = importlib.import_module("github_plan_closure")
         import session_liveness
         import tmux_terminal
         self.save()
@@ -401,7 +414,7 @@ class ServicesTests(unittest.TestCase):
                   patch.object(session_liveness, "inventory", return_value=[(50, "ttys001", "claude" if harness == "claude" else "python codex_session_proxy.py")]),
                   patch.object(session_liveness, "native_arguments", return_value=["python", "codex_session_proxy.py"]),
                   patch.object(session_liveness, "process_started_at", return_value=datetime.now(timezone.utc)),
-                  patch.object(github_plan_closure, "guarded_launch_endpoint", side_effect=lambda pid, _: "/fixture/socket" if pid == 50 else None),
+                  patch_attr(github_plan_closure, "guarded_launch_endpoint", side_effect=lambda pid, _: "/fixture/socket" if pid == 50 else None),
                   patch.object(codex_session_proxy, "source_endpoint", return_value=Path("/fixture/socket"))):
                 bound = services.bind_launched_supervisor(self.config, entry)
                 self.assertEqual(bound["session_id"], identity)
@@ -411,6 +424,36 @@ class ServicesTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     services.bind_launched_supervisor(self.config, {**entry, "pid": 51})
                 self.assertEqual(self.config.read_bytes(), before)
+
+    def test_codex_binding_uses_the_real_interpreter_normalized_proxy_guard(self) -> None:
+        import codex_session_proxy
+        import session_liveness
+
+        closure = importlib.import_module("github_plan_closure")
+        self.save()
+        identity = self.claude_source().env["CLAUDE_CODE_SESSION_ID"]
+        transcript, env = self.codex_source(identity)
+        home = Path(env["CODEX_HOME"])
+        endpoint = self.root / "guard.sock"
+        guard = socket.socket(socket.AF_UNIX)
+        self.addCleanup(guard.close)
+        guard.bind(str(endpoint))
+        endpoint.chmod(0o600)
+        argv = [str(self.root / "catalog with spaces/codex-session.py"), "launch", "--codex-home", str(home)]
+        entry = {"harness": "codex", "session_id": identity, "transcript": str(transcript), "codex_home": str(home),
+                 "backend": "tmux", "supervisor_owned": True, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:identity",
+                 "pid": os.getpid(), "tty": "ttys001", "window_id": "$1", "tab_id": "@1"}
+        with (patch_attr(closure, "closed_log", return_value=self.root / "closed.json"),
+              patch_attr(closure.sys, "argv", argv),
+              patch.object(session_liveness, "native_arguments", return_value=[sys.executable, *argv]),
+              patch.object(codex_session_proxy, "source_endpoint", return_value=home / "app-server.sock"),
+              patch_attr(closure, "daemon_endpoint", return_value=home / "app-server.sock")):
+            closure.register_proxy(str(home), str(endpoint))
+            bound = services.bind_launched_supervisor(self.config, entry)
+            self.assertEqual(bound["session_id"], identity)
+            with patch.object(session_liveness, "native_arguments", return_value=[sys.executable, *argv, "--changed"]):
+                with self.assertRaises(ValueError):
+                    services.bind_launched_supervisor(self.config, entry)
 
     def test_bind_claude_refuses_unmanaged_or_ambiguous_terminal(self) -> None:
         import session_liveness

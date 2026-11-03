@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 import compact_check
 import foreign_watch
+import github_access
 import oq
 from question_delivery import run_queue, source_item
 
@@ -222,8 +223,7 @@ def build_readers(args: argparse.Namespace, watch: dict) -> dict[str, Callable[[
     def github_reader(deadline_seconds: float = 120) -> github_read.GitHubReader:
         return github_read.GitHubReader(
             operation="github.supervisor.routine_check",
-            strict_actor=True,
-            gh_prefix_args=github_read.automation_only_gh_prefix_args(),
+            **github_access.reader_options(getattr(args, "github_cli_login", None)),
             deadline_at=time.time() + deadline_seconds,
         )
 
@@ -346,6 +346,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Print the existing Supervisor digest; optional routing delivers message pointers, never launches or closes."
     )
+    parser.add_argument("--github-cli-login", help="retain the plain install login selected by supervisor.py start")
     parser.add_argument("--full", action="store_true", help="include acknowledged questions")
     parser.add_argument("--owner", required=True)
     parser.add_argument("--queue", required=True)
@@ -367,6 +368,9 @@ def main() -> int:
         parser.error("routing needs --foreign-state, --notify-config and --miss-issue together")
     if args.miss_issue and not re.fullmatch(rf"{re.escape(args.owner)}/[A-Za-z0-9_.-]+#[1-9][0-9]*", args.miss_issue, re.I):
         parser.error("--miss-issue must belong to the configured Director")
+
+    if args.github_cli_login:
+        args.github_cli_login = github_access.select_login(args.github_cli_login)
 
     def read_watch() -> dict:
         config = radar.rollup.load_config(args.radar_config)

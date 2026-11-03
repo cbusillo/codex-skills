@@ -40,7 +40,7 @@ LABEL_PREFIX = "com.codex-skills.supervisor"
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 
 
-def load_config(path):
+def load_config(path: Path) -> dict[str, Any]:
     config = json.loads(path.read_text())
     if (not isinstance(config, dict) or not {"uv", "services"} <= set(config)
             or set(config) - {"uv", "services", "supervisor"}):
@@ -95,11 +95,11 @@ def verify_managed_supervisor(entry: dict) -> dict:
     recipient["launch_started_at"] = started_at
     if entry["harness"] == "codex":
         from codex_session_proxy import source_endpoint
-        from github_plan_closure import guarded_launch_endpoint
-        from session_liveness import native_arguments
+        guarded_launch_endpoint = importlib.import_module("github_plan_closure").guarded_launch_endpoint
+        from session_liveness import execution_arguments, native_arguments
         recipient["codex_home"] = entry["codex_home"]
         endpoint = source_endpoint(entry["session_id"], Path(entry["codex_home"]), transcript=Path(entry["transcript"]))
-        if guarded_launch_endpoint(entry["pid"], native_arguments(entry["pid"])) != str(endpoint):
+        if guarded_launch_endpoint(entry["pid"], execution_arguments(native_arguments(entry["pid"]))[0]) != str(endpoint):
             raise ValueError("Supervisor managed Codex generation changed")
     else:
         route = claude_supervisor_route(entry["tmux_socket"], source_pid=entry["pid"])
@@ -331,13 +331,16 @@ def prepare_service_host(config_path: Path, catalog: Path, output: Path, name: s
         loaded = launchd_status(target)
         expected = plistlib.loads(staged.read_bytes())["ProgramArguments"]
         if loaded.returncode == 0:
-            block = re.search(r"(?ms)^\s*arguments = \{\n(.*?)^\s*\}", loaded.stdout)
+            block = re.search(r"(?ms)^\s*arguments = \{\n(.*?)^\s*}", loaded.stdout)
             if not block or [line.strip() for line in block[1].splitlines()] != expected:
                 raise ValueError("loaded service belongs to another configuration; preserve it")
         installed = Path.home() / "Library/LaunchAgents" / staged.name
         if installed.exists() and plistlib.loads(installed.read_bytes())["ProgramArguments"] != expected:
             raise ValueError("installed service belongs to another configuration; preserve it")
-        return {"backend": "launchd", "target": target, "staged": str(staged), "installed": str(installed)}
+        job = plistlib.loads((installed if installed.exists() else staged).read_bytes())
+        loaded_log = re.search(r"(?m)^\s*stdout path = (.+)$", loaded.stdout) if loaded.returncode == 0 else None
+        return {"backend": "launchd", "target": target, "staged": str(staged), "installed": str(installed),
+                "log": loaded_log[1].strip() if loaded_log else job["StandardOutPath"]}
     if sys.platform != "linux" or not shutil.which("systemctl"):
         raise ValueError("persistent Supervisor services require launchd or a systemd user manager")
     config = load_config(config_path)
@@ -347,7 +350,7 @@ def prepare_service_host(config_path: Path, catalog: Path, output: Path, name: s
             "run", "--config", str(config_path), "--service", name]
     content = ("[Unit]\nDescription=Managed Supervisor reader\n[Service]\nType=exec\n"
                + "ExecStart=:" + " ".join(map(systemd_value, argv)) + "\n"
-               + f"WorkingDirectory={systemd_value(str(catalog))}\n"
+               + f"WorkingDirectory={str(catalog).replace(chr(37), chr(37) * 2)}\n"
                + f"Environment={systemd_value('PATH=' + os.environ.get('PATH', os.defpath))}\n"
                + f"StandardOutput=append:{str(logs / (name + '.jsonl')).replace('%', '%%')}\n"
                + f"StandardError=append:{str(logs / (name + '.stderr.log')).replace('%', '%%')}\n"
@@ -363,7 +366,8 @@ def prepare_service_host(config_path: Path, catalog: Path, output: Path, name: s
             raise ValueError("loaded service belongs to another configuration; preserve it")
     if installed.exists() and installed.read_text() != content:
         raise ValueError("installed service belongs to another configuration; preserve it")
-    return {"backend": "systemd", "target": staged.name, "staged": str(staged), "installed": str(installed)}
+    return {"backend": "systemd", "target": staged.name, "staged": str(staged), "installed": str(installed),
+            "log": str(logs / (name + ".jsonl"))}
 
 
 def service_host_active(host: dict) -> bool:

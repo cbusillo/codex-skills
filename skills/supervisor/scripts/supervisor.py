@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import re
@@ -15,6 +16,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
+import github_access
 import services
 from check_changes import save_state
 from session_liveness import generation_ended
@@ -31,7 +33,9 @@ class LaunchCommandError(ValueError):
 
 
 def parser() -> argparse.ArgumentParser:
-    command = argparse.ArgumentParser(description="Start a managed Codex or Claude Supervisor and its existing message reader.")
+    command = argparse.ArgumentParser(
+        description="Start a managed Codex or Claude Supervisor and its existing message reader."
+    )
     subcommands = command.add_subparsers(dest="command", required=True)
     start_command = subcommands.add_parser("start")
     start_command.add_argument("--owner", required=True)
@@ -42,15 +46,23 @@ def parser() -> argparse.ArgumentParser:
     start_command.add_argument("--ledger", type=Path)
     start_command.add_argument("--foreign-state", type=Path)
     start_command.add_argument("--services-config", type=Path)
-    start_command.add_argument("--watch-args-file", type=Path, help="existing watcher flags to preserve during adoption")
+    start_command.add_argument(
+        "--watch-args-file", type=Path, help="existing watcher flags to preserve during adoption"
+    )
     start_command.add_argument("--recovery", type=Path, help="existing Supervisor recovery note")
     start_command.add_argument("--queue", help="existing Director question queue, OWNER/REPO#NUMBER")
-    start_command.add_argument("--events", action="store_true", help="use the existing optional Launchplane attention subscription")
+    start_command.add_argument(
+        "--events", action="store_true", help="use the existing optional Launchplane attention subscription"
+    )
     start_command.add_argument("--tmux-socket", default="supervisor")
     start_command.add_argument("--account")
     start_command.add_argument("--account-config", type=Path)
-    start_command.add_argument("--takeover", action="store_true", help="launch a successor after the current Supervisor's handoff")
-    start_command.add_argument("--recover", action="store_true", help="finish the retained native launch; never relaunch")
+    start_command.add_argument(
+        "--takeover", action="store_true", help="launch a successor after the current Supervisor's handoff"
+    )
+    start_command.add_argument(
+        "--recover", action="store_true", help="finish the retained native launch; never relaunch"
+    )
     return command
 
 
@@ -60,7 +72,7 @@ def run_json(argv: list[str], *, receipt: Path | None = None) -> dict:
     except subprocess.TimeoutExpired as error:
         if receipt:
             output = error.stdout or b""
-            receipt.write_bytes(output.encode() if isinstance(output, str) else output)
+            receipt.write_bytes(output)
         raise
     if receipt:
         receipt.write_text(result.stdout)
@@ -97,7 +109,7 @@ def configure(args: argparse.Namespace, root: Path, config_path: Path) -> tuple[
 
 
 def configure_locked(args: argparse.Namespace, root: Path, config_path: Path) -> tuple[Path, Path]:
-    import github_identity
+    github_identity = importlib.import_module("github_identity")
     from session_record import load_ledger
 
     uv = shutil.which("uv")
@@ -130,11 +142,18 @@ def configure_locked(args: argparse.Namespace, root: Path, config_path: Path) ->
             else existing is not None and existing.casefold() == value.casefold()
         )
         if existing is not None and not same:
-            raise ValueError(f"existing {option} differs; choose matching startup arguments rather than changing custody")
+            raise ValueError(
+                f"existing {option} differs; choose matching startup arguments rather than changing custody"
+            )
         if existing is None:
             argv.extend([option, value])
+    args.github_cli_login = github_access.select_login(option_value(argv, "--github-cli-login"))
+    if args.github_cli_login and option_value(argv, "--github-cli-login") is None:
+        argv.extend(["--github-cli-login", args.github_cli_login])
     if not any(value == "--own-login" or value.startswith("--own-login=") for value in argv):
-        for login in filter(None, [args.owner, github_identity.automation_login(), *github_identity.configured_bot_logins()]):
+        for login in filter(
+            None, [args.owner, github_identity.automation_login(), *github_identity.configured_bot_logins()]
+        ):
             argv.extend(["--own-login", login])
     if "--persistent" not in argv:
         argv.append("--persistent")
@@ -191,11 +210,13 @@ def launch_supervisor(args: argparse.Namespace, root: Path, config_path: Path, l
             "--miss-issue",
             args.miss_issue,
             "--foreign-log",
-            str(root / "jobs/logs/foreign.jsonl"),
+            str(prepare_foreign_service(root, config_path)["log"]),
         ]
         if args.queue
         else []
     )
+    if routine and args.github_cli_login:
+        routine.extend(["--github-cli-login", args.github_cli_login])
     brief = attempt / "brief.txt"
     brief.write_text(
         "You are the Director's managed Supervisor. Read the supervisor skill in full before supervising.\n"
@@ -212,7 +233,15 @@ def launch_supervisor(args: argparse.Namespace, root: Path, config_path: Path, l
         "Follow the Director's stop boundaries and do not change access, credentials or personal settings.\n"
         f"Rules for this brief: {SCRIPTS.parent / 'references/brief-rules.md'}\n"
     )
-    base = [shutil.which("uv") or "uv", "run", str(SCRIPTS / "iterm_tab.py"), "--backend", "tmux", "--tmux-socket", args.tmux_socket]
+    base = [
+        shutil.which("uv") or "uv",
+        "run",
+        str(SCRIPTS / "iterm_tab.py"),
+        "--backend",
+        "tmux",
+        "--tmux-socket",
+        args.tmux_socket,
+    ]
     try:
         container = run_json([*base, "window"], receipt=attempt / "window.json")
     except (ValueError, OSError, subprocess.SubprocessError):
@@ -255,8 +284,31 @@ def recover_supervisor(root: Path, config_path: Path, ledger: Path) -> dict:
     receipt = json.loads(receipt_path.read_text())
     registration = attempt / "launch.json"
     if "native_session_id" not in receipt:
-        if not isinstance(receipt.get("failed_launch", {}).get("launch"), dict):
-            raise ValueError("retained launcher receipt has no registered source; inspect its exact terminal before recovery")
+        failed = receipt.get("failed_launch", {})
+        from tmux_terminal import Terminal
+
+        if isinstance(failed.get("session_id"), str):
+            rows = Terminal(failed["tmux_socket"]).list()
+            matches = [row for row in rows if row["session_id"] == failed["session_id"]]
+            original = failed.get("launch", failed)
+            changed = [
+                row
+                for row in rows
+                if row.get("tab_id") == original.get("tab_id")
+                and (row["session_id"] != failed["session_id"] or row.get("pid") != original.get("pid"))
+            ]
+            if changed or len(matches) > 1:
+                raise ValueError("retained terminal generation changed; preserve it for reconciliation")
+            if not matches or matches[0].get("dead") is True:
+                if json.loads(registration.read_text()):
+                    raise ValueError("ended launch has a native registration; reconcile that source before retry")
+                journal["status"] = "not_started"
+                save_state(root / "start.json", journal)
+                return {"status": "not_started"}
+        if not isinstance(failed.get("launch"), dict):
+            raise ValueError(
+                "retained launcher receipt has no registered source; inspect its exact terminal before recovery"
+            )
         receipt = run_json(
             [
                 shutil.which("uv") or "uv",
@@ -294,7 +346,9 @@ def verify_existing_supervisor(config_path: Path) -> dict:
 def prepare_foreign_service(root: Path, config_path: Path) -> dict:
     host = services.prepare_service_host(config_path, CATALOG, root / "jobs", "foreign")
     if services.reconciliation_marker(config_path, "foreign").exists() and not services.service_host_active(host):
-        raise ValueError("foreign service requires reconciliation; inspect its logs and use services.py clear before retrying")
+        raise ValueError(
+            "foreign service requires reconciliation; inspect its logs and use services.py clear before retrying"
+        )
     return host
 
 
@@ -308,7 +362,10 @@ def start(args: argparse.Namespace) -> dict:
     ):
         raise ValueError("--miss-issue must identify the Director's existing repair issue")
     root = (
-        (args.state_dir or Path(os.environ.get("CODE_HOME") or Path.home() / ".code") / "skill-data/supervisor" / args.owner)
+        (
+            args.state_dir
+            or Path(os.environ.get("CODE_HOME") or Path.home() / ".code") / "skill-data/supervisor" / args.owner
+        )
         .expanduser()
         .resolve()
     )
@@ -319,7 +376,13 @@ def start(args: argparse.Namespace) -> dict:
         previous = json.loads(path.read_text()) if path.exists() else {}
         if args.recover and (not previous or args.takeover):
             raise ValueError("--recover requires a retained startup and cannot launch a takeover")
-        if config_path.exists() and services.load_config(config_path).get("supervisor") and not previous and not args.takeover:
+        if (
+            config_path.exists()
+            and services.load_config(config_path).get("supervisor")
+            and previous.get("status") != "running"
+            and not args.takeover
+            and not args.recover
+        ):
             raise ValueError("an existing Supervisor is bound; use --takeover only after its handoff")
         if previous and previous.get("status") not in {"running", "not_started"} and not args.recover:
             raise ValueError(f"startup requires reconciliation; inspect {path}; --recover never replays a launch")
@@ -330,7 +393,11 @@ def start(args: argparse.Namespace) -> dict:
                 if not generation_ended(services.supervisor_recipient(config_path)):
                     raise
             else:
-                return {"status": "already_running", "supervisor": recipient, "service": ensure_foreign_service(root, config_path)}
+                return {
+                    "status": "already_running",
+                    "supervisor": recipient,
+                    "service": ensure_foreign_service(root, config_path),
+                }
         if services.reconciliation_marker(config_path, "foreign").exists() and not config_path.exists():
             raise ValueError("foreign service requires reconciliation before launching a Supervisor")
         ledger, state = configure(args, root, config_path)
@@ -342,6 +409,8 @@ def start(args: argparse.Namespace) -> dict:
             if args.recover
             else launch_supervisor(args, root, config_path, ledger, state)
         )
+        if recipient.get("status") == "not_started":
+            return {"status": "not_started", "next_action": "Correct the exited launch's cause, then repeat start."}
         journal = json.loads(path.read_text())
         journal["supervisor"] = recipient["session_id"]
         save_state(path, journal)
@@ -365,7 +434,9 @@ def main() -> int:
         print(json.dumps(start(args)))
         return 0
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-        status = "not_started" if isinstance(error, LaunchCommandError) and error.not_started else "reconciliation_required"
+        status = (
+            "not_started" if isinstance(error, LaunchCommandError) and error.not_started else "reconciliation_required"
+        )
         print(json.dumps({"status": status, "error": str(error)}))
         return 1
 

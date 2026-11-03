@@ -416,6 +416,23 @@ def test_no_token_command_preserves_authorized_active_auth_fallback() -> None:
         assert "'active-login'" in result.stderr
 
 
+def test_active_cli_write_retains_selected_login_before_sending() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        classifier = root / "classifier.py"
+        fake_gh = root / "gh"
+        called = root / "called"
+        write(fake_gh, f"#!/bin/sh\ntouch '{called}'\n")
+        for actual in ("director", "changed"):
+            called.unlink(missing_ok=True)
+            write(classifier, "import json\n" + f"print(json.dumps({{'body': {{'login': {actual!r}}}}}))\n")
+            result = run_wrapper(root / "absent.env", classifier, root / "unused.py", "issue", "comment", "1", "--body", "fixture",
+                                 gh_command=fake_gh, extra_env={"GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK": "1",
+                                                             "GH_WITH_ENV_TOKEN_EXPECTED_LOGIN": "director"})
+            assert (result.returncode == 0) == (actual == "director"), result.stderr
+            assert called.exists() == (actual == "director")
+
+
 def test_partial_app_configuration_fails_closed() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -1591,6 +1608,7 @@ def main() -> None:
         test_no_token_check_fails_explicitly_without_running_gh,
         test_check_rejects_commands_before_active_auth_fallback,
         test_no_token_command_preserves_authorized_active_auth_fallback,
+        test_active_cli_write_retains_selected_login_before_sending,
         test_partial_app_configuration_fails_closed,
         test_app_auth_failure_never_falls_back_to_active_user,
         test_empty_app_auth_response_fails_closed,

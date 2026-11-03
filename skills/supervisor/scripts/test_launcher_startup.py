@@ -248,7 +248,7 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
     async def test_codex_hook_review_after_short_check_still_blocks_launch(self):
         # Codex draws its first screen seconds after exec; the prompt must not
         # be missed because the immediate-exit check has already passed.
-        row = {"window_id": "$1", "tab_id": "@1", "pane_id": "%1", "tty": "fixture",
+        row = {"window_id": "$1", "tab_id": "@1", "pane_id": "%1", "session_id": "tmux:fixture:identity", "tty": "fixture",
                "pid": 1, "backend": "tmux", "tmux_socket": "fixture"}
         terminal = Mock()
         terminal.run.return_value.stdout = "@1\t%1"
@@ -265,7 +265,7 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
 
         terminal.read.side_effect = prompt_after_three_reads
         args = argparse.Namespace(command="new", tmux_socket="fixture", window_id="$1")
-        choice = {"provider": "openai", "env": {}}
+        choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/codex"}}
         original = iterm_tab.verify_startup
 
         async def observe(read, **options):
@@ -370,7 +370,7 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         await iterm_tab.verify_startup(AsyncMock(return_value={"dead": False, "screen": ["ready"]}), timeout=0)
 
     async def test_tmux_failed_launch_retains_receipt_identity_and_output(self):
-        row = {"window_id": "$1", "tab_id": "@1", "pane_id": "%1", "tty": "fixture",
+        row = {"window_id": "$1", "tab_id": "@1", "pane_id": "%1", "session_id": "tmux:fixture:identity", "tty": "fixture",
                "pid": 1, "backend": "tmux", "tmux_socket": "fixture"}
         terminal = Mock()
         terminal.run.return_value.stdout = "@1\t%1"
@@ -378,7 +378,7 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         terminal.send = AsyncMock()
         terminal.read.return_value = {"dead": True, "exit_status": "1", "exit_signal": "", "screen": ["thread/start failed"]}
         args = argparse.Namespace(command="new", tmux_socket="fixture", window_id="$1")
-        choice = {"provider": "openai", "env": {}}
+        choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/codex"}}
         with (patch.object(tmux_terminal, "Terminal", return_value=terminal),
               patch.object(iterm_tab, "prepare_launches", return_value=(["fake-agent"], [choice])),
               patch.object(iterm_tab.account_choice, "public", return_value={}),
@@ -395,7 +395,7 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         terminal.view.assert_not_called()
 
     async def test_tmux_hook_review_stops_batch_after_first_submitted_worker(self):
-        row = {"window_id": "$1", "tab_id": "@1", "pane_id": "%1", "tty": "fixture",
+        row = {"window_id": "$1", "tab_id": "@1", "pane_id": "%1", "session_id": "tmux:fixture:identity", "tty": "fixture",
                "pid": 1, "backend": "tmux", "tmux_socket": "fixture"}
         terminal = Mock()
         terminal.run.return_value.stdout = "@1\t%1"
@@ -404,7 +404,7 @@ class StartupTests(unittest.IsolatedAsyncioTestCase):
         terminal.read.return_value = {"dead": False, "exit_status": "", "exit_signal": "",
                                      "screen": ["› 1. Trust all and continue", "2. Continue without trusting"]}
         args = argparse.Namespace(command="new", tmux_socket="fixture", window_id="$1")
-        choice = {"provider": "openai", "env": {}}
+        choice = {"provider": "openai", "env": {"CODEX_HOME": "/fixture/codex"}}
         with (patch.object(tmux_terminal, "Terminal", return_value=terminal),
               patch.object(iterm_tab, "prepare_launches", return_value=(["agent1", "agent2"], [choice, choice])),
               patch.object(iterm_tab.account_choice, "public", return_value={}),

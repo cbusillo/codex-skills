@@ -1168,6 +1168,10 @@ if [ -z "$expected_login" ] && [ -z "${GH_TOKEN:-}" ] && is_write_command "$@"; 
 	exit $?
 fi
 
+if [ -z "${GH_TOKEN:-}" ] && [ -n "$expected_login" ] && allows_active_auth_fallback; then
+	verify_bot_login_for_write "$@" || exit $?
+fi
+
 if [ -z "${GH_TOKEN:-}" ]; then
 	if refuse_active_auth_fallback "no automation gh token found"; then
 		exit 1
