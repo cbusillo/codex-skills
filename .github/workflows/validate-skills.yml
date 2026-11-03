@@ -77,6 +77,6 @@ jobs:
         if: steps.lane.outputs.run == 'true'
         run: uv run scripts/check_test_quality.py --repo . --format github
 
-      - name: Check new comments and docstrings
+      - name: Check new comments
         if: steps.lane.outputs.run == 'true'
         run: uv run scripts/check_new_comments.py --repo . --base HEAD^1 --format github

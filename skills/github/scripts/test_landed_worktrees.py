@@ -283,6 +283,31 @@ class RepositoryTests(Fixture):
         self.assertEqual({row["path"]: row["decision"] for row in rows}, {
             str(done): "candidate", str(active): "kept", str(fresh): "kept", str(foreign): "kept"})
 
+    def test_fork_commit_reads_its_merged_upstream_pr_in_the_upstream_repository(self) -> None:
+        upstream = {"full_name": "up/sample", "default_branch": "main"}
+        pull = {"number": 404, "state": "closed", "merged_at": "2026-11-03T16:32:11Z", "title": "Fix", "body": "",
+                "head": {"ref": "fix"}, "base": {"ref": "main", "repo": upstream}}
+        reader = mock.Mock()
+
+        def graphql(_query: str, variables: dict, **_: object) -> mock.Mock:
+            if (variables["owner"], variables["name"]) != ("up", "sample"):
+                return mock.Mock(ok=True, body={"data": {"repository": {"pullRequest": None}},
+                                                "errors": [{"type": "NOT_FOUND"}]})
+            return mock.Mock(ok=True, body={"data": {"repository": {
+                "defaultBranchRef": {"name": "main"},
+                "pullRequest": {"merged": True, "baseRefName": "main", "url": "u", "mergeCommit": {"oid": "1" * 40},
+                                "closingIssuesReferences": {"nodes": [], "pageInfo": {"hasNextPage": False}}}}}})
+
+        reader.graphql_json.side_effect = graphql
+        def naming(_reader: object, owner: str, branch: str) -> list[tuple[str, int]]:
+            return [("up/sample", 9)] if (owner, branch) == ("up", "work/fix") else []
+
+        with mock.patch.object(landed_worktrees, "issues_naming", side_effect=naming), \
+                mock.patch.object(landed_worktrees, "claims_on", return_value="") as claims:
+            decision = landed_worktrees.ownership_decision(reader, mock.Mock(), "me/sample", [pull], ["work/fix"])
+        self.assertEqual(decision, {"decision": "candidate"})
+        self.assertLessEqual({("up/sample", 404), ("up/sample", 9)}, set(claims.call_args.args[2]))
+
     def test_unavailable_pr_evidence_keeps_tree_and_continues(self) -> None:
         path = self.worktree("unread")
         os.utime(Path(self.git(path, "rev-parse", "--absolute-git-dir")) / "HEAD", (0, 0))
