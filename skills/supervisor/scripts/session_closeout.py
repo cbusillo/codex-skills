@@ -220,7 +220,7 @@ def validate_retired_closeout(args: argparse.Namespace, operation: Operation, *,
             argv, bounded = session_liveness.process_arguments(pid, command)
             resumed, _kind, _exact = session_liveness.invocation(argv, bounded=bounded)
             session_liveness.require_source_not_resumed(args.session_id, resumed)
-        status = release.validate_closure_state({**saved, "_transcript_roots": release.transcript_roots(saved["harness"], None, [])},
+        status = release.validate_closure_state({**saved, "_transcript_roots": release.transcript_roots(saved["harness"], None, [], saved)},
                                                args.supervisor_session)
         require(status["state"] == "turn_ended" and not status["background_tasks"], "verdict", "closed source has unfinished native work")
         with closure.store_lock(args.ledger, create=True):
@@ -385,7 +385,7 @@ def closeout(args: argparse.Namespace, operation: Operation) -> None:
         saved = closure.source_records({args.session_id})[args.session_id]
         require(not saved.get("resumed_at") and release.closure_identity(saved) == release.closure_identity(entry),
                 "retirement", "canonical closure does not preserve this finished generation")
-        release.validate_closure({**saved, "_transcript_roots": release.transcript_roots(saved["harness"], None, [])}, args.supervisor_session)
+        release.validate_closure({**saved, "_transcript_roots": release.transcript_roots(saved["harness"], None, [], saved)}, args.supervisor_session)
         with closure.store_lock(args.ledger, create=True):
             active_rows = iterm_tab.read_launch_ledger(args.ledger)
             active_matches = [normalize_ledger_entry(args.ledger, row) for row in active_rows if row.get("session_id") == args.session_id]

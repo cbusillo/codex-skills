@@ -1447,6 +1447,47 @@ def choose_from(rows, recommendations=None, **extra):
 
 
 class AccountChoiceTests(unittest.TestCase):
+    def test_plain_install_launches_on_existing_home_without_snapshot_or_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            with patch.dict(os.environ, {"CODEX_HOME": str(home / "active-codex"),
+                                         "CLAUDE_CONFIG_DIR": str(home / "active-claude")}, clear=True), \
+                 patch.object(Path, "home", return_value=home), \
+                 patch.object(account_choice, "codex_health", return_value=Mock()), \
+                 patch.object(account_choice, "read_snapshot", side_effect=AssertionError("no reader configured")):
+                for provider, variable in account_choice.ACCOUNT_VARIABLES.items():
+                    choice = account_choice.select(provider)
+                    self.assertEqual(choice["env"][variable], os.environ[variable])
+                    account_choice.prepare_launch(choice)
+                    self.assertIsNone(account_choice.record_launch(choice))
+                with self.assertRaises(ValueError):
+                    account_choice.select("anthropic", name="unknown")
+
+    def test_multiple_accounts_recommend_context_panel_once_without_selecting_one(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            (home / ".claude").mkdir()
+            active = home / "active"
+            active.mkdir()
+            config = {"snapshot_command": None, "accounts": []}
+            with patch.dict(os.environ, {"XDG_CACHE_HOME": folder, "CLAUDE_CONFIG_DIR": str(active)}, clear=True), \
+                 patch.object(Path, "home", return_value=home), \
+                 patch.object(account_choice, "load_config", return_value=config), \
+                 contextlib.redirect_stderr(io.StringIO()) as output:
+                first = account_choice.select("anthropic")
+                notice = output.getvalue()
+                self.assertTrue(notice)
+                self.assertEqual(first["env"], {"CLAUDE_CONFIG_DIR": str(active)})
+                account_choice.select_batch("anthropic", count=2)
+                self.assertEqual(output.getvalue(), notice)
+
+    def test_incomplete_context_panel_settings_do_not_become_native_login(self) -> None:
+        config = account_choice.validate_config({"account": [
+            {"name": "incomplete", "provider": "anthropic", "context_panel_label": "fixture", "env": {}}
+        ]})
+        with patch.object(account_choice, "load_config", return_value=config), self.assertRaises(ValueError):
+            account_choice.select("anthropic")
+
     @staticmethod
     def snapshot(provider="anthropic", order=None, stale=False, age: float = 0) -> dict[str, Any]:
         rows = [account_row("main", .01, []), account_row("spare", .04, [], cfg="cfg-spare")]

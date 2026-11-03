@@ -81,6 +81,12 @@ class FakeOwner:
 
 
 class RepositorySetupTests(unittest.TestCase):
+    def test_plain_install_trust_audit_includes_native_home(self) -> None:
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict("os.environ", {"HOME": folder}, clear=True):
+            accounts = setup.codex_accounts()
+            self.assertTrue(accounts)
+            self.assertTrue(all(Path(account["env"]["CODEX_HOME"]).is_relative_to(folder) for account in accounts))
+
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)

@@ -21,12 +21,10 @@ def native_helpers():
 
 
 def configured_homes(*, strict: bool = False) -> list[Path]:
-    """Canonical account authority, independent of caller configuration."""
     homes = []
     try:
-        config = native_helpers()[0].load_config(
-            path=github_plan_closure.closed_log().with_name("supervisor.toml"))
-        homes.extend(Path(a["env"]["CODEX_HOME"]) for a in config["accounts"] if a["provider"] == "openai")
+        helper = native_helpers()[0]
+        homes.extend(Path(a["env"]["CODEX_HOME"]) for a in helper.inventory_accounts() if a["provider"] == "openai")
     except (ValueError, OSError, ImportError):
         if strict:
             raise

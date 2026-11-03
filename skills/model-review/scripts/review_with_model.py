@@ -496,6 +496,8 @@ def branch_diff(repo: Path) -> bytes:
 def reviewer_environment(choice: dict[str, Any]) -> dict[str, str]:
     """Route only the child home; inherited auth overrides must not bypass its login."""
     env = dict(os.environ)
+    if choice.get("source") == "cli-login":
+        return env
     provider = choice["provider"]
     variable = account_choice.ACCOUNT_VARIABLES[provider]
     overrides = {
@@ -554,7 +556,7 @@ def review(provider: str, prompt: str, repo: Path, model: str | None, timeout: i
                 choice = choice or account_choice.select(provider)
                 account_choice.prepare_launch(choice)
                 receipt = account_choice.record_launch(choice)
-                launch = {"account": account_choice.public(choice), "launch_receipt": str(receipt)}
+                launch = {"account": account_choice.public(choice), "launch_receipt": str(receipt) if receipt else None}
             if provider in account_choice.ACCOUNT_VARIABLES:
                 result = REVIEWERS[provider](preamble + prompt + OUTPUT_INSTRUCTIONS, repo, model, timeout,
                                              Path(scratch), reviewer_environment(choice))

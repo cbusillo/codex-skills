@@ -460,8 +460,7 @@ async def operate(args):
                            for argument in ("-e", key + "=" + os.environ[key])]
             progress["phase"] = "write_receipt"
             if choice:
-                account_choice.record_launch(choice)
-                progress["receipt_written"] = True
+                progress["receipt_written"] = account_choice.record_launch(choice) is not None
             progress.update(phase="create_tab", mutation_started=True)
             created = terminal.run("new-window", "-d", "-t", args.window_id + ":", "-n", "agent",
                                    *environment,

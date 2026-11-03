@@ -3,12 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["websockets==17.3"]
 # ///
-"""Follow Context Panel's ranked choices and record count-only launch receipts.
 
-Capacity and resets come from Context Panel's agent account snapshot (schema 1).
-Accounts, their launch environment and the snapshot command come from private
-local config; nothing here reads credentials or changes any login.
-"""
 
 import argparse
 import errno
@@ -17,6 +12,7 @@ import os
 import pwd
 import re
 import subprocess
+import sys
 import tempfile
 import tomllib
 import uuid
@@ -39,6 +35,7 @@ class UnconfiguredChoice(ValueError):
     pass
 # Supported variables that put a launched harness on an account. AGY uses its existing login.
 ACCOUNT_VARIABLES = {"openai": "CODEX_HOME", "anthropic": "CLAUDE_CONFIG_DIR"}
+DEFAULT_HOMES = {"openai": ".codex", "anthropic": ".claude"}
 GOOGLE_ACCOUNT_BINDING = "existing-agy-login"
 SNAPSHOT_TIMEOUT_SECONDS = 60
 RECORD_LAUNCH_TIMEOUT_SECONDS = 30
@@ -46,6 +43,7 @@ LAUNCHER = "supervisor"
 GUI_RECEIPT_DIRECTORY = "Supervisor GUI Receipts"
 OWN_RECEIPT = re.compile(r"^\d{8}T\d{6}Z-supervisor-[0-9a-f]{32}\.json$")
 APP_RECEIPT = re.compile(rf"^\d{{8}}T\d{{6}}Z-{LAUNCHER}-[0-9A-Za-z]+\.json$")
+RECOMMENDATIONS: set[str] = set()
 
 
 def config_paths(env, home):
@@ -58,13 +56,13 @@ def config_paths(env, home):
     return list(dict.fromkeys(paths))
 
 
-def load_config(path=None, env=None, home=None):
+def load_config(path=None, env=None, home=None) -> dict[str, Any]:
     """Read [accounts] from the first private config that has it; invalid config fails closed."""
     env = os.environ if env is None else env
     home = Path.home() if home is None else home
     for candidate in [path] if path else config_paths(env, home):
         if not candidate.exists():
-            if path:
+            if path or candidate.is_symlink():
                 raise ValueError("account config file does not exist")
             continue
         try:
@@ -73,7 +71,7 @@ def load_config(path=None, env=None, home=None):
             raise ValueError("cannot read private account config") from error
         if "accounts" in data:
             return validate_config(data["accounts"])
-    raise ValueError("no [accounts] in private supervisor config (skill-data/supervisor.toml)")
+    return {"snapshot_command": None, "accounts": []}
 
 
 def validate_config(section):
@@ -278,6 +276,8 @@ def _choose_batch(provider, config, snapshot, unavailable_reason, count, now, na
     now = now or datetime.now(timezone.utc)
     if isinstance(count, bool) or not isinstance(count, int) or count < 1:
         raise ValueError("launch count must be a positive integer")
+    if not config["accounts"] and config.get("snapshot_command") is None:
+        return [existing_login(provider, name) for _ in range(count)]
     accounts = [a for a in config["accounts"] if a["provider"] == provider]
     if not accounts:
         raise ValueError(f"no configured {provider} accounts")
@@ -404,8 +404,68 @@ def receipt_route(command):
     return {"storage_root": root, "receipt_app": str(Path(command[0]).expanduser())}
 
 
+def login_environment(provider: str) -> dict[str, str]:
+    variable = ACCOUNT_VARIABLES.get(provider)
+    environment = {}
+    if variable and (value := os.environ.get(variable)):
+        environment[variable] = value
+    if provider == "openai":
+        environment.setdefault("CODEX_HOME", str(Path.home() / DEFAULT_HOMES[provider]))
+    return environment
+
+
+def login_accounts(provider: str) -> list[dict]:
+    environment = login_environment(provider)
+    variable = ACCOUNT_VARIABLES[provider]
+    default = Path.home() / DEFAULT_HOMES[provider]
+    current = Path(environment.get(variable) or default).expanduser()
+    environments = [environment]
+    if default.is_dir() and default.resolve() != current.resolve():
+        environments.append({variable: str(default)} if provider == "openai" else {})
+    return [{"provider": provider, "name": f"native-{index}", "env": values} for index, values in enumerate(environments)]
+
+
+def inventory_accounts() -> list[dict]:
+    config = load_config(env={}, home=Path.home())
+    if config["accounts"]:
+        return config["accounts"]
+    if load_config()["accounts"]:
+        raise ValueError("account settings exist outside the canonical ~/.code/skill-data/supervisor.toml; native inventory is unavailable")
+    return [account for provider in ACCOUNT_VARIABLES for account in login_accounts(provider)]
+
+
+def existing_login(provider: str, name: str | None = None) -> dict:
+    environment = login_environment(provider)
+    if name is not None:
+        raise ValueError(f"no configured {provider} account named {name}")
+    if provider == "openai":
+        codex_health().require_usable(Path(environment["CODEX_HOME"]).expanduser())
+    if provider in ACCOUNT_VARIABLES:
+        recommend_context_panel(provider, len(login_accounts(provider)))
+    return decision({"provider": provider, "name": "existing-login", "env": environment},
+                    "cli-login", "CLI login; Context Panel is optional")
+
+
+def recommend_context_panel(provider: str, home_count: int) -> None:
+    if home_count < 2 or provider in RECOMMENDATIONS:
+        return
+    marker = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "codex-skills" / f"context-panel-{provider}"
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        with marker.open("x"):
+            pass
+    except FileExistsError:
+        return
+    except OSError:
+        RECOMMENDATIONS.add(provider)
+    print(f"Multiple {provider} account homes detected. Context Panel is recommended to balance them; "
+          "continuing with the CLI's existing login.", file=sys.stderr)
+
+
 def select_batch(provider, config_path=None, name=None, count=1):
     config = load_config(config_path)
+    if config["snapshot_command"] is None:
+        return choose_batch(provider, config, None, "no snapshot_command configured", count=count, name=name)
     snapshot, problem = read_snapshot(config["snapshot_command"])
     choices = choose_batch(provider, config, snapshot, problem, count=count, name=name)
     route = receipt_route(config["snapshot_command"])
@@ -418,6 +478,8 @@ def select(provider, config_path=None, name=None):
 
 def prepare_launch(choice):
     """Detect storage failures before making tabs, without creating a receipt."""
+    if choice.get("source") == "cli-login":
+        return
     app = choice.get("receipt_app")
     if app is not None:
         if not (Path(app).is_file() and os.access(app, os.X_OK)):
@@ -452,6 +514,8 @@ class PartialReceiptFailure(ValueError):
 
 
 def record_launch(choice, now=None, runner=None):
+    if choice.get("source") == "cli-login":
+        return None
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     provider, account_id = choice["provider"], choice.get("account_id")
     if not isinstance(account_id, str) or not re.fullmatch(rf"{provider}-[0-9a-f]{{1,64}}", account_id):
@@ -566,7 +630,7 @@ def public(choice):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description="Choose the CLI existing login or a configured Context Panel account.")
     parser.add_argument("--provider", choices=PROVIDERS, required=True)
     parser.add_argument("--config", type=Path, help="private config; default skill-data/supervisor.toml")
     parser.add_argument("--account", help="use this configured account by name")
