@@ -324,8 +324,9 @@ and background output. Missing artifacts or invocations retain reconstruction.
 A modern session or native child with no claim
 rows and no unmatched result needs no reconstruction. Every claim attempt must
 also have settled: before and after the
-GitHub reads, no process outside the check's own callers is a `gh-plan` command
-naming the session or a comment POST to one of its journal targets; no journal
+GitHub reads, no process outside the check's own callers runs `gh-plan.py claim`
+naming the session or `gh api` POST to one of its journal targets. Brief text
+on a harness launcher's command line is not a running write; no journal
 row was written in the last 10 minutes; and the journal is unchanged from the
 one snapshot the check read its targets from. The GitHub search below still runs, and each claim it finds is
 checked. Other sessions keep the reconstruction.

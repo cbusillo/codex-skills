@@ -367,6 +367,21 @@ def reboot_bounds(entries: list[dict], expanded: list[dict], record: dict | None
     return bounds
 
 
+def is_claim_writer(command: str, native: str, posts: list[str]) -> bool:
+    argv = command.split()
+    arguments = history.claim_arguments(argv)
+    if arguments is not None:
+        return "claim" in arguments and native in arguments
+    position = history.command_position(argv)
+    if position is None or position.index >= len(argv):
+        return False
+    argv = argv[position.index:]
+    return (Path(argv[0]).name == "gh" and argv[1:2] == ["api"]
+            and any(argv[index:index + 2] in (["--method", "POST"], ["-X", "POST"])
+                    or argument in {"--method=POST", "-XPOST"} for index, argument in enumerate(argv))
+            and any(post in argv for post in posts))
+
+
 def live_claim_writers(native: str, targets: AbstractSet[tuple[str, int]]) -> list[str]:
     listing = subprocess.run(["ps", "-axww", "-o", "pid=,ppid=,command="], capture_output=True, text=True, check=True).stdout
     processes = {int(pid): (int(parent), command) for pid, parent, command in
@@ -377,8 +392,7 @@ def live_claim_writers(native: str, targets: AbstractSet[tuple[str, int]]) -> li
         pid = processes[pid][0]
     posts = [f"/repos/{repo}/issues/{number}/comments" for repo, number in targets]
     return [command for pid, (_, command) in sorted(processes.items())
-            if pid not in own_lineage and ("gh-plan" in command and native in command
-                                           or "POST" in command and any(post in command for post in posts))]
+            if pid not in own_lineage and is_claim_writer(command, native, posts)]
 
 
 def running_writes(native: str, written: dict[tuple[str, int], float]) -> list[str]:
