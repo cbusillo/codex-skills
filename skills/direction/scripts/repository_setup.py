@@ -97,8 +97,9 @@ def ruleset_gap(repo: str, fetch: Callable[[list[str]], Any]) -> dict[str, Any] 
 
 
 def trust_gaps(repo: str, developer: Path, codex_homes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    directory = developer / repo.split("/")[1]
-    if not directory.is_dir():
+    directory = next((path for path in (sorted(developer.iterdir()) if developer.is_dir() else ())
+                      if (path / ".git").is_dir() and (audit.default_repo(path) or "").casefold() == repo.casefold()), None)
+    if directory is None:
         return [gap(repo, "checkout")]
     untrusted = [home["name"] for home in codex_homes if not codex_trusted(directory, home)]
     return [gap(repo, "codex_trust", ", ".join(untrusted))] if untrusted else []

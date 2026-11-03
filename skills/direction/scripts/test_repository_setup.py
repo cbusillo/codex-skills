@@ -37,9 +37,11 @@ class FakeOwner:
         for name in ("ready", "old"):
             self.add_checkout(name, in_codex=True)
 
-    def add_checkout(self, name: str, *, in_codex: bool) -> None:
-        (self.developer / name / ".git").mkdir(parents=True)
+    def add_checkout(self, name: str, *, repo: str | None = None, in_codex: bool) -> None:
+        for child in ("objects", "refs"):
+            (self.developer / name / ".git" / child).mkdir(parents=True, exist_ok=True)
         (self.developer / name / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        (self.developer / name / ".git" / "config").write_text(f'[remote "origin"]\n\turl = https://github.com/{repo or f"o/{name}"}.git\n')
         if in_codex:
             self.codex_projects.add(name)
         (self.codex_home / "config.toml").write_text("".join(
@@ -87,9 +89,9 @@ class RepositorySetupTests(unittest.TestCase):
     def gaps(self) -> set[tuple[str | None, str, str]]:
         return {(row["repo"], row["setup"], row["fixer"]) for row in self.account.collect()["gaps"]}
 
-    def add_new_repository(self, **meta: Any) -> None:
+    def add_new_repository(self, checkout: str = "new", **meta: Any) -> None:
         self.account.repos["o/new"] = meta
-        self.account.add_checkout("new", in_codex=True)
+        self.account.add_checkout(checkout, repo="o/new", in_codex=True)
         self.account.enrolled.add("o/new")
         self.account.files["o/new"] = {"": ["README.md", ".github"], ".github": ["renovate.json5"]}
         self.account.rulesets["o/new"] = STANDARD
@@ -108,9 +110,10 @@ class RepositorySetupTests(unittest.TestCase):
             ("o/new", "rulesets", "agent"), ("o/new", "checkout", "agent"),
         })
 
-    def test_checkout_without_codex_trust_is_left_to_the_director(self) -> None:
-        self.add_new_repository()
-        self.account.codex_projects.discard("new")
+    def test_renamed_checkout_folder_is_matched_by_origin_remote(self) -> None:
+        self.add_new_repository(checkout="github-defaults")
+        self.assertEqual(self.gaps(), set())
+        self.account.codex_projects.discard("github-defaults")
         self.account.add_checkout("other", in_codex=False)
         self.assertEqual(self.gaps(), {("o/new", "codex_trust", "Director")})
 
