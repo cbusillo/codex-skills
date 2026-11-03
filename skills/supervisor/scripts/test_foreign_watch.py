@@ -135,10 +135,11 @@ class WatchTests(unittest.TestCase):
             self.assertEqual([notice["url"] for notice in logged], [linkback["html_url"]])
 
     def test_own_body_edit_is_logged_without_ending_persistent_watch(self) -> None:
-        for login, actor_type in (("AGENT", "Bot"), ("DIRECTOR", "User")):
-            with self.subTest(login=login), tempfile.TemporaryDirectory() as directory:
+        for login, actor_type, opener in (("AGENT", "Bot", "client"), ("DIRECTOR", "User", "client"),
+                                          ("DIRECTOR", "User", "director")):
+            with self.subTest(login=login, opener=opener), tempfile.TemporaryDirectory() as directory:
                 reader = Mock()
-                issue = {**opened(created="2026-10-01T00:00:00Z"), "node_id": "issue"}
+                issue = {**opened(opener, created="2026-10-01T00:00:00Z"), "node_id": "issue"}
                 reader.paged_json.side_effect = feeds([], [], opened_items=[issue])
                 reader.graphql_json.return_value = ApiResult(ok=True, status=200, body={"data": {"nodes": [
                     {"lastEditedAt": SINCE, "editor": {"login": login, "__typename": actor_type}}
@@ -158,8 +159,11 @@ class WatchTests(unittest.TestCase):
                     self.assertEqual(foreign_watch.watch(args, [REPO], SINCE, deadline), 0)
                 self.assertEqual(clock.now, deadline)
                 logged = [notice for line in output.getvalue().splitlines() for notice in json.loads(line)["notices"]]
-                self.assertEqual([notice["url"] for notice in logged], [issue["html_url"]])
-                self.assertEqual(logged[0]["author"].casefold(), "agent[bot]" if actor_type == "Bot" else "director")
+                self.assertEqual([notice["url"] for notice in logged], [issue["html_url"]] if opener == "client" else [])
+                if logged:
+                    self.assertEqual(logged[0]["author"].casefold(), "agent[bot]" if actor_type == "Bot" else "director")
+                    foreign_watch.route_notices(args, logged, {}, reader, event=False, persist=Mock())
+                self.assertIsNone(foreign_watch.make_notice(REPO, {**comment("director", updated=STARTED), "created_at": SINCE}, args.own_login, []))
 
     def test_restart_does_not_rewind_past_an_unchanged_notice(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

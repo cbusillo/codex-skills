@@ -295,7 +295,7 @@ def edited_message(source: dict) -> dict:
     actor_type = editor.get("__typename", "")
     if login and actor_type == "Bot":
         login = f"{login.removesuffix('[bot]')}[bot]"
-    return {**source, "user": {"login": login, "type": actor_type}}
+    return {**source, "original_author": source.get("user"), "user": {"login": login, "type": actor_type}}
 
 
 def read_inline_comments(reader: GitHubReader, repo: str, since: str) -> list[dict]:
@@ -634,7 +634,6 @@ def handle_message_hint(args: Any, hint: dict, reader: GitHubReader) -> None:
 
 def make_notice(repo: str, comment: dict, own_logins: list[str], launchplane_logins: list[str]) -> dict | None:
     user = comment["user"]
-    edited = comment.get("created_at") is not None and timestamp(comment["updated_at"]) > timestamp(comment["created_at"])
     login = user["login"] if user is not None else None
     body = comment.get("body") or ""
     updated, url = comment["updated_at"], comment["html_url"]
@@ -647,7 +646,8 @@ def make_notice(repo: str, comment: dict, own_logins: list[str], launchplane_log
     launchplane = {value.casefold() for value in launchplane_logins}
     is_launchplane = (login or "").casefold() in launchplane or ((login or "").casefold() in own and marker is not None)
     is_question = (login or "").casefold() in own and body.strip().lstrip("*").startswith(QUESTION_PREFIXES)
-    if not (edited or is_question or is_launchplane or (login or "").casefold() not in own):
+    own_cross_author_edit = bool(comment.get("editor")) and ((comment.get("original_author") or {}).get("login") or "").casefold() not in own
+    if not (own_cross_author_edit or is_question or is_launchplane or (login or "").casefold() not in own):
         return None
     is_opening = "#" not in url and updated == comment.get("created_at", updated)
     if is_opening and (login or "").casefold() in own and not is_question:
@@ -1073,7 +1073,8 @@ def main() -> int:
 
 def watch(args, repos, initial, deadline):
     covered = set(repos or [])
-    rewind = args.since is not None and not getattr(args, "persistent", False)
+    persistent = getattr(args, "persistent", False)
+    rewind = args.since is not None and not persistent
     watermarks: dict[str, str] = {}
     seen: dict[str, str] = {}
     dispatched: set[str] = set()
@@ -1094,7 +1095,7 @@ def watch(args, repos, initial, deadline):
         except READ_ERRORS as error:
             notices, errors, gaps = [], [read_error("installation", error)], []
         else:
-            cover(watermarks, [repo for repo in watched if repo not in covered], initial, rewind)
+            cover(watermarks, [repo for repo in watched if repo not in covered], initial, args.since is not None and not persistent)
             covered.update(watched)
             notices, errors, watermarks = scan(watched, watermarks, args.own_login, args.launchplane_login, started, reader, getattr(args, "client_agent_logins", ()))
             mentions, gaps, mention_errors, watermarks, seen = scan_mentions(
@@ -1121,7 +1122,6 @@ def watch(args, repos, initial, deadline):
                 watermarks[repo] = checkpoint.get("watermarks", {}).get(repo, initial)
             save_state(args.state, watermarks, seen, dispatched, deliveries)
         rewind = False
-        persistent = getattr(args, "persistent", False)
         if errors and getattr(args, "events", False) and any(not error["retryable"] for error in errors):
             raise ValueError("Scheduled message source read is nonretryable; reconcile the service before restarting.")
         own_logins = {login.casefold() for login in args.own_login}
