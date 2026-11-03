@@ -646,7 +646,7 @@ def make_notice(repo: str, comment: dict, own_logins: list[str], launchplane_log
     launchplane = {value.casefold() for value in launchplane_logins}
     is_launchplane = (login or "").casefold() in launchplane or ((login or "").casefold() in own and marker is not None)
     is_question = (login or "").casefold() in own and body.strip().lstrip("*").startswith(QUESTION_PREFIXES)
-    own_cross_author_edit = bool(comment.get("editor")) and ((comment.get("original_author") or {}).get("login") or "").casefold() not in own
+    own_cross_author_edit = "original_author" in comment and bool(comment.get("editor")) and ((comment.get("original_author") or {}).get("login") or "").casefold() not in own
     if not (own_cross_author_edit or is_question or is_launchplane or (login or "").casefold() not in own):
         return None
     is_opening = "#" not in url and updated == comment.get("created_at", updated)
