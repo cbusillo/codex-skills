@@ -85,7 +85,7 @@ both legacy capacity activity lists and mapped merge counts, including
 Directors without a map. Within each window, the reopened-issue list still
 shows each issue once, with its latest reopen timestamp.
 The separate `capacity.milestone_outcomes` report retains its existing
-inclusive-end interval for Track-graph issue closures and added links.
+inclusive-end interval for Track-graph issue closures; open and waiting counts describe current state.
 
 ## Output and validation
 

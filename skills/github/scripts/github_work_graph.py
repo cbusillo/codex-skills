@@ -753,31 +753,44 @@ def read_native_graph(
     *,
     max_nodes: int = 500,
     relationship_limit: int = 2000,
+    reads: github_next_reads.NextReads | None = None,
 ) -> NativeGraphRead:
     records = {(row["repo"].casefold(), int(row["number"])): row for row in roots}
     unavailable: list[str] = []
 
     def read_edges(repo: str, number: int) -> list[tuple[str, int]]:
-        related: list[tuple[str, int]] = []
-        for field, endpoint in (("blocked_by", "dependencies/blocked_by"), ("sub_issues", "sub_issues")):
+        def read_field(pair: tuple[str, str]) -> tuple[list[dict[str, Any]], str | None]:
+            field, endpoint = pair
             source = f"{repo}#{number}:{endpoint}"
+            valid: list[dict[str, Any]] = []
             try:
                 fields, truncated = read_relationship_rows(repo, number, {}, read, limit=relationship_limit, fields=(field,))
-                if truncated:
-                    unavailable.append(source)
-                for row in fields[field]:
-                    key = github_plan_graph.native_issue_key(row)
-                    records.setdefault(key, row)
-                    related.append(key)
+                for candidate in fields[field]:
+                    github_plan_graph.native_issue_key(candidate)
+                    valid.append(candidate)
+                return valid, source if truncated else None
             except ValueError:
-                unavailable.append(source)
+                return valid, source
+
+        pairs = [("blocked_by", "dependencies/blocked_by"), ("sub_issues", "sub_issues")]
+        results = reads.map(read_field, pairs) if reads else list(map(read_field, pairs))
+        related: list[tuple[str, int]] = []
+        for rows, error in results:
+            if error:
+                unavailable.append(error)
+            for row in rows:
+                key = github_plan_graph.native_issue_key(row)
+                records.setdefault(key, row)
+                related.append(key)
         return related
 
     graph = github_plan_graph.walk_native_issues(list(records), read_edges=read_edges, max_nodes=max_nodes)
     return NativeGraphRead({key: records[key] for key in graph.nodes}, sorted(set(unavailable)), not graph.complete)
 
 
-def cached_reads(fetch: Callable[[list[str]], Any]) -> Callable[[list[str]], Any]:
+def cached_reads(
+    fetch: Callable[[list[str]], Any], *, reads: github_next_reads.NextReads | None = None,
+) -> Callable[[list[str]], Any]:
     cache: dict[tuple[str, ...], Any] = {}
 
     def read(args: list[str]) -> Any:
@@ -795,6 +808,8 @@ def cached_reads(fetch: Callable[[list[str]], Any]) -> Callable[[list[str]], Any
             if len(normalized) == 2 and normalized[1] != "graphql":
                 normalized.extend(["--method", "GET"])
         key = tuple(normalized)
+        if reads is not None:
+            return reads.observe(json.dumps(key), lambda: fetch(args))
         if key not in cache:
             try:
                 cache[key] = fetch(args)

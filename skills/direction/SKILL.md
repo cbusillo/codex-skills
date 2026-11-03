@@ -639,7 +639,9 @@ repository, such as lab and house work in an infrastructure repository, the
 label is how that work counts as own. Reopened issues come from issues updated
 in the window, so busy label and claim traffic cannot truncate them.
 The audit reads each repository of that account the reader can see, never the
-search API, so it takes a few minutes. Reopened and reverted work is the quality
+search API. Weekly runs reuse the shared reader's four-worker pool and invocation
+cache for repository reads, retaining the same authenticated transport and read
+limits. `read_metrics` reports reads, reuse and elapsed time by section. Reopened and reverted work is the quality
 signal the throughput numbers do not carry; report it with the share. Provider
 capacity left unused stays manual until an account reader exists.
 
@@ -693,13 +695,11 @@ the normal direction PR; removing it restores the existing report without
 discarding its window. Do not edit the marker to hide missing evidence.
 
 The audit of `OWNER/direction` also returns `capacity.milestone_outcomes`: for
-each listed milestone, what moved in its `Track:` graph during the window,
-beside the pull-request counts. `issues_closed` comes from the graph listings;
-`links_added` (sub-issue and blocked-by links) and `items_checked` (checkboxes
-unchecked when the window opened and checked now) are read only for issues
-updated in the window, at most 200 of them. `unavailable` names any limit hit
-or unread issue, and `complete` is false when it is not empty. Report each
-milestone's line; a milestone with no movement says so.
+each listed milestone, issues closed in the window (`issues_closed`), open
+now (`issues_open`), and how many open issues wait on a person or event
+(`issues_waiting`), from the Track graph and current waits already read by the
+audit. `unavailable` names missing graph or wait evidence, and `complete` is
+false when it is not empty. Report each milestone's line.
 Use its `closure_reviews` in this same audit under the
 [milestone contract](../github-plan/references/milestones.md).
 

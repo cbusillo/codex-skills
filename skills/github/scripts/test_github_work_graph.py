@@ -9,6 +9,7 @@ import copy
 import json
 import math
 import re
+import threading
 import unittest
 from pathlib import Path
 from typing import Any
@@ -273,6 +274,52 @@ class WorkGraphTests(unittest.TestCase):
                 read(args)
             self.assertIs(caught.exception, failure)
         self.assertEqual(fetch.call_count, 2)
+
+    def test_parallel_cache_observes_each_source_once_and_keeps_private_copies(self) -> None:
+        started = threading.Event()
+        finish = threading.Event()
+
+        def fetch(_args: list[str]) -> list[dict[str, str]]:
+            started.set()
+            if not finish.wait(5):
+                raise AssertionError("Parallel consumer did not start")
+            return [{"body": "Provider body"}]
+
+        with graph.github_next_reads.NextReads(workers=2, seconds=0) as reads:
+            read = graph.cached_reads(fetch, reads=reads)
+            first = reads.submit("first", lambda: read(["api", "repos/Owner/Repo/issues"]))
+            self.assertTrue(started.wait(5))
+            second = reads.submit("second", lambda: read(["api", "/repos/owner/repo/issues", "--method", "GET"]))
+            finish.set()
+            first.result()[0]["body"] = "Consumer edit"
+            self.assertEqual(second.result(), [{"body": "Provider body"}])
+            self.assertEqual(reads.requests, 1)
+            self.assertEqual(reads.reused, 1)
+
+    def test_parallel_relationship_reads_keep_graph_order_limits_and_unavailable_evidence(self) -> None:
+        roots = [{"repo": "owner/repo", "number": 1, "state": "open"}]
+        barrier = threading.Barrier(2)
+        parallel = False
+
+        def read(path: str, _limit: int) -> tuple[list[dict[str, Any]], bool]:
+            if "/issues/1/" in path:
+                if parallel:
+                    barrier.wait(timeout=5)
+                if path.endswith("blocked_by"):
+                    raise ValueError("Provider unavailable")
+                return [{"number": 2, "state": "closed", "html_url": "https://github.com/owner/repo/issues/2"},
+                        {"number": 3, "state": "open"}], True
+            return [], False
+
+        for limit in (1, 2):
+            parallel = False
+            expected = graph.read_native_graph(roots, read, max_nodes=limit)
+            parallel = True
+            with graph.github_next_reads.NextReads(workers=2, seconds=0) as reads:
+                actual = graph.read_native_graph(roots, read, max_nodes=limit, reads=reads)
+            self.assertEqual(actual, expected)
+            self.assertEqual(actual.truncated, limit == 1)
+            self.assertEqual(set(actual.unavailable), {"owner/repo#1:dependencies/blocked_by", "owner/repo#1:sub_issues"})
 
     def test_raw_relationship_rows_preserve_attribution_metadata_before_compaction(self) -> None:
         source = {

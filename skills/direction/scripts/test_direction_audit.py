@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import importlib.util
 import json
 import math
@@ -1609,6 +1610,11 @@ def test_capacity_reads_each_repository_and_stops_at_the_window() -> None:
     partial, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=capacity_fetch_with_unchanged_tree(missing_links))
     assert partial["own_share_status"] == "unknown" and "capacity_pull_links:o/live#0" in errors
 
+    for source, expected in ((fetch, (result, truncated)), (missing_links, (partial, errors))):
+        with module.github_next_reads.NextReads(workers=2, seconds=0) as reads:
+            observed = module.github_work_graph.cached_reads(capacity_fetch_with_unchanged_tree(source), reads=reads)
+            assert module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=observed, reads=reads) == expected
+
     def nothing_lists(args: list[str]) -> Any:
         if "/contents/" in args[1]:
             raise module.AuditError("HTTP 404")
@@ -2008,6 +2014,9 @@ def test_weekly_direction_audit_covers_active_repositories_without_a_direction_f
     assert report["unavailable"] == [{"repo": "o/broken", "source": "issues", "reason": "unavailable"}]
     assert not report["complete"]
     assert not any(path.startswith(("repos/o/quiet/", "repos/o/attic/", "repos/o/direction/issues")) for path in calls)
+    with module.github_next_reads.NextReads(workers=2, seconds=0) as reads:
+        observed = module.github_work_graph.cached_reads(fetch, reads=reads)
+        assert module.active_unadopted_report("o/direction", SINCE, fetch=observed, reads=reads) == report
     selection = "selected"
     narrowed = module.active_unadopted_report("o/direction", SINCE, fetch=fetch)
     assert {"source": "repositories", "reason": "installation_selected_repositories"} in narrowed["unavailable"]
@@ -2032,51 +2041,35 @@ def test_weekly_direction_audit_covers_active_repositories_without_a_direction_f
         assert set(json.loads(marker.read_text())["audits"]) == {"o/direction"} and result["marked"]
 
 
-def test_milestone_outcomes_report_closures_links_and_checked_finish_line_items() -> None:
+def test_milestone_outcomes_report_closed_open_and_waiting_graph_nodes() -> None:
     module = load()
     before = stamp(SINCE - dt.timedelta(days=2))
     inside = stamp(SINCE + dt.timedelta(days=1))
-    track_body = "## Finish Line\n- [x] Spike A runs\n- [ ] Spike B runs\n- [x] Old proof\n"
-    activity = {
-        ("o/direction", 1): {"body": track_body, "createdAt": before,
-                             "timelineItems": {"totalCount": 2, "nodes": [
-                                 {"__typename": "SubIssueAddedEvent", "createdAt": inside,
-                                  "subIssue": {"url": "https://github.com/x/product/issues/9"}},
-                                 {"__typename": "BlockedByAddedEvent", "createdAt": stamp(NOW + dt.timedelta(minutes=5)),
-                                  "blockingIssue": {"url": "https://github.com/o/tools/issues/3"}}]},
-                             "userContentEdits": {"totalCount": 2, "nodes": [
-                                 {"editedAt": inside, "diff": track_body},
-                                 {"editedAt": before, "diff": track_body.replace("[x] Spike A", "[ ] Spike A")}]}},
-        ("x/product", 9): {"body": "- [x] Shipped\n", "createdAt": inside,
-                           "timelineItems": {"totalCount": 0, "nodes": []},
-                           "userContentEdits": {"totalCount": 0, "nodes": []}},
-    }
     edges = {
         "repos/o/direction/issues/1/sub_issues": [
             {"html_url": "https://github.com/x/product/issues/9", "state": "closed", "title": "Ship it",
              "closed_at": inside, "updated_at": inside}],
         "repos/o/direction/issues/1/dependencies/blocked_by": [
-            {"html_url": "https://github.com/o/tools/issues/3", "state": "open", "updated_at": before}],
+            {"number": 3, "html_url": "https://github.com/o/tools/issues/3", "state": "open", "updated_at": before, "comments": 0, "user": {"login": "o"},
+             "body": "## Current Status\n" + module.github_plan_wait.marker(module.github_plan_wait.reviewed(
+                 evidence="hands-on", waiting_for="o", ends_when="hands-on test complete"))}],
     }
-    graphql_reads: list[tuple[str, int]] = []
     completion = {"id": 1, "user": {"login": "o"}, "created_at": inside,
                   "body": "## Current Status\nState: The accepted release is complete.\n"}
 
     def fetch(args: list[str]) -> Any:
         path = args[1].split("?")[0]
         if path == "graphql":
-            values = dict(arg.split("=", 1) for arg in args if "=" in arg and not arg.startswith("query="))
-            key = (f"{values['owner']}/{values['name']}", int(values["number"]))
             if any("lastEditedAt" in arg for arg in args):
                 return {"data": {"repository": {"issue": {"createdAt": before, "lastEditedAt": before}}}}
-            graphql_reads.append(key)
-            return {"data": {"repository": {"issue": activity[key]}}}
+            raise AssertionError("Activity history is outside the report")
         if path == "repos/o/direction/milestones":
             return [{"number": 1, "title": "Thin fork decision", "state": "open"},
                     {"number": 2, "title": "Dogfood week", "state": "open"}]
         if args[1].startswith("repos/o/direction/issues?state=all&milestone=1"):
             return [{"number": 1, "title": "Track: thin fork", "state": "open", "updated_at": stamp(NOW),
-                     "body": "## Objective\nShip the spike.\n\n## Current Status\nState: Spike complete.\n"},
+                     "body": "## Objective\nShip the spike.\n\n## Current Status\nState: Spike complete.\n",
+                     "structured_wait": module.github_plan_wait.reviewed(evidence="No person or event wait")},
                     {"number": 4, "title": "Ordinary work", "state": "open", "updated_at": inside}]
         if path == "repos/o/direction/issues/1/comments":
             return [completion]
@@ -2087,14 +2080,25 @@ def test_milestone_outcomes_report_closures_links_and_checked_finish_line_items(
     assert thin["tracks"] == ["https://github.com/o/direction/issues/1"]
     assert thin["closure_reviews"][0]["track_proof"] == "Ship the spike."
     assert [item["url"] for item in thin["issues_closed"]] == ["https://github.com/x/product/issues/9"]
-    assert thin["links_added"] == [{"to": "https://github.com/o/direction/issues/1", "kind": "sub_issue",
-                                    "issue": "https://github.com/x/product/issues/9", "added_at": inside}]
-    # Boxes checked during the window count; one already checked, or on an issue
-    # created in the window with no earlier box, does not.
-    assert thin["items_checked"] == [{"url": "https://github.com/o/direction/issues/1", "item": "Spike A runs"}]
-    assert sorted(graphql_reads) == [("o/direction", 1), ("x/product", 9)], "quiet issues need no activity read"
-    assert dogfood == {"milestone": "Dogfood week", "tracks": [], "issues_closed": [], "links_added": [],
-                       "items_checked": [], "unavailable": [], "complete": True}
+    assert thin["issues_open"] == 2 and thin["issues_waiting"] == 1, thin
+    assert dogfood == {"milestone": "Dogfood week", "tracks": [], "issues_closed": [], "issues_open": 0,
+                       "issues_waiting": 0, "unavailable": [], "complete": True}
+
+    waiting = edges["repos/o/direction/issues/1/dependencies/blocked_by"][0]
+    waiting["user"]["login"] = "untrusted"
+    unknown = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=fetch)[0]
+    assert unknown["issues_waiting"] == 0 and unknown["complete"]
+    waiting["user"]["login"] = "o"
+
+    def unread_wait(args: list[str]) -> Any:
+        if args[1].startswith("repos/o/tools/issues/3/comments"):
+            raise module.AuditError("Discussion unavailable")
+        return fetch(args)
+
+    waiting["comments"] = 1
+    unread_discussion = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=unread_wait)[0]
+    assert unread_discussion["issues_waiting"] is None and not unread_discussion["complete"]
+    waiting["comments"] = 0
 
     full_nodes = {"repos/" + value["html_url"].removeprefix("https://github.com/"): value
                   for values in edges.values() for value in values}
@@ -2115,23 +2119,17 @@ def test_milestone_outcomes_report_closures_links_and_checked_finish_line_items(
     assert projected["complete"] and projected["issues_closed"] == thin["issues_closed"]
     assert set(hydrated) == set(full_nodes)
 
+    def unread_node(args: list[str], *, candidate: dict[str, Any] | None) -> Any:
+        if args[1].split("?")[0] in full_nodes:
+            if candidate is None:
+                raise module.AuditError("Canonical node unavailable")
+            return candidate
+        return minimal_edges(args)
+
     for response in (None, {}):
-        def unread_node(args: list[str], response: dict[str, Any] | None = response) -> Any:
-            if args[1].split("?")[0] in full_nodes:
-                if response is None:
-                    raise module.AuditError("Canonical node unavailable")
-                return response
-            return minimal_edges(args)
-
-        unread = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=unread_node)[0]
+        unread = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW,
+                                           fetch=functools.partial(unread_node, candidate=response))[0]
         assert not unread["complete"] and unread["issues_closed"] == []
-
-    limited = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=fetch, max_reads=1)[0]
-    assert not limited["complete"] and any(item.endswith(":read_limit") for item in limited["unavailable"])
-    activity[("o/direction", 1)] = {**activity[("o/direction", 1)], "userContentEdits": {
-        "totalCount": 150, "nodes": [{"editedAt": inside, "diff": track_body}]}}
-    cut = module.milestone_outcomes("o/direction", DIRECTION, SINCE, NOW, fetch=fetch)[0]
-    assert "activity:o/direction#1:history_limit" in cut["unavailable"] and not cut["complete"]
 
 
 def test_stale_wait_report_checks_realistic_parked_records_without_writes() -> None:
@@ -3442,6 +3440,17 @@ def test_weekly_audit_refuses_an_incomplete_or_unknown_repository_listing() -> N
             assert "weekly_audit" not in json.loads(marker.read_text())
 
 
+def test_expired_inherited_weekly_deadline_reports_unread_evidence_without_a_stamp() -> None:
+    module = load()
+    account = WeeklyAccount(module)
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"GITHUB_RETRY_DEADLINE_AT": "1"}):
+        marker = Path(tmp) / "marker.json"
+        code, receipt = account.run(["--weekly", "--owner", "o"], marker)
+        assert code == 1 and receipt["unread"] and not receipt["discovery"]["complete"]
+        assert receipt["weekly_recorded"] is None
+        assert "weekly_audit" not in json.loads(marker.read_text())
+
+
 def test_weekly_mode_requires_an_owner_and_no_other_mode() -> None:
     module = load()
     for argv in (["--weekly"], ["--weekly", "--owner", "o", "--repo", "o/a"], ["--weekly", "--owner", "o/a"],
@@ -3533,6 +3542,25 @@ def test_capacity_attaches_lines_only_to_tooling_and_retains_unknown_reads() -> 
     assert len([call for call in calls if "/commits/" in call]) == 1
     result, errors = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=base)
     assert not errors and result["by_repository"]["o/live"]["net_lines"]["total"] == 0
+
+    def mixed_histories(args: list[str]) -> Any:
+        path = args[1]
+        if path.startswith("installation/repositories"):
+            listing = base(args)
+            return {**listing, "repositories": [*listing["repositories"],
+                {"full_name": "o/broken", "owner": {"login": "o"}, "default_branch": "main", "pushed_at": stamp(NOW)}]}
+        if path.startswith("repos/o/broken/commits/"):
+            raise module.AuditError("HTTP 502")
+        return base([args[0], path.replace("repos/o/broken/", "repos/o/live/"), *args[2:]])
+
+    expected = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=mixed_histories)
+    with module.github_next_reads.NextReads(workers=2, seconds=0) as reads:
+        observed = module.github_work_graph.cached_reads(mixed_histories, reads=reads)
+        actual = module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=observed, reads=reads)
+    assert actual == expected
+    assert actual[0]["by_repository"]["o/live"]["net_lines"]["status"] == "complete"
+    assert actual[0]["by_repository"]["o/broken"]["net_lines"]["status"] == "unknown"
+    assert not module.held_reads(actual[1])
 
 
 def test_waiting_cross_repository_blocker_outside_milestones_is_a_named_finding() -> None:
