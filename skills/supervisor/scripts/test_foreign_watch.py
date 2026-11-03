@@ -96,7 +96,7 @@ class WatchTests(unittest.TestCase):
                     identities = {"status": "ok", "director_names": [], "director_ambiguous": False,
                                   "automation": {"client-agent[bot]": "Client"}}
                     with (patch_attr(foreign_watch, "GitHubReader", return_value=reader),
-                          patch_attr(foreign_watch.radar, "people_identities", return_value=identities),
+                          patch_attr(foreign_watch.radar_module(), "people_identities", return_value=identities),
                           patch.object(foreign_watch.sys, "argv", argv),
                           patch.object(foreign_watch, "utc_now", return_value="2026-10-30T19:40:00Z"),
                           patch.object(foreign_watch.time, "monotonic", side_effect=clock.monotonic),

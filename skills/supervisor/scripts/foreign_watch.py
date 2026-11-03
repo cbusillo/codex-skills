@@ -29,7 +29,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import director_mentions
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github-work-rollup/scripts"))
 import review_notifications
-radar: Any = importlib.import_module("github_unanswered_comments")
 import services
 import github_access
 
@@ -58,6 +57,10 @@ BRIEF_RULES = Path(__file__).resolve().parents[1] / "references" / "brief-rules.
 NOTICE_SETTLE_SECONDS = 5
 MAX_MESSAGE_HINTS = 256
 MISS_GRACE_SECONDS = 120
+
+
+def radar_module() -> Any:
+    return importlib.import_module("github_unanswered_comments")
 
 
 def validate_message_hint(args: Any, repos: list[str] | None, hint: dict) -> dict | None:
@@ -267,7 +270,7 @@ def read_opened(reader, repo: str, since: str, client_agents=()) -> list[dict]:
                 user = review.get("user") or {}
                 if not (review.get("body") or "").strip():
                     continue
-                if radar.is_github_bot(user.get("login", ""), user.get("type", "")) and user.get("login", "").casefold() not in client_agents:
+                if radar_module().is_github_bot(user.get("login", ""), user.get("type", "")) and user.get("login", "").casefold() not in client_agents:
                     bot_reviews.append({**review, "updated_at": review.get("submitted_at") or review["created_at"]})
                 else:
                     messages.append(review)
@@ -281,7 +284,7 @@ def source_messages(source: dict, client_agents: Any = ()) -> list[dict]:
     user = source.get("user") or {}
     if timestamp(source["updated_at"]) <= timestamp(source["created_at"]):
         return [opening]
-    if radar.is_github_bot(user.get("login", ""), user.get("type", "")) and user.get("login", "").casefold() not in client_agents:
+    if radar_module().is_github_bot(user.get("login", ""), user.get("type", "")) and user.get("login", "").casefold() not in client_agents:
         return [opening]
     return [opening, source]
 
@@ -835,7 +838,7 @@ def audit_miss(args: Any, receipt: dict, persist: Any) -> None:
 def is_ordinary_bot_notice(notice: dict, client_agents: Any = ()) -> bool:
     return (
         notice.get("kind") == "foreign"
-        and radar.is_github_bot(str(notice.get("author") or ""), notice.get("author_type", ""))
+        and radar_module().is_github_bot(str(notice.get("author") or ""), notice.get("author_type", ""))
         and not (notice.get("author_class") == "automation" and notice.get("automation_for"))
         and str(notice.get("author", "")).casefold() not in client_agents
     )
@@ -1026,7 +1029,7 @@ def main() -> int:
         parser.error("routing needs --ledger, --notify-config and --miss-issue together")
     if args.miss_issue and not re.fullmatch(rf"{re.escape(args.owner)}/[A-Za-z0-9_.-]+#[1-9][0-9]*", args.miss_issue, re.I):
         parser.error("--miss-issue must belong to the configured Director")
-    identities = radar.people_identities({(args.director_login or args.owner).casefold()}, args.people_index)
+    identities = radar_module().people_identities({(args.director_login or args.owner).casefold()}, args.people_index)
     args.director_names = identities["director_names"]
     args.recipient_identity_gap = (identities.get("error") or "Director aliases are ambiguous"
                                    if identities["status"] == "error" or identities["director_ambiguous"] else None)
