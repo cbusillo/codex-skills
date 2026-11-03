@@ -1777,8 +1777,8 @@ Last verified: Not yet verified.
 
 ## Acceptance Criteria
 
-- [ ] Outcome is defined.
-- [ ] Validation is captured.
+- Outcome is defined.
+- Validation is captured.
 
 ## Relationships
 
