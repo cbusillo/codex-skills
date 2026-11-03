@@ -313,12 +313,14 @@ def ownership_decision(reader, github_read, repo: str, pulls: Iterable[dict], br
 
     records = []
     names = dict.fromkeys(branches)
+    owners = {repo.split("/")[0]: None}
     for pull in pulls:
         if not finished_pull(pull):
             return {"decision": "kept", "reason": "branch or commit has an open PR"}
         number = pull["number"]
         base = pull.get("base") or {}
         pull_repo = (base.get("repo") or {}).get("full_name") or repo
+        owners[pull_repo.split("/")[0]] = None
         records += [(pull_repo, number), *github_plan_status.references.linked_issues(pull_repo, pull)]
         if head_ref := (pull.get("head") or {}).get("ref"):
             names[head_ref] = None
@@ -326,7 +328,8 @@ def ownership_decision(reader, github_read, repo: str, pulls: Iterable[dict], br
             records += github_plan_landing.closing_references(reader, pull_repo, number)[1]
     for branch in names:
         if branch:
-            records += issues_naming(reader, repo.split("/")[0], branch)
+            for owner in owners:
+                records += issues_naming(reader, owner, branch)
     if claims_on(reader, github_read, records):
         return {"decision": "kept", "reason": "associated work has an open claim"}
     return {"decision": "candidate"}

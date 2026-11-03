@@ -299,11 +299,14 @@ class RepositoryTests(Fixture):
                                 "closingIssuesReferences": {"nodes": [], "pageInfo": {"hasNextPage": False}}}}}})
 
         reader.graphql_json.side_effect = graphql
-        with mock.patch.object(landed_worktrees, "issues_naming", return_value=[]), \
+        def naming(_reader: object, owner: str, branch: str) -> list[tuple[str, int]]:
+            return [("up/sample", 9)] if (owner, branch) == ("up", "work/fix") else []
+
+        with mock.patch.object(landed_worktrees, "issues_naming", side_effect=naming), \
                 mock.patch.object(landed_worktrees, "claims_on", return_value="") as claims:
             decision = landed_worktrees.ownership_decision(reader, mock.Mock(), "me/sample", [pull], ["work/fix"])
         self.assertEqual(decision, {"decision": "candidate"})
-        self.assertIn(("up/sample", 404), claims.call_args.args[2])
+        self.assertLessEqual({("up/sample", 404), ("up/sample", 9)}, set(claims.call_args.args[2]))
 
     def test_unavailable_pr_evidence_keeps_tree_and_continues(self) -> None:
         path = self.worktree("unread")
