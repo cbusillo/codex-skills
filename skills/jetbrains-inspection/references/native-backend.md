@@ -299,6 +299,18 @@ roots; its private `PyProjectModelSettings.usePyprojectToml=false` preserves tha
 model when uv workspace discovery would otherwise replace module roots and
 break exact named scopes. No source project metadata is changed.
 
+The private prepared uv environment also gets `pip`, which PyCharm's package
+scanner calls even when uv installed the dependencies. The source environment
+and its lockfile are untouched. When the SDK contains Pydantic, the worker uses
+JetBrains' built-in `installPlugins` command to install and enable
+`com.koxudaxi.pydantic` once in the independent worker, with consent for that
+plugin. This launch shares the inspection's locks, custody, licence observation
+and deadline. No repository plugin declaration or hand step is needed.
+Receipts retain the interpreter, `python_sdk_observed` from the matching
+`PythonSdkUpdater` log line, the installed support-plugin versions and the
+`pydantic_plugin_version` actually loaded by the engine. Descriptor presence
+alone does not establish that a plugin loaded.
+
 A per-user lock and the independent profile's lock allow one worker.
 An ordinary request takes a ticket in its own queue under the per-user state
 directory, using the helper's kernel-locked FIFO queue, then

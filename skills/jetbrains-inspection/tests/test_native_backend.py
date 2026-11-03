@@ -791,6 +791,40 @@ print('Done.')
         self.assertFalse(list((self.root / "cache/native").glob("private-*")))
         self.assertEqual((self.repo / "source.py").read_text(), "print(missing)\n")
 
+    def test_pydantic_is_installed_once_in_the_worker_before_inspection(self):
+        launcher = self.app / "Contents/MacOS" / host.IDE_PRODUCTS[native.PYTHON_PRODUCT_KEY].launcher_names[0]
+        launcher.parent.mkdir()
+        marker = self.root / "plugin-installations"
+        launcher.write_text(f"#!{sys.executable}\nimport os,pathlib,sys,zipfile\n"
+                            f"plugins=pathlib.Path({str(self.worker / 'plugins')!r})\n"
+                            "plugin=sys.argv[2]\njar=plugins/plugin/'lib/plugin.jar'\njar.parent.mkdir(parents=True)\n"
+                            "with zipfile.ZipFile(jar,'w') as archive:\n"
+                            " archive.writestr('META-INF/plugin.xml',f'<idea-plugin><id>{plugin}</id><version>1.2</version></idea-plugin>')\n"
+                            f"pathlib.Path({str(marker)!r}).touch()\n"
+                            "print('installed plugin: '+plugin)\n")
+        launcher.chmod(0o700)
+        self.script.write_text(self.script.read_text() + f"assert __import__('pathlib').Path({str(marker)!r}).exists()\n")
+        with patch_attr(native, "python_support_plugins", return_value={native.PYDANTIC_PLUGIN}):
+            first = self.assess()
+            self.assertEqual(first["inspection_outcome"]["reason"], "native_completed")
+            marker.unlink()
+            self.script.write_text(self.script.read_text().split("assert __import__")[0])
+            second = self.assess()
+        self.assertEqual(second["inspection_outcome"]["reason"], "native_completed")
+        self.assertFalse(marker.exists())
+        self.assertEqual(first["diagnostic"]["native"]["python_support_plugins"], second["diagnostic"]["native"]["python_support_plugins"])
+
+    def test_failed_plugin_install_cannot_start_inspection_and_closes_custody(self):
+        launcher = self.app / "Contents/MacOS" / host.IDE_PRODUCTS[native.PYTHON_PRODUCT_KEY].launcher_names[0]
+        launcher.parent.mkdir()
+        launcher.write_text(f"#!{sys.executable}\nraise SystemExit(1)\n")
+        launcher.chmod(0o700)
+        with patch_attr(native, "python_support_plugins", return_value={native.PYDANTIC_PLUGIN}):
+            result = self.assess()
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertNotIn("inspected_files", result["diagnostic"]["native"])
+        self.assertEqual(result["cleanup"]["status"], "closed")
+
     def test_guardian_reaps_under_an_ignored_parent_sigchld_without_changing_it(self):
         original = signal.signal(signal.SIGCHLD, signal.SIG_IGN)
         try:

@@ -66,6 +66,20 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(receipt["engine_error_category"], "#c.i.vfs.Store")
         self.assertNotIn("private customer", str(receipt))
 
+    def test_python_support_receipt_requires_complete_current_worker_log_lines(self):
+        receipt = {"run_id": "fixture"}
+        project = Path("/private/project")
+        events = observer.EngineObserver(project, receipt)
+        plugin = "Loaded custom plugins: Pydantic (1.2.3), Other (4.5)"
+        events.observe(plugin, partial=True)
+        self.assertNotIn("pydantic_plugin_version", receipt)
+        events.observe(plugin)
+        self.assertEqual(receipt["pydantic_plugin_version"], "1.2.3")
+        events.observe("Binary skeletons directory for SDK jb-native-other (/private/project/.venv/bin/python)): /cache")
+        self.assertNotIn("python_sdk_observed", receipt)
+        events.observe("Binary skeletons directory for SDK jb-native-fixture (/private/project/.venv/bin/python)): /cache")
+        self.assertTrue(receipt["python_sdk_observed"])
+
     def test_overlong_line_fails_without_reinterpreting_a_suffix(self):
         frame = observer.LineFramer(limit=8)
         with self.assertRaises(observer.ObservationError):

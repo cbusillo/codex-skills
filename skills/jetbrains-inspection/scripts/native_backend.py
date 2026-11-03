@@ -1371,6 +1371,7 @@ def plant_controls(project, run_id, odoo, product_key=PYTHON_PRODUCT_KEY, base=P
 
 PYTHON_SDK_TYPE = "Python SDK"
 JAVA_SDK_TYPE = "JavaSDK"
+PYDANTIC_PLUGIN = "com.koxudaxi.pydantic"
 
 
 class SdkEntry(NamedTuple):
@@ -1382,6 +1383,11 @@ class SdkEntry(NamedTuple):
 def python_sdk(interpreter: Path, version: str) -> SdkEntry:
     output = common.checked([str(interpreter), "-c", "import sysconfig,json; print(json.dumps([sysconfig.get_path('stdlib'),sysconfig.get_path('purelib')]))"])
     return SdkEntry(PYTHON_SDK_TYPE, "Python " + version, [Path(path).as_uri() for path in json.loads(output)])
+
+
+def python_support_plugins(sdk: SdkEntry) -> set[str]:
+    return {PYDANTIC_PLUGIN} if any((Path(urllib.parse.unquote(urllib.parse.urlparse(root).path)) / "pydantic").is_dir()
+                                   for root in sdk.class_roots) else set()
 
 
 def java_sdk(home: Path) -> SdkEntry:
@@ -1870,7 +1876,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
 
         def prepare(preparation_argv, preparation_env):
             nonlocal deadline
-            (private / "prepare-home").mkdir()
+            (private / "prepare-home").mkdir(exist_ok=True)
             deadline = execute(preparation_argv, preparation_env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(),
                     global_lock_fd=global_lock.fileno(), require_completion=False,
                     on_spawn=lambda pid: record_process("preparation", pid), on_exit=record_exit,
@@ -1888,9 +1894,11 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             prepare_jvm_model(project, sdk_name, selected | controls)
         else:
             if requested is not None:
-                prepare(common.preparation(settings, private), {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(private / "prepare-home"),
-                                                                "TMPDIR": str(private / "tmp"), **preparation_caches})
+                preparation_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(private / "prepare-home"),
+                                   "TMPDIR": str(private / "tmp"), **preparation_caches}
+                prepare(common.preparation(settings, private), preparation_env)
                 interpreter = project / ".venv/bin/python"
+                prepare(["uv", "pip", "install", "--python", str(interpreter), "pip"], preparation_env)
             elif source_interpreter.is_file():
                 interpreter = source_interpreter
             else:
@@ -1899,6 +1907,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             if requested and not (version == requested or version.startswith(requested + ".")):
                 raise Blocked("native_python_version_mismatch")
             receipt["python_version"] = version
+            receipt["python_interpreter"] = str(interpreter)
             sdk = python_sdk(interpreter, version)
             prepare_model(project, sdk_name, framework, selected | controls)
         shutil.copyfile(profile, private / "profile.xml")
@@ -1937,6 +1946,18 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
                     load_pause_timeout_ms=load_pause_timeout_ms)
 
         try:
+            if sdk is not None and not intellij and (support_plugins := python_support_plugins(sdk)):
+                installed, disabled = common.worker_plugins(app, config, plugins)
+                for plugin_id in sorted(support_plugins - (installed.keys() - disabled)):
+                    installer = private / "install-plugins.py"
+                    installer.write_text("import subprocess, sys\nraise SystemExit(subprocess.run(sys.argv[1:]).returncode)\n")
+                    launch(["/usr/bin/nice", "-n", str(NICE), sys.executable, str(installer), str(app / "Contents/MacOS" / product.launcher_names[0]),
+                            "installPlugins", plugin_id, "--give-consent-to-use-third-party-plugins"],
+                           re.compile(r"(?:installed plugin: .*|already installed: " + re.escape(plugin_id) + r")"))
+                    installed, disabled = common.worker_plugins(app, config, plugins)
+                    if plugin_id not in installed or plugin_id in disabled:
+                        raise Blocked("native_python_support_plugin_unavailable")
+                receipt["python_support_plugins"] = {plugin: installed[plugin] for plugin in support_plugins}
             if intellij:
                 warmup_started = time.monotonic()
                 launch(["/usr/bin/nice", "-n", str(NICE), str(app / WARMUP_LAUNCHER), "warmup", f"--project-dir={project}"],
