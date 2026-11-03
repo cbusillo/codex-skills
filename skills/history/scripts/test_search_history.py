@@ -161,22 +161,31 @@ class SearchHistoryTests(unittest.TestCase):
 
     def test_zstd_transcripts_read_like_plain_ones(self):
         original = "Compressed sessions keep preview evidence."
-        lines = "\n".join(json.dumps(record) for record in [codex(original), codex("filler " * 400)]) + "\n"
+        first = json.dumps(codex(original)) + "\n"
+        compressor = zstandard.ZstdCompressor(write_checksum=True)
         path = self.root / "archive.jsonl.zst"
-        path.write_bytes(zstandard.ZstdCompressor().compress(lines.encode()))
+        path.write_bytes(compressor.compress((first + json.dumps(codex("later preview")) + "\n").encode()))
         array = self.root / "array.json.zst"
-        array.write_bytes(zstandard.ZstdCompressor().compress(json.dumps([claude("preview in an array")]).encode()))
+        array.write_bytes(compressor.compress(json.dumps([claude("preview in an array")]).encode()))
         result = self.search()
-        self.assertEqual([hit["text"] for hit in result["hits"]], [original, "preview in an array"])
+        self.assertEqual([hit["text"] for hit in result["hits"]], [original, "later preview", "preview in an array"])
         self.assertEqual(result["hits"][0]["source"], str(path))
-        self.assertEqual(result["hits"][1]["position_kind"], "record_index")
-        self.assertNotIn("byte_limit", {item["kind"] for item in result["limitations"]})
-        limited = self.search(max_bytes=path.stat().st_size + 1)
+        self.assertEqual(result["hits"][2]["position_kind"], "record_index")
+        self.assertTrue(result["coverage_complete"])
+        array.unlink()
+        limited = self.search(max_bytes=len(first.encode()))
+        self.assertEqual([hit["text"] for hit in limited["hits"]], [original])
         self.assertIn({"kind": "byte_limit", "source": str(path)}, limited["limitations"])
-        path.write_bytes(path.read_bytes()[:-3])
-        cut = self.search()
-        self.assertFalse(cut["coverage_complete"])
-        self.assertIn("file_io_error", {item["kind"] for item in cut["limitations"]})
+
+    def test_cut_off_zstd_transcript_is_a_coverage_gap(self):
+        path = self.root / "archive.jsonl.zst"
+        whole = zstandard.ZstdCompressor(write_checksum=True).compress((json.dumps(codex("preview")) + "\n").encode())
+        for damaged in (whole[:-3], b""):
+            path.write_bytes(damaged)
+            result = self.search()
+            self.assertEqual(result["hits"], [])
+            self.assertFalse(result["coverage_complete"])
+            self.assertEqual([(item["kind"], item["source"]) for item in result["limitations"]], [("file_io_error", str(path))])
 
     def test_json_array_uses_record_index(self):
         path = self.root / "transcript.json"

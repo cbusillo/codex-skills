@@ -955,13 +955,11 @@ def top_level_json_records(value: Any) -> Iterable[tuple[int, Any]]:
 
 
 def transcript_suffix(path: Path) -> str:
-    """Return the record format suffix, looking through a .zst compression suffix."""
     suffix = path.suffix.lower()
     return Path(path.stem).suffix.lower() if suffix == ".zst" else suffix
 
 
 def read_transcript(path: Path, limit: int) -> bytes:
-    """Read up to limit bytes of a transcript, streaming a .zst file's decompressed bytes."""
     if path.suffix.lower() != ".zst":
         with path.open("rb") as handle:
             return handle.read(limit)
@@ -970,24 +968,24 @@ def read_transcript(path: Path, limit: int) -> bytes:
     except ImportError as exc:
         raise OSError("reading .zst transcripts needs the zstandard package") from exc
     decompressor = zstandard.ZstdDecompressor()
+    frame = decompressor.decompressobj()
     chunks: list[bytes] = []
     remaining = limit
     try:
-        with path.open("rb") as raw, decompressor.stream_reader(raw, read_across_frames=True) as reader:
+        with path.open("rb") as raw:
             while remaining > 0:
-                chunk = reader.read(min(remaining, 1 << 20))
-                if not chunk:
+                pending = raw.read(1 << 16)
+                if not pending:
+                    if not frame.eof:
+                        raise OSError("zstd data ends inside a frame")
                     break
-                chunks.append(chunk)
-                remaining -= len(chunk)
-        # The whole stream fit, but the reader also ends quietly inside a cut-off frame.
-        pending = path.read_bytes() if remaining > 0 else b""
-        while pending:
-            frame = decompressor.decompressobj()
-            frame.decompress(pending)
-            if not frame.eof:
-                raise OSError("zstd data ends inside a frame")
-            pending = frame.unused_data
+                while pending and remaining > 0:
+                    if frame.eof:
+                        frame = decompressor.decompressobj()
+                    output = frame.decompress(pending)[:remaining]
+                    chunks.append(output)
+                    remaining -= len(output)
+                    pending = frame.unused_data if frame.eof else b""
     except zstandard.ZstdError as exc:
         raise OSError(f"invalid zstd data: {exc}") from exc
     return b"".join(chunks)
