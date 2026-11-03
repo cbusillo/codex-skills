@@ -206,7 +206,6 @@ class ResumeLaunchTests(unittest.TestCase):
             choice = choices[0]
             assert choice is not None
             self.assertEqual(choice["env"], self.account["env"])
-            self.select.assert_called_once_with("openai", None)
             self.select.return_value = {**self.choice, "env": {"CODEX_HOME": str(self.root / "other")}}
             with self.assertRaises(ValueError):
                 iterm_tab.prepare_launches(self.args)

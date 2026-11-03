@@ -1477,8 +1477,10 @@ class AccountChoiceTests(unittest.TestCase):
     def test_multiple_accounts_recommend_context_panel_once_without_selecting_one(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             home = Path(folder)
-            config = accounts_config()
-            config["snapshot_command"] = None
+            config = account_choice.validate_config({"account": [
+                {"name": "first", "provider": "anthropic", "env": {"CLAUDE_CONFIG_DIR": str(home / "first")}},
+                {"name": "second", "provider": "anthropic", "env": {"CLAUDE_CONFIG_DIR": str(home / "second")}},
+            ]})
             with patch.dict(os.environ, {"XDG_CACHE_HOME": folder}, clear=True), \
                  patch.object(Path, "home", return_value=home), \
                  patch.object(account_choice, "load_config", return_value=config), \
@@ -1503,7 +1505,9 @@ class AccountChoiceTests(unittest.TestCase):
 
     def test_incomplete_context_panel_settings_do_not_become_native_login(self) -> None:
         with self.assertRaises(ValueError):
-            accounts_config(ACCOUNTS_TOML.replace('snapshot_command = ["context-panel-snapshot"]', ''))
+            account_choice.validate_config({"account": [
+                {"name": "incomplete", "provider": "anthropic", "context_panel_label": "fixture", "env": {}}
+            ]})
 
     @staticmethod
     def snapshot(provider="anthropic", order=None, stale=False, age: float = 0) -> dict[str, Any]:

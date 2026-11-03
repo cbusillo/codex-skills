@@ -343,6 +343,7 @@ class ReviewWithModelTests(unittest.TestCase):
         code, result = self.review("anthropic", CODE_HOME=str(self.root / "other-code-home"),
                                    FAKE_REVIEW_ENV_FILE=str(capture))
         self.assertEqual((code, result["ok"]), (1, False))
+        self.assertEqual(result["phase"], "selection")
         self.assertFalse(capture.exists())
 
     def test_policy_model_budget_and_actual_provenance_reach_the_review(self) -> None:

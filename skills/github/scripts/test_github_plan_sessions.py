@@ -990,6 +990,23 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
             self.assertIsNone(CLOSURE.guarded_launch_endpoint(456, [native[0], "--model", "changed", *native[1:]]))
 
 class AccountHomeTests(unittest.TestCase):
+    def test_plain_install_inventory_uses_current_login_without_account_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder}, clear=True):
+            root = Path(folder)
+            expected = root / ".codex"
+            self.assertEqual(SESSIONS.configured_homes(strict=True), [expected.resolve()])
+            with patch.dict(os.environ, {"CODEX_HOME": str(root / "active")}):
+                self.assertEqual(SESSIONS.configured_homes(strict=True), [(root / "active").resolve()])
+            path = CLOSURE.closed_log().with_name("supervisor.toml")
+            path.parent.mkdir(parents=True)
+            path.write_text("invalid TOML")
+            with self.assertRaises(ValueError):
+                SESSIONS.configured_homes(strict=True)
+            path.unlink()
+            path.symlink_to(root / "missing-config")
+            with self.assertRaises(ValueError):
+                SESSIONS.configured_homes(strict=True)
+
     def test_runtime_and_account_overrides_cannot_hide_a_frozen_source(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder, "CODE_HOME": str(Path(folder) / ".code")}):
             path = CLOSURE.closed_log()
@@ -1011,7 +1028,7 @@ class AccountHomeTests(unittest.TestCase):
                        (root / "other-account/skill-data/supervisor.toml", root / "account-local")]
             for path, home in configs:
                 path.parent.mkdir(parents=True)
-                path.write_text('[[accounts.account]]\nname="fixture"\nprovider="openai"\ncontext_panel_label="fixture"\n'
+                path.write_text('[[accounts.account]]\nname="fixture"\nprovider="openai"\n'
                                 + 'env={CODEX_HOME=' + json.dumps(str(home)) + '}\n')
             expected = [canonical_home.resolve()]
             with patch.dict(os.environ, {"CODE_HOME": str(root / "other-runtime"), "CODEX_HOME": str(root / "other-account")}):
