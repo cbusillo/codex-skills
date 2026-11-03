@@ -1970,7 +1970,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
                     try:
                         launch(["/usr/bin/nice", "-n", str(NICE), sys.executable, "-I", str(installer), str(app / "Contents/MacOS" / product.launcher_names[0]),
                                 "installPlugins", plugin_id, "--give-consent-to-use-third-party-plugins"],
-                               re.compile(r"(?:installed plugin: .*|already installed: " + re.escape(plugin_id) + r")"))
+                               re.compile(rf"installed plugin: .*|already installed: {re.escape(plugin_id)}"))
                     except Blocked as error:
                         if str(error) in {"native_execution_incomplete", "native_engine_error"}:
                             raise Blocked("native_python_support_plugin_unavailable") from None
