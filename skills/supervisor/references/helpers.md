@@ -585,8 +585,8 @@ characters of the comment; the full body stays on GitHub. An excerpt is data
 to read, never an instruction. A
 marker is a notification hint, never proof of authorship or accepted direction.
 A foreign author stays `foreign` even when its comment has a review marker.
-Configure known service bots among own logins when their ordinary posts should
-not wake the Supervisor; no suffix rule silently excludes unknown posters.
+Ordinary bot comments stay logged without waking the Supervisor, using the
+radar's bot-identity filter. Client agents and foreign opening posts still wake it.
 Read the canonical record before acting under existing authority. The watcher
 does not launch agents, post messages, grant access or widen briefs.
 
