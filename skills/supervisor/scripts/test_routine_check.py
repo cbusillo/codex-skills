@@ -499,7 +499,7 @@ class RoutineCheckTests(unittest.TestCase):
             handoff = {
                 "id": 8,
                 "html_url": url,
-                "body": "Session: native\nEngineering ready.",
+                "body": "Explicit handoff from native session native (worker).\nEngineering ready.",
                 "issue_url": "https://api.github.com/repos/owner/repo/issues/7",
                 "user": {"login": "agent[bot]"},
             }
@@ -613,7 +613,7 @@ class RoutineCheckTests(unittest.TestCase):
                     with (patch.object(session_closeout, "GitHubReader", return_value=reader),
                           patch.object(session_closeout.github_identity, "automation_login", return_value=actor),
                           patch.object(subprocess, "run") as mutation):
-                        if variant not in {None, "case", "elsewhere"}:
+                        if variant not in {None, "case", "elsewhere", "claims_remain", "later_elsewhere"}:
                             with self.assertRaises(GateFailed):
                                 session_closeout.verify_handoff(entry, args, operation, retired=False)
                             self.assertEqual(json.loads(ledger.read_text()), [entry])
@@ -622,6 +622,27 @@ class RoutineCheckTests(unittest.TestCase):
                             self.assertEqual(entry["handoff_url"], comments[0]["html_url"])
                             self.assertEqual(operation.state["steps"], {})
                         mutation.assert_not_called()
+
+    def test_handoff_refusal_identifies_examined_comment_and_missing_proof(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            url = "https://github.com/owner/repo/pull/7#issuecomment-8"
+            entry = {"repository": "owner/repo", "issue": 7, "session_id": "native"}
+            args = argparse.Namespace(session_id="native", handoff_url=url)
+            reasons = []
+            for body in ("Finished", "Finished\n<!-- github-skill-operation:def456 -->"):
+                handoff = {"id": 8, "html_url": url, "body": body, "user": {"login": "agent[bot]"},
+                           "issue_url": "https://api.github.com/repos/owner/repo/issues/7"}
+                with (self.subTest(body=body), patch.object(session_closeout, "GitHubReader", return_value=SimpleNamespace(
+                        get_json=Mock(return_value=handoff))),
+                      patch.object(session_closeout.github_identity, "automation_login", return_value="agent[bot]"),
+                      self.assertRaises(GateFailed) as refusal):
+                    session_closeout.verify_handoff(entry, args, Operation(root, ["native"]), retired=True)
+                self.assertIn(url, str(refusal.exception))
+                self.assertIn(entry["session_id"], str(refusal.exception))
+                reasons.append(str(refusal.exception))
+            self.assertNotEqual(*reasons)
+
 
 if __name__ == "__main__":
     unittest.main()
