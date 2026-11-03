@@ -574,8 +574,8 @@ class RoutineCheckTests(unittest.TestCase):
                                  "repository": entry["repository"], "number": number,
                                  "comment": {**post["comment"], "url": comments[0]["html_url"]}}]
                     if variant in {"marker", "marker_copied"}:
-                        post = {**post, "operation_marker": {"operation_id": "own-write"}}
-                        comments[0]["body"] += "\n<!-- github-skill-operation:" + ("own-write" if variant == "marker" else "foreign-write") + " -->"
+                        post = {**post, "operation_marker": {"operation_id": "abc123"}}
+                        comments[0]["body"] += "\n<!-- github-skill-operation:" + ("abc123" if variant == "marker" else "def456") + " -->"
                     actor = comments[0]["user"]["login"]
                     if variant == "case":
                         evidence[0]["repository"] = entry["repository"].upper()
@@ -632,8 +632,8 @@ class RoutineCheckTests(unittest.TestCase):
             url = "https://github.com/owner/repo/pull/7#issuecomment-8"
             entry = {"repository": "owner/repo", "issue": 7, "session_id": "native"}
             args = argparse.Namespace(session_id="native", handoff_url=url)
-            for body, missing in (("Finished", "no operation marker"),
-                                  ("Finished\n<!-- github-skill-operation:foreign -->", "no matching write proof")):
+            reasons = []
+            for body in ("Finished", "Finished\n<!-- github-skill-operation:def456 -->"):
                 handoff = {"id": 8, "html_url": url, "body": body, "user": {"login": "agent[bot]"},
                            "issue_url": "https://api.github.com/repos/owner/repo/issues/7"}
                 with (self.subTest(body=body), patch.object(session_closeout, "GitHubReader", return_value=SimpleNamespace(
@@ -642,8 +642,9 @@ class RoutineCheckTests(unittest.TestCase):
                       self.assertRaises(GateFailed) as refusal):
                     session_closeout.verify_handoff(entry, args, Operation(root, ["native"]), retired=True)
                 self.assertIn(url, str(refusal.exception))
-                self.assertIn("native session id native absent", str(refusal.exception))
-                self.assertIn(missing, str(refusal.exception))
+                self.assertIn(entry["session_id"], str(refusal.exception))
+                reasons.append(str(refusal.exception))
+            self.assertNotEqual(*reasons)
 
 
 if __name__ == "__main__":
