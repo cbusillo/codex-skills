@@ -212,7 +212,9 @@ an unsafe key path or rejected authentication fails closed. Custom transports
 and explicitly different actors retain their existing identity handling.
 The wrapper's `--reader` prefix accepts verified reads and `--check`, including
 GraphQL queries provided literally or as JSON with `--input -`; use stdin in
-place of field file indirection. Writes and unverified commands are refused
+place of field file indirection. Download run artifacts with
+`--reader run download RUN_ID --repo OWNER/REPO --name ARTIFACT --dir EVIDENCE_DIR`.
+Writes and unverified commands are refused
 before minting or delegation.
 Read hints cannot authorize a mutation through the reader.
 
